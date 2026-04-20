@@ -56,6 +56,12 @@ import { executeTools } from "../phases/execute-tools.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { prepareContext } from "../phases/prepare-context.js";
 import { streamModel, StreamModelError } from "../phases/stream-model.js";
+import { isTransientProviderError } from "../recovery/api-errors.js";
+import {
+  RECONNECT_MAX_ATTEMPTS,
+  reconnectWithBackoff,
+} from "../recovery/reconnection.js";
+import * as planModeHelpers from "./plan-mode.js";
 import type { Session } from "./session.js";
 import { toTurnContextItem, type TurnContext } from "./turn-context.js";
 import {
@@ -342,6 +348,21 @@ async function tryRunSamplingRequest(
   // Phase 1: prepare context.
   await prepareContext(state, ctx, session, signal);
 
+  // Plan-mode stream state (T11). When the turn's collaboration mode is
+  // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
+  // post-stream finalize hook below (and future delta callbacks) share
+  // one `PlanModeStreamState` instance.
+  if (planModeHelpers.isPlanMode(ctx)) {
+    const withPlan = state as TurnState & {
+      planModeStream?: planModeHelpers.PlanModeStreamState;
+    };
+    if (withPlan.planModeStream === undefined) {
+      withPlan.planModeStream = planModeHelpers.createPlanModeStreamState(
+        ctx.subId,
+      );
+    }
+  }
+
   // Phase 2: stream model.
   let streamModelError: StreamModelError | null = null;
   try {
@@ -351,6 +372,30 @@ async function tryRunSamplingRequest(
       streamModelError = error;
     } else {
       streamModelError = new StreamModelError(error);
+    }
+  }
+
+  // Plan-mode: after the stream finishes, let the helper finalize any
+  // plan item embedded in the final assistant message. No-op when not
+  // in plan mode or when no `<plan>` block was found.
+  if (planModeHelpers.isPlanMode(ctx)) {
+    const withPlan = state as TurnState & {
+      planModeStream?: planModeHelpers.PlanModeStreamState;
+    };
+    const planStream = withPlan.planModeStream;
+    if (planStream) {
+      const last = state.assistantMessages.at(-1);
+      if (last && typeof last.text === "string" && last.text.length > 0) {
+        planModeHelpers.maybeCompletePlanItemFromMessage(
+          session,
+          ctx,
+          planStream,
+          {
+            role: "assistant",
+            content: [{ type: "output_text", text: last.text }],
+          },
+        );
+      }
     }
   }
 
@@ -405,11 +450,25 @@ async function tryRunSamplingRequest(
 }
 
 /**
- * Port of codex `run_sampling_request` (turn.rs:987-1129). Applies
- * the per-provider retry policy around `tryRunSamplingRequest`. On
- * ContextWindowExceeded / UsageLimitReached, updates session state
- * and surfaces the error. On generic retryable errors, backs off
- * and retries up to the provider's `streamMaxRetries` bound.
+ * Port of codex `run_sampling_request` (turn.rs:987-1129). Applies the
+ * per-provider retry policy around `tryRunSamplingRequest`.
+ *
+ * T8: retries route through `reconnectWithBackoff` from
+ * `recovery/reconnection.ts` so every attempt shares the suspend-aware
+ * jittered exponential backoff used by the rest of the recovery ladder.
+ * Transient classification fans through two predicates in order:
+ *
+ *   1. `isRetryableStreamError` — typed discrimination on
+ *      `StreamModelError.cause`. Covers `LLMServerError`,
+ *      `LLMRateLimitError`, `LLMTimeoutError`, and the `stream_idle`
+ *      watchdog path. Also fails closed on
+ *      `LLMContextWindowExceededError` / auth failures.
+ *   2. `isTransientProviderError` — substring + `status` classifier
+ *      over the raw underlying error. Catches socket hangups /
+ *      `5xx`-tagged errors that bubbled up without a typed wrapper.
+ *
+ * Non-transient errors bubble out of `reconnectWithBackoff` immediately
+ * (`throw err`) so `runTurn` can route them to terminal.
  */
 async function runSamplingRequest(
   state: TurnState,
@@ -418,34 +477,40 @@ async function runSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
 ): Promise<SamplingRequestResult> {
-  // T13 wires per-provider stream_max_retries; T5 default = 3.
-  const maxRetries = 3;
-  let retries = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      return await tryRunSamplingRequest(state, ctx, session, signal, events);
-    } catch (error) {
-      if (!isRetryableStreamError(error)) throw error;
-      if (retries >= maxRetries) throw error;
-      retries += 1;
-      // Exponential backoff: 100ms * 2^attempt, capped at 2s.
-      const delay = Math.min(2000, 100 * 2 ** retries);
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, delay).unref?.(),
-      );
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "stream_retry",
-            message: `retrying stream (attempt ${retries}/${maxRetries}) after ${delay}ms`,
-          },
-        },
-      });
-    }
+  // T13 adds per-provider `streamMaxRetries`; default matches the
+  // reconnection module's `RECONNECT_MAX_ATTEMPTS` (5) for parity with
+  // the rest of the recovery ladder.
+  const maxAttempts = RECONNECT_MAX_ATTEMPTS;
+
+  const outcome = await reconnectWithBackoff<SamplingRequestResult>({
+    session,
+    signal,
+    maxAttempts,
+    attempt: () => tryRunSamplingRequest(state, ctx, session, signal, events),
+    isTransient: (err) => {
+      if (isRetryableStreamError(err)) return true;
+      // Fall-through: the raw-error classifier covers bare
+      // ECONNRESET / 5xx / socket-hang-up failures that never got
+      // wrapped in StreamModelError.
+      if (err instanceof StreamModelError) {
+        return isTransientProviderError(err.cause);
+      }
+      return isTransientProviderError(err);
+    },
+  });
+
+  if (outcome.kind === "ok") return outcome.value;
+  if (outcome.kind === "aborted") {
+    const abortReason =
+      (signal as AbortSignal & { reason?: unknown }).reason ?? outcome.reason;
+    throw new StreamModelError(
+      abortReason instanceof Error ? abortReason : new Error(String(abortReason)),
+    );
   }
+  // exhausted
+  const lastError = outcome.lastError;
+  if (lastError instanceof Error) throw lastError;
+  throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
 }
 
 /**
@@ -925,3 +990,35 @@ export async function* runTurn(
 }
 
 export type { Continue, Terminal };
+
+// ─────────────────────────────────────────────────────────────────────
+// Plan-mode helpers — port of codex turn.rs:1537-1793. Exported from
+// run-turn.ts so existing call sites can tree-shake them. The
+// implementations live in `./plan-mode.ts` because they're pure helpers
+// with no dependency on the outer turn loop.
+// ─────────────────────────────────────────────────────────────────────
+
+export {
+  createPlanModeStreamState,
+  emitAgentMessageInPlanMode,
+  emitStreamedAssistantTextDelta,
+  flushAssistantTextSegmentsAll,
+  flushAssistantTextSegmentsForItem,
+  handleAssistantItemDoneInPlanMode,
+  handlePlanSegments,
+  isPlanMode,
+  maybeCompletePlanItemFromMessage,
+  realtimeTextForEvent,
+  trackTurnResolvedConfigAnalytics,
+} from "./plan-mode.js";
+
+export type {
+  AssistantMessageStreamParsersLike,
+  ParsedAssistantTextDelta,
+  PlanItem,
+  PlanItemState,
+  PlanModeStreamState,
+  PlanResponseItem,
+  PlanSegment,
+  PlanTurnItem,
+} from "./plan-mode.js";

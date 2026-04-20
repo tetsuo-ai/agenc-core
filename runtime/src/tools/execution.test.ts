@@ -9,10 +9,16 @@ import {
   resolveTimeoutMs,
   runToolUse,
   ToolTimeoutError,
+  validateToolArgs,
   withTimeoutAndAbort,
 } from "./execution.js";
 import type { Tool } from "./types.js";
 import type { ToolInvocation } from "./context.js";
+import type {
+  PostToolUseFailureHook,
+  PostToolUseHook,
+  PreToolUseHook,
+} from "./tool-hooks.js";
 import { EventLog } from "../session/event-log.js";
 
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
@@ -290,5 +296,237 @@ describe("runToolUse end-to-end", () => {
     });
     expect(typeof seen).toBe("bigint");
     expect(seen).toBe(9007199254740993n);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Lightweight JSON Schema validation
+// ─────────────────────────────────────────────────────────────────────
+
+describe("validateToolArgs", () => {
+  test("accepts args that satisfy required + types", () => {
+    const schema = {
+      type: "object",
+      properties: { a: { type: "string" }, b: { type: "number" } },
+      required: ["a"],
+    };
+    const result = validateToolArgs(schema, { a: "hi", b: 3 });
+    expect(result.valid).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  test("flags missing required field", () => {
+    const schema = {
+      type: "object",
+      properties: { a: { type: "string" } },
+      required: ["a"],
+    };
+    const result = validateToolArgs(schema, {});
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]?.path).toBe("a");
+    expect(result.errors[0]?.message).toMatch(/missing/i);
+  });
+
+  test("flags wrong type", () => {
+    const schema = {
+      type: "object",
+      properties: { a: { type: "string" } },
+    };
+    const result = validateToolArgs(schema, { a: 42 });
+    expect(result.valid).toBe(false);
+    expect(result.errors[0]?.message).toContain("expected string");
+  });
+
+  test("enum membership check", () => {
+    const schema = {
+      type: "object",
+      properties: { color: { enum: ["red", "blue"] } },
+    };
+    expect(validateToolArgs(schema, { color: "red" }).valid).toBe(true);
+    expect(validateToolArgs(schema, { color: "green" }).valid).toBe(false);
+  });
+});
+
+describe("runToolUse — schema validation integration", () => {
+  test("missing required field returns schema_validation_failed", async () => {
+    const tool: Tool = {
+      name: "strict",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+      execute: async () => ({ content: "ok" }),
+    };
+    const log = new EventLog();
+    const events: Array<{ type: string; payload: { cause?: string } }> = [];
+    log.subscribe((e) => events.push({ type: e.msg.type, payload: e.msg.payload as { cause?: string } }));
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "strict"),
+      eventLog: log,
+    });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain("schema validation failed");
+    const err = events.find((e) => e.type === "error" && e.payload.cause === "schema_validation_failed");
+    expect(err).toBeDefined();
+  });
+
+  test("skipArgValidation bypasses schema check", async () => {
+    const tool: Tool = {
+      name: "strict2",
+      description: "",
+      inputSchema: {
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+      },
+      execute: async () => ({ content: "reached" }),
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "strict2"),
+      skipArgValidation: true,
+    });
+    expect(out.content).toBe("reached");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Hook invocation inside runToolUse (consistent boundary)
+// ─────────────────────────────────────────────────────────────────────
+
+describe("runToolUse — hook invocation", () => {
+  test("pre-hook fires from runToolUse itself", async () => {
+    let sawPre = false;
+    const preHook: PreToolUseHook = async () => {
+      sawPre = true;
+      return { kind: "continue", args: { injected: true } };
+    };
+    const tool: Tool = {
+      name: "h-pre",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => ({ content: JSON.stringify(args) }),
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "h-pre"),
+      preHooks: [preHook],
+    });
+    expect(sawPre).toBe(true);
+    expect(out.content).toContain('"injected":true');
+  });
+
+  test("post-hook fires from runToolUse itself + rewrite takes effect", async () => {
+    let sawPost = false;
+    const postHook: PostToolUseHook = async () => {
+      sawPost = true;
+      return { kind: "rewrite", result: { content: "rewritten" } };
+    };
+    const tool: Tool = {
+      name: "h-post",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "original" }),
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "h-post"),
+      postHooks: [postHook],
+    });
+    expect(sawPost).toBe(true);
+    expect(out.content).toBe("rewritten");
+  });
+
+  test("failure-hook fires on tool throw", async () => {
+    let sawFailure = 0;
+    const failureHook: PostToolUseFailureHook = () => {
+      sawFailure += 1;
+    };
+    const tool: Tool = {
+      name: "thrower",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        throw new Error("kaboom");
+      },
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "thrower"),
+      failureHooks: [failureHook],
+    });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain("kaboom");
+    expect(sawFailure).toBe(1);
+  });
+
+  test("pre-hook deny short-circuits without executing tool", async () => {
+    let executed = 0;
+    const preHook: PreToolUseHook = () => ({ kind: "deny", reason: "nope" });
+    const tool: Tool = {
+      name: "h-deny",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "ran" };
+      },
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "h-deny"),
+      preHooks: [preHook],
+    });
+    expect(out.isError).toBe(true);
+    expect(out.content).toContain("nope");
+    expect(executed).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Progress events
+// ─────────────────────────────────────────────────────────────────────
+
+describe("runToolUse — progress events", () => {
+  test("tool that calls __onProgress emits tool_progress event on eventLog", async () => {
+    const log = new EventLog();
+    const progressEvents: Array<{ type: string; payload: { callId: string; chunk: string } }> = [];
+    log.subscribe((e) => {
+      if (e.msg.type === "tool_progress") {
+        progressEvents.push({ type: e.msg.type, payload: e.msg.payload as { callId: string; chunk: string } });
+      }
+    });
+    const tool: Tool = {
+      name: "progressive",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => {
+        const onProgress = (args as { __onProgress?: (e: { chunk: string }) => void })
+          .__onProgress;
+        onProgress?.({ chunk: "chunk-a" });
+        onProgress?.({ chunk: "chunk-b" });
+        return { content: "done" };
+      },
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c-prog", "progressive"),
+      eventLog: log,
+    });
+    expect(out.isError).toBe(false);
+    expect(progressEvents).toHaveLength(2);
+    expect(progressEvents[0]!.payload.callId).toBe("c-prog");
+    expect(progressEvents[0]!.payload.chunk).toBe("chunk-a");
+    expect(progressEvents[1]!.payload.chunk).toBe("chunk-b");
   });
 });

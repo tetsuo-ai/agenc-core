@@ -176,9 +176,14 @@ export function isStopHookBlocking(state: TurnState): boolean {
  * Did the streaming fallback fire in the previous iteration? This is
  * tracked by the stream-model phase via `state.transition` and the
  * `streamingFallbackOccured` flag the adapter reports.
+ *
+ * T8 disambiguation: this check fires on the dedicated
+ * `streaming_fallback_retry` reason so downstream telemetry can
+ * distinguish it from the cross-model `model_fallback` swap handled
+ * by `onFallbackError`.
  */
 export function isStreamingFallbackOccured(state: TurnState): boolean {
-  return state.transition?.reason === "model_fallback";
+  return state.transition?.reason === "streaming_fallback_retry";
 }
 
 // ─────────────────────────────────────────────────────────────────────

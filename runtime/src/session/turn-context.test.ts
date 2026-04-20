@@ -13,17 +13,24 @@
 import { describe, expect, test } from "vitest";
 import {
   applySessionConfiguration,
+  buildPerTurnConfig,
   buildTurnContext,
   codexHome,
   deepFreeze,
+  deriveFileSystemSandboxPolicyForMode,
   imageGenerationToolAuthAllowed,
   isChatgptAuth,
+  newDefaultTurn,
+  newDefaultTurnWithSubId,
+  newTurnWithSubId,
   threadConfigSnapshot,
+  toTurnContextItem,
   type AuthManager,
   type Config,
   type ManagedFeatures,
   type ModelInfo,
   type SessionConfiguration,
+  type SessionForTurn,
 } from "./turn-context.js";
 import type { LLMProvider } from "../llm/types.js";
 
@@ -204,9 +211,16 @@ describe("SessionConfiguration helpers", () => {
     expect(next.approvalPolicy.value).toBe("on_request");
     expect(next.approvalPolicy.allowed).toEqual(["never", "on_request"]);
     expect(next.sandboxPolicy.value).toBe("workspace_write");
-    // File-system split policy is preserved even when sandbox policy
-    // changed; the deny-preserving rebuild lands with T11.
-    expect(next.fileSystemSandboxPolicy).toBe(current.fileSystemSandboxPolicy);
+    // A sandbox-policy change now rebuilds `fileSystemSandboxPolicy`
+    // from the new mode via `deriveFileSystemSandboxPolicyForMode`,
+    // matching codex `apply_sandbox_policy_changes`. The deny-entry
+    // preservation still lands with T11; this default projection
+    // covers the zero-op "new richer policy" baseline.
+    expect(next.fileSystemSandboxPolicy).not.toBe(
+      current.fileSystemSandboxPolicy,
+    );
+    expect(next.fileSystemSandboxPolicy.allowWrite).toEqual([current.cwd]);
+    expect(next.fileSystemSandboxPolicy.denyWrite).toEqual([]);
   });
 
   test("apply: empty updates returns an equivalent configuration", () => {
@@ -272,5 +286,209 @@ describe("deepFreeze / buildTurnContext I-30 snapshot", () => {
     // freeze prevents leaking readonly state onto the caller).
     expect(Object.isFrozen(live)).toBe(false);
     expect(Object.isFrozen(live.permissions)).toBe(false);
+  });
+
+  test("deepFreeze on a Map rejects .set / .delete / .clear", () => {
+    const m = new Map<string, number>([["a", 1]]);
+    deepFreeze(m);
+    expect(() => m.set("b", 2)).toThrow(TypeError);
+    expect(() => m.delete("a")).toThrow(TypeError);
+    expect(() => m.clear()).toThrow(TypeError);
+    // Reads still work.
+    expect(m.get("a")).toBe(1);
+    expect(m.size).toBe(1);
+  });
+
+  test("deepFreeze on a Set rejects .add / .delete / .clear", () => {
+    const s = new Set<string>(["x"]);
+    deepFreeze(s);
+    expect(() => s.add("y")).toThrow(TypeError);
+    expect(() => s.delete("x")).toThrow(TypeError);
+    expect(() => s.clear()).toThrow(TypeError);
+    expect(s.has("x")).toBe(true);
+    expect(s.size).toBe(1);
+  });
+
+  test("deepFreeze recursively freezes Map values", () => {
+    const inner = { flag: false };
+    const m = new Map<string, typeof inner>([["k", inner]]);
+    deepFreeze(m);
+    expect(Object.isFrozen(inner)).toBe(true);
+    expect(() => {
+      (inner as { flag: boolean }).flag = true;
+    }).toThrow(TypeError);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Sandbox-policy cascade on applySessionConfiguration
+// ─────────────────────────────────────────────────────────────────────
+
+describe("applySessionConfiguration sandbox cascade", () => {
+  test("danger_full_access rebuilds to unrestricted (empty allow/deny)", () => {
+    const current = mkSessionConfiguration();
+    const next = applySessionConfiguration(current, {
+      sandboxPolicy: "danger_full_access",
+    });
+    expect(next.sandboxPolicy.value).toBe("danger_full_access");
+    expect(next.fileSystemSandboxPolicy).toEqual({
+      allowWrite: [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    });
+  });
+
+  test("workspace_write rebuilds allowWrite to the current cwd", () => {
+    const current = mkSessionConfiguration();
+    const next = applySessionConfiguration(current, {
+      sandboxPolicy: "workspace_write",
+    });
+    expect(next.sandboxPolicy.value).toBe("workspace_write");
+    expect(next.fileSystemSandboxPolicy.allowWrite).toEqual([current.cwd]);
+    expect(next.fileSystemSandboxPolicy.denyWrite).toEqual([]);
+  });
+
+  test("read_only rebuilds denyWrite to the current cwd", () => {
+    const current = mkSessionConfiguration();
+    const next = applySessionConfiguration(current, {
+      sandboxPolicy: "read_only",
+    });
+    expect(next.sandboxPolicy.value).toBe("read_only");
+    expect(next.fileSystemSandboxPolicy.allowWrite).toEqual([]);
+    expect(next.fileSystemSandboxPolicy.denyWrite).toEqual([current.cwd]);
+  });
+
+  test("external_sandbox rebuilds to an empty policy", () => {
+    const current = mkSessionConfiguration();
+    const next = applySessionConfiguration(current, {
+      sandboxPolicy: "external_sandbox",
+    });
+    expect(next.sandboxPolicy.value).toBe("external_sandbox");
+    expect(next.fileSystemSandboxPolicy).toEqual({
+      allowWrite: [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    });
+  });
+
+  test("sandbox change + cwd change honors the new cwd in the rebuilt policy", () => {
+    const current = mkSessionConfiguration();
+    const next = applySessionConfiguration(current, {
+      sandboxPolicy: "workspace_write",
+      cwd: "/workspace/v2",
+    });
+    expect(next.cwd).toBe("/workspace/v2");
+    expect(next.fileSystemSandboxPolicy.allowWrite).toEqual(["/workspace/v2"]);
+  });
+
+  test("deriveFileSystemSandboxPolicyForMode is the exported helper", () => {
+    expect(
+      deriveFileSystemSandboxPolicyForMode("workspace_write", "/w").allowWrite,
+    ).toEqual(["/w"]);
+    expect(
+      deriveFileSystemSandboxPolicyForMode("read_only", "/w").denyWrite,
+    ).toEqual(["/w"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Codex `impl Session` turn-builder helpers
+// ─────────────────────────────────────────────────────────────────────
+
+function mkSessionForTurn(overrides: Partial<SessionForTurn> = {}): SessionForTurn {
+  let subCounter = 0;
+  return {
+    conversationId: "conv-s",
+    sessionConfiguration: mkSessionConfiguration(),
+    config: mkConfig(),
+    modelInfo: mkModelInfo(),
+    provider: mkProvider(),
+    nextInternalSubId: () => {
+      subCounter += 1;
+      return `sub-${subCounter}`;
+    },
+    ...overrides,
+  };
+}
+
+describe("codex-parity turn-builder helpers", () => {
+  test("buildPerTurnConfig returns a frozen snapshot that cannot be mutated", () => {
+    const session = mkSessionForTurn();
+    const snap = buildPerTurnConfig(session);
+    expect(Object.isFrozen(snap)).toBe(true);
+    expect(Object.isFrozen(snap.permissions)).toBe(true);
+    expect(() => {
+      (snap as unknown as { model: string }).model = "other";
+    }).toThrow(TypeError);
+  });
+
+  test("buildPerTurnConfig applies overrides without mutating the live session config", () => {
+    const session = mkSessionForTurn();
+    const originalModel = session.config.model;
+    const snap = buildPerTurnConfig(session, { model: "override-model" });
+    expect(snap.model).toBe("override-model");
+    expect(session.config.model).toBe(originalModel);
+  });
+
+  test("newDefaultTurnWithSubId uses the supplied sub-id and produces a frozen config", () => {
+    const session = mkSessionForTurn();
+    const ctx = newDefaultTurnWithSubId(session, "sub-fixed");
+    expect(ctx.subId).toBe("sub-fixed");
+    expect(Object.isFrozen(ctx.config)).toBe(true);
+    expect(ctx.cwd).toBe(session.sessionConfiguration.cwd);
+  });
+
+  test("newDefaultTurn allocates a sub-id via the session allocator", () => {
+    const session = mkSessionForTurn();
+    const a = newDefaultTurn(session);
+    const b = newDefaultTurn(session);
+    expect(a.subId).toBe("sub-1");
+    expect(b.subId).toBe("sub-2");
+  });
+
+  test("newTurnWithSubId applies per-turn config overrides before freezing", () => {
+    const session = mkSessionForTurn();
+    const ctx = newTurnWithSubId(session, "sub-x", { model: "overridden" });
+    expect(ctx.subId).toBe("sub-x");
+    expect(ctx.config.model).toBe("overridden");
+    expect(Object.isFrozen(ctx.config)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// TurnContextItem field parity with toTurnContextItem writer
+// ─────────────────────────────────────────────────────────────────────
+
+describe("toTurnContextItem field parity", () => {
+  test("all 8 extended fields round-trip through toTurnContextItem", () => {
+    const sc: SessionConfiguration = {
+      ...mkSessionConfiguration(),
+      userInstructions: "user-inst",
+      developerInstructions: "dev-inst",
+    };
+    const ctx = buildTurnContext({
+      conversationId: "conv-p",
+      subId: "sub-p",
+      config: mkConfig(),
+      modelInfo: mkModelInfo(),
+      provider: mkProvider(),
+      sessionConfiguration: sc,
+      clock: { currentDate: "2026-04-20", timezone: "Etc/UTC" },
+    });
+    const item = toTurnContextItem(ctx);
+    // Fields the rollout reader consumes directly (no typed cast):
+    expect(item.realtimeActive).toBe(false);
+    expect(item.userInstructions).toBe("user-inst");
+    expect(item.developerInstructions).toBe("dev-inst");
+    expect(item.finalOutputJsonSchema).toBeUndefined();
+    expect(item.truncationPolicy).toBe("off");
+    expect(item.collaborationMode).toEqual({ model: "test-model" });
+    expect(item.fileSystemSandboxPolicy).toEqual(
+      sc.fileSystemSandboxPolicy,
+    );
+    // traceId is undefined on a fresh context but the field exists.
+    expect("traceId" in item).toBe(true);
   });
 });

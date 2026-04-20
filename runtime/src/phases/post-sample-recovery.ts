@@ -183,7 +183,17 @@ export async function postSampleRecovery(
           "streaming_fallback_tombstoned",
           "partial assistant messages tombstoned; executor recreated",
         );
-        c.state.transition = { reason: "model_fallback" };
+        emitWarning(
+          c.session.eventLog,
+          c.session.nextInternalSubId(),
+          "executor_discarded",
+          "streaming_fallback",
+        );
+        // T8: streaming_fallback_retry is the dedicated cause for this
+        // recovery path. Distinct from `model_fallback` (reserved for
+        // FallbackTriggeredError / cross-model swaps) so downstream
+        // telemetry can disambiguate the two.
+        c.state.transition = { reason: "streaming_fallback_retry" };
         return { kind: "applied", reason: "streaming_fallback" };
       },
 

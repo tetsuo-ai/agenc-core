@@ -313,6 +313,20 @@ export type SessionSource =
   | "ide"
   | { kind: "unknown"; raw: string };
 
+/**
+ * Stage 2 (tool-result budgeting) knobs. Ports openclaude's
+ * `toolResultStorage` message-level budget into the prepare-context
+ * phase. Thresholds default to openclaude's 2MB/40KB pair; envs
+ * `AGENC_TOOL_RESULT_BUDGET_BYTES` / `AGENC_TOOL_RESULT_TRUNCATE_BYTES`
+ * override at the helper boundary.
+ */
+export interface ConfigToolBudget {
+  /** Hard running-total budget across all tool-role messages. */
+  readonly maxToolResultBudgetBytes?: number;
+  /** Cap applied to each over-sized tool-role message body when shedding. */
+  readonly truncateToBytes?: number;
+}
+
 /** Codex `Config`. The original config blob (large). T10 lands real shape. */
 export interface Config {
   readonly model: string;
@@ -334,10 +348,24 @@ export interface Config {
   readonly codexSelfExe?: string;
   readonly codexLinuxSandboxExe?: string;
   readonly agentRoles: ReadonlyArray<{ name: string; description: string }>;
+  /** Stage 2 (tool-result budgeting) thresholds. Falls back to defaults
+   *  in `applyToolResultBudgeting` when absent. */
+  readonly toolBudget?: ConfigToolBudget;
   // T10 expands further.
 }
 
-/** Codex `TurnContextItem` — the rollout-stamped shape (T6). */
+/**
+ * Codex `TurnContextItem` — the rollout-stamped shape (T6).
+ *
+ * Every field here must exist on the rollout-side `TurnContextItem` in
+ * `event-log.ts` as well. The rollout reader consumes this type
+ * directly (no typed-cast recovery), so a rename on either side must
+ * be reflected in both files before merging. The 8 "richer" fields
+ * (`realtimeActive`, `userInstructions`, `developerInstructions`,
+ * `finalOutputJsonSchema`, `truncationPolicy`, `collaborationMode`,
+ * `fileSystemSandboxPolicy`, `traceId`) round-trip through
+ * `toTurnContextItem` + the rollout reader with no lossy narrowing.
+ */
 export interface TurnContextItem {
   readonly turnId?: string;
   readonly traceId?: string;
@@ -609,10 +637,90 @@ export function localTimeContext(): {
  * depth — phases must never mutate `ctx.config.permissions.*`,
  * `ctx.configSnapshot.*`, etc. This walker freezes the whole object
  * graph (skipping frozen subtrees to keep cycles harmless).
+ *
+ * Map and Set receive extra protection because `Object.freeze` alone
+ * does not stop `.set()/.add()/.delete()/.clear()` from mutating
+ * their internal slots. For Map/Set inputs, this helper:
+ *   - Object.freezes the container (catches property-bag assignments),
+ *   - replaces the `set/add/delete/clear` methods with throwing stubs
+ *     on a per-instance own-property basis so later mutation attempts
+ *     throw a TypeError instead of silently succeeding,
+ *   - recursively freezes each contained entry value (and key, for
+ *     Map) so nested structures are locked down the same way object
+ *     subtrees are.
+ *
+ * The guarantee: after `deepFreeze(x)`, no reachable property, array
+ * element, Map entry, or Set member can be mutated without a throw.
  */
 export function deepFreeze<T>(value: T): Readonly<T> {
   if (value === null || typeof value !== "object") return value;
   if (Object.isFrozen(value)) return value as Readonly<T>;
+
+  if (value instanceof Map) {
+    // Replace mutating methods before freezing so the own-property
+    // assignments succeed (frozen objects reject defineProperty).
+    const throwOnMutate = (method: string) => {
+      return () => {
+        throw new TypeError(
+          `Cannot ${method} on a deep-frozen Map (I-30 immutability)`,
+        );
+      };
+    };
+    Object.defineProperty(value, "set", {
+      value: throwOnMutate("set"),
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(value, "delete", {
+      value: throwOnMutate("delete"),
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(value, "clear", {
+      value: throwOnMutate("clear"),
+      writable: false,
+      configurable: false,
+    });
+    Object.freeze(value);
+    for (const [k, v] of value as Map<unknown, unknown>) {
+      if (k && typeof k === "object" && !Object.isFrozen(k)) deepFreeze(k);
+      if (v && typeof v === "object" && !Object.isFrozen(v)) deepFreeze(v);
+    }
+    return value as Readonly<T>;
+  }
+
+  if (value instanceof Set) {
+    const throwOnMutate = (method: string) => {
+      return () => {
+        throw new TypeError(
+          `Cannot ${method} on a deep-frozen Set (I-30 immutability)`,
+        );
+      };
+    };
+    Object.defineProperty(value, "add", {
+      value: throwOnMutate("add"),
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(value, "delete", {
+      value: throwOnMutate("delete"),
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(value, "clear", {
+      value: throwOnMutate("clear"),
+      writable: false,
+      configurable: false,
+    });
+    Object.freeze(value);
+    for (const entry of value as Set<unknown>) {
+      if (entry && typeof entry === "object" && !Object.isFrozen(entry)) {
+        deepFreeze(entry);
+      }
+    }
+    return value as Readonly<T>;
+  }
+
   Object.freeze(value);
   for (const key of Reflect.ownKeys(value as object)) {
     const child = (value as Record<PropertyKey, unknown>)[key];
@@ -757,19 +865,23 @@ export function applySessionConfiguration(
     next.cwd = updates.cwd;
   }
 
-  // codex parity (session.rs ~160-176):
-  //   - sandbox policy changed -> we do NOT rederive here (the full
-  //     FileSystemSandboxPolicy rebuild with deny-entry preservation is
-  //     T11's job). We still keep the previous richer policy so it isn't
-  //     silently dropped.
-  //   - cwd-only change AND the current split policy is just the legacy
-  //     projection -> rederive nothing here (we lack the `from_legacy`
-  //     helper pre-T11). We keep the existing policy; the cwd change
-  //     alone does not invalidate the allow/deny lists.
-  //   - in both branches: never overwrite `fileSystemSandboxPolicy` just
-  //     because cwd moved. This matches the stated audit requirement:
-  //     cwd-only update preserves `fileSystemSandboxPolicy`.
-  void sandboxPolicyChanged;
+  // codex parity (session.rs `apply_sandbox_policy_changes`):
+  //   - sandbox policy changed -> rebuild fileSystemSandboxPolicy from
+  //     the new mode so downstream readers see a consistent split
+  //     policy. The full deny-entry-preserving rebuild lands with T11;
+  //     this intermediate mapping is faithful to codex's
+  //     `FileSystemSandboxPolicy::from_legacy_sandbox_policy` default
+  //     projection for each mode.
+  //   - cwd-only change (sandbox unchanged): never overwrite
+  //     `fileSystemSandboxPolicy`. The cwd change alone does not
+  //     invalidate the allow/deny lists the operator configured; richer
+  //     policies must survive a directory move unchanged.
+  if (sandboxPolicyChanged) {
+    next.fileSystemSandboxPolicy = deriveFileSystemSandboxPolicyForMode(
+      next.sandboxPolicy.value,
+      next.cwd,
+    );
+  }
   void cwdChanged;
 
   if (updates.appServerClientName !== undefined) {
@@ -783,6 +895,61 @@ export function applySessionConfiguration(
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+/**
+ * Rebuild a `FileSystemSandboxPolicy` from a legacy `SandboxPolicy`
+ * mode + cwd. Mirrors codex
+ * `FileSystemSandboxPolicy::from_legacy_sandbox_policy` default
+ * projection for each mode:
+ *
+ *   - `danger_full_access` → fully unrestricted (empty allow/deny).
+ *   - `read_only`          → read-only (no writes allowed).
+ *   - `workspace_write`    → writes confined to the session cwd;
+ *                            reads unrestricted.
+ *   - `external_sandbox`   → owned by an out-of-process sandbox; the
+ *                            AgenC-side policy is kept empty so no
+ *                            internal layer claims authority.
+ *
+ * The full deny-entry-preserving rebuild (which inspects the previous
+ * richer policy) is T11's job; this intermediate helper covers the
+ * codex-parity default projection so a mode change does not silently
+ * keep the old policy.
+ */
+export function deriveFileSystemSandboxPolicyForMode(
+  mode: SandboxPolicy,
+  cwd: string,
+): FileSystemSandboxPolicy {
+  switch (mode) {
+    case "danger_full_access":
+      return {
+        allowWrite: [],
+        denyWrite: [],
+        allowRead: [],
+        denyRead: [],
+      };
+    case "workspace_write":
+      return {
+        allowWrite: [cwd],
+        denyWrite: [],
+        allowRead: [],
+        denyRead: [],
+      };
+    case "read_only":
+      return {
+        allowWrite: [],
+        denyWrite: [cwd],
+        allowRead: [],
+        denyRead: [],
+      };
+    case "external_sandbox":
+      return {
+        allowWrite: [],
+        denyWrite: [],
+        allowRead: [],
+        denyRead: [],
+      };
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // TurnContext builder (codex `Session::make_turn_context` parity).
@@ -890,4 +1057,133 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     turnTimingState: new TurnTimingState(),
     depth: opts.depth ?? 0,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Codex `impl Session` turn-builder helpers.
+//
+// Mirrors codex `turn_context.rs:303/449/609/614`. Structural inputs
+// keep this module free of a Session-class import (session.ts already
+// imports from this module, so a direct dependency would be cyclic).
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Structural view of the session state this module needs to build a
+ * per-turn snapshot. Matches the subset of codex `Session` that the
+ * real `make_turn_context` pulls from.
+ */
+export interface SessionForTurn {
+  readonly conversationId: string;
+  readonly sessionConfiguration: SessionConfiguration;
+  readonly config: Config;
+  readonly modelInfo: ModelInfo;
+  readonly provider: LLMProvider;
+  readonly authManager?: AuthManager;
+  readonly environment?: Environment;
+  readonly network?: NetworkProxy;
+  readonly jsRepl?: JsReplHandle;
+  /** Monotonic sub-id allocator (codex `next_internal_sub_id`). */
+  nextInternalSubId(): string;
+}
+
+/**
+ * Codex `Session::build_per_turn_config` (turn_context.rs:303).
+ *
+ * Returns a frozen `Config` snapshot for this turn. The snapshot is a
+ * deep-clone-then-deep-freeze of the session's live `config`, with any
+ * caller overrides layered on top before freeze. I-30: callers MUST
+ * read the returned snapshot rather than the live session config for
+ * the lifetime of the turn — mutating the snapshot throws.
+ */
+export function buildPerTurnConfig(
+  session: SessionForTurn,
+  overrides?: Partial<Config>,
+): Readonly<Config> {
+  const preservedFeatures = session.config.features;
+  const cloned = cloneConfigForSnapshot(session.config);
+  (cloned as Mutable<Config>).features = preservedFeatures;
+  if (overrides !== undefined) {
+    for (const key of Object.keys(overrides) as Array<keyof Config>) {
+      const value = overrides[key];
+      if (value !== undefined) {
+        // Per-key assignment widens Config[keyof Config] to an intersection;
+        // cast through `unknown` to sidestep TS's indexed-write narrowing.
+        (cloned as unknown as Record<string, unknown>)[key] = value;
+      }
+    }
+  }
+  return deepFreeze(cloned);
+}
+
+/**
+ * Codex `Session::new_default_turn_with_sub_id` (turn_context.rs:614).
+ *
+ * Builds a `TurnContext` using the session's defaults plus an
+ * operator-supplied sub-id (so the caller can join the turn's event
+ * stream on a known id).
+ */
+export function newDefaultTurnWithSubId(
+  session: SessionForTurn,
+  subId: string,
+): TurnContext {
+  return buildTurnContext({
+    conversationId: session.conversationId,
+    subId,
+    config: session.config,
+    modelInfo: session.modelInfo,
+    provider: session.provider,
+    sessionConfiguration: session.sessionConfiguration,
+    ...(session.authManager !== undefined
+      ? { authManager: session.authManager }
+      : {}),
+    ...(session.environment !== undefined
+      ? { environment: session.environment }
+      : {}),
+    ...(session.network !== undefined ? { network: session.network } : {}),
+    ...(session.jsRepl !== undefined ? { jsRepl: session.jsRepl } : {}),
+  });
+}
+
+/**
+ * Codex `Session::new_default_turn` (turn_context.rs:609).
+ *
+ * Convenience wrapper that allocates a fresh sub-id via the session's
+ * monotonic allocator, then delegates to
+ * {@link newDefaultTurnWithSubId}.
+ */
+export function newDefaultTurn(session: SessionForTurn): TurnContext {
+  return newDefaultTurnWithSubId(session, session.nextInternalSubId());
+}
+
+/**
+ * Codex `Session::new_turn_with_sub_id` (turn_context.rs:449).
+ *
+ * Builds a `TurnContext` with a caller-supplied sub-id and optional
+ * per-turn `Config` overrides layered on top of the session defaults.
+ * The overrides go through {@link buildPerTurnConfig} so the per-turn
+ * snapshot is always deep-frozen (I-30) regardless of what the caller
+ * passes in.
+ */
+export function newTurnWithSubId(
+  session: SessionForTurn,
+  subId: string,
+  configOverrides?: Partial<Config>,
+): TurnContext {
+  const perTurnConfig = buildPerTurnConfig(session, configOverrides);
+  return buildTurnContext({
+    conversationId: session.conversationId,
+    subId,
+    config: perTurnConfig,
+    modelInfo: session.modelInfo,
+    provider: session.provider,
+    sessionConfiguration: session.sessionConfiguration,
+    ...(session.authManager !== undefined
+      ? { authManager: session.authManager }
+      : {}),
+    ...(session.environment !== undefined
+      ? { environment: session.environment }
+      : {}),
+    ...(session.network !== undefined ? { network: session.network } : {}),
+    ...(session.jsRepl !== undefined ? { jsRepl: session.jsRepl } : {}),
+  });
 }

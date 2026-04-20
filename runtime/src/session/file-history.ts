@@ -33,6 +33,7 @@
  * @module
  */
 
+import type { Stats } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -46,6 +47,7 @@ import { join } from "node:path";
 import { monotonicMs } from "../utils/monotonic.js";
 import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
+import type { RolloutItem } from "./rollout-item.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
 
@@ -641,4 +643,370 @@ export class FileHistorySidecar implements Sidecar {
   getSnapshotState(): FileHistoryState {
     return this.history.getState();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Session-resume surface — module-level helpers
+//
+// Port of openclaude `utils/fileHistory.ts` lines 347-397, 399-408,
+// 414-484, 494-531, 600-634, 888-917, 922-1046. The AgenC port reuses
+// the existing FileHistory on-disk layout (`backupFileName` is the
+// absolute path to the backup artifact under `projectDir/file-history/
+// <pathHash>/v<N>`), so a snapshot carries the fully-resolved backup
+// path and these helpers can operate without knowing `projectDir`.
+// ─────────────────────────────────────────────────────────────────────
+
+function findSnapshotByMessageId(
+  state: FileHistoryState,
+  messageId: string,
+): FileHistorySnapshot | undefined {
+  for (let i = state.snapshots.length - 1; i >= 0; i -= 1) {
+    const snap = state.snapshots[i];
+    if (snap && snap.messageId === messageId) return snap;
+  }
+  return undefined;
+}
+
+/**
+ * Locate the first (earliest) tracked backup for `trackingPath` across
+ * the snapshot log, used when rewinding to a target where the file has
+ * not yet been tracked. Returns `null` when v1 recorded that the file
+ * did not exist, or `undefined` when no v1 entry can be found at all
+ * (the latter is a hard "unknown origin" and callers must not touch
+ * the file).
+ */
+function getOriginBackup(
+  state: FileHistoryState,
+  trackingPath: string,
+): FileHistoryBackup | null | undefined {
+  for (const snapshot of state.snapshots) {
+    const backup = snapshot.trackedFileBackups[trackingPath];
+    if (backup !== undefined && backup.version === 1) {
+      return backup;
+    }
+  }
+  return undefined;
+}
+
+async function safeStat(filePath: string): Promise<Stats | null> {
+  try {
+    return await stat(filePath);
+  } catch {
+    return null;
+  }
+}
+
+async function hashFileContent(filePath: string): Promise<string | null> {
+  try {
+    const buf = await readFile(filePath);
+    return createHash("sha256").update(buf).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Port of openclaude `checkOriginFileChanged` (fileHistory.ts:600-634).
+ * Hash-compares current disk state to the recorded origin (v1) backup.
+ * Returns `true` when the file differs (including presence mismatch)
+ * or when `backupFileName` is `null` but the file exists on disk.
+ */
+export async function checkOriginFileChanged(
+  filePath: string,
+  backupFileName: BackupFileName,
+): Promise<boolean> {
+  const originStats = await safeStat(filePath);
+
+  if (backupFileName === null) {
+    // Origin recorded "file did not exist" — any presence now counts
+    // as change.
+    return originStats !== null;
+  }
+
+  const backupStats = await safeStat(backupFileName);
+  // Presence mismatch between disk and backup ⇒ changed.
+  if ((originStats === null) !== (backupStats === null)) return true;
+  if (originStats === null || backupStats === null) return false;
+  if (originStats.size !== backupStats.size) return true;
+
+  const [originHash, backupHash] = await Promise.all([
+    hashFileContent(filePath),
+    hashFileContent(backupFileName),
+  ]);
+  if (originHash === null || backupHash === null) return true;
+  return originHash !== backupHash;
+}
+
+/**
+ * Port of openclaude `fileHistoryCanRestore` (fileHistory.ts:399-408).
+ * Returns `true` when a snapshot for `messageId` exists AND every
+ * tracked file in that snapshot has a reachable backup on disk (i.e.
+ * the backup files themselves have not been garbage-collected).
+ */
+export async function fileHistoryCanRestore(
+  state: FileHistoryState,
+  messageId: string,
+): Promise<boolean> {
+  const snap = findSnapshotByMessageId(state, messageId);
+  if (!snap) return false;
+  for (const backup of Object.values(snap.trackedFileBackups)) {
+    if (backup.backupFileName === null) continue;
+    const s = await safeStat(backup.backupFileName);
+    if (s === null) return false;
+  }
+  return true;
+}
+
+/**
+ * Port of openclaude `fileHistoryRewind` (fileHistory.ts:347-397).
+ * Rewind the tracked files on disk to the snapshot identified by
+ * `messageId`. Returns the list of files that changed. Throws when
+ * the snapshot does not exist so callers can surface a clear error.
+ */
+export async function fileHistoryRewind(
+  state: FileHistoryState,
+  messageId: string,
+): Promise<ReadonlyArray<string>> {
+  const target = findSnapshotByMessageId(state, messageId);
+  if (!target) {
+    throw new Error(
+      `FileHistory: Snapshot for messageId=${messageId} not found`,
+    );
+  }
+  const changed: string[] = [];
+  for (const trackingPath of state.trackedFiles) {
+    const targetBackup = target.trackedFileBackups[trackingPath];
+    const origin = targetBackup ?? getOriginBackup(state, trackingPath);
+    if (origin === undefined) continue;
+
+    try {
+      if (origin.backupFileName === null) {
+        // Target said "file did not exist" — delete if present.
+        try {
+          await rm(trackingPath);
+          changed.push(trackingPath);
+        } catch {
+          /* already absent */
+        }
+        continue;
+      }
+      if (await checkOriginFileChanged(trackingPath, origin.backupFileName)) {
+        const contents = await readFile(origin.backupFileName);
+        await writeFile(trackingPath, contents);
+        changed.push(trackingPath);
+      }
+    } catch {
+      /* best-effort — leave file untouched */
+    }
+  }
+  return changed;
+}
+
+/**
+ * Port of openclaude `fileHistoryGetDiffStats` (fileHistory.ts:414-484),
+ * generalized to diff between two snapshot points. When `fromMessageId`
+ * is omitted, diffs against the first recorded snapshot (the origin).
+ * Returns per-file insertions/deletions plus an aggregate.
+ */
+export async function fileHistoryGetDiffStats(
+  state: FileHistoryState,
+  fromMessageId: string | undefined,
+  toMessageId: string,
+): Promise<{
+  readonly filesChanged: ReadonlyArray<string>;
+  readonly insertions: number;
+  readonly deletions: number;
+  readonly perFile: Readonly<Record<string, DiffStats>>;
+}> {
+  const toSnap = findSnapshotByMessageId(state, toMessageId);
+  if (!toSnap) {
+    return { filesChanged: [], insertions: 0, deletions: 0, perFile: {} };
+  }
+  const fromSnap =
+    fromMessageId !== undefined
+      ? findSnapshotByMessageId(state, fromMessageId)
+      : state.snapshots[0];
+
+  const perFile: Record<string, DiffStats> = {};
+  const filesChanged: string[] = [];
+  let insertions = 0;
+  let deletions = 0;
+
+  const tracked = new Set<string>([
+    ...Object.keys(toSnap.trackedFileBackups),
+    ...(fromSnap ? Object.keys(fromSnap.trackedFileBackups) : []),
+  ]);
+
+  for (const trackingPath of tracked) {
+    const fromBackup = fromSnap?.trackedFileBackups[trackingPath];
+    const toBackup = toSnap.trackedFileBackups[trackingPath];
+    try {
+      const fromContent =
+        fromBackup?.backupFileName !== undefined &&
+        fromBackup.backupFileName !== null
+          ? await readFile(fromBackup.backupFileName, "utf8")
+          : "";
+      const toContent =
+        toBackup?.backupFileName !== undefined &&
+        toBackup.backupFileName !== null
+          ? await readFile(toBackup.backupFileName, "utf8")
+          : "";
+      if (fromContent === toContent) continue;
+      const stats = computeDiffStats(fromContent, toContent);
+      if (stats.insertions === 0 && stats.deletions === 0) continue;
+      perFile[trackingPath] = stats;
+      filesChanged.push(trackingPath);
+      insertions += stats.insertions;
+      deletions += stats.deletions;
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  return { filesChanged, insertions, deletions, perFile };
+}
+
+/**
+ * Port of openclaude `fileHistoryHasAnyChanges` (fileHistory.ts:494-531)
+ * specialized to "any edit ever recorded" — true iff at least one
+ * tracked-file backup exists across the snapshot log. Complements the
+ * disk-vs-snapshot variant exposed via the `FileHistory` class.
+ */
+export function fileHistoryHasAnyChanges(state: FileHistoryState): boolean {
+  if (state.trackedFiles.size > 0) return true;
+  for (const snap of state.snapshots) {
+    if (Object.keys(snap.trackedFileBackups).length > 0) return true;
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Rollout persistence — session_state carries a file-history block.
+//
+// Emission side (writer) lives with the session-store; this module
+// owns the parser. We duck-type the payload shape so older rollouts
+// without the block are simply returned as an empty state.
+// ─────────────────────────────────────────────────────────────────────
+
+interface PersistedBackup {
+  readonly backupFileName: BackupFileName;
+  readonly version: number;
+  readonly backupTimeMs: number;
+  readonly diffStats?: DiffStats;
+}
+
+interface PersistedSnapshot {
+  readonly messageId: string;
+  readonly trackedFileBackups: Record<string, PersistedBackup>;
+  readonly timestampMs: number;
+  readonly aggregateDiffStats?: DiffStats & {
+    readonly filesChanged: ReadonlyArray<string>;
+  };
+}
+
+function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.messageId === "string" &&
+    typeof obj.timestampMs === "number" &&
+    obj.trackedFileBackups !== null &&
+    typeof obj.trackedFileBackups === "object"
+  );
+}
+
+/**
+ * Port of openclaude `fileHistoryRestoreStateFromLog` (fileHistory.ts:
+ * 888-917). Rebuild `FileHistoryState` by walking the rollout items
+ * and collecting any `event_msg` payload whose `msg.type ===
+ * "file_history_snapshot"` carries a `PersistedSnapshot`. Unknown or
+ * malformed payloads are skipped (I-26 forward-compat posture).
+ */
+export function fileHistoryRestoreStateFromLog(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+): FileHistoryState {
+  const snapshots: FileHistorySnapshot[] = [];
+  const trackedFiles = new Set<string>();
+
+  for (const item of rolloutItems) {
+    if (item.type !== "event_msg") continue;
+    const payload = item.payload as Event | undefined;
+    const msg = payload?.msg as
+      | { readonly type?: string; readonly snapshot?: unknown }
+      | undefined;
+    if (!msg || msg.type !== "file_history_snapshot") continue;
+    const candidate = msg.snapshot;
+    if (!isPersistedSnapshot(candidate)) continue;
+
+    const trackedFileBackups: Record<string, FileHistoryBackup> = {};
+    for (const [path, backup] of Object.entries(candidate.trackedFileBackups)) {
+      trackedFiles.add(path);
+      trackedFileBackups[path] = {
+        backupFileName: backup.backupFileName,
+        version: backup.version,
+        backupTimeMs: backup.backupTimeMs,
+        diffStats: backup.diffStats,
+      };
+    }
+    snapshots.push({
+      messageId: candidate.messageId,
+      trackedFileBackups,
+      timestampMs: candidate.timestampMs,
+      aggregateDiffStats: candidate.aggregateDiffStats,
+    });
+  }
+
+  return {
+    snapshots,
+    trackedFiles,
+    snapshotSequence: snapshots.length,
+    isFileHistoryComplete: true,
+    evictedCount: 0,
+  };
+}
+
+/**
+ * Port of openclaude `copyFileHistoryForResume` (fileHistory.ts:922-
+ * 1046). AgenC snapshots carry absolute backup paths, so resuming a
+ * session does not require per-session backup-dir migration: the new
+ * session can read the existing backup artifacts directly. This helper
+ * therefore reduces to a structural deep clone of the state so the
+ * resumed session gets its own mutable copy isolated from the prior
+ * session's in-memory state.
+ */
+export function copyFileHistoryForResume(
+  state: FileHistoryState,
+): FileHistoryState {
+  const snapshots: FileHistorySnapshot[] = state.snapshots.map((snap) => {
+    const trackedFileBackups: Record<string, FileHistoryBackup> = {};
+    for (const [path, backup] of Object.entries(snap.trackedFileBackups)) {
+      trackedFileBackups[path] = {
+        backupFileName: backup.backupFileName,
+        version: backup.version,
+        backupTimeMs: backup.backupTimeMs,
+        diffStats: backup.diffStats
+          ? { insertions: backup.diffStats.insertions, deletions: backup.diffStats.deletions }
+          : undefined,
+      };
+    }
+    return {
+      messageId: snap.messageId,
+      trackedFileBackups,
+      timestampMs: snap.timestampMs,
+      aggregateDiffStats: snap.aggregateDiffStats
+        ? {
+            insertions: snap.aggregateDiffStats.insertions,
+            deletions: snap.aggregateDiffStats.deletions,
+            filesChanged: [...snap.aggregateDiffStats.filesChanged],
+          }
+        : undefined,
+    };
+  });
+  return {
+    snapshots,
+    trackedFiles: new Set(state.trackedFiles),
+    snapshotSequence: state.snapshotSequence,
+    isFileHistoryComplete: state.isFileHistoryComplete,
+    evictedCount: state.evictedCount,
+  };
 }

@@ -20,6 +20,11 @@
  */
 
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
+import type {
+  CollaborationMode,
+  FileSystemSandboxPolicy,
+  TruncationPolicy,
+} from "./turn-context.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Schema version — I-49
@@ -185,6 +190,13 @@ export interface WarningEvent {
  * that turn's model-visible context updates (and again after
  * mid-turn compaction) so resume/fork replay recovers the latest
  * durable baseline. Port of codex `TurnContextItem` (protocol.rs:2896).
+ *
+ * Full-parity shape: every field populated by `toTurnContextItem` in
+ * `turn-context.ts` is declared here so downstream readers (notably
+ * `rollout-reconstruction.ts`) can consume each field directly
+ * without falling back to a typed cast. Keep the field list in sync
+ * with `TurnContextItem` in `turn-context.ts`; a rename here without
+ * the matching change there silently breaks replay.
  */
 export interface TurnContextItem {
   readonly turnId?: string;
@@ -194,10 +206,17 @@ export interface TurnContextItem {
   readonly timezone?: string;
   readonly approvalPolicy: string;
   readonly sandboxPolicy: string;
+  readonly fileSystemSandboxPolicy?: FileSystemSandboxPolicy;
   readonly model: string;
   readonly personality?: string;
+  readonly collaborationMode?: CollaborationMode;
+  readonly realtimeActive?: boolean;
   readonly effort?: string;
   readonly summary?: string;
+  readonly userInstructions?: string;
+  readonly developerInstructions?: string;
+  readonly finalOutputJsonSchema?: unknown;
+  readonly truncationPolicy?: TruncationPolicy;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -275,6 +294,16 @@ export type EventMsg =
       };
     }
   | {
+      readonly type: "tool_progress";
+      readonly payload: {
+        readonly callId: string;
+        readonly toolName: string;
+        readonly chunk: string;
+        readonly stream?: "stdout" | "stderr" | "status";
+        readonly at?: number;
+      };
+    }
+  | {
       readonly type: "request_permissions";
       readonly payload: RequestPermissionsEvent;
     }
@@ -293,11 +322,27 @@ export type EventMsg =
   | { readonly type: "warning"; readonly payload: WarningEvent }
   | {
       readonly type: "deprecation_notice";
-      readonly payload: {
-        readonly summary: string;
-        readonly details?: string;
-      };
+      readonly payload: DeprecationNoticeEvent;
     };
+
+/**
+ * Structured deprecation-notice payload. Emitted whenever the runtime
+ * silently rewrites an operator-supplied identifier (model alias,
+ * deprecated API field, legacy config key) to a canonical value so
+ * telemetry and the event log can surface the rewrite instead of the
+ * operator only discovering the change from downstream behavior.
+ *
+ *   - `subject`: what got deprecated (e.g. `"grok-4.20-beta-0309-reasoning"`)
+ *   - `reason`:  why it was deprecated or what the rewrite is about
+ *   - `replacement`: optional canonical identifier the subject resolved to
+ *   - `deprecated_since`: optional marker of when the deprecation began
+ */
+export interface DeprecationNoticeEvent {
+  readonly subject: string;
+  readonly reason: string;
+  readonly replacement?: string;
+  readonly deprecated_since?: string;
+}
 
 /**
  * All known event-type tags. `isKnownEventType()` checks membership;
@@ -320,6 +365,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "exec_approval_request",
     "tool_call_started",
     "tool_call_completed",
+    "tool_progress",
     "request_permissions",
     "context_compacted",
     "turn_complete",
@@ -490,6 +536,27 @@ export function emitWarning(
     msg: {
       type: "warning",
       payload: { cause, message },
+    },
+  });
+}
+
+/**
+ * Deprecation-notice helper. Single entry point for every runtime site
+ * that silently rewrites an operator-supplied identifier to a
+ * canonical value. Keeping the emit here (rather than inline at each
+ * call site) guarantees every deprecation event carries the same
+ * payload shape for downstream consumers and rollout replay.
+ */
+export function emitDeprecationNotice(
+  log: EventLog,
+  subId: string,
+  notice: DeprecationNoticeEvent,
+): Event {
+  return log.emit({
+    id: subId,
+    msg: {
+      type: "deprecation_notice",
+      payload: notice,
     },
   });
 }

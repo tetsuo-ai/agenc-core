@@ -39,6 +39,15 @@ import type {
 } from "./context.js";
 import { functionToolOutput, toolNameDisplay } from "./context.js";
 import type { Tool } from "./types.js";
+import {
+  runPostToolUseFailureHooks,
+  runPostToolUseHooks,
+  runPreToolUseHooks,
+  type HookTimingRecord,
+  type PostToolUseFailureHook,
+  type PostToolUseHook,
+  type PreToolUseHook,
+} from "./tool-hooks.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -425,6 +434,184 @@ export function classifyToolError(err: unknown): ToolErrorClass {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Lightweight JSON Schema validation (no ajv — just enough to enforce
+// `required` + top-level field `type` + enum membership).
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SchemaValidationError {
+  readonly path: string;
+  readonly message: string;
+}
+
+export interface SchemaValidationResult {
+  readonly valid: boolean;
+  readonly errors: ReadonlyArray<SchemaValidationError>;
+}
+
+/**
+ * Map a JavaScript value to its JSON Schema `type` name. BigInt is
+ * treated as `integer` / `number` so the large-int reviver works with
+ * `type: "integer"` schemas without special-casing.
+ */
+function schemaTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  switch (typeof value) {
+    case "string":
+      return "string";
+    case "boolean":
+      return "boolean";
+    case "number":
+      return Number.isInteger(value) ? "integer" : "number";
+    case "bigint":
+      return "integer";
+    case "object":
+      return "object";
+    default:
+      return typeof value;
+  }
+}
+
+function typeMatches(
+  expected: string,
+  actualType: string,
+): boolean {
+  if (expected === actualType) return true;
+  // Integer is a subset of number.
+  if (expected === "number" && actualType === "integer") return true;
+  return false;
+}
+
+/**
+ * Validate `args` against a JSON Schema subset. Supports:
+ *   - top-level object with `required: string[]`
+ *   - per-property `type: string | string[]`
+ *   - per-property `enum: unknown[]`
+ *   - nested `properties` (recursive for nested objects only)
+ *
+ * Unknown / exotic keywords (`anyOf`, `$ref`, `format`, etc.) are
+ * intentionally ignored — the goal is to catch glaring contract
+ * violations (missing required field, wrong type) before the tool
+ * runs, not to implement full JSON Schema semantics.
+ */
+export function validateToolArgs(
+  schema: Record<string, unknown> | undefined,
+  args: Record<string, unknown>,
+): SchemaValidationResult {
+  const errors: SchemaValidationError[] = [];
+  if (!schema || typeof schema !== "object") {
+    return { valid: true, errors: [] };
+  }
+  validateObject(schema, args, "", errors);
+  return { valid: errors.length === 0, errors };
+}
+
+function validateObject(
+  schema: Record<string, unknown>,
+  value: unknown,
+  path: string,
+  errors: SchemaValidationError[],
+): void {
+  const declaredType = schema["type"];
+  if (typeof declaredType === "string" && declaredType !== "object") {
+    // Top-level schema with `type:"object"` is the only shape we recurse
+    // into; other top-level types short-circuit to a single type check.
+    validateType(schema, value, path, errors);
+    return;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    if (declaredType === "object") {
+      errors.push({
+        path: path || "(root)",
+        message: `expected object, got ${schemaTypeOf(value)}`,
+      });
+    }
+    return;
+  }
+  const obj = value as Record<string, unknown>;
+  const required = schema["required"];
+  if (Array.isArray(required)) {
+    for (const key of required) {
+      if (typeof key !== "string") continue;
+      if (!(key in obj)) {
+        errors.push({
+          path: path ? `${path}.${key}` : key,
+          message: `missing required field`,
+        });
+      }
+    }
+  }
+  const properties = schema["properties"];
+  if (properties && typeof properties === "object") {
+    const propMap = properties as Record<string, unknown>;
+    for (const [key, sub] of Object.entries(propMap)) {
+      if (!(key in obj)) continue;
+      if (!sub || typeof sub !== "object") continue;
+      const childSchema = sub as Record<string, unknown>;
+      const childPath = path ? `${path}.${key}` : key;
+      const childVal = obj[key];
+      validateType(childSchema, childVal, childPath, errors);
+      const childType = childSchema["type"];
+      if (childType === "object") {
+        validateObject(childSchema, childVal, childPath, errors);
+      }
+    }
+  }
+}
+
+function validateType(
+  schema: Record<string, unknown>,
+  value: unknown,
+  path: string,
+  errors: SchemaValidationError[],
+): void {
+  const declared = schema["type"];
+  if (declared !== undefined) {
+    const actual = schemaTypeOf(value);
+    if (typeof declared === "string") {
+      if (!typeMatches(declared, actual)) {
+        errors.push({
+          path: path || "(root)",
+          message: `expected ${declared}, got ${actual}`,
+        });
+      }
+    } else if (Array.isArray(declared)) {
+      if (!declared.some((t) => typeof t === "string" && typeMatches(t, actual))) {
+        errors.push({
+          path: path || "(root)",
+          message: `expected one of ${declared.join(",")}, got ${actual}`,
+        });
+      }
+    }
+  }
+  const enumVals = schema["enum"];
+  if (Array.isArray(enumVals) && enumVals.length > 0) {
+    if (!enumVals.some((v) => v === value)) {
+      errors.push({
+        path: path || "(root)",
+        message: `value not in enum`,
+      });
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Progress events (A-side channel for long-running tools)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Structured progress chunk emitted by a tool while it runs. The
+ * runtime forwards these via the session event log as
+ * `tool_progress` events so TUI/telemetry consumers can render them.
+ */
+export interface ToolProgressEvent {
+  readonly chunk: string;
+  readonly stream?: "stdout" | "stderr" | "status";
+}
+
+export type ToolProgressCallback = (event: ToolProgressEvent) => void;
+
+// ─────────────────────────────────────────────────────────────────────
 // runToolUse — the single entry point
 // ─────────────────────────────────────────────────────────────────────
 
@@ -443,6 +630,37 @@ export interface RunToolUseOptions {
   readonly tool: Tool & Partial<ToolExecutionOverrides>;
   /** Invocation envelope — phase-5 builds from the LLMToolCall. */
   readonly invocation: ToolInvocation;
+  /**
+   * Optional pre/post/failure hook pipelines. `runToolUse` fires these
+   * around the tool dispatch so every execution path — direct caller,
+   * phases/execute-tools, code_mode, js_repl — shares one consistent
+   * hook boundary.
+   */
+  readonly preHooks?: ReadonlyArray<PreToolUseHook>;
+  readonly postHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly failureHooks?: ReadonlyArray<PostToolUseFailureHook>;
+  readonly onHookTiming?: (record: HookTimingRecord) => void;
+  readonly onHookError?: (
+    phase: "pre" | "post" | "failure",
+    err: unknown,
+    idx: number,
+  ) => void;
+  /**
+   * Optional progress callback. When the tool's `execute` is called
+   * with an injected `onProgress` prop (second arg on the typed helper
+   * or the `args.__onProgress` convention), each chunk is forwarded
+   * through this callback AND emitted as a `tool_progress` event on
+   * `eventLog` when supplied. Reserved so long-running tools (bash,
+   * http, long-running MCP calls) can stream status without blocking
+   * the caller promise.
+   */
+  readonly onProgress?: ToolProgressCallback;
+  /**
+   * When true, skip the lightweight JSON Schema validation step for
+   * this specific call. Useful in testing or when the caller has
+   * already validated args against a richer schema.
+   */
+  readonly skipArgValidation?: boolean;
 }
 
 /**
@@ -483,6 +701,32 @@ export async function runToolUse(
     });
   }
 
+  // Step 1b: lightweight JSON Schema validation BEFORE approval/hooks
+  // so a malformed request is surfaced as quickly as possible.
+  if (!opts.skipArgValidation) {
+    const validation = validateToolArgs(
+      tool.inputSchema as Record<string, unknown> | undefined,
+      parsedArgs,
+    );
+    if (!validation.valid) {
+      const detail = validation.errors
+        .map((e) => `${e.path}: ${e.message}`)
+        .join("; ");
+      const message = `schema validation failed for ${toolNameDisplay(invocation.toolName)}: ${detail}`;
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "schema_validation_failed",
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: message,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+  }
+
   // Step 2: I-21 + I-44 approval.
   if (opts.requestApproval) {
     const effectiveSignal = signal ?? new AbortController().signal;
@@ -513,13 +757,97 @@ export async function runToolUse(
     }
   }
 
+  // Step 2b: pre-tool-use hooks. `deny` short-circuits with an error
+  // response; `skip` short-circuits with a synthesized result (used by
+  // memoizing / cached hooks); otherwise arg mutations flow through to
+  // the dispatch call.
+  let args = parsedArgs;
+  const preHooks = opts.preHooks ?? [];
+  if (preHooks.length > 0) {
+    const preDecision = await runPreToolUseHooks(
+      preHooks,
+      { invocation, tool, args },
+      (err, idx) => opts.onHookError?.("pre", err, idx),
+      opts.onHookTiming,
+    );
+    if (preDecision.kind === "deny") {
+      const message = `pre-hook denied ${toolNameDisplay(invocation.toolName)}: ${preDecision.reason}`;
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "pre_hook_denied",
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: message,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+    if (preDecision.kind === "skip") {
+      return functionToolOutput({
+        callId: invocation.callId,
+        toolName: invocation.toolName,
+        payload: invocation.payload,
+        content: preDecision.synthResult.content,
+        isError: preDecision.synthResult.isError === true,
+        durationMs: performance.now() - startedAt,
+      });
+    }
+    if (preDecision.args) args = preDecision.args;
+  }
+
+  // Progress channel — each chunk is forwarded to the caller's
+  // `onProgress` callback AND re-emitted on the event log (if any) as
+  // a `tool_progress` event.
+  const progressCallback: ToolProgressCallback | undefined =
+    opts.onProgress || opts.eventLog
+      ? (event) => {
+          opts.onProgress?.(event);
+          if (opts.eventLog) {
+            opts.eventLog.emit({
+              id: subId,
+              msg: {
+                type: "tool_progress",
+                payload: {
+                  callId: invocation.callId,
+                  toolName: toolNameDisplay(invocation.toolName),
+                  chunk: event.chunk,
+                  ...(event.stream !== undefined
+                    ? { stream: event.stream }
+                    : {}),
+                  at: Date.now(),
+                },
+              },
+            });
+          }
+        }
+      : undefined;
+
+  // Inject onProgress into the args under the reserved key
+  // `__onProgress` when the callback is present. Tools that know about
+  // it (bash) read the callback; tools that don't simply ignore it.
+  // We define it as NON-ENUMERABLE so `Object.keys(args)` /
+  // deep-equality checks / schema validators never see it — callers can
+  // still retrieve it via direct key access.
+  let argsForTool: Record<string, unknown> = args;
+  if (progressCallback) {
+    argsForTool = { ...args };
+    Object.defineProperty(argsForTool, "__onProgress", {
+      value: progressCallback,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  }
+
   // Step 3: I-9 timeout + abort race.
-  const timeoutMs = resolveTimeoutMs(tool, parsedArgs);
+  const timeoutMs = resolveTimeoutMs(tool, args);
   let dispatch: ToolDispatchResult;
   try {
     dispatch = await withTimeoutAndAbort(
       async () => {
-        const result = await tool.execute(parsedArgs);
+        const result = await tool.execute(argsForTool);
         return {
           content: result.content,
           isError: result.isError,
@@ -548,6 +876,23 @@ export async function runToolUse(
         });
       }
     }
+    // Fire failure hooks for observability — purely observational, does
+    // not change the error result returned to the caller.
+    const failureHooks = opts.failureHooks ?? [];
+    if (failureHooks.length > 0) {
+      await runPostToolUseFailureHooks(
+        failureHooks,
+        {
+          invocation,
+          tool,
+          args,
+          error: err,
+          isInterrupt: cls === "aborted",
+        },
+        (hookErr, idx) => opts.onHookError?.("failure", hookErr, idx),
+        opts.onHookTiming,
+      );
+    }
     return errorOutput({
       invocation,
       content: `<tool_use_error>${message}</tool_use_error>`,
@@ -555,12 +900,42 @@ export async function runToolUse(
     });
   }
 
+  // Step 3b: post-tool-use hooks — `rewrite` replaces the result for
+  // subsequent hooks AND the returned output. `retry` is surfaced up
+  // to the caller via the runtime-level auto-fix loop; runToolUse
+  // itself never re-dispatches.
+  const postHooks = opts.postHooks ?? [];
+  let finalDispatch = dispatch;
+  if (postHooks.length > 0) {
+    const postDecision = await runPostToolUseHooks(
+      postHooks,
+      { invocation, tool, args, result: finalDispatch },
+      (err, idx) => opts.onHookError?.("post", err, idx),
+      opts.onHookTiming,
+    );
+    if (postDecision.kind === "retry") {
+      // Runtime-level retry is handled by `runWithAutoFixRetry`; here
+      // we just surface the base dispatch as-is with metadata noting
+      // that a retry was requested so the caller can decide.
+      if (opts.eventLog) {
+        emitWarningEvent(
+          opts.eventLog,
+          subId,
+          "post_tool_hook_retry_requested",
+          `post-hook requested retry for ${toolNameDisplay(invocation.toolName)}`,
+        );
+      }
+    } else if (postDecision.result) {
+      finalDispatch = postDecision.result;
+    }
+  }
+
   // Step 4: I-15 result-size cap.
   const maxResultBytes =
     tool.maxResultBytes !== undefined && tool.maxResultBytes > 0
       ? tool.maxResultBytes
       : DEFAULT_MAX_TOOL_RESULT_BYTES;
-  const capped = capToolResult(dispatch.content, maxResultBytes);
+  const capped = capToolResult(finalDispatch.content, maxResultBytes);
   if (capped.truncated && opts.eventLog) {
     emitWarningEvent(
       opts.eventLog,
@@ -575,7 +950,7 @@ export async function runToolUse(
     toolName: invocation.toolName,
     payload: invocation.payload,
     content: capped.capped,
-    isError: dispatch.isError === true,
+    isError: finalDispatch.isError === true,
     durationMs: performance.now() - startedAt,
   });
 }

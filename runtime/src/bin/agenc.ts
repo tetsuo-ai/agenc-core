@@ -543,7 +543,6 @@ async function main(): Promise<number> {
         sessionSource: "cli_main",
       },
       history: [],
-      idlePendingInput: [],
     };
 
     // Step 6: construct Session. Push its shutdown into the reverse-
@@ -571,6 +570,23 @@ async function main(): Promise<number> {
     // is constructed in this entrypoint yet — the placeholder
     // services.mcpManager is a stub until T9 lands).
     void mcpCallObserver;
+    // Future MCPManager attach site. When the CLI gains a first-class
+    // MCPManager (T9), uncomment the block below — `getMcpConfigFromEnv`
+    // lets ops seed servers via `AGENC_MCP_SERVERS` today, and
+    // `attachMcpManagerToSession` MUST run BEFORE `manager.start()` so
+    // `mcp_tool_call_begin` / `mcp_tool_call_end` are captured from the
+    // very first bridge. Leaving it commented keeps the ordering doc
+    // and the call surface discoverable without dragging the full
+    // MCPManager wiring in today.
+    //
+    // import { MCPManager } from "../mcp-client/manager.js";
+    // import {
+    //   attachMcpManagerToSession,
+    //   getMcpConfigFromEnv,
+    // } from "../session/mcp-startup.js";
+    // const mcpManager = new MCPManager(getMcpConfigFromEnv());
+    // attachMcpManagerToSession(mcpManager, session, sessionSlot);
+    // await mcpManager.start();
 
     let sessionRef: Session | null = session;
     installSignalHandlers(() => sessionRef);
@@ -688,7 +704,25 @@ async function main(): Promise<number> {
         sessionId: conversationId,
       }),
     );
-    sidecarManager.register(new CostSidecar({ budgetTracker: session.budgetTracker }));
+    const costSidecar = new CostSidecar({
+      budgetTracker: session.budgetTracker,
+      projectDir,
+      sessionId: conversationId,
+      onDiagnostic: (d) =>
+        sidecarManager.recordDiagnostic({
+          sidecar: "cost",
+          level: d.level,
+          cause: d.cause,
+          message: d.message,
+          at: Date.now(),
+        }),
+    });
+    // Load lifetime totals before the sidecar observes any events so
+    // `/status` and lifetime accessors reflect prior sessions
+    // immediately on resume. Cost totals survive session boundaries,
+    // scoped per project.
+    await costSidecar.loadFromDisk();
+    sidecarManager.register(costSidecar);
     await sidecarManager.start(session.eventLog);
     cleanup.push("sidecar-manager.stop", () => sidecarManager.stop());
 
@@ -761,6 +795,11 @@ async function main(): Promise<number> {
         return result.exitCode;
       } finally {
         sessionRef = null;
+        // Flush sidecars (incl. CostSidecar cross-session persistence)
+        // before closing the event log via session.shutdown().
+        await sidecarManager.stop().catch(() => {
+          /* best effort */
+        });
         await session.shutdown().catch(() => {
           /* best effort */
         });
@@ -781,6 +820,11 @@ async function main(): Promise<number> {
       }
     } finally {
       sessionRef = null;
+      // Flush sidecars (incl. CostSidecar cross-session persistence)
+      // before closing the event log via session.shutdown().
+      await sidecarManager.stop().catch(() => {
+        /* best effort */
+      });
       await session.shutdown().catch(() => {
         /* best effort */
       });

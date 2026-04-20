@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   EventLog,
+  emitDeprecationNotice,
   emitError,
   emitWarning,
   isKnownEventType,
@@ -142,6 +143,32 @@ describe("I-26 forward-compat + schema version", () => {
 
   test("ROLLOUT_SCHEMA_VERSION is exported (I-49)", () => {
     expect(ROLLOUT_SCHEMA_VERSION).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("deprecation_notice emit helper", () => {
+  test("emitDeprecationNotice writes a structured event", () => {
+    const log = new EventLog();
+    let captured: unknown;
+    log.subscribe((e) => (captured = e));
+    emitDeprecationNotice(log, "sub-7", {
+      subject: "grok-4.20-beta-0309-reasoning",
+      reason: "legacy catalog id",
+      replacement: "grok-4.20-0309-reasoning",
+      deprecated_since: "2026-04",
+    });
+    expect(captured).toMatchObject({
+      id: "sub-7",
+      msg: {
+        type: "deprecation_notice",
+        payload: {
+          subject: "grok-4.20-beta-0309-reasoning",
+          reason: "legacy catalog id",
+          replacement: "grok-4.20-0309-reasoning",
+          deprecated_since: "2026-04",
+        },
+      },
+    });
   });
 });
 

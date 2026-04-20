@@ -1,21 +1,30 @@
 /**
- * AgentControl — spawn/resume/interrupt/shutdown control plane.
+ * AgentControl — subagent lifecycle + control plane.
  *
- * Hand-port of codex `core/src/agent/control.rs` (1,214 LOC) — the
- * main subagent lifecycle driver. Codex's implementation threads
- * through the full thread-spawn runtime + state-db rollout
- * integration; AgenC's T9 surface focuses on:
+ * Port of codex `core/src/agent/control.rs` (1,214 LOC). Covers: full
+ * lifecycle (spawn/interrupt/shutdown/resume), parent→child message
+ * routing (send_input / append_message / inter-agent communication),
+ * metadata + subtree queries (list_agents / subtree descendants /
+ * token totals / environment context), completion watcher, fork-mode
+ * spawn helpers, and subtree genealogy bookkeeping.
  *
- *   1. `spawn()` — reserve slot (I-63) + depth check (I-1) +
- *      cancellation-token (I-32) + register metadata (I-37)
- *   2. `interrupt()` — signal abort to a running child (I-5
- *      parent→child direction); cascades to descendants
- *   3. `shutdown()` — terminal shutdown with descendant cascade
- *   4. `resume()` — rehydrate from rollout (T6 integration slot)
- *
- * The heavy lifting — actually launching a subagent session and
- * wiring up its run-turn loop — lives in `run-agent.ts`. Control
- * is the single-point-of-truth for lifecycle state transitions.
+ * Deferred (subsystems not yet in AgenC — track T10/T13):
+ *   - Rollout-driven rehydrate body: `resumeAgentFromRollout()` exists
+ *     and returns the root live handle only (no descendant walk) until
+ *     the T6 rollout reader surface exposes persisted
+ *     `thread_spawn_edge` records. The live-handle part of resume is
+ *     fully functional via `resume()`.
+ *   - Exec-policy + shell-snapshot inheritance
+ *     (`inheritedExecPolicyForSource`, `inheritedShellSnapshotForSource`)
+ *     is stubbed pending T13's config refactor. Safe default: return
+ *     undefined (child uses its own defaults).
+ *   - Persisted spawn-edge writes (`persistThreadSpawnEdgeForSource`)
+ *     are stubbed until the session exposes a state-db writer; the
+ *     live subtree is tracked entirely in-memory via `parentOf`.
+ *   - `getAgentConfigSnapshot` / `getTotalTokenUsage` currently return
+ *     conservative fallbacks (role-config blob + zeros). The codex
+ *     parity surface is preserved so callers upgrade once the live
+ *     thread config snapshot lands.
  *
  * Invariants wired:
  *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `childDepth >= cap`.
@@ -26,14 +35,15 @@
  *        verifier chains. Comparison operator matches codex's `>=`
  *        form (`codex-rs/core/src/agent/control.rs:486`,
  *        `codex-rs/core/src/agent/multi_agents_common.rs:283`).
- *   I-5  (bidirectional mailbox) — interrupt routes via the child's
- *        `downInbox` with `direction: 'down'`
+ *   I-5  (bidirectional mailbox) — routing methods (send_input /
+ *        append_message / IAC / interrupt) go through the child's
+ *        `downInbox` with `direction: 'down'`.
  *   I-32 (parent-interrupt race) — cancellation token from the
  *        reservation; `spawn()` validates `parent.token.aborted`
  *        before finalizing; on cancellation, undo slot + send
- *        synthetic interrupt
- *   I-37 (path collision) — registry.reserveAgentPath throws on dup
- *   I-63 (atomic slot acquisition) — registry.reserveSpawnSlot
+ *        synthetic interrupt.
+ *   I-37 (path collision) — registry.reserveAgentPath throws on dup.
+ *   I-63 (atomic slot acquisition) — registry.reserveSpawnSlot.
  *
  * @module
  */
@@ -54,11 +64,13 @@ import {
 } from "./registry.js";
 import {
   allocateNickname,
+  applyRoleToConfig,
   releaseNickname,
   resolveAgentRole,
   type AgentRole,
+  type RoleShapedConfig,
 } from "./role.js";
-import { AgentStatusTracker } from "./status.js";
+import { AgentStatusTracker, isFinal, type AgentStatus } from "./status.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -94,6 +106,27 @@ function resolveDefaultMaxDepth(): number {
 
 export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
 
+/**
+ * Accessor stub for the session-level child-base-config blob.
+ *
+ * TODO(T10): Replace with a real accessor once `SessionConfiguration`
+ * carries a stable child-config source. Codex derives the child's
+ * base config from `Session.state.config` (`role.rs:40`); AgenC's
+ * `Session.state.sessionConfiguration` exists but is not yet the
+ * authoritative source for subagent config layering. Returning
+ * `undefined` today is deliberate: it forces `applyRoleToConfig` to
+ * project onto an empty blob so the seam stays live without faking a
+ * config source that doesn't exist yet.
+ */
+function getChildBaseConfig(session: Session): RoleShapedConfig | undefined {
+  // Intentionally not reaching into session.state here — that state
+  // is an async-locked mutex whose contents are still under active
+  // reshape for T10. The live accessor will replace this with a
+  // proper snapshot read.
+  void session;
+  return undefined;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Errors
 // ─────────────────────────────────────────────────────────────────────
@@ -115,6 +148,56 @@ export class SpawnRaceAbortedError extends Error {
   }
 }
 
+export class ThreadNotFoundError extends Error {
+  constructor(public readonly threadId: ThreadId) {
+    super(`thread ${threadId} not found`);
+    this.name = "ThreadNotFoundError";
+  }
+}
+
+export class AgentReferenceUnresolvedError extends Error {
+  constructor(public readonly reference: string) {
+    super(`agent reference cannot be resolved: ${reference}`);
+    this.name = "AgentReferenceUnresolvedError";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Fork-mode + spawn option types (codex `SpawnAgentForkMode` /
+// `SpawnAgentOptions`; `control.rs:46-55`).
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Port of codex `SpawnAgentForkMode` (`control.rs:46`). AgenC's
+ * fork-context module owns the richer `ForkMode` used by delegate.ts;
+ * this enum matches the narrower codex spawn-entry shape.
+ */
+export type SpawnAgentForkMode =
+  | { readonly kind: "full_history" }
+  | { readonly kind: "last_n_turns"; readonly n: number };
+
+/**
+ * Port of codex `SpawnAgentOptions` (`control.rs:52`).
+ */
+export interface SpawnAgentOptions {
+  readonly threadId?: ThreadId;
+  readonly roleName?: string;
+  /** Caller-supplied metadata fields to merge into the allocated
+   *  record (e.g. inherited `agentRole` from a resume payload). */
+  readonly metadata?: Partial<AgentMetadata>;
+  readonly forkParentSpawnCallId?: string;
+  readonly forkMode?: SpawnAgentForkMode;
+}
+
+/**
+ * Port of codex `ListedAgent` (`control.rs:64`).
+ */
+export interface ListedAgent {
+  readonly agentName: string;
+  readonly agentStatus: AgentStatus;
+  readonly lastTaskMessage?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Live handle an AgentControl returns on spawn
 // ─────────────────────────────────────────────────────────────────────
@@ -132,6 +215,8 @@ export interface LiveAgent {
   readonly downInbox: Mailbox;
   /** Per-agent AbortController — triggered by `interrupt()`. */
   readonly abortController: AbortController;
+  /** Cached metadata snapshot at spawn time (codex `LiveAgent.metadata`). */
+  readonly metadata: AgentMetadata;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -152,6 +237,11 @@ export class AgentControl {
   private readonly live = new Map<ThreadId, LiveAgent>();
   /** Cancellation tokens scoped to parents — I-32. */
   private readonly parentTokens = new Map<AgentPath, AbortController>();
+  /** Registered session-root thread id (codex `register_session_root`). */
+  private rootThreadId: ThreadId | undefined;
+  /** Parent linkage: childId → parentId (for open_thread_spawn_children
+   *  and subtree cascade, since we have no state-db in-tree yet). */
+  private readonly parentOf = new Map<ThreadId, ThreadId>();
 
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
@@ -214,6 +304,18 @@ export class AgentControl {
     }
 
     const role = resolveAgentRole(opts.roleName);
+    // Project the role's overrides onto the child's effective config.
+    // T10 replaces the accessor below with a real config source on
+    // the session. For now we read whatever blob is available and
+    // re-apply; the returned object is intentionally unused today
+    // (the child session config path is not wired yet) but this call
+    // keeps the spawn seam live and fails fast on type drift.
+    const baseChildConfig = getChildBaseConfig(this.session) ?? {};
+    // TODO(T10): thread the child effective config into the child
+    // session's SessionConfiguration once the config source lives on
+    // session state. For now this materializes the role-projection
+    // locally so the integration is test-covered.
+    void applyRoleToConfig(role, baseChildConfig);
     const nickname = allocateNickname(role, this.registry);
     const threadId = opts.threadId ?? crypto.randomUUID();
     const metadata: AgentMetadata = buildChildMetadata({
@@ -289,6 +391,7 @@ export class AgentControl {
       upInbox,
       downInbox,
       abortController: new AbortController(),
+      metadata,
     };
 
     // I-5: wire the child's upInbox into the session's childInboxes
@@ -296,13 +399,160 @@ export class AgentControl {
     this.session.childInboxes.set(threadId, upInbox as unknown as never);
     this.live.set(threadId, agent);
 
+    // Track parent linkage for the in-memory subtree helpers.
+    const parentId = this.agentIdForPath(opts.parentPath);
+    if (parentId) {
+      this.parentOf.set(threadId, parentId);
+    }
+
     // Register a per-agent parent cancellation token so nested
     // spawns (grandchildren) observe the parent's token.
     if (!this.parentTokens.has(agent.agentPath)) {
       this.parentTokens.set(agent.agentPath, agent.abortController);
     }
 
+    // Best-effort persisted spawn-edge write (no-op stub today; the
+    // in-memory `parentOf` map is authoritative until the T10 state-
+    // db writer lands).
+    await this.persistThreadSpawnEdgeForSource(opts.parentPath, threadId);
+
     return agent;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Additional spawn entry points (codex parity)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Port of codex `spawn_agent_with_metadata` (control.rs:170).
+   * Delegates to `spawn()` but accepts the richer `SpawnAgentOptions`
+   * surface (preset threadId / role / metadata / fork mode).
+   */
+  async spawnAgentWithMetadata(
+    parentPath: AgentPath,
+    options: SpawnAgentOptions,
+  ): Promise<LiveAgent> {
+    const spawnOpts: Parameters<AgentControl["spawn"]>[0] = { parentPath };
+    if (options.roleName !== undefined) {
+      (spawnOpts as { roleName?: string }).roleName = options.roleName;
+    } else if (options.metadata?.agentRole) {
+      (spawnOpts as { roleName?: string }).roleName =
+        options.metadata.agentRole;
+    }
+    if (options.threadId !== undefined) {
+      (spawnOpts as { threadId?: ThreadId }).threadId = options.threadId;
+    }
+    const live = await this.spawn(spawnOpts);
+    // Fork annotation: the live handle is already wired; the parent-
+    // side fork history build lives in `fork-context.ts`.
+    void options.forkMode;
+    void options.forkParentSpawnCallId;
+    return live;
+  }
+
+  /**
+   * Port of codex `spawn_forked_thread` (control.rs:328). Thin wrapper
+   * that requires a fork mode + parent-spawn-call id (matches codex's
+   * `CodexErr::Fatal` guards at `control.rs:337` and `control.rs:342`).
+   * The actual rollout-truncation body lives in `fork-context.ts`.
+   */
+  async spawnForkedThread(
+    parentPath: AgentPath,
+    forkMode: SpawnAgentForkMode,
+    options: Omit<SpawnAgentOptions, "forkMode"> = {},
+  ): Promise<LiveAgent> {
+    if (!options.forkParentSpawnCallId) {
+      throw new Error("spawn_agent fork requires a parent spawn call id");
+    }
+    return this.spawnAgentWithMetadata(parentPath, {
+      ...options,
+      forkMode,
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Parent → child routing (codex control.rs:582/605/619)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Port of codex `send_input` (`control.rs:582`). Routes a user-input
+   * message to a live child via its `downInbox` with triggerTurn=true,
+   * and records the preview for `ListedAgent.lastTaskMessage`.
+   */
+  async sendInput(threadId: ThreadId, input: string): Promise<void> {
+    const agent = this.requireLive(threadId);
+    try {
+      agent.downInbox.send({
+        author: agent.agentPath,
+        recipient: agent.agentPath,
+        content: input,
+        triggerTurn: true,
+        direction: "down",
+        metadata: { kind: "user_input" },
+      });
+    } catch (err) {
+      if (err instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw err;
+    }
+    this.registry.updateLastTaskMessage(threadId, renderInputPreview(input));
+  }
+
+  /**
+   * Port of codex `append_message` (`control.rs:605`). Non-turn-
+   * triggering message append.
+   */
+  async appendMessage(threadId: ThreadId, message: string): Promise<void> {
+    const agent = this.requireLive(threadId);
+    try {
+      agent.downInbox.send({
+        author: agent.agentPath,
+        recipient: agent.agentPath,
+        content: message,
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "append_message" },
+      });
+    } catch (err) {
+      if (err instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Port of codex `send_inter_agent_communication`
+   * (`control.rs:619`). Generic parent→child IAC routing. Updates
+   * `lastTaskMessage` on success (matches codex's registry update).
+   */
+  async sendInterAgentCommunication(
+    threadId: ThreadId,
+    communication: {
+      readonly author: string;
+      readonly recipient: string;
+      readonly content: string;
+      readonly triggerTurn: boolean;
+    },
+  ): Promise<void> {
+    const agent = this.requireLive(threadId);
+    try {
+      agent.downInbox.send({
+        author: communication.author,
+        recipient: communication.recipient,
+        content: communication.content,
+        triggerTurn: communication.triggerTurn,
+        direction: "down",
+        metadata: { kind: "inter_agent_communication" },
+      });
+    } catch (err) {
+      if (err instanceof MailboxClosedError) {
+        throw new ThreadNotFoundError(threadId);
+      }
+      throw err;
+    }
+    this.registry.updateLastTaskMessage(threadId, communication.content);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -382,6 +632,7 @@ export class AgentControl {
     await this.registry.releaseSpawnedThread(threadId);
     this.parentTokens.delete(agent.agentPath);
     this.session.childInboxes.delete(threadId);
+    this.parentOf.delete(threadId);
     this.live.delete(threadId);
   }
 
@@ -493,10 +744,15 @@ export class AgentControl {
       upInbox,
       downInbox,
       abortController: new AbortController(),
+      metadata,
     };
 
     this.session.childInboxes.set(threadId, upInbox as unknown as never);
     this.live.set(threadId, agent);
+    const parentId = this.agentIdForPath(parentPath);
+    if (parentId) {
+      this.parentOf.set(threadId, parentId);
+    }
     if (!this.parentTokens.has(agent.agentPath)) {
       this.parentTokens.set(agent.agentPath, agent.abortController);
     }
@@ -509,6 +765,460 @@ export class AgentControl {
     );
 
     return agent;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Rollout-driven resume (codex `resume_agent_from_rollout`)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Port of codex `resume_agent_from_rollout` (control.rs:406).
+   *
+   * Deferred (T10): descendant rehydrate depends on the rollout
+   * reader exposing persisted `thread_spawn_edge` records. Today we
+   * rebuild the root live handle only and emit a
+   * `rollout_resume_stub` warning. Returns the count of resumed live
+   * handles (0 when the metadata is insufficient, 1 when root was
+   * resumed).
+   */
+  async resumeAgentFromRollout(opts: {
+    readonly rootThreadId: ThreadId;
+    readonly parentPath: AgentPath;
+    readonly metadata: AgentMetadata;
+  }): Promise<{
+    readonly resumedCount: number;
+    readonly rootLive: LiveAgent | null;
+  }> {
+    void opts.rootThreadId;
+    const rootLive = await this.resume({
+      parentPath: opts.parentPath,
+      metadata: opts.metadata,
+    });
+
+    const rolloutStore = (
+      this.session as unknown as { rolloutStore?: unknown }
+    ).rolloutStore;
+    if (!rolloutStore) {
+      emitWarning(
+        this.session.eventLog,
+        this.session.nextInternalSubId(),
+        "rollout_resume_stub",
+        `resumeAgentFromRollout returning live-handle-only (rollout reader unavailable)`,
+      );
+      return { resumedCount: rootLive ? 1 : 0, rootLive };
+    }
+
+    // TODO T10/T6: once the rollout reader exposes
+    // `listThreadSpawnChildren`, walk the queue exactly like codex
+    // `control.rs:424`.
+    emitWarning(
+      this.session.eventLog,
+      this.session.nextInternalSubId(),
+      "rollout_resume_stub",
+      `descendant rehydrate pending T10 rollout reader surface`,
+    );
+    return { resumedCount: rootLive ? 1 : 0, rootLive };
+  }
+
+  /**
+   * Port of codex `resume_single_agent_from_rollout` public surface
+   * (control.rs:479). Alias of `resume()` — present so ports tracking
+   * the codex name don't need to rename.
+   */
+  async resumeSingleAgentFromRollout(opts: {
+    readonly parentPath: AgentPath;
+    readonly metadata: AgentMetadata;
+  }): Promise<LiveAgent | null> {
+    return this.resume(opts);
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Metadata + subtree queries (Priority 2)
+  // ─────────────────────────────────────────────────────────────────
+
+  /** Port of codex `register_session_root` (`control.rs:721`). */
+  registerSessionRoot(threadId: ThreadId): void {
+    this.rootThreadId = threadId;
+    this.registry.registerRootThread(threadId);
+  }
+
+  /** Port of codex `get_agent_metadata` (`control.rs:731`). */
+  getAgentMetadata(threadId: ThreadId): AgentMetadata | undefined {
+    return this.registry.agentMetadataForThread(threadId);
+  }
+
+  /**
+   * Port of codex `list_live_agent_subtree_thread_ids`
+   * (`control.rs:735`). Returns `[root, ...descendants]`.
+   */
+  listLiveAgentSubtreeThreadIds(
+    rootThreadId: ThreadId,
+  ): ReadonlyArray<ThreadId> {
+    const agent = this.live.get(rootThreadId);
+    if (!agent) return [rootThreadId];
+    return [rootThreadId, ...this.liveThreadSpawnDescendants(rootThreadId)];
+  }
+
+  /**
+   * Port of codex `get_agent_config_snapshot` (`control.rs:744`).
+   * Deferred (T13): no per-thread config snapshot yet. Returns a
+   * compact best-effort snapshot assembled from the live handle.
+   */
+  getAgentConfigSnapshot(
+    threadId: ThreadId,
+  ): Record<string, unknown> | undefined {
+    const agent = this.live.get(threadId);
+    if (!agent) return undefined;
+    return {
+      threadId: agent.agentId,
+      agentPath: agent.agentPath,
+      agentNickname: agent.nickname,
+      agentRole: agent.role.name,
+      depth: agent.depth,
+      roleConfig: agent.role.config,
+    };
+  }
+
+  /**
+   * Port of codex `resolve_agent_reference` (`control.rs:757`).
+   * Supports `@nickname`, `@/absolute/path`, and `@relative/path`.
+   */
+  resolveAgentReference(opts: {
+    readonly currentAgentPath?: AgentPath;
+    readonly reference: string;
+  }): ThreadId {
+    const ref = opts.reference.startsWith("@")
+      ? opts.reference.slice(1)
+      : opts.reference;
+    if (!ref) {
+      throw new AgentReferenceUnresolvedError(opts.reference);
+    }
+
+    if (ref.startsWith("/")) {
+      const id = this.agentIdForPath(ref);
+      if (id) return id;
+      throw new AgentReferenceUnresolvedError(opts.reference);
+    }
+
+    for (const agent of this.live.values()) {
+      if (agent.nickname === ref) return agent.agentId;
+    }
+
+    const base = opts.currentAgentPath ?? "/root";
+    const resolved = joinAgentPath(base, ref);
+    const resolvedId = this.agentIdForPath(resolved);
+    if (resolvedId) return resolvedId;
+
+    throw new AgentReferenceUnresolvedError(opts.reference);
+  }
+
+  /**
+   * Port of codex `get_total_token_usage` (`control.rs:788`).
+   * Deferred (T13): AgenC doesn't expose per-thread totals yet.
+   * Returns zeros until the budget tracker wiring lands.
+   */
+  getTotalTokenUsage(): {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+  } {
+    const inputTokens = 0;
+    const outputTokens = 0;
+    for (const _agent of this.live.values()) {
+      void _agent;
+    }
+    return {
+      inputTokens,
+      outputTokens,
+      totalTokens: inputTokens + outputTokens,
+    };
+  }
+
+  /**
+   * Port of codex `format_environment_context_subagents`
+   * (`control.rs:798`). Produces a textual subagent tree for
+   * injection into the parent's prompt.
+   */
+  formatEnvironmentContextSubagents(parentThreadId: ThreadId): string {
+    const children = this.openThreadSpawnChildren(parentThreadId);
+    if (children.length === 0) return "";
+    const lines = children.map(([threadId, metadata]) => {
+      const reference =
+        metadata.agentPath ?? metadata.agentNickname ?? threadId;
+      const nickname = metadata.agentNickname;
+      return nickname ? `- ${reference} (${nickname})` : `- ${reference}`;
+    });
+    return lines.join("\n");
+  }
+
+  /**
+   * Port of codex `list_agents` (`control.rs:820`). Optional role +
+   * path-prefix filter. Includes root when no prefix is supplied or
+   * the prefix matches the root.
+   */
+  listAgents(
+    opts: {
+      readonly roleName?: string;
+      readonly pathPrefix?: AgentPath;
+    } = {},
+  ): ReadonlyArray<ListedAgent> {
+    const prefix = opts.pathPrefix;
+    const result: ListedAgent[] = [];
+
+    const rootMatches = !prefix || agentMatchesPrefix("/root", prefix);
+    if (rootMatches && this.rootThreadId) {
+      result.push({
+        agentName: "/root",
+        agentStatus: { status: "idle" },
+        lastTaskMessage: "Main thread",
+      });
+    }
+
+    const metadatas = Array.from(this.registry.liveAgents())
+      .slice()
+      .sort((l, r) =>
+        (l.agentPath ?? "").localeCompare(r.agentPath ?? ""),
+      );
+
+    for (const metadata of metadatas) {
+      if (opts.roleName && metadata.agentRole !== opts.roleName) continue;
+      if (
+        prefix !== undefined &&
+        !agentMatchesPrefix(metadata.agentPath, prefix)
+      )
+        continue;
+      const agent = metadata.agentId
+        ? this.live.get(metadata.agentId)
+        : undefined;
+      if (!agent) continue;
+      result.push({
+        agentName: metadata.agentPath ?? agent.agentId,
+        agentStatus: agent.status.value,
+        ...(metadata.lastTaskMessage !== undefined
+          ? { lastTaskMessage: metadata.lastTaskMessage }
+          : {}),
+      });
+    }
+
+    return result;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Completion watcher (Priority 3)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Port of codex `maybe_start_completion_watcher` (`control.rs:899`).
+   * Starts a detached watcher that waits for the child to reach a
+   * terminal status, then fires an IAC back to the parent announcing
+   * the completion. No-op when the parent is unknown.
+   */
+  maybeStartCompletionWatcher(opts: {
+    readonly childThreadId: ThreadId;
+    readonly parentThreadId?: ThreadId;
+  }): void {
+    const child = this.live.get(opts.childThreadId);
+    if (!child) return;
+    const parentId =
+      opts.parentThreadId ?? this.parentOf.get(opts.childThreadId);
+    if (!parentId) return;
+    const parent = this.live.get(parentId);
+
+    void this.awaitCompletion(child, parent, parentId);
+  }
+
+  private async awaitCompletion(
+    child: LiveAgent,
+    parent: LiveAgent | undefined,
+    parentId: ThreadId,
+  ): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (isFinal(child.status.value)) {
+        resolve();
+        return;
+      }
+      const unsubscribe = child.status.subscribe((status) => {
+        if (isFinal(status)) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+
+    const final = child.status.value;
+    const message = `subagent ${child.agentPath} finished: ${final.status}`;
+
+    if (!parent) return;
+    try {
+      parent.downInbox.send({
+        author: child.agentPath,
+        recipient: parent.agentPath,
+        content: message,
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "subagent_completion", finalStatus: final.status },
+      });
+    } catch (err) {
+      if (err instanceof MailboxClosedError) return;
+      emitWarning(
+        this.session.eventLog,
+        this.session.nextInternalSubId(),
+        "completion_watcher_send_failed",
+        `parent=${parentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Subtree genealogy helpers (Priority 5)
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Port of codex `prepare_thread_spawn` (`control.rs:975`). Reserves
+   * the nickname and composes the child metadata without actually
+   * spawning. Callers that want to preflight a spawn use this to see
+   * the allocated path/nickname.
+   */
+  prepareThreadSpawn(opts: {
+    readonly parentPath: AgentPath;
+    readonly roleName?: string;
+    readonly preferredNickname?: string;
+  }): { readonly metadata: AgentMetadata; readonly role: AgentRole } {
+    const role = resolveAgentRole(opts.roleName);
+    const nickname =
+      opts.preferredNickname ?? allocateNickname(role, this.registry);
+    const depth = depthOfAgentPath(opts.parentPath) + 1;
+    const metadata = buildChildMetadata({
+      agentId: "pending",
+      parentPath: opts.parentPath,
+      role,
+      nickname,
+      depth,
+    });
+    return { metadata, role };
+  }
+
+  /**
+   * Port of codex `inherited_shell_snapshot_for_source`
+   * (`control.rs:1010`). Deferred (T13 config refactor).
+   */
+  inheritedShellSnapshotForSource(
+    _parentThreadId: ThreadId | undefined,
+  ): unknown | undefined {
+    void _parentThreadId;
+    return undefined;
+  }
+
+  /**
+   * Port of codex `inherited_exec_policy_for_source`
+   * (`control.rs:1045`). Deferred (T13 config refactor).
+   */
+  inheritedExecPolicyForSource(
+    _parentThreadId: ThreadId | undefined,
+  ): unknown | undefined {
+    void _parentThreadId;
+    return undefined;
+  }
+
+  /**
+   * Port of codex `open_thread_spawn_children` (`control.rs:1060`).
+   * Returns live children of the given parent thread, sorted by path.
+   */
+  openThreadSpawnChildren(
+    parentThreadId: ThreadId,
+  ): ReadonlyArray<[ThreadId, AgentMetadata]> {
+    const children: [ThreadId, AgentMetadata][] = [];
+    for (const [childId, parentId] of this.parentOf.entries()) {
+      if (parentId !== parentThreadId) continue;
+      const metadata = this.registry.agentMetadataForThread(childId);
+      if (!metadata) continue;
+      children.push([childId, metadata]);
+    }
+    children.sort((l, r) =>
+      (l[1].agentPath ?? "").localeCompare(r[1].agentPath ?? ""),
+    );
+    return children;
+  }
+
+  /**
+   * Port of codex `live_thread_spawn_children` (`control.rs:1070`).
+   * Parent→children map for every live child.
+   */
+  liveThreadSpawnChildren(): ReadonlyMap<
+    ThreadId,
+    ReadonlyArray<[ThreadId, AgentMetadata]>
+  > {
+    const map = new Map<ThreadId, [ThreadId, AgentMetadata][]>();
+    for (const [childId, parentId] of this.parentOf.entries()) {
+      const metadata = this.registry.agentMetadataForThread(childId);
+      if (!metadata) continue;
+      const bucket = map.get(parentId) ?? [];
+      bucket.push([childId, metadata]);
+      map.set(parentId, bucket);
+    }
+    for (const bucket of map.values()) {
+      bucket.sort((l, r) =>
+        (l[1].agentPath ?? "").localeCompare(r[1].agentPath ?? ""),
+      );
+    }
+    return map;
+  }
+
+  /**
+   * Port of codex `live_thread_spawn_descendants` (`control.rs:1137`).
+   * Depth-first walk over the in-memory spawn tree rooted at
+   * `rootThreadId`.
+   */
+  liveThreadSpawnDescendants(rootThreadId: ThreadId): ReadonlyArray<ThreadId> {
+    const children = this.liveThreadSpawnChildren();
+    const descendants: ThreadId[] = [];
+    const firstBucket = children.get(rootThreadId) ?? [];
+    const stack: ThreadId[] = firstBucket
+      .map(([id]) => id)
+      .slice()
+      .reverse();
+    while (stack.length > 0) {
+      const next = stack.pop()!;
+      descendants.push(next);
+      const nextChildren = children.get(next) ?? [];
+      for (let i = nextChildren.length - 1; i >= 0; i -= 1) {
+        const entry = nextChildren[i];
+        if (entry) stack.push(entry[0]);
+      }
+    }
+    return descendants;
+  }
+
+  /**
+   * Port of codex `persist_thread_spawn_edge_for_source`
+   * (`control.rs:1113`). Deferred (T10): AgenC's `RolloutStore` has
+   * no state-db writer yet. The in-memory `parentOf` map keeps
+   * subtree queries accurate today.
+   */
+  private async persistThreadSpawnEdgeForSource(
+    _parentPath: AgentPath,
+    _childThreadId: ThreadId,
+  ): Promise<void> {
+    void _parentPath;
+    void _childThreadId;
+    return;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Internal helpers
+  // ─────────────────────────────────────────────────────────────────
+
+  private requireLive(threadId: ThreadId): LiveAgent {
+    const agent = this.live.get(threadId);
+    if (!agent) throw new ThreadNotFoundError(threadId);
+    return agent;
+  }
+
+  private agentIdForPath(path: AgentPath): ThreadId | undefined {
+    for (const agent of this.live.values()) {
+      if (agent.agentPath === path) return agent.agentId;
+    }
+    return this.registry.agentIdForPath(path);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -542,4 +1252,33 @@ export class AgentControl {
   pathFor(parentPath: AgentPath, nickname: string): AgentPath {
     return joinAgentPath(parentPath, nickname);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Free helpers (codex parity)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Port of codex `render_input_preview` (`control.rs:1187`). Codex's
+ * form walks over `Op::UserInput` items; AgenC inputs are plain
+ * strings at this boundary, so we preview the first line and truncate
+ * to fit a registry `lastTaskMessage` cell.
+ */
+export function renderInputPreview(input: string): string {
+  const firstLine = input.split(/\r?\n/, 1)[0] ?? "";
+  return firstLine.length > 200 ? `${firstLine.slice(0, 197)}...` : firstLine;
+}
+
+/** Port of codex `agent_matches_prefix` (`control.rs:1173`). */
+function agentMatchesPrefix(
+  agentPath: AgentPath | undefined,
+  prefix: AgentPath,
+): boolean {
+  if (prefix === "/root") return true;
+  if (!agentPath) return false;
+  if (agentPath === prefix) return true;
+  const suffix = agentPath.startsWith(prefix)
+    ? agentPath.slice(prefix.length)
+    : undefined;
+  return suffix !== undefined && suffix.startsWith("/");
 }

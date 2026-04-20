@@ -90,14 +90,27 @@ export interface SessionState {
   sessionConfiguration: SessionConfiguration;
   /** Conversation history items (T6 fleshes out via rollout reducer). */
   history: unknown[];
-  /** Pending input items (TODO codex line 23 — merge with mailbox). */
-  idlePendingInput: unknown[];
   /** Pending session-start hook source (codex line 841). T10 wires. */
   pendingSessionStartSource?: SessionStartSource;
 }
 
 /** Codex `SessionStartSource` (codex_hooks). */
 export type SessionStartSource = "startup" | "resume" | "clear";
+
+/**
+ * Codex `ResponseInputItem` / `UserInput` — opaque payload the turn
+ * machine consumes. Structural alias kept permissive so both text and
+ * multimodal items can route through idle-input merge without the
+ * session module pulling in the provider-specific shape.
+ */
+export type UserInput = unknown;
+
+/**
+ * Sentinel used as the `metadata.source` tag for idle-input envelopes
+ * routed through `Session.mailbox`. Kept as a const so downstream
+ * consumers can filter without magic strings.
+ */
+export const MAILBOX_SOURCE_IDLE_INPUT = "idle";
 
 /** Codex `ActiveTurn`. T7 (tool runtime) wires. */
 export interface ActiveTurn {
@@ -109,13 +122,21 @@ export interface ActiveTurn {
 /** Codex `Mailbox` + `MailboxReceiver`. T9 (subagents) provides the
  *  full bidirectional impl per I-5/I-16/I-31/I-64. Today we expose the
  *  shape so Session can hold its own inbox + per-child outbound
- *  mailboxes. */
+ *  mailboxes.
+ *
+ *  `direction` + `metadata` are optional here so Session.mailbox can
+ *  carry idle-input envelopes alongside peer/agent messages (see
+ *  `Session.enqueueIdleInput` / `Session.drainIdleInput`); the real
+ *  `agents/mailbox.ts` implementation uses the same field names with
+ *  a stricter shape (direction is required there). */
 export interface InterAgentCommunication {
   readonly author: string;
   readonly recipient: string;
   readonly content: string;
   readonly triggerTurn: boolean;
   readonly seq: number;
+  readonly direction?: "up" | "down";
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 export interface Mailbox<T = InterAgentCommunication> {
@@ -411,9 +432,6 @@ export class Session {
   /** codex: `mailbox_rx: Mutex<MailboxReceiver>` — drain receiver. T9 wires the full impl. */
   readonly mailboxRx: AsyncLock<{ drain(): InterAgentCommunication[] }>;
 
-  /** codex: `idle_pending_input: Mutex<Vec<ResponseInputItem>>` — TODO merge w/ mailbox. */
-  readonly idlePendingInput: AsyncLock<unknown[]>;
-
   /** codex: `guardian_review_session: GuardianReviewSessionManager`. T11 wires. */
   readonly guardianReviewSession: GuardianReviewSessionManager;
 
@@ -481,7 +499,6 @@ export class Session {
     this.mailboxRx = new AsyncLock<{ drain(): InterAgentCommunication[] }>({
       drain: () => this.mailbox.drain(),
     });
-    this.idlePendingInput = new AsyncLock<unknown[]>([]);
     this.guardianReviewSession = { enabled: false };
     this.services = opts.services;
     this.jsRepl = opts.jsRepl;
@@ -535,6 +552,65 @@ export class Session {
    */
   sendEvent(subId: string, msg: EventMsg): void {
     this.emit({ id: subId, msg });
+  }
+
+  /**
+   * Idle-input merge into the session mailbox. Replaces the old
+   * `idlePendingInput: AsyncLock<unknown[]>` slot. Idle input is
+   * wrapped in an `InterAgentCommunication` envelope with
+   * `direction: 'down'` (parent/cockpit → session) and
+   * `metadata.source = MAILBOX_SOURCE_IDLE_INPUT`, and `triggerTurn`
+   * set to false so the idle-merge point can collect pending items
+   * without the mailbox waking the turn machine on its own. The
+   * payload is stored on `metadata.payload` so `drainIdleInput()`
+   * can round-trip the original `UserInput` back to callers.
+   *
+   * Codex parity: matches `core/src/session/session.rs` line 23's
+   * pending-input slot, routed through the same mailbox that carries
+   * peer/agent traffic.
+   */
+  enqueueIdleInput(input: UserInput): number {
+    return this.mailbox.send({
+      author: this.conversationId,
+      recipient: this.conversationId,
+      content: "",
+      triggerTurn: false,
+      direction: "down",
+      metadata: {
+        source: MAILBOX_SOURCE_IDLE_INPUT,
+        payload: input,
+      },
+    });
+  }
+
+  /**
+   * Drain all idle-source envelopes currently queued on the session
+   * mailbox. Non-idle traffic (peer/agent messages routed through the
+   * same mailbox) is preserved and re-enqueued in arrival order so
+   * callers that want idle input do not consume unrelated messages.
+   *
+   * Returns the original `UserInput` payloads in FIFO order — the
+   * session-local `InterAgentCommunication` envelope is stripped.
+   */
+  drainIdleInput(): UserInput[] {
+    const drained = this.mailbox.drain();
+    const idleItems: UserInput[] = [];
+    const passthrough: InterAgentCommunication[] = [];
+    for (const msg of drained) {
+      const source = msg.metadata?.source;
+      if (source === MAILBOX_SOURCE_IDLE_INPUT) {
+        idleItems.push(msg.metadata?.payload);
+      } else {
+        passthrough.push(msg);
+      }
+    }
+    // Re-enqueue non-idle messages so other consumers still see them.
+    for (const msg of passthrough) {
+      const { seq: _omitted, ...rest } = msg;
+      void _omitted;
+      this.mailbox.send(rest);
+    }
+    return idleItems;
   }
 
   /**

@@ -294,6 +294,145 @@ describe("requestApproval pipeline", () => {
   });
 });
 
+describe("classifyToolApproval — payload-variant routing", () => {
+  const strictTool: Tool = {
+    name: "variant.tool",
+    description: "",
+    inputSchema: {},
+    execute: async () => ({ content: "ok" }),
+    isReadOnly: false,
+  };
+
+  test("tool_search payload always skips approval", () => {
+    const res = classifyToolApproval(strictTool, {
+      approvalPolicy: "untrusted",
+      sandboxMode: "read_only",
+      payload: { kind: "tool_search", arguments: { query: "foo" } },
+    });
+    expect(res.kind).toBe("skip");
+  });
+
+  test("mcp payload: trusted server → skip", () => {
+    const res = classifyToolApproval(strictTool, {
+      approvalPolicy: "granular",
+      sandboxMode: "read_only",
+      payload: { kind: "mcp", server: "good", tool: "x", rawArguments: "{}" },
+      mcpServerTrusted: (s) => s === "good",
+    });
+    expect(res.kind).toBe("skip");
+  });
+
+  test("mcp payload: untrusted server falls through to normal policy", () => {
+    const res = classifyToolApproval(strictTool, {
+      approvalPolicy: "granular",
+      sandboxMode: "read_only",
+      payload: { kind: "mcp", server: "untrusted", tool: "x", rawArguments: "{}" },
+      mcpServerTrusted: () => false,
+    });
+    // granular + write tool → needs approval.
+    expect(res.kind).toBe("needs_approval");
+  });
+
+  test("local_shell payload: restricted sandbox + on_request → needs approval", () => {
+    const res = classifyToolApproval(strictTool, {
+      approvalPolicy: "on_request",
+      sandboxMode: "workspace_write",
+      payload: {
+        kind: "local_shell",
+        params: { command: ["ls"] },
+      },
+    });
+    expect(res.kind).toBe("needs_approval");
+  });
+
+  test("local_shell payload: danger_full_access + never → skip with bypass", () => {
+    const res = classifyToolApproval(strictTool, {
+      approvalPolicy: "never",
+      sandboxMode: "danger_full_access",
+      payload: {
+        kind: "local_shell",
+        params: { command: ["ls"] },
+      },
+    });
+    expect(res.kind).toBe("skip");
+    if (res.kind === "skip") {
+      expect(res.bypassSandbox).toBe(true);
+    }
+  });
+
+  test("custom payload shares the function-branch logic", () => {
+    const res = classifyToolApproval(strictTool, {
+      approvalPolicy: "granular",
+      sandboxMode: "workspace_write",
+      payload: { kind: "custom", input: "x" },
+    });
+    // granular + mutation tool → needs approval (function-branch).
+    expect(res.kind).toBe("needs_approval");
+  });
+});
+
+describe("requestApproval — permissionDecisionHooks wiring", () => {
+  const mkCtx = (): ApprovalCtx => ({
+    invocation: {} as ApprovalCtx["invocation"],
+    callId: "c-1",
+    toolName: "test.tool",
+    turnId: "t-1",
+  });
+
+  test("allow hook bypasses resolver", async () => {
+    let resolverCalled = 0;
+    const res = await requestApproval({
+      ctx: mkCtx(),
+      permissionDecisionHooks: [() => ({ kind: "allow" })],
+      resolver: {
+        request: async () => {
+          resolverCalled += 1;
+          return "denied";
+        },
+      },
+    });
+    expect(res.decision).toBe("approved");
+    expect(res.source).toBe("permission_hook");
+    expect(resolverCalled).toBe(0);
+  });
+
+  test("deny hook bypasses resolver", async () => {
+    const res = await requestApproval({
+      ctx: mkCtx(),
+      permissionDecisionHooks: [() => ({ kind: "deny" })],
+      resolver: { request: async () => "approved" },
+    });
+    expect(res.decision).toBe("denied");
+    expect(res.source).toBe("permission_hook");
+  });
+
+  test("ask hook falls through to resolver", async () => {
+    let resolverCalled = 0;
+    const res = await requestApproval({
+      ctx: mkCtx(),
+      permissionDecisionHooks: [() => ({ kind: "ask" })],
+      resolver: {
+        request: async () => {
+          resolverCalled += 1;
+          return "approved";
+        },
+      },
+    });
+    expect(res.decision).toBe("approved");
+    expect(res.source).toBe("resolver");
+    expect(resolverCalled).toBe(1);
+  });
+
+  test("no resolver + no decision hook → default_deny", async () => {
+    const res = await requestApproval({
+      ctx: mkCtx(),
+      permissionDecisionHooks: [() => ({ kind: "pass" })],
+    });
+    expect(res.source).toBe("default_deny");
+    expect(res.decision).toBe("denied");
+  });
+});
+
 describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => {
   const mkTool = (over: Partial<Tool> = {}): Tool => ({
     name: "test.cmd",

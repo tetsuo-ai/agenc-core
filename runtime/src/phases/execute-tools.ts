@@ -67,8 +67,10 @@ import {
 } from "../tools/orchestrator.js";
 import { resolveMaxToolUseConcurrency } from "../tools/orchestration.js";
 import {
-  runPreToolUseHooks,
+  runWithAutoFixRetry,
   ToolHookRegistry,
+  type PermissionDecisionHook,
+  type PostToolUseFailureHook,
   type PostToolUseHook,
   type PreToolUseHook,
 } from "../tools/tool-hooks.js";
@@ -123,6 +125,8 @@ function resolveHookRegistry(session: Session): ToolHookRegistry {
     | {
         readonly preToolUseHooks?: ReadonlyArray<PreToolUseHook>;
         readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
+        readonly failureToolUseHooks?: ReadonlyArray<PostToolUseFailureHook>;
+        readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
       }
     | undefined;
   if (hooks?.preToolUseHooks) {
@@ -130,6 +134,12 @@ function resolveHookRegistry(session: Session): ToolHookRegistry {
   }
   if (hooks?.postToolUseHooks) {
     for (const h of hooks.postToolUseHooks) registry.addPost(h);
+  }
+  if (hooks?.failureToolUseHooks) {
+    for (const h of hooks.failureToolUseHooks) registry.addFailure(h);
+  }
+  if (hooks?.permissionDecisionHooks) {
+    for (const h of hooks.permissionDecisionHooks) registry.addPermission(h);
   }
   return registry;
 }
@@ -207,11 +217,13 @@ export async function executeTools(
 
   // T7 gap #109: build the auxiliary pipeline surfaces once per turn.
   //   - router: classification/telemetry per tool call
-  //   - hookRegistry: pre/post hook lists pulled from session services
+  //   - hookRegistry: pre/post/failure/permission hooks from session services
   const router = routerFromRegistry(session.services.registry);
   const hookRegistry = resolveHookRegistry(session);
   const preHooks = hookRegistry.getPre();
   const postHooks = hookRegistry.getPost();
+  const failureHooks = hookRegistry.getFailure();
+  const permissionDecisionHooks = hookRegistry.getPermission();
 
   // T7 (orchestrator gap): session-derived approval policy + sandbox
   // mode. Replaces the previous hardcoded `never` + `workspace_write`
@@ -291,12 +303,34 @@ export async function executeTools(
           }),
         );
 
-        // Step 2: Orchestrator approval classification. Without a real
-        // modal wired at this layer, forbidden decisions surface as a
-        // typed error; needs_approval + skip both proceed normally.
+        // Build the canonical invocation envelope once — it's reused
+        // by the classifier (payload-variant routing), approval ctx,
+        // and runToolUse.
+        const invocation = {
+          session,
+          turn: ctx,
+          tracker: {
+            appendFileDiff: () => {},
+            snapshot: () => [],
+            clear: () => {},
+          },
+          callId: toolCall.id,
+          toolName: parseToolName(toolCall.name),
+          payload: {
+            kind: "function" as const,
+            arguments: toolCall.arguments ?? "",
+          },
+          source: "direct" as const,
+        };
+
+        // Step 2: Orchestrator approval classification. Now routed by
+        // ToolPayload.kind — function/custom share the legacy logic,
+        // mcp consults server-side trust, local_shell routes through
+        // the fs-policy matrix, tool_search is always read-only.
         const approval = classifyToolApproval(tool, {
           approvalPolicy: orchestratorPolicy.approvalPolicy,
           sandboxMode: orchestratorPolicy.sandboxMode,
+          payload: invocation.payload,
         });
         if (approval.kind === "forbidden") {
           return {
@@ -308,15 +342,7 @@ export async function executeTools(
         }
         if (approval.kind === "needs_approval") {
           const approvalCtx: ApprovalCtx = {
-            invocation: {
-              session,
-              turn: ctx,
-              tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
-              callId: toolCall.id,
-              toolName: parseToolName(toolCall.name),
-              payload: { kind: "function", arguments: toolCall.arguments ?? "" },
-              source: "direct",
-            },
+            invocation,
             callId: toolCall.id,
             toolName: toolCall.name,
             turnId: ctx.subId,
@@ -326,6 +352,9 @@ export async function executeTools(
             ctx: approvalCtx,
             ...(orchestratorPolicy.permissionHooks !== undefined
               ? { hooks: orchestratorPolicy.permissionHooks }
+              : {}),
+            ...(permissionDecisionHooks.length > 0
+              ? { permissionDecisionHooks, args: parsed }
               : {}),
             ...(orchestratorPolicy.approvalResolver !== undefined
               ? { resolver: orchestratorPolicy.approvalResolver }
@@ -352,82 +381,41 @@ export async function executeTools(
           }
         }
 
-        const invocation = {
-          session,
-          turn: ctx,
-          tracker: {
-            appendFileDiff: () => {},
-            snapshot: () => [],
-            clear: () => {},
-          },
-          callId: toolCall.id,
-          toolName: parseToolName(toolCall.name),
-          payload: {
-            kind: "function" as const,
-            arguments: toolCall.arguments ?? "",
-          },
-          source: "direct" as const,
-        };
-
-        // Step 3: Pre-hook pipeline.
-        let args = parsed;
-        const preDecision = await runPreToolUseHooks(
-          preHooks,
-          { invocation, tool, args },
-          (err, idx) => {
-            emitWarningEvent(
-              session.eventLog,
-              toolCall.id,
-              "pre_tool_hook_threw",
-              `pre hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          },
-        );
-        if (preDecision.kind === "deny") {
-          return {
-            content: JSON.stringify({
-              error: `pre-hook denied tool ${toolCall.name}: ${preDecision.reason}`,
-            }),
-            isError: true,
-          };
-        }
-        if (preDecision.kind === "skip") {
-          return preDecision.synthResult;
-        }
-        if (preDecision.args) args = preDecision.args;
-
-        // Rebuild the raw args JSON the executor will pass in so the
-        // BigInt reviver in `runToolUse` sees the post-hook value.
-        // Pre-hooks usually return plain JSON-safe records; BigInts
-        // survive because `runToolUse` re-parses with the reviver only
-        // when raw string input is given. To keep the pre-hook mutation
-        // visible we invoke `tool.execute` via `runToolUse` using the
-        // raw args when no hook mutated, and fall through to a direct
-        // path when hooks mutated.
-        const argsMutated = preDecision.args !== undefined;
-
-        const dispatchOnce = async (): Promise<ToolDispatchResult> => {
-          if (argsMutated) {
-            // Pre-hook mutated args: invoke directly so the mutated
-            // record is what the tool sees.
-            const result = await tool.execute(args);
-            return { content: result.content, isError: result.isError };
-          }
-          const output = await runToolUse(toolCall.arguments ?? "", {
+        // Step 3: Single-tool dispatch through `runToolUse`. The per-call
+        // hook boundary (pre / post / failure / schema validation /
+        // timeout / size cap / BigInt reviver / progress) now lives
+        // INSIDE `runToolUse` so every entry path — direct, code_mode,
+        // js_repl, repl — shares the exact same hook invocation order.
+        const dispatchOnce = async (
+          rawArgsOverride?: string,
+        ): Promise<ToolDispatchResult> => {
+          const output = await runToolUse(rawArgsOverride ?? toolCall.arguments ?? "", {
             ...(childSignal !== undefined ? { signal: childSignal } : {}),
             currentTurnId: ctx.subId,
             tool,
             invocation,
             eventLog: session.eventLog,
             subId: toolCall.id,
+            preHooks,
+            postHooks: [], // post hooks are handled by runWithAutoFixRetry
+            failureHooks,
+            onHookError: (phase, err, idx) => {
+              emitWarningEvent(
+                session.eventLog,
+                toolCall.id,
+                `${phase}_tool_hook_threw`,
+                `${phase} hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            },
           });
           return { content: output.content, isError: output.isError };
         };
 
-        // Step 4: Orchestrator retry wrap. Real codex parity:
-        //   - transient errors → one retry after 500ms backoff
-        //   - sandbox-denied → request approval, retry with sandbox off
-        //   - hard errors → bubble
+        // Step 4: Orchestrator retry wrap for transient + sandbox-denied
+        // classes. Auto-fix retry (post-hook `retry`) is handled by
+        // `runWithAutoFixRetry` below — it dispatches through the same
+        // `runToolUse` surface so pre-hooks + failure hooks still fire
+        // on every attempt.
         let dispatchResult: ToolDispatchResult;
         try {
           dispatchResult = await attemptWithRetry({
@@ -440,15 +428,7 @@ export async function executeTools(
             // Two-pass sandbox escalation — request approval and retry
             // once with sandbox off. Codex orchestrator.rs:236-373.
             const escalationCtx: ApprovalCtx = {
-              invocation: {
-                session,
-                turn: ctx,
-                tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
-                callId: toolCall.id,
-                toolName: parseToolName(toolCall.name),
-                payload: { kind: "function", arguments: toolCall.arguments ?? "" },
-                source: "direct",
-              },
+              invocation,
               callId: toolCall.id,
               toolName: toolCall.name,
               turnId: ctx.subId,
@@ -459,6 +439,9 @@ export async function executeTools(
               ctx: escalationCtx,
               ...(orchestratorPolicy.permissionHooks !== undefined
                 ? { hooks: orchestratorPolicy.permissionHooks }
+                : {}),
+              ...(permissionDecisionHooks.length > 0
+                ? { permissionDecisionHooks, args: parsed }
                 : {}),
               ...(orchestratorPolicy.approvalResolver !== undefined
                 ? { resolver: orchestratorPolicy.approvalResolver }
@@ -502,44 +485,52 @@ export async function executeTools(
           }
         }
 
-        // Step 5: Post-hook pipeline. `runPostToolUseHooks` only
-        // returns a discriminator (`continue`/`retry`); it composes
-        // `rewrite` replacements internally without surfacing the final
-        // content. Since the wire needs the rewritten bytes we run the
-        // hooks inline here: same contract (rewrite replaces, retry
-        // short-circuits) but the final result is returned to the
-        // executor.
-        let finalResult = dispatchResult;
-        for (let i = 0; i < postHooks.length; i += 1) {
-          const hook = postHooks[i];
-          if (!hook) continue;
-          try {
-            const d = await hook({
-              invocation,
-              tool,
-              args,
-              result: finalResult,
-            });
-            if (d.kind === "retry") {
+        // Step 5: Post-hook pipeline with real auto-fix retry. `rewrite`
+        // decisions replace the result; `retry` decisions trigger
+        // `runWithAutoFixRetry` which bounded-dispatches again through
+        // `runToolUse` so pre-hooks + schema validation + failure hooks
+        // continue to fire on every attempt.
+        if (postHooks.length === 0) {
+          return dispatchResult;
+        }
+        try {
+          const finalResult = await runWithAutoFixRetry({
+            invocation,
+            tool,
+            initialArgs: parsed,
+            dispatch: async (retryArgs) => {
+              // The first dispatch has already happened above — runWithAutoFixRetry
+              // always redispatches before running hooks. To avoid a
+              // wasted first call, seed the loop by running the
+              // post-hooks against `dispatchResult` via a one-shot
+              // dispatch function that returns the cached result
+              // on the first call, then re-dispatches with hook-supplied
+              // args on subsequent attempts.
+              if (retryArgs === parsed) {
+                return dispatchResult;
+              }
+              return dispatchOnce(JSON.stringify(retryArgs));
+            },
+            postHooks,
+            onError: (err, idx) => {
               emitWarningEvent(
                 session.eventLog,
                 toolCall.id,
-                "post_tool_hook_retry_skipped",
-                "post hook requested retry; skipped at phase-5 wire",
+                "post_tool_hook_threw",
+                `post hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
               );
-              break;
-            }
-            if (d.kind === "rewrite") finalResult = d.result;
-          } catch (err) {
-            emitWarningEvent(
-              session.eventLog,
-              toolCall.id,
-              "post_tool_hook_threw",
-              `post hook ${i} threw: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          }
+            },
+          });
+          return finalResult;
+        } catch (err) {
+          emitWarningEvent(
+            session.eventLog,
+            toolCall.id,
+            "post_tool_hook_retry_failed",
+            `auto-fix retry threw: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return dispatchResult;
         }
-        return finalResult;
       },
     });
     state.streamingToolExecutor = executor;

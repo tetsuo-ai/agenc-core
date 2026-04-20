@@ -20,6 +20,8 @@
  * @module
  */
 
+import { join } from "node:path";
+import { promises as fsp } from "node:fs";
 import { monotonicMs } from "../utils/monotonic.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { Event } from "./event-log.js";
@@ -163,6 +165,104 @@ export function formatDuration(ms: number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Cross-session persistence (T6 gap: cost totals survive resume).
+//
+// Layout: ~/.agenc/projects/<slug>/cost-totals.json
+//
+//   {
+//     "version": 1,
+//     "totalUsage": { inputTokens, outputTokens, cacheReadTokens, ... },
+//     "totalCostUsd": N,
+//     "sessions": [ { sessionId, startedAtMs, endedAtMs, usage, costUsd } ],
+//     "updatedAtMs": N
+//   }
+//
+// Writes are atomic via tmp+fsync+rename so a crash mid-save leaves
+// either the previous or the new file intact.
+// ─────────────────────────────────────────────────────────────────────
+
+export const COST_TOTALS_FILENAME = "cost-totals.json";
+export const COST_TOTALS_SCHEMA_VERSION = 1;
+
+/** Aggregate token totals used by lifetime totals and per-session records. */
+export interface CostTotals {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly reasoningOutputTokens: number;
+  readonly totalTokens: number;
+}
+
+export interface SessionCostRecord {
+  readonly sessionId: string;
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+  readonly usage: CostTotals;
+  readonly costUsd: number;
+}
+
+export interface CostTotalsFile {
+  readonly version: number;
+  readonly totalUsage: CostTotals;
+  readonly totalCostUsd: number;
+  readonly sessions: ReadonlyArray<SessionCostRecord>;
+  readonly updatedAtMs: number;
+}
+
+function emptyTotals(): CostTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+function addTotals(a: CostTotals, b: CostTotals): CostTotals {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+  };
+}
+
+function validateTotalsFile(raw: unknown): CostTotalsFile | null {
+  if (!raw || typeof raw !== "object") return null;
+  const f = raw as Partial<CostTotalsFile>;
+  if (typeof f.version !== "number") return null;
+  if (!f.totalUsage || typeof f.totalUsage !== "object") return null;
+  if (typeof f.totalCostUsd !== "number") return null;
+  if (!Array.isArray(f.sessions)) return null;
+  if (typeof f.updatedAtMs !== "number") return null;
+  return f as CostTotalsFile;
+}
+
+/**
+ * Atomic write helper — write to `<path>.tmp`, fsync, rename over
+ * `path`. Mirrors the pattern used by `session-store.ts`
+ * `writeIndexSnapshot` but self-contained so cost.ts has no dep on
+ * SessionStore. Uses node:fs/promises so the CostSidecar save path
+ * is async and doesn't block the event loop.
+ */
+export async function atomicWriteJson(
+  path: string,
+  content: string,
+): Promise<void> {
+  const tmp = `${path}.tmp`;
+  const handle = await fsp.open(tmp, "w", 0o600);
+  try {
+    await handle.writeFile(content);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fsp.rename(tmp, path);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // CostSidecar
 // ─────────────────────────────────────────────────────────────────────
 
@@ -170,6 +270,29 @@ export interface CostSidecarOpts {
   readonly registry?: Readonly<Record<string, ModelCostEntry>>;
   /** Optional BudgetTracker to receive token totals (I-22 integration). */
   readonly budgetTracker?: BudgetTracker | null;
+  /**
+   * Project directory for cross-session persistence. When set, the
+   * sidecar loads/saves `cost-totals.json` under this directory. When
+   * unset, the sidecar is in-memory only (legacy behavior, tests).
+   */
+  readonly projectDir?: string;
+  /** Session id stamped onto the per-session record on save. */
+  readonly sessionId?: string;
+  /**
+   * Optional diagnostic sink for load/save failures. Matches the
+   * sidecar-manager `SidecarDiagnostic` shape but stays a plain
+   * callback so cost.ts stays UI-layer agnostic.
+   */
+  readonly onDiagnostic?: (d: {
+    readonly level: "warning" | "error";
+    readonly cause: string;
+    readonly message: string;
+  }) => void;
+  /**
+   * Test-only seam — override the atomic write implementation to
+   * simulate disk failures. Falls back to `atomicWriteJson`.
+   */
+  readonly writeImpl?: (path: string, content: string) => Promise<void>;
 }
 
 export class CostSidecar implements Sidecar {
@@ -182,9 +305,31 @@ export class CostSidecar implements Sidecar {
   private lastTurnStartMs: number | null = null;
   private currentModel: string | null = null;
 
+  // ── cross-session persistence state ──
+  private projectDir: string | null;
+  private sessionId: string | null;
+  private readonly onDiagnostic?: (d: {
+    readonly level: "warning" | "error";
+    readonly cause: string;
+    readonly message: string;
+  }) => void;
+  private readonly writeImpl: (path: string, content: string) => Promise<void>;
+  private readonly sessionStartedAtWallMs = Date.now();
+  /** Lifetime snapshot from disk (does not include current session). */
+  private loadedTotalUsage: CostTotals = emptyTotals();
+  private loadedTotalCostUsd = 0;
+  private loadedSessions: SessionCostRecord[] = [];
+  /** True once loadFromDisk has run (success or absent-file). */
+  private loaded = false;
+  private saveDegraded = false;
+
   constructor(opts: CostSidecarOpts = {}) {
     this.registry = opts.registry ?? DEFAULT_MODEL_COSTS;
     this.budgetTracker = opts.budgetTracker ?? null;
+    this.projectDir = opts.projectDir ?? null;
+    this.sessionId = opts.sessionId ?? null;
+    this.onDiagnostic = opts.onDiagnostic;
+    this.writeImpl = opts.writeImpl ?? atomicWriteJson;
   }
 
   onEvent(event: Event): void {
@@ -308,6 +453,174 @@ export class CostSidecar implements Sidecar {
   }
 
   isDegraded(): boolean {
-    return false; // Cost tracker is in-memory only.
+    return this.saveDegraded;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Cross-session persistence
+  // ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Configure (or reconfigure) the persistence target. Useful when the
+   * sidecar is constructed before the project dir / session id are
+   * known (e.g., tests mutate it later).
+   */
+  setPersistenceContext(opts: {
+    readonly projectDir: string;
+    readonly sessionId: string;
+  }): void {
+    this.projectDir = opts.projectDir;
+    this.sessionId = opts.sessionId;
+  }
+
+  private get totalsPath(): string | null {
+    return this.projectDir
+      ? join(this.projectDir, COST_TOTALS_FILENAME)
+      : null;
+  }
+
+  /**
+   * Load lifetime totals from disk. Missing file → empty state (no
+   * warning). Malformed JSON or bad schema → empty state + warning
+   * diagnostic. Safe to call before the sidecar is wired into the
+   * event log.
+   */
+  async loadFromDisk(): Promise<void> {
+    this.loaded = true;
+    const path = this.totalsPath;
+    if (!path) return;
+    let raw: string;
+    try {
+      raw = await fsp.readFile(path, "utf8");
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code === "ENOENT") return; // first-run, start empty
+      this.onDiagnostic?.({
+        level: "warning",
+        cause: "cost_load_failed",
+        message: `cost-totals read failed: ${code ?? (err as Error).message}`,
+      });
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      this.onDiagnostic?.({
+        level: "warning",
+        cause: "cost_load_corrupt",
+        message: `cost-totals JSON parse failed: ${(err as Error).message}`,
+      });
+      return;
+    }
+    const validated = validateTotalsFile(parsed);
+    if (!validated) {
+      this.onDiagnostic?.({
+        level: "warning",
+        cause: "cost_load_corrupt",
+        message: "cost-totals schema invalid",
+      });
+      return;
+    }
+    // Coerce partial totalUsage (forward-compat: missing fields → 0).
+    this.loadedTotalUsage = {
+      inputTokens: validated.totalUsage.inputTokens ?? 0,
+      outputTokens: validated.totalUsage.outputTokens ?? 0,
+      cacheReadTokens: validated.totalUsage.cacheReadTokens ?? 0,
+      reasoningOutputTokens: validated.totalUsage.reasoningOutputTokens ?? 0,
+      totalTokens: validated.totalUsage.totalTokens ?? 0,
+    };
+    this.loadedTotalCostUsd = validated.totalCostUsd;
+    this.loadedSessions = [...validated.sessions];
+  }
+
+  /** Current session's in-memory totals, in `CostTotals` shape. */
+  getSessionTotals(): CostTotals {
+    return {
+      inputTokens: this.getTotalInputTokens(),
+      outputTokens: this.getTotalOutputTokens(),
+      cacheReadTokens: this.getTotalCachedInputTokens(),
+      reasoningOutputTokens: this.getTotalReasoningOutputTokens(),
+      totalTokens: this.getSessionTotalTokensRaw(),
+    };
+  }
+
+  private getSessionTotalTokensRaw(): number {
+    let total = 0;
+    for (const usage of this.perModel.values()) total += usage.totalTokens;
+    return total;
+  }
+
+  /**
+   * Lifetime totals — loaded-from-disk totals plus the current
+   * session's in-memory tally. Returned values are tokens, not cost.
+   */
+  getLifetimeTotals(): CostTotals {
+    return addTotals(this.loadedTotalUsage, this.getSessionTotals());
+  }
+
+  getLifetimeCostUsd(): number {
+    return this.loadedTotalCostUsd + this.getTotalCostUsd();
+  }
+
+  /**
+   * Append a finished session's totals to the sessions[] array. Does
+   * not itself write to disk — call `saveToDisk()` afterward.
+   */
+  appendSessionRecord(summary: SessionCostRecord): void {
+    this.loadedSessions.push(summary);
+    this.loadedTotalUsage = addTotals(this.loadedTotalUsage, summary.usage);
+    this.loadedTotalCostUsd += summary.costUsd;
+  }
+
+  /**
+   * Atomically write the current lifetime totals to disk. Tolerates
+   * disk failure: emits `cost_save_failed` warning and flags the
+   * sidecar degraded but keeps the in-memory totals intact so the
+   * next save attempt can succeed.
+   */
+  async saveToDisk(): Promise<void> {
+    const path = this.totalsPath;
+    if (!path) return;
+    if (!this.loaded) await this.loadFromDisk();
+    const payload: CostTotalsFile = {
+      version: COST_TOTALS_SCHEMA_VERSION,
+      totalUsage: this.loadedTotalUsage,
+      totalCostUsd: this.loadedTotalCostUsd,
+      sessions: this.loadedSessions,
+      updatedAtMs: Date.now(),
+    };
+    try {
+      await fsp.mkdir(this.projectDir!, { recursive: true });
+      await this.writeImpl(path, JSON.stringify(payload));
+      this.saveDegraded = false;
+    } catch (err) {
+      this.saveDegraded = true;
+      this.onDiagnostic?.({
+        level: "warning",
+        cause: "cost_save_failed",
+        message: `cost-totals atomic write failed: ${(err as { code?: string }).code ?? (err as Error).message}`,
+      });
+    }
+  }
+
+  /**
+   * Sidecar lifecycle hook invoked by `SidecarManager.stop()` during
+   * session shutdown. Finalizes the current session into `sessions[]`
+   * and flushes to disk. Called before the event-log is closed so
+   * any diagnostic emissions still land in the rollout.
+   */
+  async stop(): Promise<void> {
+    if (!this.projectDir || !this.sessionId) return;
+    const usage = this.getSessionTotals();
+    const record: SessionCostRecord = {
+      sessionId: this.sessionId,
+      startedAtMs: this.sessionStartedAtWallMs,
+      endedAtMs: Date.now(),
+      usage,
+      costUsd: this.getTotalCostUsd(),
+    };
+    this.appendSessionRecord(record);
+    await this.saveToDisk();
   }
 }

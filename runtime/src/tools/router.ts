@@ -1,14 +1,32 @@
 /**
- * ToolRouter — dispatch to tool handlers with parallel-support
- * classification.
+ * Subset port of codex `core/src/tools/router.rs`.
  *
- * Hand-port of codex `core/src/tools/router.rs` (306 LOC). Holds the
- * per-tool spec registry + the parallel-MCP-server allowlist so
- * `toolSupportsParallel(call)` has the information it needs without
- * plumbing through the ToolCallRuntime.
+ * Ports:
+ *   - Spec registry (`ConfiguredToolSpec[]`) + `findSpec` /
+ *     `modelVisibleSpecs`.
+ *   - Parallel-MCP-server allowlist feeding `toolSupportsParallel`.
+ *   - `buildToolCall(session, item)` over 4 ResponseItem variants
+ *     (`function_call`, `tool_search_call`, `custom_tool_call`,
+ *     `local_shell_call`).
+ *   - `dispatchToolCallWithCodeMode(invocation, args, source)` —
+ *     code-mode-aware dispatch restricted to the JS-REPL-safe subset.
+ *   - `ToolRouter.fromConfig({...})` builder-style init merging
+ *     `mcpTools` / `deferredMcpTools` / `unavailableCalledTools` /
+ *     `discoverableTools` / `dynamicTools`.
+ *   - `createDiffConsumer(toolName)` — tool-argument diff tracking
+ *     with `.record(name, before)` / `.compare(name, after)`.
  *
- * AgenC keeps this focused: function tools (from the registry),
- * MCP tools (from T9 connections), and a discoverable-tool future slot.
+ * MCP attribution resolves through
+ * `session.services.mcpManager.resolveMcpToolInfo(toolName)` instead of
+ * the previous `namespace.startsWith("mcp")` heuristic.
+ *
+ * Deferred (not in this port):
+ *   - `TurnContext`-gated `js_repl_tools_only` direct-call blocking
+ *     (codex router.rs:280-290) — AgenC exposes the code-mode filter
+ *     through `dispatchToolCallWithCodeMode` instead; the
+ *     per-turn-context gate lands with the JsRepl subsystem.
+ *   - `DiscoverableTool` materialization into actual `Tool` objects
+ *     beyond spec carrying.
  *
  * @module
  */
@@ -34,7 +52,74 @@ export interface ConfiguredToolSpec {
   readonly tool: Tool;
   readonly supportsParallelToolCalls: boolean;
   readonly serverId?: string;
+  /** When true, the tool is unavailable for direct invocation but may
+   *  still appear in the spec catalog for telemetry/tracing. */
+  readonly unavailable?: boolean;
+  /** When true, the tool is loaded on-demand via ToolSearch and
+   *  should not be advertised in `modelVisibleSpecs()`. */
+  readonly deferred?: boolean;
+  /** When true, the tool was injected as a discoverable late-load
+   *  entry (codex `DiscoverableTool`). */
+  readonly discoverable?: boolean;
+  /** When true, the tool was injected as a runtime dynamic spec
+   *  (codex `DynamicToolSpec`). */
+  readonly dynamic?: boolean;
 }
+
+// Duck-typed MCPManager dependency — avoids pulling the concrete
+// class into the router test surface.
+interface McpManagerLike {
+  readonly resolveMcpToolInfo?: (
+    toolName: string,
+  ) => { readonly serverName: string; readonly toolName: string } | undefined;
+  readonly getServerForTool?: (namespacedName: string) => string | undefined;
+}
+
+interface SessionLike {
+  readonly services?: {
+    readonly mcpManager?: McpManagerLike;
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// ResponseItem input union for `buildToolCall`.
+//
+// Mirrors the 4 codex `ResponseItem` variants the router consumes.
+// Types are narrow — callers only need to pass the minimum the router
+// reads. Everything else is preserved upstream in the rollout store.
+// ─────────────────────────────────────────────────────────────────────
+
+export type RouterResponseItem =
+  | {
+      readonly type: "function_call";
+      readonly callId: string;
+      readonly name: string;
+      readonly namespace?: string;
+      readonly arguments: string;
+    }
+  | {
+      readonly type: "tool_search_call";
+      readonly callId?: string;
+      readonly execution?: string;
+      readonly arguments: { readonly query: string } | string;
+    }
+  | {
+      readonly type: "custom_tool_call";
+      readonly callId: string;
+      readonly name: string;
+      readonly input: string;
+    }
+  | {
+      readonly type: "local_shell_call";
+      readonly id?: string;
+      readonly callId?: string;
+      readonly action: {
+        readonly type: "exec";
+        readonly command: ReadonlyArray<string>;
+        readonly workingDirectory?: string;
+        readonly timeoutMs?: number;
+      };
+    };
 
 // ─────────────────────────────────────────────────────────────────────
 // ToolRouter
@@ -47,6 +132,22 @@ export interface ToolRouterOpts {
    * (router.rs:42). Empty by default = MCP tools serialize per server.
    * T9 wires from config.
    */
+  readonly parallelMcpServerNames?: ReadonlySet<string>;
+}
+
+/**
+ * Codex `ToolRouterParams` (router.rs:45-52). Builder-style input for
+ * `ToolRouter.fromConfig(...)`. AgenC accepts the subset it can
+ * materialize today — `unavailableCalledTools` is retained as opaque
+ * tool-name list so the registry can filter on it.
+ */
+export interface ToolRouterFromConfigOpts {
+  readonly baseSpecs?: ReadonlyArray<ConfiguredToolSpec>;
+  readonly mcpTools?: ReadonlyMap<string, Tool>;
+  readonly deferredMcpTools?: ReadonlyMap<string, Tool>;
+  readonly unavailableCalledTools?: ReadonlyArray<string>;
+  readonly discoverableTools?: ReadonlyArray<Tool>;
+  readonly dynamicTools?: ReadonlyArray<Tool>;
   readonly parallelMcpServerNames?: ReadonlySet<string>;
 }
 
@@ -64,21 +165,88 @@ export class ToolRouter {
     this.parallelMcpServerNames = opts.parallelMcpServerNames ?? new Set();
   }
 
+  /**
+   * Port of codex `ToolRouter::from_config` (router.rs:55-97). Merges
+   * the 5 codex input slots into one spec list with a consistent
+   * priority:
+   *
+   *   1. `baseSpecs` (typically from the local tool registry)
+   *   2. `mcpTools`
+   *   3. `deferredMcpTools` (flagged `deferred: true`)
+   *   4. `discoverableTools` (flagged `discoverable: true`)
+   *   5. `dynamicTools` (flagged `dynamic: true`)
+   *
+   * Tools named in `unavailableCalledTools` are retained but flagged
+   * `unavailable: true`. Later additions override earlier ones on name
+   * collision (matches codex spec-build ordering).
+   */
+  static fromConfig(opts: ToolRouterFromConfigOpts): ToolRouter {
+    const unavailable = new Set(opts.unavailableCalledTools ?? []);
+    const merged = new Map<string, ConfiguredToolSpec>();
+
+    const addTool = (
+      tool: Tool,
+      flags: Partial<ConfiguredToolSpec> = {},
+    ): void => {
+      const supportsParallelToolCalls =
+        (tool as Tool & { supportsParallelToolCalls?: boolean })
+          .supportsParallelToolCalls ?? false;
+      const spec: ConfiguredToolSpec = {
+        tool,
+        supportsParallelToolCalls,
+        ...((tool as Tool & { serverId?: string }).serverId !== undefined
+          ? { serverId: (tool as Tool & { serverId?: string }).serverId }
+          : {}),
+        ...(unavailable.has(tool.name) ? { unavailable: true } : {}),
+        ...flags,
+      };
+      merged.set(tool.name, spec);
+    };
+
+    for (const base of opts.baseSpecs ?? []) {
+      merged.set(base.tool.name, {
+        ...base,
+        ...(unavailable.has(base.tool.name) ? { unavailable: true } : {}),
+      });
+    }
+    if (opts.mcpTools) {
+      for (const tool of opts.mcpTools.values()) addTool(tool);
+    }
+    if (opts.deferredMcpTools) {
+      for (const tool of opts.deferredMcpTools.values())
+        addTool(tool, { deferred: true });
+    }
+    for (const tool of opts.discoverableTools ?? []) {
+      addTool(tool, { discoverable: true });
+    }
+    for (const tool of opts.dynamicTools ?? []) {
+      addTool(tool, { dynamic: true });
+    }
+
+    const parallelOpts: ToolRouterOpts = opts.parallelMcpServerNames
+      ? { parallelMcpServerNames: opts.parallelMcpServerNames }
+      : {};
+    return new ToolRouter(Array.from(merged.values()), parallelOpts);
+  }
+
   /** All registered configured-tool specs. */
   getSpecs(): ReadonlyArray<ConfiguredToolSpec> {
     return this.specs;
   }
 
-  /** LLMTool array for provider requests. */
+  /** LLMTool array for provider requests. Deferred tools are hidden
+   *  (loaded on-demand via ToolSearch) to match codex behavior. */
   modelVisibleSpecs(): ReadonlyArray<LLMTool> {
-    return this.specs.map((config) => ({
-      type: "function",
-      function: {
-        name: config.tool.name,
-        description: config.tool.description,
-        parameters: config.tool.inputSchema,
-      },
-    }));
+    return this.specs
+      .filter((config) => config.deferred !== true)
+      .map((config) => ({
+        type: "function",
+        function: {
+          name: config.tool.name,
+          description: config.tool.description,
+          parameters: config.tool.inputSchema,
+        },
+      }));
   }
 
   /** Look up a single spec. */
@@ -139,6 +307,47 @@ export class ToolRouter {
       };
     }
   }
+
+  /**
+   * Port of codex `dispatch_tool_call_with_code_mode_result`
+   * (router.rs:266-302). When `source === "code_mode"`, restrict
+   * dispatch to the JS-REPL-safe subset (`js_repl` / `js_repl_reset`);
+   * anything else returns an error result the model can observe. All
+   * other sources delegate to `dispatchToolCall`.
+   */
+  async dispatchToolCallWithCodeMode(
+    invocation: ToolInvocation,
+    args: Record<string, unknown>,
+    source: ToolCallSource,
+  ): Promise<ToolDispatchResult> {
+    if (source === "code_mode" && !isCodeModeSafeTool(invocation.toolName)) {
+      return {
+        content: JSON.stringify({
+          error:
+            "direct tool calls are disabled in code_mode; use js_repl and codex.tool(...) instead",
+        }),
+        isError: true,
+      };
+    }
+    return this.dispatchToolCall(invocation, args);
+  }
+
+  /**
+   * Port of codex `ToolRouter::create_diff_consumer` (router.rs:135).
+   * Returns a consumer the tool execution flow can call to record
+   * pre-hook arguments and compare post-hook arguments — used to
+   * surface argument rewrites in telemetry.
+   *
+   * Intentionally minimal: the consumer keeps an in-memory map keyed
+   * by argument-name; `.compare(name, after)` runs a line-diff against
+   * the previously recorded `before`. Matches codex
+   * `ToolArgumentDiffConsumer` in scope (not in shape).
+   */
+  createDiffConsumer(toolName: ToolName | string): ToolArgumentDiffConsumer {
+    return createDiffConsumer(
+      typeof toolName === "string" ? toolName : nameDisplay(toolName),
+    );
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -168,32 +377,285 @@ export function routerFromRegistry(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Helpers: build a ToolCall envelope from a raw LLMToolCall.
+// Helpers: build a ToolCall envelope.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Convert an incoming LLMToolCall into the ToolCall envelope the
- * router expects. Raw args stay as a string; execution.ts does the
- * large-int-safe parsing (I-79).
+ * router expects. MCP routing flows through
+ * `session.services.mcpManager.resolveMcpToolInfo(toolName)` when a
+ * session is provided; the previous `namespace.startsWith("mcp")`
+ * heuristic is retained only as a no-session fallback for tests and
+ * legacy call sites.
  */
 export function toolCallFromLLMToolCall(
   llmCall: LLMToolCall,
-  opts: { readonly source?: ToolCallSource } = {},
+  opts: { readonly source?: ToolCallSource; readonly session?: SessionLike } = {},
 ): ToolCall {
-  void opts;
-  const toolName = parseToolName(llmCall.name);
   const args = llmCall.arguments ?? "";
-  const payload: ToolPayload = toolName.namespace?.startsWith("mcp")
-    ? {
+  const mcpInfo = opts.session?.services?.mcpManager?.resolveMcpToolInfo?.(
+    llmCall.name,
+  );
+  if (mcpInfo) {
+    return {
+      toolName: { namespace: mcpInfo.serverName, name: mcpInfo.toolName },
+      callId: llmCall.id,
+      payload: {
         kind: "mcp",
-        server: toolName.namespace ?? "",
-        tool: toolName.name,
+        server: mcpInfo.serverName,
+        tool: mcpInfo.toolName,
         rawArguments: args,
-      }
-    : { kind: "function", arguments: args };
+      },
+    };
+  }
+  const toolName = parseToolName(llmCall.name);
+  // Legacy fallback for callers without a session bound — keeps
+  // existing tests happy until every call site passes `session`.
+  const payload: ToolPayload =
+    opts.session === undefined && toolName.namespace?.startsWith("mcp")
+      ? {
+          kind: "mcp",
+          server: toolName.namespace ?? "",
+          tool: toolName.name,
+          rawArguments: args,
+        }
+      : { kind: "function", arguments: args };
   return {
     toolName,
     callId: llmCall.id,
     payload,
   };
+}
+
+/**
+ * Port of codex `ToolRouter::build_tool_call` (router.rs:172-263).
+ * Inspects `item.type` and produces the right ToolCall envelope for
+ * each of the four ResponseItem variants. Returns `null` when the
+ * item is not a tool call (codex returns `Ok(None)`) or when the
+ * tool_search_call was not client-executed.
+ *
+ * MCP attribution is resolved through
+ * `session.services.mcpManager.resolveMcpToolInfo(...)` — free of the
+ * `namespace.startsWith("mcp")` heuristic.
+ */
+export async function buildToolCall(
+  session: SessionLike | undefined,
+  item: RouterResponseItem,
+): Promise<ToolCall | null> {
+  switch (item.type) {
+    case "function_call": {
+      const fullName = item.namespace
+        ? `${item.namespace}.${item.name}`
+        : item.name;
+      const mcpInfo = session?.services?.mcpManager?.resolveMcpToolInfo?.(
+        fullName,
+      );
+      if (mcpInfo) {
+        return {
+          toolName: { namespace: mcpInfo.serverName, name: mcpInfo.toolName },
+          callId: item.callId,
+          payload: {
+            kind: "mcp",
+            server: mcpInfo.serverName,
+            tool: mcpInfo.toolName,
+            rawArguments: item.arguments,
+          },
+        };
+      }
+      return {
+        toolName: item.namespace
+          ? { namespace: item.namespace, name: item.name }
+          : { name: item.name },
+        callId: item.callId,
+        payload: { kind: "function", arguments: item.arguments },
+      };
+    }
+    case "tool_search_call": {
+      if (item.callId === undefined) return null;
+      if (item.execution !== undefined && item.execution !== "client") {
+        return null;
+      }
+      const parsed = parseToolSearchArguments(item.arguments);
+      if (!parsed) return null;
+      return {
+        toolName: { name: "tool_search" },
+        callId: item.callId,
+        payload: { kind: "tool_search", arguments: parsed },
+      };
+    }
+    case "custom_tool_call":
+      return {
+        toolName: { name: item.name },
+        callId: item.callId,
+        payload: { kind: "custom", input: item.input },
+      };
+    case "local_shell_call": {
+      const callId = item.callId ?? item.id;
+      if (callId === undefined) return null;
+      if (item.action.type !== "exec") return null;
+      const params: Extract<ToolPayload, { kind: "local_shell" }>["params"] = {
+        command: item.action.command,
+        ...(item.action.workingDirectory !== undefined
+          ? { cwd: item.action.workingDirectory }
+          : {}),
+        ...(item.action.timeoutMs !== undefined
+          ? { timeoutMs: item.action.timeoutMs }
+          : {}),
+      };
+      return {
+        toolName: { name: "local_shell" },
+        callId,
+        payload: { kind: "local_shell", params },
+      };
+    }
+  }
+}
+
+function parseToolSearchArguments(
+  raw: { readonly query: string } | string,
+): { readonly query: string } | null {
+  if (typeof raw === "object" && raw && typeof raw.query === "string") {
+    return { query: raw.query };
+  }
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as { query?: unknown };
+      if (parsed && typeof parsed.query === "string") {
+        return { query: parsed.query };
+      }
+    } catch {
+      // fallthrough
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// code_mode safety — restricted-tool set
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Direct tool set permitted when `source === "code_mode"`. Matches
+ * codex router.rs:281 (`matches!(tool_name.name.as_str(), "js_repl" |
+ * "js_repl_reset")`). Code-mode callers go through `js_repl` and the
+ * JS runner's `codex.tool(...)` bridge for everything else.
+ */
+const CODE_MODE_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "js_repl",
+  "js_repl_reset",
+]);
+
+export function isCodeModeSafeTool(toolName: ToolName): boolean {
+  if (toolName.namespace !== undefined) return false;
+  return CODE_MODE_SAFE_TOOL_NAMES.has(toolName.name);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Tool-argument diff consumer
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ToolArgumentDiffConsumer {
+  readonly toolName: string;
+  record(name: string, before: string): void;
+  compare(name: string, after: string): string | null;
+  snapshot(): ReadonlyArray<{
+    readonly name: string;
+    readonly before: string;
+    readonly after: string;
+    readonly diff: string;
+  }>;
+}
+
+function createDiffConsumer(toolName: string): ToolArgumentDiffConsumer {
+  const pending = new Map<string, string>();
+  const entries: Array<{
+    name: string;
+    before: string;
+    after: string;
+    diff: string;
+  }> = [];
+
+  return {
+    toolName,
+    record(name, before) {
+      pending.set(name, before);
+    },
+    compare(name, after) {
+      const before = pending.get(name);
+      if (before === undefined) return null;
+      pending.delete(name);
+      if (before === after) return "";
+      const diff = computeLineDiff(before, after);
+      entries.push({ name, before, after, diff });
+      return diff;
+    },
+    snapshot() {
+      return [...entries];
+    },
+  };
+}
+
+/**
+ * Free-function export of `createDiffConsumer` so callers outside the
+ * router (tool execution pipeline) can instantiate one per
+ * invocation. Shape matches `ToolRouter.createDiffConsumer`.
+ */
+export { createDiffConsumer };
+
+/**
+ * Minimal unified line-diff. One `-` line per removed line, one `+`
+ * line per added line. Lines that appear in both keep a leading space.
+ * The implementation is O(n*m) LCS which is fine for short argument
+ * strings — the point is to have the seam live, not to compete with
+ * `diff` libraries.
+ */
+function computeLineDiff(before: string, after: string): string {
+  const a = before.split("\n");
+  const b = after.split("\n");
+  const n = a.length;
+  const m = b.length;
+  const lcs: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(0),
+  );
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      if (a[i] === b[j]) {
+        lcs[i]![j] = (lcs[i + 1]?.[j + 1] ?? 0) + 1;
+      } else {
+        lcs[i]![j] = Math.max(
+          lcs[i + 1]?.[j] ?? 0,
+          lcs[i]?.[j + 1] ?? 0,
+        );
+      }
+    }
+  }
+  const out: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.push(` ${a[i]}`);
+      i += 1;
+      j += 1;
+    } else if ((lcs[i + 1]?.[j] ?? 0) >= (lcs[i]?.[j + 1] ?? 0)) {
+      out.push(`-${a[i]}`);
+      i += 1;
+    } else {
+      out.push(`+${b[j]}`);
+      j += 1;
+    }
+  }
+  while (i < n) {
+    out.push(`-${a[i]}`);
+    i += 1;
+  }
+  while (j < m) {
+    out.push(`+${b[j]}`);
+    j += 1;
+  }
+  return out.join("\n");
+}
+
+function nameDisplay(name: ToolName): string {
+  return name.namespace ? `${name.namespace}.${name.name}` : name.name;
 }

@@ -41,9 +41,18 @@ import type { TurnContext } from "./turn-context.js";
  *   1375 → token_budget_continuation
  *   1457 → continuation_nudge
  * Plus codex model-fallback site → model_fallback.
+ *
+ * T8 disambiguation:
+ *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
+ *     from the provider/retry layer — primary model swapped for fallback).
+ *   - `streaming_fallback_retry` is set by `onStreamingFallback` when the
+ *     streaming adapter reports a mid-stream fallback that needs a tombstone
+ *     + executor recreate without a cross-model swap. Downstream telemetry
+ *     can now distinguish the two recovery causes.
  */
 export type ContinueReason =
   | "model_fallback"
+  | "streaming_fallback_retry"
   | "collapse_drain_retry"
   | "reactive_compact_retry"
   | "max_output_tokens_escalate"

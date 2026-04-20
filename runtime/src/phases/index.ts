@@ -49,6 +49,10 @@ export enum Phase {
 export const PhaseTransition: Readonly<Record<ContinueReason, Phase>> =
   Object.freeze({
     model_fallback: Phase.PrepareContext,
+    // T8: streaming_fallback_retry is a distinct cause from model_fallback
+    // (same destination phase, different telemetry). Kept in the table so
+    // the phase-machine dispatcher treats both uniformly.
+    streaming_fallback_retry: Phase.PrepareContext,
     collapse_drain_retry: Phase.PrepareContext,
     reactive_compact_retry: Phase.PrepareContext,
     max_output_tokens_escalate: Phase.PrepareContext,

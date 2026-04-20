@@ -570,4 +570,35 @@ describe("MCPManager", () => {
     expect(await manager.getResources()).toHaveLength(0);
     expect(await manager.listPrompts()).toHaveLength(0);
   });
+
+  // --------------------------------------------------------------------------
+  // getServerForTool + resolveMcpToolInfo
+  // --------------------------------------------------------------------------
+
+  it("getServerForTool returns the owning server for a registered tool", async () => {
+    const bridge = makeMockBridge("github", ["listIssues", "createPR"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("c");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("github")]);
+    await manager.start();
+
+    expect(manager.getServerForTool("mcp.github.listIssues")).toBe("github");
+    expect(manager.getServerForTool("mcp.github.doesNotExist")).toBeUndefined();
+  });
+
+  it("resolveMcpToolInfo resolves namespaced MCP tool names", async () => {
+    const bridge = makeMockBridge("github", ["listIssues"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("c");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("github")]);
+    await manager.start();
+
+    expect(manager.resolveMcpToolInfo("mcp.github.listIssues")).toEqual({
+      serverName: "github",
+      toolName: "listIssues",
+    });
+    expect(manager.resolveMcpToolInfo("system.readFile")).toBeUndefined();
+  });
 });

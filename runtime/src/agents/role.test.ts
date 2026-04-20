@@ -2,12 +2,17 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { AgentRegistry } from "./registry.js";
 import {
   allocateNickname,
+  applyRoleToConfig,
+  buildConfigLayerStack,
+  formatRoleList,
   getAgentRole,
   getDefaultAgentRole,
   listAgentRoles,
+  loadRoleLayerToml,
   registerAgentRole,
   releaseNickname,
   resolveAgentRole,
+  tryResolveRoleConfig,
 } from "./role.js";
 
 // Each suite gets a fresh registry — nicknames now live on the
@@ -124,5 +129,121 @@ describe("nickname allocation", () => {
     expect(n1).not.toBe(n2);
     expect(role.config.nicknameCandidates).toContain(n1);
     expect(role.config.nicknameCandidates).toContain(n2);
+  });
+});
+
+describe("config-layer stack (Wave 3 port)", () => {
+  // The earlier `registerAgentRole overrides built-ins by name` test
+  // mutates the module-level registry; restore a clean explorer so
+  // this suite's assertions are not coupled to run order.
+  beforeEach(() => {
+    registerAgentRole({
+      name: "explorer",
+      config: {
+        description: "Fast codebase exploration.",
+        reasoningEffort: "low",
+        allowlist: ["system.readFile", "system.listDir"],
+        nicknameCandidates: ["scout", "ranger", "pathfinder", "seeker"],
+      },
+    });
+  });
+
+  it("applyRoleToConfig(explorer) sets reasoning=low + projects allowlist", () => {
+    const explorer = getAgentRole("explorer")!;
+    const base = { cwd: "/tmp/project" };
+    const next = applyRoleToConfig(explorer, base);
+    expect(next.reasoningEffort).toBe("low");
+    expect(next.allowlist).toContain("system.readFile");
+    // Base sibling fields pass through untouched.
+    expect(next.cwd).toBe("/tmp/project");
+    // applyRoleToConfig is pure — base stays unchanged.
+    expect((base as { reasoningEffort?: string }).reasoningEffort).toBeUndefined();
+  });
+
+  it("applyRoleToConfig does not rewrite fields the role doesn't set", () => {
+    const defaultRole = getDefaultAgentRole();
+    const base = { reasoningEffort: "high" as const, cwd: "/x" };
+    const next = applyRoleToConfig(defaultRole, base);
+    // default role sets no reasoningEffort — base value sticks.
+    expect(next.reasoningEffort).toBe("high");
+    expect(next.cwd).toBe("/x");
+  });
+
+  it("buildConfigLayerStack: user layer overrides role layer", () => {
+    const base = { cwd: "/x" };
+    const effective = buildConfigLayerStack({
+      base,
+      roleName: "explorer",
+      userLayer: { reasoningEffort: "high" },
+    });
+    // role says low, user says high → user wins.
+    expect(effective.reasoningEffort).toBe("high");
+    // role-layer allowlist still flows through (user didn't touch it).
+    expect(effective.allowlist).toContain("system.readFile");
+  });
+
+  it("buildConfigLayerStack: base-role-user precedence", () => {
+    const base = {
+      cwd: "/x",
+      reasoningEffort: "medium" as const,
+      timeoutMs: 1000,
+    };
+    const effective = buildConfigLayerStack({
+      base,
+      roleName: "awaiter",
+      userLayer: { timeoutMs: 42 },
+    });
+    // awaiter projects background=true, reasoning=low, timeout=3_600_000.
+    // user layer then overrides timeoutMs → 42.
+    expect(effective.reasoningEffort).toBe("low");
+    expect(effective.background).toBe(true);
+    expect(effective.timeoutMs).toBe(42);
+    // base cwd still intact (not a role-override field).
+    expect(effective.cwd).toBe("/x");
+  });
+
+  it("buildConfigLayerStack: unknown role leaves base unchanged except user overlay", () => {
+    const base = { cwd: "/x", reasoningEffort: "medium" as const };
+    const effective = buildConfigLayerStack({
+      base,
+      roleName: "nope-not-a-role",
+      userLayer: { background: true },
+    });
+    expect(effective.reasoningEffort).toBe("medium");
+    expect(effective.background).toBe(true);
+    expect(effective.cwd).toBe("/x");
+  });
+
+  it("tryResolveRoleConfig returns undefined for unknown; resolveAgentRole falls back to default", () => {
+    expect(tryResolveRoleConfig("unknown")).toBeUndefined();
+    expect(tryResolveRoleConfig(undefined)).toBeUndefined();
+    expect(tryResolveRoleConfig("explorer")).toBeDefined();
+    expect(resolveAgentRole("unknown").name).toBe("default");
+  });
+
+  it("loadRoleLayerToml stub returns empty object (T10 TODO)", () => {
+    const role = getAgentRole("explorer")!;
+    expect(loadRoleLayerToml(role)).toEqual({});
+  });
+
+  it("formatRoleList produces a header + per-role summary", () => {
+    const text = formatRoleList(listAgentRoles());
+    expect(text).toContain("Available roles:");
+    expect(text).toContain("default");
+    expect(text).toContain("explorer:");
+    // Capability hint line for explorer should mention low reasoning.
+    expect(text).toMatch(/reasoning=low/);
+    // Worker should appear in the listing.
+    expect(text).toContain("worker:");
+    // Default role's description is present.
+    expect(text).toContain("Unrestricted subagent");
+  });
+
+  it("formatRoleList skips duplicate names", () => {
+    const explorer = getAgentRole("explorer")!;
+    const text = formatRoleList([explorer, explorer]);
+    // explorer should appear exactly once.
+    const matches = text.match(/explorer:/g);
+    expect(matches?.length).toBe(1);
   });
 });

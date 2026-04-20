@@ -1,10 +1,16 @@
 import { describe, expect, test } from "vitest";
 import {
+  HOOK_TIMING_DISPLAY_THRESHOLD_MS,
   MAX_AUTO_FIX_RETRIES,
+  resolveHookPermissionDecision,
+  runPostToolUseFailureHooks,
   runPostToolUseHooks,
   runPreToolUseHooks,
   runWithAutoFixRetry,
   ToolHookRegistry,
+  type HookTimingRecord,
+  type PermissionDecisionHook,
+  type PostToolUseFailureHook,
 } from "./tool-hooks.js";
 import type { Tool } from "./types.js";
 import type { ToolInvocation } from "./context.js";
@@ -129,5 +135,123 @@ describe("ToolHookRegistry", () => {
     expect(reg.getPost()).toHaveLength(1);
     reg.clear();
     expect(reg.getPre()).toHaveLength(0);
+  });
+
+  test("failure + permission hook arrays", () => {
+    const reg = new ToolHookRegistry();
+    reg.addFailure(() => {});
+    reg.addPermission(() => ({ kind: "pass" }));
+    expect(reg.getFailure()).toHaveLength(1);
+    expect(reg.getPermission()).toHaveLength(1);
+    reg.clear();
+    expect(reg.getFailure()).toHaveLength(0);
+    expect(reg.getPermission()).toHaveLength(0);
+  });
+});
+
+describe("runPostToolUseFailureHooks", () => {
+  test("every hook fires + timing record emitted", async () => {
+    const timings: HookTimingRecord[] = [];
+    let hits = 0;
+    const hooks: PostToolUseFailureHook[] = [
+      () => {
+        hits += 1;
+      },
+      () => {
+        hits += 1;
+      },
+    ];
+    const records = await runPostToolUseFailureHooks(
+      hooks,
+      { invocation: stubInvocation, tool: stubTool, args: {}, error: new Error("x") },
+      undefined,
+      (r) => timings.push(r),
+    );
+    expect(hits).toBe(2);
+    expect(records).toHaveLength(2);
+    expect(timings).toHaveLength(2);
+    expect(timings[0]?.phase).toBe("failure");
+    expect(timings[0]?.overThreshold).toBe(false);
+  });
+
+  test("throwing hook is swallowed", async () => {
+    const errors: unknown[] = [];
+    let second = 0;
+    const hooks: PostToolUseFailureHook[] = [
+      () => {
+        throw new Error("boom");
+      },
+      () => {
+        second += 1;
+      },
+    ];
+    await runPostToolUseFailureHooks(
+      hooks,
+      { invocation: stubInvocation, tool: stubTool, args: {}, error: new Error("cause") },
+      (err) => errors.push(err),
+    );
+    expect(errors).toHaveLength(1);
+    expect(second).toBe(1);
+  });
+});
+
+describe("resolveHookPermissionDecision", () => {
+  test("first non-pass decision wins", async () => {
+    const hooks: PermissionDecisionHook[] = [
+      () => ({ kind: "pass" }),
+      () => ({ kind: "deny", reason: "blocked" }),
+      () => ({ kind: "allow" }),
+    ];
+    const decision = await resolveHookPermissionDecision("tool.x", {}, hooks);
+    expect(decision.kind).toBe("deny");
+    expect(decision.reason).toBe("blocked");
+  });
+
+  test("all pass returns final pass", async () => {
+    const hooks: PermissionDecisionHook[] = [
+      () => ({ kind: "pass" }),
+      () => undefined,
+    ];
+    const decision = await resolveHookPermissionDecision("tool.x", {}, hooks);
+    expect(decision.kind).toBe("pass");
+  });
+
+  test("throwing hook is swallowed (treated as pass)", async () => {
+    const errors: unknown[] = [];
+    const hooks: PermissionDecisionHook[] = [
+      () => {
+        throw new Error("boom");
+      },
+      () => ({ kind: "allow" }),
+    ];
+    const decision = await resolveHookPermissionDecision(
+      "tool.x",
+      {},
+      hooks,
+      (err) => errors.push(err),
+    );
+    expect(decision.kind).toBe("allow");
+    expect(errors).toHaveLength(1);
+  });
+});
+
+describe("HOOK_TIMING_DISPLAY_THRESHOLD_MS", () => {
+  test("constant matches openclaude default", () => {
+    expect(HOOK_TIMING_DISPLAY_THRESHOLD_MS).toBe(500);
+  });
+
+  test("overThreshold flag flips when a hook runs longer than the threshold", async () => {
+    const timings: HookTimingRecord[] = [];
+    const slow: PostToolUseFailureHook = async () => {
+      await new Promise((r) => setTimeout(r, HOOK_TIMING_DISPLAY_THRESHOLD_MS + 30));
+    };
+    await runPostToolUseFailureHooks(
+      [slow],
+      { invocation: stubInvocation, tool: stubTool, args: {}, error: new Error("x") },
+      undefined,
+      (r) => timings.push(r),
+    );
+    expect(timings).toHaveLength(1);
+    expect(timings[0]?.overThreshold).toBe(true);
   });
 });

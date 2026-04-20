@@ -255,6 +255,52 @@ export class MCPManager {
     return this.bridges.has(name);
   }
 
+  /**
+   * Given a namespaced MCP tool name (`mcp.<server>.<tool>`), return
+   * the owning server name if the tool is registered on a connected
+   * bridge. Returns `undefined` otherwise.
+   *
+   * Router replacement for the brittle `namespace.startsWith("mcp")`
+   * heuristic — the router now resolves MCP attribution through this
+   * lookup instead of prefix-matching the stringified name.
+   */
+  getServerForTool(namespacedName: string): string | undefined {
+    for (const [serverName, bridge] of this.bridges) {
+      for (const tool of bridge.tools) {
+        if (tool.name === namespacedName) return serverName;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Port of codex `Session::resolve_mcp_tool_info` (session.rs). Given
+   * a tool name the model emitted, either return `{ serverName,
+   * toolName }` when the tool is MCP-backed, or `undefined`.
+   *
+   * Accepts both the namespaced `mcp.<server>.<tool>` form and a plain
+   * tool name that matches a single registered MCP tool.
+   */
+  resolveMcpToolInfo(
+    toolName: string,
+  ): { readonly serverName: string; readonly toolName: string } | undefined {
+    if (toolName.startsWith("mcp.")) {
+      const server = this.getServerForTool(toolName);
+      if (!server) return undefined;
+      const prefix = `mcp.${server}.`;
+      if (!toolName.startsWith(prefix)) return undefined;
+      return { serverName: server, toolName: toolName.slice(prefix.length) };
+    }
+    for (const [serverName, bridge] of this.bridges) {
+      for (const tool of bridge.tools) {
+        if (tool.name === toolName) {
+          return { serverName, toolName };
+        }
+      }
+    }
+    return undefined;
+  }
+
   async reconnectServer(name: string): Promise<MCPReconnectResult> {
     const config = this.getServerConfig(name);
     if (!config) {

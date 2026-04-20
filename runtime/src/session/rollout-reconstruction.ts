@@ -274,15 +274,13 @@ export function reconstructFromRollout(
           // Codex threads `realtime_active` from the TurnContext event
           // into PreviousTurnSettings so resume can rehydrate a
           // realtime turn. The rollout writer (`toTurnContextItem`)
-          // includes the field, though our event-log.ts TurnContextItem
-          // type omits it — read via a typed cast.
-          const payloadWithRealtime = item.payload as TurnContextItem & {
-            readonly realtimeActive?: boolean;
-          };
+          // and the TurnContextItem declaration in event-log.ts both
+          // carry the field directly now, so read it without a typed
+          // cast.
           const next: PreviousTurnSettings = {
-            model: payloadWithRealtime.model,
-            ...(payloadWithRealtime.realtimeActive !== undefined
-              ? { realtimeActive: payloadWithRealtime.realtimeActive }
+            model: item.payload.model,
+            ...(item.payload.realtimeActive !== undefined
+              ? { realtimeActive: item.payload.realtimeActive }
               : {}),
           };
           active.previousTurnSettings = next;

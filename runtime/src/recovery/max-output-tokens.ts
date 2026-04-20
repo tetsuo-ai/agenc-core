@@ -16,12 +16,20 @@
  *
  * After both exhaust, the turn surfaces the error.
  *
+ * T8: both recovery paths discard + recreate the StreamingToolExecutor
+ * before the next iteration. The truncated assistant batch that hit
+ * `max_output_tokens` may have emitted partial `tool_use` blocks that
+ * never reached the executor's completion state, so we treat the
+ * executor as poisoned on every max-output-tokens recovery path.
+ *
  * @module
  */
 
 import type { LLMMessage } from "../llm/types.js";
+import { emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
+import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
 
 export const MAX_OUTPUT_TOKENS_ESCALATED = 64_000;
 export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
@@ -44,6 +52,35 @@ export interface RunMaxOutputTokensOpts {
 }
 
 /**
+ * T8: discard the in-flight StreamingToolExecutor and null the state
+ * slot so the next phase iteration builds a fresh executor. Matches
+ * the model-fallback pattern. Idempotent via the I-41 re-entrance
+ * guard on `executor.discard`.
+ */
+function discardExecutorForMaxOutputTokens(
+  session: Session,
+  state: TurnState,
+): void {
+  const executor = state.streamingToolExecutor as StreamingToolExecutor | null;
+  if (executor !== null && executor !== undefined) {
+    try {
+      (executor as { discard: (reason?: string) => void }).discard(
+        "max_output_tokens",
+      );
+    } catch {
+      /* I-41: re-entrance guard absorbs a second discard */
+    }
+  }
+  state.streamingToolExecutor = null;
+  emitWarning(
+    session.eventLog,
+    session.nextInternalSubId(),
+    "executor_discarded",
+    "max_output_tokens",
+  );
+}
+
+/**
  * Decide + mutate state for the next iteration. Called by phase-3
  * post-sample-recovery after `isWithheldMaxOutputTokens` fires.
  *
@@ -51,11 +88,14 @@ export interface RunMaxOutputTokensOpts {
  *   - escalate: sets `state.maxOutputTokensOverride`, marks transition
  *   - continuation: appends meta message, bumps counter, marks transition
  *   - exhausted: no state change (caller surfaces the error)
+ *
+ * Both escalate and continuation additionally discard+recreate the
+ * StreamingToolExecutor and emit `executor_discarded` telemetry.
  */
 export function runMaxOutputTokensRecovery(
   opts: RunMaxOutputTokensOpts,
 ): MaxOutputTokensOutcome {
-  const { state } = opts;
+  const { session, state } = opts;
   const overrideUnset = state.maxOutputTokensOverride === undefined;
   const escalateAllowed = opts.escalateAllowed !== false;
 
@@ -63,6 +103,7 @@ export function runMaxOutputTokensRecovery(
   if (overrideUnset && escalateAllowed) {
     state.maxOutputTokensOverride = MAX_OUTPUT_TOKENS_ESCALATED;
     state.transition = { reason: "max_output_tokens_escalate" };
+    discardExecutorForMaxOutputTokens(session, state);
     return { kind: "escalate" };
   }
 
@@ -75,6 +116,7 @@ export function runMaxOutputTokensRecovery(
     state.messages.push(metaMessage);
     state.maxOutputTokensRecoveryCount += 1;
     state.transition = { reason: "max_output_tokens_recovery" };
+    discardExecutorForMaxOutputTokens(session, state);
     return { kind: "continuation" };
   }
 

@@ -268,6 +268,100 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(peak).toBeLessThanOrEqual(2);
   });
 
+  test("post-hook retry triggers runWithAutoFixRetry (not skipped)", async () => {
+    let dispatchCount = 0;
+    const tool: Tool = {
+      name: "autofix.target",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        dispatchCount += 1;
+        return { content: `dispatch-${dispatchCount}`, isError: true };
+      },
+    };
+
+    const log = new EventLog();
+    let retryEmissions = 0;
+    let skipEmissions = 0;
+    log.subscribe((ev) => {
+      const msg = ev.msg as { type: string; payload?: { cause?: string } };
+      if (msg.type === "warning") {
+        if (msg.payload?.cause === "post_tool_hook_retry_skipped") {
+          skipEmissions += 1;
+        } else if (msg.payload?.cause === "post_tool_hook_retry_failed") {
+          retryEmissions += 1;
+        }
+      }
+    });
+
+    // Post-hook that requests retry TWICE then continues — this exercises
+    // the real runWithAutoFixRetry loop.
+    let postHookCallCount = 0;
+    const postHook: PostToolUseHook = async () => {
+      postHookCallCount += 1;
+      if (postHookCallCount < 3) {
+        return { kind: "retry", args: { attempt: postHookCallCount } };
+      }
+      return { kind: "continue" };
+    };
+
+    const registry = mkRegistry([tool]);
+    const session = mkSession({ log, registry, postToolUseHooks: [postHook] });
+    const call: LLMToolCall = {
+      id: "c-retry",
+      name: "autofix.target",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+    await executeTools(state, mkCtx(), session);
+
+    // dispatchCount should be >1 because retry re-dispatched.
+    expect(dispatchCount).toBeGreaterThan(1);
+    // The `post_tool_hook_retry_skipped` warning must NOT have fired
+    // (proving the real retry path ran).
+    expect(skipEmissions).toBe(0);
+    // No retry error either.
+    expect(retryEmissions).toBe(0);
+    // Final result threaded to messages.
+    expect(state.messages.length).toBe(1);
+  });
+
+  test("progress event fires on eventLog when tool calls __onProgress", async () => {
+    const tool: Tool = {
+      name: "bash-like",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async (args) => {
+        const onProgress = (args as { __onProgress?: (e: { chunk: string }) => void })
+          .__onProgress;
+        onProgress?.({ chunk: "line-1" });
+        onProgress?.({ chunk: "line-2" });
+        return { content: "done" };
+      },
+    };
+
+    const log = new EventLog();
+    const progressEvents: string[] = [];
+    log.subscribe((ev) => {
+      const msg = ev.msg as { type: string; payload?: { chunk?: string } };
+      if (msg.type === "tool_progress" && msg.payload?.chunk) {
+        progressEvents.push(msg.payload.chunk);
+      }
+    });
+
+    const registry = mkRegistry([tool]);
+    const session = mkSession({ log, registry });
+    const call: LLMToolCall = {
+      id: "c-prog",
+      name: "bash-like",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+    await executeTools(state, mkCtx(), session);
+
+    expect(progressEvents).toEqual(["line-1", "line-2"]);
+  });
+
   test("router classification emits tool_routing_classified warning", async () => {
     const tool: Tool = {
       name: "stub.ping",

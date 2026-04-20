@@ -235,6 +235,49 @@ export function resolveDocumentedXaiModel(model: string): string | null {
 }
 
 /**
+ * Deprecation notice produced when the operator-supplied model ID
+ * resolves to a different canonical ID via the alias map. Shape matches
+ * the `deprecation_notice` event payload in
+ * `runtime/src/session/event-log.ts` so a session emit can pass this
+ * value through unchanged.
+ */
+export interface XaiModelDeprecationNotice {
+  readonly subject: string;
+  readonly reason: string;
+  readonly replacement: string;
+  readonly deprecated_since?: string;
+}
+
+/**
+ * Detect whether `model` is a documented xAI alias that resolves to a
+ * different canonical ID, and return the structured deprecation notice
+ * when it does. Returns `null` when the model is already canonical, or
+ * when the model is not in the xAI catalog at all (the pre-flight
+ * validator throws `XaiUnknownModelError` in that second case; this
+ * helper is purely informational and never throws).
+ */
+export function detectDocumentedXaiModelAlias(
+  model: string,
+): XaiModelDeprecationNotice | null {
+  if (typeof model !== "string" || model.length === 0) return null;
+  if (DOCUMENTED_XAI_MODEL_IDS.has(model)) return null;
+  const canonical = DOCUMENTED_XAI_MODEL_ALIASES.get(model);
+  if (!canonical || !DOCUMENTED_XAI_MODEL_IDS.has(canonical)) return null;
+  const isBetaInfix = model.includes("-beta-");
+  return {
+    subject: model,
+    reason: isBetaInfix
+      ? `Legacy xAI catalog ID with "-beta-" infix (dropped in April 2026); ` +
+        `the runtime silently resolves to the current canonical release ` +
+        `per developers/models#model-aliases`
+      : `xAI alias for a dated release; the runtime silently resolves to ` +
+        `the current canonical release per developers/models#model-aliases`,
+    replacement: canonical,
+    ...(isBetaInfix ? { deprecated_since: "2026-04" } : {}),
+  };
+}
+
+/**
  * True if the canonical model supports function calling. The image/video
  * models in the catalog (`grok-imagine-*`) do not.
  */
@@ -374,14 +417,37 @@ export class XaiUndocumentedFieldError extends LLMProviderError {
  * Pure function. No side effects. Caller is responsible for catching the
  * thrown error and threading it through the existing trace event stream.
  */
+/**
+ * Optional side-channel for the pre-flight validator. When provided,
+ * `onDeprecationNotice` is invoked once with the structured notice if
+ * the incoming `model` resolves via the alias map to a different
+ * canonical ID. This is how the adapter surfaces an AI-invisible
+ * rewrite as an observable `deprecation_notice` event without making
+ * this pure validator depend on the runtime event log.
+ */
+export interface ValidateXaiRequestPreFlightOptions {
+  readonly onDeprecationNotice?: (notice: XaiModelDeprecationNotice) => void;
+}
+
 export function validateXaiRequestPreFlight(
   params: Record<string, unknown>,
+  options?: ValidateXaiRequestPreFlightOptions,
 ): void {
   // 1. Model must be in the documented catalog.
   const model = typeof params.model === "string" ? params.model : "";
   const canonicalModel = resolveDocumentedXaiModel(model);
   if (!canonicalModel) {
     throw new XaiUnknownModelError(model);
+  }
+  // 1a. Emit a deprecation notice if the operator-supplied ID is an
+  //     alias that resolved to a different canonical ID. Single
+  //     callback — the adapter wires this to `emitDeprecationNotice`
+  //     so rollout replay can see the rewrite that actually happened.
+  if (options?.onDeprecationNotice) {
+    const alias = detectDocumentedXaiModelAlias(model);
+    if (alias !== null) {
+      options.onDeprecationNotice(alias);
+    }
   }
 
   // 2. reasoning.effort is multi-agent-only.

@@ -44,7 +44,7 @@
 
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
-import type { TurnContext } from "../session/turn-context.js";
+import type { Config, TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 
 /**
@@ -96,6 +96,225 @@ function getMessagesAfterCompactBoundary(
   return messages.map((x) => ({ ...x }));
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Stage 2 — tool-result budgeting (ports openclaude `query.ts:~369` →
+// `toolResultStorage.ts::applyToolResultBudget`).
+//
+// Runs oldest → newest over the model-visible message slice and truncates
+// tool-role message bodies with the I-15 marker (same text shape as
+// `capToolResult` in `tools/execution.ts`) until the running byte total
+// falls at or under `maxToolResultBudgetBytes`.
+//
+// Invariants:
+//   - Message ordering is preserved (clone-in-place on hit, passthrough
+//     on miss).
+//   - Truncation marker matches I-15 so downstream consumers and
+//     compaction passes see one consistent shape.
+//   - Env overrides (`AGENC_TOOL_RESULT_BUDGET_BYTES`,
+//     `AGENC_TOOL_RESULT_TRUNCATE_BYTES`) win over config knobs; config
+//     knobs win over hard-coded openclaude defaults (2MB / 40KB).
+// ─────────────────────────────────────────────────────────────────────
+
+/** Openclaude parity defaults (toolResultStorage + constants/toolLimits). */
+const DEFAULT_MAX_TOOL_RESULT_BUDGET_BYTES = 2 * 1024 * 1024; // 2 MB
+const DEFAULT_TOOL_RESULT_TRUNCATE_BYTES = 40 * 1024; // 40 KB
+
+/**
+ * I-15 marker (keep in sync with `capToolResult` in
+ * `runtime/src/tools/execution.ts`). Shared wording — do not fork.
+ */
+const STAGE2_TRUNCATION_MARKER_TEMPLATE =
+  "\n\n[truncated: original was {ORIG} bytes, returning first {KEPT}]\n";
+
+function readEnvBytes(name: string): number | undefined {
+  const raw = typeof process !== "undefined" ? process.env?.[name] : undefined;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
+}
+
+/** Resolve the effective budget/truncation knobs (env > config > default). */
+export function resolveToolBudgetConfig(
+  config?: Pick<Config, "toolBudget">,
+): {
+  maxToolResultBudgetBytes: number;
+  truncateToBytes: number;
+} {
+  const envBudget = readEnvBytes("AGENC_TOOL_RESULT_BUDGET_BYTES");
+  const envTruncate = readEnvBytes("AGENC_TOOL_RESULT_TRUNCATE_BYTES");
+  const cfg = config?.toolBudget;
+  const maxToolResultBudgetBytes =
+    envBudget ??
+    (cfg?.maxToolResultBudgetBytes && cfg.maxToolResultBudgetBytes > 0
+      ? cfg.maxToolResultBudgetBytes
+      : DEFAULT_MAX_TOOL_RESULT_BUDGET_BYTES);
+  const truncateToBytes =
+    envTruncate ??
+    (cfg?.truncateToBytes && cfg.truncateToBytes > 0
+      ? cfg.truncateToBytes
+      : DEFAULT_TOOL_RESULT_TRUNCATE_BYTES);
+  return { maxToolResultBudgetBytes, truncateToBytes };
+}
+
+/**
+ * Return the UTF-8 byte size of an `LLMMessage.content` (string or
+ * multimodal content-part array). Text parts are summed; non-text parts
+ * (image_url, etc.) are ignored — they don't participate in the
+ * tool-result size budget (openclaude's `contentSize` parity).
+ */
+function messageContentBytes(content: LLMMessage["content"]): number {
+  if (typeof content === "string") {
+    return Buffer.byteLength(content, "utf8");
+  }
+  let total = 0;
+  for (const part of content) {
+    if (part.type === "text") {
+      total += Buffer.byteLength(part.text, "utf8");
+    }
+  }
+  return total;
+}
+
+/**
+ * Truncate a tool-role message's text content to at most `targetBytes`
+ * and append the I-15-style marker. Preserves multimodal part ordering
+ * by collapsing text parts into a single capped string + marker; non-
+ * text parts are dropped (they cannot meaningfully survive a byte-cap
+ * on the tool-result channel).
+ */
+function truncateToolMessage(
+  message: LLMMessage,
+  originalBytes: number,
+  targetBytes: number,
+): LLMMessage {
+  const marker = STAGE2_TRUNCATION_MARKER_TEMPLATE
+    .replace("{ORIG}", String(originalBytes))
+    .replace("{KEPT}", String(targetBytes));
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  const keepBytes = Math.max(0, targetBytes - markerBytes);
+
+  const flat =
+    typeof message.content === "string"
+      ? message.content
+      : message.content
+          .filter((p): p is { type: "text"; text: string } => p.type === "text")
+          .map((p) => p.text)
+          .join("");
+  const buf = Buffer.from(flat, "utf8");
+  const kept = buf.subarray(0, keepBytes).toString("utf8");
+  return { ...message, content: `${kept}${marker}` };
+}
+
+export interface ToolResultBudgetingResult {
+  readonly messages: LLMMessage[];
+  readonly bytesFreed: number;
+  readonly truncatedCount: number;
+}
+
+/**
+ * Apply Stage 2 tool-result budgeting. Iterates oldest → newest over
+ * `messages`; for each `role:"tool"` entry whose byte-size exceeds
+ * `truncateToBytes`, truncates with the I-15 marker and subtracts the
+ * freed bytes from the running total. Halts early once the running
+ * total is ≤ `maxToolResultBudgetBytes`.
+ *
+ * `toolResultBytesByTurn` is the I-88 per-turn index. When provided we
+ * seed the running total from its aggregate sum (authoritative across
+ * turns); otherwise we measure in-place. Ordering is always preserved.
+ *
+ * @param messages  The model-visible message slice (typically
+ *                  `state.messagesForQuery`). Not mutated; a new array
+ *                  is returned when any truncation occurs.
+ * @param toolResultBytesByTurn  Optional I-88 rollout-side index. When
+ *                  absent or empty, the helper falls back to measuring
+ *                  tool-role message bytes in place.
+ * @param config    Budget + truncation thresholds (env > config > default).
+ */
+export function applyToolResultBudgeting(
+  messages: readonly LLMMessage[],
+  toolResultBytesByTurn:
+    | ReadonlyMap<string, number>
+    | Record<string, number>
+    | undefined,
+  config: {
+    readonly maxToolResultBudgetBytes?: number;
+    readonly truncateToBytes?: number;
+  } = {},
+): ToolResultBudgetingResult {
+  const envBudget = readEnvBytes("AGENC_TOOL_RESULT_BUDGET_BYTES");
+  const envTruncate = readEnvBytes("AGENC_TOOL_RESULT_TRUNCATE_BYTES");
+  const maxBudget =
+    envBudget ??
+    (config.maxToolResultBudgetBytes && config.maxToolResultBudgetBytes > 0
+      ? config.maxToolResultBudgetBytes
+      : DEFAULT_MAX_TOOL_RESULT_BUDGET_BYTES);
+  const truncateTo =
+    envTruncate ??
+    (config.truncateToBytes && config.truncateToBytes > 0
+      ? config.truncateToBytes
+      : DEFAULT_TOOL_RESULT_TRUNCATE_BYTES);
+
+  // Seed the running total.
+  let indexTotal = 0;
+  if (toolResultBytesByTurn) {
+    if (toolResultBytesByTurn instanceof Map) {
+      for (const n of toolResultBytesByTurn.values()) indexTotal += n;
+    } else {
+      for (const n of Object.values(toolResultBytesByTurn)) {
+        if (typeof n === "number") indexTotal += n;
+      }
+    }
+  }
+
+  // Measure in-place so we always have a live ceiling the budget can
+  // walk down. The I-88 index is the authoritative across-turn view; we
+  // use whichever is larger to stay conservative.
+  const inPlaceSizes: number[] = new Array(messages.length);
+  let inPlaceTotal = 0;
+  for (let i = 0; i < messages.length; i += 1) {
+    const m = messages[i];
+    if (m && m.role === "tool") {
+      const bytes = messageContentBytes(m.content);
+      inPlaceSizes[i] = bytes;
+      inPlaceTotal += bytes;
+    } else {
+      inPlaceSizes[i] = 0;
+    }
+  }
+
+  let runningTotal = Math.max(indexTotal, inPlaceTotal);
+  if (runningTotal <= maxBudget) {
+    return { messages: messages as LLMMessage[], bytesFreed: 0, truncatedCount: 0 };
+  }
+
+  // Oldest → newest. Truncate any tool-role message whose body exceeds
+  // `truncateToBytes`; skip smaller results even when over budget (they
+  // already fit the openclaude per-result floor).
+  const next: LLMMessage[] = messages.slice();
+  let bytesFreed = 0;
+  let truncatedCount = 0;
+  for (let i = 0; i < next.length; i += 1) {
+    if (runningTotal <= maxBudget) break;
+    const m = next[i];
+    if (!m || m.role !== "tool") continue;
+    const bytes = inPlaceSizes[i] ?? messageContentBytes(m.content);
+    if (bytes <= truncateTo) continue;
+    const replaced = truncateToolMessage(m, bytes, truncateTo);
+    const newBytes = messageContentBytes(replaced.content);
+    const freed = Math.max(0, bytes - newBytes);
+    next[i] = replaced;
+    bytesFreed += freed;
+    runningTotal -= freed;
+    truncatedCount += 1;
+  }
+
+  if (truncatedCount === 0) {
+    return { messages: messages as LLMMessage[], bytesFreed: 0, truncatedCount: 0 };
+  }
+  return { messages: next, bytesFreed, truncatedCount };
+}
+
 interface AutoCompactModule {
   autoCompactIfNeeded?: (...args: unknown[]) => Promise<{
     wasCompacted: boolean;
@@ -134,9 +353,49 @@ export async function prepareContext(
   // control-flow shape (what order things fire, what happens on
   // success, what happens on failure) is live.
 
-  // Stage 2: tool-result budgeting. openclaude's applyToolResultBudget
-  // lives at utils/toolResultStorage.ts (not compact/). T7 ports it
-  // into the tools subsystem; this stage lights up when it lands.
+  // Stage 2 — I-88-driven tool-result budgeting (ports
+  // openclaude `query.ts:~369` + `toolResultStorage.ts`).
+  // Byte-index source: `session.rolloutStore` (`RolloutStore` owns the
+  // I-88 per-turn tally at `rollout-store.ts:76/82`). Falls back to
+  // measuring tool-role messages in-place when the rollout store is
+  // absent (degraded/no-rollout sessions, subagents without persistence).
+  const rolloutStore = (session as unknown as {
+    rolloutStore?: {
+      getToolResultBytesIndexSnapshot?: () => ReadonlyMap<string, number>;
+    } | null;
+  }).rolloutStore;
+  const toolResultBytesByTurn =
+    rolloutStore?.getToolResultBytesIndexSnapshot?.();
+  const budget = applyToolResultBudgeting(
+    messagesForQuery,
+    toolResultBytesByTurn,
+    {
+      ...(ctx.configSnapshot.toolBudget?.maxToolResultBudgetBytes !== undefined
+        ? {
+            maxToolResultBudgetBytes:
+              ctx.configSnapshot.toolBudget.maxToolResultBudgetBytes,
+          }
+        : {}),
+      ...(ctx.configSnapshot.toolBudget?.truncateToBytes !== undefined
+        ? {
+            truncateToBytes: ctx.configSnapshot.toolBudget.truncateToBytes,
+          }
+        : {}),
+    },
+  );
+  if (budget.truncatedCount > 0) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "tool_result_budget_truncated",
+          message: `${budget.truncatedCount} tool result(s) truncated, ${budget.bytesFreed}B freed`,
+        },
+      },
+    });
+    messagesForQuery = budget.messages;
+  }
 
   // Stage 3: snip compaction.
   let snipTokensFreed = 0;

@@ -41,7 +41,11 @@
  */
 
 import type { Tool } from "./types.js";
-import type { ToolInvocation } from "./context.js";
+import type { ToolInvocation, ToolPayload } from "./context.js";
+import {
+  resolveHookPermissionDecision,
+  type PermissionDecisionHook,
+} from "./tool-hooks.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Policy + mode enums (mirror of codex protocol)
@@ -154,6 +158,22 @@ export interface ClassifyToolOptions {
    *  regardless of the session-wide policy. */
   readonly toolAllowlist?: ReadonlySet<string>;
   readonly toolDenylist?: ReadonlySet<string>;
+  /**
+   * Full tool payload variant. Different payload kinds get different
+   * classification rules — MCP calls defer to server-side trust, shell
+   * payloads route through the fs-policy-aware default, tool_search is
+   * always read-only, and `custom`/`function` share the legacy logic.
+   * When omitted, the classifier falls back to the `function` branch
+   * so legacy call sites keep working.
+   */
+  readonly payload?: ToolPayload;
+  /**
+   * Optional MCP trust resolver. When a payload is `{kind:"mcp"}` and
+   * this returns `true`, the call is considered pre-approved at the
+   * server level and skips approval. When `undefined` or `false`, the
+   * MCP call falls through to the normal policy matrix.
+   */
+  readonly mcpServerTrusted?: (server: string) => boolean;
 }
 
 /**
@@ -181,6 +201,53 @@ export function classifyToolApproval(
   }
   if (opts.toolAllowlist?.has(name)) {
     return { kind: "skip", bypassSandbox: false };
+  }
+
+  // Payload-variant routing. Every tool invocation carries a typed
+  // `ToolPayload` describing its kind. Different kinds get different
+  // approval rules — MCP server-side trust, `tool_search` is always
+  // read-only, `local_shell` uses the fs-policy default, etc.
+  const payload = opts.payload;
+  if (payload) {
+    switch (payload.kind) {
+      case "tool_search":
+        // Tool discovery is read-only metadata — always skip approval.
+        return { kind: "skip", bypassSandbox: false };
+      case "mcp": {
+        if (opts.mcpServerTrusted?.(payload.server) === true) {
+          return { kind: "skip", bypassSandbox: false };
+        }
+        // Fall through to the function-branch logic below — the MCP
+        // server is not trusted so the normal policy matrix applies.
+        break;
+      }
+      case "local_shell": {
+        // Route shell calls through the fs-policy-aware default.
+        const fsKind = sandboxKindFromMode(opts.sandboxMode);
+        const fallback = defaultExecApprovalRequirement(
+          opts.approvalPolicy,
+          fsKind,
+        );
+        if (fallback.kind === "needs_approval") {
+          return {
+            kind: "needs_approval",
+            reason: `local_shell under ${fsKind} sandbox requires approval`,
+          };
+        }
+        // When policy skips, honor the danger-yolo bypass exactly like
+        // the function branch below.
+        return {
+          kind: "skip",
+          bypassSandbox:
+            opts.sandboxMode === "danger_full_access" &&
+            opts.approvalPolicy === "never",
+        };
+      }
+      case "custom":
+      case "function":
+        // Falls through to the shared function-kind switch below.
+        break;
+    }
   }
 
   const sandboxBypass =
@@ -316,6 +383,18 @@ export type PermissionRequestHook = (
 export interface RequestApprovalOpts {
   readonly ctx: ApprovalCtx;
   readonly hooks?: ReadonlyArray<PermissionRequestHook>;
+  /**
+   * Typed `PermissionDecisionHook` pipeline — walked AFTER `hooks` and
+   * BEFORE the resolver / default-deny fallback so typed per-tool
+   * policy hooks can approve or deny without synthesizing a raw
+   * `ReviewDecision`. First non-`pass` decision wins:
+   *   - `allow` → `approved`
+   *   - `deny`  → `denied`
+   *   - `ask`   → falls through to the resolver.
+   */
+  readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
+  /** Raw args fed to the decision hooks. Defaults to `{}` when absent. */
+  readonly args?: Record<string, unknown>;
   readonly resolver?: ApprovalResolver;
   /** Logger for "no resolver" default-deny event. Optional. */
   readonly onNoResolver?: (ctx: ApprovalCtx) => void;
@@ -323,7 +402,7 @@ export interface RequestApprovalOpts {
 
 export interface RequestApprovalResult {
   readonly decision: ReviewDecision;
-  readonly source: "hook" | "resolver" | "default_deny";
+  readonly source: "hook" | "resolver" | "default_deny" | "permission_hook";
 }
 
 /**
@@ -345,6 +424,22 @@ export async function requestApproval(
     if (result !== undefined) {
       return { decision: result, source: "hook" };
     }
+  }
+  // Typed permission decision hooks — walked BEFORE resolver / default_deny
+  // so hook-driven allow/deny decisions bypass the raw-resolver modal.
+  if (opts.permissionDecisionHooks && opts.permissionDecisionHooks.length > 0) {
+    const decision = await resolveHookPermissionDecision(
+      opts.ctx.toolName,
+      opts.args ?? {},
+      opts.permissionDecisionHooks,
+    );
+    if (decision.kind === "allow") {
+      return { decision: "approved", source: "permission_hook" };
+    }
+    if (decision.kind === "deny") {
+      return { decision: "denied", source: "permission_hook" };
+    }
+    // `ask` / `pass` → fall through to resolver.
   }
   if (opts.resolver) {
     const decision = await opts.resolver.request(opts.ctx);
