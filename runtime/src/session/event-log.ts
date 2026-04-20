@@ -1,0 +1,532 @@
+/**
+ * Event log — the discriminated union that every state change in
+ * AgenC flows through.
+ *
+ * Hand-port of codex `protocol/src/protocol.rs` EventMsg (78 variants)
+ * reduced to the 18-variant AgenC subset per `docs/plan/codex-inventory.md §4`.
+ *
+ * Invariants wired here:
+ *   I-8  (every error site emits a typed event) — `emitError()` helper
+ *        is the single entry point for error emissions.
+ *   I-26 (forward-compat: unknown event variant skipped, not panicked)
+ *        — `isKnownEventType()` + reducer wraps unknown variants in
+ *        `{type:'unknown', raw, version}` shim.
+ *   I-27 (FIFO + monotonic seq) — `EventLog.emit()` assigns the seq
+ *        synchronously before any await; reducer asserts monotonicity.
+ *   I-49 (schema version stamped) — every SessionMetaLine carries
+ *        `agencVersion` + `rolloutSchemaVersion`.
+ *
+ * @module
+ */
+
+import type { LLMMessage, LLMUsage } from "../llm/types.js";
+
+// ─────────────────────────────────────────────────────────────────────
+// Schema version — I-49
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Incremented on any breaking change to the rollout JSONL format.
+ * - v1: initial T6 shape (18 event variants, 6 rollout wrappers).
+ * On open, if rollout.schemaVersion > runtime.ROLLOUT_SCHEMA_VERSION,
+ * hard-fail with migration message (I-49).
+ */
+export const ROLLOUT_SCHEMA_VERSION = 1;
+
+// ─────────────────────────────────────────────────────────────────────
+// Event envelope: { id, msg, seq }
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Per-emit sequence number (monotonic within a session lifetime).
+ * Used by the reducer to assert FIFO order (I-27).
+ */
+export type EventSeq = number;
+
+export interface Event {
+  readonly id: string;
+  readonly msg: EventMsg;
+  /**
+   * Assigned synchronously at emit time by `EventLog.emit()`. Exposed
+   * as optional here because constructors may accept pre-envelope
+   * values; the EventLog fills it in.
+   */
+  readonly seq?: EventSeq;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Event payloads — 18 variants
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SessionMetaLine {
+  readonly sessionId: string;
+  readonly timestamp: string;
+  readonly cwd: string;
+  readonly originator: string;
+  /** `@tetsuo-ai/runtime` version that wrote this rollout. */
+  readonly agencVersion: string;
+  /** Schema version (I-49). Bump on breaking changes. */
+  readonly rolloutSchemaVersion: number;
+  readonly cliVersion?: string;
+  readonly source?: string;
+  readonly model?: string;
+  readonly modelProvider?: string;
+}
+
+export interface TurnStartedEvent {
+  readonly turnId: string;
+  readonly startedAt?: number;
+  readonly modelContextWindow?: number;
+  readonly collaborationModeKind?: string;
+}
+
+export interface TurnCompleteEvent {
+  readonly turnId: string;
+  readonly lastAgentMessage?: string;
+  readonly completedAt?: number;
+  readonly durationMs?: number;
+}
+
+export interface TurnAbortedEvent {
+  readonly turnId?: string;
+  readonly reason: string;
+}
+
+export interface AgentMessageEvent {
+  readonly message: string;
+}
+
+export interface UserMessageEvent {
+  readonly message: string;
+  readonly images?: ReadonlyArray<string>;
+}
+
+export interface TokenCountEvent {
+  readonly promptTokens?: number;
+  readonly completionTokens?: number;
+  readonly totalTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly reasoningOutputTokens?: number;
+}
+
+export interface McpToolCallBeginEvent {
+  readonly callId: string;
+  readonly server: string;
+  readonly toolName: string;
+  readonly args: string;
+}
+
+export interface McpToolCallEndEvent {
+  readonly callId: string;
+  readonly result: string;
+  readonly isError: boolean;
+  readonly durationMs?: number;
+}
+
+export interface ExecCommandBeginEvent {
+  readonly callId: string;
+  readonly command: string;
+  readonly cwd?: string;
+}
+
+export interface ExecCommandEndEvent {
+  readonly callId: string;
+  readonly exitCode: number;
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly durationMs?: number;
+}
+
+export interface ExecApprovalRequestEvent {
+  readonly callId: string;
+  readonly command: string;
+  readonly reason?: string;
+}
+
+export interface RequestPermissionsEvent {
+  readonly callId: string;
+  readonly toolName: string;
+  readonly permissions: ReadonlyArray<string>;
+}
+
+export interface ContextCompactedEvent {
+  readonly turnId?: string;
+  readonly summary?: string;
+  readonly preCompactTokens?: number;
+  readonly postCompactTokens?: number;
+}
+
+export interface ThreadRolledBackEvent {
+  readonly numTurns: number;
+  readonly reason?: string;
+}
+
+export interface ErrorEvent {
+  readonly cause: string;
+  readonly message: string;
+  readonly turnId?: string;
+  readonly stack?: string;
+}
+
+export interface StreamErrorEvent {
+  readonly cause: string;
+  readonly message: string;
+  readonly provider?: string;
+  readonly status?: number;
+}
+
+export interface WarningEvent {
+  readonly cause: string;
+  readonly message: string;
+}
+
+/**
+ * TurnContextItem — emitted once per real user turn after computing
+ * that turn's model-visible context updates (and again after
+ * mid-turn compaction) so resume/fork replay recovers the latest
+ * durable baseline. Port of codex `TurnContextItem` (protocol.rs:2896).
+ */
+export interface TurnContextItem {
+  readonly turnId?: string;
+  readonly traceId?: string;
+  readonly cwd: string;
+  readonly currentDate?: string;
+  readonly timezone?: string;
+  readonly approvalPolicy: string;
+  readonly sandboxPolicy: string;
+  readonly model: string;
+  readonly personality?: string;
+  readonly effort?: string;
+  readonly summary?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// EventMsg discriminated union (18 variants)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Codex `SessionConfigured` payload. Emitted once at session open.
+ * Kept in the canonical union so session.ts can rely on event-log.ts
+ * as the single source of truth for event types.
+ */
+export interface SessionConfiguredEvent {
+  readonly sessionId: string;
+  readonly forkedFromId?: string;
+  readonly threadName?: string;
+  readonly model: string;
+  readonly modelProviderId: string;
+  readonly serviceTier?: string;
+  readonly cwd: string;
+  readonly historyLogId: number;
+  readonly historyEntryCount: number;
+  readonly initialMessages: ReadonlyArray<EventMsg>;
+  readonly rolloutPath?: string;
+}
+
+export type EventMsg =
+  | { readonly type: "session_meta"; readonly payload: SessionMetaLine }
+  | {
+      readonly type: "session_configured";
+      readonly payload: SessionConfiguredEvent;
+    }
+  | { readonly type: "turn_started"; readonly payload: TurnStartedEvent }
+  | { readonly type: "turn_context"; readonly payload: TurnContextItem }
+  | { readonly type: "agent_message"; readonly payload: AgentMessageEvent }
+  | {
+      readonly type: "agent_message_delta";
+      readonly payload: { readonly delta: string };
+    }
+  | { readonly type: "user_message"; readonly payload: UserMessageEvent }
+  | { readonly type: "token_count"; readonly payload: TokenCountEvent }
+  | {
+      readonly type: "mcp_tool_call_begin";
+      readonly payload: McpToolCallBeginEvent;
+    }
+  | {
+      readonly type: "mcp_tool_call_end";
+      readonly payload: McpToolCallEndEvent;
+    }
+  | {
+      readonly type: "exec_command_begin";
+      readonly payload: ExecCommandBeginEvent;
+    }
+  | {
+      readonly type: "exec_command_end";
+      readonly payload: ExecCommandEndEvent;
+    }
+  | {
+      readonly type: "exec_approval_request";
+      readonly payload: ExecApprovalRequestEvent;
+    }
+  | {
+      readonly type: "tool_call_started";
+      readonly payload: {
+        readonly callId: string;
+        readonly toolName: string;
+        readonly args: string;
+      };
+    }
+  | {
+      readonly type: "tool_call_completed";
+      readonly payload: {
+        readonly callId: string;
+        readonly result: string;
+        readonly isError: boolean;
+      };
+    }
+  | {
+      readonly type: "request_permissions";
+      readonly payload: RequestPermissionsEvent;
+    }
+  | {
+      readonly type: "context_compacted";
+      readonly payload: ContextCompactedEvent;
+    }
+  | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
+  | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
+  | {
+      readonly type: "thread_rolled_back";
+      readonly payload: ThreadRolledBackEvent;
+    }
+  | { readonly type: "error"; readonly payload: ErrorEvent }
+  | { readonly type: "stream_error"; readonly payload: StreamErrorEvent }
+  | { readonly type: "warning"; readonly payload: WarningEvent }
+  | {
+      readonly type: "deprecation_notice";
+      readonly payload: {
+        readonly summary: string;
+        readonly details?: string;
+      };
+    };
+
+/**
+ * All known event-type tags. `isKnownEventType()` checks membership;
+ * the reducer wraps unknown tags in an `unknown` shim (I-26).
+ */
+export const KNOWN_EVENT_TYPES = Object.freeze(
+  new Set<string>([
+    "session_meta",
+    "session_configured",
+    "turn_started",
+    "turn_context",
+    "agent_message",
+    "agent_message_delta",
+    "user_message",
+    "token_count",
+    "mcp_tool_call_begin",
+    "mcp_tool_call_end",
+    "exec_command_begin",
+    "exec_command_end",
+    "exec_approval_request",
+    "tool_call_started",
+    "tool_call_completed",
+    "request_permissions",
+    "context_compacted",
+    "turn_complete",
+    "turn_aborted",
+    "thread_rolled_back",
+    "error",
+    "stream_error",
+    "warning",
+    "deprecation_notice",
+  ]),
+);
+
+export function isKnownEventType(type: string): boolean {
+  return KNOWN_EVENT_TYPES.has(type);
+}
+
+/**
+ * Durable events force an immediate fsync before the phase machine
+ * proceeds (I-4). Turn-scoped durability is guaranteed; within a
+ * turn, up to 100ms of progress events may be lost on crash.
+ */
+const DURABLE_EVENT_TYPES = Object.freeze(
+  new Set<string>([
+    "turn_complete",
+    "turn_aborted",
+    "error",
+    "context_compacted",
+  ]),
+);
+
+export function isDurableEvent(event: Event): boolean {
+  return DURABLE_EVENT_TYPES.has(event.msg.type);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// EventLog — synchronous seq-assigning emitter + subscriber fan-out.
+// ─────────────────────────────────────────────────────────────────────
+
+export type EventListener = (event: Event) => void;
+
+/**
+ * Synchronous, in-process event bus. Emitted events get a monotonic
+ * `seq` assigned before any async work (I-27). Listeners receive
+ * events in emission order; a listener throwing doesn't affect
+ * subsequent listeners (per-sidecar isolation preview — I-43).
+ */
+export class EventLog {
+  private nextSeq: EventSeq = 0;
+  private readonly listeners = new Set<EventListener>();
+  private closed = false;
+
+  /**
+   * Emit an event. Returns the assigned seq.
+   * I-27: synchronous + FIFO + monotonic.
+   */
+  emit(event: Event): Event {
+    if (this.closed) return event;
+    this.nextSeq += 1;
+    const seq = this.nextSeq;
+    const stamped: Event = { ...event, seq };
+    for (const listener of this.listeners) {
+      try {
+        listener(stamped);
+      } catch {
+        // I-43: per-sidecar isolation — don't let one subscriber's
+        // failure prevent the others from receiving the event.
+      }
+    }
+    return stamped;
+  }
+
+  /**
+   * Subscribe. Returns an unsubscribe function. Listeners fire in
+   * registration order; the set preserves insertion order.
+   */
+  subscribe(listener: EventListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /** Current next-seq value (useful for tests / telemetry). */
+  get lastSeq(): EventSeq {
+    return this.nextSeq;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.listeners.clear();
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-8: emitError helper — single entry point for all error sites.
+// ─────────────────────────────────────────────────────────────────────
+
+export interface EmitErrorOptions {
+  readonly cause: string;
+  readonly message: string;
+  readonly turnId?: string;
+  readonly stack?: string;
+  /** Use `stream_error` instead of `error` (for transient provider failures). */
+  readonly streamError?: boolean;
+  /** Provider label (included when streamError=true). */
+  readonly provider?: string;
+  readonly status?: number;
+}
+
+/**
+ * I-8 entry point. Every error site MUST funnel through this helper
+ * so post-mortem analysis can distinguish *what kind of failure
+ * happened*. Callers pass `streamError: true` for transient
+ * provider-layer failures (classified separately so recovery can
+ * route on `stream_error` events).
+ */
+export function emitError(
+  log: EventLog,
+  subId: string,
+  options: EmitErrorOptions,
+): Event {
+  if (options.streamError) {
+    return log.emit({
+      id: subId,
+      msg: {
+        type: "stream_error",
+        payload: {
+          cause: options.cause,
+          message: options.message,
+          ...(options.provider !== undefined ? { provider: options.provider } : {}),
+          ...(options.status !== undefined ? { status: options.status } : {}),
+        },
+      },
+    });
+  }
+  return log.emit({
+    id: subId,
+    msg: {
+      type: "error",
+      payload: {
+        cause: options.cause,
+        message: options.message,
+        ...(options.turnId !== undefined ? { turnId: options.turnId } : {}),
+        ...(options.stack !== undefined ? { stack: options.stack } : {}),
+      },
+    },
+  });
+}
+
+/**
+ * I-8: warning helper. Warnings surface to telemetry but don't abort
+ * the turn. The existing known-warning sites (from the invariant
+ * matrix) include: MCP soft startup failure, mode-race abort, config
+ * reload request, stop-hook throw, reactive-compact throw, etc.
+ */
+export function emitWarning(
+  log: EventLog,
+  subId: string,
+  cause: string,
+  message: string,
+): Event {
+  return log.emit({
+    id: subId,
+    msg: {
+      type: "warning",
+      payload: { cause, message },
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Convenience: build a minimal LLMMessage → EventMsg projection.
+// Used by sidecars to shadow assistant/user messages into the event
+// log for replay.
+// ─────────────────────────────────────────────────────────────────────
+
+export function llmMessageToEvent(message: LLMMessage): EventMsg | null {
+  const contentString =
+    typeof message.content === "string"
+      ? message.content
+      : JSON.stringify(message.content);
+  if (message.role === "user") {
+    return {
+      type: "user_message",
+      payload: { message: contentString },
+    };
+  }
+  if (message.role === "assistant") {
+    return {
+      type: "agent_message",
+      payload: { message: contentString },
+    };
+  }
+  return null;
+}
+
+export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
+  return {
+    type: "token_count",
+    payload: {
+      promptTokens: usage.promptTokens,
+      completionTokens: usage.completionTokens,
+      totalTokens: usage.totalTokens,
+    },
+  };
+}

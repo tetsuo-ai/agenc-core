@@ -42,6 +42,17 @@ import {
 } from "../session/turn-context.js";
 import { runTurn } from "../session/run-turn.js";
 import { buildToolRegistry } from "../tool-registry.js";
+import { RolloutStore } from "../session/rollout-store.js";
+import {
+  SchemaMismatchError,
+  SessionLockedError,
+  getProjectDir,
+} from "../session/session-store.js";
+import { SidecarManager } from "../session/sidecar.js";
+import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
+import { ErrorLogSidecar } from "../session/error-log.js";
+import { CostSidecar } from "../session/cost.js";
+import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 
 const DEFAULT_MODEL = "grok-4-fast";
 
@@ -512,7 +523,111 @@ async function main(): Promise<number> {
     let sessionRef: Session | null = session;
     installSignalHandlers(() => sessionRef);
 
-    // Step 7: build TurnContext.
+    // Step 7a: mount RolloutStore (T6 — I-4 fsync + I-23 flock +
+    // I-49 schema version). On SessionLockedError, bail fast with
+    // the holder PID (another AgenC process owns the session).
+    // On SchemaMismatchError, bail with the migration message.
+    let rolloutStore: RolloutStore | null = null;
+    try {
+      rolloutStore = new RolloutStore({
+        cwd: workspaceRoot,
+        sessionId: conversationId,
+        agencVersion: "0.2.0",
+      });
+      rolloutStore.open({
+        sessionId: conversationId,
+        timestamp: new Date().toISOString(),
+        cwd: workspaceRoot,
+        originator: "agenc-cli",
+        agencVersion: "0.2.0",
+        model,
+        modelProvider: "grok",
+      });
+      session.mountRolloutStore(rolloutStore);
+      cleanup.push("rollout-store.close", () => rolloutStore?.close());
+    } catch (err) {
+      if (err instanceof SessionLockedError) {
+        process.stderr.write(`agenc: ${err.message}\n`);
+        return 1;
+      }
+      if (err instanceof SchemaMismatchError) {
+        process.stderr.write(`agenc: ${err.message}\n`);
+        return 1;
+      }
+      throw err;
+    }
+    throwIfAborted("RolloutStore");
+
+    // Step 7b: I-48 orphan-TurnStarted recovery. On resume, scan the
+    // rollout for unmatched TurnStarted events and emit synthetic
+    // TurnAborted{reason:'process_killed'} markers so downstream
+    // consumers see consistent turn lifecycles.
+    try {
+      const existingItems = rolloutStore.readAll();
+      if (existingItems.length > 0) {
+        const reconstruction = reconstructFromRollout(existingItems);
+        if (reconstruction.orphanedTurnIds.length > 0) {
+          for (const synth of reconstruction.synthesizedEvents) {
+            if (synth.type === "event_msg") {
+              session.emit(synth.payload);
+            } else {
+              rolloutStore.appendRollout(synth);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Orphan-recovery failures are best-effort. Surface as warning
+      // but keep going; resume still works with partial metadata.
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "orphan_recovery_failed",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        },
+      });
+    }
+
+    // Step 7c: mount sidecars (T6 §C).
+    const projectDir = getProjectDir(workspaceRoot);
+    const sidecarManager = new SidecarManager({
+      onDiagnostic: (d) => {
+        // Route sidecar diagnostics through the event log so they
+        // land in the rollout alongside other errors.
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: d.level,
+            payload: { cause: d.cause, message: d.message },
+          },
+        } as Parameters<typeof session.emit>[0]);
+      },
+    });
+    const fileHistory = new FileHistory({
+      projectDir,
+      onDiagnostic: (d) => sidecarManager.recordDiagnostic({
+        sidecar: "file-history",
+        level: "warning",
+        cause: d.cause,
+        message: d.message,
+        at: Date.now(),
+      }),
+    });
+    sidecarManager.register(new FileHistorySidecar({ fileHistory }));
+    sidecarManager.register(
+      new ErrorLogSidecar({
+        projectDir,
+        sessionId: conversationId,
+      }),
+    );
+    sidecarManager.register(new CostSidecar({ budgetTracker: session.budgetTracker }));
+    await sidecarManager.start(session.eventLog);
+    cleanup.push("sidecar-manager.stop", () => sidecarManager.stop());
+
+    // Step 8: build TurnContext.
     const subId = session.nextInternalSubId();
     const ctx = buildTurnContext({
       conversationId,
@@ -523,6 +638,24 @@ async function main(): Promise<number> {
       sessionConfiguration: initialState.sessionConfiguration,
     });
     throwIfAborted("buildTurnContext");
+
+    // Emit a session_meta event to stamp the session_configured record.
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "session_configured",
+        payload: {
+          sessionId: conversationId,
+          model,
+          modelProviderId: "grok",
+          cwd: workspaceRoot,
+          historyLogId: 0,
+          historyEntryCount: 0,
+          initialMessages: [],
+          rolloutPath: rolloutStore.rolloutPath,
+        },
+      },
+    });
 
     // Init complete — tear down init-phase signal handlers (Session
     // now owns its own) and drop the cleanup stack since the session

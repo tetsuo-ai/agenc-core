@@ -40,6 +40,14 @@ import { monotonicMs } from "../utils/monotonic.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import {
+  EventLog,
+  isDurableEvent,
+  type Event,
+  type EventMsg,
+  type SessionConfiguredEvent,
+} from "./event-log.js";
+import type { RolloutStore } from "./rollout-store.js";
 import type {
   AuthManager,
   Environment,
@@ -62,44 +70,10 @@ import type {
 /** Codex `ThreadId`. Conversation/thread unique identifier. */
 export type ThreadId = string;
 
-/** Codex `Event` (top-level event envelope). T6 expands. */
-export interface Event {
-  readonly id: string;
-  readonly msg: EventMsg;
-}
-
-/** Codex `EventMsg` (the full discriminated union). T6 wires real ~78 variants. */
-export type EventMsg =
-  | { readonly type: "session_configured"; readonly payload: SessionConfiguredEvent }
-  | { readonly type: "turn_started"; readonly payload: { readonly turnId: string; readonly startedAt: number } }
-  | { readonly type: "agent_message"; readonly payload: { readonly message: string } }
-  | { readonly type: "user_message"; readonly payload: { readonly message: string; readonly images?: ReadonlyArray<string> } }
-  | { readonly type: "agent_message_delta"; readonly payload: { readonly delta: string } }
-  | { readonly type: "token_count"; readonly payload: { readonly promptTokens?: number; readonly completionTokens?: number; readonly totalTokens?: number } }
-  | { readonly type: "tool_call_started"; readonly payload: { readonly callId: string; readonly toolName: string; readonly args: string } }
-  | { readonly type: "tool_call_completed"; readonly payload: { readonly callId: string; readonly result: string; readonly isError: boolean } }
-  | { readonly type: "context_compacted"; readonly payload: { readonly summary: string } }
-  | { readonly type: "thread_rolled_back"; readonly payload: { readonly numTurns: number } }
-  | { readonly type: "turn_complete"; readonly payload: { readonly turnId: string; readonly lastAgentMessage?: string } }
-  | { readonly type: "turn_aborted"; readonly payload: { readonly turnId: string; readonly reason: AbortReason } }
-  | { readonly type: "stream_error"; readonly payload: { readonly cause: string; readonly message: string } }
-  | { readonly type: "error"; readonly payload: { readonly message: string; readonly cause?: string } }
-  | { readonly type: "warning"; readonly payload: { readonly message: string; readonly cause?: string } }
-  | { readonly type: "deprecation_notice"; readonly payload: { readonly summary: string; readonly details?: string } };
-
-export interface SessionConfiguredEvent {
-  readonly sessionId: ThreadId;
-  readonly forkedFromId?: ThreadId;
-  readonly threadName?: string;
-  readonly model: string;
-  readonly modelProviderId: string;
-  readonly serviceTier?: string;
-  readonly cwd: string;
-  readonly historyLogId: number;
-  readonly historyEntryCount: number;
-  readonly initialMessages: ReadonlyArray<EventMsg>;
-  readonly rolloutPath?: string;
-}
+// Event / EventMsg / SessionConfiguredEvent are re-exported from
+// event-log.ts below. The T6 canonical shape lives there; session.ts
+// used to have a narrow local copy which caused type divergence.
+export type { Event, EventMsg, SessionConfiguredEvent };
 
 /** Codex `AgentStatus` FSM. T9 (subagents) expands. */
 export type AgentStatus =
@@ -473,8 +447,15 @@ export class Session {
   /** I-7: session-level AbortController; phases observe `signal.aborted`. */
   readonly abortController: AbortController = new AbortController();
 
-  /** I-27: monotonic sequence number for emitted events. Sync-incremented in `emit()`. */
-  private nextSeq = 0;
+  /** T6: in-process event bus (pub/sub). All emit() paths go through
+   *  here — EventLog assigns a monotonic seq (I-27) and fans out to
+   *  subscribed sidecars (I-43 per-sidecar isolation). */
+  readonly eventLog: EventLog = new EventLog();
+
+  /** T6: optional rollout-store for durable JSONL persistence.
+   *  When present, every emitted event is appended; durable events
+   *  (I-4) force an immediate fsync. */
+  rolloutStore: RolloutStore | null = null;
 
   /** Session creation wall-clock (monotonic ms; for telemetry). */
   readonly createdAtMs: number = monotonicMs();
@@ -523,19 +504,30 @@ export class Session {
   }
 
   /**
-   * Synchronously emit an event to the txEvent stream + assign monotonic
-   * sequence number per I-27. Subscribers (T6 sidecars) consume from
-   * `txEvent.stream()`.
+   * Synchronously emit an event. Routes through:
    *
-   * I-8: every error site MUST funnel through this (or the dedicated
-   * error-emission helpers).
+   *   1. EventLog (T6) — assigns monotonic seq (I-27), fans to
+   *      subscribed sidecars (I-43 per-sidecar isolation).
+   *   2. RolloutStore (T6, when wired) — appends to the JSONL
+   *      rollout; durable events (TurnComplete, TurnAborted, Error,
+   *      ContextCompacted) force fsync before returning (I-4).
+   *   3. txEvent (legacy) — kept for consumers that still use
+   *      `for await ... of session.txEvent.stream()`.
+   *
+   * I-8: every error site MUST funnel through this or the dedicated
+   * `emitError` helper (event-log.ts).
    */
   emit(event: Event): void {
-    // I-27: assign seq synchronously before any await. The seq is part
-    // of the event envelope so the reducer can assert FIFO.
-    const seq = ++this.nextSeq;
-    void seq; // currently used only for telemetry; T6 wires reducer assertion
-    this.txEvent.send(event);
+    // I-27: assign seq synchronously + fan to subscribers.
+    const stamped = this.eventLog.emit(event);
+    // T6: persist if store is wired. isDurableEvent triggers I-4 fsync.
+    if (this.rolloutStore) {
+      this.rolloutStore.append(stamped, {
+        durable: isDurableEvent(stamped),
+      });
+    }
+    // Legacy consumer path.
+    this.txEvent.send(stamped);
   }
 
   /**
@@ -543,6 +535,15 @@ export class Session {
    */
   sendEvent(subId: string, msg: EventMsg): void {
     this.emit({ id: subId, msg });
+  }
+
+  /**
+   * Attach a RolloutStore. Subsequent `emit()` calls will persist to
+   * the store. Replaces any previously-mounted store (the previous
+   * one should be `close()`d by the caller first).
+   */
+  mountRolloutStore(store: RolloutStore | null): void {
+    this.rolloutStore = store;
   }
 
   /**
@@ -627,6 +628,16 @@ export class Session {
     }
 
     this.mailbox.close();
+    // Flush + close the rollout store (I-4: final durable fsync).
+    if (this.rolloutStore) {
+      try {
+        this.rolloutStore.flushDurable();
+        this.rolloutStore.close();
+      } catch {
+        /* best-effort */
+      }
+    }
+    this.eventLog.close();
     this.txEvent.close();
     this.agentStatus.next({ status: "shutdown" });
     this.agentStatus.complete();
