@@ -225,6 +225,11 @@ export type TokenBudgetDecision =
  * is: phases take `(state, ctx, session, signal)` and return a
  * mutated-or-replaced TurnState. See `docs/plan/architecture.md` §Phase
  * Machine for the pure-phase-function invariant (I-89, proposed).
+ *
+ * Field-name mapping to openclaude `query.ts:315` destructure:
+ *   toolUseContext    → handled via TurnContext + streamingToolExecutor
+ *   tracking          → autoCompactTracking (renamed for clarity)
+ *   (all other 20 names map 1:1 — see openclaude-inventory.md §1)
  */
 export interface TurnState {
   // ── Phase 1 — prepare context (openclaude query.ts:268-459) ───────

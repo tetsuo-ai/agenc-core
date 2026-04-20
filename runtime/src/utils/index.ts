@@ -30,7 +30,7 @@ export {
   fnv1aHashHex,
 } from "./encoding.js";
 
-export { encodeStatusByte, queryWithFallback } from "./query.js";
+export { encodeStatusByte, queryWithFallback } from "./solana-query.js";
 
 export { ensureLazyModule } from "./lazy-import.js";
 

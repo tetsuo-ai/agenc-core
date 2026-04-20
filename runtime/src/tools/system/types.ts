@@ -38,6 +38,29 @@ export interface BashToolConfig {
   readonly unrestricted?: boolean;
   /** Enable shell mode when args is omitted (default: true). Set false to require command+args only. */
   readonly shellMode?: boolean;
+  /**
+   * T6 gap #119: optional observer that the bash tool calls before/after
+   * spawn so the session layer can emit `exec_command_begin` /
+   * `exec_command_end` EventMsg without the bash factory needing a
+   * Session handle.
+   */
+  readonly execObserver?: BashExecObserver;
+}
+
+/** T6 gap #119 — begin/end lifecycle observer for bash spawns. */
+export interface BashExecObserver {
+  readonly onBegin?: (begin: {
+    readonly callId: string;
+    readonly command: string;
+    readonly cwd: string;
+  }) => void;
+  readonly onEnd?: (end: {
+    readonly callId: string;
+    readonly exitCode: number;
+    readonly stdout?: string;
+    readonly stderr?: string;
+    readonly durationMs: number;
+  }) => void;
 }
 
 /**

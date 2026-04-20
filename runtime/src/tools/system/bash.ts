@@ -700,6 +700,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
   const logger: Logger = config?.logger ?? silentLogger;
   const lockCwd = config?.lockCwd ?? false;
   const shellModeEnabled = config?.shellMode !== false;
+  const execObserver = config?.execObserver;
 
   return {
     name: "system.bash",
@@ -938,6 +939,44 @@ export function createBashTool(config?: BashToolConfig): Tool {
       const useSpawnedWrapperMode =
         !useShellMode && SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
 
+      // T6 gap #119: exec_command_begin / _end lifecycle emit.
+      const execCallId = `bash-${randomBytes(4).toString("hex")}`;
+      const execObservedCommand = useShellMode
+        ? shellCommand
+        : [command, ...execArgs].join(" ");
+      execObserver?.onBegin?.({
+        callId: execCallId,
+        command: execObservedCommand,
+        cwd,
+      });
+      const emitEnd = (result: ToolResult): ToolResult => {
+        if (!execObserver?.onEnd) return result;
+        // Parse the exit/stdout/stderr out of the serialized result.
+        let exitCode = 0;
+        let stdout: string | undefined;
+        let stderr: string | undefined;
+        try {
+          const parsed = JSON.parse(result.content) as {
+            exitCode?: number | null;
+            stdout?: string;
+            stderr?: string;
+          };
+          exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : result.isError ? 1 : 0;
+          stdout = parsed.stdout;
+          stderr = parsed.stderr;
+        } catch {
+          exitCode = result.isError ? 1 : 0;
+        }
+        execObserver.onEnd!({
+          callId: execCallId,
+          exitCode,
+          ...(stdout !== undefined ? { stdout } : {}),
+          ...(stderr !== undefined ? { stderr } : {}),
+          durationMs: Date.now() - startTime,
+        });
+        return result;
+      };
+
       // Shell mode uses spawn + exit event to avoid hanging when backgrounded
       // children (e.g. `python3 ... &`) inherit stdout/stderr pipes.
       // execFile waits for pipes to close, not just child exit — spawn + exit
@@ -954,8 +993,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
         try {
           writeFileSync(scriptPath, shellCommand, { mode: 0o700 });
         } catch (writeErr) {
-          return errorResult(
-            `Failed to create temp script: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+          return emitEnd(
+            errorResult(
+              `Failed to create temp script: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+            ),
           );
         }
         return runSpawnedCommand({
@@ -972,7 +1013,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataArgs: execArgs,
           shellMode: true,
           cleanupPath: scriptPath,
-        });
+        }).then(emitEnd);
       }
 
       if (useSpawnedWrapperMode) {
@@ -989,11 +1030,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataCommand: command,
           metadataArgs: execArgs,
           shellMode: false,
-        });
+        }).then(emitEnd);
       }
 
       // Direct mode: use execFile (waits for pipes — safe since no backgrounding)
-      return new Promise<ToolResult>((resolve) => {
+      return new Promise<ToolResult>((outerResolve) => {
+        const resolve = (result: ToolResult): void => {
+          outerResolve(emitEnd(result));
+        };
         execFile(
           execCommand,
           execArgs,

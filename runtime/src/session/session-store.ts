@@ -437,6 +437,20 @@ export class SessionStore {
   private closed = false;
   private readonly diagnosticsBuffer: SessionStoreDiagnostic[] = [];
   private onDiagnostic?: (d: SessionStoreDiagnostic) => void;
+  /**
+   * I-38 async fsync retries currently in flight. Tracked so `close()`
+   * can wait for them to settle (or so tests can await completion).
+   * Each entry is the Promise returned by `scheduleFsyncRetry()`.
+   */
+  private readonly pendingFsyncRetries = new Set<Promise<void>>();
+  /**
+   * Test-only seam for the I-38 async fsync retry behaviour. Since
+   * `fsyncSync` is imported as a static ESM binding from `node:fs`,
+   * it cannot be monkey-patched at the module level in Vitest. Tests
+   * install a fake here via {@link setFsyncImplForTest} to simulate
+   * transient and persistent fsync failures.
+   */
+  private fsyncImpl: (fd: number) => void = fsyncSync;
 
   constructor(opts: SessionStoreOpts) {
     this.cwd = opts.cwd;
@@ -499,7 +513,18 @@ export class SessionStore {
           type: "session_meta",
           payload: sessionMeta,
         });
-        this.writeBytesWithFsync(line);
+        this.writeBytesWithFsync(line, (err) => {
+          // I-38: persistent fsync failure on the initial session_meta
+          // write — enter degraded mode so subsequent durable appends
+          // route through the ring buffer. The meta line itself is in
+          // the page cache so recovery readers will usually still see
+          // it; degraded mode just protects follow-on events.
+          if (isDegradedErrno(err)) {
+            this.degraded.enterDegraded(
+              `${(err as { code?: string }).code} during session_meta write`,
+            );
+          }
+        });
         this.fileSize = Buffer.byteLength(line, "utf8");
         this.lastSessionMeta = sessionMeta;
       }
@@ -535,6 +560,18 @@ export class SessionStore {
   /** Drain any buffered diagnostics. Used by tests. */
   drainBufferedDiagnostics(): SessionStoreDiagnostic[] {
     return this.diagnosticsBuffer.splice(0);
+  }
+
+  /**
+   * Test-only: swap the fsync implementation used by
+   * `writeBytesWithFsync` and its I-38 async retry. Kept as a named
+   * seam (rather than a module-level spy) because `node:fs` ESM
+   * namespace bindings are not spyable in Vitest.
+   *
+   * @internal
+   */
+  setFsyncImplForTest(impl: (fd: number) => void): void {
+    this.fsyncImpl = impl;
   }
 
   /**
@@ -685,16 +722,12 @@ export class SessionStore {
     this.pending = [];
     this.batchOpenedAtMs = null;
 
-    try {
-      if (durable) {
-        this.writeBytesWithFsync(lines);
-      } else {
-        this.writeBytesAppendOnly(lines);
-      }
-      this.fileSize += Buffer.byteLength(lines, "utf8");
-    } catch (err) {
+    const routeToDegraded = (err: unknown) => {
       if (isDegradedErrno(err)) {
-        // I-12: route to degraded mode.
+        // I-12 / I-38 path: route the batch items into the degraded
+        // ring buffer. UUID dedup protects against re-play duplicating
+        // any rows the kernel did eventually persist despite the
+        // fsync failure.
         this.degraded.enterDegraded(
           `${(err as { code?: string }).code} during append`,
         );
@@ -705,7 +738,24 @@ export class SessionStore {
           cause: "rollout_degraded",
           message: `${(err as { code?: string }).code ?? "unknown"} during append — ${toWrite.length} events queued in degraded ring buffer`,
         });
+        return true;
+      }
+      return false;
+    };
+
+    try {
+      if (durable) {
+        // I-38: async retry on fsync failure routes to degraded via
+        // the callback, so we don't block the event loop here.
+        this.writeBytesWithFsync(lines, (err) => {
+          routeToDegraded(err);
+        });
       } else {
+        this.writeBytesAppendOnly(lines);
+      }
+      this.fileSize += Buffer.byteLength(lines, "utf8");
+    } catch (err) {
+      if (!routeToDegraded(err)) {
         throw err;
       }
     }
@@ -719,46 +769,113 @@ export class SessionStore {
    * Write + fsync with I-38 retry. Used for durable events (I-4)
    * and for the session-meta header write.
    *
-   * I-38: on fsync failure, retry once after 100ms. If the retry
-   * also fails, emit a typed `error:'fsync_failed'` diagnostic (I-8
-   * via the listener) so operators see the durability loss, then
-   * rethrow so the caller (flushBatch) routes the batch into the
-   * degraded ring buffer.
+   * I-4: the initial `writeSync` + `fsyncSync` attempt is synchronous,
+   * so durable events are persisted to the kernel and flushed before
+   * returning in the happy path (fsync success).
+   *
+   * I-38: on fsync failure the retry is scheduled asynchronously
+   * ~100ms later via `setTimeout` instead of a busy-wait loop. The
+   * sync caller returns with the data already `writeSync`'d — it
+   * lives in the page cache and, on most transient fsync failures,
+   * will have been flushed by the kernel by the time the retry fires.
+   * If the async retry succeeds we emit `fsync_retry_succeeded`; if
+   * it fails we emit the typed `fsync_failed` diagnostic and invoke
+   * `onRetryFailure` so the caller can route the affected items to
+   * the degraded ring buffer (I-12 path).
+   *
+   * @param onRetryFailure Optional callback invoked from the async
+   *   retry branch when the second fsync attempt also fails. Used by
+   *   durable-flush callers to route items into the degraded store.
    */
-  private writeBytesWithFsync(content: string): void {
+  private writeBytesWithFsync(
+    content: string,
+    onRetryFailure?: (err: unknown) => void,
+  ): void {
     const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
     const fd = openSync(this.rolloutPath, flags, 0o600);
+    let firstErr: unknown;
     try {
       writeSync(fd, content);
       try {
-        fsyncSync(fd);
+        this.fsyncImpl(fd);
       } catch (err) {
-        // I-38: retry once after 100ms (sync sleep approximation).
-        const retryUntil = Date.now() + I4_FSYNC_RETRY_MS;
-        while (Date.now() < retryUntil) {
-          /* busy-wait — fsync is rare so acceptable */
-        }
+        firstErr = err;
+      }
+    } finally {
+      closeSync(fd);
+    }
+    if (firstErr !== undefined) {
+      // I-38: defer the retry via setTimeout so we don't pin the event
+      // loop. The data is already in the OS buffer from writeSync, so
+      // re-opening the file and calling fsyncSync on that fd flushes
+      // the same kernel-level buffers to disk.
+      this.scheduleFsyncRetry(firstErr, onRetryFailure);
+    }
+  }
+
+  /**
+   * Schedule the I-38 async retry. Kept separate so tests can stub
+   * the timer shape. Returns the promise tracking the retry so
+   * callers (and tests) can await it.
+   */
+  private scheduleFsyncRetry(
+    firstErr: unknown,
+    onRetryFailure?: (err: unknown) => void,
+  ): Promise<void> {
+    const retry = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        let retryErr: unknown;
         try {
-          fsyncSync(fd);
+          const flags = fsConstants.O_WRONLY | fsConstants.O_APPEND;
+          const rfd = openSync(this.rolloutPath, flags, 0o600);
+          try {
+            this.fsyncImpl(rfd);
+          } finally {
+            closeSync(rfd);
+          }
+        } catch (err2) {
+          retryErr = err2;
+        }
+        if (retryErr === undefined) {
           this.emitDiagnostic({
             at: Date.now(),
             level: "warning",
             cause: "fsync_retry_succeeded",
-            message: `fsync succeeded on retry after ${(err as { code?: string }).code ?? "unknown"}`,
+            message: `fsync succeeded on retry after ${(firstErr as { code?: string }).code ?? "unknown"}`,
           });
-        } catch (err2) {
-          // I-38 second failure — emit typed error + rethrow.
+        } else {
           this.emitDiagnostic({
             at: Date.now(),
             level: "error",
             cause: "fsync_failed",
-            message: `fsync retry failed: ${(err2 as { code?: string; message?: string }).code ?? ""} ${(err2 as { message?: string }).message ?? String(err2)}`,
+            message: `fsync retry failed: ${(retryErr as { code?: string; message?: string }).code ?? ""} ${(retryErr as { message?: string }).message ?? String(retryErr)}`,
           });
-          throw err2;
+          if (onRetryFailure) {
+            try {
+              onRetryFailure(retryErr);
+            } catch {
+              /* swallow — we're on the timer stack, caller owns its side effects */
+            }
+          }
         }
-      }
-    } finally {
-      closeSync(fd);
+        resolve();
+      }, I4_FSYNC_RETRY_MS).unref?.();
+    });
+    this.pendingFsyncRetries.add(retry);
+    void retry.then(() => {
+      this.pendingFsyncRetries.delete(retry);
+    });
+    return retry;
+  }
+
+  /**
+   * Test + close-coordination helper: await any in-flight I-38 async
+   * fsync retries. Kept internal; tests import via the class since
+   * there are no external consumers of the retry lifecycle today.
+   */
+  async awaitPendingFsyncRetries(): Promise<void> {
+    while (this.pendingFsyncRetries.size > 0) {
+      await Promise.all(Array.from(this.pendingFsyncRetries));
     }
   }
 
@@ -779,20 +896,24 @@ export class SessionStore {
       type: "session_meta",
       payload: this.lastSessionMeta,
     };
-    try {
-      const line = serializeRolloutItem(item);
-      this.writeBytesWithFsync(line);
-      this.fileSize += Buffer.byteLength(line, "utf8");
-    } catch (err) {
-      // Degraded path — queue for retry but don't bubble.
+    const routeToDegraded = (err: unknown) => {
       if (isDegradedErrno(err)) {
         this.degraded.enterDegraded(
           `${(err as { code?: string }).code} during metadata re-append`,
         );
         this.degraded.append(item);
-      } else {
-        throw err;
+        return true;
       }
+      return false;
+    };
+    try {
+      const line = serializeRolloutItem(item);
+      this.writeBytesWithFsync(line, (err) => {
+        routeToDegraded(err);
+      });
+      this.fileSize += Buffer.byteLength(line, "utf8");
+    } catch (err) {
+      if (!routeToDegraded(err)) throw err;
     }
   }
 
@@ -805,8 +926,20 @@ export class SessionStore {
   ): Promise<boolean> {
     try {
       const lines = events.map(serializeRolloutItem).join("");
-      this.writeBytesWithFsync(lines);
+      let retryFailure: unknown;
+      this.writeBytesWithFsync(lines, (err) => {
+        retryFailure = err;
+      });
+      // writeSync succeeded; the bytes are at least in the page cache,
+      // so bump fileSize regardless of fsync retry outcome.
       this.fileSize += Buffer.byteLength(lines, "utf8");
+      // If the sync fsync failed and scheduled an async retry, wait
+      // for it to settle so we accurately report drain success/failure
+      // back to the DegradedStore.
+      await this.awaitPendingFsyncRetries();
+      if (retryFailure !== undefined) {
+        return !isDegradedErrno(retryFailure);
+      }
       return true;
     } catch (err) {
       return !isDegradedErrno(err);

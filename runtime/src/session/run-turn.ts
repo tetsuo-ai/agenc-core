@@ -49,7 +49,7 @@ import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { prepareContext } from "../phases/prepare-context.js";
 import { streamModel, StreamModelError } from "../phases/stream-model.js";
 import type { Session } from "./session.js";
-import type { TurnContext } from "./turn-context.js";
+import { toTurnContextItem, type TurnContext } from "./turn-context.js";
 import {
   buildInitialTurnState,
   resetIterationFields,
@@ -502,8 +502,68 @@ export async function* runTurn(
   userMessage: string,
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
+  // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
+  // invocation must flank its work with a `turn_started` +
+  // `turn_context` pair and either a matching `turn_complete` (happy
+  // path) or `turn_aborted` (cancel/error path) so durable rollouts
+  // see closed turn boundaries. Without these, I-48 orphan-TurnStarted
+  // recovery in rollout-reconstruction would treat every clean turn
+  // as a `process_killed` abort.
+  const turnStartedAt = Date.now();
+  const emitTurnStarted = (): void => {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "turn_started",
+        payload: {
+          turnId: ctx.subId,
+          startedAt: turnStartedAt,
+          ...(ctx.modelInfo.contextWindow !== undefined
+            ? { modelContextWindow: ctx.modelInfo.contextWindow }
+            : {}),
+          collaborationModeKind: ctx.collaborationMode.model,
+        },
+      },
+    });
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "turn_context",
+        payload: toTurnContextItem(ctx),
+      },
+    });
+  };
+  const emitTurnComplete = (content: string): void => {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "turn_complete",
+        payload: {
+          turnId: ctx.subId,
+          lastAgentMessage: content,
+          completedAt: Date.now(),
+          durationMs: Date.now() - turnStartedAt,
+        },
+      },
+    });
+  };
+  const emitTurnAborted = (reason: string): void => {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: ctx.subId,
+          reason,
+        },
+      },
+    });
+  };
+
   // Codex: "if input.is_empty() && !sess.has_pending_input().await { return None }"
   if (userMessage.trim().length === 0) {
+    emitTurnStarted();
+    emitTurnComplete("");
     const terminal: Terminal = { reason: "completed" };
     yield {
       type: "turn_complete",
@@ -513,6 +573,20 @@ export async function* runTurn(
     };
     return terminal;
   }
+
+  emitTurnStarted();
+
+  // T6 gap #119: emit the seed user message exactly once per runTurn
+  // invocation. Continuation turns (needsFollowUp=true) stay inside the
+  // same generator so this fires once per user-initiated turn, not per
+  // phase iteration.
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "user_message",
+      payload: { message: userMessage },
+    },
+  });
 
   // Codex: run_pre_sampling_compact before any phase runs. Returns
   // whether compaction happened; if yes and we had a prewarmed
@@ -532,6 +606,7 @@ export async function* runTurn(
       },
     });
     // Codex: "return None" on pre-compact failure.
+    emitTurnComplete("");
     const terminal: Terminal = { reason: "completed" };
     yield {
       type: "turn_complete",
@@ -565,6 +640,11 @@ export async function* runTurn(
   while (true) {
     if (signal.aborted) {
       await drainInFlight(state, ctx, session);
+      // T6 gap #119: cancellation path gets `turn_aborted` so rollouts
+      // close the turn boundary with the actual reason.
+      emitTurnAborted(
+        String((signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled"),
+      );
       const terminal: Terminal = { reason: "cancelled" };
       yield {
         type: "turn_complete",
@@ -579,6 +659,7 @@ export async function* runTurn(
       (ctx.config as unknown as { maxTurns?: number }).maxTurns ?? 100;
     if (state.turnCount > maxTurns) {
       await drainInFlight(state, ctx, session);
+      emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "max_turns" };
       yield {
         type: "turn_complete",
@@ -593,6 +674,7 @@ export async function* runTurn(
     // the next turn's pre-sampling compact considers the new model.
     if (session.pendingProviderSwitch) {
       await drainInFlight(state, ctx, session);
+      emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed" };
       yield {
         type: "turn_complete",
@@ -621,6 +703,15 @@ export async function* runTurn(
         (sme?.cause instanceof Error ? sme.cause : undefined) ??
         (error instanceof Error ? error : new Error(String(error)));
       if (signal.aborted) {
+        // T6 gap #119: cancelled-with-error still gets `turn_aborted`
+        // so rollout reconstruction sees a closed turn boundary.
+        emitTurnAborted(
+          String(
+            (signal as AbortSignal & { reason?: unknown }).reason ??
+              underlying.message ??
+              "cancelled",
+          ),
+        );
         const terminal: Terminal = { reason: "cancelled" };
         yield {
           type: "turn_complete",
@@ -631,6 +722,9 @@ export async function* runTurn(
         };
         return terminal;
       }
+      // T6 gap #119: error-terminated turn still completes the turn
+      // boundary for rollout reducers.
+      emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed", error: underlying };
       yield {
         type: "turn_complete",
@@ -663,6 +757,9 @@ export async function* runTurn(
         continue;
       }
       const stopReason = assistantText.length === 0 ? "empty_response" : "completed";
+      // T6 gap #119: canonical happy-path `turn_complete` so rollouts
+      // record the close of this turn's lifecycle.
+      emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed" };
       yield {
         type: "turn_complete",
@@ -704,6 +801,7 @@ export async function* runTurn(
     // today takes the cautious path and terminates. T8 wires the
     // token_budget_continuation recovery that re-enters prepare.
     if (state.pendingBudgetDecision?.kind === "stop") {
+      emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed" };
       yield {
         type: "turn_complete",

@@ -54,10 +54,35 @@ const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000;
 /** I-76: upper bound on a single MCP tool-call result, 5MB. */
 export const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
 
+/**
+ * T6 gap #119: optional observer hooks for `mcp_tool_call_begin` /
+ * `mcp_tool_call_end` EventMsg emissions. The bridge factory does not
+ * own a `Session`, so callers pass these hooks in — the manager wires
+ * them to `session.emit(...)` with `session.nextInternalSubId()` for
+ * the event id. Missing hooks = no emission (test fixtures stay silent).
+ */
+export interface MCPCallObserver {
+  onBegin?: (begin: {
+    readonly callId: string;
+    readonly server: string;
+    readonly toolName: string;
+    readonly args: string;
+  }) => void;
+  onEnd?: (end: {
+    readonly callId: string;
+    readonly server: string;
+    readonly toolName: string;
+    readonly result: string;
+    readonly isError: boolean;
+    readonly durationMs: number;
+  }) => void;
+}
+
 interface ToolBridgeOptions {
   listToolsTimeoutMs?: number;
   callToolTimeoutMs?: number;
   serverConfig?: MCPToolCatalogPolicyConfig;
+  callObserver?: MCPCallObserver;
 }
 
 interface MCPToolDescriptor {
@@ -92,6 +117,19 @@ function truncateUtf8(text: string, maxBytes: number): string {
   let end = maxBytes;
   while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
   return buffer.subarray(0, end).toString("utf8");
+}
+
+function randomCallId(): string {
+  // Non-crypto — just needs to be unique within a session for tracing.
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function safeStringifyArgs(args: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(args);
+  } catch {
+    return "{}";
+  }
 }
 
 async function withRPCDeadline<T>(
@@ -192,6 +230,21 @@ export async function createToolBridge(
           };
         }
 
+        // T6 gap #119: notify observer of call start. The observer is
+        // responsible for emitting `mcp_tool_call_begin`; bridge stays
+        // session-agnostic. `callId` is synthesized here because the
+        // MCP bridge is not given one by the executor wrapper.
+        const callId = `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`;
+        const callArgs = safeStringifyArgs(args);
+        const observer = options.callObserver;
+        observer?.onBegin?.({
+          callId,
+          server: serverName,
+          toolName: mcpTool.name,
+          args: callArgs,
+        });
+        const startedAtMs = Date.now();
+
         try {
           const result = await withRPCDeadline<MCPCallToolResponse>(
             `MCP tool "${mcpTool.name}" callTool`,
@@ -224,13 +277,31 @@ export async function createToolBridge(
             );
           }
 
+          const isError = result.isError === true;
+          observer?.onEnd?.({
+            callId,
+            server: serverName,
+            toolName: mcpTool.name,
+            result: content,
+            isError,
+            durationMs: Date.now() - startedAtMs,
+          });
           return {
             content,
-            isError: result.isError === true,
+            isError,
           };
         } catch (error) {
+          const errMessage = `MCP tool "${mcpTool.name}" failed: ${(error as Error).message}`;
+          observer?.onEnd?.({
+            callId,
+            server: serverName,
+            toolName: mcpTool.name,
+            result: errMessage,
+            isError: true,
+            durationMs: Date.now() - startedAtMs,
+          });
           return {
-            content: `MCP tool "${mcpTool.name}" failed: ${(error as Error).message}`,
+            content: errMessage,
             isError: true,
           };
         }

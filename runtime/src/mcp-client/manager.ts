@@ -18,7 +18,10 @@ import { silentLogger } from "../utils/logger.js";
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tool-bridge.js";
 import { ResilientMCPBridge } from "./resilient-bridge.js";
-import type { MCPToolCatalogPolicyConfig } from "./tool-bridge.js";
+import type {
+  MCPCallObserver,
+  MCPToolCatalogPolicyConfig,
+} from "./tool-bridge.js";
 import {
   createResourceBridge,
   type MCPResourceBridge,
@@ -84,10 +87,27 @@ export class MCPManager {
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
   private readonly promptBridges: Map<string, MCPPromptBridge> = new Map();
+  /**
+   * T6 gap #119: optional observer wired by the session layer so MCP
+   * tool calls emit `mcp_tool_call_begin` / `mcp_tool_call_end` events
+   * into the session event log. Manager stays session-free; the session
+   * owner sets this to a shim that calls `session.emit(...)`.
+   */
+  private callObserver: MCPCallObserver | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
     this.logger = logger;
+  }
+
+  /**
+   * T6 gap #119: install the call-observer that the bridge factory
+   * passes to each per-tool `execute()` wrapper. Safe to call before or
+   * after `start()`; observer applies to bridges created after the
+   * call.
+   */
+  setCallObserver(observer: MCPCallObserver | undefined): void {
+    this.callObserver = observer;
   }
 
   /**
@@ -414,6 +434,9 @@ export class MCPManager {
           listToolsTimeoutMs: config.timeout,
           callToolTimeoutMs: config.timeout,
           serverConfig: toToolCatalogPolicyConfig(config),
+          ...(this.callObserver !== undefined
+            ? { callObserver: this.callObserver }
+            : {}),
         },
       );
       // I-73: reject MCP tools whose namespaced names collide with

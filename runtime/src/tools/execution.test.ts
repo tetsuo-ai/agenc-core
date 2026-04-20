@@ -183,6 +183,47 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
     );
     expect(result.allow).toBe(true);
   });
+
+  test("T6 gap #119: emits exec_approval_request + request_permissions when eventLog supplied", async () => {
+    const ctl = new AbortController();
+    const log = new EventLog();
+    const recorded: Array<{ type: string; payload: unknown }> = [];
+    log.subscribe((e) => {
+      recorded.push({ type: e.msg.type, payload: e.msg.payload });
+    });
+
+    const tool = {
+      name: "system.bash",
+      description: "runs a shell command",
+      inputSchema: {},
+      execute: async () => ({ content: "" }),
+    } as unknown as Tool;
+
+    await requestApprovalWithAbortRace(
+      async () => ({ behavior: "allow", decisionAtTurnId: "t1" }),
+      {
+        tool,
+        args: { command: "ls -la" },
+        currentTurnId: "t1",
+        signal: ctl.signal,
+        eventLog: log,
+        subId: "sub-1",
+        callId: "call-xyz",
+      },
+    );
+
+    const approval = recorded.find((r) => r.type === "exec_approval_request");
+    expect(approval).toBeDefined();
+    const ap = approval!.payload as { callId: string; command: string };
+    expect(ap.callId).toBe("call-xyz");
+    expect(ap.command).toBe("ls -la");
+
+    const perms = recorded.find((r) => r.type === "request_permissions");
+    expect(perms).toBeDefined();
+    const pp = perms!.payload as { toolName: string; permissions: string[] };
+    expect(pp.toolName).toBe("system.bash");
+    expect(pp.permissions.length).toBeGreaterThan(0);
+  });
 });
 
 describe("runToolUse end-to-end", () => {

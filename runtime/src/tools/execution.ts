@@ -295,11 +295,58 @@ export async function requestApprovalWithAbortRace(
     readonly args: Record<string, unknown>;
     readonly currentTurnId: string;
     readonly signal: AbortSignal;
+    /**
+     * T6 gap #119: optional EventLog + subId for `exec_approval_request`
+     * emission. This is the single gate every tool-call approval flows
+     * through, so emitting here gives rollouts a durable record of who
+     * asked for approval on what and why.
+     */
+    readonly eventLog?: EventLog;
+    readonly subId?: string;
+    readonly callId?: string;
+    /** Human-readable reason shown in the approval modal, if any. */
+    readonly approvalReason?: string;
   },
 ): Promise<{ readonly allow: true } | { readonly allow: false; readonly cause: string }> {
   // I-21 fast-path: already aborted.
   if (opts.signal.aborted) {
     return { allow: false, cause: "aborted_before_approval" };
+  }
+
+  // T6 gap #119: emit `exec_approval_request` as soon as we're actually
+  // racing the modal — this covers the real "we asked the user" moment.
+  // `request_permissions` overlaps with this flow (same approval gate),
+  // so we also emit a `request_permissions` view naming the tool +
+  // declared permission scope. If a future permission model grows a
+  // distinct surface, the new call sites should split from this.
+  if (opts.eventLog) {
+    const subId = opts.subId ?? opts.callId ?? "approval";
+    const callId = opts.callId ?? opts.subId ?? "approval";
+    const commandPreview = extractCommandPreview(opts.tool, opts.args);
+    opts.eventLog.emit({
+      id: subId,
+      msg: {
+        type: "exec_approval_request",
+        payload: {
+          callId,
+          command: commandPreview,
+          ...(opts.approvalReason !== undefined
+            ? { reason: opts.approvalReason }
+            : {}),
+        },
+      },
+    });
+    opts.eventLog.emit({
+      id: subId,
+      msg: {
+        type: "request_permissions",
+        payload: {
+          callId,
+          toolName: opts.tool.name,
+          permissions: deriveToolPermissions(opts.tool),
+        },
+      },
+    });
   }
 
   // Race the modal against the abort signal — signal wins even if the
@@ -444,6 +491,9 @@ export async function runToolUse(
       args: parsedArgs,
       currentTurnId,
       signal: effectiveSignal,
+      ...(opts.eventLog !== undefined ? { eventLog: opts.eventLog } : {}),
+      subId,
+      callId: invocation.callId,
     });
     if (!decision.allow) {
       const cause = decision.cause;
@@ -547,6 +597,42 @@ function errorOutput(opts: {
     isError: true,
     durationMs: opts.elapsedMs,
   });
+}
+
+/**
+ * T6 gap #119: best-effort preview for the `command` field on
+ * `exec_approval_request`. Tools vary — bash stores the command in
+ * `args.command`, others may use `args.cmd` / `args.path`. We fall
+ * back to the tool name when nothing matches so the event stays valid.
+ */
+function extractCommandPreview(
+  tool: Tool,
+  args: Record<string, unknown>,
+): string {
+  const candidates = ["command", "cmd", "path", "url"];
+  for (const key of candidates) {
+    const value = args[key];
+    if (typeof value === "string" && value.length > 0) {
+      return value.slice(0, 256);
+    }
+  }
+  return tool.name;
+}
+
+/**
+ * T6 gap #119: surface the tool's declared permissions if the Tool
+ * shape exposes them. Today the Tool interface does not include a
+ * structured permission field, so we fall back to `["execute"]` — a
+ * single coarse permission covering the actual call. When T11 lands
+ * the full permission model this should switch to the real scopes.
+ */
+function deriveToolPermissions(tool: Tool): ReadonlyArray<string> {
+  const declared = (tool as unknown as { readonly permissions?: unknown })
+    .permissions;
+  if (Array.isArray(declared) && declared.every((p) => typeof p === "string")) {
+    return declared as ReadonlyArray<string>;
+  }
+  return ["execute"];
 }
 
 export { toolNameDisplay };

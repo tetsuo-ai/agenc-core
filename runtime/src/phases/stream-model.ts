@@ -258,6 +258,24 @@ export async function streamModel(
     });
   }
 
+  // T6 gap #119: emit a `token_count` event with the provider-reported
+  // LLMUsage so durable rollouts capture per-stream token accounting.
+  // `LLMUsage` is always present on `LLMResponse`; emitting even when
+  // all fields are zero gives reducers a consistent signal.
+  if (response.usage) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: response.usage.promptTokens,
+          completionTokens: response.usage.completionTokens,
+          totalTokens: response.usage.totalTokens,
+        },
+      },
+    });
+  }
+
   state.messages.push(llmMessageFromResponse(response));
 
   // I-22: boundary check in case the provider tallied usage only on

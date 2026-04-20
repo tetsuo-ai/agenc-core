@@ -1457,3 +1457,34 @@ describe("isCommandAllowed", () => {
     expect(result.allowed).toBe(true);
   });
 });
+
+describe("system.bash — T6 gap #119 exec lifecycle observer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStatSync.mockReturnValue({ isDirectory: () => true } as any);
+  });
+
+  it("fires execObserver.onBegin + onEnd around a direct-mode call", async () => {
+    const begins: Array<{ command: string; cwd: string }> = [];
+    const ends: Array<{ exitCode: number }> = [];
+    const tool = createBashTool({
+      cwd: "/tmp",
+      execObserver: {
+        onBegin: (b) => begins.push({ command: b.command, cwd: b.cwd }),
+        onEnd: (e) => ends.push({ exitCode: e.exitCode }),
+      },
+    });
+    mockExecFile.mockImplementation((_cmd, _args, _opts, callback) => {
+      (callback as Function)(null, "hi\n", "");
+      return {} as ReturnType<typeof execFile>;
+    });
+
+    const result = await tool.execute({ command: "echo", args: ["hi"] });
+    expect(result.isError).toBeUndefined();
+    expect(begins).toHaveLength(1);
+    expect(begins[0]!.command).toBe("echo hi");
+    expect(begins[0]!.cwd).toBe("/tmp");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]!.exitCode).toBe(0);
+  });
+});

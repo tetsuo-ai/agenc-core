@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fsyncSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
 import {
+  I4_FSYNC_RETRY_MS,
   readIndexSnapshot,
   SessionLock,
   SessionLockedError,
@@ -188,6 +189,126 @@ describe("session-store", () => {
     const content = readFileSync(store.rolloutPath, "utf8");
     const metaCount = (content.match(/"type":"session_meta"/g) ?? []).length;
     expect(metaCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("I-38 fsync retry: first attempt fails, async retry succeeds without busy-wait", async () => {
+    const store = new SessionStore({
+      cwd: "/home/test-fsync-retry-ok",
+      sessionId: "sess-fsync-ok",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-fsync-ok",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-fsync-retry-ok",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    const diagnostics: Array<{ cause: string; level: string }> = [];
+    store.setDiagnosticListener((d) => {
+      diagnostics.push({ cause: d.cause, level: d.level });
+    });
+
+    // Fail the next fsync call exactly once, then let the real impl run.
+    let callsSeen = 0;
+    store.setFsyncImplForTest((fd: number) => {
+      callsSeen += 1;
+      if (callsSeen === 1) {
+        const err = new Error("simulated transient fsync failure") as NodeJS.ErrnoException;
+        err.code = "EIO";
+        throw err;
+      }
+      return fsyncSync(fd);
+    });
+
+    try {
+      const start = Date.now();
+      store.append(
+        {
+          id: "durable-1",
+          seq: 1,
+          msg: { type: "turn_complete", payload: { turnId: "t1" } },
+        },
+        { durable: true },
+      );
+      const syncElapsed = Date.now() - start;
+
+      // Assert no busy-wait: the sync append path must return quickly
+      // (well under the 100ms I-38 retry window).
+      expect(syncElapsed).toBeLessThan(I4_FSYNC_RETRY_MS);
+
+      // Wait for the deferred async retry to settle.
+      await (store as unknown as {
+        awaitPendingFsyncRetries(): Promise<void>;
+      }).awaitPendingFsyncRetries();
+
+      expect(callsSeen).toBeGreaterThanOrEqual(2);
+      expect(diagnostics.some((d) => d.cause === "fsync_retry_succeeded")).toBe(true);
+      expect(diagnostics.some((d) => d.cause === "fsync_failed")).toBe(false);
+      expect(store.isDegraded).toBe(false);
+    } finally {
+      store.setFsyncImplForTest(fsyncSync);
+      store.close();
+    }
+  });
+
+  test("I-38 fsync retry: both attempts fail — emits fsync_failed + routes to degraded", async () => {
+    const store = new SessionStore({
+      cwd: "/home/test-fsync-retry-fail",
+      sessionId: "sess-fsync-fail",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-fsync-fail",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-fsync-retry-fail",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    const diagnostics: Array<{ cause: string; level: string }> = [];
+    store.setDiagnosticListener((d) => {
+      diagnostics.push({ cause: d.cause, level: d.level });
+    });
+
+    // Fail every fsync on the rollout path — first attempt and
+    // deferred retry must both trip the mock.
+    store.setFsyncImplForTest(() => {
+      const err = new Error("simulated persistent fsync failure") as NodeJS.ErrnoException;
+      err.code = "EIO";
+      throw err;
+    });
+
+    try {
+      store.append(
+        {
+          id: "durable-2",
+          seq: 1,
+          msg: { type: "turn_complete", payload: { turnId: "t2" } },
+        },
+        { durable: true },
+      );
+
+      // Wait for the deferred async retry to run + fail.
+      await (store as unknown as {
+        awaitPendingFsyncRetries(): Promise<void>;
+      }).awaitPendingFsyncRetries();
+
+      const fsyncFailed = diagnostics.find((d) => d.cause === "fsync_failed");
+      expect(fsyncFailed).toBeDefined();
+      expect(fsyncFailed?.level).toBe("error");
+
+      // Retry failure must have routed the batch into the degraded
+      // ring buffer (I-12 / I-38).
+      expect(store.isDegraded).toBe(true);
+      expect(diagnostics.some((d) => d.cause === "rollout_degraded")).toBe(true);
+    } finally {
+      // Restore so the close() path + index-snapshot fsync run the
+      // real impl and don't trip the mock.
+      store.setFsyncImplForTest(fsyncSync);
+      store.close();
+    }
   });
 
   test("I-24 truncateCorruptTail removes partial trailing line", () => {

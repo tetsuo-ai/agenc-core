@@ -209,9 +209,31 @@ export async function runReactiveCompact(
   }
 
   // Success path — rewire the state and signal the run-turn loop.
+  const preCompactCount = opts.state.messagesForQuery.length;
+  const postCompactCount = result.compactedMessages.length;
   opts.state.messagesForQuery = [...result.compactedMessages];
   opts.state.hasAttemptedReactiveCompact = true;
   opts.state.transition = { reason: "reactive_compact_retry" };
+
+  // T6 gap #119: emit `thread_rolled_back` here — reactive-compact
+  // swaps `messagesForQuery` with a shorter history, which is the
+  // closest live semantic to "thread rollback" in the current runtime.
+  // T13/T-recovery will add the true rollback-ladder path; when that
+  // lands it should emit here too rather than inventing a new variant.
+  // Emitting through `session.eventLog` (same pattern used by
+  // `emitWarning` a few lines above) keeps the existing `mkSession`
+  // fixtures working — they don't need to mock `session.emit`.
+  const numTurns = Math.max(0, preCompactCount - postCompactCount);
+  opts.session.eventLog.emit({
+    id: opts.session.nextInternalSubId(),
+    msg: {
+      type: "thread_rolled_back",
+      payload: {
+        numTurns,
+        reason: "reactive_compact",
+      },
+    },
+  });
   return { kind: "compacted", result };
 }
 
