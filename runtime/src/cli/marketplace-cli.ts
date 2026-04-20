@@ -62,6 +62,11 @@ import {
   createVoteProposalTool,
 } from "../tools/agenc/mutation-tools.js";
 import { createCreateTaskTool } from "../tools/agenc/tools.js";
+import {
+  loadVerifiedTaskAttestationTrustKeysFromEnv,
+  verifiedTaskTrustKeyFromPublicKey,
+  type VerifiedTaskAttestationTrustKey,
+} from "../marketplace/verified-task-attestation.js";
 import type { ToolResult } from "../tools/types.js";
 import { silentLogger } from "../utils/logger.js";
 import type { BaseCliOptions, CliRuntimeContext, CliStatusCode } from "./types.js";
@@ -92,6 +97,9 @@ export interface MarketTaskCreateOptions extends BaseCliOptions {
   constraints?: unknown;
   attachments?: unknown;
   jobSpecStoreDir?: string;
+  verifiedTaskAttestation?: unknown;
+  verifiedTaskAttestationPublicKey?: string;
+  verifiedTaskAttestationKeyId?: string;
 }
 
 export interface MarketTaskDetailOptions extends BaseCliOptions {
@@ -309,6 +317,21 @@ function parseToolPayload(result: ToolResult): unknown {
   } catch {
     return { raw: result.content };
   }
+}
+
+function buildVerifiedTaskTrustKeys(
+  options: MarketTaskCreateOptions,
+): readonly VerifiedTaskAttestationTrustKey[] {
+  const keys = [...loadVerifiedTaskAttestationTrustKeysFromEnv()];
+  if (options.verifiedTaskAttestationPublicKey) {
+    keys.push(
+      verifiedTaskTrustKeyFromPublicKey(
+        options.verifiedTaskAttestationPublicKey,
+        options.verifiedTaskAttestationKeyId,
+      ),
+    );
+  }
+  return keys;
 }
 
 function requireRpcUrl(
@@ -1073,8 +1096,16 @@ export async function runMarketTaskCreateCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
+    const shouldVerifyTaskAttestation =
+      options.verifiedTaskAttestation !== undefined ||
+      options.verifiedTaskAttestationPublicKey !== undefined ||
+      options.verifiedTaskAttestationKeyId !== undefined;
+    const verifiedTaskTrustKeys = shouldVerifyTaskAttestation
+      ? buildVerifiedTaskTrustKeys(options)
+      : [];
     const createTaskOptions = {
       ...(options.jobSpecStoreDir ? { jobSpecStoreDir: options.jobSpecStoreDir } : {}),
+      ...(verifiedTaskTrustKeys.length > 0 ? { verifiedTaskTrustKeys } : {}),
       allowRawTaskCreation: true,
     };
     const tool = createCreateTaskTool(program, silentLogger, createTaskOptions);
@@ -1097,6 +1128,7 @@ export async function runMarketTaskCreateCommand(
       deliverables: options.deliverables,
       constraints: options.constraints,
       attachments: options.attachments,
+      verifiedTaskAttestation: options.verifiedTaskAttestation,
     });
     if (result.isError) {
       context.error({

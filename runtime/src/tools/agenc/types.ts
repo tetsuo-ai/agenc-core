@@ -23,6 +23,9 @@ export interface SerializedTaskJobSpec {
   jobSpecPath?: string | null;
   jobSpecTaskLinkPath?: string | null;
   transactionSignature?: string | null;
+  verifiedTaskHash?: string | null;
+  verifiedTaskUri?: string | null;
+  verifiedTaskAttestation?: unknown;
   integrity?: {
     algorithm: string;
     canonicalization: string;

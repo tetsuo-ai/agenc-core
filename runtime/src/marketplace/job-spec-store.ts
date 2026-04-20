@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  assertVerifiedTaskAttestation,
+  normalizeVerifiedTaskAttestation,
+  type VerifiedTaskAttestation,
+  type VerifiedTaskAttestationTrustKey,
+} from "./verified-task-attestation.js";
 
 export type MarketplaceJobSpecJsonPrimitive = string | number | boolean | null;
 export type MarketplaceJobSpecJsonObject = {
@@ -81,6 +87,7 @@ export interface MarketplaceJobSpecInput {
 export interface MarketplaceJobSpecStoreOptions {
   readonly rootDir?: string;
   readonly allowRemote?: boolean;
+  readonly verifiedTaskTrustKeys?: readonly VerifiedTaskAttestationTrustKey[];
 }
 
 export class MarketplaceJobSpecNotFoundError extends Error {
@@ -123,6 +130,7 @@ export interface MarketplaceJobSpecTaskLinkInput {
   readonly taskPda: string;
   readonly taskId: string;
   readonly transactionSignature: string;
+  readonly verifiedTaskAttestation?: unknown;
 }
 
 export interface MarketplaceJobSpecTaskLink {
@@ -133,6 +141,7 @@ export interface MarketplaceJobSpecTaskLink {
   readonly jobSpecHash: string;
   readonly jobSpecUri: string;
   readonly transactionSignature: string;
+  readonly verifiedTaskAttestation?: VerifiedTaskAttestation;
 }
 
 export interface MarketplaceJobSpecReference {
@@ -161,6 +170,7 @@ export interface ResolvedMarketplaceJobSpec {
   readonly envelope: MarketplaceJobSpecEnvelope;
   readonly payload: MarketplaceJobSpecPayload;
   readonly link: MarketplaceJobSpecTaskLink;
+  readonly verifiedTaskAttestation?: VerifiedTaskAttestation;
 }
 
 export interface MarketplaceJobSpecTaskPointer {
@@ -171,6 +181,7 @@ export interface MarketplaceJobSpecTaskPointer {
   readonly jobSpecTaskLinkPath: string;
   readonly transactionSignature: string;
   readonly link: MarketplaceJobSpecTaskLink;
+  readonly verifiedTaskAttestation?: VerifiedTaskAttestation;
 }
 
 export function getDefaultMarketplaceJobSpecStoreDir(): string {
@@ -240,6 +251,14 @@ export async function linkMarketplaceJobSpecToTask(
   if (!TASK_ID_RE.test(input.taskId)) {
     throw new Error("taskId must be a 32-byte hex string");
   }
+  const verifiedTaskAttestation =
+    input.verifiedTaskAttestation === undefined
+      ? undefined
+      : assertVerifiedTaskAttestation({
+          attestation: input.verifiedTaskAttestation,
+          expectedJobSpecHash: input.hash,
+          trustedKeys: options.verifiedTaskTrustKeys ?? [],
+        });
 
   const link: MarketplaceJobSpecTaskLink = {
     schemaVersion: JOB_SPEC_SCHEMA_VERSION,
@@ -253,6 +272,7 @@ export async function linkMarketplaceJobSpecToTask(
       "transactionSignature",
       256,
     ),
+    ...(verifiedTaskAttestation ? { verifiedTaskAttestation } : {}),
   };
   const rootDir = options.rootDir ?? getDefaultMarketplaceJobSpecStoreDir();
   const linksDir = join(rootDir, "task-links");
@@ -295,6 +315,9 @@ export async function readMarketplaceJobSpecPointerForTask(
     jobSpecTaskLinkPath,
     transactionSignature: link.transactionSignature,
     link,
+    ...(link.verifiedTaskAttestation
+      ? { verifiedTaskAttestation: link.verifiedTaskAttestation }
+      : {}),
   };
 }
 
@@ -381,6 +404,9 @@ export async function resolveMarketplaceJobSpecForTask(
     envelope: resolved.envelope,
     payload: resolved.payload,
     link,
+    ...(link.verifiedTaskAttestation
+      ? { verifiedTaskAttestation: link.verifiedTaskAttestation }
+      : {}),
   };
 }
 
@@ -708,8 +734,21 @@ async function readMarketplaceJobSpecTaskLink(
   if (typeof candidate.transactionSignature !== "string") {
     throw new Error(`marketplace jobSpec task link has invalid transactionSignature: ${path}`);
   }
+  let verifiedTaskAttestation: VerifiedTaskAttestation | undefined;
+  if (candidate.verifiedTaskAttestation !== undefined) {
+    try {
+      verifiedTaskAttestation = normalizeVerifiedTaskAttestation(
+        candidate.verifiedTaskAttestation,
+        candidate.jobSpecHash,
+      );
+    } catch (error) {
+      throw new Error(
+        `marketplace jobSpec task link has invalid verifiedTaskAttestation: ${formatError(error)}: ${path}`,
+      );
+    }
+  }
 
-  return {
+  const link: MarketplaceJobSpecTaskLink = {
     schemaVersion: JOB_SPEC_SCHEMA_VERSION,
     kind: "agenc.marketplace.jobSpecTaskLink",
     taskPda: candidate.taskPda,
@@ -721,7 +760,9 @@ async function readMarketplaceJobSpecTaskLink(
       "transactionSignature",
       256,
     ),
+    ...(verifiedTaskAttestation ? { verifiedTaskAttestation } : {}),
   };
+  return link;
 }
 
 async function readMarketplaceJobSpecEnvelope(
@@ -904,4 +945,8 @@ function isNotFoundError(error: unknown): boolean {
     "code" in error &&
     (error as NodeJS.ErrnoException).code === "ENOENT"
   );
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -79,7 +79,13 @@ import {
   persistMarketplaceJobSpec,
   readMarketplaceJobSpecPointerForTask,
   resolveMarketplaceJobSpecReference,
+  type MarketplaceJobSpecTaskPointer,
 } from '../../marketplace/job-spec-store.js';
+import {
+  assertVerifiedTaskAttestation,
+  type VerifiedTaskAttestation,
+  type VerifiedTaskAttestationTrustKey,
+} from '../../marketplace/verified-task-attestation.js';
 import {
   listApprovedTaskTemplates,
   getApprovedTaskTemplate,
@@ -142,6 +148,7 @@ const CREATE_TASK_DEDUP_TTL_MS = 30_000;
 export interface CreateTaskToolOptions {
   readonly jobSpecStoreDir?: string;
   readonly allowRawTaskCreation?: boolean;
+  readonly verifiedTaskTrustKeys?: readonly VerifiedTaskAttestationTrustKey[];
 }
 
 export interface TaskTemplateToolOptions extends CreateTaskToolOptions {
@@ -579,6 +586,17 @@ async function buildTaskJobSpecView(
   includePayload: boolean,
 ): Promise<SerializedTaskJobSpec | null> {
   const storeOptions = getJobSpecStoreOptions(options.jobSpecStoreDir);
+  let localPointer: MarketplaceJobSpecTaskPointer | null = null;
+  let localPointerError: unknown;
+  try {
+    localPointer = await readMarketplaceJobSpecPointerForTask(
+      taskPda.toBase58(),
+      storeOptions,
+    );
+  } catch (error) {
+    localPointerError = error;
+    if (!options.program) throw error;
+  }
 
   if (options.program) {
     const onChainPointer = await fetchTaskJobSpecPointer(options.program, taskPda);
@@ -590,6 +608,15 @@ async function buildTaskJobSpecView(
         jobSpecUri: onChainPointer.jobSpecUri,
         createdAt: onChainPointer.createdAt,
         updatedAt: onChainPointer.updatedAt,
+        ...(localPointer?.verifiedTaskAttestation
+          ? {
+              verifiedTaskHash: localPointer.verifiedTaskAttestation.verifiedTaskHash,
+              verifiedTaskUri: localPointer.verifiedTaskAttestation.verifiedTaskUri,
+              verifiedTaskAttestation: localPointer.verifiedTaskAttestation,
+              jobSpecTaskLinkPath: localPointer.jobSpecTaskLinkPath,
+              transactionSignature: localPointer.transactionSignature,
+            }
+          : {}),
       };
 
       if (!includePayload) {
@@ -617,10 +644,7 @@ async function buildTaskJobSpecView(
     }
   }
 
-  const localPointer = await readMarketplaceJobSpecPointerForTask(
-    taskPda.toBase58(),
-    storeOptions,
-  );
+  if (localPointerError) throw localPointerError;
   if (!localPointer) return null;
 
   const base: Omit<SerializedTaskJobSpec, 'source' | 'verified' | 'jobSpecPath' | 'integrity' | 'payload' | 'error'> = {
@@ -630,6 +654,13 @@ async function buildTaskJobSpecView(
     jobSpecUri: localPointer.jobSpecUri,
     jobSpecTaskLinkPath: localPointer.jobSpecTaskLinkPath,
     transactionSignature: localPointer.transactionSignature,
+    ...(localPointer.verifiedTaskAttestation
+      ? {
+          verifiedTaskHash: localPointer.verifiedTaskAttestation.verifiedTaskHash,
+          verifiedTaskUri: localPointer.verifiedTaskAttestation.verifiedTaskUri,
+          verifiedTaskAttestation: localPointer.verifiedTaskAttestation,
+        }
+      : {}),
   };
 
   if (!includePayload) {
@@ -688,6 +719,9 @@ async function resolveTaskJobSpecPayloadOrThrow(
         jobSpecPath: resolved.jobSpecPath,
         jobSpecTaskLinkPath: localPointer?.jobSpecTaskLinkPath ?? null,
         transactionSignature: localPointer?.transactionSignature ?? null,
+        verifiedTaskHash: localPointer?.verifiedTaskAttestation?.verifiedTaskHash ?? null,
+        verifiedTaskUri: localPointer?.verifiedTaskAttestation?.verifiedTaskUri ?? null,
+        verifiedTaskAttestation: localPointer?.verifiedTaskAttestation ?? null,
         integrity: resolved.integrity,
         payload: resolved.payload,
       };
@@ -711,6 +745,9 @@ async function resolveTaskJobSpecPayloadOrThrow(
       jobSpecPath: resolved.jobSpecPath,
       jobSpecTaskLinkPath: localPointer.jobSpecTaskLinkPath,
       transactionSignature: localPointer.transactionSignature,
+      verifiedTaskHash: localPointer.verifiedTaskAttestation?.verifiedTaskHash ?? null,
+      verifiedTaskUri: localPointer.verifiedTaskAttestation?.verifiedTaskUri ?? null,
+      verifiedTaskAttestation: localPointer.verifiedTaskAttestation ?? null,
       integrity: resolved.integrity,
       payload: resolved.payload,
     };
@@ -2568,6 +2605,11 @@ export function createCreateTaskTool(
           description:
             'Optional full marketplace job spec. Stored off-chain as canonical JSON with a sha256 integrity hash; use for long requirements, scope, examples, and notes.',
         },
+        verifiedTaskAttestation: {
+          anyOf: [{ type: 'object' }, { type: 'string' }],
+          description:
+            'Optional human-approved verified task attestation JSON. When provided, core verifies Ed25519 signature, expiry, and jobSpecHash before creating the task.',
+        },
         fullDescription: {
           type: 'string',
           description: 'Optional long-form job description stored in the marketplace jobSpec object.',
@@ -2818,6 +2860,25 @@ export function createCreateTaskTool(
           }
         }
 
+        let verifiedTaskAttestation: VerifiedTaskAttestation | null = null;
+        if (!isOptionalPlaceholder(args.verifiedTaskAttestation)) {
+          if (!storedJobSpec) {
+            return errorResult(
+              'verifiedTaskAttestation requires jobSpec metadata so core can bind the approval to a jobSpecHash',
+            );
+          }
+          try {
+            verifiedTaskAttestation = assertVerifiedTaskAttestation({
+              attestation: args.verifiedTaskAttestation,
+              expectedJobSpecHash: storedJobSpec.hash,
+              trustedKeys: options.verifiedTaskTrustKeys ?? [],
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return errorResult(`Invalid verifiedTaskAttestation: ${message}`);
+          }
+        }
+
         const taskPda = findTaskPda(creator, taskId, program.programId);
         const escrowPda = findEscrowPda(taskPda, program.programId);
         const protocolPda = findProtocolPda(program.programId);
@@ -2912,10 +2973,14 @@ export function createCreateTaskTool(
                 taskPda: taskPda.toBase58(),
                 taskId: bytesToHex(taskId),
                 transactionSignature: jobSpecTransactionSignature ?? txSignature,
+                verifiedTaskAttestation: verifiedTaskAttestation ?? undefined,
               },
-              options.jobSpecStoreDir
-                ? { rootDir: options.jobSpecStoreDir }
-                : undefined,
+              {
+                ...(options.jobSpecStoreDir ? { rootDir: options.jobSpecStoreDir } : {}),
+                ...(options.verifiedTaskTrustKeys
+                  ? { verifiedTaskTrustKeys: options.verifiedTaskTrustKeys }
+                  : {}),
+              },
             );
           } catch (error) {
             jobSpecLinkWarning =
@@ -2960,6 +3025,8 @@ export function createCreateTaskTool(
             jobSpecUri: storedJobSpec?.uri ?? null,
             jobSpecPath: storedJobSpec?.path ?? null,
             jobSpecTaskLinkPath,
+            verifiedTaskHash: verifiedTaskAttestation?.verifiedTaskHash ?? null,
+            verifiedTaskUri: verifiedTaskAttestation?.verifiedTaskUri ?? null,
             jobSpecIntegrity: storedJobSpec
               ? { algorithm: 'sha256', canonicalization: 'json-stable-v1' }
               : null,

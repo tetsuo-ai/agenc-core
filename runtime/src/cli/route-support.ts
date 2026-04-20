@@ -669,6 +669,9 @@ const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
     "attachment",
     "attachments",
     "job-spec-store-dir",
+    "verified-attestation",
+    "verified-attestation-public-key",
+    "verified-attestation-key-id",
   ]),
   "tasks.detail": new Set(["job-spec-store-dir"]),
   "tasks.cancel": new Set(),
@@ -1226,6 +1229,9 @@ export function buildHelp(): string {
     "      --constraints <json>                 JSON constraints stored in the off-chain job spec",
     "      --attachment <url>                   Off-chain job spec attachment URL (repeatable)",
     "      --job-spec-store-dir <path>          Local content-addressed job spec store override",
+    "      --verified-attestation <json>        Human-approved verified task attestation JSON",
+    "      --verified-attestation-public-key <pem> Trusted Ed25519 public key for attestation verification",
+    "      --verified-attestation-key-id <id>   Issuer key id for --verified-attestation-public-key",
     "      --query <text>                        Text filter for skills list",
     "      --tags <t1,t2>                        Tag filter for skills list",
     "      --limit <n>                           Limit skills list results",
@@ -2909,6 +2915,15 @@ function normalizeAndValidateMarketCommand(
           parseStringListFlag(parsed.flags.attachments),
         jobSpecStoreDir: parseOptionalStringFlag(
           parsed.flags["job-spec-store-dir"],
+        ),
+        verifiedTaskAttestation: parseOptionalStringFlag(
+          parsed.flags["verified-attestation"],
+        ),
+        verifiedTaskAttestationPublicKey: parseOptionalStringFlag(
+          parsed.flags["verified-attestation-public-key"],
+        ),
+        verifiedTaskAttestationKeyId: parseOptionalStringFlag(
+          parsed.flags["verified-attestation-key-id"],
         ),
       } as MarketTaskCreateOptions;
       break;
