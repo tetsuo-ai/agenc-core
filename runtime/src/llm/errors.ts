@@ -180,12 +180,6 @@ export class LLMInvalidResponseError extends LLMProviderError {
  * combined prompt + expected completion exceeds the model's context
  * window. Surfaced as an HTTP 413 or as a provider-specific
  * "prompt too long" / "context_length_exceeded" error.
- *
- * Phase I of the 16-phase refactor in TODO.MD wires this error into
- * the reactive compaction retry loop — the runtime catches it,
- * applies `applyReactiveCompact` to trim the oldest messages, and
- * retries until it either succeeds or the reactive compact layer
- * reports `exhausted`.
  */
 export class LLMContextWindowExceededError extends LLMProviderError {
   public readonly effectiveTokens?: number;
