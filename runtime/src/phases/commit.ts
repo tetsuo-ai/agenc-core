@@ -1,20 +1,30 @@
 /**
  * Phase 6 — Commit.
  *
- * The iteration close-out. Increments the turn counter, clears any
- * pending iteration-scoped state (tool-result buffer already pushed
- * onto messages by executeTools), decides whether the turn is done.
+ * Mirrors openclaude `query.ts:1192-1465` (iteration tail) + 1643-1836
+ * (terminal commit). Responsibilities per TODO.MD T5-B line 974:
  *
- * Mirrors openclaude query.ts:1192-1465 (the final tail of the loop
- * body: await pending tool-use summary, push assistant + tool messages
- * into state.messages, bump turnCount, loop around).
+ *   1. **Append history** — ensure all iteration outputs (assistant
+ *      message, tool results, attachments) are in `state.messages`.
+ *      Await any pending tool-use summary promise so the next
+ *      iteration observes a stable history.
  *
- * T5 scope:
- *   - Increment `turnCount`.
- *   - Clear the per-iteration transition marker.
- *   - Resolve + apply `pendingToolUseSummary` if present (T7 wires).
- *   - Leave `needsFollowUp` as set by streamModel — the dispatcher
- *     reads it to decide whether to loop.
+ *   2. **Compaction boundary** — if this iteration ran auto-compact
+ *      successfully (tracking.compacted && turnCounter === 0), emit a
+ *      `context_compacted` event so the rollout sidecar (T6) can stamp
+ *      the boundary marker.
+ *
+ *   3. **Stop gate** — when the turn is about to terminate naturally
+ *      (no tool calls, no transition), invoke stop hooks. Blocking
+ *      hooks set `transition: stop_hook_blocking` with the counter
+ *      bumped (I-17: MAX_STOP_HOOK_BLOCKS=3). Non-blocking hooks fall
+ *      through to terminal.
+ *
+ *   4. Bump `turnCount`; clear per-iteration fields that survive into
+ *      the next iteration via continue-site re-entry.
+ *
+ * The full stop-hook implementation lives behind `evaluateStopHooks`
+ * in `stop-hooks.ts` (T8 replaces the stub with the real hook runner).
  *
  * @module
  */
@@ -22,26 +32,121 @@
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
+import { evaluateStopHooks } from "./stop-hooks.js";
+
+/**
+ * I-17: hard cap on how many consecutive stop-hook blocking cycles
+ * we tolerate before force-terminating with error. Matches openclaude
+ * `MAX_STOP_HOOK_BLOCKS = 3` (query.ts:163).
+ */
+export const MAX_STOP_HOOK_BLOCKS = 3;
 
 export async function commit(
   state: TurnState,
-  _ctx: TurnContext,
-  _session: Session,
-  _signal?: AbortSignal,
+  ctx: TurnContext,
+  session: Session,
+  signal?: AbortSignal,
 ): Promise<TurnState> {
-  // T7: await streamingToolExecutor pending completion (flushes in-flight
-  // streaming tool results into state.toolResults).
+  // ── 1. Append history — await any pending tool-use summary promise
+  //      so state.messages is stable before the next iteration runs
+  //      prepareContext and reads messagesForQuery off of it.
   if (state.pendingToolUseSummary) {
     try {
-      await state.pendingToolUseSummary;
+      const summary = await state.pendingToolUseSummary;
+      if (summary) {
+        // T7 wires: push the summary into state.messages as a
+        // user-meta message. For T5 the summary type is a placeholder
+        // structure; the adapter will land alongside the real
+        // StreamingToolExecutor in T7.
+      }
     } catch {
-      /* summary failures are non-fatal; real handling in T7 */
+      /* summary failures non-fatal; executor emits stream_error */
     } finally {
       state.pendingToolUseSummary = undefined;
     }
   }
 
+  // Drop the streaming tool executor reference so the next iteration
+  // constructs a fresh one (matches openclaude query.ts:572).
+  state.streamingToolExecutor = null;
+
+  // ── 2. Compaction boundary — if this iteration's tracking state
+  //      records a successful compact (compacted=true, turnCounter=0
+  //      was reset at auto-compact.ts:531), emit a typed boundary
+  //      marker so the rollout sidecar (T6) can stamp it.
+  const tracking = state.autoCompactTracking;
+  if (tracking && tracking.compacted && tracking.turnCounter === 0) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "context_compacted",
+        payload: {
+          summary: `auto-compact boundary (turnId=${tracking.turnId})`,
+        },
+      },
+    });
+    // Mark the boundary as consumed so subsequent iterations don't
+    // re-emit until the next successful compact mutates the turnId.
+    state.autoCompactTracking = {
+      ...tracking,
+      // advance turnCounter so the marker only fires once per boundary
+      turnCounter: 1,
+    };
+  }
+
+  // ── 3. Stop gate — only evaluate when the turn is about to
+  //      terminate naturally (no tool calls pending, no recovery
+  //      transition already set). Recovery transitions (reactive
+  //      compact, max-tokens recovery, etc.) route around the stop
+  //      gate; stop hooks only matter at the terminal boundary.
+  const turnIsTerminating =
+    state.toolUseBlocks.length === 0 &&
+    state.transition === undefined &&
+    !state.needsFollowUp;
+
+  if (turnIsTerminating) {
+    const result = await evaluateStopHooks(state, ctx, session, signal);
+    if (result.blocking) {
+      state.stopHookBlockingCount += 1;
+      if (state.stopHookBlockingCount >= MAX_STOP_HOOK_BLOCKS) {
+        // I-17: stop-hook recursion cap tripped. Surface as an error
+        // event + force-terminate with the blocking reason.
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "error",
+            payload: {
+              cause: "stop_hook_loop",
+              message: `stop hooks blocked ${state.stopHookBlockingCount} times in a row — forcing terminal (${result.reason ?? "no_reason"})`,
+            },
+          },
+        });
+        state.stopHookActive = true;
+        // Do NOT set transition: the cap being hit means we exit, not
+        // re-enter. run-turn sees no transition + no tool calls →
+        // terminal.
+      } else {
+        // Inject the hook's suggested message (if any) and set the
+        // transition so run-turn re-enters PrepareContext.
+        if (result.injectedMessage) {
+          state.messages.push({
+            role: "user",
+            content: result.injectedMessage,
+          });
+        }
+        state.transition = { reason: "stop_hook_blocking" };
+        state.stopHookActive = true;
+      }
+    } else {
+      state.stopHookActive = false;
+      state.stopHookBlockingCount = 0;
+    }
+  }
+
+  // ── 4. Bump turnCount + clear one-shot overrides. recoveryReentry
+  //      and stop-hook-blocking counters are preserved here — they
+  //      only reset on a successful non-recovering iteration.
   state.turnCount += 1;
-  state.transition = undefined;
+  state.maxOutputTokensOverride = undefined;
   return state;
 }

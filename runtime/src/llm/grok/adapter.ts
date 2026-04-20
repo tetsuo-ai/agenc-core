@@ -47,6 +47,19 @@ import { parseStructuredOutputText } from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
+import {
+  IncrementalTracker,
+  registerIncrementalTracker,
+  type IncrementalRequestShape,
+  type LastResponseSnapshot,
+} from "./incremental.js";
+import {
+  isUnauthorizedError,
+  retryWithAuthRefresh,
+  type AuthRefreshCallbacks,
+  type AuthRefreshOutcome,
+} from "./auth-refresh.js";
+import { monotonicMs } from "../../utils/monotonic.js";
 import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 import {
   buildProviderTraceErrorPayload,
@@ -744,6 +757,20 @@ export class GrokProvider implements LLMProvider {
 
   private client: unknown | null = null;
   private readonly config: GrokProviderConfig;
+  /** I-2 / I-14 tracker — zeroed by post-compact-cleanup.ts via
+   *  clearAllResponseIds(); delta logic is T13's full-integration job. */
+  private readonly incrementalTracker = new IncrementalTracker();
+  /** Registry unsubscribe; called on dispose to drop the tracker. */
+  private readonly unregisterIncrementalTracker: () => void;
+  /** I-14 auth refresh callback. Bearer-key auth has no refresh;
+   *  callers can override via `withAuthRefreshCallbacks()` for OAuth
+   *  flows (T13 wires OAuth providers). */
+  private authRefreshCallbacks: AuthRefreshCallbacks = {
+    refreshBearer: async (): Promise<AuthRefreshOutcome> => ({
+      kind: "skipped",
+      reason: "grok_bearer_key_mode_has_no_refresh",
+    }),
+  };
   private readonly rawToolsByName = new Map<string, LLMTool>();
   private readonly tools: LLMTool[];
   private readonly responseTools: Record<string, unknown>[];
@@ -804,6 +831,62 @@ export class GrokProvider implements LLMProvider {
         (sum, definition) => sum + definition.schemaChars,
         0,
       );
+    // I-2: register the tracker so post-compact-cleanup can zero it.
+    this.unregisterIncrementalTracker = registerIncrementalTracker(
+      this.incrementalTracker,
+    );
+  }
+
+  /**
+   * I-14 hook point: supply real OAuth-refresh callbacks. Bearer-key
+   * mode leaves the default (no-refresh) in place. T13 wires this for
+   * OpenAI/Anthropic OAuth providers.
+   */
+  withAuthRefreshCallbacks(callbacks: AuthRefreshCallbacks): this {
+    this.authRefreshCallbacks = callbacks;
+    return this;
+  }
+
+  /** Drop the tracker registration (used on provider swap / session shutdown). */
+  dispose(): void {
+    this.unregisterIncrementalTracker();
+  }
+
+  /**
+   * I-2 / I-14 incremental-tracker integration for chat path.
+   * Records the pre-flight request shape + post-response snapshot so
+   * `clearAllResponseIds()` (called from post-compact-cleanup.ts) can
+   * zero the cached previous_response_id. T13 extends to compute and
+   * send an actual delta payload; today the tracker is purely a
+   * book-keeping slot exposed to the I-2 cleanup path.
+   */
+  private noteIncrementalRequest(
+    messages: LLMMessage[],
+    params: Record<string, unknown>,
+  ): void {
+    const shape: IncrementalRequestShape = {
+      model: String(params.model ?? this.config.model),
+      instructions:
+        typeof params["instructions"] === "string"
+          ? (params["instructions"] as string)
+          : undefined,
+      tools: params["tools"],
+      parallelToolCalls: this.config.parallelToolCalls ?? false,
+    };
+    this.incrementalTracker.recordRequest(shape, messages);
+  }
+
+  private noteIncrementalResponse(
+    previousResponseId: string | undefined,
+    itemsAdded: LLMMessage[],
+  ): void {
+    if (!previousResponseId) return;
+    const snapshot: LastResponseSnapshot = {
+      previousResponseId,
+      itemsAdded,
+      recordedAtMs: monotonicMs(),
+    };
+    this.incrementalTracker.recordResponse(snapshot);
   }
 
   private logPostFlightAnomaly(anomaly: {
@@ -940,8 +1023,52 @@ export class GrokProvider implements LLMProvider {
     };
 
     try {
-      return await run(plan);
+      // I-2 / I-14: record the outbound request shape for the
+      // incremental tracker before the HTTP call. clearAllResponseIds
+      // (called from post-compact-cleanup) zeros this on every
+      // compaction.
+      this.noteIncrementalRequest(messages, plan.params as Record<string, unknown>);
+
+      // I-14: retry-on-401 wrapper. Bearer-key mode's refresh callback
+      // returns `skipped`, so the original 401 bubbles up unchanged.
+      // OAuth providers (T13) install real refresh callbacks via
+      // withAuthRefreshCallbacks().
+      const parsed = await retryWithAuthRefresh(
+        String(this.config.apiKey),
+        async () => run(plan),
+        this.authRefreshCallbacks,
+      );
+
+      // Record the response metadata so the tracker can supply
+      // previous_response_id on the next incremental call. T13 adds
+      // the actual delta-input computation; today this is purely the
+      // I-2 clear-target bookkeeping.
+      const respId = (parsed as { requestMetrics?: { responseId?: string } })
+        ?.requestMetrics?.responseId;
+      if (respId) {
+        this.noteIncrementalResponse(respId, [
+          {
+            role: "assistant",
+            content: parsed.content,
+            ...(parsed.toolCalls.length > 0
+              ? { toolCalls: parsed.toolCalls }
+              : {}),
+          },
+        ]);
+      }
+      return parsed;
     } catch (err: unknown) {
+      // 401s that propagated past the refresh wrapper classify through
+      // the normal mapper so callers see `LLMProviderError` rather
+      // than the raw transport.
+      if (isUnauthorizedError(err)) {
+        const mapped = this.mapError(
+          err,
+          lastAttemptTimeoutMs ?? requestTimeout.timeoutMs,
+        );
+        this.logPromptOverflowDiagnostics(mapped, plan.params);
+        throw mapped;
+      }
       const mapped = this.mapError(
         err,
         lastAttemptTimeoutMs ?? requestTimeout.timeoutMs,

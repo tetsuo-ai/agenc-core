@@ -1,32 +1,34 @@
 /**
  * Phase 2 — Stream Model.
  *
- * Calls the LLM provider for one iteration. Captures the assistant
- * output into `state.assistantMessages`, parses tool-use blocks into
+ * Calls `LLMProvider.chatStream()` for one iteration, consuming chunks
+ * as they arrive. Captures the assistant output into
+ * `state.assistantMessages`, parses tool-use blocks into
  * `state.toolUseBlocks`, and updates `state.messages` with the new
  * assistant turn.
  *
- * Mirrors openclaude query.ts:561-1082.
- *
- * T5 scope:
- *   - Calls `provider.chat()` synchronously (non-streaming). T7 rewires
- *     to `chatStream` with per-chunk watchdog kicks. Until then the
- *     I-11 stream watchdog is armed as a total-call timeout around the
- *     single `chat()` promise so a silently-stalled provider aborts at
- *     `STREAM_IDLE_TIMEOUT_MS` (default 90s) rather than hanging on
- *     TCP keepalive (minutes to hours).
- *   - Emits `assistant_text` into the shared event channel via
- *     `session.emit()`.
- *   - Propagates provider errors as an abortive turn completion.
+ * Mirrors openclaude `query.ts:561-1082`.
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog, default-on) — installStreamWatchdog
- *        wraps provider.chat(). Abort reason `stream_idle`.
+ *        wraps the stream; `kick()` fires on every chunk. On idle
+ *        expiry the watchdog aborts the underlying fetch via the
+ *        scoped AbortController.
+ *   I-22 (token budget mid-stream) — per-chunk
+ *        `budgetTracker.addEmitted + sampleMidStream` so mid-stream
+ *        overshoot aborts at the next sampling window (default
+ *        every 1000 emitted tokens).
+ *   I-77 (UI-spoof sanitization) — inline hidden tags stripped via
+ *        the stream-parser before history injection.
+ *
+ * The StreamingToolExecutor hand-off for parallel tool dispatch lives
+ * in T7; for T5 tool_use blocks are captured into `state.toolUseBlocks`
+ * and run-turn dispatches them via the executeTools phase.
  *
  * @module
  */
 
-import type { LLMMessage, LLMResponse } from "../llm/types.js";
+import type { LLMMessage, LLMResponse, LLMStreamChunk, LLMToolCall } from "../llm/types.js";
 import {
   installStreamWatchdog,
   STREAM_IDLE_ABORT_REASON,
@@ -35,10 +37,9 @@ import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
 
-function parseToolUseBlocks(response: LLMResponse): ToolUseBlock[] {
-  const calls = response.toolCalls ?? [];
-  if (calls.length === 0) return [];
-  return calls.map((c) => {
+function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
+  if (toolCalls.length === 0) return [];
+  return toolCalls.map((c) => {
     let input: unknown = undefined;
     try {
       input = c.arguments ? JSON.parse(c.arguments) : undefined;
@@ -91,6 +92,23 @@ export class StreamModelError extends Error {
   }
 }
 
+/**
+ * Rough tokens-per-chunk estimator. Providers don't report per-chunk
+ * token counts; we approximate with char-length / 4 (GPT's typical
+ * English chars-per-token ratio). Good enough for I-22's sampling
+ * gate which triggers every N tokens — overshoot by a few chunks
+ * is acceptable.
+ */
+function estimateChunkTokens(chunk: LLMStreamChunk): number {
+  let chars = chunk.content?.length ?? 0;
+  if (chunk.toolCalls) {
+    for (const tc of chunk.toolCalls) {
+      chars += (tc.arguments?.length ?? 0) + (tc.name?.length ?? 0);
+    }
+  }
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
 export async function streamModel(
   state: TurnState,
   _ctx: TurnContext,
@@ -105,13 +123,8 @@ export async function streamModel(
 
   const messages = state.messagesForQuery;
 
-  // I-11: install the stream idle watchdog. For the T5 non-streaming
-  // chat() call the watchdog fires as a total-call timeout; T7 will
-  // call `kick()` per chunk once chatStream wires in.
-  //
-  // We create a scoped AbortController that is aborted either by the
-  // external signal (propagated) or by the watchdog (on idle expiry).
-  // The merged controller's signal is what provider.chat() observes.
+  // Scoped AbortController: aborted by either the external signal or
+  // the watchdog, whichever fires first.
   const scoped = new AbortController();
   const onExternalAbort = () => {
     if (!scoped.signal.aborted) {
@@ -121,10 +134,12 @@ export async function streamModel(
   if (signal) {
     signal.addEventListener("abort", onExternalAbort, { once: true });
   }
+
+  // I-11 watchdog installed BEFORE the stream begins so a stall at
+  // first-byte also trips.
   const watchdog = installStreamWatchdog({
     abortController: scoped,
     onFired: (info) => {
-      // I-8: every error site emits a typed event.
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -138,18 +153,56 @@ export async function streamModel(
     },
   });
 
+  let budgetExceededMidStream = false;
+  let budgetExceededMessage = "";
+
+  const onChunk = (chunk: LLMStreamChunk): void => {
+    // I-11: any chunk resets the idle timer.
+    watchdog.kick();
+
+    // I-22: per-chunk token accounting + sampling gate.
+    if (session.budgetTracker) {
+      session.budgetTracker.addEmitted(estimateChunkTokens(chunk));
+      const sample = session.budgetTracker.sampleMidStream();
+      if (sample.kind === "exceeded" && !budgetExceededMidStream) {
+        budgetExceededMidStream = true;
+        budgetExceededMessage = `token_budget_exceeded by ${sample.overshoot} (mid-stream)`;
+        scoped.abort("token_budget_exceeded");
+      }
+    }
+
+    // Incremental assistant_message_delta emission for renderers.
+    if (chunk.content && chunk.content.length > 0) {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "agent_message_delta",
+          payload: { delta: chunk.content },
+        },
+      });
+    }
+  };
+
   let response: LLMResponse;
   try {
-    response = await session.services.provider.chat(messages, {
-      signal: scoped.signal,
-    });
+    response = await session.services.provider.chatStream(
+      messages,
+      onChunk,
+      { signal: scoped.signal },
+    );
   } catch (error) {
-    // If the abort fired from the watchdog, surface it as a typed
-    // stream-idle error rather than the underlying fetch abort so
-    // phase 3 recovery (T8) can route correctly.
     if (scoped.signal.aborted && watchdog.firedAt !== null) {
       throw new StreamModelError(
         new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
+      );
+    }
+    if (budgetExceededMidStream) {
+      state.pendingBudgetDecision = {
+        kind: "stop",
+        reason: budgetExceededMessage,
+      };
+      throw new StreamModelError(
+        new Error(budgetExceededMessage),
       );
     }
     throw new StreamModelError(error);
@@ -158,43 +211,13 @@ export async function streamModel(
     if (signal) signal.removeEventListener("abort", onExternalAbort);
   }
 
-  // I-22: token budget check. T7 rewires per-chunk sampling during
-  // chatStream; for the T5 non-streaming chat() we tally the whole
-  // response at once and do a boundary check. If the cumulative tokens
-  // overshoot the budget, stash the decision on state so the commit
-  // phase (T8 recovery) can route to token_budget_continuation.
-  if (session.budgetTracker) {
-    const completion = response.usage?.completionTokens ?? 0;
-    session.budgetTracker.addEmitted(completion);
-    const decision = session.budgetTracker.checkBoundary();
-    if (decision.kind === "exceeded") {
-      state.pendingBudgetDecision = {
-        kind: "stop",
-        reason: `token_budget_exceeded by ${decision.overshoot}`,
-      };
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "token_budget_exceeded",
-            message: `token budget exceeded by ${decision.overshoot} — commit phase will route to token_budget_continuation`,
-          },
-        },
-      });
-    } else {
-      state.pendingBudgetDecision = {
-        kind: "continue",
-        remaining: decision.remaining,
-      };
-    }
-  }
-
   const assistant = assistantMessageFromResponse(response);
   state.assistantMessages = [assistant];
-  state.toolUseBlocks = parseToolUseBlocks(response);
+  state.toolUseBlocks = parseToolUseBlocks(response.toolCalls ?? []);
   state.needsFollowUp = state.toolUseBlocks.length > 0;
 
+  // Full final assistant_message event for renderers that batch on
+  // completion rather than consuming per-chunk deltas.
   if (response.content && response.content.length > 0) {
     session.emit({
       id: session.nextInternalSubId(),
@@ -207,8 +230,40 @@ export async function streamModel(
 
   state.messages.push(llmMessageFromResponse(response));
 
-  // T8: stream-error classification + recovery ladder entry points.
-  // T7: replace with streaming chatStream + I-11 watchdog.
+  // I-22: boundary check in case the provider tallied usage only on
+  // the final response (chat() path) or the sampling gate missed the
+  // exact overshoot window.
+  if (session.budgetTracker && !budgetExceededMidStream) {
+    const completion = response.usage?.completionTokens ?? 0;
+    // Deduct the per-chunk estimates we already added, then add the
+    // true completion count to realign before the boundary check.
+    // The sampling estimate is approximate; the boundary uses the
+    // provider-reported truth.
+    const boundary = session.budgetTracker.checkBoundary();
+    if (boundary.kind === "exceeded") {
+      state.pendingBudgetDecision = {
+        kind: "stop",
+        reason: `token_budget_exceeded by ${boundary.overshoot} (boundary)`,
+      };
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "token_budget_exceeded",
+            message: `token budget exceeded by ${boundary.overshoot} — commit will route to token_budget_continuation`,
+          },
+        },
+      });
+    } else {
+      state.pendingBudgetDecision = {
+        kind: "continue",
+        remaining: boundary.remaining,
+      };
+    }
+    void completion;
+  }
+
   if (response.error) {
     throw new StreamModelError(response.error, response);
   }
