@@ -9,7 +9,7 @@
 
 import { PublicKey, SystemProgram, type AccountMeta } from "@solana/web3.js";
 import { toAnchorBytes } from "../utils/encoding.js";
-import type { Program } from "@coral-xyz/anchor";
+import type { AnchorProvider, Program } from "@coral-xyz/anchor";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Logger } from "../utils/logger.js";
 import { silentLogger } from "../utils/logger.js";
@@ -32,6 +32,7 @@ import {
   DISPUTE_STATUS_OFFSET,
   DISPUTE_TASK_OFFSET,
 } from "./types.js";
+import { createProgram } from "../idl.js";
 import { deriveDisputePda, deriveVotePda } from "./pda.js";
 import {
   findAgentPda,
@@ -149,6 +150,63 @@ export class DisputeOperations {
     ).taskSubmission?.fetchNullable?.(taskSubmissionPda);
 
     return taskSubmissionAccount ? taskSubmissionPda : null;
+  }
+
+  private buildInitiateDisputeBuilder(
+    program: Program<AgencCoordination>,
+    params: InitiateDisputeParams,
+    disputePda: PublicKey,
+    initiatorClaimPda: PublicKey | null,
+    taskSubmissionPda: PublicKey | null,
+    remainingAccounts: AccountMeta[],
+    mode: "default" | "legacyInitiateDispute",
+  ) {
+    const builder = (program.methods as any)
+      .initiateDispute(
+        toAnchorBytes(params.disputeId),
+        toAnchorBytes(params.taskId),
+        toAnchorBytes(params.evidenceHash),
+        params.resolutionType,
+        params.evidence,
+      )
+      .accountsPartial({
+        dispute: disputePda,
+        task: params.taskPda,
+        agent: this.agentPda,
+        ...(mode === "default"
+          ? { authorityRateLimit: this.authorityRateLimitPda }
+          : {}),
+        protocolConfig: this.protocolPda,
+        initiatorClaim: initiatorClaimPda ?? null,
+        workerAgent: params.workerAgentPda ?? null,
+        workerClaim: params.workerClaimPda ?? null,
+        ...(mode === "default" ? { taskSubmission: taskSubmissionPda } : {}),
+        authority: program.provider.publicKey,
+        systemProgram: SystemProgram.programId,
+      });
+
+    if (remainingAccounts.length > 0) {
+      builder.remainingAccounts(remainingAccounts);
+    }
+
+    return builder;
+  }
+
+  private async shouldRetryLegacyInitiateDispute(err: unknown): Promise<boolean> {
+    const message = err instanceof Error ? err.message : String(err);
+    if (
+      !message.includes("account: protocol_config") ||
+      !message.includes("AccountNotInitialized")
+    ) {
+      return false;
+    }
+
+    const authorityRateLimitAccount =
+      await this.program.provider.connection.getAccountInfo(
+        this.authorityRateLimitPda,
+        "confirmed",
+      );
+    return authorityRateLimitAccount === null;
   }
 
   // ==========================================================================
@@ -365,43 +423,53 @@ export class DisputeOperations {
         undefined,
         params.defendantWorkers,
       );
-
-      // The runtime patches local IDL account layouts ahead of the published
-      // protocol typings, so this builder needs a narrow escape hatch until the
-      // package catches up.
-      const builder = (this.program.methods as any)
-        .initiateDispute(
-          toAnchorBytes(params.disputeId),
-          toAnchorBytes(params.taskId),
-          toAnchorBytes(params.evidenceHash),
-          params.resolutionType,
-          params.evidence,
-        )
-        .accountsPartial({
-          dispute: disputePda,
-          task: params.taskPda,
-          agent: this.agentPda,
-          authorityRateLimit: this.authorityRateLimitPda,
-          protocolConfig: this.protocolPda,
-          initiatorClaim: initiatorClaimPda ?? null,
-          workerAgent: params.workerAgentPda ?? null,
-          workerClaim: params.workerClaimPda ?? null,
-          taskSubmission: taskSubmissionPda,
-          authority: this.program.provider.publicKey,
-          systemProgram: SystemProgram.programId,
-        });
-
-      if (remainingAccounts.length > 0) {
-        builder.remainingAccounts(remainingAccounts);
-      }
-
-      const signature = await builder.rpc();
+      const signature = await this.buildInitiateDisputeBuilder(
+        this.program,
+        params,
+        disputePda,
+        initiatorClaimPda,
+        taskSubmissionPda,
+        remainingAccounts,
+        "default",
+      ).rpc();
 
       this.logger.info(`Dispute initiated: ${signature}`);
       this.recordDisputeMetrics("initiate", Date.now() - start);
 
       return { disputePda, transactionSignature: signature };
     } catch (err) {
+      if (await this.shouldRetryLegacyInitiateDispute(err)) {
+        this.logger.warn(
+          "Retrying dispute initiation with legacy devnet account layout compatibility",
+        );
+
+        const legacyProgram = createProgram(
+          this.program.provider as AnchorProvider,
+          this.program.programId,
+          "legacyInitiateDispute",
+        );
+        const remainingAccounts = this.buildRemainingAccounts(
+          undefined,
+          params.defendantWorkers,
+        );
+        const signature = await this.buildInitiateDisputeBuilder(
+          legacyProgram,
+          params,
+          disputePda,
+          initiatorClaimPda,
+          taskSubmissionPda,
+          remainingAccounts,
+          "legacyInitiateDispute",
+        ).rpc();
+
+        this.logger.info(
+          `Dispute initiated via legacy compatibility path: ${signature}`,
+        );
+        this.recordDisputeMetrics("initiate", Date.now() - start);
+
+        return { disputePda, transactionSignature: signature };
+      }
+
       const pda = disputePda.toBase58();
       if (isAnchorError(err, AnchorErrorCodes.InsufficientEvidence)) {
         throw new DisputeResolutionError(pda, "Insufficient evidence provided");
