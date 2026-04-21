@@ -106,6 +106,14 @@ This is the same runtime gate lane enforced by the default PR validation workflo
 - [ ] Pipeline gates report `PASS` for context growth, tool-turn forwarding, desktop timeout regressions, and token-efficiency thresholds
 - [ ] Background-run gates and autonomy rollout gates report `PASS`
 
+## Compiled marketplace Phase 1 launch checks
+
+- [ ] `runtime/docs/compiled-job-phase1-launch-readiness.md` is reviewed by the launch owner
+- [ ] hostile-content red-team coverage passes for compiled `L0` launch jobs
+- [ ] blocked-run, policy-failure, and domain-denial alerts are live
+- [ ] incident and abuse-response steps are confirmed for compiled jobs
+- [ ] audit retention posture is reviewed for launch
+
 ## Rollback plan
 
 If any private verification gate fails:
