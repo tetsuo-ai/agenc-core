@@ -354,4 +354,64 @@ describe("compiled job chat task handler", () => {
       'Compiled job type "product_comparison_report" is not enabled for this task handler',
     );
   });
+
+  it("honors the global compiled-job pause switch", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      launchControls: {
+        paused: true,
+      },
+    });
+
+    await expect(handler(createContext())).rejects.toThrow(
+      "Compiled marketplace job execution is paused by runtime launch controls",
+    );
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(provider.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("honors per-job launch allowlists from env", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      env: {
+        AGENC_COMPILED_JOB_ENABLED_TYPES: "product_comparison_report",
+      },
+    });
+
+    await expect(handler(createContext())).rejects.toThrow(
+      'Compiled job type "web_research_brief" is not enabled in runtime launch controls',
+    );
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(provider.chatStream).not.toHaveBeenCalled();
+  });
 });

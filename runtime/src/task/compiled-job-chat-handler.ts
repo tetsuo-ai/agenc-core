@@ -9,6 +9,11 @@ import {
 import { createGatewayMessage, type GatewayMessage } from "../gateway/message.js";
 import { silentLogger, type Logger } from "../utils/logger.js";
 import type { ToolRegistry } from "../tools/registry.js";
+import {
+  evaluateCompiledJobLaunchAccess,
+  resolveCompiledJobLaunchControls,
+  type CompiledJobLaunchControls,
+} from "./compiled-job-launch-controls.js";
 import type { TaskExecutionContext, TaskExecutionResult, TaskHandler } from "./types.js";
 
 const DEFAULT_SUPPORTED_JOB_TYPES = ["web_research_brief"] as const;
@@ -26,6 +31,8 @@ export interface CompiledJobChatTaskHandlerOptions {
   readonly toolRegistry: ToolRegistry;
   readonly logger?: Logger;
   readonly supportedJobTypes?: readonly string[];
+  readonly launchControls?: Partial<CompiledJobLaunchControls>;
+  readonly env?: NodeJS.ProcessEnv;
   readonly channel?: string;
   readonly senderId?: string;
   readonly senderName?: string;
@@ -44,15 +51,24 @@ export function createCompiledJobChatTaskHandler(
   const supportedJobTypes = [
     ...(options.supportedJobTypes ?? DEFAULT_SUPPORTED_JOB_TYPES),
   ];
+  const launchControls = resolveCompiledJobLaunchControls({
+    base: options.launchControls,
+    env: options.env,
+  });
 
   return async (context: TaskExecutionContext): Promise<TaskExecutionResult> => {
     const { compiledJob, compiledJobRuntime } = requireCompiledJobContext(
       context,
     );
 
-    if (!supportedJobTypes.includes(compiledJob.jobType)) {
+    const launchDecision = evaluateCompiledJobLaunchAccess({
+      jobType: compiledJob.jobType,
+      supportedJobTypes,
+      controls: launchControls,
+    });
+    if (!launchDecision.allowed) {
       throw new Error(
-        `Compiled job type "${compiledJob.jobType}" is not enabled for this task handler`,
+        launchDecision.message ?? "Compiled job launch controls denied execution",
       );
     }
 
