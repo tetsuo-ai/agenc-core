@@ -14,6 +14,9 @@ export {
   type SkillMetadata,
   type SkillAction,
   type SkillContext,
+  type SkillSideEffectReviewRequest,
+  type SkillSideEffectReviewResult,
+  type SkillSideEffectReviewer,
   type SemanticVersion,
   type SkillRegistryConfig,
   SkillState,
@@ -34,6 +37,7 @@ export {
 export {
   SkillNotFoundError,
   SkillNotReadyError,
+  SkillApprovalRequiredError,
   SkillActionNotFoundError,
   SkillInitializationError,
   SkillAlreadyRegisteredError,

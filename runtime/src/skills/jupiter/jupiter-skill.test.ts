@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { JupiterSkill } from "./jupiter-skill.js";
 import { SkillState } from "../types.js";
-import { SkillNotReadyError } from "../errors.js";
+import { SkillApprovalRequiredError, SkillNotReadyError } from "../errors.js";
 import type { SkillContext } from "../types.js";
 import { silentLogger } from "../../utils/logger.js";
 import {
@@ -247,6 +247,94 @@ describe("JupiterSkill", () => {
 
       const prices = await skill.getTokenPrice([WSOL_MINT]);
       expect(prices.get(WSOL_MINT)?.priceUsd).toBe(25.5);
+    });
+  });
+
+  describe("side-effect review gate", () => {
+    it("fails closed for executeSwap when no reviewer is configured", async () => {
+      const ctx = createMockContext();
+      await skill.initialize(ctx);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          inputMint: WSOL_MINT,
+          outputMint: USDC_MINT,
+          inAmount: "1000000000",
+          outAmount: "25500000",
+          otherAmountThreshold: "25245000",
+          priceImpactPct: "0.01",
+        }),
+      });
+
+      await expect(
+        skill.executeSwap({
+          inputMint: WSOL_MINT,
+          outputMint: USDC_MINT,
+          amount: 1_000_000_000n,
+        }),
+      ).rejects.toThrow(SkillApprovalRequiredError);
+
+      expect(ctx.wallet.signTransaction).not.toHaveBeenCalled();
+      expect(ctx.connection.sendRawTransaction).not.toHaveBeenCalled();
+    });
+
+    it("routes SOL transfers through the review broker before signing", async () => {
+      const reviewBeforeSideEffect = vi.fn(async () => ({
+        approved: true,
+        reviewedBy: "security-review",
+      }));
+      const ctx: SkillContext = {
+        ...createMockContext(),
+        reviewBeforeSideEffect,
+      };
+      await skill.initialize(ctx);
+
+      const recipient = Keypair.generate().publicKey;
+      const result = await skill.transferSol({
+        recipient,
+        lamports: 42n,
+      });
+
+      expect(result.txSignature).toBe("mock_tx_signature");
+      expect(reviewBeforeSideEffect).toHaveBeenCalledWith({
+        skillName: "jupiter",
+        actionName: "transferSol",
+        effectKind: "transfer_sol",
+        summary: `Transfer 42 lamports to ${recipient.toBase58()}`,
+        metadata: {
+          recipient: recipient.toBase58(),
+          lamports: "42",
+        },
+      });
+      expect(ctx.wallet.signTransaction).toHaveBeenCalledOnce();
+      expect(ctx.connection.sendRawTransaction).toHaveBeenCalledOnce();
+    });
+
+    it("blocks token transfers when review is denied", async () => {
+      const reviewBeforeSideEffect = vi.fn(async () => ({
+        approved: false,
+        reviewedBy: "security-review",
+        reason: "Manual review required",
+      }));
+      const ctx: SkillContext = {
+        ...createMockContext(),
+        reviewBeforeSideEffect,
+      };
+      await skill.initialize(ctx);
+
+      await expect(
+        skill.transferToken({
+          recipient: Keypair.generate().publicKey,
+          mint: new PublicKey(USDC_MINT),
+          amount: 500n,
+        }),
+      ).rejects.toThrow(/Manual review required/);
+
+      expect(reviewBeforeSideEffect).toHaveBeenCalledOnce();
+      expect(ctx.wallet.signTransaction).not.toHaveBeenCalled();
+      expect(ctx.connection.getAccountInfo).not.toHaveBeenCalled();
+      expect(ctx.connection.sendRawTransaction).not.toHaveBeenCalled();
     });
   });
 

@@ -20,10 +20,12 @@ import type {
   SkillMetadata,
   SkillAction,
   SkillContext,
+  SkillSideEffectReviewRequest,
+  SkillSideEffectReviewer,
   SemanticVersion,
 } from "../types.js";
 import { SkillState } from "../types.js";
-import { SkillNotReadyError } from "../errors.js";
+import { SkillApprovalRequiredError, SkillNotReadyError } from "../errors.js";
 import { JupiterClient } from "./jupiter-client.js";
 import {
   JUPITER_API_BASE_URL,
@@ -90,6 +92,7 @@ export class JupiterSkill implements Skill {
   private wallet: Wallet | null = null;
   private logger: Logger | null = null;
   private client: JupiterClient | null = null;
+  private reviewBeforeSideEffect: SkillSideEffectReviewer | null = null;
 
   private readonly defaultSlippageBps: number;
   private readonly apiBaseUrl: string;
@@ -160,6 +163,7 @@ export class JupiterSkill implements Skill {
       this.connection = context.connection;
       this.wallet = context.wallet;
       this.logger = context.logger;
+      this.reviewBeforeSideEffect = context.reviewBeforeSideEffect ?? null;
       this.client = new JupiterClient({
         apiBaseUrl: this.apiBaseUrl,
         timeoutMs: this.timeoutMs,
@@ -178,6 +182,7 @@ export class JupiterSkill implements Skill {
     this.connection = null;
     this.wallet = null;
     this.logger = null;
+    this.reviewBeforeSideEffect = null;
     this._state = SkillState.Stopped;
   }
 
@@ -216,6 +221,22 @@ export class JupiterSkill implements Skill {
     this.logger!.info(
       `Swap quote: ${quote.inAmount} ${quote.inputMint} -> ${quote.outAmount} ${quote.outputMint} (impact: ${quote.priceImpactPct}%)`,
     );
+
+    await this.requireSideEffectApproval({
+      actionName: "executeSwap",
+      effectKind: "swap",
+      summary: `Swap ${quote.inAmount.toString()} ${quote.inputMint} for ${quote.outAmount.toString()} ${quote.outputMint}`,
+      metadata: {
+        inputMint: quote.inputMint,
+        outputMint: quote.outputMint,
+        inputAmount: quote.inAmount.toString(),
+        outputAmount: quote.outAmount.toString(),
+        priceImpactPct: quote.priceImpactPct.toString(),
+        slippageBps: String(
+          params.slippageBps ?? this.defaultSlippageBps,
+        ),
+      },
+    });
 
     // 2. Get serialized transaction
     const txBytes = await this.client!.getSwapTransaction(
@@ -329,6 +350,16 @@ export class JupiterSkill implements Skill {
   async transferSol(params: TransferSolParams): Promise<TransferResult> {
     this.ensureReady();
 
+    await this.requireSideEffectApproval({
+      actionName: "transferSol",
+      effectKind: "transfer_sol",
+      summary: `Transfer ${params.lamports.toString()} lamports to ${params.recipient.toBase58()}`,
+      metadata: {
+        recipient: params.recipient.toBase58(),
+        lamports: params.lamports.toString(),
+      },
+    });
+
     const instruction = SystemProgram.transfer({
       fromPubkey: this.wallet!.publicKey,
       toPubkey: params.recipient,
@@ -374,6 +405,17 @@ export class JupiterSkill implements Skill {
    */
   async transferToken(params: TransferTokenParams): Promise<TransferResult> {
     this.ensureReady();
+
+    await this.requireSideEffectApproval({
+      actionName: "transferToken",
+      effectKind: "transfer_token",
+      summary: `Transfer ${params.amount.toString()} of ${params.mint.toBase58()} to ${params.recipient.toBase58()}`,
+      metadata: {
+        recipient: params.recipient.toBase58(),
+        mint: params.mint.toBase58(),
+        amount: params.amount.toString(),
+      },
+    });
 
     const TOKEN_PROGRAM_ID = new PublicKey(
       "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
@@ -488,6 +530,38 @@ export class JupiterSkill implements Skill {
   private ensureReady(): void {
     if (this._state !== SkillState.Ready) {
       throw new SkillNotReadyError("jupiter");
+    }
+  }
+
+  private async requireSideEffectApproval(
+    request: Omit<SkillSideEffectReviewRequest, "skillName">,
+  ): Promise<void> {
+    if (!this.reviewBeforeSideEffect) {
+      throw new SkillApprovalRequiredError(
+        "jupiter",
+        request.actionName,
+        "No review-before-side-effect broker is configured",
+      );
+    }
+
+    const review = await this.reviewBeforeSideEffect({
+      ...request,
+      skillName: "jupiter",
+    });
+
+    if (!review.approved) {
+      throw new SkillApprovalRequiredError(
+        "jupiter",
+        request.actionName,
+        review.reason ?? "The requested side effect was not approved",
+        review.reviewedBy,
+      );
+    }
+
+    if (review.reviewedBy) {
+      this.logger?.info(
+        `Side effect approved for jupiter.${request.actionName} by ${review.reviewedBy}`,
+      );
     }
   }
 }
