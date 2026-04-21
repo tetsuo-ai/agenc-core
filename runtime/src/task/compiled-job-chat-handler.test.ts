@@ -866,6 +866,165 @@ describe("compiled job chat task handler", () => {
     );
   });
 
+  it("records policy-failure and domain-denial telemetry for blocked domains", async () => {
+    const provider = createMockProvider([
+      {
+        content: "",
+        toolCalls: [
+          {
+            id: "tc-1",
+            name: "system.httpGet",
+            arguments: '{"url":"https://blocked.example.com/report"}',
+          },
+        ],
+        usage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 },
+        model: "mock-model",
+        finishReason: "tool_calls",
+      },
+      {
+        content: "Fallback brief after blocked domain",
+        toolCalls: [],
+        usage: { promptTokens: 8, completionTokens: 6, totalTokens: 14 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({
+      providers: [provider],
+      allowedTools: ["system.httpGet", "system.pdfExtractText"],
+    });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+    });
+    const result = await handler(
+      createContext(undefined, {
+        metrics: metrics.provider,
+      }),
+    );
+
+    expect(decodeFixedBytes(result.resultData!)).toBe(
+      "Fallback brief after blocked domain",
+    );
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_POLICY_FAILURE,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "network_access_denied",
+        violation_code: "network_access_denied",
+        tool_name: "system.httpGet",
+      }),
+    });
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_DOMAIN_DENIED,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "network_access_denied",
+        tool_name: "system.httpGet",
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job policy failure observed",
+      expect.objectContaining({
+        reason: "network_access_denied",
+        violationCode: "network_access_denied",
+        toolName: "system.httpGet",
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job domain denied",
+      expect.objectContaining({
+        reason: "network_access_denied",
+        toolName: "system.httpGet",
+        host: "blocked.example.com",
+      }),
+    );
+  });
+
+  it("records domain-denial telemetry when a tool blocks a redirect target", async () => {
+    const provider = createMockProvider([
+      {
+        content: "",
+        toolCalls: [
+          {
+            id: "tc-1",
+            name: "system.httpGet",
+            arguments: '{"url":"https://example.com/report"}',
+          },
+        ],
+        usage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 },
+        model: "mock-model",
+        finishReason: "tool_calls",
+      },
+      {
+        content: "Fallback brief after redirect block",
+        toolCalls: [],
+        usage: { promptTokens: 8, completionTokens: 6, totalTokens: 14 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({
+      providers: [provider],
+      allowedTools: ["system.httpGet", "system.pdfExtractText"],
+    });
+    const registry = new ToolRegistry();
+    registry.register(
+      createTool("system.httpGet", async () => ({
+        content: JSON.stringify({
+          error: "Domain not in allowed list: redirected.example.com",
+        }),
+        isError: true,
+      })),
+    );
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+    });
+    const result = await handler(
+      createContext(undefined, {
+        metrics: metrics.provider,
+      }),
+    );
+
+    expect(decodeFixedBytes(result.resultData!)).toBe(
+      "Fallback brief after redirect block",
+    );
+    expect(
+      metrics.counterCalls.filter(
+        (call) => call.name === METRIC_NAMES.COMPILED_JOB_POLICY_FAILURE,
+      ),
+    ).toHaveLength(0);
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_DOMAIN_DENIED,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "tool_domain_blocked",
+        tool_name: "system.httpGet",
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job domain denied",
+      expect.objectContaining({
+        reason: "tool_domain_blocked",
+        toolName: "system.httpGet",
+        host: "redirected.example.com",
+      }),
+    );
+  });
+
   it("records telemetry when L0 runtime blocks side-effect tools", async () => {
     const provider = createMockProvider([
       {
