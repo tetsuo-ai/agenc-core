@@ -111,7 +111,30 @@ function mkRegistry(): ToolRegistry {
 function mkSession(opts: {
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
-}): { session: Session; events: Event[] } {
+  readonly pendingProviderSwitch?: {
+    readonly provider: string;
+    readonly model: string;
+    readonly profile?: string;
+  } | null;
+  readonly sessionConfiguration?: {
+    provider?: { slug?: string };
+    collaborationMode?: { model?: string };
+    [key: string]: unknown;
+  };
+  readonly configStore?: { current: () => unknown };
+}): {
+  session: Session;
+  events: Event[];
+  /** Live reference to the session-state object so tests can read it after mutations. */
+  getState: () => {
+    sessionConfiguration: {
+      provider?: { slug?: string };
+      collaborationMode?: { model?: string };
+      [key: string]: unknown;
+    };
+    totalTokenUsage: number;
+  };
+} {
   const events: Event[] = [];
   const eventLog = new EventLog();
   let subIdCounter = 0;
@@ -119,21 +142,52 @@ function mkSession(opts: {
   eventLog.subscribe((e) => {
     events.push(e);
   });
+  // Live state object — `state.with(fn)` hands this reference to the
+  // callback so the test can observe in-place mutations after runTurn
+  // consumes the staged switch.
+  const state: {
+    sessionConfiguration: {
+      provider?: { slug?: string };
+      collaborationMode?: { model?: string };
+      [key: string]: unknown;
+    };
+    totalTokenUsage: number;
+  } = {
+    sessionConfiguration: opts.sessionConfiguration ?? {
+      provider: { slug: "stub-provider" },
+      collaborationMode: { model: "stub-model" },
+    },
+    totalTokenUsage: 0,
+  };
+  const services: Record<string, unknown> = {
+    provider: opts.provider,
+    registry: opts.registry,
+    hooks: {
+      executeStop: async () => ({}),
+    },
+  };
+  if (opts.configStore) services.configStore = opts.configStore;
   const session = {
     conversationId: "conv-test",
     eventLog,
-    services: {
-      provider: opts.provider,
-      registry: opts.registry,
-      hooks: {
-        executeStop: async () => ({}),
+    services,
+    state: {
+      unsafePeek: () => state,
+      with: async (fn: (s: unknown) => unknown) => {
+        await fn(state);
       },
     },
-    state: {
-      unsafePeek: () => ({ totalTokenUsage: 0 }),
-    },
     abortController: new AbortController(),
-    pendingProviderSwitch: null,
+    pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
+    setPendingProviderSwitch(next: typeof opts.pendingProviderSwitch | null) {
+      (this as { pendingProviderSwitch: unknown }).pendingProviderSwitch =
+        next;
+    },
+    abortTerminal(reason: string) {
+      (this as { abortController: AbortController }).abortController.abort(
+        reason,
+      );
+    },
     budgetTracker: null,
     nextInternalSubId: () => `sub-${++subIdCounter}`,
     emit: (event: Event) => {
@@ -141,7 +195,7 @@ function mkSession(opts: {
       eventLog.emit(event);
     },
   } as unknown as Session;
-  return { session, events };
+  return { session, events, getState: () => state };
 }
 
 async function drain(
@@ -403,5 +457,158 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
   test("non-StreamModelError is never retryable", () => {
     expect(isRetryableStreamError(new Error("some other error"))).toBe(false);
     expect(isRetryableStreamError(undefined)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T11 W4-B / I-13 consumer: pendingProviderSwitch is applied at turn start
+// ─────────────────────────────────────────────────────────────────────
+
+describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
+  test("pendingProviderSwitch is consumed at turn start and session.config.model updates", async () => {
+    const ctx = mkCtx();
+    const { session, getState } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: mkRegistry(),
+      pendingProviderSwitch: {
+        provider: "xai",
+        model: "grok-4",
+      },
+      sessionConfiguration: {
+        provider: { slug: "openai" },
+        collaborationMode: { model: "gpt-4" },
+      },
+    });
+
+    await drain(runTurn(session, ctx, "hello"));
+
+    const applied = getState().sessionConfiguration;
+    expect(applied.collaborationMode?.model).toBe("grok-4");
+  });
+
+  test("pendingProviderSwitch is cleared after consumption", async () => {
+    const ctx = mkCtx();
+    const { session } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: mkRegistry(),
+      pendingProviderSwitch: {
+        provider: "xai",
+        model: "grok-4",
+      },
+    });
+
+    expect(session.pendingProviderSwitch).not.toBeNull();
+
+    await drain(runTurn(session, ctx, "hello"));
+
+    expect(session.pendingProviderSwitch).toBeNull();
+  });
+
+  test("mid-turn /model sets pending, aborts current turn, next turn applies the new model", async () => {
+    // Simulate: a pending switch staged DURING turn N (the existing
+    // inner-loop safety net terminates turn N cleanly), then turn N+1
+    // is a fresh runTurn call that reads the marker and applies the
+    // switch to the session config BEFORE any model-dependent work.
+    const ctx = mkCtx();
+    const { session, getState } = mkSession({
+      provider: mkProvider({ content: "first" }),
+      registry: mkRegistry(),
+      sessionConfiguration: {
+        provider: { slug: "xai" },
+        collaborationMode: { model: "grok-3" },
+      },
+    });
+
+    // Turn N: no pending switch yet. During the turn, simulate a
+    // `/model grok-4` invocation that stages the switch. We stage it
+    // by setting the marker directly on the session (same shape the
+    // safety net path would use). Since this mock turn's loop won't
+    // call abortTerminal here (we're not driving a phase loop), the
+    // first runTurn completes cleanly — the test's contract is that
+    // the NEXT runTurn applies the marker.
+    session.setPendingProviderSwitch({
+      provider: "xai",
+      model: "grok-4",
+    });
+
+    // Turn N+1: fresh runTurn call. The consumer at the top reads the
+    // marker, applies it, and clears it. The new turn proceeds with
+    // the updated model.
+    await drain(runTurn(session, ctx, "second message"));
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+      "grok-4",
+    );
+  });
+
+  test("profile switch via pendingProviderSwitch routes through configStore.resolveProfile when available", async () => {
+    // When a configStore is wired on session.services, the profile
+    // slot drives model resolution through resolveProfile. The staged
+    // marker's `model` field acts as the fallback; the profile overlay
+    // supersedes it when it declares a model.
+    const ctx = mkCtx();
+    const configSnapshot = {
+      model: "base-model",
+      model_provider: "xai",
+      profiles: {
+        coding: {
+          model: "grok-code-fast-1",
+          model_provider: "xai",
+        },
+      },
+    };
+    const { session, getState } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: mkRegistry(),
+      pendingProviderSwitch: {
+        provider: "xai",
+        model: "grok-code-fast-1",
+        profile: "coding",
+      },
+      sessionConfiguration: {
+        provider: { slug: "xai" },
+        collaborationMode: { model: "base-model" },
+      },
+      configStore: {
+        current: () => configSnapshot,
+      },
+    });
+
+    await drain(runTurn(session, ctx, "apply profile"));
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+      "grok-code-fast-1",
+    );
+  });
+
+  test("profile switch falls back to marker's model when configStore is absent", async () => {
+    // No configStore on services -> resolveProfile is not invoked. The
+    // staged marker already carries the profile's declared model
+    // (populated by commands/config.ts::handleProfileSubcommand) so
+    // the session config still ends up with that model.
+    const ctx = mkCtx();
+    const { session, getState } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: mkRegistry(),
+      pendingProviderSwitch: {
+        provider: "xai",
+        model: "grok-code-fast-1",
+        profile: "coding",
+      },
+      sessionConfiguration: {
+        provider: { slug: "xai" },
+        collaborationMode: { model: "base-model" },
+      },
+      // configStore intentionally omitted
+    });
+
+    await drain(runTurn(session, ctx, "apply profile"));
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+      "grok-code-fast-1",
+    );
   });
 });

@@ -247,27 +247,33 @@ describe("requestApproval pipeline", () => {
   });
 
   test("hook short-circuits before resolver", async () => {
-    const hookSpy = vi.fn().mockResolvedValue("approved" as ReviewDecision);
-    const resolverSpy = vi.fn().mockResolvedValue("denied" as ReviewDecision);
+    const hookSpy = vi
+      .fn()
+      .mockResolvedValue({ kind: "approved" } as ReviewDecision);
+    const resolverSpy = vi
+      .fn()
+      .mockResolvedValue({ kind: "denied" } as ReviewDecision);
     const res = await requestApproval({
       ctx: mkCtx(),
       hooks: [hookSpy as PermissionRequestHook],
       resolver: { request: resolverSpy } as ApprovalResolver,
     });
-    expect(res.decision).toBe("approved");
+    expect(res.decision.kind).toBe("approved");
     expect(res.source).toBe("hook");
     expect(resolverSpy).not.toHaveBeenCalled();
   });
 
   test("hook passes (undefined) → resolver runs", async () => {
     const hookSpy = vi.fn().mockResolvedValue(undefined);
-    const resolverSpy = vi.fn().mockResolvedValue("approved" as ReviewDecision);
+    const resolverSpy = vi
+      .fn()
+      .mockResolvedValue({ kind: "approved" } as ReviewDecision);
     const res = await requestApproval({
       ctx: mkCtx(),
       hooks: [hookSpy as PermissionRequestHook],
       resolver: { request: resolverSpy } as ApprovalResolver,
     });
-    expect(res.decision).toBe("approved");
+    expect(res.decision.kind).toBe("approved");
     expect(res.source).toBe("resolver");
     expect(resolverSpy).toHaveBeenCalledOnce();
   });
@@ -278,19 +284,29 @@ describe("requestApproval pipeline", () => {
       ctx: mkCtx(),
       onNoResolver: noResolver,
     });
-    expect(res.decision).toBe("denied");
+    expect(res.decision.kind).toBe("denied");
     expect(res.source).toBe("default_deny");
     expect(noResolver).toHaveBeenCalledOnce();
   });
 
   test("isApprovalAccepted covers all approve variants", () => {
-    expect(isApprovalAccepted("approved")).toBe(true);
-    expect(isApprovalAccepted("approved_for_session")).toBe(true);
-    expect(isApprovalAccepted("approved_exec_policy_amendment")).toBe(true);
-    expect(isApprovalAccepted("denied")).toBe(false);
-    expect(isApprovalAccepted("abort")).toBe(false);
-    expect(isApprovalAccepted("timed_out")).toBe(false);
-    expect(isApprovalAccepted("network_policy_amendment")).toBe(false);
+    expect(isApprovalAccepted({ kind: "approved" })).toBe(true);
+    expect(isApprovalAccepted({ kind: "approved_for_session" })).toBe(true);
+    expect(
+      isApprovalAccepted({
+        kind: "approved_execpolicy_amendment",
+        proposed_execpolicy_amendment: {},
+      }),
+    ).toBe(true);
+    expect(isApprovalAccepted({ kind: "denied" })).toBe(false);
+    expect(isApprovalAccepted({ kind: "abort" })).toBe(false);
+    expect(isApprovalAccepted({ kind: "timed_out" })).toBe(false);
+    expect(
+      isApprovalAccepted({
+        kind: "network_policy_amendment",
+        amendment: { action: "deny", host: "x" },
+      }),
+    ).toBe(false);
   });
 });
 
@@ -387,11 +403,11 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       resolver: {
         request: async () => {
           resolverCalled += 1;
-          return "denied";
+          return { kind: "denied" };
         },
       },
     });
-    expect(res.decision).toBe("approved");
+    expect(res.decision.kind).toBe("approved");
     expect(res.source).toBe("permission_hook");
     expect(resolverCalled).toBe(0);
   });
@@ -400,9 +416,9 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
     const res = await requestApproval({
       ctx: mkCtx(),
       permissionDecisionHooks: [() => ({ kind: "deny" })],
-      resolver: { request: async () => "approved" },
+      resolver: { request: async () => ({ kind: "approved" }) },
     });
-    expect(res.decision).toBe("denied");
+    expect(res.decision.kind).toBe("denied");
     expect(res.source).toBe("permission_hook");
   });
 
@@ -414,11 +430,11 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       resolver: {
         request: async () => {
           resolverCalled += 1;
-          return "approved";
+          return { kind: "approved" };
         },
       },
     });
-    expect(res.decision).toBe("approved");
+    expect(res.decision.kind).toBe("approved");
     expect(res.source).toBe("resolver");
     expect(resolverCalled).toBe(1);
   });
@@ -429,7 +445,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       permissionDecisionHooks: [() => ({ kind: "pass" })],
     });
     expect(res.source).toBe("default_deny");
-    expect(res.decision).toBe("denied");
+    expect(res.decision.kind).toBe("denied");
   });
 });
 
@@ -452,7 +468,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
   test("sandbox escalation: first attempt sandbox-denied → approval → second attempt succeeds with sandbox=off", async () => {
     const calls: string[] = [];
     const resolver: ApprovalResolver = {
-      request: async () => "approved",
+      request: async () => ({ kind: "approved" }),
     };
     const result = await orchestrateToolCall<string>({
       tool: mkTool(),
@@ -474,7 +490,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
 
   test("sandbox escalation: approval denied → ApprovalRejectedError", async () => {
     const resolver: ApprovalResolver = {
-      request: async () => "denied",
+      request: async () => ({ kind: "denied" }),
     };
     await expect(
       orchestrateToolCall<string>({
@@ -492,7 +508,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
 
   test("needs_approval path: approve → tool runs", async () => {
     const resolver: ApprovalResolver = {
-      request: async () => "approved",
+      request: async () => ({ kind: "approved" }),
     };
     let ran = 0;
     const result = await orchestrateToolCall<string>({
@@ -519,7 +535,10 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
         sandboxMode: "workspace_write",
         dispatch: async () => "ok",
       }),
-    ).rejects.toMatchObject({ decision: "denied", name: "ApprovalRejectedError" });
+    ).rejects.toMatchObject({
+      decision: { kind: "denied" },
+      name: "ApprovalRejectedError",
+    });
   });
 
   test("forbidden classification → ApprovalRejectedError, no dispatch", async () => {

@@ -40,6 +40,13 @@ import { monotonicMs } from "../utils/monotonic.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  freshDenialTracking,
+  type DenialTrackingState,
+} from "../permissions/denial-tracking.js";
+import type { ConfigStore } from "../config/store.js";
 import {
   EventLog,
   isDurableEvent,
@@ -354,6 +361,33 @@ export interface SessionServices {
   // T-future: AgenC-specific additions
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
+  /**
+   * T11 W3-A: authoritative permission-mode registry. Commands (`/permissions`,
+   * `/plan`) and the evaluator both read from the same registry instance so
+   * I-3 live-read semantics are honoured. When omitted, `Session`
+   * bootstraps a default registry seeded with `createEmptyToolPermissionContext()`
+   * so test fixtures can continue constructing Sessions without wiring
+   * the full permissions subsystem.
+   */
+  readonly permissionModeRegistry: PermissionModeRegistry;
+  /**
+   * T11 W3-A: optional ConfigStore reference so `/config` and `/permissions`
+   * can reach the store without plumbing it through `SlashCommandContext`.
+   * The `?` is intentional — some test fixtures construct Session without
+   * a ConfigStore, and commands already prefer `ctx.configStore` when set.
+   */
+  readonly configStore?: ConfigStore;
+}
+
+/**
+ * I-13 + I-57 staging shape for a mid-stream provider/model switch. The
+ * `profile` slot is T11 Wave 2's extension so `/config profile <name>`
+ * can stage a profile swap alongside the provider/model pair.
+ */
+export interface PendingProviderSwitch {
+  readonly provider: string;
+  readonly model: string;
+  readonly profile?: string;
 }
 
 /** Abort reason classification (per I-7). */
@@ -454,8 +488,26 @@ export class Session {
   /** I-5: per-child outbound mailboxes (parent → child Interrupt/Resume). T9 wires. */
   readonly childInboxes: Map<ThreadId, Mailbox> = new Map();
 
-  /** I-13: pending mid-stream provider/model switch. Honored by run-turn at top-of-loop. */
-  pendingProviderSwitch: { provider: string; model: string } | null = null;
+  /**
+   * I-13 (mid-stream provider/model switch) + I-57 (history-compat check)
+   * staging slot. Honored by `run-turn` at top-of-loop: the turn loop
+   * consumes this marker, applies the switch atomically, and clears the
+   * slot before the next turn.
+   *
+   * The T11 Wave 2 extension adds `profile?` so `/config profile <name>`
+   * can stage a profile swap through the same gate. I-30 (per-turn
+   * config-snapshot immutability) forbids mutating the live
+   * `sessionConfiguration` mid-turn, so profile resolution must land on
+   * the next turn's config snapshot through this slot.
+   *
+   * Mutators should call `Session.setPendingProviderSwitch(...)` rather
+   * than poking the field directly so the I-13 staging site has a
+   * single well-typed entry point.
+   *
+   * TODO(T11-W3): surface the active profile name back on the snapshot
+   * once ConfigStore tracks it.
+   */
+  pendingProviderSwitch: PendingProviderSwitch | null = null;
 
   /** I-22: token-budget tracker (null = budgeting disabled). Set at
    *  session construction by SessionOpts.budgetTracker; updated per
@@ -475,9 +527,29 @@ export class Session {
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
 
+  /**
+   * T11 W4: session-scoped denial tracking. Mutated in place by the
+   * permission evaluator (matches openclaude's `Object.assign` contract)
+   * so denial limits (3 consecutive / 20 total) persist across turns in
+   * the same session. Reset by `/clear` via `Object.assign` so the shared
+   * reference stays stable.
+   */
+  readonly denialTracking: DenialTrackingState = freshDenialTracking();
+
   /** Session creation wall-clock (monotonic ms; for telemetry). */
   readonly createdAtMs: number = monotonicMs();
 
+  /**
+   * Session bootstrap.
+   *
+   * Notable defaults:
+   *   - `opts.services.permissionModeRegistry` is constructed with a
+   *     default `PermissionModeRegistry` seeded from
+   *     `createEmptyToolPermissionContext()` when absent, so test
+   *     fixtures that do not wire the full permissions subsystem still
+   *     get a working registry. Production bootstrap paths supply the
+   *     real registry built during startup by the CLI.
+   */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
     this.txEvent = opts.eventQueue ?? new AsyncQueue<Event>();
@@ -500,7 +572,22 @@ export class Session {
       drain: () => this.mailbox.drain(),
     });
     this.guardianReviewSession = { enabled: false };
-    this.services = opts.services;
+    // Bootstrap a default permission-mode registry when the caller did
+    // not supply one. `SessionServices.permissionModeRegistry` is
+    // required on the interface, but historical test fixtures that
+    // loose-cast through `unknown as SessionServices` can still reach
+    // this branch with an `undefined` slot, so treat the cast-through
+    // case as a missing registry and fall back to the empty default.
+    const rawRegistry = (opts.services as unknown as {
+      permissionModeRegistry?: PermissionModeRegistry;
+    }).permissionModeRegistry;
+    const resolvedRegistry =
+      rawRegistry ??
+      new PermissionModeRegistry(createEmptyToolPermissionContext());
+    this.services =
+      rawRegistry === undefined
+        ? { ...opts.services, permissionModeRegistry: resolvedRegistry }
+        : opts.services;
     this.jsRepl = opts.jsRepl;
     this.nextInternalSubIdValue = 0;
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
@@ -510,6 +597,19 @@ export class Session {
   // ───────────────────────────────────────────────────────────
   // Methods (codex parity).
   // ───────────────────────────────────────────────────────────
+
+  /**
+   * Typed mutator for the I-13 + I-57 staging slot. Commands
+   * (`/model`, `/provider`, `/config profile <name>`, recovery
+   * fallback) set the pending switch via this helper instead of
+   * poking `pendingProviderSwitch` directly, so the staging site has
+   * a single well-typed entry point. Pass `null` to clear the slot.
+   */
+  setPendingProviderSwitch(
+    pendingSwitch: PendingProviderSwitch | null,
+  ): void {
+    this.pendingProviderSwitch = pendingSwitch;
+  }
 
   /**
    * Mirrors codex `Session::next_internal_sub_id` — monotonic id allocation.

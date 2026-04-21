@@ -4,6 +4,7 @@ import {
   classifyToolError,
   DEFAULT_MAX_TOOL_RESULT_BYTES,
   DEFAULT_TOOL_TIMEOUT_MS,
+  defaultCheckModeStillAllowed,
   parseToolArgsWithBigInt,
   requestApprovalWithAbortRace,
   resolveTimeoutMs,
@@ -20,6 +21,20 @@ import type {
   PreToolUseHook,
 } from "./tool-hooks.js";
 import { EventLog } from "../session/event-log.js";
+import {
+  attachContextDefaults,
+  hasPermissionsToUseTool,
+  type AppStateSnapshot,
+  type ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import {
+  createEmptyToolPermissionContext,
+  type PermissionMode,
+  type PermissionResult,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
 
 function makeInvocation(callId: string, toolName: string): ToolInvocation {
   return {
@@ -528,5 +543,342 @@ describe("runToolUse — progress events", () => {
     expect(progressEvents[0]!.payload.callId).toBe("c-prog");
     expect(progressEvents[0]!.payload.chunk).toBe("chunk-a");
     expect(progressEvents[1]!.payload.chunk).toBe("chunk-b");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T11 W3-B — permission evaluator integration + I-3 mid-execution
+// ─────────────────────────────────────────────────────────────────────
+
+function buildEvaluatorContext(
+  mode: PermissionMode,
+  overrides?: Partial<ToolPermissionContext>,
+): { context: ToolEvaluatorContext; registry: PermissionModeRegistry } {
+  const ctx = createEmptyToolPermissionContext({ mode, ...(overrides ?? {}) });
+  const registry = new PermissionModeRegistry(ctx);
+  const denialTracking = freshDenialTracking();
+  const appState: AppStateSnapshot = {
+    toolPermissionContext: registry.current(),
+    denialTracking,
+    autoModeActive: false,
+  };
+  const context = attachContextDefaults({
+    session: {} as never,
+    denialTracking,
+    getAppState: (): AppStateSnapshot => ({
+      toolPermissionContext: registry.current(),
+      denialTracking,
+      autoModeActive: appState.autoModeActive,
+    }),
+  });
+  return { context, registry };
+}
+
+describe("T11 W3-B — permission evaluator integration", () => {
+  test("bypassPermissions mode skips prompts and allows execute()", async () => {
+    const { context } = buildEvaluatorContext("bypassPermissions");
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "wrote" };
+      },
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.writeFile"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+    });
+    expect(out.isError).toBe(false);
+    expect(out.content).toBe("wrote");
+    expect(executed).toBe(1);
+  });
+
+  test("default mode with no matching rules returns ask → deny when no prompt wired", async () => {
+    const { context } = buildEvaluatorContext("default");
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "wrote" };
+      },
+    };
+    const log = new EventLog();
+    const errorCauses: string[] = [];
+    log.subscribe((e) => {
+      if (e.msg.type === "error") {
+        const pl = e.msg.payload as { cause: string };
+        errorCauses.push(pl.cause);
+      }
+    });
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.writeFile"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      eventLog: log,
+    });
+    expect(out.isError).toBe(true);
+    expect(executed).toBe(0);
+    expect(errorCauses.some((c) => c.startsWith("permission_denied:"))).toBe(
+      true,
+    );
+  });
+
+  test("deny rule short-circuits before execute()", async () => {
+    const { context } = buildEvaluatorContext("default", {
+      alwaysDenyRules: { session: ["system.writeFile"] },
+    });
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "wrote" };
+      },
+    };
+    const log = new EventLog();
+    const errorCauses: string[] = [];
+    log.subscribe((e) => {
+      if (e.msg.type === "error") {
+        const pl = e.msg.payload as { cause: string };
+        errorCauses.push(pl.cause);
+      }
+    });
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.writeFile"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      eventLog: log,
+    });
+    expect(out.isError).toBe(true);
+    expect(executed).toBe(0);
+    // Deny via rule surfaces as `permission_denied:rule` (decisionReason.type === "rule").
+    expect(errorCauses.some((c) => c === "permission_denied:rule")).toBe(true);
+  });
+
+  test("allow rule lets execute() run under default mode", async () => {
+    const { context } = buildEvaluatorContext("default", {
+      alwaysAllowRules: { session: ["system.writeFile"] },
+    });
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "wrote" };
+      },
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.writeFile"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+    });
+    expect(out.isError).toBe(false);
+    expect(executed).toBe(1);
+  });
+
+  test("evaluator custom allow with updatedInput is threaded into tool.execute()", async () => {
+    const { context: baseContext } = buildEvaluatorContext("default");
+    // Custom canUseTool returns allow with an updatedInput replacing arg.
+    const canUseTool = async () =>
+      ({
+        behavior: "allow" as const,
+        updatedInput: { redacted: true },
+      }) as PermissionResult;
+    let seenArgs: unknown = null;
+    const tool: Tool = {
+      name: "system.echo",
+      description: "",
+      inputSchema: {},
+      execute: async (args) => {
+        seenArgs = { ...args };
+        return { content: "ok" };
+      },
+    };
+    await runToolUse('{"original":true}', {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.echo"),
+      canUseTool,
+      permissionContext: baseContext,
+    });
+    expect((seenArgs as { redacted?: boolean })?.redacted).toBe(true);
+    expect((seenArgs as { original?: boolean })?.original).toBeUndefined();
+  });
+
+  test("mid-execution plan-mode transition aborts in-flight write-capable tool", async () => {
+    const { context, registry } = buildEvaluatorContext("default", {
+      alwaysAllowRules: { session: ["system.writeFile"] },
+    });
+    const abortCtl = new AbortController();
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: {},
+      execute: (args) =>
+        new Promise((resolve, reject) => {
+          const sig = (args as { __signal?: AbortSignal }).__signal;
+          const onAbort = () => {
+            reject(new Error("aborted: plan mode"));
+          };
+          // Listen on the supplied session signal (bound by
+          // runToolUse via `signal`), otherwise fall back to the
+          // abort controller passed alongside modeChangeRegistry.
+          abortCtl.signal.addEventListener("abort", onAbort, { once: true });
+          if (sig) {
+            sig.addEventListener("abort", onAbort, { once: true });
+          }
+          // Never resolves on its own.
+        }),
+    };
+    const runP = runToolUse("{}", {
+      signal: abortCtl.signal,
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.writeFile"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      modeChangeRegistry: registry,
+      abortController: abortCtl,
+    });
+    // After microtask, flip mode to `plan` and expect the in-flight
+    // tool to abort.
+    setImmediate(async () => {
+      const nextCtx: ToolPermissionContext = {
+        ...registry.current(),
+        mode: "plan" as PermissionMode,
+      };
+      await registry.update(nextCtx);
+    });
+    const out = await runP;
+    expect(out.isError).toBe(true);
+    expect(out.content).toMatch(/aborted|plan/i);
+  });
+
+  test("mode-change subscription is removed on normal completion (no leak)", async () => {
+    const { context, registry } = buildEvaluatorContext("default", {
+      alwaysAllowRules: { session: ["system.readFile"] },
+    });
+    const abortCtl = new AbortController();
+    const tool: Tool = {
+      name: "system.readFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "ok" }),
+    };
+    const beforeSize = (registry as unknown as {
+      subscribers: Set<unknown>;
+    }).subscribers.size;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.readFile"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      modeChangeRegistry: registry,
+      abortController: abortCtl,
+    });
+    expect(out.isError).toBe(false);
+    const afterSize = (registry as unknown as {
+      subscribers: Set<unknown>;
+    }).subscribers.size;
+    expect(afterSize).toBe(beforeSize);
+  });
+
+  test("mode-change subscription is removed on tool error (no leak)", async () => {
+    const { context, registry } = buildEvaluatorContext("default", {
+      alwaysAllowRules: { session: ["system.thrower"] },
+    });
+    const abortCtl = new AbortController();
+    const tool: Tool = {
+      name: "system.thrower",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        throw new Error("boom");
+      },
+    };
+    const beforeSize = (registry as unknown as {
+      subscribers: Set<unknown>;
+    }).subscribers.size;
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.thrower"),
+      canUseTool: hasPermissionsToUseTool,
+      permissionContext: context,
+      modeChangeRegistry: registry,
+      abortController: abortCtl,
+    });
+    expect(out.isError).toBe(true);
+    const afterSize = (registry as unknown as {
+      subscribers: Set<unknown>;
+    }).subscribers.size;
+    expect(afterSize).toBe(beforeSize);
+  });
+
+  test("defaultCheckModeStillAllowed: plan mode strips write-capable tools", () => {
+    const writeTool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "" }),
+    };
+    const readTool: Tool = {
+      name: "system.readFile",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "" }),
+      isReadOnly: true,
+    };
+    expect(defaultCheckModeStillAllowed(writeTool, {}, "plan")).toBe(false);
+    expect(defaultCheckModeStillAllowed(readTool, {}, "plan")).toBe(true);
+    // Non-plan transitions do not retroactively abort.
+    expect(defaultCheckModeStillAllowed(writeTool, {}, "acceptEdits")).toBe(
+      true,
+    );
+    expect(defaultCheckModeStillAllowed(writeTool, {}, "bypassPermissions")).toBe(
+      true,
+    );
+  });
+
+  test("no permission context supplied → evaluator path is skipped entirely", async () => {
+    // Back-compat: runToolUse without canUseTool/permissionContext
+    // still dispatches normally (existing approval modal path).
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.bash",
+      description: "",
+      inputSchema: {},
+      execute: async () => {
+        executed += 1;
+        return { content: "ran" };
+      },
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "system.bash"),
+    });
+    expect(out.isError).toBe(false);
+    expect(executed).toBe(1);
   });
 });

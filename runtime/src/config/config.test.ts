@@ -11,7 +11,12 @@ import {
   AgenCConfig,
   resolveModelDisambiguated,
   AmbiguousModelError,
+  InvalidPermissionsConfigError,
   UnknownModelError,
+  isValidPermissionMode,
+  validatePermissionsConfig,
+  KNOWN_CONFIG_KEYS,
+  DEFERRED_OPENCLAUDE_KEYS,
 } from "./schema.js";
 import { parseToml, loadConfig, TomlParseError } from "./loader.js";
 import {
@@ -150,6 +155,112 @@ describe("schema: normalizeCodexKeyAliases", () => {
     });
     expect(out.tools_config).toEqual({ web_search: false });
     expect(out.tools).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T11 Wave 3 Agent D: permissions block
+// ─────────────────────────────────────────────────────────────────────
+
+describe("schema: permissions block (T11)", () => {
+  test("permissions is registered as a known key (no longer deferred)", () => {
+    expect(KNOWN_CONFIG_KEYS.includes("permissions")).toBe(true);
+    expect(DEFERRED_OPENCLAUDE_KEYS.includes("permissions")).toBe(false);
+  });
+
+  test("normalizeRawConfig preserves permissions on the typed path, not _unknown", () => {
+    const out = normalizeRawConfig({
+      model: "grok-4-fast",
+      permissions: {
+        allow: ["Read(*)"],
+        deny: ["Bash(rm -rf *)"],
+      },
+    });
+    expect(out.permissions).toEqual({
+      allow: ["Read(*)"],
+      deny: ["Bash(rm -rf *)"],
+    });
+    expect(out._unknown).toBeUndefined();
+  });
+
+  test("mergeConfigs deep-merges a permissions overlay onto the base config", () => {
+    const base: AgenCConfig = {
+      permissions: {
+        allow: ["Read(*)"],
+        defaultMode: "default",
+      },
+    };
+    const out = mergeConfigs(base, {
+      permissions: {
+        allow: ["Read(*)", "Edit(src/**)"],
+        defaultMode: "acceptEdits",
+      },
+    });
+    // Arrays replace (right-biased), defaultMode flips to the override.
+    expect(out.permissions?.allow).toEqual(["Read(*)", "Edit(src/**)"]);
+    expect(out.permissions?.defaultMode).toBe("acceptEdits");
+    expect(Object.isFrozen(out.permissions)).toBe(true);
+  });
+
+  test("validatePermissionsConfig accepts a full well-formed block", () => {
+    const out = validatePermissionsConfig({
+      allow: ["Read(*)"],
+      deny: ["Bash(rm *)"],
+      ask: ["Edit(*)"],
+      additionalDirectories: ["/tmp/sandbox"],
+      defaultMode: "plan",
+    });
+    expect(out).toBeDefined();
+    expect(out?.allow).toEqual(["Read(*)"]);
+    expect(out?.deny).toEqual(["Bash(rm *)"]);
+    expect(out?.ask).toEqual(["Edit(*)"]);
+    expect(out?.additionalDirectories).toEqual(["/tmp/sandbox"]);
+    expect(out?.defaultMode).toBe("plan");
+    expect(Object.isFrozen(out)).toBe(true);
+  });
+
+  test("validatePermissionsConfig accepts an empty object (all sub-fields optional)", () => {
+    const out = validatePermissionsConfig({});
+    expect(out).toEqual({});
+  });
+
+  test("validatePermissionsConfig returns undefined for undefined input (field is optional)", () => {
+    expect(validatePermissionsConfig(undefined)).toBeUndefined();
+  });
+
+  test("validatePermissionsConfig rejects an invalid defaultMode", () => {
+    expect(() =>
+      validatePermissionsConfig({ defaultMode: "nonsense" }),
+    ).toThrow(InvalidPermissionsConfigError);
+  });
+
+  test("validatePermissionsConfig rejects a non-array allow field", () => {
+    expect(() =>
+      validatePermissionsConfig({ allow: "Read(*)" as unknown }),
+    ).toThrow(InvalidPermissionsConfigError);
+  });
+
+  test("validatePermissionsConfig rejects an array element that is not a string", () => {
+    expect(() =>
+      validatePermissionsConfig({ deny: [123 as unknown as string] }),
+    ).toThrow(InvalidPermissionsConfigError);
+  });
+
+  test("isValidPermissionMode matches all seven mode variants and rejects garbage", () => {
+    for (const m of [
+      "default",
+      "acceptEdits",
+      "plan",
+      "bypassPermissions",
+      "dontAsk",
+      "auto",
+      "bubble",
+    ]) {
+      expect(isValidPermissionMode(m)).toBe(true);
+    }
+    expect(isValidPermissionMode("nonsense")).toBe(false);
+    expect(isValidPermissionMode(null)).toBe(false);
+    expect(isValidPermissionMode(42)).toBe(false);
   });
 });
 

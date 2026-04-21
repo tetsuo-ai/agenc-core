@@ -17,6 +17,8 @@
  */
 
 import type { LLMProvider } from "../llm/types.js";
+import type { PermissionMode } from "../permissions/types.js";
+import type { PermissionModeRegistry } from "../permissions/mode.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep placeholder types (real impls land in later tranches).
@@ -532,6 +534,18 @@ export interface TurnContext {
 
   /** I-1: subagent recursion depth. Root session = 0; children +=1 (T9 enforces cap). */
   readonly depth: number;
+
+  /**
+   * I-30 snapshot of the permission mode at turn start. Captured from
+   * `session.services.permissionModeRegistry.current().mode` when the
+   * TurnContext is built and never mutated afterwards.
+   *
+   * IMPORTANT (I-3 re-reads): evaluator paths that need the *live*
+   * permission mode MUST call `registry.current()` fresh on every
+   * check. They MUST NOT consult this field — it is a snapshot, not
+   * the live registry value.
+   */
+  readonly permissionMode: PermissionMode;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -973,6 +987,14 @@ export interface BuildTurnContextOptions {
   depth?: number;
   /** Optional override for current date / timezone (testing). */
   clock?: { currentDate: string; timezone: string };
+  /**
+   * I-30 snapshot of the permission mode at turn start. When absent,
+   * the builder falls back to `"default"` so tests that construct
+   * TurnContexts without a PermissionModeRegistry keep working.
+   * Evaluator I-3 re-reads must continue to call the live registry;
+   * this field is strictly the per-turn snapshot.
+   */
+  permissionMode?: PermissionMode;
 }
 
 /**
@@ -1056,6 +1078,11 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     turnSkills: new TurnSkillsContext(skillsOutcome),
     turnTimingState: new TurnTimingState(),
     depth: opts.depth ?? 0,
+    // I-30 snapshot of the permission mode at turn start. Evaluator I-3
+    // re-reads MUST consult the live registry instead of this field;
+    // this slot exists only so per-turn observers can see the mode that
+    // was active when the turn began without racing the registry.
+    permissionMode: opts.permissionMode ?? "default",
   };
 }
 
@@ -1082,6 +1109,14 @@ export interface SessionForTurn {
   readonly environment?: Environment;
   readonly network?: NetworkProxy;
   readonly jsRepl?: JsReplHandle;
+  /**
+   * I-30 snapshot source for the per-turn permission-mode slot. When
+   * present, `newDefaultTurnWithSubId` / `newTurnWithSubId` read the
+   * current mode once at turn construction and pin it on the
+   * TurnContext. Optional so test fixtures that do not need permission
+   * wiring can keep omitting it.
+   */
+  readonly permissionModeRegistry?: PermissionModeRegistry;
   /** Monotonic sub-id allocator (codex `next_internal_sub_id`). */
   nextInternalSubId(): string;
 }
@@ -1126,6 +1161,11 @@ export function newDefaultTurnWithSubId(
   session: SessionForTurn,
   subId: string,
 ): TurnContext {
+  // I-30 snapshot: read the registry exactly once at turn construction.
+  // Evaluator I-3 re-reads stay on the live registry; this snapshot is
+  // only for per-turn observers that need to know the mode that was
+  // active when the turn began.
+  const permissionMode = session.permissionModeRegistry?.current().mode;
   return buildTurnContext({
     conversationId: session.conversationId,
     subId,
@@ -1141,6 +1181,7 @@ export function newDefaultTurnWithSubId(
       : {}),
     ...(session.network !== undefined ? { network: session.network } : {}),
     ...(session.jsRepl !== undefined ? { jsRepl: session.jsRepl } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
   });
 }
 
@@ -1170,6 +1211,9 @@ export function newTurnWithSubId(
   configOverrides?: Partial<Config>,
 ): TurnContext {
   const perTurnConfig = buildPerTurnConfig(session, configOverrides);
+  // I-30 snapshot: registry read is a single atomic lookup at turn
+  // construction. Evaluator I-3 re-reads stay on the live registry.
+  const permissionMode = session.permissionModeRegistry?.current().mode;
   return buildTurnContext({
     conversationId: session.conversationId,
     subId,
@@ -1185,5 +1229,6 @@ export function newTurnWithSubId(
       : {}),
     ...(session.network !== undefined ? { network: session.network } : {}),
     ...(session.jsRepl !== undefined ? { jsRepl: session.jsRepl } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
   });
 }

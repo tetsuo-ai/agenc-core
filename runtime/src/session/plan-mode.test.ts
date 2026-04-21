@@ -74,6 +74,26 @@ describe("isPlanMode", () => {
     } as unknown as TurnContext;
     expect(isPlanMode(ctx)).toBe(true);
   });
+
+  test("returns true when sessionConfiguration.permissionContext.mode === 'plan' (T11 W2 real gate)", () => {
+    const ctx = {
+      subId: "t",
+      collaborationMode: { model: "chat" },
+      sessionConfiguration: {
+        permissionContext: { mode: "plan" },
+      },
+    } as unknown as TurnContext;
+    expect(isPlanMode(ctx)).toBe(true);
+  });
+
+  test("legacy collaborationMode.model === 'plan' still wins when permissionContext absent", () => {
+    // Ensures the fallback path keeps compiling / firing for pre-W3 wiring.
+    const ctx = {
+      subId: "t",
+      collaborationMode: { model: "plan" },
+    } as unknown as TurnContext;
+    expect(isPlanMode(ctx)).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────

@@ -95,9 +95,12 @@ mutation tools call before their final commit (file write, process
 spawn, network send). `permissions/mode.ts` exposes
 `subscribeToModeChange()` for abortability.
 
-**Scheduled for:** T11 (permissions tranche). The mid-dispatch guard
-and `permissions/mode.ts` subscription API do not exist yet; this
-invariant lands with T11.
+**Status:** WIRED (T11) — `runtime/src/tools/execution.ts`
+subscribes via `PermissionModeRegistry.subscribeToModeChange`
+inside `runToolUse` (unsubscribe on settle) and the evaluator
+`runtime/src/permissions/evaluator.ts::checkModeGate` re-reads
+`context.getAppState()` at step 2a to observe Shift+Tab races
+mid-evaluation.
 
 **Test:** `tools/execution.test.ts` — start a write tool, flip mode to
 plan mid-execution, assert write aborts and emits
@@ -436,6 +439,12 @@ Better to abort cleanly + apply on next turn.
 `runtime/src/session/run-turn.ts` reads pending-switch flag at the
 top of each turn and applies before Phase 1.
 
+**Status:** WIRED (T11) — staged via the typed mutator in
+`runtime/src/commands/model.ts` (sets `session.pendingProviderSwitch`);
+consumed at the top of the turn loop in
+`runtime/src/session/run-turn.ts` (see `session.pendingProviderSwitch`
+check inside the run-turn loop).
+
 **Test:** `commands/model.test.ts` — start a stream, fire `/model
 gpt-5` mid-stream, assert (a) current stream aborts with reason, (b)
 next turn uses gpt-5, (c) `lastResponseId` cleared, (d) warning
@@ -765,7 +774,7 @@ keep this section navigable.
 **NEW.** `MEMORY.md` is written by both the auto-extract subagent and (potentially) hand-edits. Race loses one write silently. Rule: acquire `fs.open(path, 'wx')` exclusive lock with 2s timeout; on contention, emit `warning:'memory_write_contention'` + skip the write, retrying on the next auto-save tick. Journal append replay (`MEMORY.md.extract`) is deferred to T11; current impl emits `warning:'memory_write_contention'` + skips the write, retrying on the next auto-save tick. **Where:** `runtime/src/prompts/memory/auto-save.ts`. **Scheduled for:** T10 (memory / auto-save tranche); journal-replay variant lands in T11.
 
 ### I-30 · Config snapshot is per-turn-immutable
-**NEW.** User edits `~/.agenc/config.toml` mid-session. Without policy, half a turn uses old values, half new. Rule: `LoadConfig` reads once at session init; `TurnState` carries a `configSnapshot: Readonly<Config>` constructed at turn start; phases ALWAYS read from `turnState.configSnapshot`, never from a live config object. File-watch on `config.toml` triggers `warning:'config_reloaded_takes_effect_next_turn'` only — never mid-turn. **Where:** `runtime/src/session/turn-state.ts` + `runtime/src/config/loader.ts`.
+**NEW.** User edits `~/.agenc/config.toml` mid-session. Without policy, half a turn uses old values, half new. Rule: `LoadConfig` reads once at session init; `TurnState` carries a `configSnapshot: Readonly<Config>` constructed at turn start; phases ALWAYS read from `turnState.configSnapshot`, never from a live config object. File-watch on `config.toml` triggers `warning:'config_reloaded_takes_effect_next_turn'` only — never mid-turn. **Where:** `runtime/src/session/turn-state.ts` + `runtime/src/config/loader.ts`. **Status:** WIRED (T11) — `runtime/src/session/turn-context.ts::buildTurnContext` clones the Config and `deepFreeze`s it into `configSnapshot: Readonly<Config>` before the TurnContext is handed to phases.
 
 ## Subagent lifecycle (I-31..I-37)
 
@@ -827,7 +836,7 @@ keep this section navigable.
 **EXTEND** I-12. ENOSPC in `Sidecar1` (session-store) does not break `Sidecar5` (error-log-sink) — they're independent files. Rule: each sidecar implements its own degraded ring buffer; one sidecar's failure doesn't propagate. Critically: `error-log-sink` writing about another sidecar's ENOSPC must not itself ENOSPC indefinitely (recursion). Reserve a 64KB in-memory error buffer that always succeeds. **Where:** `runtime/src/session/sidecar.ts`.
 
 ### I-44 · Modal decision is turn-id-stamped to reject stale resolutions
-**NEW.** Modal opened in turn N. Phase 3 recovery loops back to Phase 1, starting turn N+1's prepare. Modal promise from turn N resolves with `'allow'` after Phase 1 of N+1 begins. Tool dispatched against the wrong turn's intent. Rule: every modal decision carries `decisionAtTurnId`; `tools/execution.ts` rejects decisions where `currentTurn.id !== decision.turnId` with `warning:'stale_modal_decision'`. **Where:** `runtime/src/tools/execution.ts` + `runtime/src/tui/permissions/InteractiveHandler.tsx`.
+**NEW.** Modal opened in turn N. Phase 3 recovery loops back to Phase 1, starting turn N+1's prepare. Modal promise from turn N resolves with `'allow'` after Phase 1 of N+1 begins. Tool dispatched against the wrong turn's intent. Rule: every modal decision carries `decisionAtTurnId`; `tools/execution.ts` rejects decisions where `currentTurn.id !== decision.turnId` with `warning:'stale_modal_decision'`. **Where:** `runtime/src/tools/execution.ts` + `runtime/src/tui/permissions/InteractiveHandler.tsx`. **Status:** WIRED (T11) — `runtime/src/permissions/context.ts::PendingPermissionRequest` carries the `turnId` stamp set by the orchestrator; dispatcher + evaluator consumers reject resolutions whose stamp does not match the active turn.
 
 ## Boot, signals, init (I-45..I-52)
 
@@ -870,7 +879,7 @@ keep this section navigable.
 **NEW.** Some providers emit chunks in unexpected order (text after tool_use, etc). Rule: `stream-parser.ts` buffers incoming chunks; on stream end, reorders to canonical order (thinking → tool_use → text) before forming the assistant message. Emit `warning:'stream_chunk_reordered'` with provider + count for telemetry. **Where:** `runtime/src/llm/stream-parser.ts`.
 
 ### I-57 · History compatibility check on provider switch (extends I-13)
-**NEW.** I-13 covers the abort flow on `/model` mid-stream. But a session whose history has 3 image messages can't continue under a provider that doesn't support images. Rule: on `/model` or `/provider` switch, run `validateHistoryCompatibility(newCaps, history)`. If history contains content the new provider rejects (images, audio, thinking blocks), strip + nudge user: "your history has image messages; new provider doesn't support them — stripped." Emit `warning:'content_stripped_on_switch'`. **Where:** `runtime/src/commands/model.ts` + `runtime/src/commands/provider.ts` (T11 scope — neither file exists yet). **Scheduled for:** T11 (commands / slash-command dispatcher tranche).
+**NEW.** I-13 covers the abort flow on `/model` mid-stream. But a session whose history has 3 image messages can't continue under a provider that doesn't support images. Rule: on `/model` or `/provider` switch, run `validateHistoryCompatibility(newCaps, history)`. If history contains content the new provider rejects (images, audio, thinking blocks), strip + nudge user: "your history has image messages; new provider doesn't support them — stripped." Emit `warning:'content_stripped_on_switch'`. **Where:** `runtime/src/commands/model.ts` + `runtime/src/commands/provider.ts` (T11 scope — neither file exists yet). **Status:** WIRED (T11) AS STUB — `runtime/src/commands/model.ts::checkModelHistoryCompat` is the staging site and always returns compatible today; the real capability-registry comparison is deferred to T13 (see I-53) and will replace the stub without changing the call-site contract.
 
 ### I-58 · Honor `Retry-After` header on 429 (port openclaude)
 **PORT** openclaude `services/api/withRetry.ts:303-475`. Rule: 429 response with `Retry-After: N` MUST sleep for max(N, exponentialBackoff). Cap at user-configurable `MAX_RETRY_AFTER_MS = 300_000` (5 min); above cap, emit `warning:'rate_limit_exceeds_max_wait'` and abort to recovery. **Where:** `runtime/src/llm/oauth/refresh-loop.ts` + `runtime/src/llm/wire/*.ts`.
@@ -916,7 +925,7 @@ keep this section navigable.
 **NEW.** Pasted text containing `\x1b[...` ANSI sequences renders without injection but becomes a semantic Trojan if forwarded to a tool. Rule: paste handler strips bytes in `0x00-0x1F` (except `\n`, `\t`) and `0x80-0x9F` before storing. Emit `warning:'paste_sanitized'` with byte count. **Where:** `runtime/src/tui/composer/image-paste.ts` (T12 scope). **Scheduled for:** T12.
 
 ### I-68 · Slash command recognized only on first line
-**NEW.** Pasted text starting with `/model gpt-5\nsome prompt\n...` should NOT trigger `/model`; today it would. Rule: `parseSlashCommand()` matches `^/[a-z]+(?:\s|$)` against ONLY the first line; multi-line input never dispatches a slash command. **Where:** `runtime/src/commands/dispatcher.ts` (T11 scope — dispatcher does not exist yet). **Scheduled for:** T11.
+**NEW.** Pasted text starting with `/model gpt-5\nsome prompt\n...` should NOT trigger `/model`; today it would. Rule: `parseSlashCommand()` matches `^/[a-z]+(?:\s|$)` against ONLY the first line; multi-line input never dispatches a slash command. **Where:** `runtime/src/commands/dispatcher.ts`. **Status:** WIRED (T11) — enforced in `runtime/src/commands/dispatcher.ts::parseSlashCommand`, which splits on `\n` and requires every subsequent line to be whitespace-only before dispatching (documented inline with the I-68 fence).
 
 ### I-69 · Multi-line paste is atomic w.r.t. Enter
 **NEW.** User pastes 3 lines, reflexively hits Enter after line 1 — submission strips lines 2-3. Rule: `Composer` tracks `paste-in-flight` state; while true, Enter is buffered, not dispatched. Cleared on paste-complete event (whichever terminal-specific hook fires last). **Where:** `runtime/src/tui/composer/Composer.tsx` (T12 scope). **Scheduled for:** T12.
@@ -1199,3 +1208,39 @@ Anything marked **NEW** must be implemented in AgenC code; nothing to
 copy from upstream. **PORT** items copy a working pattern from the
 named source. **EXTEND** items take a partial pattern and broaden it.
 **CHANGE** items deliberately diverge from upstream.
+
+---
+
+## Proposed Invariants (T11 architecture, not yet numbered)
+
+These are genuine invariants observed in the shipped T11 architecture
+but not yet assigned I-numbers. They are called out here so a later
+verification sweep can either promote them into the numbered series
+(appended at the end to avoid renumbering) or consciously reject them.
+
+### Proposed · Slash commands with side effects require `session` in context
+
+Informational commands (`/help`, `/keybindings`) may run with a nil
+session, but any command that mutates session state (`/clear`,
+`/compact`, `/model`, `/provider`, `/permissions`, `/plan`, `/fork`,
+`/resume`, `/enter-worktree`, `/exit-worktree`) must receive a live
+`session` inside the command context. The dispatcher refuses to
+execute a side-effectful command without a session; callers that
+bridge remotely (daemon, IPC) must first rehydrate a session before
+dispatching. **Where to enforce:** `runtime/src/commands/dispatcher.ts`
++ each command's own handler. **Test:** dispatch `/clear` with no
+session; assert refusal.
+
+### Proposed · `/permissions` mutations must propagate atomically
+
+A `/permissions` write that stages a new rule (or flips a mode) must
+apply to the live session state for the next tool-evaluation, and —
+when invoked with `--persist` — must also write through to the
+settings file in a single atomic pass. If either the in-memory update
+or the settings-file write fails, the whole mutation must fail with a
+single error and leave both stores untouched so session-state and
+on-disk settings never diverge silently. **Where to enforce:**
+`runtime/src/commands/permissions.ts` + `runtime/src/permissions/settings.ts`.
+**Test:** stub the settings-file write to throw; assert the in-memory
+permission state is rolled back and the command reports a single
+structured error.

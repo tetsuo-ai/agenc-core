@@ -48,6 +48,12 @@ import {
   type PostToolUseHook,
   type PreToolUseHook,
 } from "./tool-hooks.js";
+import type {
+  CanUseToolFn,
+  ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
+import type { PermissionMode } from "../permissions/types.js";
+import type { PermissionModeRegistry } from "../permissions/mode.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -433,6 +439,24 @@ export function classifyToolError(err: unknown): ToolErrorClass {
   return "unknown";
 }
 
+/**
+ * T11 W3-B — AbortError/AbortController abort detection. The evaluator
+ * throws a `DOMException("aborted", "AbortError")` when the caller
+ * signals abort mid-evaluation; this helper lets `runToolUse` route
+ * that case through the normal abort error path.
+ */
+function isAbortLikeError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  if (name === "AbortError") return true;
+  const code = (err as { code?: string }).code;
+  if (code === "ABORT_ERR") return true;
+  if (err instanceof Error && err.message.toLowerCase().includes("aborted")) {
+    return true;
+  }
+  return false;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Lightweight JSON Schema validation (no ajv — just enough to enforce
 // `required` + top-level field `type` + enum membership).
@@ -661,6 +685,79 @@ export interface RunToolUseOptions {
    * already validated args against a richer schema.
    */
   readonly skipArgValidation?: boolean;
+  /**
+   * T11 W3-B — permission evaluator injection.
+   *
+   * When supplied, `runToolUse` calls `canUseTool` (defaults to
+   * `hasPermissionsToUseTool` from `permissions/evaluator`) BEFORE
+   * invoking the tool's `execute()`. Wiring is pay-as-you-go: callers
+   * that already run their own approval modal can skip this by leaving
+   * `canUseTool` undefined — the `requestApproval` path remains
+   * functional for back-compat.
+   *
+   *   - `behavior:'allow'` → proceed with (optionally updated) input
+   *   - `behavior:'deny'`  → short-circuit with a typed error output
+   *   - `behavior:'ask'`   → fall through to the existing
+   *     `requestApproval` modal if one is supplied, otherwise deny
+   */
+  readonly canUseTool?: CanUseToolFn;
+  /** Factory for the evaluator context. Required when `canUseTool` is set. */
+  readonly permissionContext?: ToolEvaluatorContext;
+  /**
+   * I-3 mid-execution re-check. When supplied and a mode change occurs
+   * mid-stream, the runtime aborts the in-flight tool via the supplied
+   * AbortController if the new mode would strip the tool's permission
+   * (currently: transitioning to `plan` aborts write-capable tools).
+   */
+  readonly modeChangeRegistry?: PermissionModeRegistry;
+  /** Optional override for the mid-execution mode recheck. */
+  readonly checkModeStillAllowed?: (
+    tool: Tool,
+    args: Record<string, unknown>,
+    newMode: PermissionMode,
+  ) => boolean;
+  /** Optional abort controller invoked on a stricter-mode transition. */
+  readonly abortController?: AbortController;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T11 W3-B — permission gate helpers
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Names of tools that take a write-capable action on the host. Used by
+ * the default mid-execution mode-change abort heuristic: a transition
+ * into `plan` mode must abort any in-flight write. T13 will make the
+ * classification more granular (e.g. per-argument for bash `read`
+ * commands); T11 ships the coarse, safe list.
+ */
+const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "system.bash",
+  "system.writeFile",
+  "system.editFile",
+  "system.delete",
+  "Bash",
+  "write_file",
+  "edit_file",
+]);
+
+/**
+ * Default mid-execution mode-change recheck. Pragmatic per the T11
+ * scope: a transition to `plan` aborts any write-capable tool in
+ * flight. Other mode changes do not retroactively strip tools.
+ */
+export function defaultCheckModeStillAllowed(
+  tool: Tool,
+  _args: Record<string, unknown>,
+  newMode: PermissionMode,
+): boolean {
+  if (newMode !== "plan") return true;
+  if (WRITE_CAPABLE_TOOL_NAMES.has(tool.name)) return false;
+  // Explicit opt-in on the Tool shape also blocks.
+  if (tool.isReadOnly === true) return true;
+  // Bash is the canonical non-read-only tool; default to read-only
+  // otherwise so T11 doesn't surprise-abort unrelated tools.
+  return true;
 }
 
 /**
@@ -727,6 +824,91 @@ export async function runToolUse(
     }
   }
 
+  // Step 1c: T11 W3-B — runtime permission gate. Runs BEFORE the
+  // legacy approval modal so deny/ask decisions from rules, tool-level
+  // checks, the mode gate, and the auto-mode classifier short-circuit
+  // before we fall through to the user-facing prompt. The evaluator is
+  // optional: callers that still use `requestApproval` alone get the
+  // previous behavior.
+  let inputForTool: Record<string, unknown> = parsedArgs;
+  if (opts.canUseTool && opts.permissionContext) {
+    try {
+      const permResult = await opts.canUseTool(
+        tool,
+        parsedArgs,
+        opts.permissionContext,
+      );
+      if (permResult.behavior === "deny") {
+        const reasonMsg = permResult.message;
+        const denialReasonType =
+          permResult.decisionReason?.type ?? "unknown";
+        if (opts.eventLog) {
+          emitErrorEvent(opts.eventLog, subId, {
+            cause: `permission_denied:${denialReasonType}`,
+            message: `${toolNameDisplay(invocation.toolName)} denied: ${reasonMsg}`,
+          });
+        }
+        return errorOutput({
+          invocation,
+          content: reasonMsg,
+          elapsedMs: performance.now() - startedAt,
+        });
+      }
+      if (permResult.behavior === "ask") {
+        // Fall back to the legacy approval modal when a caller-provided
+        // one is available; otherwise treat `ask` as a deny. T11 ships
+        // this pragmatic seam — Wave 4 can add a richer pending-queue.
+        if (!opts.requestApproval) {
+          const message = permResult.message;
+          if (opts.eventLog) {
+            emitErrorEvent(opts.eventLog, subId, {
+              cause: "permission_denied:ask_without_prompt",
+              message: `${toolNameDisplay(invocation.toolName)} requires approval but no prompt is wired: ${message}`,
+            });
+          }
+          return errorOutput({
+            invocation,
+            content: message,
+            elapsedMs: performance.now() - startedAt,
+          });
+        }
+      } else if (permResult.behavior === "allow") {
+        if (permResult.updatedInput !== undefined) {
+          inputForTool = permResult.updatedInput as Record<string, unknown>;
+        }
+      }
+    } catch (err) {
+      // AbortError from the evaluator surfaces through the normal abort
+      // path; any other throw becomes a deny so we fail closed.
+      if (isAbortLikeError(err)) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (opts.eventLog) {
+          emitErrorEvent(opts.eventLog, subId, {
+            cause: "aborted",
+            message,
+          });
+        }
+        return errorOutput({
+          invocation,
+          content: `<tool_use_error>${message}</tool_use_error>`,
+          elapsedMs: performance.now() - startedAt,
+        });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "permission_evaluator_threw",
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: `Permission evaluation failed for ${toolNameDisplay(invocation.toolName)}: ${message}`,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+  }
+
   // Step 2: I-21 + I-44 approval.
   if (opts.requestApproval) {
     const effectiveSignal = signal ?? new AbortController().signal;
@@ -760,8 +942,9 @@ export async function runToolUse(
   // Step 2b: pre-tool-use hooks. `deny` short-circuits with an error
   // response; `skip` short-circuits with a synthesized result (used by
   // memoizing / cached hooks); otherwise arg mutations flow through to
-  // the dispatch call.
-  let args = parsedArgs;
+  // the dispatch call. Starting args may have been updated by the
+  // permission evaluator (W3-B) via `PermissionAllowDecision.updatedInput`.
+  let args = inputForTool;
   const preHooks = opts.preHooks ?? [];
   if (preHooks.length > 0) {
     const preDecision = await runPreToolUseHooks(
@@ -843,6 +1026,55 @@ export async function runToolUse(
 
   // Step 3: I-9 timeout + abort race.
   const timeoutMs = resolveTimeoutMs(tool, args);
+
+  // T11 W3-B — I-3 mid-execution re-check. If the caller supplied a
+  // `modeChangeRegistry` (and an `abortController` to pair with),
+  // subscribe to mode-change notifications. When the new mode would
+  // strip this tool's permission (currently: plan-mode vs. write-
+  // capable tool), fire the abort controller so the in-flight tool
+  // bails via the AbortSignal path in `withTimeoutAndAbort`.
+  let unsubscribeMode: (() => void) | null = null;
+  if (opts.modeChangeRegistry && opts.abortController) {
+    const guard =
+      opts.checkModeStillAllowed ?? defaultCheckModeStillAllowed;
+    const abortCtl = opts.abortController;
+    unsubscribeMode = opts.modeChangeRegistry.subscribeToModeChange(
+      (newMode) => {
+        if (abortCtl.signal.aborted) return;
+        const stillAllowed = guard(tool, args, newMode);
+        if (!stillAllowed) {
+          if (opts.eventLog) {
+            emitWarningEvent(
+              opts.eventLog,
+              subId,
+              "mode_change_aborted_tool",
+              `mode transitioned to ${newMode}; aborting in-flight ${toolNameDisplay(invocation.toolName)}`,
+            );
+          }
+          try {
+            abortCtl.abort(
+              `aborted: permission mode changed to ${newMode}`,
+            );
+          } catch {
+            // Already aborted; swallow.
+          }
+        }
+      },
+    );
+  }
+
+  // T11 W3-B — helper that releases the mode-change subscription on
+  // every return path below.
+  const cleanupModeSub = (): void => {
+    if (!unsubscribeMode) return;
+    try {
+      unsubscribeMode();
+    } catch {
+      // best-effort
+    }
+    unsubscribeMode = null;
+  };
+
   let dispatch: ToolDispatchResult;
   try {
     dispatch = await withTimeoutAndAbort(
@@ -893,6 +1125,7 @@ export async function runToolUse(
         opts.onHookTiming,
       );
     }
+    cleanupModeSub();
     return errorOutput({
       invocation,
       content: `<tool_use_error>${message}</tool_use_error>`,
@@ -945,6 +1178,7 @@ export async function runToolUse(
     );
   }
 
+  cleanupModeSub();
   return functionToolOutput({
     callId: invocation.callId,
     toolName: invocation.toolName,

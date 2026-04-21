@@ -1,26 +1,154 @@
 /**
  * Slash-command dispatcher for the `agenc` CLI entry point.
  *
- * Two commands are wired today (T9):
+ * W3 wiring: this module is now a thin wrapper over the canonical
+ * dispatcher in `../commands/dispatcher.ts`. The CLI binary calls
+ * `runSlashCommand(input, ctx)` once per input line; the wrapper
+ * builds the default command registry, parses the input, and routes
+ * through `dispatchSlashCommand`. Bridge-safety (for IPC / daemon
+ * forwarding) is enforced through `isBridgeSafeCommand`.
  *
- *   /enter-worktree <slug>
- *   /exit-worktree <keep|remove> [--discard]
- *
- * These short-circuit the normal `runTurn` flow: the CLI calls
- * `parseSlashCommand(line)` before handing the text to the provider,
- * and if a command matches we run the corresponding `commands/*`
- * handler and return the outcome without invoking the LLM.
- *
- * The T11 tranche will land the full slash dispatcher + help system;
- * this module is the minimum wiring the user can rely on today.
+ * Legacy surface (`parseSlashCommand`, `handleSlashCommand`,
+ * `PendingWorktreeState`, `SlashCommand`, `SlashHandleResult`) is
+ * preserved for the pre-existing worktree entry tests + callers that
+ * still depend on the bespoke shape. New callers should use
+ * `runSlashCommand` + `SlashCommandRunContext` instead.
  *
  * @module
  */
 
 import { enterWorktree } from "../commands/enter-worktree.js";
 import { exitWorktree } from "../commands/exit-worktree.js";
+import {
+  dispatchSlashCommand,
+  isBridgeSafeCommand,
+  parseSlashCommand as parseDispatcherInput,
+  type DispatchOutcome,
+} from "../commands/dispatcher.js";
+import {
+  buildDefaultRegistry,
+  type CommandRegistry,
+} from "../commands/registry.js";
+import {
+  getGlobalCommandRegistry,
+  setGlobalCommandRegistry,
+  type SlashCommandContext,
+  type SlashCommandResult,
+} from "../commands/types.js";
 import type { WorktreeHandle } from "../agents/worktree.js";
 import type { Session } from "../session/session.js";
+
+// ---------------------------------------------------------------------------
+// W3 thin-wrapper surface
+// ---------------------------------------------------------------------------
+
+/**
+ * Context carried to every slash-command run through `runSlashCommand`.
+ * Mirrors `SlashCommandContext` but with `argsRaw` intentionally absent —
+ * the wrapper fills it in from the parsed input line. Callers supply the
+ * session + cwd + home + (optional) configStore once per turn.
+ */
+export type SlashCommandRunContext = Omit<SlashCommandContext, "argsRaw">;
+
+/**
+ * Discriminated union describing what happened when the CLI tried to
+ * dispatch a slash command. `skip` means the input was not a slash
+ * command at all (or did not parse under I-68); the caller should
+ * forward the input as a normal user prompt. Every other variant
+ * carries the full dispatcher outcome so the CLI can render the result.
+ */
+export type SlashCommandRunResult =
+  | { readonly kind: "skip" }
+  | {
+      readonly kind: "dispatched";
+      readonly outcome: DispatchOutcome;
+      readonly result: SlashCommandResult;
+    }
+  | { readonly kind: "unknown"; readonly message: string }
+  | { readonly kind: "blocked_by_bridge"; readonly message: string };
+
+export interface RunSlashCommandOpts {
+  /**
+   * Gate for daemon-bridged / IPC invocation paths. When `true`, any
+   * command NOT on the `BRIDGE_SAFE` allowlist is rejected with
+   * `blocked_by_bridge` before dispatch. Defaults to `false` (local
+   * CLI — every command is allowed).
+   */
+  readonly bridge?: boolean;
+}
+
+/**
+ * Lazily constructed default registry, shared across every call to
+ * `runSlashCommand`. We also publish it through
+ * `setGlobalCommandRegistry` so commands that read the global slot
+ * (notably `/help`, which lists every registered command) see the
+ * live set rather than the "registry pending" fallback.
+ */
+let cachedRegistry: CommandRegistry | null = null;
+function getOrBuildRegistry(): CommandRegistry {
+  if (cachedRegistry !== null) return cachedRegistry;
+  cachedRegistry = buildDefaultRegistry();
+  if (getGlobalCommandRegistry() === null) {
+    setGlobalCommandRegistry(cachedRegistry);
+  }
+  return cachedRegistry;
+}
+
+/**
+ * Thin wrapper over `dispatchSlashCommand` + `buildDefaultRegistry`.
+ *
+ *   - Non-slash input → `{ kind: "skip" }`. Caller forwards as user prompt.
+ *   - I-68 fence violation → `{ kind: "skip" }` (same as non-slash).
+ *   - Bridge-gated call to a non-bridge-safe command →
+ *     `{ kind: "blocked_by_bridge" }`.
+ *   - Unknown command (dispatcher returned `error` for unknown) →
+ *     `{ kind: "unknown" }` for readable CLI routing.
+ *   - Anything else → `{ kind: "dispatched", outcome, result }`.
+ */
+export async function runSlashCommand(
+  input: string,
+  ctx: SlashCommandRunContext,
+  opts: RunSlashCommandOpts = {},
+): Promise<SlashCommandRunResult> {
+  const parsed = parseDispatcherInput(input);
+  if (!parsed) return { kind: "skip" };
+
+  // Bridge gate — only consult the allowlist when the caller says this
+  // dispatch is arriving from a bridged / IPC path. Local CLI bypasses.
+  if (opts.bridge === true && !isBridgeSafeCommand(parsed.name)) {
+    return {
+      kind: "blocked_by_bridge",
+      message: `/${parsed.name} is not allowed over the daemon bridge (needs direct CLI confirmation)`,
+    };
+  }
+
+  const registry = getOrBuildRegistry();
+  const fullCtx: SlashCommandContext = {
+    ...ctx,
+    argsRaw: parsed.argsRaw,
+  };
+  const outcome = await dispatchSlashCommand(parsed, fullCtx, registry);
+
+  // Distinguish unknown-command errors from other error kinds so the CLI
+  // can render them differently (unknown commands are usually user typos,
+  // not real failures).
+  if (
+    outcome.result.kind === "error" &&
+    outcome.result.message.startsWith("Unknown command:")
+  ) {
+    return { kind: "unknown", message: outcome.result.message };
+  }
+
+  return { kind: "dispatched", outcome, result: outcome.result };
+}
+
+// Re-exports so the CLI (and future bridge adapters) can read the gate
+// + the canonical parser from this single entry point.
+export { isBridgeSafeCommand, parseDispatcherInput as parseSlashCommandLine };
+
+// ---------------------------------------------------------------------------
+// Legacy worktree surface (preserved for existing callers/tests)
+// ---------------------------------------------------------------------------
 
 export type SlashCommand =
   | { readonly kind: "enter_worktree"; readonly slug: string }
@@ -53,10 +181,12 @@ const ENTER_RE = /^\/enter-worktree\s+(\S+)\s*$/;
 const EXIT_RE = /^\/exit-worktree\s+(keep|remove)(?:\s+(--discard))?\s*$/;
 
 /**
- * Parse a raw prompt into a SlashCommand, or return null if it's not
- * a slash command the CLI knows about. Only matches when the line
- * starts with `/` to avoid grabbing user text that happens to contain
- * a slash mid-sentence.
+ * Legacy worktree-specific parser. Returns `null` unless the input
+ * matches `/enter-worktree <slug>` or `/exit-worktree <keep|remove>
+ * [--discard]`. New callers should use `runSlashCommand` instead; the
+ * W3 CLI binary keeps this around to route `/enter-worktree` and
+ * `/exit-worktree` through the session-bound worktree handler until
+ * the adapter ships in a later tranche.
  */
 export function parseSlashCommand(line: string): SlashCommand | null {
   const trimmed = line.trim();
@@ -89,10 +219,10 @@ export interface HandleSlashOpts {
 }
 
 /**
- * Run a parsed slash command. Does NOT call `process.chdir` — returns
- * the new cwd in the result so the caller can decide how to apply it
- * (the CLI does `process.chdir(result.cwd)` inline; tests inspect the
- * returned value).
+ * Legacy worktree handler. Preserves the session-bound worktree flow
+ * until the W3 dispatcher-side adapter lands. Does NOT call
+ * `process.chdir` — returns the new cwd in the result so the caller
+ * can decide how to apply it.
  */
 export async function handleSlashCommand(
   opts: HandleSlashOpts,

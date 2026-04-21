@@ -46,20 +46,32 @@ import {
   resolveHookPermissionDecision,
   type PermissionDecisionHook,
 } from "./tool-hooks.js";
+import {
+  defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
+  type ApprovalPolicy as PermissionsApprovalPolicy,
+  type ExecApprovalRequirement as PermissionsExecApprovalRequirement,
+  type FileSystemSandboxKind as PermissionsFileSystemSandboxKind,
+} from "../permissions/approval-policy.js";
+import {
+  reviewDecisionIsAllow,
+  type ReviewDecision as PermissionsReviewDecision,
+} from "../permissions/review-decision.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Policy + mode enums (mirror of codex protocol)
+// Policy + mode enums — re-exported from `permissions/` so this file
+// remains the stable orchestrator surface while the canonical types
+// live in the permissions layer (T11 Wave 1 Agent C).
 // ─────────────────────────────────────────────────────────────────────
 
 /** Port of codex `AskForApproval`. */
-export type ApprovalPolicy =
-  | "never"
-  | "on_failure"
-  | "on_request"
-  | "granular"
-  | "untrusted";
+export type ApprovalPolicy = PermissionsApprovalPolicy;
 
-/** Port of codex `SandboxMode`. */
+/**
+ * Port of codex `SandboxMode`. Includes `external_sandbox` as a fourth
+ * value — the orchestrator receives this from `TurnContext`, but the
+ * permissions `SandboxMode` enum is the 3-variant selector. The two
+ * keep the overlapping names in sync.
+ */
 export type SandboxMode =
   | "danger_full_access"
   | "read_only"
@@ -67,10 +79,11 @@ export type SandboxMode =
   | "external_sandbox";
 
 /**
- * Port of codex `FileSystemSandboxKind` (protocol/src/permissions.rs:131).
- * This is the narrower shape `defaultExecApprovalRequirement` actually
- * reads — the full `FileSystemSandboxPolicy` is still modeled in
- * `session/turn-context.ts`, we just extract `.kind` here.
+ * Port of codex `FileSystemSandboxKind`. The permissions layer uses
+ * the 2-variant form (`full_access` / `restricted`). The orchestrator
+ * keeps a compatibility layer that distinguishes `external_sandbox`
+ * as a third kind for the older call sites. Callers that only need
+ * the permission decision should import from `permissions/`.
  */
 export type FileSystemSandboxKind =
   | "restricted"
@@ -78,20 +91,10 @@ export type FileSystemSandboxKind =
   | "external_sandbox";
 
 /** Port of codex `ExecApprovalRequirement` — per-tool-call. */
-export type ExecApprovalRequirement =
-  | { readonly kind: "skip"; readonly bypassSandbox: boolean }
-  | { readonly kind: "forbidden"; readonly reason: string }
-  | { readonly kind: "needs_approval"; readonly reason?: string };
+export type ExecApprovalRequirement = PermissionsExecApprovalRequirement;
 
 /** Port of codex `ReviewDecision`. */
-export type ReviewDecision =
-  | "approved"
-  | "approved_for_session"
-  | "approved_exec_policy_amendment"
-  | "network_policy_amendment"
-  | "denied"
-  | "abort"
-  | "timed_out";
+export type ReviewDecision = PermissionsReviewDecision;
 
 // ─────────────────────────────────────────────────────────────────────
 // Approval decision envelope (I-21 + I-44)
@@ -333,28 +336,12 @@ export function defaultExecApprovalRequirement(
   policy: ApprovalPolicy,
   fsKind: FileSystemSandboxKind,
 ): ExecApprovalRequirement {
-  let needsApproval = false;
-  switch (policy) {
-    case "never":
-    case "on_failure":
-      needsApproval = false;
-      break;
-    case "on_request":
-    case "granular":
-      needsApproval = fsKind === "restricted";
-      break;
-    case "untrusted":
-      needsApproval = true;
-      break;
-    default: {
-      const _exhaustive: never = policy;
-      void _exhaustive;
-    }
-  }
-  if (needsApproval) {
-    return { kind: "needs_approval" };
-  }
-  return { kind: "skip", bypassSandbox: false };
+  // Narrow the 3-variant orchestrator-side kind to the 2-variant
+  // permissions-layer kind: `external_sandbox` is treated as a
+  // non-restricted context for approval-table purposes (codex parity).
+  const narrowed: PermissionsFileSystemSandboxKind =
+    fsKind === "restricted" ? "restricted" : "full_access";
+  return defaultExecApprovalRequirementFromPermissions(policy, narrowed);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -434,10 +421,10 @@ export async function requestApproval(
       opts.permissionDecisionHooks,
     );
     if (decision.kind === "allow") {
-      return { decision: "approved", source: "permission_hook" };
+      return { decision: { kind: "approved" }, source: "permission_hook" };
     }
     if (decision.kind === "deny") {
-      return { decision: "denied", source: "permission_hook" };
+      return { decision: { kind: "denied" }, source: "permission_hook" };
     }
     // `ask` / `pass` → fall through to resolver.
   }
@@ -446,7 +433,7 @@ export async function requestApproval(
     return { decision, source: "resolver" };
   }
   opts.onNoResolver?.(opts.ctx);
-  return { decision: "denied", source: "default_deny" };
+  return { decision: { kind: "denied" }, source: "default_deny" };
 }
 
 /**
@@ -455,11 +442,7 @@ export async function requestApproval(
  * match tree at codex `orchestrator.rs:160-183`.
  */
 export function isApprovalAccepted(decision: ReviewDecision): boolean {
-  return (
-    decision === "approved" ||
-    decision === "approved_for_session" ||
-    decision === "approved_exec_policy_amendment"
-  );
+  return reviewDecisionIsAllow(decision);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -631,7 +614,7 @@ export async function orchestrateToolCall<T>(
   }
 
   if (requirement.kind === "forbidden") {
-    throw new ApprovalRejectedError(requirement.reason, "denied");
+    throw new ApprovalRejectedError(requirement.reason, { kind: "denied" });
   }
 
   let alreadyApproved = false;
@@ -657,7 +640,7 @@ export async function orchestrateToolCall<T>(
       throw new ApprovalRejectedError(
         approval.source === "default_deny"
           ? "no_approval_resolver"
-          : approval.decision === "timed_out"
+          : approval.decision.kind === "timed_out"
             ? "approval timed out"
             : "rejected by user",
         approval.decision,
@@ -700,7 +683,7 @@ export async function orchestrateToolCall<T>(
         throw new ApprovalRejectedError(
           approval.source === "default_deny"
             ? "no_approval_resolver"
-            : approval.decision === "timed_out"
+            : approval.decision.kind === "timed_out"
               ? "approval timed out"
               : "rejected by user",
           approval.decision,

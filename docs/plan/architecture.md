@@ -411,3 +411,111 @@ composer `runtime/src/llm/shape-request.ts`. Full provider plan:
 
 Delete the dead AgenC chain, copy openclaude's `services/compact/`
 (15 files, 4,171 LOC). Kebab-case rename on arrival, content 1:1.
+
+---
+
+## Permissions Module (T11)
+
+**Location:** `runtime/src/permissions/`
+
+**Responsibilities:**
+
+- **Rule loading, 5-source priority** — user, project, local, CLI,
+  policy sources are merged in `permissions/settings.ts` with the
+  documented precedence; the resulting `permissions/rules.ts`
+  surface exposes allow/deny/ask rules to the evaluator.
+- **Mode state (7 variants + cycle)** — `permissions/mode.ts` ships
+  the `PermissionMode` union `default | acceptEdits | plan |
+  bypassPermissions | dontAsk | auto | bubble` (7 variants, where
+  `bubble` is internal-only) plus the Shift+Tab cycle via
+  `getNextPermissionMode` / `cyclePermissionMode` /
+  `transitionPermissionMode`, and the subscription surface
+  (`PermissionModeRegistry.setMode` /
+  `subscribeToModeChange`) used by I-3 guards.
+- **Evaluator (5-step decision tree)** —
+  `permissions/evaluator.ts` implements the ported openclaude flow:
+  (1) rule/tool checks, (2) mode gate with the I-3 `getAppState()`
+  re-read, (3) passthrough→ask conversion, (4) outer transforms
+  (dontAsk, auto, headless fallback), (5) auto-mode classifier
+  pipeline with safe-tool allowlist and denial tracking.
+- **Denial tracking (3/20 limits)** —
+  `permissions/denial-tracking.ts` enforces the openclaude-canonical
+  limits: `maxConsecutive = 3`, `maxTotal = 20`. Exceeding either
+  falls back to prompting or aborts the headless run.
+- **Sandbox policy (4 variants)** — `permissions/sandbox.ts` ports
+  the codex `SandboxMode` enum (`danger_full_access`, `read_only`,
+  `workspace_write`, `external_sandbox`) as a decision model only.
+  No OS primitives are linked in; worktree + evaluator + cwd jail
+  remain the enforcement surface.
+- **Approval cache** — `permissions/approval-cache.ts` holds the
+  session-scoped `Map<string, ReviewDecision>` so repeat approvals
+  for the same key short-circuit the modal.
+- **Network approval service** —
+  `permissions/network-approval.ts` ports the host+protocol+port
+  cache from codex with `AllowOnce | AllowForSession | Deny`.
+- **Bash subcommand permission check** — `permissions/bash.ts`
+  ports the openclaude subcommand parser and sandbox-override
+  rules; AgenC ships a ~1005 LOC lean port of the ~2598 LOC
+  upstream file.
+
+**Integration points:**
+
+- `Session.services.permissionModeRegistry` — the single
+  `PermissionModeRegistry` instance a session owns.
+- `TurnContext.permissionMode` — per-turn snapshot of the active
+  mode, captured at `buildTurnContext` time.
+- `runToolUse` subscribe/abort — `runtime/src/tools/execution.ts`
+  subscribes each in-flight tool call to mode changes and fires
+  its `AbortController` on a stricter transition.
+- `src/commands/` slash commands — `/permissions`, `/plan`,
+  `/model`, `/provider` read and mutate through this module.
+
+**Invariants enforced:**
+
+- **I-3** (mid-dispatch mode re-check on every mutation tool)
+- **I-30** (per-turn immutable config snapshot — consumed by the
+  evaluator context)
+- **I-44** (turn-id-stamped modal decisions via
+  `PendingPermissionRequest.turnId`)
+
+**Deferred:**
+
+- **Classifier YOLO model** — `permissions/classifier.ts` ships the
+  2-stage pipeline and safe-tool allowlist; the real xAI call lands
+  in T13.
+- **Capability registry for I-57** — the history-compat check in
+  `commands/model.ts::checkModelHistoryCompat` is a stub until
+  T13's provider-capability registry replaces it.
+
+## Slash Commands (T11)
+
+**Dispatcher:** `runtime/src/commands/dispatcher.ts`
+
+The dispatcher enforces the **I-68 parse fence** in
+`parseSlashCommand`: it splits on `\n` and requires every subsequent
+line to be whitespace-only before dispatching. Pasted multi-line
+input that happens to start with a slash never triggers a command.
+
+**Registry:** `runtime/src/commands/registry.ts`
+
+`buildDefaultRegistry()` constructs the shipped registry. The
+`CommandRegistry.register()` surface rejects duplicate canonical
+names, rejects alias collisions with canonical names, and drops
+alias-to-alias collisions with a console warning (first-registered
+wins). A global registry hook lets `/help` enumerate itself without
+a second cutover.
+
+**18 shipped commands, grouped by category:**
+
+- **Info:** `/help`, `/status`, `/keybindings`, `/diff`, `/context`
+- **Memory / context:** `/init`, `/clear`, `/compact`, `/resume`,
+  `/fork`
+- **Mode:** `/plan`
+- **Permission:** `/permissions`, `/config`
+- **Lifecycle:** `/model`, `/provider`, `/exit`,
+  `/enter-worktree`, `/exit-worktree`
+
+**Bridge-safe allowlist:** `isBridgeSafeCommand` in
+`commands/dispatcher.ts` exposes a closed allowlist of commands safe
+to run from a remote-origin / daemon-bridged CLI front end. Unknown
+commands fail closed.

@@ -21,6 +21,12 @@ import type {
   PostToolUseHook,
   PreToolUseHook,
 } from "../tools/tool-hooks.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import {
+  createEmptyToolPermissionContext,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { executeTools } from "./execute-tools.js";
 
 function mkCtx(): TurnContext {
@@ -64,28 +70,42 @@ interface MkSessionOpts {
   readonly registry: ToolRegistry;
   readonly preToolUseHooks?: ReadonlyArray<PreToolUseHook>;
   readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly permissionModeRegistry?: PermissionModeRegistry;
+  /**
+   * When true, expose `session.denialTracking` mirroring the real
+   * Session class so the T11 W4 wire-up picks up a shared reference.
+   */
+  readonly withDenialTracking?: boolean;
 }
 
 function mkSession(opts: MkSessionOpts): Session {
   let i = 0;
   const emitted: Array<{ id: string; msg: { type: string; payload?: unknown } }> = [];
-  const sess = {
+  const servicesRecord: Record<string, unknown> = {
+    registry: opts.registry,
+    provider: { name: "stub-provider" },
+    hooks: {
+      preToolUseHooks: opts.preToolUseHooks ?? [],
+      postToolUseHooks: opts.postToolUseHooks ?? [],
+    },
+  };
+  if (opts.permissionModeRegistry) {
+    servicesRecord["permissionModeRegistry"] = opts.permissionModeRegistry;
+  }
+  const baseSession: Record<string, unknown> = {
     conversationId: "conv-1",
     eventLog: opts.log,
-    services: {
-      registry: opts.registry,
-      provider: { name: "stub-provider" },
-      hooks: {
-        preToolUseHooks: opts.preToolUseHooks ?? [],
-        postToolUseHooks: opts.postToolUseHooks ?? [],
-      },
-    },
+    services: servicesRecord,
     nextInternalSubId: () => `s-${++i}`,
     emit: (ev: { id: string; msg: { type: string; payload?: unknown } }) => {
       emitted.push(ev);
       return opts.log.emit(ev as never);
     },
-  } as unknown as Session;
+  };
+  if (opts.withDenialTracking) {
+    baseSession["denialTracking"] = freshDenialTracking();
+  }
+  const sess = baseSession as unknown as Session;
   (sess as unknown as { _emitted: typeof emitted })._emitted = emitted;
   return sess;
 }
@@ -360,6 +380,158 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     await executeTools(state, mkCtx(), session);
 
     expect(progressEvents).toEqual(["line-1", "line-2"]);
+  });
+
+  // ───────────────────────────────────────────────────────────────────
+  // T11 W4 (Agent A) — permission evaluator wire-up through executeTools
+  // ───────────────────────────────────────────────────────────────────
+
+  test("W4 deny rule short-circuits tool.execute() via the evaluator", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const log = new EventLog();
+    const errorCauses: string[] = [];
+    log.subscribe((ev) => {
+      const msg = ev.msg as { type: string; payload?: { cause?: string } };
+      if (msg.type === "error" && msg.payload?.cause) {
+        errorCauses.push(msg.payload.cause);
+      }
+    });
+
+    // Default mode + a session-source deny rule for writeFile → evaluator
+    // must return `deny`, and executeTools must surface an error tool
+    // result instead of dispatching `tool.execute()`.
+    const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
+      mode: "default",
+      alwaysDenyRules: { session: ["system.writeFile"] },
+    });
+    const registry = new PermissionModeRegistry(permCtx);
+
+    const toolRegistry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry: toolRegistry,
+      permissionModeRegistry: registry,
+      withDenialTracking: true,
+    });
+
+    const call: LLMToolCall = {
+      id: "c-deny",
+      name: "system.writeFile",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    // tool.execute() must not have run.
+    expect(executed).toBe(0);
+    // An error tool result must have been threaded back into state.messages.
+    expect(state.messages.length).toBe(1);
+    expect(state.messages[0]!.role).toBe("tool");
+    // The evaluator surfaces the deny through the error event log.
+    expect(
+      errorCauses.some((c) => c.startsWith("permission_denied:")),
+    ).toBe(true);
+  });
+
+  test("W4 allow rule passes through to tool.execute()", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "wrote-file" };
+      },
+    };
+
+    const log = new EventLog();
+    const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
+      mode: "default",
+      alwaysAllowRules: { session: ["system.writeFile"] },
+    });
+    const registry = new PermissionModeRegistry(permCtx);
+
+    const toolRegistry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry: toolRegistry,
+      permissionModeRegistry: registry,
+      withDenialTracking: true,
+    });
+
+    const call: LLMToolCall = {
+      id: "c-allow",
+      name: "system.writeFile",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(executed).toBe(1);
+    expect(state.messages.length).toBe(1);
+    expect(state.messages[0]!.role).toBe("tool");
+    expect(state.messages[0]!.content).toBe("wrote-file");
+  });
+
+  test("W4 session without denialTracking still runs via evaluator fallback", async () => {
+    // Fixture does NOT populate `session.denialTracking`. The executeTools
+    // wire-up must fall back to a fresh per-turn DenialTracking so the
+    // evaluator still sees a valid reference and no throw escapes.
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.readFile",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "read-ok" };
+      },
+    };
+
+    const log = new EventLog();
+    const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
+      mode: "default",
+      alwaysAllowRules: { session: ["system.readFile"] },
+    });
+    const registry = new PermissionModeRegistry(permCtx);
+
+    const toolRegistry = mkRegistry([tool]);
+    // withDenialTracking=false → session.denialTracking is undefined.
+    const session = mkSession({
+      log,
+      registry: toolRegistry,
+      permissionModeRegistry: registry,
+      withDenialTracking: false,
+    });
+
+    const call: LLMToolCall = {
+      id: "c-default",
+      name: "system.readFile",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+
+    // Must not throw even though session.denialTracking is absent.
+    await expect(
+      executeTools(state, mkCtx(), session),
+    ).resolves.toBeDefined();
+
+    expect(executed).toBe(1);
+    expect(state.messages.length).toBe(1);
+    expect(state.messages[0]!.content).toBe("read-ok");
   });
 
   test("router classification emits tool_routing_classified warning", async () => {

@@ -36,6 +36,8 @@ import type {
   SessionServices,
   SessionState,
 } from "../session/session.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Event } from "../session/event-log.js";
 import {
   buildTurnContext,
@@ -67,8 +69,10 @@ import { buildDelegateTool } from "./delegate-tool.js";
 import {
   handleSlashCommand,
   parseSlashCommand,
+  runSlashCommand,
   type PendingWorktreeState,
 } from "./slash.js";
+import { parseSlashCommand as parseDispatcherInput } from "../commands/dispatcher.js";
 import {
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
@@ -503,6 +507,12 @@ function buildPlaceholderServices(
     codeModeService: { enabled: () => false },
     provider,
     registry,
+    // T11 W3-A: placeholder permission-mode registry. The real bootstrap
+    // path (ConfigStore → initialize-permission-context → registry) lands
+    // once the permissions wiring integrates with the CLI entry point.
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
   };
 }
 
@@ -1476,18 +1486,29 @@ export async function main(): Promise<number> {
       /* swallow — we're handing off to session's own lifecycle */
     });
 
-    // T9: slash-command short-circuit. If the user's line is a
-    // worktree control command, run it directly + skip the LLM turn.
-    // The full slash dispatcher lands in T11; this is the minimum
-    // wiring so `/enter-worktree` + `/exit-worktree` work today.
-    const slashCommand = parseSlashCommand(userMessage);
+    // T9 / T11-W3: slash-command short-circuit.
+    //
+    // Two dispatch paths coexist during the W3 transition:
+    //
+    //   1. Worktree adapters (`/enter-worktree`, `/exit-worktree`) still
+    //      go through the bespoke session-bound handler — the generic
+    //      registry adapters cannot thread `PendingWorktreeState`
+    //      through `dispatchSlashCommand` yet (tracked as a follow-up).
+    //
+    //   2. Every other `/...` line routes through `runSlashCommand`,
+    //      which parses via `commands/dispatcher.ts`, loads the full
+    //      default registry (help, status, init, diff, exit, clear,
+    //      context, keybindings, resume, fork, plan, permissions,
+    //      config, model, provider, compact), and dispatches with the
+    //      full `SlashCommandContext`.
+    const worktreeCommand = parseSlashCommand(userMessage);
     let pendingWorktree: PendingWorktreeState | null = null;
     const originalCwd = processCwd();
-    if (slashCommand) {
+    if (worktreeCommand) {
       try {
         const result = await handleSlashCommand({
           session,
-          command: slashCommand,
+          command: worktreeCommand,
           originalCwd,
           pendingWorktree,
         });
@@ -1516,6 +1537,65 @@ export async function main(): Promise<number> {
       }
     }
     void pendingWorktree;
+
+    // W3: generic slash dispatcher path. Only route through the
+    // dispatcher when the input actually parses as a slash command;
+    // otherwise fall through to the LLM turn. The dispatcher has its
+    // own unknown-command reporting + result rendering.
+    if (parseDispatcherInput(userMessage)) {
+      try {
+        const runResult = await runSlashCommand(userMessage, {
+          session,
+          cwd: processCwd(),
+          home: agencHome,
+          configStore,
+        });
+        switch (runResult.kind) {
+          case "skip":
+            process.stderr.write(
+              "agenc: slash command rejected (multi-line input not allowed)\n",
+            );
+            return 1;
+          case "unknown":
+            process.stderr.write(`agenc: ${runResult.message}\n`);
+            return 1;
+          case "blocked_by_bridge":
+            process.stderr.write(`agenc: ${runResult.message}\n`);
+            return 1;
+          case "dispatched": {
+            const r = runResult.result;
+            switch (r.kind) {
+              case "text":
+              case "compact":
+                process.stdout.write(`${r.text}\n`);
+                return 0;
+              case "prompt":
+                // Re-injected prompt would feed back into the turn
+                // loop; one-shot CLI has no loop yet, so surface the
+                // prompt to stdout + exit 0.
+                process.stdout.write(`${r.content}\n`);
+                return 0;
+              case "skip":
+                return 0;
+              case "exit":
+                return r.code;
+              case "error":
+                process.stderr.write(`agenc: ${r.message}\n`);
+                return 1;
+            }
+          }
+        }
+      } finally {
+        sessionRef = null;
+        sessionRefForMemory.current = null;
+        await sidecarManager.stop().catch(() => {
+          /* best effort */
+        });
+        await session.shutdown().catch(() => {
+          /* best effort */
+        });
+      }
+    }
 
     // T10 Group I: load tiered AGENTS.md/CLAUDE.md (managed/user/
     // project/local) + memory prompt once, then assemble the real

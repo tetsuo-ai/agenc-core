@@ -7,6 +7,18 @@
  * `agent_message_delta` + `agent_message` events, and proposed-plan
  * content that becomes `plan_delta` + `plan_item_completed` events.
  *
+ * T11 Wave 2 (Agent C): `isPlanMode` now consults the real
+ * `PermissionMode` via `turnContext.sessionConfiguration?.permissionContext`
+ * first, falling back to the legacy `collaborationMode.model === "plan"`
+ * gate so existing callers keep working.
+ *
+ * NOTE: The `[plan]` prefix hack emitted by `startPlanItem` / `pushPlanDelta`
+ * / `completePlanItemWithText` is deliberately kept — extending the
+ * `EventMsg` union with dedicated `plan_delta` and `plan_item_completed`
+ * variants is deferred to T12 (TUI realtime) to avoid scope creep in T11.
+ * TODO(T12): replace `[plan:...]` prefixes with first-class EventMsg
+ * variants once the TUI realtime surface lands.
+ *
  * Mapping (codex → AgenC):
  *   turn.rs:1537 handle_plan_segments                → handlePlanSegments
  *   turn.rs:1600 emit_streamed_assistant_text_delta  → emitStreamedAssistantTextDelta
@@ -122,11 +134,24 @@ export function createPlanModeStreamState(turnId: string): PlanModeStreamState {
 /**
  * Is plan mode currently active for this turn context?
  *
- * Today: structural check against `collaborationMode.model === "plan"`
- * because `CollaborationMode` has no discriminant field yet. TODO(T11):
- * replace with the real collaboration-mode `kind` / enum once modes land.
+ * T11 Wave 2: consult the real `PermissionMode` first (the authoritative
+ * source set by `PermissionModeRegistry` + the `EnterPlanMode` /
+ * `ExitPlanMode` tools + the `/plan` slash command). Falls back to the
+ * legacy structural check against `collaborationMode.kind|model === "plan"`
+ * so existing streaming call sites keep working before W3 wires
+ * sessionConfiguration through turn contexts.
  */
 export function isPlanMode(ctx: TurnContext): boolean {
+  const withPermission = ctx as unknown as {
+    sessionConfiguration?: {
+      permissionContext?: { mode?: string };
+    };
+  };
+  const permissionMode =
+    withPermission.sessionConfiguration?.permissionContext?.mode;
+  if (permissionMode === "plan") return true;
+
+  // Legacy gate fallback — pre-T11 collaborationMode structural check.
   const mode = ctx.collaborationMode as unknown as {
     kind?: string;
     model?: string;
@@ -262,7 +287,10 @@ function startPlanItem(
 ): void {
   if (state.planItemState.started || state.planItemState.completed) return;
   state.planItemState.started = true;
-  // T11 replaces with a dedicated `plan_item_started` event.
+  // TODO T12: replace this `[plan:…]` prefix hack with a dedicated
+  // `plan_item_started` (or `plan_delta`) EventMsg variant once the TUI
+  // realtime surface lands. Kept here so rollouts still see the stream
+  // boundary without forcing a speculative schema change.
   emit(session, {
     type: "agent_message_delta",
     payload: { delta: `[plan:${state.planItemState.itemId}]` },
@@ -277,8 +305,9 @@ function pushPlanDelta(
 ): void {
   if (state.planItemState.completed || delta.length === 0) return;
   state.planItemState.accumulatedText += delta;
-  // T11 adds a dedicated `plan_delta` EventMsg variant. Until then, fan
-  // the delta out as an agent_message_delta so rollouts see the stream.
+  // TODO T12: add a dedicated `plan_delta` EventMsg variant. Until then,
+  // fan the delta out as an `agent_message_delta` so rollouts still see
+  // the streamed plan text.
   emit(session, {
     type: "agent_message_delta",
     payload: { delta },
@@ -293,7 +322,10 @@ function completePlanItemWithText(
 ): void {
   if (state.planItemState.completed || !state.planItemState.started) return;
   state.planItemState.completed = true;
-  // T11 adds dedicated `plan_item_completed`; emit as agent_message for now.
+  // TODO T12: add a dedicated `plan_item_completed` EventMsg variant. Until
+  // then, emit the completion as an `agent_message` with a `[plan:…]`
+  // prefix so the stream is still observable without a speculative
+  // schema change.
   emit(session, {
     type: "agent_message",
     payload: { message: `[plan:${state.planItemState.itemId}] ${text}` },

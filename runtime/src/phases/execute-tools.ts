@@ -82,6 +82,13 @@ import {
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState, UserMessage } from "../session/turn-state.js";
+import {
+  attachContextDefaults,
+  hasPermissionsToUseTool,
+  type AppStateSnapshot,
+  type ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
+import { freshDenialTracking } from "../permissions/denial-tracking.js";
 
 function toolResultMessage(
   callId: string,
@@ -229,6 +236,36 @@ export async function executeTools(
   // mode. Replaces the previous hardcoded `never` + `workspace_write`
   // that hid the real classifier behind a no-op.
   const orchestratorPolicy = resolveOrchestratorSessionPolicy(ctx, session);
+
+  // T11 W4 (Agent A): permission-evaluator context. Built once per turn
+  // and reused across every tool dispatch so rule/mode/classifier
+  // decisions share the same `denialTracking` reference (limits persist
+  // across tool calls, not just within one). `executionSurface` falls
+  // back to `process.stdin.isTTY === false ? "headless" : "cli"` since
+  // Session does not currently carry an `isHeadless` field. The
+  // `session.denialTracking` field was added in this wave; when a test
+  // fixture casts through `unknown as Session` without it, we fall back
+  // to a fresh per-turn state so the evaluator still gets a valid ref.
+  const resolvedDenialTracking =
+    session.denialTracking ?? freshDenialTracking();
+  const resolvedExecutionSurface: "cli" | "headless" =
+    process.stdin && process.stdin.isTTY === false ? "headless" : "cli";
+  const permissionModeRegistry = session.services.permissionModeRegistry;
+  const permissionContext: ToolEvaluatorContext | null = permissionModeRegistry
+    ? attachContextDefaults({
+        session,
+        denialTracking: resolvedDenialTracking,
+        executionSurface: resolvedExecutionSurface,
+        getAppState: (): AppStateSnapshot => {
+          const current = permissionModeRegistry.current();
+          return {
+            toolPermissionContext: current,
+            denialTracking: resolvedDenialTracking,
+            autoModeActive: current.autoModeActive === true,
+          };
+        },
+      })
+    : null;
 
   // Construct (or reuse) the streaming executor. T7 upgrades the
   // T5 shell to a full openclaude port with ConcurrencyClass-aware
@@ -381,6 +418,30 @@ export async function executeTools(
           }
         }
 
+        // T11 W4: per-call AbortController paired with the child signal
+        // so the permission evaluator can abort the in-flight tool when
+        // the permission mode flips mid-execution (I-3). The outer
+        // `childSignal` abort is forwarded so upstream cancellation still
+        // bails the tool through the same signal path.
+        const toolAbortController = new AbortController();
+        const forwardChildAbort = (): void => {
+          if (toolAbortController.signal.aborted) return;
+          try {
+            toolAbortController.abort(
+              (childSignal as AbortSignal & { reason?: unknown }).reason,
+            );
+          } catch {
+            // already aborted
+          }
+        };
+        if (childSignal.aborted) {
+          forwardChildAbort();
+        } else {
+          childSignal.addEventListener("abort", forwardChildAbort, {
+            once: true,
+          });
+        }
+
         // Step 3: Single-tool dispatch through `runToolUse`. The per-call
         // hook boundary (pre / post / failure / schema validation /
         // timeout / size cap / BigInt reviver / progress) now lives
@@ -390,7 +451,7 @@ export async function executeTools(
           rawArgsOverride?: string,
         ): Promise<ToolDispatchResult> => {
           const output = await runToolUse(rawArgsOverride ?? toolCall.arguments ?? "", {
-            ...(childSignal !== undefined ? { signal: childSignal } : {}),
+            signal: toolAbortController.signal,
             currentTurnId: ctx.subId,
             tool,
             invocation,
@@ -399,6 +460,19 @@ export async function executeTools(
             preHooks,
             postHooks: [], // post hooks are handled by runWithAutoFixRetry
             failureHooks,
+            // T11 W4 — permission evaluator wire-up. Fires BEFORE the
+            // tool's `execute()` so rule/mode/classifier decisions can
+            // short-circuit. Back-compat: when the session has no
+            // `permissionModeRegistry` (legacy test fixtures), the
+            // evaluator path is skipped entirely.
+            ...(permissionContext !== null
+              ? {
+                  canUseTool: hasPermissionsToUseTool,
+                  permissionContext,
+                  modeChangeRegistry: permissionModeRegistry,
+                  abortController: toolAbortController,
+                }
+              : {}),
             onHookError: (phase, err, idx) => {
               emitWarningEvent(
                 session.eventLog,

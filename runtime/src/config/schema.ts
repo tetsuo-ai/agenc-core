@@ -34,6 +34,34 @@ export type Personality = "default" | "concise" | "careful" | "fast";
 
 export type WebSearchMode = "auto" | "always" | "never";
 
+/**
+ * Permission mode variants accepted by the runtime. Mirrors the
+ * `PermissionMode` union in `src/permissions/types.ts` — kept inline here
+ * to avoid a `config → permissions → config` import cycle (permissions
+ * settings.ts already depends on `config/schema.ts`).
+ *
+ * If a variant is ever added or removed in `src/permissions/types.ts`,
+ * update this union in lockstep.
+ */
+export type PermissionMode =
+  | "default"
+  | "acceptEdits"
+  | "plan"
+  | "bypassPermissions"
+  | "dontAsk"
+  | "auto"
+  | "bubble";
+
+const PERMISSION_MODE_VALUES: readonly PermissionMode[] = Object.freeze([
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "dontAsk",
+  "auto",
+  "bubble",
+] as const);
+
 // ─────────────────────────────────────────────────────────────────────
 // Sub-config shapes
 // ─────────────────────────────────────────────────────────────────────
@@ -126,6 +154,43 @@ export interface McpServerConfig {
   readonly required?: boolean;
 }
 
+/**
+ * Permissions block as it appears in `~/.agenc/config.toml` (or any
+ * settings.json the loader folds in). Mirrors the subset of
+ * `SettingsPermissionsBlock` in `src/permissions/settings.ts` that is
+ * surfaced through the top-level AgenC config.
+ *
+ * Rule arrays (`allow` / `deny` / `ask`) carry rule strings in the
+ * `Tool(filter)` or bare `Tool` form parsed by
+ * `src/permissions/rules.ts::parseRuleString`. `defaultMode` accepts any
+ * variant of the `PermissionMode` union.
+ *
+ * Precedence (top-down, highest wins) for the runtime permission
+ * context — implemented progressively across T11:
+ *   1. Flag / CLI override
+ *   2. Active profile's `permissions` (see `profiles.ts`)
+ *   3. Top-level `permissions` (this field)
+ *   4. Built-in defaults
+ *
+ * The 5-source on-disk rule ingestion (user / project / local / flag /
+ * policy settings files) is handled by
+ * `src/permissions/settings.ts::loadAllPermissionRulesFromDisk`. Those
+ * settings files are the primary source of rule strings; a
+ * ConfigStore-backed `permissions` block acts as a session-transient
+ * overlay or a TOML-side mirror of the same shape.
+ *
+ * TODO T11-closeout: reconcile ConfigStore.permissions vs settings-file
+ * permissions precedence (evaluator currently prefers settings-file
+ * sources; top-level config block is reserved for overlays).
+ */
+export interface PermissionsConfig {
+  readonly allow?: readonly string[];
+  readonly deny?: readonly string[];
+  readonly ask?: readonly string[];
+  readonly additionalDirectories?: readonly string[];
+  readonly defaultMode?: PermissionMode;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -156,6 +221,7 @@ export interface AgenCConfig {
   readonly experiments?: ExperimentsConfig;
   readonly ideConnector?: IdeConnectorConfig;
   readonly managedWorkspaces?: ManagedWorkspacesConfig;
+  readonly permissions?: PermissionsConfig;
   readonly privateStorage?: PrivateStorageConfig;
   readonly telemetryOptIn?: boolean;
 
@@ -197,13 +263,15 @@ export interface AgenCConfig {
  *   - analytics        → T12 (analytics opt-in knobs)
  *
  * Openclaude-rooted, deferred:
- *   - permissions      → T11 (permissions DSL + evaluator)
  *   - env              → T11 (shell env injection policy)
  *   - apiKeyHelper     → T11 (external API-key resolver hook)
  *   - cleanupPeriodDays → T11 (rollout/history retention)
  *   - statusLine       → T12 (TUI status line renderer)
  *   - outputStyle      → T12 (TUI output style)
  *   - enabledPlugins   → T11 (plugin loader)
+ *
+ * Lit up by T11 (no longer deferred):
+ *   - permissions      → see `PermissionsConfig` above.
  *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
@@ -225,7 +293,6 @@ export const DEFERRED_CODEX_KEYS: readonly string[] = Object.freeze([
 ]);
 
 export const DEFERRED_OPENCLAUDE_KEYS: readonly string[] = Object.freeze([
-  "permissions",
   "env",
   "apiKeyHelper",
   "cleanupPeriodDays",
@@ -262,6 +329,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "experiments",
   "ideConnector",
   "managedWorkspaces",
+  "permissions",
   "privateStorage",
   "telemetryOptIn",
   "toolBudget",
@@ -439,6 +507,103 @@ export function normalizeRawConfig(raw: Record<string, unknown>): AgenCConfig {
     out._unknown = unknown;
   }
   return deepFreeze(out as AgenCConfig);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// permissions block validation
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Error thrown when a permissions block fails schema validation.
+ * Carries the offending field path so operator-facing warnings can
+ * point at the exact subkey.
+ */
+export class InvalidPermissionsConfigError extends Error {
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid permissions.${field}: ${detail}`);
+    this.name = "InvalidPermissionsConfigError";
+    this.field = field;
+  }
+}
+
+/**
+ * Type-guard for `PermissionMode`. Kept local to the schema module so
+ * the loader can validate raw TOML values without pulling in the
+ * permissions barrel (which would create an import cycle).
+ */
+export function isValidPermissionMode(value: unknown): value is PermissionMode {
+  return (
+    typeof value === "string" &&
+    (PERMISSION_MODE_VALUES as readonly string[]).includes(value)
+  );
+}
+
+function validateStringArray(
+  value: unknown,
+  field: string,
+): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new InvalidPermissionsConfigError(field, "expected string[]");
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new InvalidPermissionsConfigError(
+        field,
+        `array element is not a string: ${typeof item}`,
+      );
+    }
+  }
+  return Object.freeze([...(value as string[])]);
+}
+
+/**
+ * Validate a raw `permissions` block (typically coming from TOML or
+ * settings.json) and return a frozen `PermissionsConfig`. Returns
+ * `undefined` for `undefined` input. Throws
+ * `InvalidPermissionsConfigError` on shape violations (wrong types,
+ * unknown mode literal, etc.).
+ *
+ * Unknown sub-fields are silently dropped — the five keys declared on
+ * `PermissionsConfig` are the contract surface. If a new key is added
+ * to `PermissionsConfig`, it must be wired through here too.
+ */
+export function validatePermissionsConfig(
+  raw: unknown,
+): PermissionsConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new InvalidPermissionsConfigError("", "expected plain object");
+  }
+
+  const out: {
+    -readonly [K in keyof PermissionsConfig]: PermissionsConfig[K];
+  } = {};
+
+  const allow = validateStringArray(raw.allow, "allow");
+  if (allow !== undefined) out.allow = allow;
+  const deny = validateStringArray(raw.deny, "deny");
+  if (deny !== undefined) out.deny = deny;
+  const ask = validateStringArray(raw.ask, "ask");
+  if (ask !== undefined) out.ask = ask;
+  const addl = validateStringArray(
+    raw.additionalDirectories,
+    "additionalDirectories",
+  );
+  if (addl !== undefined) out.additionalDirectories = addl;
+
+  if (raw.defaultMode !== undefined) {
+    if (!isValidPermissionMode(raw.defaultMode)) {
+      throw new InvalidPermissionsConfigError(
+        "defaultMode",
+        `unknown mode '${String(raw.defaultMode)}'`,
+      );
+    }
+    out.defaultMode = raw.defaultMode;
+  }
+
+  return Object.freeze(out as PermissionsConfig);
 }
 
 // ─────────────────────────────────────────────────────────────────────
