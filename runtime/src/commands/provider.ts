@@ -1,22 +1,17 @@
 /**
  * `/provider <name>` — switch the LLM provider for subsequent turns
- * (T11 Wave 2, Agent W2-E).
- *
- * Same semantics as `/model`: enforces I-13 (mid-stream abort + pending
- * switch marker) and I-57 (history compatibility check, stubbed until
- * T13 wires the real provider capability registry).
- *
- * Why provider + model are staged together on `pendingProviderSwitch`:
- * the run-turn loop consumes both atomically at top-of-loop per I-13
- * so a provider-only swap keeps whatever model was previously selected
- * (and vice-versa for `/model`). The `/config profile <name>` path
- * staged by W2 populates the optional `profile` slot for the same
- * reason.
  *
  * @module
  */
 
 import type { Session } from "../session/session.js";
+import {
+  normalizeProviderName,
+  prepareProviderSwitch,
+  type PreparedProviderSwitch,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
 import {
   checkModelHistoryCompat,
   type HistoryCompatResult,
@@ -54,55 +49,90 @@ export async function applyProviderSwitch(
       collaborationMode?: { model?: string };
     };
   };
+  const liveProvider = (session.services as {
+    provider?: Parameters<typeof readProviderFactoryOptions>[0];
+  }).provider;
+  const liveProviderOptions = liveProvider
+    ? readProviderFactoryOptions(liveProvider)
+    : undefined;
   const currentProvider =
-    rawState?.sessionConfiguration?.provider?.slug ?? "unknown";
+    readProviderIdentity(
+      liveProvider,
+      rawState?.sessionConfiguration?.provider?.slug,
+    ) ??
+    rawState?.sessionConfiguration?.provider?.slug ??
+    "unknown";
   const currentModel =
-    rawState?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
+    liveProviderOptions?.model ??
+    rawState?.sessionConfiguration?.collaborationMode?.model ??
+    "unknown";
 
-  // I-57: the stub checks compatibility against the currently-selected
-  // model because the model is what carries capability requirements.
-  // T13 will expand this to a provider × model pairing check.
-  const compat = checkModelHistoryCompat(session, currentModel, {
-    targetProvider,
+  let preparedSwitch: PreparedProviderSwitch;
+  try {
+    const targetNormalizedProvider = normalizeProviderName(targetProvider);
+    const liveProviderIdentity = readProviderIdentity(
+      liveProvider,
+      rawState?.sessionConfiguration?.provider?.slug,
+    );
+    const snapshotProviderIdentity = normalizeProviderName(
+      rawState?.sessionConfiguration?.provider?.slug,
+    );
+    const reuseLiveProviderOptions =
+      liveProviderOptions &&
+      liveProviderIdentity !== null &&
+      liveProviderIdentity === targetNormalizedProvider;
+    const reuseSnapshotModel =
+      !reuseLiveProviderOptions &&
+      targetNormalizedProvider !== null &&
+      snapshotProviderIdentity === targetNormalizedProvider;
+    preparedSwitch = prepareProviderSwitch(targetProvider, {
+      ...(reuseLiveProviderOptions ? liveProviderOptions : {}),
+      ...(reuseSnapshotModel ? { model: currentModel } : {}),
+      tools: session.services.registry.toLLMTools(),
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message.length > 0
+        ? error.message
+        : `failed to configure provider "${targetProvider.trim()}"`;
+    return `Provider switch to "${targetProvider}" blocked: ${message}`;
+  }
+
+  const compat = checkModelHistoryCompat(session, preparedSwitch.model, {
+    targetProvider: preparedSwitch.provider,
   });
   if (!compat.compatible) {
-    return `Provider switch to "${targetProvider}" blocked: ${
+    return `Provider switch to "${preparedSwitch.provider}" blocked: ${
       compat.reason ?? "history incompatible with target provider"
     }`;
   }
 
-  // T11 W3-A: use the typed mutator so the I-13 + I-57 staging site
-  // has a single well-typed entry point.
   session.setPendingProviderSwitch({
-    provider: targetProvider,
-    model: currentModel,
+    provider: preparedSwitch.provider,
+    model: preparedSwitch.model,
   });
 
   const activeTurn = session.activeTurn.unsafePeek();
   if (activeTurn !== null) {
-    // I-13: abort the current turn with reason `provider_switched`.
     session.abortTerminal("provider_switched");
     return (
-      `Provider switch staged: ${currentProvider} → ${targetProvider}. ` +
+      `Provider switch staged: ${currentProvider}/${currentModel} -> ` +
+      `${preparedSwitch.provider}/${preparedSwitch.model}. ` +
       `Current turn aborted; the switch takes effect on the next turn.`
     );
   }
 
-  if (
-    typeof (
-      session as Session & {
-        consumePendingProviderSwitch?: () => Promise<void>;
-      }
-    ).consumePendingProviderSwitch === "function"
-  ) {
-    await (
-      session as Session & {
-        consumePendingProviderSwitch: () => Promise<void>;
-      }
-    ).consumePendingProviderSwitch();
+  const applied = await session.consumePendingProviderSwitch();
+  if (!applied.applied) {
+    return `Provider switch to "${preparedSwitch.provider}" blocked: ${
+      applied.reason ?? "provider rebuild failed"
+    }`;
   }
 
-  return `Provider switched to "${targetProvider}" (was "${currentProvider}").`;
+  return (
+    `Provider switched to "${applied.provider}" with model "${applied.model}" ` +
+    `(was "${currentProvider}" / "${currentModel}").`
+  );
 }
 
 export const providerCommand: SlashCommand = {

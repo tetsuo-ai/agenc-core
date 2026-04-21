@@ -997,6 +997,43 @@ describe("system.bash tool", () => {
     );
   });
 
+  it("passes injected abort signals through to execFile", async () => {
+    const tool = createBashTool();
+    const abortController = new AbortController();
+    mockSuccess("ok\n");
+
+    await tool.execute({
+      command: "git",
+      args: ["status"],
+      __abortSignal: abortController.signal,
+    } as Record<string, unknown>);
+
+    const [, , opts] = mockExecFile.mock.calls[0];
+    expect((opts as { signal?: AbortSignal }).signal).toBe(abortController.signal);
+  });
+
+  it("aborts spawned shell-mode processes when the injected signal fires", async () => {
+    const tool = createBashTool();
+    const abortController = new AbortController();
+    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+    mockSpawn.mockImplementation(() => {
+      const child = createFakeChild();
+      queueMicrotask(() => abortController.abort("user_interrupt"));
+      queueMicrotask(() => child.emit("exit", null));
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+
+    const result = await tool.execute({
+      command: "sleep 60 && echo done",
+      __abortSignal: abortController.signal,
+    } as Record<string, unknown>);
+
+    expect(result.isError).toBe(true);
+    expect(parseContent(result).stderr).toContain("aborted");
+    expect(killSpy).toHaveBeenCalled();
+    killSpy.mockRestore();
+  });
+
     it("truncates shell mode output exceeding maxOutputBytes", async () => {
       const tool = createBashTool({ maxOutputBytes: 20 });
       mockSpawnSuccess("a".repeat(100));

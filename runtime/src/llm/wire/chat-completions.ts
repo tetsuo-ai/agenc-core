@@ -19,7 +19,10 @@ import {
   normalizeFinishReason,
   normalizeToolCalls,
   parseOpenAIToolChoice,
+  prepareMessagesForWire,
   toOpenAIMessageContent,
+  toOpenAIToolMessageContent,
+  withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
 
@@ -33,13 +36,16 @@ export interface ChatCompletionsRequestOptions {
 export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
+  const messages = prepareMessagesForWire(input.messages);
   const body: Record<string, unknown> = {
     model: input.model,
-    messages: input.messages.map((message) => {
+    stream: false,
+    store: false,
+    messages: messages.map((message) => {
       if (message.role === "tool") {
         return {
           role: "tool",
-          content: messageTextContent(message.content),
+          content: toOpenAIToolMessageContent(message.content),
           tool_call_id: message.toolCallId,
         };
       }
@@ -115,8 +121,9 @@ export function parseChatCompletionsResponse(
       : Array.isArray(message.content)
         ? assistantTextFromContentBlocks(message.content)
         : "";
+  const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
-    collectRequestMetrics(request.messages, request.tools),
+    collectRequestMetrics(preparedMessages, request.tools),
     buildChatCompletionsRequest(request),
     request.options,
   );
@@ -136,6 +143,10 @@ export function parseChatCompletionsResponse(
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason: normalizeFinishReason(choice.finish_reason),
-    requestMetrics,
+    requestMetrics: withEndpointMarkers(
+      requestMetrics,
+      "/chat/completions",
+      response,
+    ),
   };
 }

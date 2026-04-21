@@ -24,6 +24,7 @@
 
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 import { isWithheld413Message, isMediaTooLargeMessage } from "./api-errors.js";
+import { hasAttemptedCollapseDrain } from "./collapse-drain.js";
 
 export interface WithholdGateResult {
   readonly kind:
@@ -50,7 +51,7 @@ export function evaluateWithholdCascade(
   }
 
   // Gate 2: has collapse-drain already fired this recovery pass?
-  const alreadyDrained = state.transition?.reason === "collapse_drain_retry";
+  const alreadyDrained = hasAttemptedCollapseDrain(state);
   if (alreadyDrained) {
     return {
       kind: "route_to_reactive_compact",

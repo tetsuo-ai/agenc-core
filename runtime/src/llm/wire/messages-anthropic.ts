@@ -18,8 +18,11 @@ import {
   normalizeFinishReason,
   normalizeToolCalls,
   parseAnthropicToolChoice,
+  prepareMessagesForWire,
   toAnthropicMessageContent,
+  toAnthropicToolResultContent,
   toAnthropicTools,
+  withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
 
@@ -34,28 +37,32 @@ export interface AnthropicMessagesRequestOptions {
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
-  const system = input.messages
+  const messages = prepareMessagesForWire(input.messages);
+  const system = messages
     .filter((message) => message.role === "system")
     .map((message) => messageTextContent(message.content))
     .join("\n\n");
 
   const body: Record<string, unknown> = {
     model: input.model,
-    messages: input.messages
+    messages: messages
       .filter((message) => message.role !== "system")
       .map((message) => {
         if (message.role === "assistant" && message.toolCalls?.length) {
+          const anthropicContent = toAnthropicMessageContent(message.content);
+          const assistantContent =
+            typeof anthropicContent === "string"
+              ? anthropicContent.length > 0
+                ? [{
+                  type: "text",
+                  text: anthropicContent,
+                }]
+                : []
+              : anthropicContent;
           return {
             role: "assistant",
             content: [
-              ...(
-                typeof toAnthropicMessageContent(message.content) === "string"
-                  ? [{
-                    type: "text",
-                    text: toAnthropicMessageContent(message.content),
-                  }]
-                  : toAnthropicMessageContent(message.content)
-              ),
+              ...assistantContent,
               ...message.toolCalls.map((toolCall) => ({
                 type: "tool_use",
                 id: toolCall.id,
@@ -71,7 +78,7 @@ export function buildAnthropicMessagesRequest(
             content: [{
               type: "tool_result",
               tool_use_id: message.toolCallId,
-              content: messageTextContent(message.content),
+              content: toAnthropicToolResultContent(message.content),
             }],
           };
         }
@@ -129,8 +136,9 @@ export function parseAnthropicMessagesResponse(
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
       : {};
+  const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
-    collectRequestMetrics(request.messages, request.tools),
+    collectRequestMetrics(preparedMessages, request.tools),
     buildAnthropicMessagesRequest(request),
     request.options,
   );
@@ -146,6 +154,6 @@ export function parseAnthropicMessagesResponse(
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason: normalizeFinishReason(response.stop_reason),
-    requestMetrics,
+    requestMetrics: withEndpointMarkers(requestMetrics, "/messages", response),
   };
 }

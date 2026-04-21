@@ -15,10 +15,13 @@ import {
   assistantTextFromContentBlocks,
   coerceUsage,
   collectRequestMetrics,
+  messageTextContent,
   normalizeFinishReason,
   normalizeToolCalls,
   parseOpenAIToolChoice,
-  toOpenAIMessageContent,
+  prepareMessagesForWire,
+  toResponsesToolOutput,
+  withEndpointMarkers,
   withSerializedMetrics,
 } from "./shared.js";
 
@@ -30,52 +33,167 @@ export interface OpenAIResponsesRequestOptions {
   readonly store?: boolean;
 }
 
-function roleContent(message: LLMMessage): Array<Record<string, unknown>> {
-  if (typeof message.content === "string") {
-    return [{ type: "input_text", text: message.content }];
+function normalizeFunctionCallId(toolCallId: string | undefined): {
+  readonly id: string;
+  readonly callId: string;
+} {
+  const value = (toolCallId ?? "").trim();
+  if (!value) {
+    return {
+      id: "fc_unknown",
+      callId: "call_unknown",
+    };
   }
-  return (toOpenAIMessageContent(message.content) as Array<Record<string, unknown>>)
-    .map((entry) => {
-      if (entry.type === "text") return { type: "input_text", text: entry.text };
-      return entry;
+  if (value.startsWith("call_")) {
+    return {
+      id: `fc_${value.slice("call_".length)}`,
+      callId: value,
+    };
+  }
+  if (value.startsWith("fc_")) {
+    return {
+      id: value,
+      callId: `call_${value.slice("fc_".length)}`,
+    };
+  }
+  return {
+    id: `fc_${value}`,
+    callId: value,
+  };
+}
+
+function toResponsesMessageParts(
+  content: LLMMessage["content"],
+  role: "user" | "assistant",
+): Array<Record<string, unknown>> {
+  const textType = role === "assistant" ? "output_text" : "input_text";
+  if (typeof content === "string") {
+    return content.length > 0 ? [{ type: textType, text: content }] : [];
+  }
+
+  const parts: Array<Record<string, unknown>> = [];
+  for (const part of content) {
+    if (part.type === "text") {
+      if (part.text.length === 0) continue;
+      parts.push({ type: textType, text: part.text });
+      continue;
+    }
+    if (role === "assistant") continue;
+    parts.push({
+      type: "input_image",
+      image_url: part.image_url.url,
     });
+  }
+  return parts;
+}
+
+function resolveResponsesFinishReason(
+  response: Record<string, unknown>,
+  toolCalls: readonly LLMToolCall[],
+): LLMResponse["finishReason"] {
+  if (toolCalls.length > 0) {
+    return "tool_calls";
+  }
+
+  const status = String(response.status ?? "");
+  if (status === "incomplete") {
+    const details =
+      response.incomplete_details &&
+      typeof response.incomplete_details === "object"
+        ? (response.incomplete_details as Record<string, unknown>)
+        : {};
+    const reason = String(details.reason ?? "");
+    if (reason.includes("max_output_tokens") || reason.includes("max_tokens")) {
+      return "length";
+    }
+    if (reason.includes("content_filter") || reason.includes("refusal")) {
+      return "content_filter";
+    }
+    if (reason.includes("error")) {
+      return "error";
+    }
+  }
+
+  if (
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "expired"
+  ) {
+    return "error";
+  }
+
+  return normalizeFinishReason(status);
 }
 
 export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
+  const messages = prepareMessagesForWire(input.messages);
+  const instructions = messages
+    .filter((message) => message.role === "system")
+    .map((message) => messageTextContent(message.content))
+    .join("\n\n");
+  const responseInput: Array<Record<string, unknown>> = [];
+
+  for (const message of messages) {
+    if (message.role === "system") continue;
+
+    if (message.role === "assistant") {
+      const content = toResponsesMessageParts(message.content, "assistant");
+      if (content.length > 0) {
+        responseInput.push({
+          type: "message",
+          role: "assistant",
+          content,
+        });
+      }
+      for (const toolCall of message.toolCalls ?? []) {
+        const normalizedId = normalizeFunctionCallId(toolCall.id);
+        responseInput.push({
+          type: "function_call",
+          id: normalizedId.id,
+          call_id: normalizedId.callId,
+          name: toolCall.name,
+          arguments: toolCall.arguments,
+        });
+      }
+      continue;
+    }
+
+    if (message.role === "tool") {
+      responseInput.push({
+        type: "function_call_output",
+        call_id: normalizeFunctionCallId(message.toolCallId).callId,
+        output: toResponsesToolOutput(message.content),
+      });
+      continue;
+    }
+
+    responseInput.push({
+      type: "message",
+      role: message.role,
+      content: toResponsesMessageParts(message.content, "user"),
+    });
+  }
+
+  if (responseInput.length === 0) {
+    responseInput.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "" }],
+    });
+  }
+
   const body: Record<string, unknown> = {
     model: input.model,
-    input: input.messages.map((message) => {
-      if (message.role === "assistant" && message.toolCalls?.length) {
-        return {
-          role: "assistant",
-          content: roleContent(message),
-          tool_calls: message.toolCalls.map((toolCall) => ({
-            type: "function_call",
-            call_id: toolCall.id,
-            name: toolCall.name,
-            arguments: toolCall.arguments,
-          })),
-        };
-      }
-      if (message.role === "tool") {
-        return {
-          type: "function_call_output",
-          call_id: message.toolCallId,
-          output:
-            typeof message.content === "string"
-              ? message.content
-              : JSON.stringify(message.content),
-        };
-      }
-      return {
-        role: message.role,
-        content: roleContent(message),
-      };
-    }),
+    input: responseInput,
+    stream: false,
+    store: input.store ?? false,
   };
 
+  if (instructions.length > 0) {
+    body.instructions = instructions;
+  }
   if (input.tools.length > 0) body.tools = input.tools;
   if (input.options?.toolChoice !== undefined) {
     body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
@@ -83,14 +201,14 @@ export function buildOpenAIResponsesRequest(
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
+  if (input.options?.promptCacheKey) {
+    body.prompt_cache_key = input.options.promptCacheKey;
+  }
   if (input.options?.includeEncryptedReasoning) {
     body.include = ["reasoning.encrypted_content"];
   }
   if (input.options?.reasoningEffort !== undefined) {
     body.reasoning = { effort: input.options.reasoningEffort };
-  }
-  if (input.store !== undefined) {
-    body.store = input.store;
   }
   return body;
 }
@@ -129,8 +247,9 @@ export function parseOpenAIResponsesResponse(
     response.usage && typeof response.usage === "object"
       ? (response.usage as Record<string, unknown>)
       : {};
+  const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
-    collectRequestMetrics(request.messages, request.tools),
+    collectRequestMetrics(preparedMessages, request.tools),
     buildOpenAIResponsesRequest(request),
     request.options,
   );
@@ -145,7 +264,7 @@ export function parseOpenAIResponsesResponse(
     }),
     model:
       typeof response.model === "string" ? response.model : model,
-    finishReason: normalizeFinishReason(response.status),
-    requestMetrics,
+    finishReason: resolveResponsesFinishReason(response, toolCalls),
+    requestMetrics: withEndpointMarkers(requestMetrics, "/responses", response),
   };
 }

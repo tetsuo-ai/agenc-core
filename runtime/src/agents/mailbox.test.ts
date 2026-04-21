@@ -78,10 +78,10 @@ describe("Mailbox", () => {
     expect(second).toHaveLength(0);
   });
 
-  it("rejects send after close", () => {
+  it("throws MailboxClosedError on send after close", () => {
     const mb = new Mailbox({ threadId: "t1" });
     mb.close();
-    expect(mb.send(makeMsg())).toBe("rejected");
+    expect(() => mb.send(makeMsg())).toThrowError(MailboxClosedError);
   });
 
   it("MAX_MAILBOX_DEPTH default is 1000", () => {

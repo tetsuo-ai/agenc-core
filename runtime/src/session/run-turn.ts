@@ -58,7 +58,10 @@ import {
   getPrepareContextTerminal,
   prepareContext,
 } from "../phases/prepare-context.js";
-import { buildCompactedRolloutItem } from "../llm/compact/compact.js";
+import {
+  buildCompactedRolloutItem,
+  buildPostCompactMessages,
+} from "../llm/compact/compact.js";
 import {
   streamModel,
   StreamModelError,
@@ -70,6 +73,11 @@ import {
   reconnectWithBackoff,
 } from "../recovery/reconnection.js";
 import * as planModeHelpers from "./plan-mode.js";
+import {
+  buildCompactCacheSafeParams,
+  createSessionBackedCompactContext,
+} from "./compact-runtime-context.js";
+import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import { toTurnContextItem, type TurnContext } from "./turn-context.js";
 import {
@@ -123,6 +131,19 @@ function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
     promptTokens: acc.promptTokens + (next.promptTokens ?? 0),
     completionTokens: acc.completionTokens + (next.completionTokens ?? 0),
     totalTokens: acc.totalTokens + (next.totalTokens ?? 0),
+  };
+}
+
+function toResponseItem(message: LLMMessage): ResponseItem {
+  return {
+    role: message.role,
+    content:
+      typeof message.content === "string"
+        ? message.content
+        : message.content.map((part) => ({ ...part })),
+    ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+    ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+    ...(message.phase !== undefined ? { phase: message.phase } : {}),
   };
 }
 
@@ -249,22 +270,35 @@ async function runAutoCompact(
     state && state.messagesForQuery.length > 0
       ? state.messagesForQuery
       : (state?.messages ?? []);
+  const querySource =
+    reason === "model_downshift" ? "model_downshift" : "repl_main_thread";
+  const compactContext = createSessionBackedCompactContext(session, {
+    turnContext: ctx,
+    querySource,
+    isNonInteractiveSession: false,
+    verbose: false,
+  });
 
   try {
+    const cacheSafeParams = await buildCompactCacheSafeParams(
+      compactContext,
+      messages as never,
+    );
     const result = await impl(
       messages,
-      ctx,
+      compactContext,
+      cacheSafeParams,
+      querySource,
       state?.autoCompactTracking,
       state?.snipTokensFreed ?? 0,
-      // Per-reason querySource keeps the compact module's telemetry
-      // distinguishable between pre-turn downshift and pre-turn
-      // context-limit triggers. Uses openclaude's canonical source id.
-      reason === "model_downshift"
-        ? "model_downshift"
-        : "repl_main_thread",
     );
 
     if (result.wasCompacted && state) {
+      if (!result.compactionResult) {
+        throw new Error(
+          "autoCompactIfNeeded reported success without a compactionResult",
+        );
+      }
       const cr = result.compactionResult as
         | {
             boundaryMarker?: unknown;
@@ -290,18 +324,14 @@ async function runAutoCompact(
           { durable: true },
         );
       }
-      if (cr && (cr.summaryMessages || cr.attachments || cr.hookResults)) {
-        const compacted: LLMMessage[] = [
-          ...(cr.summaryMessages ?? []),
-          ...(cr.attachments ?? []),
-          ...(cr.hookResults ?? []),
-        ];
-        // Replace both the full history view and the per-iteration
-        // projection so `prepareContext` (next phase) sees the compacted
-        // view on its first stage.
-        state.messages = compacted;
-        state.messagesForQuery = [...compacted];
-      }
+      const compacted = buildPostCompactMessages(
+        cr as Parameters<typeof buildPostCompactMessages>[0],
+      ) as unknown as LLMMessage[];
+      // Replace both the full history view and the per-iteration
+      // projection so `prepareContext` (next phase) sees the same
+      // post-compact replacement history the rollout recorded.
+      state.messages = compacted;
+      state.messagesForQuery = [...compacted];
       // Stamp auto-compact tracking so the commit phase emits the
       // boundary marker (runtime/src/phases/commit.ts).
       state.autoCompactTracking = {
@@ -396,7 +426,7 @@ export async function maybeRunPreviousModelInlineCompact(
     oldContextWindow > newContextWindow;
   if (!shouldRun) return false;
 
-  await runAutoCompact(
+  return await runAutoCompact(
     session,
     ctx,
     "do_not_inject",
@@ -404,7 +434,6 @@ export async function maybeRunPreviousModelInlineCompact(
     "pre_turn",
     state,
   );
-  return true;
 }
 
 /**
@@ -432,7 +461,7 @@ async function runPreSamplingCompact(
     (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
       .autoCompactTokenLimit ?? Number.POSITIVE_INFINITY;
   if (totalUsageTokens >= autoCompactLimit) {
-    await runAutoCompact(
+    const contextLimitCompacted = await runAutoCompact(
       session,
       ctx,
       "do_not_inject",
@@ -440,7 +469,7 @@ async function runPreSamplingCompact(
       "pre_turn",
       state,
     );
-    preSamplingCompacted = true;
+    preSamplingCompacted = preSamplingCompacted || contextLimitCompacted;
   }
   return preSamplingCompacted;
 }
@@ -976,6 +1005,7 @@ export async function* runTurnKernel(
       },
     });
   };
+  const referenceContextItem = toTurnContextItem(ctx);
 
   // I-13 consumer: apply any staged provider/model/profile switch from
   // a prior `/model`, `/provider`, `/config profile <name>`, or
@@ -991,6 +1021,7 @@ export async function* runTurnKernel(
   if (typeof sessionOwner.consumePendingProviderSwitch === "function") {
     await sessionOwner.consumePendingProviderSwitch();
   }
+  session.bindProviderConversation();
 
   // Codex: `if input.is_empty() && !sess.has_pending_input().await { return None }`
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
@@ -1000,7 +1031,68 @@ export async function* runTurnKernel(
     return { reason: "completed" };
   }
 
+  // Seed the initial TurnState BEFORE pre-sampling compact so the
+  // dispatcher can splice post-compact messages back into state and the
+  // first `prepareContext` call reads the compacted view. Codex's
+  // equivalent operates on the session-held conversation directly;
+  // AgenC's phase machine reads `state.messages`, so the compact result
+  // has to land there.
+  const { system, prior, user } = buildSeedMessages(opts, userMessage);
+  const priorFull = system ? [system, ...prior] : prior;
+  const durableHistoryStartIndex = system ? 1 : 0;
+
+  let state: TurnState = buildInitialTurnState(ctx, user, {
+    priorMessages: priorFull,
+  });
+  let persistedMessageCount = priorFull.length;
+  const persistTurnRolloutBaseline = (): void => {
+    session.rolloutStore?.appendRollout({
+      type: "turn_context",
+      payload: referenceContextItem,
+    });
+  };
+  const persistNewResponseItems = (): void => {
+    if (!session.rolloutStore) return;
+    const nextItems = state.messages.slice(persistedMessageCount);
+    for (const message of nextItems) {
+      session.rolloutStore.appendRollout({
+        type: "response_item",
+        payload: toResponseItem(message),
+      });
+    }
+    persistedMessageCount = state.messages.length;
+  };
+  const syncSessionState = async (): Promise<void> => {
+    persistNewResponseItems();
+    const durableHistory = state.messages.slice(durableHistoryStartIndex);
+    await session.state.with((sessionState) => {
+      sessionState.history = durableHistory.map((message) => ({
+        ...message,
+        ...(Array.isArray(message.content)
+          ? { content: message.content.map((part) => ({ ...part })) }
+          : {}),
+        ...(message.toolCalls !== undefined
+          ? { toolCalls: message.toolCalls.map((toolCall) => ({ ...toolCall })) }
+          : {}),
+      }));
+      sessionState.previousTurnSettings = {
+        model: ctx.modelInfo.slug,
+        ...(ctx.realtimeActive !== undefined
+          ? { realtimeActive: ctx.realtimeActive }
+          : {}),
+        ...(ctx.modelInfo.contextWindow !== undefined
+          ? {
+              contextWindow: ctx.modelInfo.contextWindow,
+              modelInfo: { contextWindow: ctx.modelInfo.contextWindow },
+            }
+          : {}),
+      };
+      sessionState.referenceContextItem = referenceContextItem;
+    });
+  };
+
   emitTurnStarted();
+  persistTurnRolloutBaseline();
   session.budgetTracker?.resetForTurn();
 
   // T6 gap #119: emit the seed user message exactly once per runTurn
@@ -1014,19 +1106,7 @@ export async function* runTurnKernel(
       payload: { message: userMessage },
     },
   });
-
-  // Seed the initial TurnState BEFORE pre-sampling compact so the
-  // dispatcher can splice post-compact messages back into state and the
-  // first `prepareContext` call reads the compacted view. Codex's
-  // equivalent operates on the session-held conversation directly;
-  // AgenC's phase machine reads `state.messages`, so the compact result
-  // has to land there.
-  const { system, prior, user } = buildSeedMessages(opts, userMessage);
-  const priorFull = system ? [system, ...prior] : prior;
-
-  let state: TurnState = buildInitialTurnState(ctx, user, {
-    priorMessages: priorFull,
-  });
+  persistNewResponseItems();
 
   // Codex: run_pre_sampling_compact before any phase runs. Returns
   // whether compaction happened; if yes and we had a prewarmed
@@ -1046,6 +1126,7 @@ export async function* runTurnKernel(
       },
     });
     // Codex: "return None" on pre-compact failure.
+    await syncSessionState();
     emitTurnComplete("");
     const terminal: Terminal = { reason: "completed" };
     yield {
@@ -1075,6 +1156,7 @@ export async function* runTurnKernel(
       await drainInFlight(state, ctx, session);
       // T6 gap #119: cancellation path gets `turn_aborted` so rollouts
       // close the turn boundary with the actual reason.
+      await syncSessionState();
       emitTurnAborted(
         String((signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled"),
       );
@@ -1091,6 +1173,7 @@ export async function* runTurnKernel(
     const maxTurns = resolveMaxTurns(ctx);
     if (state.turnCount > maxTurns) {
       await drainInFlight(state, ctx, session);
+      await syncSessionState();
       emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "max_turns" };
       yield {
@@ -1106,6 +1189,7 @@ export async function* runTurnKernel(
     // the next turn's pre-sampling compact considers the new model.
     if (session.pendingProviderSwitch) {
       await drainInFlight(state, ctx, session);
+      await syncSessionState();
       emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed" };
       yield {
@@ -1132,6 +1216,7 @@ export async function* runTurnKernel(
         if (result.assistantText.length > 0) {
           lastContent = result.assistantText;
         }
+        await syncSessionState();
         emitTurnComplete(lastContent);
         yield {
           type: "turn_complete",
@@ -1170,6 +1255,7 @@ export async function* runTurnKernel(
       }
       // T6 gap #119: error-terminated turn still completes the turn
       // boundary for rollout reducers.
+      await syncSessionState();
       emitTurnComplete(lastContent);
       const terminal: Terminal = { reason: "completed", error: underlying };
       yield {
@@ -1186,6 +1272,13 @@ export async function* runTurnKernel(
     // have set state.transition — all 8 reasons route to PrepareContext
     // per PhaseTransition table.
     if (state.transition !== undefined) {
+      if (
+        state.transition.reason === "model_fallback" &&
+        session.pendingProviderSwitch !== null &&
+        typeof sessionOwner.consumePendingProviderSwitch === "function"
+      ) {
+        await sessionOwner.consumePendingProviderSwitch();
+      }
       state.transition = undefined;
       continue;
     }
@@ -1197,6 +1290,7 @@ export async function* runTurnKernel(
     // No tool calls + no transition → commit + terminate.
     if (!state.needsFollowUp && state.toolUseBlocks.length === 0) {
       await commit(state, ctx, session, signal);
+      await syncSessionState();
       // commit may set a stop-hook transition (I-17). If so, re-enter.
       if (state.transition !== undefined) {
         state.transition = undefined;
@@ -1242,6 +1336,7 @@ export async function* runTurnKernel(
 
     // Phase 6 — commit iteration. Stop-hook may request re-entry.
     await commit(state, ctx, session, signal);
+    await syncSessionState();
 
     // Token-budget decision from streamModel: if exceeded, run-turn
     // today takes the cautious path and terminates. T8 wires the

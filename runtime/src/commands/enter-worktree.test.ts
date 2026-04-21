@@ -32,6 +32,7 @@ function stubSession() {
   return {
     eventLog: {},
     nextInternalSubId: () => "sub-1",
+    sessionConfiguration: { cwd: "/repo-from-session" },
   } as unknown as Parameters<typeof enterWorktree>[0]["session"];
 }
 
@@ -50,6 +51,7 @@ describe("enterWorktree", () => {
     });
     const res = await enterWorktree({
       session: stubSession(),
+      cwd: "/repo",
       slug: "bad slug",
     });
     expect(res.kind).toBe("rejected");
@@ -62,6 +64,7 @@ describe("enterWorktree", () => {
     mockFindRoot.mockReturnValueOnce(null);
     const res = await enterWorktree({
       session: stubSession(),
+      cwd: "/repo",
       slug: "ok",
     });
     expect(res.kind).toBe("rejected");
@@ -80,6 +83,7 @@ describe("enterWorktree", () => {
     mockCapture.mockResolvedValueOnce("abc123");
     const res = await enterWorktree({
       session: stubSession(),
+      cwd: "/repo",
       slug: "feat",
     });
     expect(res.kind).toBe("entered");
@@ -87,6 +91,27 @@ describe("enterWorktree", () => {
       expect(res.handle.path).toBe("/repo/.agenc-worktrees/feat");
       expect(res.baseCommit).toBe("abc123");
     }
+    expect(mockFindRoot).toHaveBeenCalledWith("/repo");
+  });
+
+  it("falls back to the session cwd when the adapter did not pass one", async () => {
+    mockValidate.mockImplementation(() => {});
+    mockFindRoot.mockReturnValueOnce("/repo-from-session");
+    mockGetOrCreate.mockResolvedValueOnce({
+      path: "/repo-from-session/.agenc-worktrees/feat",
+      branch: "worktree-feat",
+      gitRoot: "/repo-from-session",
+      created: true,
+    });
+    mockCapture.mockResolvedValueOnce("abc123");
+
+    const res = await enterWorktree({
+      session: stubSession(),
+      slug: "feat",
+    });
+
+    expect(res.kind).toBe("entered");
+    expect(mockFindRoot).toHaveBeenCalledWith("/repo-from-session");
   });
 
   it("warns when resuming an existing worktree", async () => {
@@ -99,7 +124,7 @@ describe("enterWorktree", () => {
       created: false,
     });
     mockCapture.mockResolvedValueOnce("abc");
-    await enterWorktree({ session: stubSession(), slug: "feat" });
+    await enterWorktree({ session: stubSession(), cwd: "/repo", slug: "feat" });
     expect(mockEmitWarning).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -114,6 +139,7 @@ describe("enterWorktree", () => {
     mockGetOrCreate.mockRejectedValueOnce(new Error("git failed"));
     const res = await enterWorktree({
       session: stubSession(),
+      cwd: "/repo",
       slug: "feat",
     });
     expect(res.kind).toBe("rejected");

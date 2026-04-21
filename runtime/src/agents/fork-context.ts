@@ -81,9 +81,19 @@ function buildDirective(input: ForkContextInput): string {
     `Task: ${input.taskPrompt}`,
   ];
   if (input.worktreePath) {
-    lines.push(
-      `Working directory: ${input.worktreePath} (isolated git worktree)`,
-    );
+    const parentCwd =
+      input.parent.sessionConfiguration.cwd ?? input.parent.config.cwd;
+    if (parentCwd && parentCwd !== input.worktreePath) {
+      lines.push(
+        `You've inherited conversation context from a parent working in ${parentCwd}. ` +
+          `You are operating in an isolated git worktree at ${input.worktreePath}. ` +
+          "Translate inherited paths to the worktree root and re-read files before editing if they may have changed.",
+      );
+    } else {
+      lines.push(
+        `Working directory: ${input.worktreePath} (isolated git worktree)`,
+      );
+    }
   }
   lines.push(
     "Your parent will see your final message and the tool results you produced.",

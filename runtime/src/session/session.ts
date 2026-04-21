@@ -38,21 +38,33 @@ import { AsyncQueue } from "../utils/async-queue.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import { monotonicMs } from "../utils/monotonic.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
+import { ProviderHttpClient } from "../llm/client.js";
+import type { LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
-  createProvider,
-  isFactoryProvider,
-  type ProviderName,
+  normalizeProviderName,
+  prepareProviderSwitch,
+  type PreparedProviderSwitch,
+  readProviderFactoryOptions,
+  readProviderIdentity,
 } from "../llm/provider.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  createEmptyToolPermissionContext,
+  type PermissionMode,
+  type ToolPermissionContext,
+} from "../permissions/types.js";
 import {
   freshDenialTracking,
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
+import type {
+  ApprovalResolver,
+  PermissionRequestHook,
+} from "../tools/orchestrator.js";
 import { startMcpManagerForSession } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
@@ -61,6 +73,7 @@ import {
   type Event,
   type EventMsg,
   type SessionConfiguredEvent,
+  type TurnContextItem,
 } from "./event-log.js";
 import type { RolloutStore } from "./rollout-store.js";
 import type { AppendOptions } from "./session-store.js";
@@ -117,9 +130,11 @@ export interface SessionState {
   previousTurnSettings?: {
     readonly model: string;
     readonly realtimeActive?: boolean;
-    readonly contextWindow?: number;
-    readonly modelInfo?: { readonly contextWindow?: number };
+      readonly contextWindow?: number;
+      readonly modelInfo?: { readonly contextWindow?: number };
   };
+  /** Resume/fork baseline turn context from rollout reconstruction. */
+  referenceContextItem?: TurnContextItem;
   /** Pending session-start hook source (codex line 841). T10 wires. */
   pendingSessionStartSource?: SessionStartSource;
 }
@@ -310,6 +325,11 @@ export interface AnalyticsEventsClient {
 export interface ApprovalStore {
   hasApproval(key: string): boolean;
   approve(key: string): void;
+  clear?(): void;
+  withCachedApproval?(opts: {
+    readonly keys: readonly unknown[];
+    readonly fetchDecision: () => Promise<unknown>;
+  }): Promise<unknown>;
 }
 
 /** Codex `LocalThreadStore`. T6 (event log) wires. */
@@ -332,6 +352,9 @@ export interface CodeModeService {
 /** Codex `NetworkApprovalService`. T11 (network approval). */
 export interface NetworkApprovalService {
   enabled(): boolean;
+  clearSessionHosts?(): void;
+  requestNetworkApproval?(opts: unknown): Promise<unknown>;
+  requestDeferredApproval?(opts: unknown): Promise<unknown>;
 }
 
 /** Codex `Shell`. T7 (tools) wires. */
@@ -395,6 +418,8 @@ export interface SessionServices {
   // T-future: AgenC-specific additions
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
+  readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
+  readonly approvalResolver?: ApprovalResolver;
   /**
    * T11 W3-A: authoritative permission-mode registry. Commands (`/permissions`,
    * `/plan`) and the evaluator both read from the same registry instance so
@@ -422,6 +447,13 @@ export interface PendingProviderSwitch {
   readonly provider: string;
   readonly model: string;
   readonly profile?: string;
+}
+
+export interface AppliedProviderSwitchResult {
+  readonly applied: boolean;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reason?: string;
 }
 
 /** Abort reason classification (per I-7). */
@@ -467,6 +499,59 @@ export interface SessionOpts {
 export interface SessionTurnDriverHooks {
   readonly submit: (message: string) => Promise<void>;
   readonly flushEventLog?: () => Promise<void> | void;
+}
+
+function readProviderHttpClient(
+  provider: LLMProvider | undefined,
+): ProviderHttpClient | undefined {
+  const candidate = (provider as { client?: unknown } | undefined)?.client;
+  return candidate instanceof ProviderHttpClient ? candidate : undefined;
+}
+
+function normalizeHistoryMessages(
+  history: ReadonlyArray<unknown>,
+): LLMMessage[] {
+  const normalized: LLMMessage[] = [];
+  for (const item of history) {
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as Partial<LLMMessage> & {
+      role?: unknown;
+      content?: unknown;
+      phase?: unknown;
+      toolCalls?: unknown;
+      toolCallId?: unknown;
+      toolName?: unknown;
+    };
+    if (
+      candidate.role !== "system" &&
+      candidate.role !== "user" &&
+      candidate.role !== "assistant" &&
+      candidate.role !== "tool"
+    ) {
+      continue;
+    }
+    const content =
+      typeof candidate.content === "string" || Array.isArray(candidate.content)
+        ? candidate.content
+        : "";
+    normalized.push({
+      role: candidate.role,
+      content: content as LLMMessage["content"],
+      ...(candidate.phase === "commentary" || candidate.phase === "final_answer"
+        ? { phase: candidate.phase }
+        : {}),
+      ...(Array.isArray(candidate.toolCalls)
+        ? { toolCalls: candidate.toolCalls as LLMMessage["toolCalls"] }
+        : {}),
+      ...(typeof candidate.toolCallId === "string"
+        ? { toolCallId: candidate.toolCallId }
+        : {}),
+      ...(typeof candidate.toolName === "string"
+        ? { toolName: candidate.toolName }
+        : {}),
+    });
+  }
+  return normalized;
 }
 
 /**
@@ -660,6 +745,27 @@ export class Session {
     const resolvedRegistry =
       rawRegistry ??
       new PermissionModeRegistry(createEmptyToolPermissionContext());
+    opts.initialState.sessionConfiguration = {
+      ...opts.initialState.sessionConfiguration,
+      permissionContext: {
+        mode: resolvedRegistry.current().mode,
+        ...(resolvedRegistry.current().isAutoModeAvailable !== undefined
+          ? {
+              isAutoModeAvailable:
+                resolvedRegistry.current().isAutoModeAvailable,
+            }
+          : {}),
+        ...(resolvedRegistry.current().autoModeActive !== undefined
+          ? { autoModeActive: resolvedRegistry.current().autoModeActive }
+          : {}),
+        ...(resolvedRegistry.current().bypassPermissionsAcceptedIn !== undefined
+          ? {
+              bypassPermissionsAcceptedIn:
+                resolvedRegistry.current().bypassPermissionsAcceptedIn,
+            }
+          : {}),
+      },
+    } as SessionConfiguration;
     this.services =
       rawRegistry === undefined
         ? { ...opts.services, permissionModeRegistry: resolvedRegistry }
@@ -680,6 +786,13 @@ export class Session {
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
     this.budgetTracker = opts.budgetTracker ?? null;
     this.initialTranscriptEvents = opts.initialTranscriptEvents ?? [];
+    this.bindProviderConversation();
+    resolvedRegistry.subscribeToModeChange((newMode) => {
+      void this.syncPermissionContextFromRegistry({
+        ...resolvedRegistry.current(),
+        mode: newMode,
+      });
+    });
   }
 
   // ───────────────────────────────────────────────────────────
@@ -702,7 +815,19 @@ export class Session {
   setPendingWorktreeState(
     pendingWorktreeState: PendingWorktreeState | null,
   ): void {
+    const previous = this.pendingWorktreeState;
     this.pendingWorktreeState = pendingWorktreeState;
+    const nextCwd = pendingWorktreeState?.handle.path ?? previous?.originalCwd;
+    if (!nextCwd) return;
+    const state = this.state.unsafePeek();
+    state.sessionConfiguration = {
+      ...state.sessionConfiguration,
+      cwd: nextCwd,
+    } as SessionConfiguration;
+    (this as { config: Config }).config = {
+      ...this.config,
+      cwd: nextCwd,
+    };
   }
 
   /**
@@ -728,6 +853,28 @@ export class Session {
     return provider;
   }
 
+  bindProviderConversation(provider?: LLMProvider): void {
+    const target =
+      provider ?? (this.services as Partial<SessionServices>).provider;
+    readProviderHttpClient(target)?.bindConversationId(this.conversationId);
+  }
+
+  clearProviderResponseId(provider?: LLMProvider): void {
+    const target =
+      provider ?? (this.services as Partial<SessionServices>).provider;
+    readProviderHttpClient(target)?.clearResponsesResponseId();
+  }
+
+  resetProviderIncrementalState(
+    provider?: LLMProvider,
+  ): void {
+    const target =
+      provider ?? (this.services as Partial<SessionServices>).provider;
+    const client = readProviderHttpClient(target);
+    client?.bindConversationId(this.conversationId);
+    client?.resetResponsesContinuation();
+  }
+
   get authManager(): AuthManager | undefined {
     return (this.services as Partial<SessionServices>).authManager;
   }
@@ -742,6 +889,43 @@ export class Session {
 
   get permissionModeRegistry(): PermissionModeRegistry {
     return this.services.permissionModeRegistry;
+  }
+
+  async syncPermissionContextFromRegistry(
+    nextCtx: Pick<
+      ToolPermissionContext,
+      "mode" | "isAutoModeAvailable" | "autoModeActive" |
+        "bypassPermissionsAcceptedIn"
+    > = this.permissionModeRegistry.current(),
+  ): Promise<void> {
+    const state = this.state.unsafePeek();
+    const currentPermissionContext =
+      (state.sessionConfiguration as SessionConfiguration & {
+        permissionContext?: {
+          readonly mode?: PermissionMode;
+          readonly isAutoModeAvailable?: boolean;
+          readonly autoModeActive?: boolean;
+          readonly bypassPermissionsAcceptedIn?: readonly string[];
+        };
+      }).permissionContext;
+    state.sessionConfiguration = {
+      ...state.sessionConfiguration,
+      permissionContext: {
+        ...(currentPermissionContext ?? {}),
+        mode: nextCtx.mode,
+        ...(nextCtx.isAutoModeAvailable !== undefined
+          ? { isAutoModeAvailable: nextCtx.isAutoModeAvailable }
+          : {}),
+        ...(nextCtx.autoModeActive !== undefined
+          ? { autoModeActive: nextCtx.autoModeActive }
+          : {}),
+        ...(nextCtx.bypassPermissionsAcceptedIn !== undefined
+          ? {
+              bypassPermissionsAcceptedIn: nextCtx.bypassPermissionsAcceptedIn,
+            }
+          : {}),
+      },
+    } as SessionConfiguration;
   }
 
   buildPerTurnConfig(overrides?: Partial<Config>): Readonly<Config> {
@@ -763,9 +947,11 @@ export class Session {
     return buildTurnWithSubId(this, subId, configOverrides);
   }
 
-  async consumePendingProviderSwitch(): Promise<void> {
+  async consumePendingProviderSwitch(): Promise<AppliedProviderSwitchResult> {
     const pending = this.pendingProviderSwitch;
-    if (!pending) return;
+    if (!pending) {
+      return { applied: false, reason: "no pending provider switch" };
+    }
 
     const peeked = this.state.unsafePeek() as {
       sessionConfiguration?: {
@@ -773,10 +959,21 @@ export class Session {
         collaborationMode?: { model?: string };
       };
     };
+    const liveProvider = (this.services as Partial<SessionServices>).provider;
+    const liveProviderOptions = liveProvider
+      ? readProviderFactoryOptions(liveProvider)
+      : undefined;
     const beforeModel =
-      peeked.sessionConfiguration?.collaborationMode?.model ?? "unknown";
+      liveProviderOptions?.model ??
+      peeked.sessionConfiguration?.collaborationMode?.model ??
+      "unknown";
     const beforeProvider =
-      peeked.sessionConfiguration?.provider?.slug ?? "unknown";
+      readProviderIdentity(
+        liveProvider,
+        peeked.sessionConfiguration?.provider?.slug,
+      ) ??
+      peeked.sessionConfiguration?.provider?.slug ??
+      "unknown";
 
     let resolvedModel = pending.model;
     let resolvedProvider = pending.provider;
@@ -802,39 +999,72 @@ export class Session {
       }
     }
 
+    let preparedSwitch: PreparedProviderSwitch;
+    try {
+      const targetNormalizedProvider = normalizeProviderName(resolvedProvider);
+      const liveProviderIdentity = readProviderIdentity(
+        liveProvider,
+        peeked.sessionConfiguration?.provider?.slug,
+      );
+      preparedSwitch = prepareProviderSwitch(resolvedProvider, {
+        ...(liveProviderOptions &&
+        liveProviderIdentity !== null &&
+        liveProviderIdentity === targetNormalizedProvider
+          ? liveProviderOptions
+          : {}),
+        model: resolvedModel,
+        tools: this.services.registry.toLLMTools(),
+      });
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message.length > 0
+          ? error.message
+          : "provider rebuild failed";
+      this.setPendingProviderSwitch(null);
+      this.emit({
+        id: this.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "provider_switch_rejected",
+            message: `provider switch rejected: ${reason}`,
+          },
+        },
+      });
+      return { applied: false, reason };
+    }
+
     const nextModelInfo = await deriveNextModelInfo(
       this.services.modelsManager,
-      resolvedModel,
+      preparedSwitch.model,
     );
-    const nextProviderInstance = await maybeRebuildProviderForSwitch(
-      this,
-      resolvedProvider,
-      resolvedModel,
-    );
+    const previousClient = readProviderHttpClient(liveProvider);
+    const nextClient = readProviderHttpClient(preparedSwitch.instance);
 
     await this.state.with((state) => {
       const cfg = (state as {
         sessionConfiguration?: {
-          provider?: { slug?: string };
+          provider?: unknown;
           collaborationMode?: { model?: string };
         };
       }).sessionConfiguration;
       if (!cfg) return;
-      cfg.provider = { slug: resolvedProvider } as SessionConfiguration["provider"];
+      cfg.provider = { slug: preparedSwitch.provider };
       cfg.collaborationMode = {
         ...(cfg.collaborationMode ?? {}),
-        model: resolvedModel,
+        model: preparedSwitch.model,
       };
     });
 
     (this as { modelInfo: ModelInfo }).modelInfo = nextModelInfo;
     (this as { config: Config }).config = {
       ...this.config,
-      model: resolvedModel,
+      model: preparedSwitch.model,
     };
-    if (nextProviderInstance !== null) {
-      (this.services as { provider: LLMProvider }).provider = nextProviderInstance;
-    }
+    (this.services as { provider: LLMProvider }).provider = preparedSwitch.instance;
+    previousClient?.resetResponsesContinuation();
+    nextClient?.bindConversationId(this.conversationId);
+    nextClient?.resetResponsesContinuation();
 
     this.setPendingProviderSwitch(null);
 
@@ -843,13 +1073,18 @@ export class Session {
       msg: {
         type: "warning",
         payload: {
-          cause: "provider_switch_applied",
-          message: `provider ${beforeProvider} → ${resolvedProvider}; model ${beforeModel} → ${resolvedModel}${
+          cause: "provider_switched",
+          message: `provider ${beforeProvider} -> ${preparedSwitch.provider}; model ${beforeModel} -> ${preparedSwitch.model}; previous_response_id reset${
             pending.profile ? `; profile ${pending.profile}` : ""
           }`,
         },
       },
     });
+    return {
+      applied: true,
+      provider: preparedSwitch.provider,
+      model: preparedSwitch.model,
+    };
   }
 
   async *runTurn(
@@ -883,7 +1118,12 @@ export class Session {
     void _subId;
     void _configOverrides;
     const { runTurnKernel } = await import("./run-turn.js");
-    const iter = runTurnKernel(this, ctx, userMessage, runOpts);
+    const history =
+      runOpts.history ?? normalizeHistoryMessages(this.state.unsafePeek().history);
+    const iter = runTurnKernel(this, ctx, userMessage, {
+      ...runOpts,
+      history,
+    });
     while (true) {
       const next = await iter.next();
       if (next.done) return next.value;
@@ -965,6 +1205,12 @@ export class Session {
    * `emitError` helper (event-log.ts).
    */
   emit(event: Event, appendOpts: AppendOptions = {}): void {
+    if (
+      event.msg.type === "context_compacted" ||
+      (event.msg as { type?: string }).type === "compacted"
+    ) {
+      this.clearProviderResponseId();
+    }
     // I-27: assign seq synchronously + fan to subscribers.
     const stamped = this.eventLog.emit(event);
     const derivedTurnId =
@@ -1261,25 +1507,6 @@ function deriveMinimalModelInfo(slug: string): ModelInfo {
   };
 }
 
-function normalizeProviderName(raw: string): ProviderName | null {
-  switch (raw.trim().toLowerCase()) {
-    case "xai":
-    case "grok":
-      return "grok";
-    case "openai":
-    case "anthropic":
-    case "ollama":
-    case "lmstudio":
-    case "openrouter":
-    case "groq":
-    case "deepseek":
-    case "gemini":
-      return raw.trim().toLowerCase() as ProviderName;
-    default:
-      return null;
-  }
-}
-
 async function deriveNextModelInfo(
   modelsManager: ModelsManager | undefined,
   model: string,
@@ -1291,27 +1518,5 @@ async function deriveNextModelInfo(
     return await modelsManager.getModelInfo(model);
   } catch {
     return deriveMinimalModelInfo(model);
-  }
-}
-
-async function maybeRebuildProviderForSwitch(
-  session: Session,
-  providerName: string,
-  model: string,
-): Promise<LLMProvider | null> {
-  if (!isFactoryProvider(session.services.provider)) {
-    return null;
-  }
-  const normalized = normalizeProviderName(providerName);
-  if (normalized === null) {
-    return null;
-  }
-  try {
-    return createProvider(normalized, {
-      model,
-      tools: session.services.registry.toLLMTools(),
-    });
-  } catch {
-    return null;
   }
 }

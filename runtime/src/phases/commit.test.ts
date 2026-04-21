@@ -1,8 +1,25 @@
 import { describe, expect, test, vi } from "vitest";
+import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import { commit } from "./commit.js";
+import { MAX_STOP_HOOK_BLOCKS } from "./stop-hooks.js";
+
+function mkCtx(): TurnContext {
+  return {
+    subId: "turn-1",
+    cwd: "/tmp",
+    config: {
+      permissions: {
+        allowLoginShell: false,
+      },
+    },
+    modelInfo: {
+      slug: "stub-model",
+    },
+  } as unknown as TurnContext;
+}
 
 function mkState(opts: Partial<TurnState> = {}): TurnState {
   return {
@@ -40,6 +57,13 @@ function mkSession(): Session {
     emit: vi.fn(),
     nextInternalSubId: () => "sub-1",
     rolloutStore: undefined,
+    eventLog: new EventLog(),
+    conversationId: "conv-1",
+    services: {
+      hooks: {
+        stopHooks: [],
+      },
+    },
   } as unknown as Session;
 }
 
@@ -63,7 +87,7 @@ describe("commit", () => {
         pendingToolUseSummary: Promise.resolve(pending as never),
       });
 
-      await commit(state, {} as TurnContext, mkSession());
+      await commit(state, mkCtx(), mkSession());
 
       expect(state.pendingToolUseSummary).toBeUndefined();
       expect(state.turnCount).toBe(1);
@@ -81,7 +105,7 @@ describe("commit", () => {
       } as never),
     });
 
-    await commit(state, {} as TurnContext, session);
+    await commit(state, mkCtx(), session);
 
     expect(session.emit).toHaveBeenCalledWith({
       id: "sub-1",
@@ -99,10 +123,84 @@ describe("commit", () => {
       pendingToolUseSummary: Promise.reject(new Error("summary_boom")),
     });
 
-    await commit(state, {} as TurnContext, mkSession());
+    await commit(state, mkCtx(), mkSession());
 
     expect(state.pendingToolUseSummary).toBeUndefined();
     expect(state.turnCount).toBe(1);
     expect(state.messages).toEqual([{ role: "user", content: "start" }]);
+  });
+
+  test("blocking stop hook increments once and re-enters without double counting", async () => {
+    const session = mkSession();
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+    });
+    (
+      session.services.hooks as {
+        stopHooks: Array<{ name: string; run: () => Promise<unknown> }>;
+      }
+    ).stopHooks = [
+      {
+        name: "lint",
+        run: async () => ({
+          shouldStop: false,
+          shouldBlock: true,
+          blockReason: "lint errors",
+          continuationFragments: ["fix lint"],
+        }),
+      },
+    ];
+
+    await commit(state, mkCtx(), session);
+
+    expect(state.stopHookBlockingCount).toBe(1);
+    expect(state.transition?.reason).toBe("stop_hook_blocking");
+    expect(state.messages.at(-1)).toEqual({
+      role: "user",
+      content: "fix lint",
+    });
+  });
+
+  test("third blocking stop hook hits the cap without re-entering", async () => {
+    const session = mkSession();
+    const state = mkState({
+      needsFollowUp: false,
+      toolUseBlocks: [],
+      stopHookBlockingCount: MAX_STOP_HOOK_BLOCKS - 1,
+    });
+    (
+      session.services.hooks as {
+        stopHooks: Array<{ name: string; run: () => Promise<unknown> }>;
+      }
+    ).stopHooks = [
+      {
+        name: "lint",
+        run: async () => ({
+          shouldStop: false,
+          shouldBlock: true,
+          blockReason: "lint errors",
+          continuationFragments: ["fix lint"],
+        }),
+      },
+    ];
+
+    await commit(state, mkCtx(), session);
+
+    expect(state.stopHookBlockingCount).toBe(MAX_STOP_HOOK_BLOCKS);
+    expect(state.transition).toBeUndefined();
+    expect(state.stopHookActive).toBe(false);
+    expect((session.emit as ReturnType<typeof vi.fn>).mock.calls).toContainEqual([
+      {
+        id: "sub-1",
+        msg: {
+          type: "error",
+          payload: {
+            cause: "stop_hook_loop",
+            message: `stop hooks blocked ${MAX_STOP_HOOK_BLOCKS} times in a row — forcing terminal (stop_hook_blocked)`,
+          },
+        },
+      },
+    ]);
   });
 });

@@ -26,6 +26,7 @@ import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
 
 const DELEGATE_TOOL_NAME = "system.agent.delegate";
+const SESSION_AGENT_REGISTRY = Symbol("sessionAgentRegistry");
 
 const DELEGATE_INPUT_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -73,6 +74,28 @@ const controlCache: WeakMap<
   { control: AgentControl; registry: AgentRegistry }
 > = new WeakMap();
 
+type AgentControlWithRegistry = AgentControl & {
+  [SESSION_AGENT_REGISTRY]?: AgentRegistry;
+};
+
+export function bindSessionAgentControl(
+  session: Session,
+  pair: { control: AgentControl; registry: AgentRegistry },
+): void {
+  (pair.control as AgentControlWithRegistry)[SESSION_AGENT_REGISTRY] =
+    pair.registry;
+  controlCache.set(session, pair);
+  try {
+    (
+      session.services as unknown as {
+        agentControl?: unknown;
+      }
+    ).agentControl = pair.control as unknown;
+  } catch {
+    /* best effort */
+  }
+}
+
 /**
  * Get (or create) the AgentControl + AgentRegistry pair for a session.
  * Exported so tests can prime the cache with stubs.
@@ -83,10 +106,24 @@ export function ensureAgentControl(session: Session): {
 } {
   const cached = controlCache.get(session);
   if (cached) return cached;
+  const bound = (
+    session.services as unknown as {
+      agentControl?: unknown;
+    }
+  ).agentControl;
+  if (bound instanceof AgentControl) {
+    const registry = (bound as AgentControlWithRegistry)[SESSION_AGENT_REGISTRY];
+    if (registry instanceof AgentRegistry) {
+      const pair = { control: bound, registry };
+      controlCache.set(session, pair);
+      return pair;
+    }
+  }
   const registry = new AgentRegistry();
   const control = new AgentControl({ session, registry });
+  control.registerSessionRoot(session.conversationId);
   const pair = { control, registry };
-  controlCache.set(session, pair);
+  bindSessionAgentControl(session, pair);
   return pair;
 }
 
@@ -99,7 +136,7 @@ export function _setAgentControlForTesting(
   session: Session,
   pair: { control: AgentControl; registry: AgentRegistry },
 ): void {
-  controlCache.set(session, pair);
+  bindSessionAgentControl(session, pair);
 }
 
 /**

@@ -12,8 +12,6 @@ import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js';
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED, logEvent } from '../../services/analytics/index.js';
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js';
-import { buildPostCompactMessages } from '../../llm/compact/compact.js';
-import { resetMicrocompactState } from '../../llm/compact/micro-compact.js';
 import type { CommandResultDisplay } from '../../types/command.js';
 import { createAbortController } from '../abortController.js';
 import { getAgentContext } from '../agentContext.js';
@@ -29,7 +27,7 @@ import { toArray } from '../generators.js';
 import { registerSkillHooks } from '../hooks/registerSkillHooks.js';
 import { logError } from '../log.js';
 import { enqueuePendingNotification } from '../messageQueueManager.js';
-import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSystemMessage, createUserInterruptionMessage, createUserMessage, formatCommandInputTags, isCompactBoundaryMessage, isSystemLocalCommandMessage, normalizeMessages, prepareUserContent } from '../messages.js';
+import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSystemMessage, createUserInterruptionMessage, createUserMessage, formatCommandInputTags, isSystemLocalCommandMessage, normalizeMessages, prepareUserContent } from '../messages.js';
 import type { ModelAlias } from '../model/aliases.js';
 import { parseToolListFromCLI } from '../permissions/permissionSetup.js';
 import { hasPermissionsToUseTool } from '../permissions/permissions.js';
@@ -429,10 +427,8 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
     })
   });
 
-  // Check if this is a compact result which handle their own synthetic caveat message ordering
-  const isCompactResult = newMessages.length > 0 && newMessages[0] && isCompactBoundaryMessage(newMessages[0]);
   return {
-    messages: messageShouldQuery || newMessages.every(isSystemLocalCommandMessage) || isCompactResult ? newMessages : [createSyntheticUserCaveatMessage(), ...newMessages],
+    messages: messageShouldQuery || newMessages.every(isSystemLocalCommandMessage) ? newMessages : [createSyntheticUserCaveatMessage(), ...newMessages],
     shouldQuery: messageShouldQuery,
     allowedTools,
     model,
@@ -584,41 +580,11 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
             })
           });
           try {
-            const syntheticCaveatMessage = createSyntheticUserCaveatMessage();
             const mod = await command.load();
             const result = await mod.call(args, context);
             if (result.type === 'skip') {
               return {
                 messages: [],
-                shouldQuery: false,
-                command
-              };
-            }
-
-            // Use discriminated union to handle different result types
-            if (result.type === 'compact') {
-              // Append slash command messages to messagesToKeep so that
-              // attachments and hookResults come after user messages
-              const slashCommandMessages = [syntheticCaveatMessage, userMessage, ...(result.displayText ? [createUserMessage({
-                content: `<local-command-stdout>${result.displayText}</local-command-stdout>`,
-                // --resume looks at latest timestamp message to determine which message to resume from
-                // This is a perf optimization to avoid having to recaculcate the leaf node every time
-                // Since we're creating a bunch of synthetic messages for compact, it's important to set
-                // the timestamp of the last message to be slightly after the current time
-                // This is mostly important for sdk / -p mode
-                timestamp: new Date(Date.now() + 100).toISOString()
-              })] : [])];
-              const compactionResultWithSlashMessages = {
-                ...result.compactionResult,
-                messagesToKeep: [...(result.compactionResult.messagesToKeep ?? []), ...slashCommandMessages]
-              };
-              // Reset microcompact state since full compact replaces all
-              // messages — old tool IDs are no longer relevant. Budget state
-              // (on toolUseContext) needs no reset: stale entries are inert
-              // (UUIDs never repeat, so they're never looked up).
-              resetMicrocompactState();
-              return {
-                messages: buildPostCompactMessages(compactionResultWithSlashMessages),
                 shouldQuery: false,
                 command
               };

@@ -43,6 +43,13 @@ import {
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import type { LLMProvider } from "../llm/types.js";
+import { ProviderHttpClient } from "../llm/client.js";
+import {
+  createProvider,
+  isFactoryProvider,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -133,6 +140,13 @@ function mkProvider(): LLMProvider {
   } as unknown as LLMProvider;
 }
 
+function mkProviderWithClient(client: ProviderHttpClient): LLMProvider {
+  return {
+    ...mkProvider(),
+    client,
+  } as unknown as LLMProvider;
+}
+
 /**
  * Minimal `Session` builder for the W3 integration tests. Mirrors the
  * loose-cast approach in `idle-input.test.ts` so the constructor's
@@ -180,6 +194,26 @@ function ctxWithPermissionMode(mode: PermissionMode): ToolPermissionContext {
     ...createEmptyToolPermissionContext(),
     mode,
   };
+}
+
+async function withEnv<T>(
+  overrides: Record<string, string | undefined>,
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -247,6 +281,97 @@ describe("Session.setPendingProviderSwitch", () => {
   });
 });
 
+describe("Session provider continuity hooks", () => {
+  it("binds the session conversation id onto ProviderHttpClient-backed providers at construction", () => {
+    const client = new ProviderHttpClient({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl: vi.fn<typeof fetch>(),
+    });
+    const bindSpy = vi.spyOn(client, "bindConversationId");
+
+    buildSession({
+      services: {
+        provider: mkProviderWithClient(client),
+      },
+    });
+
+    expect(bindSpy).toHaveBeenCalledWith("conv-test");
+  });
+
+  it("clears shared previous_response_id state synchronously on compaction events", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "resp_1",
+            output: [
+              {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: "hi" }],
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "resp_2", output: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    const client = new ProviderHttpClient({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+    });
+    const session = buildSession({
+      services: {
+        provider: mkProviderWithClient(client),
+      },
+    });
+
+    await client.createTurnSession().requestJson({
+      body: {
+        model: "gpt-5",
+        input: [{ type: "message", role: "user", content: [] }],
+        stream: false,
+      },
+    });
+    session.emit({
+      id: "sub-compact",
+      msg: {
+        type: "compacted",
+        payload: { message: "compacted" },
+      } as never,
+    });
+    await client.createTurnSession().requestJson({
+      body: {
+        model: "gpt-5",
+        input: [
+          { type: "message", role: "user", content: [] },
+          { type: "message", role: "assistant", content: [] },
+          { type: "message", role: "user", content: [{ type: "input_text", text: "after compact" }] },
+        ],
+        stream: false,
+      },
+    });
+
+    const secondBody = JSON.parse(
+      String((fetchImpl.mock.calls[1]?.[1] as RequestInit | undefined)?.body),
+    ) as Record<string, unknown>;
+    expect(secondBody.previous_response_id).toBeUndefined();
+  });
+});
+
 describe("Session.setPendingWorktreeState", () => {
   it("stores and clears the active worktree binding", () => {
     const session = buildSession();
@@ -263,9 +388,33 @@ describe("Session.setPendingWorktreeState", () => {
 
     session.setPendingWorktreeState(pending);
     expect(session.pendingWorktreeState).toEqual(pending);
+    expect(session.sessionConfiguration.cwd).toBe("/repo/.agenc-worktrees/feat");
 
     session.setPendingWorktreeState(null);
     expect(session.pendingWorktreeState).toBeNull();
+    expect(session.sessionConfiguration.cwd).toBe("/repo");
+  });
+});
+
+describe("Session permission-context sync", () => {
+  it("mirrors registry mode changes onto sessionConfiguration.permissionContext", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+    const session = buildSession({
+      services: { permissionModeRegistry: registry },
+    });
+
+    expect(session.sessionConfiguration.permissionContext?.mode).toBe("default");
+
+    await registry.update(
+      createEmptyToolPermissionContext({
+        mode: "plan",
+        isAutoModeAvailable: true,
+      }),
+    );
+
+    expect(session.sessionConfiguration.permissionContext?.mode).toBe("plan");
   });
 });
 
@@ -307,6 +456,158 @@ describe("Session.abortTerminal", () => {
         },
       },
     });
+  });
+});
+
+describe("Session.consumePendingProviderSwitch", () => {
+  it("resets ProviderHttpClient continuity state on provider/model switches and re-binds the session conversation id", async () => {
+    const bindSpy = vi.spyOn(ProviderHttpClient.prototype, "bindConversationId");
+    const resetSpy = vi.spyOn(
+      ProviderHttpClient.prototype,
+      "resetResponsesContinuation",
+    );
+    const session = buildSession({
+      services: {
+        provider: createProvider("openai", {
+          apiKey: "openai-test",
+          baseURL: "https://openai.example/v1",
+          model: "gpt-5",
+        }),
+      },
+    });
+    session.setPendingProviderSwitch({
+      provider: "openai",
+      model: "gpt-5-mini",
+    });
+
+    await session.consumePendingProviderSwitch();
+
+    expect(resetSpy).toHaveBeenCalled();
+    expect(bindSpy).toHaveBeenCalledWith("conv-test");
+  });
+
+  it("applies provider slug, live provider, config model, and modelInfo together", async () => {
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+      },
+    });
+    session.setPendingProviderSwitch({
+      provider: "xai",
+      model: "grok-4-fast",
+    });
+
+    const applied = await session.consumePendingProviderSwitch();
+    const state = session.state.unsafePeek();
+
+    expect(applied).toEqual({
+      applied: true,
+      provider: "grok",
+      model: "grok-4-fast",
+    });
+    expect(state.sessionConfiguration.provider).toEqual({ slug: "grok" });
+    expect(state.sessionConfiguration.collaborationMode.model).toBe(
+      "grok-4-fast",
+    );
+    expect(session.config.model).toBe("grok-4-fast");
+    expect(session.modelInfo.slug).toBe("grok-4-fast");
+    expect(isFactoryProvider(session.services.provider)).toBe(true);
+    expect(session.pendingProviderSwitch).toBeNull();
+    const emitted = session.txEvent.tryRecv();
+    expect(emitted).toMatchObject({
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "provider_switched",
+        },
+      },
+    });
+    if (emitted?.msg.type === "warning") {
+      expect(emitted.msg.payload.message).toContain(
+        "previous_response_id reset",
+      );
+    }
+  });
+
+  it("refuses impossible switches without mutating the live session", async () => {
+    const startingProvider = createProvider("grok", {
+      apiKey: "test-key",
+      model: "grok-4",
+    });
+    const session = buildSession({
+      services: {
+        provider: startingProvider,
+      },
+    });
+    session.setPendingProviderSwitch({
+      provider: "openai",
+      model: "gpt-5",
+    });
+
+    const applied = await session.consumePendingProviderSwitch();
+    const state = session.state.unsafePeek();
+    const emitted = session.txEvent.tryRecv();
+
+    expect(applied.applied).toBe(false);
+    expect(applied.reason).toMatch(/OPENAI_API_KEY|apiKey/i);
+    expect(state.sessionConfiguration.provider).toBeUndefined();
+    expect(state.sessionConfiguration.collaborationMode.model).toBe(
+      "test-model",
+    );
+    expect(session.config.model).toBe("test-model");
+    expect(session.modelInfo.slug).toBe("test-model");
+    expect(session.services.provider).toBe(startingProvider);
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(emitted).toMatchObject({
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "provider_switch_rejected",
+        },
+      },
+    });
+  });
+
+  it("rebuilds the current provider from the live provider snapshot instead of OPENAI globals", async () => {
+    await withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      async () => {
+        const session = buildSession({
+          services: {
+            provider: createProvider("openrouter", {
+              apiKey: "or-test",
+              baseURL: "https://router.example/api/v1",
+              model: "openai/gpt-5-mini",
+            }),
+          },
+        });
+        session.setPendingProviderSwitch({
+          provider: "openrouter",
+          model: "openai/gpt-5",
+        });
+
+        const applied = await session.consumePendingProviderSwitch();
+
+        expect(applied).toEqual({
+          applied: true,
+          provider: "openrouter",
+          model: "openai/gpt-5",
+        });
+        expect(readProviderIdentity(session.services.provider)).toBe("openrouter");
+        expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+          apiKey: "or-test",
+          baseURL: "https://router.example/api/v1",
+          model: "openai/gpt-5",
+        });
+      },
+    );
   });
 });
 

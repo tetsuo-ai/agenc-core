@@ -35,8 +35,8 @@ import { normalizeExternalText, readTextFile } from "../utils/file-read.js";
 import {
   DEFAULT_PROJECT_DOC_MAX_BYTES,
   DEFAULT_PROJECT_ROOT_MARKERS,
-  loadProjectInstructions,
-  type ProjectInstructions,
+  loadProjectInstructionChain,
+  type ProjectInstructionChainEntry,
   type ProjectInstructionsConfig,
 } from "./project-instructions.js";
 
@@ -434,6 +434,13 @@ async function loadTier(
   };
 }
 
+function formatProjectTierChainEntry(
+  entry: Pick<ProjectInstructionChainEntry, "path">,
+  content: string,
+): string {
+  return `--- project-doc (${entry.path}) ---\n\n${normalizeExternalText(content).trim()}`;
+}
+
 /**
  * Load all four tiers for a given working directory.
  *
@@ -482,7 +489,7 @@ export async function loadTieredInstructions(
   }
 
   // Project tier — ancestor-walk via project-instructions loader.
-  const project: ProjectInstructions | null = await loadProjectInstructions({
+  const projectChain = await loadProjectInstructionChain({
     cwd: opts.cwd,
     projectRootMarkers:
       opts.projectRootMarkers && opts.projectRootMarkers.length > 0
@@ -491,28 +498,43 @@ export async function loadTieredInstructions(
     projectDocMaxBytes: opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
   });
   let projectTier: TierEntry | null = null;
-  if (project) {
-    // Project file content already passed readTextFile, but we still
-    // need @include expansion against the project root boundary.
-    const resolved = await resolveIncludes(project.content, {
-      baseDir: pathDir(project.path),
-      projectRoot: project.rootDir,
-      maxDepth: includeMaxDepth,
-      maxBytes: includeMaxBytes,
-    });
+  if (projectChain.length > 0) {
+    const parts: string[] = [];
+    const rawParts: string[] = [];
+    const dropped: DroppedInclude[] = [];
+
+    for (const entry of projectChain) {
+      const resolved = await resolveIncludes(entry.content, {
+        baseDir: pathDir(entry.path),
+        projectRoot: entry.rootDir,
+        maxDepth: includeMaxDepth,
+        maxBytes: includeMaxBytes,
+      });
+      dropped.push(...resolved.dropped);
+      if (projectChain.length === 1) {
+        parts.push(resolved.text);
+        rawParts.push(entry.content);
+      } else {
+        parts.push(formatProjectTierChainEntry(entry, resolved.text));
+        rawParts.push(formatProjectTierChainEntry(entry, entry.content));
+      }
+    }
+
+    const nearestEntry = projectChain[projectChain.length - 1]!;
     projectTier = {
       tier: "project",
-      path: project.path,
-      content: resolved.text,
-      rawContent: project.content,
-      dropped: resolved.dropped,
+      path: nearestEntry.path,
+      content: parts.join("\n\n"),
+      rawContent: rawParts.join("\n\n"),
+      dropped,
     };
   }
 
   // Local tier — `<projectRoot>/AGENTS.local.md` if a project root was
   // found, otherwise `<cwd>/AGENTS.local.md` (lets a standalone checkout
   // still carry a local override without a root marker).
-  const localBase = project?.rootDir ?? opts.cwd;
+  const projectRootDir = projectChain[0]?.rootDir;
+  const localBase = projectRootDir ?? opts.cwd;
   const localPath = join(localBase, LOCAL_INSTRUCTION_FILENAME);
   const local = await loadTier(
     "local",

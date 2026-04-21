@@ -1,4 +1,10 @@
 import type { StdoutMessage } from "../entrypoints/sdk/controlTypes.js";
+import { CircularBuffer } from "../utils/CircularBuffer.js";
+import { isEnvTruthy } from "../utils/envUtils.js";
+import {
+  registerSessionActivityCallback,
+  unregisterSessionActivityCallback,
+} from "../utils/sessionActivity.js";
 import {
   asNdjson,
   defaultTransportTimers,
@@ -7,14 +13,18 @@ import {
   type RefreshHeaders,
   type Transport,
   type TransportTimers,
-  withResolvedHeaders,
 } from "./index.js";
+import { applyRefreshedHeaders, refreshAuthHeaders } from "./refresh-headers.js";
+
+// Retained openclaude websocket session-ingress contract.
+const KEEP_ALIVE_FRAME = '{"type":"keep_alive"}\n';
 
 export const DEFAULT_MAX_BUFFER_SIZE = 1000;
 export const DEFAULT_BASE_RECONNECT_DELAY_MS = 1_000;
 export const DEFAULT_MAX_RECONNECT_DELAY_MS = 30_000;
 export const DEFAULT_RECONNECT_GIVE_UP_MS = 600_000;
 export const DEFAULT_PING_INTERVAL_MS = 10_000;
+export const DEFAULT_KEEPALIVE_INTERVAL_MS = 300_000;
 export const DEFAULT_SLEEP_DETECTION_THRESHOLD_MS =
   DEFAULT_MAX_RECONNECT_DELAY_MS * 2;
 
@@ -35,10 +45,17 @@ type WebSocketEventMap = {
   pong: [];
 };
 
+type UpgradeHeaderBag = {
+  headers?: Record<string, string | string[] | undefined>;
+};
+
 export interface WebSocketClientLike {
   send(data: string): void;
   close(code?: number): void;
   ping?(): void;
+  upgradeHeaders?: HeaderMap;
+  upgradeReq?: UpgradeHeaderBag;
+  response?: UpgradeHeaderBag;
   on<K extends keyof WebSocketEventMap>(
     event: K,
     handler: (...args: WebSocketEventMap[K]) => void,
@@ -65,6 +82,7 @@ export interface WebSocketTransportOptions {
   readonly maxReconnectDelayMs?: number;
   readonly reconnectGiveUpMs?: number;
   readonly pingIntervalMs?: number;
+  readonly keepAliveIntervalMs?: number;
   readonly sleepDetectionThresholdMs?: number;
 }
 
@@ -82,9 +100,13 @@ async function defaultWebSocketFactory(args: {
 
 export class WebSocketTransport implements Transport {
   private socket: WebSocketClientLike | null = null;
-  private readonly url: URL;
+  protected readonly url: URL;
+  protected state: WebSocketTransportState = "idle";
+  protected onData?: (data: string) => void;
+  private onCloseCallback?: (closeCode?: number) => void;
+  private onConnectCallback?: () => void;
+  private headers: HeaderMap;
   private readonly autoReconnect: boolean;
-  private readonly maxBufferSize: number;
   private readonly createSocket: WebSocketFactory;
   private readonly timers: TransportTimers;
   private readonly random: () => number;
@@ -93,37 +115,33 @@ export class WebSocketTransport implements Transport {
   private readonly maxReconnectDelayMs: number;
   private readonly reconnectGiveUpMs: number;
   private readonly pingIntervalMs: number;
+  private readonly keepAliveIntervalMs: number;
   private readonly sleepDetectionThresholdMs: number;
-  private headers: HeaderMap;
   private readonly refreshHeaders?: RefreshHeaders;
-  private state: WebSocketTransportState = "idle";
-  private onData?: (data: string) => void;
-  private onCloseCallback?: (closeCode?: number) => void;
-  private onConnectCallback?: () => void;
   private reconnectAttempts = 0;
   private reconnectStartedAt: number | null = null;
   private lastReconnectAttemptAt: number | null = null;
-  private hasConnectedOnce = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private pongReceived = true;
   private lastPingTickAt: number | null = null;
+  private keepAliveInterval: ReturnType<typeof setInterval> | null = null;
   private lastSentId: string | null = null;
-  private messageBuffer: StdoutMessage[] = [];
+  private readonly messageBuffer: CircularBuffer<StdoutMessage>;
 
   private readonly handleOpen = () => {
-    this.state = "connected";
+    const acknowledgedId = readAcknowledgedMessageId(this.socket);
     this.reconnectAttempts = 0;
     this.reconnectStartedAt = null;
     this.lastReconnectAttemptAt = null;
-    this.pongReceived = true;
-    this.lastPingTickAt = this.now();
-    this.startPingInterval();
+    this.state = "connected";
     this.onConnectCallback?.();
-    if (!this.hasConnectedOnce) {
-      this.hasConnectedOnce = true;
-    }
-    this.replayBufferedMessages();
+    this.startPingInterval();
+    this.startKeepaliveInterval();
+    registerSessionActivityCallback(() => {
+      void this.write({ type: "keep_alive" } as StdoutMessage);
+    });
+    this.replayBufferedMessages(acknowledgedId ?? "");
   };
 
   private readonly handleMessage = (data: string | Buffer) => {
@@ -154,7 +172,6 @@ export class WebSocketTransport implements Transport {
     this.headers = { ...headers };
     this.refreshHeaders = refreshHeaders;
     this.autoReconnect = options.autoReconnect ?? true;
-    this.maxBufferSize = options.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
     this.createSocket = options.createSocket ?? defaultWebSocketFactory;
     this.timers = mergeTimers(options.timers);
     this.random = options.random ?? Math.random;
@@ -166,8 +183,13 @@ export class WebSocketTransport implements Transport {
     this.reconnectGiveUpMs =
       options.reconnectGiveUpMs ?? DEFAULT_RECONNECT_GIVE_UP_MS;
     this.pingIntervalMs = options.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
+    this.keepAliveIntervalMs =
+      options.keepAliveIntervalMs ?? DEFAULT_KEEPALIVE_INTERVAL_MS;
     this.sleepDetectionThresholdMs =
       options.sleepDetectionThresholdMs ?? DEFAULT_SLEEP_DETECTION_THRESHOLD_MS;
+    this.messageBuffer = new CircularBuffer(
+      options.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE,
+    );
   }
 
   async connect(): Promise<void> {
@@ -212,14 +234,7 @@ export class WebSocketTransport implements Transport {
   }
 
   async write(message: StdoutMessage): Promise<void> {
-    const uuid = messageUuid(message);
-    if (uuid) {
-      this.lastSentId = uuid;
-      this.messageBuffer.push(message);
-      if (this.messageBuffer.length > this.maxBufferSize) {
-        this.messageBuffer = this.messageBuffer.slice(-this.maxBufferSize);
-      }
-    }
+    this.trackBufferedMessage(message);
 
     if (this.state !== "connected") {
       return;
@@ -233,7 +248,6 @@ export class WebSocketTransport implements Transport {
       this.timers.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.stopPingInterval();
     this.state = "closing";
     this.disconnectSocket();
   }
@@ -252,21 +266,7 @@ export class WebSocketTransport implements Transport {
   }
 
   protected replayBufferedMessages(lastId = ""): void {
-    let messages = this.messageBuffer;
-    if (lastId.length > 0) {
-      const confirmedIndex = messages.findIndex(
-        (message) => messageUuid(message) === lastId,
-      );
-      if (confirmedIndex >= 0) {
-        messages = messages.slice(confirmedIndex + 1);
-        this.messageBuffer = messages;
-        if (messages.length === 0) {
-          this.lastSentId = null;
-        }
-      }
-    }
-
-    for (const message of messages) {
+    for (const message of this.consumeReplayBufferedMessages(lastId)) {
       if (!this.sendLine(asNdjson(message))) {
         break;
       }
@@ -274,15 +274,49 @@ export class WebSocketTransport implements Transport {
   }
 
   private buildConnectHeaders(): HeaderMap {
-    const headers =
-      this.hasConnectedOnce && this.refreshHeaders
-        ? withResolvedHeaders(this.headers, this.refreshHeaders)
-        : { ...this.headers };
-    this.headers = { ...headers };
+    const headers = { ...this.headers };
     if (this.lastSentId) {
       headers["X-Last-Request-Id"] = this.lastSentId;
     }
     return headers;
+  }
+
+  protected trackBufferedMessage(message: StdoutMessage): void {
+    const uuid = messageUuid(message);
+    if (!uuid) {
+      return;
+    }
+    this.lastSentId = uuid;
+    this.messageBuffer.add(message);
+  }
+
+  protected consumeReplayBufferedMessages(lastId = ""): StdoutMessage[] {
+    const messages = this.messageBuffer.toArray();
+    if (messages.length === 0) {
+      return [];
+    }
+
+    if (lastId.length === 0) {
+      return messages;
+    }
+
+    const confirmedIndex = messages.findIndex(
+      (message) => messageUuid(message) === lastId,
+    );
+    if (confirmedIndex < 0) {
+      return messages;
+    }
+
+    const remaining = messages.slice(confirmedIndex + 1);
+    this.messageBuffer.clear();
+    this.messageBuffer.addAll(remaining);
+    this.lastSentId = findLastBufferedUuid(remaining);
+    return remaining;
+  }
+
+  protected refreshTransportHeaders(): HeaderMap {
+    this.headers = applyRefreshedHeaders(this.headers, this.refreshHeaders);
+    return { ...this.headers };
   }
 
   private startPingInterval(): void {
@@ -316,9 +350,35 @@ export class WebSocketTransport implements Transport {
     }
   }
 
+  private startKeepaliveInterval(): void {
+    this.stopKeepaliveInterval();
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
+      return;
+    }
+    this.keepAliveInterval = this.timers.setInterval(() => {
+      if (this.state !== "connected") {
+        return;
+      }
+      this.sendLine(KEEP_ALIVE_FRAME);
+    }, this.keepAliveIntervalMs);
+  }
+
+  private stopKeepaliveInterval(): void {
+    if (this.keepAliveInterval) {
+      this.timers.clearInterval(this.keepAliveInterval);
+      this.keepAliveInterval = null;
+    }
+  }
+
   private disconnectSocket(): void {
+    this.stopPingInterval();
+    this.stopKeepaliveInterval();
+    unregisterSessionActivityCallback();
+
     const socket = this.socket;
-    if (!socket) return;
+    if (!socket) {
+      return;
+    }
     socket.off?.("open", this.handleOpen);
     socket.off?.("message", this.handleMessage);
     socket.off?.("error", this.handleError);
@@ -329,7 +389,6 @@ export class WebSocketTransport implements Transport {
   }
 
   private handleConnectionError(closeCode?: number): void {
-    this.stopPingInterval();
     this.disconnectSocket();
 
     if (this.state === "closing" || this.state === "closed") {
@@ -337,12 +396,10 @@ export class WebSocketTransport implements Transport {
     }
 
     let headersRefreshed = false;
-    if (closeCode === 4003 && this.refreshHeaders) {
-      const refreshed = this.refreshHeaders();
-      if (refreshed.Authorization !== this.headers.Authorization) {
-        this.headers = { ...this.headers, ...refreshed };
-        headersRefreshed = true;
-      }
+    if (closeCode === 4003) {
+      const refreshed = refreshAuthHeaders(this.headers, this.refreshHeaders);
+      this.headers = refreshed.headers;
+      headersRefreshed = refreshed.changed;
     }
 
     if (
@@ -365,6 +422,7 @@ export class WebSocketTransport implements Transport {
     if (this.reconnectStartedAt === null) {
       this.reconnectStartedAt = now;
     }
+
     if (
       this.lastReconnectAttemptAt !== null &&
       now - this.lastReconnectAttemptAt > this.sleepDetectionThresholdMs
@@ -379,6 +437,15 @@ export class WebSocketTransport implements Transport {
       this.state = "closed";
       this.onCloseCallback?.(closeCode);
       return;
+    }
+
+    if (!headersRefreshed && this.refreshHeaders) {
+      this.headers = applyRefreshedHeaders(this.headers, this.refreshHeaders);
+    }
+
+    if (this.reconnectTimer) {
+      this.timers.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
 
     this.state = "reconnecting";
@@ -396,9 +463,50 @@ export class WebSocketTransport implements Transport {
   }
 }
 
+function findLastBufferedUuid(messages: StdoutMessage[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const uuid = messageUuid(messages[index]!);
+    if (uuid) {
+      return uuid;
+    }
+  }
+  return null;
+}
+
+function readAcknowledgedMessageId(
+  socket: WebSocketClientLike | null,
+): string | undefined {
+  if (!socket) {
+    return undefined;
+  }
+
+  const sources: Array<Record<string, string | string[] | undefined> | undefined> = [
+    socket.upgradeHeaders,
+    socket.upgradeReq?.headers,
+    socket.response?.headers,
+  ];
+
+  for (const headers of sources) {
+    const rawValue =
+      headers?.["x-last-request-id"] ?? headers?.["X-Last-Request-Id"];
+    if (typeof rawValue === "string" && rawValue.length > 0) {
+      return rawValue;
+    }
+    if (Array.isArray(rawValue)) {
+      const [first] = rawValue;
+      if (typeof first === "string" && first.length > 0) {
+        return first;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export function convertWsUrlToPostUrl(wsUrl: URL): string {
   const protocol = wsUrl.protocol === "wss:" ? "https:" : "http:";
-  let pathname = wsUrl.pathname.replace("/ws/", "/session/");
+  let pathname = wsUrl.pathname;
+  pathname = pathname.replace("/ws/", "/session/");
   if (!pathname.endsWith("/events")) {
     pathname = pathname.endsWith("/") ? `${pathname}events` : `${pathname}/events`;
   }

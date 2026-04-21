@@ -68,7 +68,18 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     const log = new EventLog();
     const session = mkSession(log);
     const executor = mkExecutor();
-    const state = mkState({ streamingToolExecutor: executor });
+    const state = mkState({
+      streamingToolExecutor: executor,
+      assistantMessages: [
+        {
+          uuid: "a1",
+          role: "assistant",
+          text: "partial",
+          toolCalls: [{ id: "tc-1", name: "system.bash", arguments: "{}" }],
+        },
+      ],
+      toolUseBlocks: [{ type: "tool_use", id: "tc-1", name: "system.bash", input: {} }],
+    });
 
     const outcome = runMaxOutputTokensRecovery({ session, state });
 
@@ -77,6 +88,9 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     expect(executor.discardCount).toBe(1);
     expect(executor.lastReason).toBe("max_output_tokens");
     expect(state.streamingToolExecutor).toBeNull();
+    const toolMessages = state.messages.filter((m) => m.role === "tool");
+    expect(toolMessages).toHaveLength(1);
+    expect(String(toolMessages[0]?.content)).toContain("tool_use_error");
   });
 
   test("escalate path: emits executor_discarded warning with cause max_output_tokens", () => {

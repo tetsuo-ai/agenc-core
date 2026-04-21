@@ -17,9 +17,10 @@
  *
  *   3. **Stop gate** — when the turn is about to terminate naturally
  *      (no tool calls, no transition), invoke stop hooks. Blocking
- *      hooks set `transition: stop_hook_blocking` with the counter
- *      bumped (I-17: MAX_STOP_HOOK_BLOCKS=3). Non-blocking hooks fall
- *      through to terminal.
+ *      hooks set `transition: stop_hook_blocking`; the counter was
+ *      already bumped inside `evaluateStopHooks()` (I-17:
+ *      MAX_STOP_HOOK_BLOCKS=3). Non-blocking hooks fall through to
+ *      terminal.
  *
  *   4. Bump `turnCount`; clear per-iteration fields that survive into
  *      the next iteration via continue-site re-entry.
@@ -137,7 +138,6 @@ export async function commit(
   if (turnIsTerminating) {
     const result = await evaluateStopHooks(state, ctx, session, signal);
     if (result.blocking) {
-      state.stopHookBlockingCount += 1;
       if (state.stopHookBlockingCount >= MAX_STOP_HOOK_BLOCKS) {
         // I-17: stop-hook recursion cap tripped. Surface as an error
         // event + force-terminate with the blocking reason.
@@ -151,7 +151,7 @@ export async function commit(
             },
           },
         });
-        state.stopHookActive = true;
+        state.stopHookActive = false;
         // Do NOT set transition: the cap being hit means we exit, not
         // re-enter. run-turn sees no transition + no tool calls →
         // terminal.

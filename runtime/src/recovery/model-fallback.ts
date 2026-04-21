@@ -23,6 +23,7 @@
  */
 
 import type { LLMMessage, LLMToolCall } from "../llm/types.js";
+import { readProviderIdentity } from "../llm/provider.js";
 import type { Session } from "../session/session.js";
 import type {
   AssistantMessage,
@@ -157,7 +158,9 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
   // the real provider factory swap; for T8 we flag the pending-switch
   // slot so run-turn's I-13 path picks it up before the next stream.
   session.pendingProviderSwitch = {
-    provider: session.services.provider.name,
+    provider:
+      readProviderIdentity(session.services.provider) ??
+      session.services.provider.name,
     model: error.toModel,
   };
 

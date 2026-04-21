@@ -35,6 +35,7 @@ import {
   LLMContextWindowExceededError,
   LLMServerError,
 } from "../llm/errors.js";
+import { FallbackTriggeredError } from "../recovery/api-errors.js";
 import type {
   LLMMessage,
   LLMProvider,
@@ -223,6 +224,18 @@ function mkSession(opts: {
       collaborationMode?: { model?: string };
       [key: string]: unknown;
     };
+    history: unknown[];
+    previousTurnSettings?: {
+      model?: string;
+      realtimeActive?: boolean;
+      contextWindow?: number;
+      modelInfo?: { contextWindow?: number };
+    };
+    referenceContextItem?: {
+      model?: string;
+      turnId?: string;
+      [key: string]: unknown;
+    };
     totalTokenUsage: number;
   };
 } {
@@ -230,6 +243,17 @@ function mkSession(opts: {
   const state: {
     sessionConfiguration: SessionConfiguration;
     history: unknown[];
+    previousTurnSettings?: {
+      model?: string;
+      realtimeActive?: boolean;
+      contextWindow?: number;
+      modelInfo?: { contextWindow?: number };
+    };
+    referenceContextItem?: {
+      model?: string;
+      turnId?: string;
+      [key: string]: unknown;
+    };
     totalTokenUsage: number;
   } = {
     sessionConfiguration: mkSessionConfiguration({
@@ -352,6 +376,106 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       expect(last.msg.payload.lastAgentMessage).toBe("final reply");
       expect(typeof last.msg.payload.durationMs).toBe("number");
     }
+  });
+
+  test("persists turn_context + response_items into the rollout-owned stream", async () => {
+    const { session } = mkSession({
+      provider: mkProvider({ content: "reply" }),
+      registry: mkRegistry(),
+    });
+    const append = vi.fn();
+    const appendRollout = vi.fn();
+    (session as Session & {
+      rolloutStore: {
+        append: typeof append;
+        appendRollout: typeof appendRollout;
+      };
+    }).rolloutStore = {
+      append,
+      appendRollout,
+    } as unknown as Session["rolloutStore"];
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(appendRollout).toHaveBeenCalledWith(
+      {
+        type: "turn_context",
+        payload: expect.objectContaining({
+          turnId: "turn-abc",
+          model: "test-model",
+        }),
+      },
+    );
+    expect(appendRollout).toHaveBeenCalledWith(
+      {
+        type: "response_item",
+        payload: expect.objectContaining({
+          role: "user",
+          content: "hello",
+        }),
+      },
+    );
+    expect(appendRollout).toHaveBeenCalledWith(
+      {
+        type: "response_item",
+        payload: expect.objectContaining({
+          role: "assistant",
+          content: "reply",
+        }),
+      },
+    );
+  });
+
+  test("writes finalized history back into session state and consumes it on the next turn", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const provider: LLMProvider = {
+      name: "history-provider",
+      chat: async () => ({
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async (messages) => {
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        return {
+          content: seenMessages.length === 1 ? "first answer" : "second answer",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+      healthCheck: async () => true,
+    };
+    const { session, getState } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("first question", { ctx: mkCtx() }));
+
+    expect(getState().history).toEqual([
+      { role: "user", content: "first question" },
+      { role: "assistant", content: "first answer" },
+    ]);
+    expect(getState().previousTurnSettings?.model).toBe("test-model");
+    expect(getState().referenceContextItem).toEqual(
+      expect.objectContaining({
+        turnId: "turn-abc",
+        model: "test-model",
+      }),
+    );
+
+    await drain(session.runTurn("second question", { ctx: mkCtx() }));
+
+    expect(seenMessages).toHaveLength(2);
+    expect(seenMessages[1]).toEqual([
+      { role: "user", content: "first question" },
+      { role: "assistant", content: "first answer" },
+      { role: "user", content: "second question" },
+    ]);
   });
 
   test("emits token_count after streamModel completes", async () => {
@@ -522,6 +646,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
     // Inject a previous-turn setting with a larger context window.
     (session as unknown as { state: unknown }).state = {
       unsafePeek: () => ({
+        history: [],
         totalTokenUsage: 5_000,
         previousTurnSettings: {
           model: "old-big-model",
@@ -529,6 +654,16 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
         },
       }),
     };
+    setAutoCompactImplForTests(
+      vi.fn<AutoCompactImpl>(async () => ({
+        wasCompacted: true,
+        compactionResult: {
+          summaryMessages: [{ role: "assistant", content: "summary" }],
+          attachments: [],
+          hookResults: [],
+        },
+      })),
+    );
 
     const ran = await maybeRunPreviousModelInlineCompact(
       session,
@@ -536,6 +671,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
       5_000,
     );
     expect(ran).toBe(true);
+    setAutoCompactImplForTests(null);
   });
 
   test("maybeRunPreviousModelInlineCompact skips when same model slug", async () => {
@@ -557,6 +693,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
     });
     (session as unknown as { state: unknown }).state = {
       unsafePeek: () => ({
+        history: [],
         totalTokenUsage: 5_000,
         previousTurnSettings: {
           model: "same-model",
@@ -788,6 +925,18 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 // ─────────────────────────────────────────────────────────────────────
 
 describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
+  test("binds provider conversation continuity before sampling starts", async () => {
+    const { session } = mkSession({
+      provider: mkProvider({ content: "hi" }),
+      registry: mkRegistry(),
+    });
+    const bindSpy = vi.spyOn(session, "bindProviderConversation");
+
+    await drain(session.runTurn("hello"));
+
+    expect(bindSpy).toHaveBeenCalled();
+  });
+
   test("pendingProviderSwitch is consumed before default turn construction so turn_context sees the new model", async () => {
     const { session, events, getState } = mkSession({
       provider: mkProvider({ content: "hi" }),
@@ -806,7 +955,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     const applied = getState().sessionConfiguration;
     expect(applied.collaborationMode?.model).toBe("grok-4");
-    expect(applied.provider?.slug).toBe("xai");
+    expect(applied.provider?.slug).toBe("grok");
     const turnContext = events.find((event) => event.msg.type === "turn_context");
     expect(turnContext).toBeDefined();
     if (turnContext?.msg.type === "turn_context") {
@@ -869,6 +1018,73 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
       "grok-4",
     );
+  });
+
+  test("model_fallback consumes the pending switch and continues the same turn", async () => {
+    const ctx = mkCtx();
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    const primaryProvider: LLMProvider = {
+      name: "stub-provider",
+      chat: async () => ({
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async () => {
+        primaryCalls += 1;
+        throw new FallbackTriggeredError("test-model", "fallback-model");
+      },
+      healthCheck: async () => true,
+    };
+    const fallbackProvider = mkProvider({
+      content: "recovered on fallback",
+      model: "fallback-model",
+    });
+    const originalFallbackChatStream = fallbackProvider.chatStream;
+    fallbackProvider.chatStream = async (...args) => {
+      fallbackCalls += 1;
+      return originalFallbackChatStream(...args);
+    };
+
+    const { session, events } = mkSession({
+      provider: primaryProvider,
+      registry: mkRegistry(),
+    });
+    let appliedSwitches = 0;
+    const consumeSpy = vi
+      .spyOn(session, "consumePendingProviderSwitch")
+      .mockImplementation(async () => {
+        if (session.pendingProviderSwitch === null) {
+          return {
+            applied: false,
+            reason: "no pending provider switch",
+          };
+        }
+        appliedSwitches += 1;
+        session.setPendingProviderSwitch(null);
+        (session.services as { provider: LLMProvider }).provider = fallbackProvider;
+        return {
+          applied: true,
+          provider: "stub-provider",
+          model: "fallback-model",
+        };
+      });
+
+    await drain(session.runTurn("hello", { ctx }));
+
+    expect(primaryCalls).toBe(1);
+    expect(fallbackCalls).toBe(1);
+    expect(consumeSpy).toHaveBeenCalledTimes(2);
+    expect(appliedSwitches).toBe(1);
+    expect(session.pendingProviderSwitch).toBeNull();
+    const turnComplete = events.filter((event) => event.msg.type === "turn_complete").at(-1);
+    expect(turnComplete).toBeDefined();
+    if (turnComplete?.msg.type === "turn_complete") {
+      expect(turnComplete.msg.payload.lastAgentMessage).toBe("recovered on fallback");
+    }
   });
 
   test("profile switch via pendingProviderSwitch routes through configStore.resolveProfile when available", async () => {
@@ -967,8 +1183,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     });
     // Push totalTokenUsage above the limit so runPreSamplingCompact fires.
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ totalTokenUsage: 999 }),
-      with: async (fn: (s: unknown) => unknown) => fn({ totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 999 }),
     };
 
     const calls: Array<unknown[]> = [];
@@ -985,11 +1202,23 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     // detail (prepare-context.ts Stage 6 may invoke it again inside
     // the phase loop), but >=1 proves the dispatcher was wired.
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    // First call carries per-turn ctx as second arg (shared call shape
-    // with prepare-context Stage 6).
-    const [firstMessages, firstCtx] = calls[0] ?? [];
+    const [firstMessages, firstCompactContext, firstCacheSafeParams, firstQuerySource] =
+      calls[0] ?? [];
     expect(Array.isArray(firstMessages)).toBe(true);
-    expect(firstCtx).toBe(ctx);
+    expect(firstCompactContext).toEqual(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          mainLoopModel: "test-model",
+          querySource: "repl_main_thread",
+        }),
+      }),
+    );
+    expect(firstCacheSafeParams).toEqual(
+      expect.objectContaining({
+        toolUseContext: firstCompactContext,
+      }),
+    );
+    expect(firstQuerySource).toBe("repl_main_thread");
   });
 
   test("autoCompactIfNeeded is NOT called when total usage is below the threshold", async () => {
@@ -1003,8 +1232,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     });
     // Keep totalTokenUsage at 0 — below the astronomical limit.
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ totalTokenUsage: 0 }),
-      with: async (fn: (s: unknown) => unknown) => fn({ totalTokenUsage: 0 }),
+      unsafePeek: () => ({ history: [], totalTokenUsage: 0 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 0 }),
     };
 
     const impl = vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false }));
@@ -1026,7 +1256,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     expect(callsWithDownshift.length).toBe(0);
   });
 
-  test("compaction result (summary + attachments) is spliced into TurnState messages", async () => {
+  test("compaction result rehydrates the full post-compact replacement history", async () => {
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
       .autoCompactTokenLimit = 10;
@@ -1037,21 +1267,32 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       registry: mkRegistry(),
     });
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ totalTokenUsage: 999 }),
-      with: async (fn: (s: unknown) => unknown) => fn({ totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 999 }),
     };
 
     // Return a compactionResult so the dispatcher splices messages
     // back into TurnState. We then verify prepareContext (next phase)
     // received the compacted view by watching what the provider saw.
+    const compactBoundary = {
+      role: "system",
+      content: "<agenc-compact-boundary>",
+    } as const;
     const compactSummary: LLMMessage = {
       role: "system",
-      content: "<agenc-compact-boundary>POST-COMPACT SUMMARY",
+      content: "POST-COMPACT SUMMARY",
+    };
+    const keptTail: LLMMessage = {
+      role: "assistant",
+      content: "KEPT TAIL",
     };
     const fakeImpl: AutoCompactImpl = async () => ({
       wasCompacted: true,
       compactionResult: {
+        boundaryMarker: compactBoundary,
         summaryMessages: [compactSummary],
+        messagesToKeep: [keptTail],
         attachments: [],
         hookResults: [],
       },
@@ -1093,8 +1334,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       },
     } as unknown as Session["rolloutStore"];
     (session2 as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ totalTokenUsage: 999 }),
-      with: async (fn: (s: unknown) => unknown) => fn({ totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 999 }),
     };
 
     await drain(session2.runTurn("first user input", { ctx }));
@@ -1103,22 +1345,26 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       expect.objectContaining({
         type: "compacted",
         payload: expect.objectContaining({
-          message: "<agenc-compact-boundary>POST-COMPACT SUMMARY",
+          message: "POST-COMPACT SUMMARY",
+          replacementHistory: expect.arrayContaining([
+            expect.objectContaining({ content: "KEPT TAIL" }),
+          ]),
         }),
       }),
       { durable: true },
     );
 
-    // prepareContext uses getMessagesAfterCompactBoundary: the
-    // `<agenc-compact-boundary>` prefix marks the boundary and the
-    // projection returns the slice AFTER it, so nothing from before
-    // should leak through to the provider.
+    expect(
+      seenMessages.some(
+        (m) => typeof m.content === "string" && m.content.includes("KEPT TAIL"),
+      ),
+    ).toBe(true);
     expect(
       seenMessages.some((m) =>
         typeof m.content === "string" &&
         m.content.includes("POST-COMPACT SUMMARY"),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("dispatcher errors emit warning:auto_compact_failed and continue with uncompacted state", async () => {
@@ -1131,8 +1377,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       registry: mkRegistry(),
     });
     (session as unknown as { state: unknown }).state = {
-      unsafePeek: () => ({ totalTokenUsage: 999 }),
-      with: async (fn: (s: unknown) => unknown) => fn({ totalTokenUsage: 999 }),
+      unsafePeek: () => ({ history: [], totalTokenUsage: 999 }),
+      with: async (fn: (s: unknown) => unknown) =>
+        fn({ history: [], totalTokenUsage: 999 }),
     };
 
     const thrown = new Error("compact-blew-up");
@@ -1176,6 +1423,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     });
     (session as unknown as { state: unknown }).state = {
       unsafePeek: () => ({
+        history: [],
         totalTokenUsage: 5_000,
         previousTurnSettings: {
           model: "old-big-model",
@@ -1195,9 +1443,9 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       ctx,
       5_000,
     );
-    expect(ran).toBe(true);
-    // querySource (5th positional arg) should be the downshift marker.
+    expect(ran).toBe(false);
+    // querySource (4th positional arg) should be the downshift marker.
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    expect(calls[0]?.[4]).toBe("model_downshift");
+    expect(calls[0]?.[3]).toBe("model_downshift");
   });
 });

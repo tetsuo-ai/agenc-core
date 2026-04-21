@@ -95,15 +95,17 @@ describe("T8 transition-reason disambiguation", () => {
   test("onStreamingFallback path sets transition reason = streaming_fallback_retry (distinct)", async () => {
     const log = new EventLog();
     const session = mkSession(log);
-    // Pre-seed `transition.reason = streaming_fallback_retry` so the
-    // streamingFallbackOccured matcher (`isStreamingFallbackOccured`)
-    // returns true. This simulates the stream-model phase flagging a
-    // streaming fallback in the previous iteration.
     const state = mkState({
       assistantMessages: [
-        { uuid: "a1", role: "assistant", text: "partial", toolCalls: [] },
+        {
+          uuid: "a1",
+          role: "assistant",
+          text: "partial provider output",
+          toolCalls: [],
+          apiError: "provider_error",
+        },
       ],
-      transition: { reason: "streaming_fallback_retry" },
+      lastStreamError: new Error("stream aborted after partial output"),
     });
 
     await postSampleRecovery(state, mkCtx(), session);
@@ -111,9 +113,23 @@ describe("T8 transition-reason disambiguation", () => {
     expect(state.transition?.reason).toBe("streaming_fallback_retry");
   });
 
-  test("isStreamingFallbackOccured matches streaming_fallback_retry (not model_fallback)", () => {
-    const s1 = mkState({ transition: { reason: "streaming_fallback_retry" } });
-    const s2 = mkState({ transition: { reason: "model_fallback" } });
+  test("isStreamingFallbackOccured matches partial provider-error retries, not model_fallback", () => {
+    const s1 = mkState({
+      assistantMessages: [
+        {
+          uuid: "a1",
+          role: "assistant",
+          text: "partial provider output",
+          toolCalls: [],
+          apiError: "provider_error",
+        },
+      ],
+      lastStreamError: new Error("stream aborted after partial output"),
+    } as Partial<TurnState> & { lastStreamError?: unknown });
+    const s2 = mkState({
+      transition: { reason: "model_fallback" },
+      lastStreamError: new FallbackTriggeredError("grok-3-fast", "grok-3"),
+    } as Partial<TurnState> & { lastStreamError?: unknown });
     expect(isStreamingFallbackOccured(s1)).toBe(true);
     expect(isStreamingFallbackOccured(s2)).toBe(false);
   });
@@ -130,9 +146,15 @@ describe("T8 transition-reason disambiguation", () => {
     });
     const state = mkState({
       assistantMessages: [
-        { uuid: "a1", role: "assistant", text: "partial", toolCalls: [] },
+        {
+          uuid: "a1",
+          role: "assistant",
+          text: "partial provider output",
+          toolCalls: [],
+          apiError: "provider_error",
+        },
       ],
-      transition: { reason: "streaming_fallback_retry" },
+      lastStreamError: new Error("stream aborted after partial output"),
     });
 
     await postSampleRecovery(state, mkCtx(), session);

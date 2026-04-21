@@ -14,7 +14,7 @@ import { statSync, writeFileSync, unlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
-import type { Tool, ToolResult } from "../types.js";
+import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import type {
   BashToolConfig,
@@ -246,6 +246,7 @@ function runSpawnedCommand(params: {
   readonly metadataArgs: readonly string[];
   readonly shellMode: boolean;
   readonly cleanupPath?: string;
+  readonly signal?: AbortSignal;
 }): Promise<ToolResult> {
   return new Promise<ToolResult>((resolve) => {
     let resolved = false;
@@ -256,9 +257,15 @@ function runSpawnedCommand(params: {
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let timedOut = false;
+    let aborted = false;
     let forceKillTimer: NodeJS.Timeout | null = null;
+    let onAbort: (() => void) | null = null;
 
     const cleanup = (reason: "timeout" | "resolve" | "error") => {
+      if (params.signal && onAbort) {
+        params.signal.removeEventListener("abort", onAbort);
+        onAbort = null;
+      }
       if (!params.cleanupPath) return;
       try {
         unlinkSync(params.cleanupPath);
@@ -310,6 +317,37 @@ function runSpawnedCommand(params: {
       cleanup("timeout");
     }, params.timeout);
 
+    const terminateChild = (signalName: "SIGTERM" | "SIGKILL") => {
+      try {
+        process.kill(-child.pid!, signalName);
+      } catch (error) {
+        params.logger.debug(
+          `Bash tool process-group ${signalName} failed; falling back to child.kill`,
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        child.kill(signalName);
+      }
+    };
+
+    if (params.signal) {
+      if (params.signal.aborted) {
+        aborted = true;
+        terminateChild("SIGTERM");
+      } else {
+        onAbort = () => {
+          if (resolved || aborted) return;
+          aborted = true;
+          terminateChild("SIGTERM");
+          forceKillTimer = setTimeout(() => {
+            terminateChild("SIGKILL");
+          }, 500);
+        };
+        params.signal.addEventListener("abort", onAbort, { once: true });
+      }
+    }
+
     const doResolve = (code: number | null) => {
       if (resolved) return;
       resolved = true;
@@ -320,8 +358,9 @@ function runSpawnedCommand(params: {
       cleanup("resolve");
 
       const durationMs = Date.now() - params.startTime;
-      const exitCode = timedOut ? null : (code ?? 1);
-      const isError = timedOut || (exitCode !== null && exitCode !== 0);
+      const exitCode = timedOut || aborted ? null : (code ?? 1);
+      const isError =
+        timedOut || aborted || (exitCode !== null && exitCode !== 0);
 
       // I-78: decode accumulated Buffer[] once at flush boundary.
       const stdoutBuf = Buffer.concat(stdoutChunks).toString("utf8");
@@ -331,6 +370,8 @@ function runSpawnedCommand(params: {
       const stderrResult = truncate(
         stderrBuf.trim().length > 0
           ? stderrBuf
+          : aborted
+            ? "Command aborted"
           : isError
             ? `Command "${params.metadataCommand}" failed`
             : "",
@@ -341,6 +382,8 @@ function runSpawnedCommand(params: {
         params.logger.warn(
           `Bash tool timed out after ${durationMs}ms: ${params.logCmd}`,
         );
+      } else if (aborted) {
+        params.logger.debug(`Bash tool aborted after ${durationMs}ms: ${params.logCmd}`);
       } else if (isError) {
         params.logger.debug(
           `Bash tool error (exit ${exitCode}): ${params.logCmd}`,
@@ -738,7 +781,8 @@ export function createBashTool(config?: BashToolConfig): Tool {
     },
 
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
-      const input = rawArgs as unknown as BashToolInput;
+      const input = rawArgs as unknown as BashToolInput & ToolExecutionInjectedArgs;
+      const abortSignal = input.__abortSignal;
 
       // Validate command
       if (
@@ -1013,6 +1057,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataArgs: execArgs,
           shellMode: true,
           cleanupPath: scriptPath,
+          ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
         }).then(emitEnd);
       }
 
@@ -1030,6 +1075,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           metadataCommand: command,
           metadataArgs: execArgs,
           shellMode: false,
+          ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
         }).then(emitEnd);
       }
 
@@ -1047,6 +1093,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
             maxBuffer: maxOutputBytes * 2, // Allow headroom, rely on truncate() for user-facing limits
             shell: false,
             env,
+            ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
           },
           (error, stdout, stderr) => {
             const durationMs = Date.now() - startTime;

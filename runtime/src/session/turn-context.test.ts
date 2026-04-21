@@ -561,6 +561,31 @@ describe("codex-parity turn-builder helpers", () => {
     expect(ctx.config.permissions.allowLoginShell).toBe(false);
   });
 
+  test("pending worktree state overrides cwd for the next turn snapshot", () => {
+    const session = mkSessionForTurn({
+      sessionConfiguration: {
+        ...mkSessionConfiguration(),
+        cwd: "/session-root",
+      },
+      pendingWorktreeState: {
+        handle: {
+          path: "/session-root/.agenc-worktrees/feat",
+          branch: "worktree-feat",
+          gitRoot: "/session-root",
+          created: false,
+        },
+        baseCommit: "abc123",
+        originalCwd: "/session-root",
+      },
+    });
+
+    const ctx = newDefaultTurnWithSubId(session, "sub-worktree");
+
+    expect(ctx.cwd).toBe("/session-root/.agenc-worktrees/feat");
+    expect(ctx.config.cwd).toBe("/session-root/.agenc-worktrees/feat");
+    expect(ctx.turnMetadataState.cwd).toBe("/session-root/.agenc-worktrees/feat");
+  });
+
   test("newDefaultTurn allocates a sub-id via the session allocator", () => {
     const session = mkSessionForTurn();
     const a = newDefaultTurn(session);
@@ -583,6 +608,27 @@ describe("codex-parity turn-builder helpers", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("toTurnContextItem field parity", () => {
+  test("buildTurnContext uses the config cwd when the sessionConfiguration cwd is stale", () => {
+    const ctx = buildTurnContext({
+      conversationId: "conv-wt",
+      subId: "sub-wt",
+      config: {
+        ...mkConfig(),
+        cwd: "/repo/.agenc-worktrees/feat",
+      },
+      modelInfo: mkModelInfo(),
+      provider: mkProvider(),
+      sessionConfiguration: {
+        ...mkSessionConfiguration(),
+        cwd: "/repo",
+      },
+      clock: { currentDate: "2026-04-21", timezone: "Etc/UTC" },
+    });
+
+    expect(ctx.cwd).toBe("/repo/.agenc-worktrees/feat");
+    expect(ctx.turnMetadataState.cwd).toBe("/repo/.agenc-worktrees/feat");
+  });
+
   test("all 8 extended fields round-trip through toTurnContextItem", () => {
     const sc: SessionConfiguration = {
       ...mkSessionConfiguration(),

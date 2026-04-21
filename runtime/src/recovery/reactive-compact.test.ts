@@ -47,6 +47,7 @@ function mkState(): TurnState {
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
     pendingBudgetDecision: undefined,
+    lastResponseUsage: undefined,
     turnCount: 1,
     transition: undefined,
     stopHookActive: undefined,
@@ -114,9 +115,13 @@ describe("reactive-compact (I-40 throw guard)", () => {
     const log = new EventLog();
     const session = mkSession(log);
     const state = mkState();
-    state.messages = [
+    state.messagesForQuery = [
       { role: "user", content: "before-a" },
       { role: "assistant", content: "before-b" },
+      { role: "user", content: "before-c" },
+      { role: "assistant", content: "before-d" },
+      { role: "user", content: "before-e" },
+      { role: "assistant", content: "before-f" },
     ];
     const compacted = [{ role: "user" as const, content: "[summary]" }];
     const driver: ReactiveCompactDriver = {
@@ -215,6 +220,67 @@ describe("reactive-compact (I-40 throw guard)", () => {
     });
     expect(out.kind).toBe("noop");
     expect(called).toBe(false);
+  });
+
+  test("unsupported last message returns noop before invoking the driver", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState();
+    let called = false;
+    const driver: ReactiveCompactDriver = {
+      ...DEFAULT_REACTIVE_COMPACT_DRIVER,
+      async tryReactiveCompact() {
+        called = true;
+        return null;
+      },
+    };
+    const out = await runReactiveCompact({
+      session,
+      state,
+      lastMessage: {
+        uuid: "a2",
+        role: "assistant",
+        text: "ordinary reply",
+        toolCalls: [],
+      },
+      driver,
+    });
+    expect(out.kind).toBe("noop");
+    if (out.kind === "noop") {
+      expect(out.reason).toBe("unsupported_last_message");
+    }
+    expect(called).toBe(false);
+  });
+
+  test("non-shrinking driver result trips the I-18 throw guard", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState();
+    state.messagesForQuery = [
+      { role: "user", content: "a" },
+      { role: "assistant", content: "b" },
+      { role: "user", content: "c" },
+      { role: "assistant", content: "d" },
+      { role: "user", content: "e" },
+      { role: "assistant", content: "f" },
+    ];
+    const driver: ReactiveCompactDriver = {
+      ...DEFAULT_REACTIVE_COMPACT_DRIVER,
+      async tryReactiveCompact({ hasAttempted }) {
+        expect(hasAttempted).toBe(false);
+        return { compactedMessages: [...state.messagesForQuery] };
+      },
+    };
+
+    const out = await runReactiveCompact({
+      session,
+      state,
+      lastMessage,
+      driver,
+    });
+
+    expect(out.kind).toBe("threw");
+    expect(state.hasAttemptedReactiveCompact).toBe(true);
   });
 });
 

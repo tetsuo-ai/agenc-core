@@ -34,6 +34,7 @@ import {
 } from "./ink/termio/csi.js";
 
 import { App, type AppProps } from "./App.js";
+import type { Event } from "../session/event-log.js";
 import type { ConfigStoreLike, SessionLike } from "./state/AppState.js";
 
 /**
@@ -49,12 +50,13 @@ import type { ConfigStoreLike, SessionLike } from "./state/AppState.js";
 export interface StdinLossSession extends SessionLike {
   readonly abortTerminal?: (reason: string) => void;
   readonly flushEventLog?: () => Promise<void> | void;
-  readonly emit?: (event: {
+  readonly emit?: (event: Event | {
     readonly kind: string;
     readonly cause?: string;
     readonly timestamp?: number;
     readonly [key: string]: unknown;
   }) => void;
+  nextInternalSubId?(): string;
 }
 
 export interface BootTUIOptions {
@@ -115,6 +117,38 @@ function restoreTerminal(stdout: NodeJS.WriteStream): void {
   } catch {
     // stdout is gone — nothing useful we can do here.
   }
+}
+
+function emitSessionWarning(
+  session: StdinLossSession,
+  cause: string,
+  message: string,
+  extra: Record<string, unknown> = {},
+): void {
+  const nextInternalSubId =
+    typeof session.nextInternalSubId === "function"
+      ? session.nextInternalSubId.bind(session)
+      : null;
+  if (typeof session.emit !== "function" || nextInternalSubId === null) {
+    session.emit?.({
+      kind: `warning:${cause}`,
+      cause,
+      message,
+      ...extra,
+    });
+    return;
+  }
+  session.emit({
+    id: nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause,
+        message,
+        ...extra,
+      },
+    },
+  });
 }
 
 /**
@@ -179,11 +213,12 @@ export async function handleStdinLoss(
 
   // 3. Warning emission.
   try {
-    session.emit?.({
-      kind: "warning",
-      cause: "stdin_lost",
-      timestamp: Date.now(),
-    });
+    emitSessionWarning(
+      session,
+      "stdin_lost",
+      "stdin was lost while the TUI was active; aborting the session",
+      { timestamp: Date.now() },
+    );
   } catch {
     // Emit is best-effort.
   }

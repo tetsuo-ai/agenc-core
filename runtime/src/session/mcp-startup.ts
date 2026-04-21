@@ -27,6 +27,84 @@ import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
 
+type ConfiguredServerWithExtras = MCPServerConfig & {
+  readonly required?: boolean;
+  readonly instructions?: string;
+};
+
+type EffectiveServerWithInstructions = Awaited<
+  ReturnType<SessionServices["mcpManager"]["effectiveServers"]>
+> extends Map<string, infer Info>
+  ? Info & { readonly instructions?: string }
+  : never;
+
+type RuntimeMcpManagerWithMetadata = MCPManager & {
+  getConnectedServers?(): string[];
+  getConfiguredServers?(): readonly ConfiguredServerWithExtras[];
+  getServerConfig?(name: string): ConfiguredServerWithExtras | undefined;
+  getServerInstructions?(name: string): string | undefined;
+  getInstructionsForServer?(name: string): string | undefined;
+};
+
+function getServerInstructions(
+  manager: RuntimeMcpManagerWithMetadata,
+  config: ConfiguredServerWithExtras | undefined,
+  name: string,
+): string | undefined {
+  const fromManager =
+    manager.getServerInstructions?.(name) ??
+    manager.getInstructionsForServer?.(name);
+  if (typeof fromManager === "string" && fromManager.trim().length > 0) {
+    return fromManager;
+  }
+  if (typeof config?.instructions === "string" && config.instructions.trim().length > 0) {
+    return config.instructions;
+  }
+  return undefined;
+}
+
+function buildEffectiveServerMap(
+  manager: RuntimeMcpManagerWithMetadata,
+): Map<string, EffectiveServerWithInstructions> {
+  const connectedNames = new Set(manager.getConnectedServers?.() ?? []);
+  const configs = manager.getConfiguredServers?.() ?? [];
+  const map = new Map<string, EffectiveServerWithInstructions>();
+
+  for (const rawConfig of configs) {
+    const config = rawConfig as ConfiguredServerWithExtras;
+    const connected = connectedNames.has(config.name);
+    const instructions = connected
+      ? getServerInstructions(manager, config, config.name)
+      : undefined;
+    map.set(config.name, {
+      enabled: connected,
+      required: config.required ?? false,
+      ...(config.endpoint !== undefined ? { url: config.endpoint } : {}),
+      ...(config.command !== undefined ? { command: config.command } : {}),
+      ...(instructions !== undefined ? { instructions } : {}),
+    } as EffectiveServerWithInstructions);
+  }
+
+  for (const name of connectedNames) {
+    if (map.has(name)) {
+      continue;
+    }
+    const config = manager.getServerConfig?.(name) as
+      | ConfiguredServerWithExtras
+      | undefined;
+    const instructions = getServerInstructions(manager, config, name);
+    map.set(name, {
+      enabled: true,
+      required: config?.required ?? false,
+      ...(config?.endpoint !== undefined ? { url: config.endpoint } : {}),
+      ...(config?.command !== undefined ? { command: config.command } : {}),
+      ...(instructions !== undefined ? { instructions } : {}),
+    } as EffectiveServerWithInstructions);
+  }
+
+  return map;
+}
+
 /**
  * Construct the real runtime `MCPManager` for a session boundary.
  * Bootstrap/CLI own env/config discovery, but the concrete manager
@@ -60,8 +138,9 @@ export function createSessionMcpManagerFromEnv(
 export function createSessionMcpService(
   manager: MCPManager,
 ): SessionServices["mcpManager"] {
+  const runtimeManager = manager as RuntimeMcpManagerWithMetadata;
   return {
-    effectiveServers: async () => new Map(),
+    effectiveServers: async () => buildEffectiveServerMap(runtimeManager),
     toolPluginProvenance: async () => null,
     isConnected:
       typeof manager.isConnected === "function"

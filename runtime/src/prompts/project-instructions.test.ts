@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   DEFAULT_PROJECT_DOC_MAX_BYTES,
   findProjectRoot,
+  loadProjectInstructionChain,
   loadProjectInstructions,
   resolveInstructionFile,
 } from "./project-instructions.js";
@@ -151,5 +152,43 @@ describe("project-instructions (T10-B)", () => {
     // No AGENTS.md / CLAUDE.md present.
     const res = await loadProjectInstructions({ cwd: repoRoot });
     expect(res).toBeNull();
+  });
+
+  test("loadProjectInstructionChain collects root-to-cwd docs in order", async () => {
+    const repoRoot = join(root, "proj");
+    const pkgDir = join(repoRoot, "packages", "worker");
+    const leafDir = join(pkgDir, "src");
+    mkdirSync(leafDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
+    writeFileSync(join(pkgDir, "CLAUDE.md"), "PKG");
+    writeFileSync(join(leafDir, "AGENTS.override.md"), "LEAF");
+
+    const chain = await loadProjectInstructionChain({ cwd: leafDir });
+    expect(chain.map((entry) => entry.path)).toEqual([
+      join(repoRoot, "AGENTS.md"),
+      join(pkgDir, "CLAUDE.md"),
+      join(leafDir, "AGENTS.override.md"),
+    ]);
+    expect(chain.map((entry) => entry.content)).toEqual(["ROOT", "PKG", "LEAF"]);
+  });
+
+  test("loadProjectInstructionChain applies the byte budget across the full chain", async () => {
+    const repoRoot = join(root, "proj");
+    const leafDir = join(repoRoot, "nested");
+    mkdirSync(leafDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT-CONTENT");
+    writeFileSync(join(leafDir, "AGENTS.md"), "LEAF-CONTENT");
+
+    const chain = await loadProjectInstructionChain({
+      cwd: leafDir,
+      projectDocMaxBytes: 14,
+    });
+    expect(chain).toHaveLength(2);
+    expect(chain[0]!.content).toBe("ROOT-CONTENT");
+    expect(chain[0]!.truncated).toBe(false);
+    expect(chain[1]!.truncated).toBe(true);
+    expect(chain[1]!.content).toContain("truncated by project_doc_max_bytes");
   });
 });

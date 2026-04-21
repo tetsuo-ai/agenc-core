@@ -53,6 +53,7 @@ export interface ReactiveCompactDriver {
   isWithheldPromptTooLong(msg: AssistantMessage): boolean;
   isWithheldMediaSizeError(msg: AssistantMessage): boolean;
   tryReactiveCompact(input: {
+    readonly hasAttempted: boolean;
     readonly messages: ReadonlyArray<LLMMessage>;
     readonly lastMessage: AssistantMessage;
     readonly session: Session;
@@ -124,6 +125,7 @@ export const DEFAULT_REACTIVE_COMPACT_DRIVER: ReactiveCompactDriver = Object.fre
   isWithheldPromptTooLong: (msg: AssistantMessage) => isPromptTooLongMessage(msg),
   isWithheldMediaSizeError: (msg: AssistantMessage) => isMediaTooLargeMessage(msg),
   async tryReactiveCompact(input: {
+    readonly hasAttempted: boolean;
     readonly messages: ReadonlyArray<LLMMessage>;
   }): Promise<ReactiveCompactResult | null> {
     const collapsed = inlineCollapseMessages(input.messages);
@@ -169,6 +171,12 @@ export async function runReactiveCompact(
   if (!driver.isReactiveCompactEnabled()) {
     return { kind: "disabled" };
   }
+  const supportsLastMessage =
+    driver.isWithheldPromptTooLong(opts.lastMessage) ||
+    driver.isWithheldMediaSizeError(opts.lastMessage);
+  if (!supportsLastMessage) {
+    return { kind: "noop", reason: "unsupported_last_message" };
+  }
 
   // Skip when we've already tried + the flag is still set.
   // The flag is reset only by token-budget-continuation, preserved
@@ -180,11 +188,20 @@ export async function runReactiveCompact(
   let result: ReactiveCompactResult | null;
   try {
     result = await driver.tryReactiveCompact({
+      hasAttempted: opts.state.hasAttemptedReactiveCompact,
       messages: opts.state.messagesForQuery,
       lastMessage: opts.lastMessage,
       session: opts.session,
       state: opts.state,
     });
+    if (
+      result &&
+      result.compactedMessages.length >= opts.state.messagesForQuery.length
+    ) {
+      throw new Error(
+        `I-18 shrink assertion failed: input=${opts.state.messagesForQuery.length} output=${result.compactedMessages.length}`,
+      );
+    }
   } catch (err) {
     // I-40: throw guard. Emit warning, increment circuit-breaker
     // on the turn's autoCompactTracking, return `threw` outcome.

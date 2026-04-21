@@ -12,7 +12,7 @@
  *     + branch delete + **I-34 prune** + **I-35 sparse-checkout verify**.
  *   - `hasWorktreeChanges(path, baseCommit)` — check for commits /
  *     dirty files before deleting.
- *   - `findGitRoot(cwd)` — walk up for `.git`.
+ *   - `findGitRoot(cwd)` — resolve to the canonical owning repo root.
  *
  * Git operations run via `node:child_process.spawn` with a per-
  * invocation mutation lock (concurrent `git worktree add` against
@@ -32,11 +32,12 @@
 
 import {
   existsSync,
+  realpathSync,
   readFileSync,
   statSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
-import { dirname, join, resolve as resolvePath } from "node:path";
+import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { AsyncLock } from "../utils/async-lock.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -49,7 +50,17 @@ import { AsyncLock } from "../utils/async-lock.js";
  * `.git/worktrees/`. One lock per process is sufficient since all
  * subagent spawns serialize through AgentControl anyway.
  */
-const gitMutationLock = new AsyncLock<void>(undefined);
+let gitMutationLock = new AsyncLock<void>(undefined);
+
+export function withGitWorktreeMutationLock<T>(
+  fn: () => Promise<T>,
+): Promise<T> {
+  return gitMutationLock.with(fn);
+}
+
+export function _resetGitWorktreeMutationLocksForTesting(): void {
+  gitMutationLock = new AsyncLock<void>(undefined);
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Git command helper
@@ -95,18 +106,68 @@ export function runGit(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Walk up from `startDir` looking for a `.git` entry (directory or
- * file — `.git` is a file when the dir is itself a worktree). Returns
- * the repo root on success; null if not inside a repo.
+ * Resolve `startDir` to the owning repository's canonical root.
+ *
+ * For a regular repo this returns the directory containing `.git`.
+ * For a linked worktree this resolves back to the main checkout so
+ * agent worktrees always live under one stable repo root.
  */
 export function findGitRoot(startDir: string): string | null {
+  const gitRoot = findNearestGitRoot(startDir);
+  if (!gitRoot) {
+    return null;
+  }
+  return resolveCanonicalGitRoot(gitRoot);
+}
+
+function findNearestGitRoot(startDir: string): string | null {
   let dir = resolvePath(startDir);
   while (true) {
     const probe = join(dir, ".git");
-    if (existsSync(probe)) return dir;
+    if (existsSync(probe)) {
+      return dir;
+    }
     const parent = dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) {
+      return null;
+    }
     dir = parent;
+  }
+}
+
+function resolveCanonicalGitRoot(gitRoot: string): string {
+  try {
+    const gitContent = readFileSync(join(gitRoot, ".git"), "utf8").trim();
+    if (!gitContent.startsWith("gitdir:")) {
+      return gitRoot;
+    }
+
+    const worktreeGitDir = resolvePath(
+      gitRoot,
+      gitContent.slice("gitdir:".length).trim(),
+    );
+    const commonDir = resolvePath(
+      worktreeGitDir,
+      readFileSync(join(worktreeGitDir, "commondir"), "utf8").trim(),
+    );
+
+    if (resolvePath(dirname(worktreeGitDir)) !== join(commonDir, "worktrees")) {
+      return gitRoot;
+    }
+
+    const backlink = realpathSync(
+      readFileSync(join(worktreeGitDir, "gitdir"), "utf8").trim(),
+    );
+    if (backlink !== join(realpathSync(gitRoot), ".git")) {
+      return gitRoot;
+    }
+
+    if (basename(commonDir) !== ".git") {
+      return commonDir;
+    }
+    return dirname(commonDir);
+  } catch {
+    return gitRoot;
   }
 }
 
@@ -116,6 +177,10 @@ export function findGitRoot(startDir: string): string | null {
 
 const SLUG_RE = /^[a-zA-Z0-9._-]+$/;
 const MAX_SLUG_LEN = 64;
+
+export function worktreeBranchName(slug: string): string {
+  return `worktree-${slug}`;
+}
 
 export function validateWorktreeSlug(slug: string): void {
   if (slug.length === 0 || slug.length > MAX_SLUG_LEN) {
@@ -153,14 +218,14 @@ export interface GetOrCreateOpts {
 /**
  * Create a new worktree (or fast-resume an existing one).
  *
- * Fast resume: if `<workspaceRoot>/worktrees/<slug>` exists + its
- * `.git` points at the parent repo, skip the `git worktree add`.
+ * Fast resume: if the target path already points at the same canonical
+ * repo root, skip the `git worktree add`.
  */
 export async function getOrCreateWorktree(
   opts: GetOrCreateOpts,
 ): Promise<WorktreeHandle> {
   validateWorktreeSlug(opts.slug);
-  const branch = `worktree-${opts.slug}`;
+  const branch = worktreeBranchName(opts.slug);
   const workspaceRoot =
     opts.workspaceRoot ?? join(opts.gitRoot, ".agenc-worktrees");
   const path = join(workspaceRoot, opts.slug);
@@ -168,7 +233,21 @@ export async function getOrCreateWorktree(
   return gitMutationLock.with(async () => {
     // Fast resume.
     if (existsSync(path) && existsSync(join(path, ".git"))) {
-      return { path, branch, gitRoot: opts.gitRoot, created: false };
+      const existingGitRoot = findGitRoot(path);
+      if (existingGitRoot === opts.gitRoot) {
+        return { path, branch, gitRoot: opts.gitRoot, created: false };
+      }
+      if (existingGitRoot !== null) {
+        throw new Error(
+          `worktree path ${path} already belongs to ${existingGitRoot}, expected ${opts.gitRoot}`,
+        );
+      }
+    }
+
+    if (existsSync(path)) {
+      throw new Error(
+        `worktree path ${path} already exists but is not a worktree for ${opts.gitRoot}`,
+      );
     }
 
     // Fetch base if it doesn't exist locally.
@@ -289,11 +368,17 @@ export async function removeAgentWorktree(
       }
     }
 
-    // Force-remove.
-    await runGit(
+    // Force-remove. Fail closed on git errors so callers never report a
+    // removed worktree when git rejected the remove.
+    const remove = await runGit(
       ["worktree", "remove", "--force", opts.path],
       opts.gitRoot,
     );
+    if (remove.code !== 0) {
+      throw new Error(
+        `git worktree remove failed: ${remove.stderr.trim() || remove.stdout.trim() || `exit ${remove.code}`}`,
+      );
+    }
 
     // Branch delete — best-effort (may fail if branch is the current
     // one in another worktree).

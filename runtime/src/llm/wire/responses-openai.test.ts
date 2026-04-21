@@ -1,0 +1,274 @@
+import { describe, expect, test } from "vitest";
+import type { LLMMessage, LLMTool } from "../types.js";
+import {
+  buildOpenAIResponsesRequest,
+  parseOpenAIResponsesResponse,
+} from "./responses-openai.js";
+
+const TEST_TOOLS: LLMTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "shell",
+      description: "Run a shell command",
+      parameters: {
+        type: "object",
+        properties: {
+          cmd: { type: "string" },
+        },
+        required: ["cmd"],
+      },
+    },
+  },
+];
+
+describe("buildOpenAIResponsesRequest", () => {
+  test("uses codex-style response items and disables store by default", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "system", content: "system prompt" },
+        { role: "user", content: "look at this" },
+        {
+          role: "assistant",
+          content: "working",
+          toolCalls: [
+            {
+              id: "tool-1",
+              name: "shell",
+              arguments: "{\"cmd\":\"pwd\"}",
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "tool-1",
+          toolName: "shell",
+          content: "ok",
+        },
+      ],
+      tools: TEST_TOOLS,
+    });
+
+    expect(request).toMatchObject({
+      model: "gpt-5",
+      instructions: "system prompt",
+      stream: false,
+      store: false,
+    });
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "look at this" }],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "working" }],
+      },
+      {
+        type: "function_call",
+        id: "fc_tool-1",
+        call_id: "tool-1",
+        name: "shell",
+        arguments: "{\"cmd\":\"pwd\"}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "tool-1",
+        output: "ok",
+      },
+    ]);
+  });
+
+  test("drops orphan tool outputs before serializing responses input", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "run it" },
+        {
+          role: "tool",
+          toolCallId: "call_missing",
+          toolName: "shell",
+          content: "done",
+        },
+      ],
+      tools: TEST_TOOLS,
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "run it" }],
+      },
+    ]);
+  });
+
+  test("maps user images to input_image parts", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "inspect" },
+            {
+              type: "image_url",
+              image_url: { url: "https://example.com/cat.png" },
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "inspect" },
+          { type: "input_image", image_url: "https://example.com/cat.png" },
+        ],
+      },
+    ]);
+  });
+
+  test("forwards prompt_cache_key when the runtime shapes one for the session", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        promptCacheKey: "conv-123",
+      },
+    });
+
+    expect(request.prompt_cache_key).toBe("conv-123");
+  });
+
+  test("preserves mixed text and image tool outputs as function_call_output content items", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "user", content: "inspect" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_image",
+              name: "view_image",
+              arguments: "{\"path\":\"/tmp/cat.png\"}",
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call_image",
+          toolName: "view_image",
+          content: [
+            { type: "text", text: "Screenshot captured" },
+            {
+              type: "image_url",
+              image_url: { url: "https://example.com/cat.png" },
+            },
+          ],
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "inspect" }],
+      },
+      {
+        type: "function_call",
+        id: "fc_image",
+        call_id: "call_image",
+        name: "view_image",
+        arguments: "{\"path\":\"/tmp/cat.png\"}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_image",
+        output: [
+          { type: "input_text", text: "Screenshot captured" },
+          { type: "input_image", image_url: "https://example.com/cat.png" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("parseOpenAIResponsesResponse", () => {
+  const request = {
+    model: "gpt-5",
+    messages: [] as LLMMessage[],
+    tools: TEST_TOOLS,
+  };
+
+  test("marks function-call outputs as tool_calls turns", () => {
+    const response = parseOpenAIResponsesResponse(
+      "gpt-5",
+      {
+        status: "completed",
+        output: [
+          {
+            type: "function_call",
+            id: "fc_1",
+            call_id: "call_1",
+            name: "shell",
+            arguments: "{\"cmd\":\"pwd\"}",
+          },
+        ],
+      },
+      request,
+    );
+
+    expect(response.finishReason).toBe("tool_calls");
+    expect(response.toolCalls).toEqual([
+      {
+        id: "call_1",
+        name: "shell",
+        arguments: "{\"cmd\":\"pwd\"}",
+      },
+    ]);
+  });
+
+  test("maps incomplete max_output_tokens to length", () => {
+    const response = parseOpenAIResponsesResponse(
+      "gpt-5",
+      {
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+        output: [],
+      },
+      request,
+    );
+
+    expect(response.finishReason).toBe("length");
+  });
+
+  test("records responses endpoint markers in request metrics", () => {
+    const response = parseOpenAIResponsesResponse(
+      "gpt-5",
+      {
+        id: "resp_123",
+        status: "completed",
+        output: [],
+      },
+      request,
+    );
+
+    expect(response.requestMetrics).toMatchObject({
+      endpoint: "/responses",
+      responseId: "resp_123",
+    });
+  });
+});

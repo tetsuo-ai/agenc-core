@@ -3,6 +3,7 @@ import {
   evaluateWithholdCascade,
   isMediaWithholdRoute,
 } from "./withhold-cascading.js";
+import { runCollapseDrain, type CollapseDrainDriver } from "./collapse-drain.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 
 function mkState(): TurnState {
@@ -27,6 +28,7 @@ function mkState(): TurnState {
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
     pendingBudgetDecision: undefined,
+    lastResponseUsage: undefined,
     turnCount: 1,
     transition: undefined,
     stopHookActive: undefined,
@@ -56,9 +58,19 @@ describe("withhold-cascading two-gate check", () => {
     );
   });
 
-  test("second-attempt PTL (already drained) → reactive-compact", () => {
+  test("second-attempt PTL (already drained) → reactive-compact even after transition clears", async () => {
     const s = mkState();
-    s.transition = { reason: "collapse_drain_retry" };
+    const driver: CollapseDrainDriver = {
+      isEnabled: () => true,
+      async recoverFromOverflow(messages) {
+        return { committed: 1, messages };
+      },
+    };
+    await runCollapseDrain(s, {
+      session: {} as never,
+      driver,
+    });
+    s.transition = undefined;
     expect(evaluateWithholdCascade(s, pltMsg).kind).toBe(
       "route_to_reactive_compact",
     );

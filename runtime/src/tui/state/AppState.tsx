@@ -36,6 +36,7 @@ import React, {
 
 import type { PermissionMode } from "../../permissions/types.js";
 import type { PhaseEvent } from "../../phases/events.js";
+import type { Event } from "../../session/event-log.js";
 import {
   createPermissionQueueOps,
   type PendingPermissionRequest,
@@ -89,11 +90,10 @@ export interface SessionLike {
   readonly cwd?: string;
   /** Home directory — Composer falls back to `process.env.HOME` if absent. */
   readonly home?: string;
-  /** Optional observability sink. `InteractiveHandler` emits warnings here. */
-  readonly emit?: (event: {
-    readonly kind: string;
-    readonly [key: string]: unknown;
-  }) => void;
+  /** Session-owned event emission path used by the TUI warning flow. */
+  readonly emit?: (event: Event | { readonly kind: string; readonly [key: string]: unknown }) => void;
+  /** Event id allocator for session-owned warning/event envelopes. */
+  nextInternalSubId?(): string;
   /** Optional permission rule persistence hook. */
   readonly addPermissionRule?: (rule: unknown) => void;
   /** Optional tool-permission-context getter used by the classifier. */

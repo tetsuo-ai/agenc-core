@@ -19,6 +19,7 @@
 import type { LLMProvider } from "../llm/types.js";
 import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
+import type { PendingWorktreeState } from "./pending-worktree.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep placeholder types (real impls land in later tranches).
@@ -1053,6 +1054,7 @@ export interface BuildTurnContextOptions {
  */
 export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
   const sc = opts.sessionConfiguration;
+  const effectiveCwd = opts.config.cwd;
   const reasoningEffort = sc.collaborationMode.reasoningEffort;
   const reasoningSummary =
     sc.modelReasoningSummary ?? opts.modelInfo.defaultReasoningSummary;
@@ -1064,7 +1066,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
   const turnMetadataState: TurnMetadataState = {
     conversationId: opts.conversationId,
     subId: opts.subId,
-    cwd: sc.cwd,
+    cwd: effectiveCwd,
     spawnGitEnrichmentTask: () => {
       /* T6 wires git-enrichment background task */
     },
@@ -1095,7 +1097,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     reasoningSummary,
     sessionSource: sc.sessionSource,
     environment: opts.environment,
-    cwd: sc.cwd,
+    cwd: effectiveCwd,
     currentDate,
     timezone,
     appServerClientName: sc.appServerClientName,
@@ -1159,6 +1161,7 @@ export interface SessionForTurn {
   readonly environment?: Environment;
   readonly network?: NetworkProxy;
   readonly jsRepl?: JsReplHandle;
+  readonly pendingWorktreeState?: PendingWorktreeState | null;
   /**
    * I-30 snapshot source for the per-turn permission-mode slot. When
    * present, `newDefaultTurnWithSubId` / `newTurnWithSubId` read the
@@ -1188,11 +1191,14 @@ export function buildPerTurnConfig(
 ): Readonly<Config> {
   const sourceConfig =
     session.sessionConfiguration.originalConfigDoNotUse ?? session.config;
+  const effectiveCwd =
+    session.pendingWorktreeState?.handle.path ??
+    session.sessionConfiguration.cwd;
   const cloned = cloneConfigForSnapshot(sourceConfig);
   const mutableCloned = cloned as Mutable<Config>;
   mutableCloned.features = sourceConfig.features;
   mutableCloned.model = session.sessionConfiguration.collaborationMode.model;
-  mutableCloned.cwd = session.sessionConfiguration.cwd;
+  mutableCloned.cwd = effectiveCwd;
   mutableCloned.modelReasoningEffort =
     session.sessionConfiguration.collaborationMode.reasoningEffort;
   mutableCloned.modelReasoningSummary =

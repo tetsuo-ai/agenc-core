@@ -1,6 +1,6 @@
 /**
  * T9 integration seams for `bin/agenc.ts`:
- *   - slash-command handler (`parseSlashCommand` + `handleSlashCommand`)
+ *   - slash-command short-circuit through the canonical dispatcher path
  *   - `system.agent.delegate` built-in tool
  *
  * T10 Group I integration seams:
@@ -19,11 +19,6 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  handleSlashCommand,
-  parseSlashCommand,
-  type PendingWorktreeState,
-} from "./slash.js";
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
   PROVIDER_MODEL_CATALOG,
@@ -36,7 +31,9 @@ import {
   installSignalHandlers,
   main,
   maybeReloadConfigBetweenTurns,
+  oneShotCLI,
   parseExtractedMemoryCandidates,
+  prepareTurnRuntimeInputs,
   resolveModelOrExit,
   resumeTUIEntry,
   runSingleTurn,
@@ -66,21 +63,15 @@ import {
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
+import type { Session } from "../session/session.js";
 import { getCurrentRuntimeSession } from "../utils/currentRuntimeSession.js";
 
 function stubSession() {
   return {
     eventLog: {},
     nextInternalSubId: () => "sub-1",
-  } as unknown as Parameters<typeof handleSlashCommand>[0]["session"];
+  } as unknown as Session;
 }
-
-const HANDLE = {
-  path: "/repo/.agenc-worktrees/feat-x",
-  branch: "worktree-feat-x",
-  gitRoot: "/repo",
-  created: true,
-};
 
 type MockProcess = Pick<NodeJS.Process, "once" | "on" | "removeListener">;
 
@@ -113,189 +104,6 @@ function createMockSignalProcess(): {
     removeListener,
   };
 }
-
-describe("parseSlashCommand", () => {
-  it("returns null for non-slash input", () => {
-    expect(parseSlashCommand("hello world")).toBeNull();
-    expect(parseSlashCommand("")).toBeNull();
-  });
-
-  it("parses /enter-worktree <slug>", () => {
-    const cmd = parseSlashCommand("/enter-worktree feat-x");
-    expect(cmd).toEqual({ kind: "enter_worktree", slug: "feat-x" });
-  });
-
-  it("parses /exit-worktree keep", () => {
-    expect(parseSlashCommand("/exit-worktree keep")).toEqual({
-      kind: "exit_worktree",
-      action: "keep",
-      discardChanges: false,
-    });
-  });
-
-  it("parses /exit-worktree remove --discard", () => {
-    expect(parseSlashCommand("/exit-worktree remove --discard")).toEqual({
-      kind: "exit_worktree",
-      action: "remove",
-      discardChanges: true,
-    });
-  });
-
-  it("rejects unknown slash commands", () => {
-    expect(parseSlashCommand("/unknown foo")).toBeNull();
-    expect(parseSlashCommand("/enter-worktree")).toBeNull();
-    expect(parseSlashCommand("/exit-worktree bogus")).toBeNull();
-  });
-});
-
-describe("handleSlashCommand — enter-worktree", () => {
-  it("invokes enterWorktree + returns entered pending state + new cwd", async () => {
-    const enterSpy = vi.fn().mockResolvedValue({
-      kind: "entered",
-      handle: HANDLE,
-      baseCommit: "abc123",
-    });
-    const exitSpy = vi.fn();
-    const result = await handleSlashCommand({
-      session: stubSession(),
-      command: { kind: "enter_worktree", slug: "feat-x" },
-      originalCwd: "/repo",
-      pendingWorktree: null,
-      enterWorktreeFn: enterSpy,
-      exitWorktreeFn: exitSpy,
-    });
-    expect(enterSpy).toHaveBeenCalledWith({
-      session: expect.anything(),
-      slug: "feat-x",
-    });
-    expect(result.matched).toBe(true);
-    expect(result.exitCode).toBe(0);
-    expect(result.cwd).toBe(HANDLE.path);
-    expect(result.pendingWorktree?.handle).toEqual(HANDLE);
-    expect(result.pendingWorktree?.baseCommit).toBe("abc123");
-    expect(result.pendingWorktree?.enteredFromCwd).toBe("/repo");
-  });
-
-  it("propagates rejection reason + exit code 1", async () => {
-    const enterSpy = vi.fn().mockResolvedValue({
-      kind: "rejected",
-      reason: "not a git repo",
-    });
-    const result = await handleSlashCommand({
-      session: stubSession(),
-      command: { kind: "enter_worktree", slug: "feat-x" },
-      originalCwd: "/repo",
-      pendingWorktree: null,
-      enterWorktreeFn: enterSpy,
-      exitWorktreeFn: vi.fn(),
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.pendingWorktree).toBeNull();
-    expect(result.message).toContain("not a git repo");
-  });
-});
-
-describe("handleSlashCommand — exit-worktree", () => {
-  const active: PendingWorktreeState = {
-    handle: HANDLE,
-    baseCommit: "abc123",
-    enteredFromCwd: "/repo",
-  };
-
-  it("keep: returns kept state + stays on worktree cwd", async () => {
-    const exitSpy = vi.fn().mockResolvedValue({
-      kind: "kept",
-      path: HANDLE.path,
-      branch: HANDLE.branch,
-      changedFiles: false,
-      hasCommits: false,
-      message: "worktree preserved",
-    });
-    const result = await handleSlashCommand({
-      session: stubSession(),
-      command: { kind: "exit_worktree", action: "keep", discardChanges: false },
-      originalCwd: "/repo",
-      pendingWorktree: active,
-      enterWorktreeFn: vi.fn(),
-      exitWorktreeFn: exitSpy,
-    });
-    expect(exitSpy).toHaveBeenCalledWith({
-      session: expect.anything(),
-      handle: HANDLE,
-      baseCommit: "abc123",
-      action: "keep",
-    });
-    expect(result.exitCode).toBe(0);
-    expect(result.cwd).toBe(HANDLE.path);
-    expect(result.pendingWorktree).toEqual(active);
-  });
-
-  it("remove: returns removed state + restores original cwd", async () => {
-    const exitSpy = vi.fn().mockResolvedValue({
-      kind: "removed",
-      path: HANDLE.path,
-      branch: HANDLE.branch,
-      discardedFiles: false,
-      discardedCommits: false,
-      message: "worktree removed",
-    });
-    const result = await handleSlashCommand({
-      session: stubSession(),
-      command: {
-        kind: "exit_worktree",
-        action: "remove",
-        discardChanges: false,
-      },
-      originalCwd: "/home/u/project",
-      pendingWorktree: {
-        handle: HANDLE,
-        baseCommit: "abc",
-        enteredFromCwd: "/home/u/project",
-      },
-      enterWorktreeFn: vi.fn(),
-      exitWorktreeFn: exitSpy,
-    });
-    expect(result.exitCode).toBe(0);
-    expect(result.pendingWorktree).toBeNull();
-    expect(result.cwd).toBe("/home/u/project");
-  });
-
-  it("refused: surfaces the error code", async () => {
-    const exitSpy = vi.fn().mockResolvedValue({
-      kind: "refused",
-      reason: "has uncommitted files",
-      errorCode: 2,
-    });
-    const result = await handleSlashCommand({
-      session: stubSession(),
-      command: {
-        kind: "exit_worktree",
-        action: "remove",
-        discardChanges: false,
-      },
-      originalCwd: "/repo",
-      pendingWorktree: active,
-      enterWorktreeFn: vi.fn(),
-      exitWorktreeFn: exitSpy,
-    });
-    expect(result.exitCode).toBe(2);
-    expect(result.pendingWorktree).toEqual(active);
-    expect(result.cwd).toBe(HANDLE.path);
-  });
-
-  it("no active worktree: rejects with exit code 1", async () => {
-    const result = await handleSlashCommand({
-      session: stubSession(),
-      command: { kind: "exit_worktree", action: "keep", discardChanges: false },
-      originalCwd: "/repo",
-      pendingWorktree: null,
-      enterWorktreeFn: vi.fn(),
-      exitWorktreeFn: vi.fn(),
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.message).toContain("no active worktree");
-  });
-});
 
 describe("buildDelegateTool — system.agent.delegate", () => {
   const LIVE = {
@@ -1288,6 +1096,74 @@ describe("per-turn memory attachments pipeline", () => {
   });
 });
 
+describe("prepareTurnRuntimeInputs", () => {
+  it("reloads project instructions, memory prompt, and MCP instructions on each call", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "agenc-turn-inputs-"));
+    const nested = join(repoRoot, "pkg");
+    const memoryDir = join(repoRoot, ".agenc-memory");
+    const memoryMdPath = join(memoryDir, "MEMORY.md");
+    await mkdir(nested, { recursive: true });
+    await mkdir(memoryDir, { recursive: true });
+    await writeFile(join(repoRoot, "package.json"), "{}", "utf8");
+    await writeFile(join(repoRoot, "AGENTS.md"), "PROJECT-ONE", "utf8");
+    await writeFile(memoryMdPath, "MEMORY-ONE\n", "utf8");
+
+    let instructionText = "MCP-ONE";
+    const session = {
+      services: {
+        mcpManager: {
+          effectiveServers: vi.fn(async () =>
+            new Map([
+              [
+                "alpha",
+                { enabled: true, instructions: instructionText } as unknown,
+              ],
+            ]),
+          ),
+        },
+      },
+    } as unknown as Session;
+    const store = new ConfigStore({ env: {} });
+    await store.reload();
+
+    const first = await prepareTurnRuntimeInputs({
+      session,
+      configStore: store,
+      workspaceRoot: nested,
+      memoryDir,
+      memoryMdPath,
+      registry: { tools: [{ name: "bash" }] },
+    });
+    expect(first.projectInstructions).toContain("PROJECT-ONE");
+    expect(first.memoryPromptText).toContain("MEMORY-ONE");
+    expect(first.mcpServers).toEqual([
+      { name: "alpha", instructions: "MCP-ONE" },
+    ]);
+
+    await writeFile(join(repoRoot, "AGENTS.md"), "PROJECT-TWO", "utf8");
+    await writeFile(memoryMdPath, "MEMORY-TWO\n", "utf8");
+    instructionText = "MCP-TWO";
+
+    const second = await prepareTurnRuntimeInputs({
+      session,
+      configStore: store,
+      workspaceRoot: nested,
+      memoryDir,
+      memoryMdPath,
+      registry: { tools: [{ name: "bash" }] },
+    });
+    expect(second.projectInstructions).toContain("PROJECT-TWO");
+    expect(second.projectInstructions).not.toContain("PROJECT-ONE");
+    expect(second.memoryPromptText).toContain("MEMORY-TWO");
+    expect(second.memoryPromptText).not.toContain("MEMORY-ONE");
+    expect(second.mcpServers).toEqual([
+      { name: "alpha", instructions: "MCP-TWO" },
+    ]);
+
+    await rm(repoRoot, { recursive: true, force: true });
+  });
+});
+
 describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
   it("invokes maybeReloadConfigBetweenTurns exactly once per call", async () => {
     const reloadConfigFn = vi
@@ -1378,6 +1254,75 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     }
     expect(reloadConfigFn).toHaveBeenCalledTimes(3);
     expect(runTurnFn).toHaveBeenCalledTimes(3);
+  });
+
+  it("reloads prompt inputs on each call so later turns see updated instructions", async () => {
+    const loadTurnInputsFn = vi
+      .fn()
+      .mockResolvedValueOnce({
+        projectInstructions: "PROJECT-ONE",
+        memoryPromptText: "MEMORY-ONE",
+        allMemories: [],
+        enabledToolNames: new Set<string>(),
+        mcpServers: [{ name: "alpha", instructions: "ALPHA" }],
+      })
+      .mockResolvedValueOnce({
+        projectInstructions: "PROJECT-TWO",
+        memoryPromptText: "MEMORY-TWO",
+        allMemories: [],
+        enabledToolNames: new Set<string>(),
+        mcpServers: [{ name: "beta", instructions: "BETA" }],
+      });
+    const prompts: string[] = [];
+    async function* fakeRunTurn(
+      _session: unknown,
+      _ctx: unknown,
+      _input: unknown,
+      opts: { readonly systemPrompt: string },
+    ): AsyncGenerator<unknown, unknown> {
+      prompts.push(opts.systemPrompt);
+      return { reason: "completed" };
+    }
+
+    const store = new ConfigStore({ env: {} });
+    await store.reload();
+    const cfg = defaultConfig();
+    const ctx = {
+      config: cfg,
+      configSnapshot: cfg,
+      cwd: "/tmp",
+      modelInfo: { slug: cfg.model },
+    } as never;
+
+    for (let i = 0; i < 2; i++) {
+      const iter = runSingleTurn({
+        session: { emit: vi.fn() } as never,
+        ctx,
+        input: `t${i}`,
+        configStore: store,
+        configReloadLatch: { requested: false },
+        loadTurnInputsFn: loadTurnInputsFn as never,
+        provider: "grok",
+        reloadConfigFn: (async () => ({ reloaded: false })) as never,
+        runTurnFn: fakeRunTurn as never,
+      });
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const step = await iter.next();
+        if (step.done) break;
+      }
+    }
+
+    expect(loadTurnInputsFn).toHaveBeenCalledTimes(2);
+    expect(prompts[0]).toContain("PROJECT-ONE");
+    expect(prompts[0]).toContain("MEMORY-ONE");
+    expect(prompts[0]).toContain("## alpha");
+    expect(prompts[1]).toContain("PROJECT-TWO");
+    expect(prompts[1]).toContain("MEMORY-TWO");
+    expect(prompts[1]).toContain("## beta");
+    expect(prompts[1]).not.toContain("PROJECT-ONE");
+    expect(prompts[1]).not.toContain("MEMORY-ONE");
+    expect(prompts[1]).not.toContain("## alpha");
   });
 
   it("forwards every event yielded by runTurn", async () => {
@@ -1730,6 +1675,65 @@ describe("memory_write_contention routing (I-8)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("main() full-IIFE smoke", () => {
+  it("oneShotCLI rejects malformed slash input through the canonical dispatcher path", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+    const runTurnSpy = vi.spyOn(await import("../session/run-turn.js"), "runTurn");
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    try {
+      const code = await oneShotCLI("/help\nextra");
+      expect(code).toBe(1);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(startMcpSpy).toHaveBeenCalledTimes(1);
+      expect(runTurnSpy).not.toHaveBeenCalled();
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain("slash command rejected (multi-line input not allowed)");
+    } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      runTurnSpy.mockRestore();
+      stderrSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("bootTUIEntry reuses bootstrap-owned session bring-up, shared tools, and teardown", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cwd-"));
@@ -1881,6 +1885,98 @@ describe("main() full-IIFE smoke", () => {
     } finally {
       createProviderSpy.mockRestore();
       startMcpSpy.mockRestore();
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry executes slash commands through the TUI submit path without entering runTurn", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+    const runTurnSpy = vi.spyOn(await import("../session/run-turn.js"), "runTurn");
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+      subscribeToEvents?: (cb: (event: { type: string }) => void) => () => void;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      const pending = bootTUIEntry({});
+      await new Promise((r) => setTimeout(r, 20));
+      expect(capturedSession).not.toBeNull();
+
+      const seenEvents: Array<{ type: string; [key: string]: unknown }> = [];
+      const unsubscribe =
+        capturedSession?.subscribeToEvents?.((event) => {
+          seenEvents.push(event);
+        }) ?? (() => undefined);
+      await capturedSession?.submit?.("/help");
+      unsubscribe();
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(startMcpSpy).toHaveBeenCalledTimes(1);
+      expect(runTurnSpy).not.toHaveBeenCalled();
+      expect(seenEvents).toContainEqual(
+        expect.objectContaining({
+          type: "slash_result",
+          input: "/help",
+          result: expect.objectContaining({ kind: "text" }),
+        }),
+      );
+    } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      runTurnSpy.mockRestore();
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
         if (!(key in prevEnv)) delete process.env[key];

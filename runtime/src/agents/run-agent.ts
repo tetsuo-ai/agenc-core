@@ -23,11 +23,21 @@ import type {
   LLMMessage,
   LLMProvider,
 } from "../llm/types.js";
+import { readProviderIdentity } from "../llm/provider.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
-import { safeStringify } from "../tools/types.js";
+import { safeStringify, type Tool } from "../tools/types.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
+import { RolloutStore } from "../session/rollout-store.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import type { LiveAgent } from "./control.js";
+import {
+  isAgentExitedSentinel,
+  type InterAgentCommunication,
+} from "./mailbox.js";
 import type { AgentRoleConfig } from "./role.js";
 import type { WorktreeHandle } from "./worktree.js";
 import { emitWarning } from "../session/event-log.js";
@@ -227,21 +237,104 @@ function buildChatOptions(
   return opts as LLMChatOptions;
 }
 
-function buildFilteredRegistry(
-  base: ToolRegistry,
-  allowlist?: ReadonlyArray<string>,
-): ToolRegistry {
-  if (!allowlist || allowlist.length === 0) {
-    return base;
+function relayToParentMailbox(params: {
+  readonly live: LiveAgent;
+  readonly parent: Session;
+  readonly content: string;
+  readonly triggerTurn: boolean;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}): void {
+  try {
+    params.live.upInbox.send({
+      author: params.live.agentPath,
+      recipient: params.parent.conversationId ?? "/root",
+      content: params.content,
+      triggerTurn: params.triggerTurn,
+      direction: "up",
+      metadata: params.metadata,
+    });
+  } catch (err) {
+    emitWarning(
+      params.parent.eventLog,
+      params.parent.nextInternalSubId(),
+      "subagent_mailbox_closed",
+      `subagent ${params.live.agentPath} upInbox closed before delivery: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function drainChildMailbox(live: LiveAgent): {
+  readonly interruptReason?: string;
+  readonly nextUserMessage?: string;
+} {
+  const drained = live.downInbox.drain();
+  if (drained.length === 0) {
+    return {};
   }
 
-  const allowed = new Set(allowlist);
-  const tools = base.tools.filter((tool) => allowed.has(tool.name));
+  const passthrough: InterAgentCommunication[] = [];
+  const nextTurnParts: string[] = [];
+  let shouldTriggerTurn = false;
+
+  for (const item of drained) {
+    if (isAgentExitedSentinel(item)) {
+      continue;
+    }
+    const kind =
+      typeof item.metadata?.kind === "string" ? item.metadata.kind : undefined;
+    if (kind === "interrupt") {
+      const reason =
+        typeof item.metadata?.reason === "string" && item.metadata.reason.length > 0
+          ? item.metadata.reason
+          : item.content.trim().length > 0
+            ? item.content
+            : "interrupt";
+      return { interruptReason: reason };
+    }
+    passthrough.push(item);
+    shouldTriggerTurn ||= item.triggerTurn;
+    if (item.content.trim().length > 0) {
+      nextTurnParts.push(item.content);
+    }
+  }
+
+  if (!shouldTriggerTurn) {
+    for (const msg of passthrough) {
+      const { seq: _seq, ...rest } = msg;
+      void _seq;
+      try {
+        live.downInbox.send(rest);
+      } catch {
+        break;
+      }
+    }
+    return {};
+  }
 
   return {
-    tools,
+    nextUserMessage: nextTurnParts.join("\n\n"),
+  };
+}
+
+export function buildFilteredRegistry(
+  base: ToolRegistry,
+  opts: {
+    readonly allowlist?: ReadonlyArray<string>;
+    readonly childConversationId: string;
+    readonly worktree?: WorktreeHandle;
+  },
+): ToolRegistry {
+  const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
+  const baseTools = allowed
+    ? base.tools.filter((tool) => allowed.has(tool.name))
+    : base.tools;
+  const wrappedTools = baseTools.map((tool) => wrapToolForChild(tool, opts));
+  const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
+
+  return {
+    tools: wrappedTools,
     toLLMTools() {
-      return tools.map((tool) => ({
+      return wrappedTools.map((tool) => ({
         type: "function" as const,
         function: {
           name: tool.name,
@@ -251,7 +344,7 @@ function buildFilteredRegistry(
       }));
     },
     async dispatch(toolCall): Promise<ToolDispatchResult> {
-      if (!allowed.has(toolCall.name)) {
+      if (allowed && !allowed.has(toolCall.name)) {
         return {
           content: safeStringify({
             error: `tool not allowed for subagent: ${toolCall.name}`,
@@ -259,7 +352,74 @@ function buildFilteredRegistry(
           isError: true,
         };
       }
-      return base.dispatch(toolCall);
+
+      const parsedArgs = parseToolCallArguments(toolCall.arguments);
+      const wrappedTool = wrappedByName.get(toolCall.name);
+      if (wrappedTool) {
+        const result = await wrappedTool.execute(parsedArgs);
+        return {
+          content: result.content,
+          ...(result.isError !== undefined ? { isError: result.isError } : {}),
+        };
+      }
+
+      return base.dispatch({
+        ...toolCall,
+        arguments: safeStringify(
+          injectChildToolArgs(parsedArgs, toolCall.name, opts),
+        ),
+      });
+    },
+  };
+}
+
+function parseToolCallArguments(raw: string | undefined): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function injectChildToolArgs(
+  parsedArgs: Record<string, unknown>,
+  toolName: string,
+  opts: {
+    readonly childConversationId: string;
+    readonly worktree?: WorktreeHandle;
+  },
+): Record<string, unknown> {
+  const injectedArgs: Record<string, unknown> = {
+    ...parsedArgs,
+    [SESSION_ID_ARG]: opts.childConversationId,
+  };
+  if (opts.worktree?.path) {
+    injectedArgs[SESSION_ALLOWED_ROOTS_ARG] = [opts.worktree.path];
+  }
+  if (
+    toolName === "system.bash" &&
+    opts.worktree?.path &&
+    (typeof injectedArgs.cwd !== "string" || injectedArgs.cwd.length === 0)
+  ) {
+    injectedArgs.cwd = opts.worktree.path;
+  }
+  return injectedArgs;
+}
+
+function wrapToolForChild(
+  tool: Tool,
+  opts: {
+    readonly childConversationId: string;
+    readonly worktree?: WorktreeHandle;
+  },
+): Tool {
+  return {
+    ...tool,
+    execute(args) {
+      return tool.execute(injectChildToolArgs(args, tool.name, opts));
     },
   };
 }
@@ -273,6 +433,7 @@ function cloneSessionConfiguration(
   return {
     ...base,
     cwd,
+    sessionSource: "cli_subagent",
     ...(base.originalConfigDoNotUse
       ? {
           originalConfigDoNotUse: {
@@ -288,6 +449,38 @@ function cloneSessionConfiguration(
         }
       : {}),
   };
+}
+
+function createChildRolloutStore(
+  parent: Session,
+  sessionConfiguration: Session["sessionConfiguration"],
+  childConversationId: string,
+): RolloutStore | null {
+  const parentRollout = parent.rolloutStore;
+  if (!parentRollout) {
+    return null;
+  }
+
+  const store = new RolloutStore({
+    cwd: sessionConfiguration.cwd,
+    sessionId: childConversationId,
+    agencVersion: parentRollout.store.agencVersion,
+    ...(parentRollout.projectRootMarkers !== undefined
+      ? { projectRootMarkers: parentRollout.projectRootMarkers }
+      : {}),
+  });
+  store.open({
+    sessionId: childConversationId,
+    timestamp: new Date().toISOString(),
+    cwd: sessionConfiguration.cwd,
+    originator: "agenc-subagent",
+    agencVersion: parentRollout.store.agencVersion,
+    model: sessionConfiguration.collaborationMode.model,
+    modelProvider:
+      readProviderIdentity(parent.services.provider) ??
+      parent.services.provider.name,
+  });
+  return store;
 }
 
 function buildChildConfig(
@@ -347,10 +540,15 @@ function buildChildSession(
   );
   const registry = buildFilteredRegistry(
     params.parent.services.registry,
-    params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
+    {
+      allowlist:
+        params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
+      childConversationId: params.live.agentId,
+      worktree: params.worktree,
+    },
   );
 
-  return new ChildSession({
+  const childSession = new ChildSession({
     conversationId: params.live.agentId,
     initialState: {
       sessionConfiguration,
@@ -369,6 +567,26 @@ function buildChildSession(
     config: buildChildConfig(params.parent, sessionConfiguration),
     modelInfo: buildChildModelInfo(params.parent, sessionConfiguration),
   });
+
+  try {
+    const childRolloutStore = createChildRolloutStore(
+      params.parent,
+      sessionConfiguration,
+      params.live.agentId,
+    );
+    if (childRolloutStore) {
+      childSession.mountRolloutStore(childRolloutStore);
+    }
+  } catch (err) {
+    emitWarning(
+      params.parent.eventLog,
+      params.parent.nextInternalSubId(),
+      "subagent_rollout_init_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  return childSession;
 }
 
 /**
@@ -415,8 +633,22 @@ export async function* runAgent(
   }
 
   const turnId = crypto.randomUUID();
+  let childSession: ChildSession | null = null;
+  let forwardMergedAbort: (() => void) | null = null;
+  let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
+    relayToParentMailbox({
+      live,
+      parent,
+      content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
+      triggerTurn: false,
+      metadata: {
+        kind: "subagent_status",
+        phase: "spawned",
+        turnId,
+      },
+    });
     yield {
       kind: "status",
       text: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
@@ -480,7 +712,7 @@ export async function* runAgent(
     // the parent's abort reason.
     const roleTimeoutMs = params.timeoutMs ?? live.role.config.timeoutMs;
     const callController = new AbortController();
-    const forwardMergedAbort = () => {
+    forwardMergedAbort = () => {
       if (!callController.signal.aborted) {
         callController.abort(String(merged.signal.reason ?? "aborted"));
       }
@@ -489,7 +721,7 @@ export async function* runAgent(
     merged.signal.addEventListener("abort", forwardMergedAbort, { once: true });
 
     let roleTimeoutFired = false;
-    const roleTimeoutHandle =
+    roleTimeoutHandle =
       typeof roleTimeoutMs === "number" && roleTimeoutMs > 0
         ? setTimeout(() => {
             if (!callController.signal.aborted) {
@@ -518,24 +750,27 @@ export async function* runAgent(
       );
     }
 
-    const childSession = buildChildSession(params, provider);
+    childSession = buildChildSession(params, provider);
     const { history, userMessage } = splitInitialMessages(
       params.initialMessages,
       params.taskPrompt,
     );
-
+    let nextUserMessage = userMessage;
+    let firstTurn = true;
     let assistantText = "";
     let toolCallCount = 0;
-    let stopReason:
-      | "completed"
-      | "max_turns"
-      | "cancelled"
-      | "error"
-      | "empty_response" = "completed";
-    let terminalError: unknown;
-    try {
-      const iter = childSession.runTurn(userMessage, {
-        history,
+    while (true) {
+      let turnAssistantText = "";
+      let stopReason:
+        | "completed"
+        | "max_turns"
+        | "cancelled"
+        | "error"
+        | "empty_response" = "completed";
+      let terminalError: unknown;
+
+      const iter = childSession.runTurn(nextUserMessage, {
+        ...(firstTurn ? { history } : {}),
         signal: chatOptions.signal,
       });
       // eslint-disable-next-line no-constant-condition
@@ -547,7 +782,7 @@ export async function* runAgent(
         }
         const event = step.value;
         if (event.type === "assistant_text") {
-          assistantText = event.content;
+          turnAssistantText = event.content;
           yield {
             kind: "message",
             message: {
@@ -560,6 +795,18 @@ export async function* runAgent(
 
         if (event.type === "tool_call") {
           toolCallCount += 1;
+          relayToParentMailbox({
+            live,
+            parent,
+            content: `${event.toolCall.name} (${event.toolCall.id})`,
+            triggerTurn: false,
+            metadata: {
+              kind: "subagent_tool_call",
+              turnId,
+              toolCallId: event.toolCall.id,
+              toolName: event.toolCall.name,
+            },
+          });
           yield {
             kind: "tool_call",
             callId: event.toolCall.id,
@@ -569,14 +816,66 @@ export async function* runAgent(
         }
 
         if (event.type === "turn_complete") {
-          assistantText = event.content;
+          turnAssistantText = event.content;
           stopReason = event.stopReason;
         }
       }
-    } finally {
-      if (roleTimeoutHandle !== null) clearTimeout(roleTimeoutHandle);
-      merged.signal.removeEventListener("abort", forwardMergedAbort);
-      await childSession.shutdown();
+
+      assistantText = turnAssistantText;
+
+      if (stopReason === "error") {
+        const message =
+          terminalError instanceof Error
+            ? terminalError.message
+            : typeof terminalError === "string"
+              ? terminalError
+              : assistantText || "subagent turn failed";
+        live.status.markErrored(turnId, message);
+        relayToParentMailbox({
+          live,
+          parent,
+          content: message,
+          triggerTurn: false,
+          metadata: {
+            kind: "subagent_error",
+            turnId,
+          },
+        });
+        yield { kind: "run_error", error: message };
+        return {
+          threadId: live.agentId,
+          durationMs: Date.now() - startedAt,
+          outcome: "errored",
+          error:
+            terminalError instanceof Error ? terminalError : new Error(message),
+          toolCallCount,
+        };
+      }
+
+      firstTurn = false;
+      const pendingChildInput = drainChildMailbox(live);
+      if (pendingChildInput.interruptReason) {
+        if (!merged.signal.aborted) {
+          merged.abort(pendingChildInput.interruptReason);
+        }
+        break;
+      }
+      if (pendingChildInput.nextUserMessage !== undefined) {
+        nextUserMessage = pendingChildInput.nextUserMessage;
+        relayToParentMailbox({
+          live,
+          parent,
+          content: `accepted follow-up input for ${live.agentPath}`,
+          triggerTurn: false,
+          metadata: {
+            kind: "subagent_status",
+            phase: "follow_up",
+            turnId,
+          },
+        });
+        continue;
+      }
+      break;
     }
 
     // If the caller aborted during the provider call, surface that
@@ -585,68 +884,60 @@ export async function* runAgent(
     if (merged.signal.aborted) {
       const reason = String(merged.signal.reason ?? "aborted");
       live.status.markInterrupted(turnId, reason);
+      relayToParentMailbox({
+        live,
+        parent,
+        content: reason,
+        triggerTurn: false,
+        metadata: {
+          kind: "subagent_interrupted",
+          turnId,
+        },
+      });
       yield { kind: "run_interrupted", reason };
       return {
         threadId: live.agentId,
         durationMs: Date.now() - startedAt,
         outcome: "interrupted",
+        toolCallCount,
       };
     }
     if (roleTimeoutFired) {
       const message = `role_timeout after ${roleTimeoutMs}ms`;
       live.status.markErrored(turnId, message);
+      relayToParentMailbox({
+        live,
+        parent,
+        content: message,
+        triggerTurn: false,
+        metadata: {
+          kind: "subagent_error",
+          turnId,
+        },
+      });
       yield { kind: "run_error", error: message };
       return {
         threadId: live.agentId,
         durationMs: Date.now() - startedAt,
         outcome: "errored",
         error: new Error(message),
-      };
-    }
-
-    if (stopReason === "error") {
-      const message =
-        terminalError instanceof Error
-          ? terminalError.message
-          : typeof terminalError === "string"
-            ? terminalError
-            : assistantText || "subagent turn failed";
-      live.status.markErrored(turnId, message);
-      yield { kind: "run_error", error: message };
-      return {
-        threadId: live.agentId,
-        durationMs: Date.now() - startedAt,
-        outcome: "errored",
-        error:
-          terminalError instanceof Error ? terminalError : new Error(message),
+        toolCallCount,
       };
     }
 
     // Forward the assistant text back to the parent via upInbox so
     // the parent's mailbox sees the completion (I-5: direction=up).
-    try {
-      live.upInbox.send({
-        author: live.agentPath,
-        recipient: parent.conversationId ?? "/root",
-        content: assistantText,
-        triggerTurn: true,
-        direction: "up",
-        metadata: {
-          kind: "subagent_complete",
-          turnId,
-          toolCallCount,
-        },
-      });
-    } catch (err) {
-      // Mailbox closed mid-run — log but still mark the turn completed
-      // since the provider call succeeded.
-      emitWarning(
-        parent.eventLog,
-        parent.nextInternalSubId(),
-        "subagent_mailbox_closed",
-        `subagent ${live.agentPath} upInbox closed before delivery: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    relayToParentMailbox({
+      live,
+      parent,
+      content: assistantText,
+      triggerTurn: true,
+      metadata: {
+        kind: "subagent_complete",
+        turnId,
+        toolCallCount,
+      },
+    });
 
     live.status.markCompleted(turnId, assistantText);
     yield {
@@ -668,15 +959,36 @@ export async function* runAgent(
     if (merged.signal.aborted) {
       const reason = String(merged.signal.reason ?? "aborted");
       live.status.markInterrupted(turnId, reason);
+      relayToParentMailbox({
+        live,
+        parent,
+        content: reason,
+        triggerTurn: false,
+        metadata: {
+          kind: "subagent_interrupted",
+          turnId,
+        },
+      });
       yield { kind: "run_interrupted", reason };
       return {
         threadId: live.agentId,
         durationMs: Date.now() - startedAt,
         outcome: "interrupted",
+        toolCallCount: 0,
       };
     }
     const message = err instanceof Error ? err.message : String(err);
     live.status.markErrored(turnId, message);
+    relayToParentMailbox({
+      live,
+      parent,
+      content: message,
+      triggerTurn: false,
+      metadata: {
+        kind: "subagent_error",
+        turnId,
+      },
+    });
     yield { kind: "run_error", error: message };
     return {
       threadId: live.agentId,
@@ -685,6 +997,13 @@ export async function* runAgent(
       error: err,
     };
   } finally {
+    if (roleTimeoutHandle !== null) clearTimeout(roleTimeoutHandle);
+    if (forwardMergedAbort !== null) {
+      merged.signal.removeEventListener("abort", forwardMergedAbort);
+    }
+    if (childSession !== null) {
+      await childSession.shutdown();
+    }
     parent.abortController.signal.removeEventListener("abort", onParentAbort);
     live.abortController.signal.removeEventListener("abort", onLiveAbort);
   }

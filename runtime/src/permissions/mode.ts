@@ -26,6 +26,10 @@ import {
   type ToolPermissionContext,
   type ToolPermissionRulesBySource,
 } from "./types.js";
+import {
+  __setAutoModeGateResolverForTesting as __setClassifierAutoModeGateResolverForTesting,
+  isAutoModeGateEnabled as isClassifierAutoModeGateEnabled,
+} from "./classifier.js";
 
 // ---------------------------------------------------------------------------
 // Mode constants + predicates
@@ -73,23 +77,8 @@ export function isExternalPermissionMode(mode: PermissionMode): boolean {
 // Auto-mode gate (T13 territory)
 // ---------------------------------------------------------------------------
 
-/**
- * Live auto-mode gate check. openclaude wires this to the
- * `TRANSCRIPT_CLASSIFIER` feature flag + GrowthBook. AgenC's equivalent
- * circuit breaker lands in T13 (YOLO gate). Until then the gate is always
- * off, so Shift+Tab never cycles into `auto`.
- *
- * TODO(T13): Replace with the real YOLO gate once the circuit breaker ships.
- *
- * Implementation detail: the active gate resolver is held behind a module
- * slot so tests (and the T13 integration patch) can override it. ESM exports
- * are read-only bindings, so routing the indirection through a closure is
- * the only way consumers inside the same module pick up the override.
- */
-let autoModeGateResolver: () => boolean = () => false;
-
 export function isAutoModeGateEnabled(): boolean {
-  return autoModeGateResolver();
+  return isClassifierAutoModeGateEnabled();
 }
 
 /**
@@ -100,11 +89,7 @@ export function isAutoModeGateEnabled(): boolean {
 export function __setAutoModeGateResolverForTesting(
   resolver: () => boolean,
 ): () => void {
-  const previous = autoModeGateResolver;
-  autoModeGateResolver = resolver;
-  return () => {
-    autoModeGateResolver = previous;
-  };
+  return __setClassifierAutoModeGateResolverForTesting(resolver);
 }
 
 /**

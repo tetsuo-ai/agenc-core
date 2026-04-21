@@ -32,7 +32,10 @@ import {
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
 } from "../llm/compact/compact.js";
-import { microcompactMessages } from "../llm/compact/micro-compact.js";
+import {
+  microcompactMessages,
+  resetMicrocompactState,
+} from "../llm/compact/micro-compact.js";
 import { runPostCompactCleanup } from "../llm/compact/post-compact-cleanup.js";
 import { trySessionMemoryCompaction } from "../llm/compact/session-memory-compact.js";
 
@@ -64,29 +67,20 @@ async function applyCompactedHistory(
   displayText: string,
   compactionResult: CompactionResult,
 ): Promise<void> {
-  const retainedSlashMessages = buildRetainedSlashMessages(
+  const finalized = finalizeManualCompactHistory(
     instructionsRaw,
     displayText,
-  );
-  const compactionResultWithSlashMessages: CompactionResult = {
-    ...compactionResult,
-    messagesToKeep: [
-      ...(compactionResult.messagesToKeep ?? []),
-      ...retainedSlashMessages,
-    ],
-  };
-  const compactedMessages = buildPostCompactMessages(
-    compactionResultWithSlashMessages,
+    compactionResult,
   );
   const currentState = session.state.unsafePeek() as SessionState;
   await session.state.swap({
     ...currentState,
-    history: compactedMessages,
+    history: finalized.messages,
   });
   session.rolloutStore?.appendRollout(
     {
       type: "compacted",
-      payload: buildCompactedRolloutItem(compactionResultWithSlashMessages),
+      payload: buildCompactedRolloutItem(finalized.compactionResult),
     },
     { durable: true },
   );
@@ -100,6 +94,34 @@ async function applyCompactedHistory(
     },
   });
   session.rolloutStore?.store.reAppendSessionMetadata?.();
+}
+
+export function finalizeManualCompactHistory(
+  instructionsRaw: string,
+  displayText: string,
+  compactionResult: CompactionResult,
+): {
+  readonly compactionResult: CompactionResult;
+  readonly messages: Message[];
+} {
+  const retainedSlashMessages = buildRetainedSlashMessages(
+    instructionsRaw,
+    displayText,
+  );
+  const compactionResultWithSlashMessages: CompactionResult = {
+    ...compactionResult,
+    messagesToKeep: [
+      ...(compactionResult.messagesToKeep ?? []),
+      ...retainedSlashMessages,
+    ],
+  };
+  // A full manual compact replaces the live transcript wholesale, so any
+  // cached microcompact tool-id state must be invalidated at the same owner.
+  resetMicrocompactState();
+  return {
+    compactionResult: compactionResultWithSlashMessages,
+    messages: buildPostCompactMessages(compactionResultWithSlashMessages),
+  };
 }
 
 export async function runManualCompact(
@@ -125,7 +147,10 @@ export async function runManualCompact(
       );
       if (sessionMemoryResult) {
         getUserContext.cache.clear?.();
-        runPostCompactCleanup();
+        runPostCompactCleanup(
+          context.options.querySource,
+          context,
+        );
         if (feature("PROMPT_CACHE_BREAK_DETECTION")) {
           notifyCompaction(
             context.options.querySource ?? "compact",
@@ -159,7 +184,10 @@ export async function runManualCompact(
     suppressCompactWarning();
 
     getUserContext.cache.clear?.();
-    runPostCompactCleanup();
+    runPostCompactCleanup(
+      context.options.querySource,
+      context,
+    );
 
     return {
       type: "compact",

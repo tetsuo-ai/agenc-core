@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { ProviderModelCapabilities } from "./capabilities.js";
 
 export interface SessionHistoryRequirements {
@@ -12,6 +13,38 @@ export interface HistoryCompatibilityCheck {
   readonly missingCapabilities: readonly string[];
   readonly reason?: string;
 }
+
+export interface ResponsesContinuationState {
+  conversationId?: string;
+  lastRequest?: Record<string, unknown>;
+  lastResponseId?: string;
+  lastResponseOutput?: readonly Record<string, unknown>[];
+}
+
+export interface PreparedResponsesContinuationRequest {
+  readonly request: Record<string, unknown>;
+  readonly snapshot: Record<string, unknown>;
+  readonly previousResponseId?: string;
+}
+
+const IMAGE_HISTORY_TYPES = new Set([
+  "image",
+  "image_url",
+  "input_image",
+  "view_image",
+]);
+
+const AUDIO_HISTORY_TYPES = new Set([
+  "audio",
+  "input_audio",
+  "audio_url",
+]);
+
+const THINKING_HISTORY_TYPES = new Set([
+  "thinking",
+  "redacted_thinking",
+  "reasoning",
+]);
 
 function scanValue(
   value: unknown,
@@ -42,26 +75,13 @@ function scanValue(
   const record = value as Record<string, unknown>;
   const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
 
-  if (
-    type === "image" ||
-    type === "image_url" ||
-    type === "input_image" ||
-    type === "view_image"
-  ) {
+  if (IMAGE_HISTORY_TYPES.has(type)) {
     requirements.hasImageHistory = true;
   }
-  if (
-    type === "audio" ||
-    type === "input_audio" ||
-    type === "audio_url"
-  ) {
+  if (AUDIO_HISTORY_TYPES.has(type)) {
     requirements.hasAudioHistory = true;
   }
-  if (
-    type === "thinking" ||
-    type === "redacted_thinking" ||
-    type === "reasoning"
-  ) {
+  if (THINKING_HISTORY_TYPES.has(type)) {
     requirements.hasThinkingHistory = true;
   }
 
@@ -115,7 +135,7 @@ export function validateHistoryCompatibility(
     missing.push("thinking history");
   }
   if (requirements.reasoningEffortRequested && !caps.acceptsReasoningEffort) {
-    missing.push("reasoning_effort");
+    missing.push("reasoning effort");
   }
 
   if (missing.length === 0) {
@@ -129,4 +149,142 @@ export function validateHistoryCompatibility(
       `${caps.provider || "target provider"} / ${caps.model || "target model"} ` +
       `cannot satisfy this session's ${missing.join(", ")} requirements`,
   };
+}
+
+function cloneJsonRecord(record: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(record)) as Record<string, unknown>;
+}
+
+function cloneJsonItems(
+  items: readonly Record<string, unknown>[],
+): Record<string, unknown>[] {
+  return items.map((item) => cloneJsonRecord(item));
+}
+
+function jsonEqual(a: unknown, b: unknown): boolean {
+  return isDeepStrictEqual(a, b);
+}
+
+function stripResponsesIncrementalFields(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  const stripped = cloneJsonRecord(body);
+  delete stripped.input;
+  delete stripped.previous_response_id;
+  return stripped;
+}
+
+function baselineIsPrefix(
+  baseline: readonly Record<string, unknown>[],
+  current: readonly Record<string, unknown>[],
+): boolean {
+  if (baseline.length > current.length) {
+    return false;
+  }
+  for (let index = 0; index < baseline.length; index += 1) {
+    if (!jsonEqual(baseline[index], current[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function getResponseInputItems(
+  body: Record<string, unknown>,
+): Record<string, unknown>[] | null {
+  if (!Array.isArray(body.input)) {
+    return null;
+  }
+  const items = body.input.filter(
+    (item): item is Record<string, unknown> =>
+      item !== null && typeof item === "object" && !Array.isArray(item),
+  );
+  return items.length === body.input.length ? cloneJsonItems(items) : null;
+}
+
+export function prepareResponsesContinuationRequest(
+  body: Record<string, unknown>,
+  state: ResponsesContinuationState,
+): PreparedResponsesContinuationRequest {
+  const snapshot = cloneJsonRecord(body);
+  const promptCacheKey =
+    typeof snapshot.prompt_cache_key === "string" &&
+    snapshot.prompt_cache_key.trim().length > 0
+      ? snapshot.prompt_cache_key.trim()
+      : state.conversationId?.trim() || undefined;
+  if (promptCacheKey) {
+    snapshot.prompt_cache_key = promptCacheKey;
+  }
+
+  const request = cloneJsonRecord(snapshot);
+  const currentInput = getResponseInputItems(snapshot);
+  const previousInput =
+    state.lastRequest !== undefined ? getResponseInputItems(state.lastRequest) : null;
+  const previousOutput = Array.isArray(state.lastResponseOutput)
+    ? cloneJsonItems(state.lastResponseOutput)
+    : [];
+
+  if (
+    !state.lastResponseId ||
+    currentInput === null ||
+    previousInput === null ||
+    !jsonEqual(
+      stripResponsesIncrementalFields(state.lastRequest ?? {}),
+      stripResponsesIncrementalFields(snapshot),
+    )
+  ) {
+    return {
+      request,
+      snapshot,
+    };
+  }
+
+  const baseline = [...previousInput, ...previousOutput];
+  if (!baselineIsPrefix(baseline, currentInput)) {
+    return {
+      request,
+      snapshot,
+    };
+  }
+
+  const delta = currentInput.slice(baseline.length);
+  request.input = delta;
+  request.previous_response_id = state.lastResponseId;
+  return {
+    request,
+    snapshot,
+    previousResponseId: state.lastResponseId,
+  };
+}
+
+export function recordResponsesContinuationResponse(
+  state: ResponsesContinuationState,
+  snapshot: Record<string, unknown>,
+  response: Record<string, unknown>,
+): void {
+  state.lastRequest = cloneJsonRecord(snapshot);
+  state.lastResponseId =
+    typeof response.id === "string" && response.id.trim().length > 0
+      ? response.id.trim()
+      : undefined;
+  state.lastResponseOutput = Array.isArray(response.output)
+    ? response.output.filter(
+        (item): item is Record<string, unknown> =>
+          item !== null && typeof item === "object" && !Array.isArray(item),
+      )
+    : undefined;
+}
+
+export function clearResponsesContinuationResponseId(
+  state: ResponsesContinuationState,
+): void {
+  state.lastResponseId = undefined;
+  state.lastResponseOutput = undefined;
+}
+
+export function resetResponsesContinuationState(
+  state: ResponsesContinuationState,
+): void {
+  state.lastRequest = undefined;
+  clearResponsesContinuationResponseId(state);
 }

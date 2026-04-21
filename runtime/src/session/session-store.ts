@@ -770,7 +770,10 @@ export class SessionStore {
       this.batchOpenedAtMs = monotonicMs();
     }
     this.pending.push(item);
-    if (opts.durable === true) {
+    const durable =
+      opts.durable === true ||
+      (item.type === "event_msg" && isDurableEvent(item.payload));
+    if (durable) {
       this.flushBatch(true);
     }
   }

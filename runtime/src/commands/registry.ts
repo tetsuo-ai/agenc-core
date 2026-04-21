@@ -45,7 +45,6 @@ import providerCommand from "./provider.js";
 import compactCommand from "./compact.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
-import { setCwd } from "../utils/Shell.js";
 import type { ExitWorktreeAction } from "./exit-worktree.js";
 import type { PendingWorktreeState } from "../session/pending-worktree.js";
 
@@ -190,7 +189,7 @@ function parseExitWorktreeArgs(
       actionExplicit = true;
       continue;
     }
-    if (part === "--discard-changes") {
+    if (part === "--discard-changes" || part === "--discard") {
       discardChanges = true;
       continue;
     }
@@ -209,9 +208,15 @@ function parseExitWorktreeArgs(
   return { action, discardChanges };
 }
 
-function switchCwd(path: string): void {
-  process.chdir(path);
-  setCwd(path);
+function resolveSessionOwnedCwd(ctx: {
+  readonly cwd: string;
+  readonly session: {
+    readonly sessionConfiguration?: {
+      readonly cwd?: string;
+    };
+  };
+}): string {
+  return ctx.session.sessionConfiguration?.cwd ?? ctx.cwd;
 }
 
 /**
@@ -237,6 +242,7 @@ const enterWorktreeCommand: SlashCommand = {
     try {
       const outcome = await enterWorktree({
         session: ctx.session,
+        cwd: resolveSessionOwnedCwd(ctx),
         slug: parsed.slug,
       });
       if (outcome.kind === "rejected") {
@@ -245,9 +251,8 @@ const enterWorktreeCommand: SlashCommand = {
       const state: PendingWorktreeState = {
         handle: outcome.handle,
         baseCommit: outcome.baseCommit,
-        originalCwd: ctx.cwd,
+        originalCwd: resolveSessionOwnedCwd(ctx),
       };
-      switchCwd(outcome.handle.path);
       ctx.session.setPendingWorktreeState(state);
       return { kind: "text", text: formatEnterWorktree(state) };
     } catch (err) {
@@ -291,7 +296,6 @@ const exitWorktreeCommand: SlashCommand = {
       if (outcome.kind === "refused") {
         return { kind: "error", message: outcome.reason };
       }
-      switchCwd(pending.originalCwd);
       ctx.session.setPendingWorktreeState(null);
       return {
         kind: "text",
@@ -315,9 +319,9 @@ const exitWorktreeCommand: SlashCommand = {
  * resume, fork, plan, permissions, config, model, provider, compact)
  * and Wave 3 wires the registry into the CLI binary.
  *
- * Worktree commands are included as thin adapters so the bin entry
- * can migrate off the bespoke `bin/slash.ts` path without a second
- * cutover.
+ * Worktree commands live here as the canonical session-backed slash
+ * handlers, including the final entry-path cleanup that removed the
+ * bespoke `bin/slash.ts` dispatch.
  */
 export function buildDefaultRegistry(): CommandRegistry {
   return CommandRegistry.fromCommands([

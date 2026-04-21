@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
+  appendTerminalToolResults,
   buildTerminalToolResult,
+  findOrphanToolCalls,
   synthesizeTerminalResults,
 } from "./terminal-tool-result.js";
 
@@ -34,5 +36,56 @@ describe("terminal-tool-result", () => {
       cause: "provider_switched",
     });
     expect(out.content).toContain("provider switched");
+  });
+
+  test("findOrphanToolCalls falls back to toolUseBlocks and dedupes resolved ids", () => {
+    const orphans = findOrphanToolCalls({
+      assistantMessages: [],
+      toolUseBlocks: [
+        { type: "tool_use", id: "tc-1", name: "system.bash", input: { command: "ls" } },
+        { type: "tool_use", id: "tc-2", name: "system.readFile", input: { path: "x" } },
+      ],
+      toolResults: [
+        {
+          uuid: "u1",
+          role: "user",
+          toolCallId: "tc-1",
+          toolName: "system.bash",
+          content: "done",
+        },
+      ],
+      messages: [],
+    });
+
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.id).toBe("tc-2");
+  });
+
+  test("appendTerminalToolResults appends tool messages and user records once", () => {
+    const state = {
+      assistantMessages: [
+        {
+          uuid: "a1",
+          role: "assistant" as const,
+          text: "partial",
+          toolCalls: [{ id: "tc-1", name: "system.bash", arguments: "{}" }],
+        },
+      ],
+      toolUseBlocks: [],
+      toolResults: [],
+      messages: [],
+    };
+
+    const first = appendTerminalToolResults(state, "aborted", "cleanup");
+    const second = appendTerminalToolResults(state, "aborted", "cleanup");
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+    expect(state.toolResults).toHaveLength(1);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: "tool",
+      toolCallId: "tc-1",
+    });
   });
 });

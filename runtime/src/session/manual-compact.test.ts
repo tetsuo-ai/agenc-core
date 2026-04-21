@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncLock } from "../utils/async-lock.js";
 import { buildPostCompactMessages } from "../llm/compact/compact.js";
-import { runSessionManualCompact } from "./manual-compact.js";
+import {
+  finalizeManualCompactHistory,
+  runSessionManualCompact,
+} from "./manual-compact.js";
 import type { Session } from "./session.js";
 
 vi.mock("bun:bundle", () => ({
@@ -16,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   microcompactMessages: vi.fn(() => {
     throw new Error("unexpected fallback to traditional compaction");
   }),
+  resetMicrocompactState: vi.fn(),
   compactConversation: vi.fn(),
   runPostCompactCleanup: vi.fn(),
   notifyCompaction: vi.fn(),
@@ -69,6 +73,7 @@ vi.mock(mocks.paths.sessionMemoryCompact, () => ({
 }));
 vi.mock(mocks.paths.microCompact, () => ({
   microcompactMessages: mocks.microcompactMessages,
+  resetMicrocompactState: mocks.resetMicrocompactState,
 }));
 vi.mock(mocks.paths.compact, () => {
   const buildPostCompactMessages = (result: {
@@ -350,6 +355,7 @@ describe("runSessionManualCompact", () => {
       }),
     );
     expect(reAppendSessionMetadata).toHaveBeenCalledTimes(1);
+    expect(mocks.resetMicrocompactState).toHaveBeenCalledTimes(1);
   });
 
   it("still blocks if a turn is currently active", async () => {
@@ -363,6 +369,41 @@ describe("runSessionManualCompact", () => {
       }),
     );
     expect(mocks.trySessionMemoryCompaction).not.toHaveBeenCalled();
+  });
+
+  it("centralizes slash retention and microcompact reset in the runtime owner", () => {
+    const compactionResult = {
+      boundaryMarker: { role: "system", content: "boundary" },
+      summaryMessages: [{ role: "user", content: "summary" }],
+      attachments: [],
+      hookResults: [],
+      messagesToKeep: [{ role: "assistant", content: "tail" }],
+    };
+
+    const finalized = finalizeManualCompactHistory(
+      "keep latest",
+      "Compacted",
+      compactionResult as never,
+    );
+
+    expect(finalized.messages).toEqual(
+      buildPostCompactMessages(finalized.compactionResult),
+    );
+    expect(finalized.compactionResult.messagesToKeep).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.objectContaining({
+            content: expect.stringContaining("<command-name>/compact</command-name>"),
+          }),
+        }),
+        expect.objectContaining({
+          message: expect.objectContaining({
+            content: expect.stringContaining("<local-command-stdout>Compacted</local-command-stdout>"),
+          }),
+        }),
+      ]),
+    );
+    expect(mocks.resetMicrocompactState).toHaveBeenCalledTimes(1);
   });
 
   it("builds the traditional compact path from live session permission state", async () => {

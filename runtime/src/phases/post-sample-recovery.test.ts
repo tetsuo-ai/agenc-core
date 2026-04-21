@@ -4,6 +4,11 @@ import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import { postSampleRecovery } from "./post-sample-recovery.js";
+import {
+  hasAttemptedCollapseDrain,
+  runCollapseDrain,
+  type CollapseDrainDriver,
+} from "../recovery/collapse-drain.js";
 
 function mkCtx(): TurnContext {
   return {
@@ -56,6 +61,7 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
     pendingBudgetDecision: undefined,
+    lastResponseUsage: undefined,
     turnCount: 1,
     transition: undefined,
     stopHookActive: undefined,
@@ -136,6 +142,58 @@ describe("post-sample-recovery integration", () => {
       ],
     });
     await postSampleRecovery(state, mkCtx(), session);
+    expect(state.transition).toBeUndefined();
+  });
+
+  test("normal stream clears the collapse-drain one-shot flag", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState({
+      assistantMessages: [
+        {
+          uuid: "a",
+          role: "assistant",
+          text: "happy path",
+          toolCalls: [],
+        },
+      ],
+    });
+    const driver: CollapseDrainDriver = {
+      isEnabled: () => true,
+      async recoverFromOverflow(messages) {
+        return { committed: 1, messages };
+      },
+    };
+
+    await runCollapseDrain(state, {
+      session,
+      driver,
+    });
+    expect(hasAttemptedCollapseDrain(state)).toBe(true);
+
+    state.transition = undefined;
+    await postSampleRecovery(state, mkCtx(), session);
+
+    expect(hasAttemptedCollapseDrain(state)).toBe(false);
+  });
+
+  test("stopHookActive alone does not re-trigger stop_hook_blocking", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState({
+      assistantMessages: [
+        {
+          uuid: "a",
+          role: "assistant",
+          text: "continued after hook block",
+          toolCalls: [],
+        },
+      ],
+      stopHookActive: true,
+    });
+
+    await postSampleRecovery(state, mkCtx(), session);
+
     expect(state.transition).toBeUndefined();
   });
 });

@@ -3,13 +3,8 @@
  *
  * Subset port of codex `core/src/agent/role.rs`. Ports:
  *   - Role enum + nickname allocation (Wave 1).
- *   - Config-layer stack (`applyRoleToConfig`, `buildConfigLayerStack`,
- *     `resolveRoleConfig`, `formatRoleList`) (Wave 3).
- *
- * Deferred: TOML role-layer loading (T10 config loader). The
- * `loadRoleLayerToml` function here is a stub that returns `{}`; T10
- * will replace it with real filesystem + parse logic mirroring codex
- * `role.rs:87-119`.
+ *   - Role/config loading (`loadRoleLayerToml`, `applyRoleToConfig`,
+ *     `buildConfigLayerStack`, `formatRoleList`) (Wave 3).
  *
  * AgenC divergences from codex upstream:
  *
@@ -23,24 +18,23 @@
  *   - Registry-as-single-nickname-source. AgenC's `AgentRegistry`
  *     owns nickname bookkeeping, not a process-global pool; free
  *     functions here are thin delegators.
- *   - Config-layer stack is pure shallow-merge, not codex's
- *     `ConfigLayerStack`-with-profile-resolution. Codex layers TOML
- *     documents through `deserialize_config_toml_with_base` and
- *     re-runs `Config::load_config_with_layer_stack` with provider
- *     preservation; AgenC only models the `base → role → user`
- *     precedence needed to project role overrides
- *     (reasoningEffort, allowlist, timeoutMs, background, maxDepth,
- *     description) onto a `SessionConfiguration`-shaped blob. T10
- *     replaces this with the real config-layer machinery when the
- *     config loader lands.
+ *   - Role TOML is parsed through AgenC's config loader primitives, but
+ *     this module still cannot rebuild a live `SessionConfiguration`
+ *     or provider object because the child-session config source is
+ *     not wired yet. The layering here preserves `base → role → user`
+ *     precedence and profile selection, but it does not recreate
+ *     codex's full `ConfigLayerStack` / provider-preservation reload.
  *
  * Built-in roles:
  *   - `default`  — unrestricted; inherits parent config
- *   - `explorer` — codebase queries; low reasoning; read-only tool set
- *   - `worker`   — execution/production work; medium reasoning;
- *                  inherits parent tool catalog (mirrors codex
- *                  `agent/role.rs:383` `worker` entry)
- *   - `awaiter`  — long-running polling (3600s timeout, low reasoning)
+ *   - `explorer` — codebase queries; loads codex's built-in
+ *                  `explorer.toml` role layer
+ *   - `worker`   — execution/production work; inherits parent tool
+ *                  catalog (mirrors codex `agent/role.rs:383`
+ *                  `worker` entry)
+ *   - `awaiter`  — long-running polling; keeps AgenC's active awaiter
+ *                  behavior but sources its role config from the codex
+ *                  `awaiter.toml` content
  *
  * User roles register via `registerAgentRole({ name, config })` and
  * override the built-ins.
@@ -48,31 +42,43 @@
  * @module
  */
 
+import { readFileSync } from "node:fs";
 import type { AgentRegistry } from "./registry.js";
+import {
+  normalizeCodexKeyAliases,
+  normalizeRawConfig,
+  parseToml,
+  resolveProfile,
+  type AgenCConfig,
+} from "../config/index.js";
+import { normalizeExternalText } from "../utils/file-read.js";
 
 export type AgentReasoningEffort = "none" | "low" | "medium" | "high";
 
 export interface AgentRoleConfig {
   readonly description?: string;
-  /** Path to a TOML/JSON config this role embeds. T10 wires the
-   *  config loader; today the bundle is passed inline. */
+  /** Codex-shaped role layer file. Built-ins resolve against embedded
+   *  TOML content; user-defined roles read the path from disk. */
+  readonly configFile?: string;
+  /** Inline TOML role layer. Useful for tests and bootstrap-time
+   *  in-memory role registration. */
+  readonly configToml?: string;
+  /** Legacy inline parsed config object. Prefer `configToml` or
+   *  `configFile` for codex parity. */
   readonly configBundle?: Record<string, unknown>;
   /** Candidate nicknames for this role; registry picks one on spawn. */
   readonly nicknameCandidates?: ReadonlyArray<string>;
-  /** Per-turn timeout in ms. Default inherits parent. */
+  /** Runtime hint derived from the loaded role layer when possible. */
   readonly timeoutMs?: number;
-  /** Reasoning effort override. */
+  /** Runtime hint derived from the loaded role layer when possible. */
   readonly reasoningEffort?: AgentReasoningEffort;
-  /** Optional tool allowlist — when present, the child sees ONLY
-   *  these tools regardless of the parent's catalog. */
+  /** Optional explicit tool allowlist. This is runtime metadata, not a
+   *  codex role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
   /** Whether this role runs synchronously (parent blocks) or async
    *  (parent registers + continues). */
   readonly background?: boolean;
-  /** Max recursion depth override. Uses codex `>=` semantics: the
-   *  cap is the smallest rejected childDepth. Defaults to
-   *  `MAX_AGENT_DEPTH` (=4 unless overridden by
-   *  `AGENC_AGENT_MAX_DEPTH`). */
+  /** Runtime hint derived from the loaded role layer when possible. */
   readonly maxDepth?: number;
 }
 
@@ -81,14 +87,31 @@ export interface AgentRole {
   readonly config: AgentRoleConfig;
 }
 
+const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
+  "explorer.toml": "",
+  // Codex's built-in awaiter role also carries developer_instructions,
+  // but role.ts strips role metadata before applying the config layer
+  // and AgenC's current inline TOML parser does not support multiline
+  // strings. Keep only the config fields this module consumes.
+  "awaiter.toml": `background_terminal_max_timeout = 3600000
+model_reasoning_effort = "low"`,
+} as const);
+
+const ROLE_DECLARATION_METADATA_KEYS = Object.freeze([
+  "name",
+  "description",
+  "nickname_candidates",
+  "developer_instructions",
+] as const);
+
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
 // ─────────────────────────────────────────────────────────────────────
 
-const DEFAULT_ROLE: AgentRole = Object.freeze({
+const DEFAULT_ROLE: AgentRole = freezeRole({
   name: "default",
   config: {
-    description: "Unrestricted subagent inheriting parent tools + config.",
+    description: "Default agent.",
     nicknameCandidates: [
       "alpha",
       "beta",
@@ -102,42 +125,30 @@ const DEFAULT_ROLE: AgentRole = Object.freeze({
   },
 });
 
-const EXPLORER_ROLE: AgentRole = Object.freeze<AgentRole>({
+const EXPLORER_ROLE: AgentRole = freezeRole({
   name: "explorer",
   config: {
-    description:
-      "Fast codebase exploration — read-only tools, low-to-medium reasoning.",
-    reasoningEffort: "low" as const,
-    allowlist: [
-      "system.readFile",
-      "system.listDir",
-      "system.stat",
-      "system.glob",
-      "system.grep",
-      "system.findFiles",
-      "http.fetch",
-    ],
+    description: "Fast codebase exploration.",
+    configFile: "explorer.toml",
     nicknameCandidates: ["scout", "ranger", "pathfinder", "seeker"],
   },
 });
 
-const WORKER_ROLE: AgentRole = Object.freeze<AgentRole>({
+const WORKER_ROLE: AgentRole = freezeRole({
   name: "worker",
   config: {
     description:
       "Execution/production work — implement features, fix tests/bugs, " +
-      "split large refactors. Inherits the parent tool catalog.",
-    reasoningEffort: "medium" as const,
+      "split large refactors.",
     nicknameCandidates: ["builder", "smith", "forge", "weaver"],
   },
 });
 
-const AWAITER_ROLE: AgentRole = Object.freeze<AgentRole>({
+const AWAITER_ROLE: AgentRole = freezeRole({
   name: "awaiter",
   config: {
-    description: "Long-running polling subagent; low reasoning.",
-    reasoningEffort: "low" as const,
-    timeoutMs: 3_600_000,
+    description: "Long-running polling subagent.",
+    configFile: "awaiter.toml",
     background: true,
     nicknameCandidates: ["sentinel", "watcher", "guardian", "keeper"],
   },
@@ -158,7 +169,7 @@ const registry = new Map<string, AgentRole>();
 for (const role of BUILT_INS) registry.set(role.name, role);
 
 export function registerAgentRole(role: AgentRole): void {
-  registry.set(role.name, role);
+  registry.set(role.name, freezeRole(role));
 }
 
 export function getAgentRole(name: string): AgentRole | undefined {
@@ -265,119 +276,85 @@ export function formatNicknameWithSuffix(
 // Config-layer stack (Wave 3 port of codex role.rs:40-270)
 //
 // Codex layers TOML documents: `base → role-layer → user-layer` with
-// provider/profile preservation (`role.rs:131`). AgenC models the
-// same precedence as pure shallow merges over a plain object blob so
-// `control.ts spawn()` can materialize a child's effective config
-// without waiting for T10's real config loader.
-//
-// The role override projection is intentionally explicit: each field
-// in `AgentRoleConfig` that can legitimately rewrite a session's
-// effective config is listed by name. Unlisted fields
-// (`description`, `nicknameCandidates`, `configBundle`) are metadata
-// and do not flow into the config blob.
+// config/profile resolution (`role.rs:155-270`). AgenC now loads role
+// TOML through the same config-parser aliases, strips role-only
+// metadata, and merges the resulting config keys onto a plain object
+// blob so `control.ts spawn()` can keep the seam live before the child
+// session config source is wired.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Fields of `AgentRoleConfig` that project into the effective config
- * blob. Kept as an explicit union so adding a new role override
- * requires updating this list + the projector in one place.
- */
-const ROLE_CONFIG_OVERRIDE_KEYS = [
-  "reasoningEffort",
-  "allowlist",
-  "timeoutMs",
-  "background",
-  "maxDepth",
-  "description",
-] as const;
-
-type RoleConfigOverrideKey = (typeof ROLE_CONFIG_OVERRIDE_KEYS)[number];
-
-/**
  * Role-shaped subset of the effective config blob. Pure-ported from
- * codex `role.rs` — the real `SessionConfiguration` is richer
- * (sandbox, approval, provider, …), but the layered fields this
- * module owns are the role-override fields only. A blob that already
- * carries other session-config keys passes through untouched.
+ * codex `role.rs`: the live child config will eventually be a full
+ * session-config snapshot, but today this seam accepts the config keys
+ * the role layer can legitimately rewrite plus arbitrary pass-through
+ * siblings.
  */
 export interface RoleShapedConfig {
-  reasoningEffort?: AgentReasoningEffort;
-  allowlist?: ReadonlyArray<string>;
-  timeoutMs?: number;
-  background?: boolean;
-  maxDepth?: number;
-  description?: string;
+  model?: string;
+  model_provider?: string;
+  approval_policy?: string;
+  sandbox_mode?: string;
+  reasoning_effort?: string;
+  personality?: string;
+  web_search?: unknown;
+  tools_config?: Record<string, unknown>;
+  profiles?: Record<string, unknown>;
+  agent_max_depth?: number;
+  profile?: string;
   /** Arbitrary sibling fields from the base/user layer flow through. */
   [extra: string]: unknown;
 }
 
 /**
- * Project the role override fields onto a base config blob. Mirrors
- * codex `apply_role_to_config` (`role.rs:40`). Pure: returns a new
- * object, never mutates `base`.
- *
- * Divergence from codex: codex rebuilds the full `Config` through
- * `ConfigLayerStack` and preserves the caller's profile/provider
- * unless the role explicitly rewrites them. AgenC's layer is a
- * shallow overlay; provider/profile preservation will move here when
- * T10 wires the real config loader.
+ * Apply the role's loaded TOML layer onto a base config blob. Mirrors
+ * codex `apply_role_to_config` (`role.rs:40`) at the config-loading
+ * seam: role metadata is ignored, config aliases are normalized, and
+ * top-level `profile = "..."` selectors are resolved against the
+ * merged config snapshot.
  */
 export function applyRoleToConfig<Base extends RoleShapedConfig>(
   role: AgentRole,
   base: Base,
 ): Base {
-  return applyRoleToConfigInner(role.config, base, /*userLayer*/ {});
+  return applyRoleToConfigInner(base, loadRoleLayerToml(role), {});
 }
 
-/**
- * Internal layered application. Base < role < user, with one
- * exception: fields listed in `preservationPolicy` keep the base
- * value regardless of later layers. Mirrors
- * codex `apply_role_to_config_inner` (`role.rs:58`) +
- * `preservation_policy` (`role.rs:131`).
- */
 function applyRoleToConfigInner<Base extends RoleShapedConfig>(
-  roleConfig: AgentRoleConfig,
   base: Base,
+  roleLayerToml: Record<string, unknown>,
   userLayer: Partial<RoleShapedConfig>,
-  preservationPolicy: ReadonlySet<RoleConfigOverrideKey> = new Set(),
 ): Base {
-  // Start from a shallow copy of base so sibling fields pass through.
-  const next: RoleShapedConfig = { ...base };
-
-  for (const key of ROLE_CONFIG_OVERRIDE_KEYS) {
-    if (preservationPolicy.has(key)) continue;
-    const roleValue = roleConfig[key as keyof AgentRoleConfig];
-    if (roleValue !== undefined) {
-      (next as Record<string, unknown>)[key] = roleValue;
-    }
+  let next = mergeLayer(base, roleTomlToConfigLayer(roleLayerToml));
+  const roleProfile = readSelectedProfile(roleLayerToml);
+  if (roleProfile) {
+    next = applySelectedProfile(next, roleProfile);
   }
 
-  // User layer always wins over role layer for non-preserved fields.
-  for (const key of ROLE_CONFIG_OVERRIDE_KEYS) {
-    if (preservationPolicy.has(key)) continue;
-    const userValue = userLayer[key];
-    if (userValue !== undefined) {
-      (next as Record<string, unknown>)[key] = userValue;
-    }
+  const userProfile = readSelectedProfile(userLayer as Record<string, unknown>);
+  next = mergeLayer(next, stripSelectedProfile(userLayer));
+  if (userProfile) {
+    next = applySelectedProfile(next, userProfile);
   }
 
-  return next as Base;
+  return next;
 }
 
 /**
- * TOML role-layer loader stub.
+ * Load the role's TOML layer. Mirrors codex `load_role_layer_toml`
+ * (`role.rs:87-119`) at the module boundary:
+ *   - built-ins resolve `configFile` against embedded TOML content
+ *   - user-defined role files are read from disk
+ *   - role-declaration metadata keys are stripped before the config
+ *     layer is returned
  *
- * TODO(T10): Replace with the real config loader. Codex
- * (`role.rs:87-119`) reads the role's `config_file`, parses the TOML,
- * and deserializes it under the codex-home base. AgenC will wire
- * this once T10's config loader + role-layer registration lands.
- * Returning `{}` today keeps the call sites honest without pulling
- * in a half-baked TOML parse.
+ * The returned object is TOML-shaped rather than fully normalized so
+ * callers can still inspect codex-native keys like
+ * `model_reasoning_effort` or `profile`.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function loadRoleLayerToml(_role: AgentRole): Record<string, unknown> {
-  return {};
+export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
+  const rawLayer = readRoleLayerSource(role);
+  return stripRoleDeclarationMetadata(rawLayer);
 }
 
 /**
@@ -386,10 +363,7 @@ export function loadRoleLayerToml(_role: AgentRole): Record<string, unknown> {
  * `deserialize_effective_config` (`role.rs:155-270`) collapsed into a
  * single pure function.
  *
- * Precedence: `base → role → user`. `preservationPolicy` names
- * fields that must keep the base value even if the role/user layers
- * try to rewrite them (codex uses this for profile/provider
- * stickiness).
+ * Precedence: `base → role → user`.
  *
  * Returns a fresh object; inputs are never mutated.
  */
@@ -397,27 +371,10 @@ export function buildConfigLayerStack<Base extends RoleShapedConfig>(opts: {
   readonly base: Base;
   readonly roleName?: string;
   readonly userLayer?: Partial<RoleShapedConfig>;
-  readonly preservationPolicy?: ReadonlySet<RoleConfigOverrideKey>;
 }): Base {
-  const { base, roleName, userLayer = {}, preservationPolicy } = opts;
-  // Strict resolution: an unknown role name yields the base blob
-  // unchanged overlaid only with the user layer. This matches codex's
-  // `resolve_role_config` returning `None` for unknown roles.
-  const roleConfig = tryResolveRoleConfig(roleName);
-  if (!roleConfig) {
-    return applyRoleToConfigInner(
-      { } as AgentRoleConfig,
-      base,
-      userLayer,
-      preservationPolicy,
-    );
-  }
-  return applyRoleToConfigInner(
-    roleConfig,
-    base,
-    userLayer,
-    preservationPolicy,
-  );
+  const { base, roleName, userLayer = {} } = opts;
+  const role = roleName ? getAgentRole(roleName) : undefined;
+  return applyRoleToConfigInner(base, role ? loadRoleLayerToml(role) : {}, userLayer);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -450,21 +407,219 @@ export function formatRoleList(roles: ReadonlyArray<AgentRole>): string {
 function formatRole(role: AgentRole): string {
   const { description } = role.config;
   if (!description) return `${role.name}: no description`;
-  // One-line capability hint drawn from the projected override fields
-  // so callers see at a glance what a role locks in. Codex embeds a
-  // model/reasoning hint read from the role's TOML; AgenC projects
-  // from the already-resolved role config.
-  const hints: string[] = [];
-  if (role.config.reasoningEffort) {
-    hints.push(`reasoning=${role.config.reasoningEffort}`);
+
+  const roleLayerToml = tryLoadRoleLayerToml(role);
+  const model = asString(roleLayerToml?.model);
+  const reasoningEffort = asString(
+    roleLayerToml?.model_reasoning_effort ?? roleLayerToml?.reasoning_effort,
+  );
+
+  let lockedSettingsNote = "";
+  if (model && reasoningEffort) {
+    lockedSettingsNote =
+      `\n- This role's model is set to \`${model}\`` +
+      ` and its reasoning effort is set to \`${reasoningEffort}\`.` +
+      " These settings cannot be changed.";
+  } else if (model) {
+    lockedSettingsNote =
+      `\n- This role's model is set to \`${model}\` and cannot be changed.`;
+  } else if (reasoningEffort) {
+    lockedSettingsNote =
+      `\n- This role's reasoning effort is set to ` +
+      `\`${reasoningEffort}\` and cannot be changed.`;
   }
-  if (role.config.allowlist && role.config.allowlist.length > 0) {
-    hints.push(`allowlist=${role.config.allowlist.length} tools`);
+
+  return `${role.name}: {\n${description}${lockedSettingsNote}\n}`;
+}
+
+function freezeRole(role: AgentRole): AgentRole {
+  const derived = deriveRoleRuntimeHints(role.config, tryLoadRoleLayerToml(role));
+  return Object.freeze({
+    name: role.name,
+    config: Object.freeze({ ...role.config, ...derived }),
+  });
+}
+
+function tryLoadRoleLayerToml(
+  role: AgentRole,
+): Record<string, unknown> | undefined {
+  try {
+    return loadRoleLayerToml(role);
+  } catch {
+    return undefined;
   }
-  if (role.config.timeoutMs) {
-    hints.push(`timeout=${role.config.timeoutMs}ms`);
+}
+
+function deriveRoleRuntimeHints(
+  config: AgentRoleConfig,
+  roleLayerToml: Record<string, unknown> | undefined,
+): Partial<AgentRoleConfig> {
+  if (!roleLayerToml) return {};
+
+  const normalizedLayer = roleTomlToConfigLayer(roleLayerToml);
+  const derived: Partial<AgentRoleConfig> = {};
+
+  if (config.reasoningEffort === undefined) {
+    const reasoningEffort = asAgentReasoningEffort(
+      normalizedLayer.reasoning_effort,
+    );
+    if (reasoningEffort) {
+      derived.reasoningEffort = reasoningEffort;
+    }
   }
-  if (role.config.background) hints.push("background");
-  const hintLine = hints.length > 0 ? `\n- ${hints.join(", ")}` : "";
-  return `${role.name}: {\n${description}${hintLine}\n}`;
+
+  if (config.timeoutMs === undefined) {
+    const timeoutMs = asPositiveInteger(
+      roleLayerToml.background_terminal_max_timeout,
+    );
+    if (timeoutMs !== undefined) {
+      derived.timeoutMs = timeoutMs;
+    }
+  }
+
+  if (config.maxDepth === undefined) {
+    const maxDepth = asPositiveInteger(normalizedLayer.agent_max_depth);
+    if (maxDepth !== undefined) {
+      derived.maxDepth = maxDepth;
+    }
+  }
+
+  return derived;
+}
+
+function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
+  if (role.config.configBundle) {
+    return cloneRecord(role.config.configBundle);
+  }
+
+  if (role.config.configToml !== undefined) {
+    return parseRoleLayerToml(role.config.configToml);
+  }
+
+  const configFile = role.config.configFile;
+  if (!configFile) return {};
+
+  const builtInContents =
+    BUILT_IN_ROLE_CONFIG_TOML[
+      configFile as keyof typeof BUILT_IN_ROLE_CONFIG_TOML
+    ];
+  if (builtInContents !== undefined) {
+    return parseRoleLayerToml(builtInContents);
+  }
+
+  const contents = normalizeExternalText(readFileSync(configFile, "utf8"));
+  return parseRoleLayerToml(contents);
+}
+
+function parseRoleLayerToml(contents: string): Record<string, unknown> {
+  const parsed = parseToml(normalizeExternalText(contents));
+  if (!isPlainObject(parsed)) {
+    throw new Error("role config must parse to a TOML table");
+  }
+  return parsed;
+}
+
+function stripRoleDeclarationMetadata(
+  rawLayer: Record<string, unknown>,
+): Record<string, unknown> {
+  const next = cloneRecord(rawLayer);
+  for (const key of ROLE_DECLARATION_METADATA_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
+function roleTomlToConfigLayer(
+  roleLayerToml: Record<string, unknown>,
+): Record<string, unknown> {
+  const aliased = normalizeCodexKeyAliases(roleLayerToml);
+  const normalized = cloneRecord(
+    normalizeRawConfig(aliased) as Record<string, unknown>,
+  );
+  delete normalized._unknown;
+  return normalized;
+}
+
+function readSelectedProfile(
+  layer: Record<string, unknown>,
+): string | undefined {
+  return asString(layer.profile);
+}
+
+function stripSelectedProfile<T extends Record<string, unknown>>(
+  layer: T,
+): T {
+  const next = cloneRecord(layer);
+  delete next.profile;
+  return next as T;
+}
+
+function applySelectedProfile<Base extends RoleShapedConfig>(
+  base: Base,
+  profileName: string,
+): Base {
+  const resolved = resolveProfile(base as unknown as AgenCConfig, profileName);
+  return mergeLayer(base, resolved as Record<string, unknown>);
+}
+
+function mergeLayer<Base extends Record<string, unknown>>(
+  base: Base,
+  override: Record<string, unknown>,
+): Base {
+  const next: Record<string, unknown> = { ...base };
+  for (const key of Object.keys(override)) {
+    const overrideValue = override[key];
+    if (overrideValue === undefined) continue;
+    const baseValue = next[key];
+    if (isPlainObject(baseValue) && isPlainObject(overrideValue)) {
+      next[key] = mergeLayer(baseValue, overrideValue);
+      continue;
+    }
+    if (Array.isArray(overrideValue)) {
+      next[key] = [...overrideValue];
+      continue;
+    }
+    next[key] = overrideValue;
+  }
+  return next as Base;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  );
+}
+
+function cloneRecord<T extends Record<string, unknown>>(value: T): T {
+  return { ...value };
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asPositiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.trunc(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
+function asAgentReasoningEffort(
+  value: unknown,
+): AgentReasoningEffort | undefined {
+  if (
+    value === "none" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high"
+  ) {
+    return value;
+  }
+  return undefined;
 }

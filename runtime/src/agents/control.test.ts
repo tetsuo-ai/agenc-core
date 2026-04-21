@@ -1,4 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AgentControl,
   AgentReferenceUnresolvedError,
@@ -9,8 +12,15 @@ import {
 } from "./control.js";
 import { AgentRegistry, type AgentMetadata } from "./registry.js";
 import { _resetNicknamePoolForTesting } from "./role.js";
+import { RolloutStore } from "../session/rollout-store.js";
 
-function stubSession() {
+let agencHome = "";
+let originalAgencHome = "";
+
+function stubSession(opts: {
+  rolloutStore?: RolloutStore | null;
+  conversationId?: string;
+} = {}) {
   const emitted: unknown[] = [];
   return {
     emit: (e: unknown) => {
@@ -24,16 +34,47 @@ function stubSession() {
     },
     nextInternalSubId: () => `sub-${emitted.length}`,
     childInboxes: new Map(),
+    rolloutStore: opts.rolloutStore ?? null,
+    conversationId: opts.conversationId ?? "session-test",
     _emitted: emitted,
   } as unknown as ConstructorParameters<typeof AgentControl>[0]["session"];
 }
 
+function openRolloutStore(opts: {
+  cwd: string;
+  sessionId: string;
+  resume?: boolean;
+}): RolloutStore {
+  const store = new RolloutStore({
+    cwd: opts.cwd,
+    sessionId: opts.sessionId,
+    agencVersion: "0.2.0",
+    ...(opts.resume ? { resume: true } : {}),
+  });
+  store.open({
+    sessionId: opts.sessionId,
+    timestamp: new Date().toISOString(),
+    cwd: opts.cwd,
+    originator: "control-test",
+    agencVersion: "0.2.0",
+    model: "test-model",
+    modelProvider: "test-provider",
+  });
+  return store;
+}
+
 beforeEach(() => {
+  agencHome = mkdtempSync(join(tmpdir(), "agenc-control-home-"));
+  originalAgencHome = process.env.AGENC_HOME ?? "";
+  process.env.AGENC_HOME = agencHome;
   _resetNicknamePoolForTesting();
 });
 
 afterEach(() => {
   _resetNicknamePoolForTesting();
+  if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
+  else delete process.env.AGENC_HOME;
+  if (agencHome) rmSync(agencHome, { recursive: true, force: true });
 });
 
 describe("AgentControl", () => {
@@ -440,25 +481,214 @@ describe("AgentControl", () => {
     expect(msg.metadata?.kind).toBe("subagent_completion");
   });
 
-  it("resumeAgentFromRollout() returns live-handle-only with empty rollout", async () => {
-    const session = stubSession();
-    const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
-    const metadata: AgentMetadata = {
-      agentId: "root-resume-1",
-      agentPath: "/root/resumed",
-      agentNickname: "resumed",
-      agentRole: "default",
-      depth: 1,
-    };
-    const result = await control.resumeAgentFromRollout({
-      rootThreadId: "root-resume-1",
-      parentPath: "/root",
-      metadata,
+  it("resumeAgentFromRollout() reopens open descendants after shutdown", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "resume-open-descendants",
     });
-    expect(result.resumedCount).toBe(1);
-    expect(result.rootLive).not.toBeNull();
-    expect(result.rootLive!.agentId).toBe("root-resume-1");
+    try {
+      const session = stubSession({ rolloutStore });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      const root = await control.spawn({ parentPath: "/root" });
+      const child = await control.spawn({ parentPath: root.agentPath });
+      const grandchild = await control.spawn({ parentPath: child.agentPath });
+      await control.shutdownAll("manager_shutdown");
+
+      const result = await control.resumeAgentFromRollout({
+        rootThreadId: root.agentId,
+        parentPath: "/root",
+        metadata: root.metadata,
+      });
+
+      expect(result.resumedCount).toBe(3);
+      expect(result.rootLive).not.toBeNull();
+      expect(result.rootLive!.agentId).toBe(root.agentId);
+      expect(control.getLive(child.agentId)?.agentPath).toBe(child.agentPath);
+      expect(control.getLive(grandchild.agentId)?.agentPath).toBe(
+        grandchild.agentPath,
+      );
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeAgentFromRollout() restores descendants on a fresh control plane restart", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
+    const sessionId = "resume-fresh-control-plane";
+    const originalRolloutStore = openRolloutStore({
+      cwd,
+      sessionId,
+    });
+    let resumedRolloutStore: RolloutStore | null = null;
+    try {
+      const originalSession = stubSession({
+        rolloutStore: originalRolloutStore,
+        conversationId: sessionId,
+      });
+      const originalRegistry = new AgentRegistry();
+      const originalControl = new AgentControl({
+        session: originalSession,
+        registry: originalRegistry,
+      });
+      const root = await originalControl.spawn({ parentPath: "/root" });
+      const child = await originalControl.spawn({ parentPath: root.agentPath });
+      const grandchild = await originalControl.spawn({
+        parentPath: child.agentPath,
+      });
+
+      await originalControl.shutdownAll("manager_shutdown");
+      originalRolloutStore.close();
+
+      resumedRolloutStore = openRolloutStore({
+        cwd,
+        sessionId,
+        resume: true,
+      });
+      const resumedSession = stubSession({
+        rolloutStore: resumedRolloutStore,
+        conversationId: sessionId,
+      });
+      const resumedRegistry = new AgentRegistry();
+      const resumedControl = new AgentControl({
+        session: resumedSession,
+        registry: resumedRegistry,
+      });
+
+      const result = await resumedControl.resumeAgentFromRollout({
+        rootThreadId: root.agentId,
+        parentPath: "/root",
+        metadata: root.metadata,
+      });
+
+      expect(result.resumedCount).toBe(3);
+      expect(result.rootLive?.agentId).toBe(root.agentId);
+      expect(resumedControl.getLive(child.agentId)?.agentPath).toBe(
+        child.agentPath,
+      );
+      expect(resumedControl.getLive(grandchild.agentId)?.agentPath).toBe(
+        grandchild.agentPath,
+      );
+    } finally {
+      originalRolloutStore.close();
+      resumedRolloutStore?.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeAgentFromRollout() skips descendants beneath a closed child", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "resume-skips-closed-child",
+    });
+    try {
+      const session = stubSession({ rolloutStore });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      const root = await control.spawn({ parentPath: "/root" });
+      const child = await control.spawn({ parentPath: root.agentPath });
+      const grandchild = await control.spawn({ parentPath: child.agentPath });
+
+      await control.shutdown(child.agentId, "delegate_teardown");
+      await control.shutdown(root.agentId, "session_shutdown");
+
+      const result = await control.resumeAgentFromRollout({
+        rootThreadId: root.agentId,
+        parentPath: "/root",
+        metadata: root.metadata,
+      });
+
+      expect(result.resumedCount).toBe(1);
+      expect(control.getLive(child.agentId)).toBeUndefined();
+      expect(control.getLive(grandchild.agentId)).toBeUndefined();
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeAgentFromRollout() uses persisted edge metadata for descendants", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "resume-uses-persisted-edge-metadata",
+    });
+    try {
+      const session = stubSession({ rolloutStore });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      const root = await control.spawn({ parentPath: "/root" });
+      const child = await control.spawn({ parentPath: root.agentPath });
+      const grandchild = await control.spawn({ parentPath: child.agentPath });
+      const expectedPath = grandchild.agentPath;
+
+      (
+        grandchild.metadata as {
+          agentPath?: string;
+          depth: number;
+        }
+      ).agentPath = "/root/stale";
+      (grandchild.metadata as { depth: number }).depth = 99;
+
+      await control.shutdownAll("manager_shutdown");
+
+      const result = await control.resumeAgentFromRollout({
+        rootThreadId: root.agentId,
+        parentPath: "/root",
+        metadata: root.metadata,
+      });
+
+      expect(result.resumedCount).toBe(3);
+      expect(control.getLive(grandchild.agentId)?.agentPath).toBe(expectedPath);
+      expect(control.getLive(grandchild.agentId)?.depth).toBe(3);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeAgentFromRollout() skips descendants when parent resume fails", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
+    const rolloutStore = openRolloutStore({
+      cwd,
+      sessionId: "resume-skips-corrupt-subtree",
+    });
+    try {
+      const session = stubSession({ rolloutStore });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      const root = await control.spawn({ parentPath: "/root" });
+      const child = await control.spawn({ parentPath: root.agentPath });
+      const grandchild = await control.spawn({ parentPath: child.agentPath });
+
+      const resumeSingle = control.resumeSingleAgentFromRollout.bind(control);
+      vi
+        .spyOn(control, "resumeSingleAgentFromRollout")
+        .mockImplementation(async (opts) => {
+          if (opts.metadata.agentId === child.agentId) {
+            throw new Error("child metadata corrupted");
+          }
+          return resumeSingle(opts);
+        });
+
+      await control.shutdownAll("manager_shutdown");
+
+      const result = await control.resumeAgentFromRollout({
+        rootThreadId: root.agentId,
+        parentPath: "/root",
+        metadata: root.metadata,
+      });
+
+      expect(result.resumedCount).toBe(1);
+      expect(control.getLive(child.agentId)).toBeUndefined();
+      expect(control.getLive(grandchild.agentId)).toBeUndefined();
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   // ───────────────────────────────────────────────────────────

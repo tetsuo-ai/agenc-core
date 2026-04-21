@@ -14,12 +14,18 @@ function stubSession(opts: {
   memoryReset?: ReturnType<typeof vi.fn>;
   costReset?: ReturnType<typeof vi.fn>;
   budgetReset?: ReturnType<typeof vi.fn>;
+  approvalClear?: ReturnType<typeof vi.fn>;
+  networkClear?: ReturnType<typeof vi.fn>;
 }) {
   const history = opts.history ?? [{ foo: 1 }, { bar: 2 }];
   const sc = { sessionConfiguration: {}, history };
   const svc: Record<string, unknown> = {};
   if (opts.memoryReset) svc["memorySidecar"] = { reset: opts.memoryReset };
   if (opts.costReset) svc["costSidecar"] = { reset: opts.costReset };
+  if (opts.approvalClear) svc["toolApprovals"] = { clear: opts.approvalClear };
+  if (opts.networkClear) {
+    svc["networkApproval"] = { clearSessionHosts: opts.networkClear };
+  }
   return {
     state: {
       with: async (fn: (s: typeof sc) => unknown) => fn(sc),
@@ -45,12 +51,16 @@ describe("clearCommand", () => {
     const memReset = vi.fn();
     const costReset = vi.fn();
     const budgetReset = vi.fn();
+    const approvalClear = vi.fn();
+    const networkClear = vi.fn();
     const history: unknown[] = [{}, {}, {}];
     const session = stubSession({
       history,
       memoryReset: memReset,
       costReset: costReset,
       budgetReset,
+      approvalClear,
+      networkClear,
     });
     const res = await clearCommand.execute(mkctx(session));
     expect(res.kind).toBe("text");
@@ -60,6 +70,8 @@ describe("clearCommand", () => {
     expect(memReset).toHaveBeenCalled();
     expect(costReset).toHaveBeenCalled();
     expect(budgetReset).toHaveBeenCalled();
+    expect(approvalClear).toHaveBeenCalled();
+    expect(networkClear).toHaveBeenCalled();
   });
 
   it("tolerates missing sidecars + missing budget tracker", async () => {

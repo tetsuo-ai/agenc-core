@@ -51,12 +51,8 @@ import {
 } from "../session/observer-wiring.js";
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
-  handleSlashCommand,
-  parseSlashCommand,
   runSlashCommand,
-  type PendingWorktreeState,
 } from "./slash.js";
-import { parseSlashCommand as parseDispatcherInput } from "../commands/dispatcher.js";
 import {
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
@@ -420,13 +416,19 @@ export interface RunSingleTurnOpts {
   /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
   readonly configStore: ConfigStore;
   readonly configReloadLatch: ConfigReloadLatch;
-  /** Pre-built, per-session memory + project-instructions inputs. */
-  readonly projectInstructions: string;
-  readonly memoryPromptText: string;
-  readonly allMemories: readonly MemoryEntry[];
+  /**
+   * Preferred seam: load fresh prompt/memory/MCP inputs for this turn.
+   * Called after between-turn reload handling so AGENTS, MEMORY, and
+   * MCP instructions observe the latest snapshot on the next turn.
+   */
+  readonly loadTurnInputsFn?: () => Promise<PreparedTurnRuntimeInputs>;
+  /** Legacy direct inputs retained for focused unit tests. */
+  readonly projectInstructions?: string;
+  readonly memoryPromptText?: string;
+  readonly allMemories?: readonly MemoryEntry[];
   /** Tool registry + MCP inputs that shape the system prompt. */
-  readonly enabledToolNames: ReadonlySet<string>;
-  readonly mcpServers: readonly McpServerInstructionsInput[];
+  readonly enabledToolNames?: ReadonlySet<string>;
+  readonly mcpServers?: readonly McpServerInstructionsInput[];
   readonly provider: string;
   /** Optional: injected for tests so we don't have to spin real runTurn. */
   readonly runTurnFn?: typeof runTurn;
@@ -461,18 +463,28 @@ export async function* runSingleTurn(
     session: opts.session,
   });
 
+  const turnInputs = opts.loadTurnInputsFn
+    ? await opts.loadTurnInputsFn()
+    : {
+        projectInstructions: opts.projectInstructions ?? "",
+        memoryPromptText: opts.memoryPromptText ?? "",
+        allMemories: opts.allMemories ?? [],
+        enabledToolNames: opts.enabledToolNames ?? new Set<string>(),
+        mcpServers: opts.mcpServers ?? [],
+      };
+
   const assembled = await assemble({
     session: opts.session,
     ctx: opts.ctx,
-    projectInstructions: opts.projectInstructions,
-    memoryPrompt: opts.memoryPromptText,
-    mcpServers: [...opts.mcpServers],
-    enabledToolNames: opts.enabledToolNames,
+    projectInstructions: turnInputs.projectInstructions,
+    memoryPrompt: turnInputs.memoryPromptText,
+    mcpServers: [...turnInputs.mcpServers],
+    enabledToolNames: turnInputs.enabledToolNames,
     provider: opts.provider,
   });
 
   const selectedMemories = selectRelevantMemoriesForTurn(
-    opts.allMemories,
+    turnInputs.allMemories,
     opts.input,
     opts.session,
   );
@@ -489,7 +501,7 @@ export async function* runSingleTurn(
   }
 }
 
-interface PreparedTurnRuntimeInputs {
+export interface PreparedTurnRuntimeInputs {
   readonly projectInstructions: string;
   readonly memoryPromptText: string;
   readonly allMemories: readonly MemoryEntry[];
@@ -497,7 +509,24 @@ interface PreparedTurnRuntimeInputs {
   readonly mcpServers: readonly McpServerInstructionsInput[];
 }
 
-async function prepareTurnRuntimeInputs(params: {
+async function loadSessionMcpServerInstructions(
+  session: Session,
+  config: AgenCConfig,
+): Promise<readonly McpServerInstructionsInput[]> {
+  const servers = await session.services.mcpManager.effectiveServers(config, null);
+  return Array.from(servers.entries())
+    .flatMap(([name, info]) => {
+      const instructions = (info as { readonly instructions?: unknown }).instructions;
+      if (typeof instructions !== "string" || instructions.trim().length === 0) {
+        return [];
+      }
+      return [{ name, instructions: instructions.trim() }];
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export async function prepareTurnRuntimeInputs(params: {
+  readonly session: Session;
   readonly configStore: ConfigStore;
   readonly workspaceRoot: string;
   readonly memoryDir: string;
@@ -529,7 +558,7 @@ async function prepareTurnRuntimeInputs(params: {
     memoryPromptText: loadedMemory.text,
     allMemories: memoryScan.entries,
     enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
-    mcpServers: [],
+    mcpServers: await loadSessionMcpServerInstructions(params.session, currentConfig),
   };
 }
 
@@ -562,7 +591,7 @@ function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
   readonly resolvedProvider: string;
-  readonly turnInputs: PreparedTurnRuntimeInputs;
+  readonly loadTurnInputsFn: () => Promise<PreparedTurnRuntimeInputs>;
 }): () => void {
   const configReloadLatch: ConfigReloadLatch = { requested: false };
   let sessionRef: Session | null = params.session;
@@ -570,35 +599,95 @@ function installTuiSessionContract(params: {
 
   params.session.installTurnDriverHooks({
     submit: async (message: string) => {
-      const ctx = params.session.newDefaultTurn();
-      const startedAtMs = Date.now();
-      await params.session.activeTurn.swap({
-        turnId: ctx.subId,
-        startedAtMs,
-        abortController: new AbortController(),
-      });
-      try {
-        for await (const event of runSingleTurn({
-          session: params.session,
-          ctx,
-          input: message,
-          configStore: params.configStore,
-          configReloadLatch,
-          projectInstructions: params.turnInputs.projectInstructions,
-          memoryPromptText: params.turnInputs.memoryPromptText,
-          allMemories: params.turnInputs.allMemories,
-          enabledToolNames: params.turnInputs.enabledToolNames,
-          mcpServers: params.turnInputs.mcpServers,
-          provider: params.resolvedProvider,
-        })) {
-          params.session.emitPhaseEvent(event);
+      const runPromptTurn = async (prompt: string): Promise<void> => {
+        const ctx = params.session.newDefaultTurn();
+        const startedAtMs = Date.now();
+        await params.session.activeTurn.swap({
+          turnId: ctx.subId,
+          startedAtMs,
+          abortController: new AbortController(),
+        });
+        try {
+          for await (const event of runSingleTurn({
+            session: params.session,
+            ctx,
+            input: prompt,
+            configStore: params.configStore,
+            configReloadLatch,
+            loadTurnInputsFn: params.loadTurnInputsFn,
+            provider: params.resolvedProvider,
+          })) {
+            params.session.emitPhaseEvent(event);
+          }
+        } finally {
+          const current = params.session.activeTurn.unsafePeek();
+          if (current?.turnId === ctx.subId) {
+            await params.session.activeTurn.swap(null);
+          }
         }
-      } finally {
-        const current = params.session.activeTurn.unsafePeek();
-        if (current?.turnId === ctx.subId) {
-          await params.session.activeTurn.swap(null);
+      };
+
+      const emitSlashResult = (
+        input: string,
+        result:
+          | { readonly kind: "text"; readonly text: string }
+          | { readonly kind: "compact"; readonly text: string }
+          | { readonly kind: "prompt"; readonly content: string }
+          | { readonly kind: "skip" }
+          | { readonly kind: "exit"; readonly code: number }
+          | { readonly kind: "error"; readonly message: string },
+      ): void => {
+        params.session.emitPhaseEvent({
+          type: "slash_result",
+          input,
+          result,
+          timestamp: Date.now(),
+          turnId: params.session.activeTurn.unsafePeek()?.turnId,
+        } as unknown as PhaseEvent);
+      };
+
+      const trimmed = message.trimStart();
+      if (trimmed.startsWith("/")) {
+        const slash = await runSlashCommand(message, {
+          session: params.session,
+          cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
+          home:
+            process.env.HOME ??
+            process.env.USERPROFILE ??
+            params.session.sessionConfiguration.cwd ??
+            process.cwd(),
+          configStore: params.configStore,
+        });
+        switch (slash.kind) {
+          case "skip":
+            emitSlashResult(message, {
+              kind: "error",
+              message: /[\r\n]/.test(message)
+                ? "slash command rejected (multi-line input not allowed)"
+                : "slash command rejected (invalid syntax)",
+            });
+            return;
+          case "unknown":
+          case "blocked_by_bridge":
+            emitSlashResult(message, {
+              kind: "error",
+              message: slash.message,
+            });
+            return;
+          case "dispatched":
+            emitSlashResult(message, slash.result);
+            if (slash.result.kind === "prompt") {
+              await runPromptTurn(slash.result.content);
+              return;
+            }
+            if (slash.result.kind === "exit") {
+              activeInkUnmount?.();
+            }
+            return;
         }
       }
+
+      await runPromptTurn(message);
     },
     flushEventLog: () => {
       params.session.rolloutStore?.flushDurable();
@@ -734,60 +823,9 @@ export async function oneShotCLI(
       /* swallow — we're handing off to session's own lifecycle */
     });
 
-    // T9 / T11-W3: slash-command short-circuit.
-    //
-    // Two dispatch paths coexist during the W3 transition:
-    //
-    //   1. Worktree adapters (`/enter-worktree`, `/exit-worktree`) still
-    //      go through the bespoke session-bound handler — the generic
-    //      registry adapters cannot thread `PendingWorktreeState`
-    //      through `dispatchSlashCommand` yet (tracked as a follow-up).
-    //
-    //   2. Every other `/...` line routes through `runSlashCommand`,
-    //      which parses via `commands/dispatcher.ts`, loads the full
-    //      default registry (help, status, init, diff, exit, clear,
-    //      context, keybindings, resume, fork, plan, permissions,
-    //      config, model, provider, compact), and dispatches with the
-    //      full `SlashCommandContext`.
-    const worktreeCommand = parseSlashCommand(resolvedUserMessage);
-    let pendingWorktree: PendingWorktreeState | null = null;
-    const originalCwd = processCwd();
-    if (worktreeCommand) {
-      try {
-        const result = await handleSlashCommand({
-          session,
-          command: worktreeCommand,
-          originalCwd,
-          pendingWorktree,
-        });
-        pendingWorktree = result.pendingWorktree;
-        if (result.cwd !== processCwd()) {
-          try {
-            process.chdir(result.cwd);
-          } catch (err) {
-            process.stderr.write(
-              `agenc: chdir(${result.cwd}) failed: ${err instanceof Error ? err.message : String(err)}\n`,
-            );
-          }
-        }
-        process.stdout.write(`${result.message}\n`);
-        return result.exitCode;
-      } finally {
-        sessionRef = null;
-        sessionSlot.current = null;
-        delegateSessionHolder.current = null;
-        await shutdown().catch(() => {
-          /* best effort */
-        });
-      }
-    }
-    void pendingWorktree;
-
-    // W3: generic slash dispatcher path. Only route through the
-    // dispatcher when the input actually parses as a slash command;
-    // otherwise fall through to the LLM turn. The dispatcher has its
-    // own unknown-command reporting + result rendering.
-    if (parseDispatcherInput(resolvedUserMessage)) {
+    // Slash-command short-circuit. `runSlashCommand` is the only entry
+    // path now, including the session-backed worktree commands.
+    if (resolvedUserMessage.trimStart().startsWith("/")) {
       try {
         const runResult = await runSlashCommand(resolvedUserMessage, {
           session,
@@ -798,7 +836,9 @@ export async function oneShotCLI(
         switch (runResult.kind) {
           case "skip":
             process.stderr.write(
-              "agenc: slash command rejected (multi-line input not allowed)\n",
+              /[\r\n]/.test(resolvedUserMessage)
+                ? "agenc: slash command rejected (multi-line input not allowed)\n"
+                : "agenc: slash command rejected (invalid syntax)\n",
             );
             return 1;
           case "unknown":
@@ -840,17 +880,15 @@ export async function oneShotCLI(
       }
     }
 
-    // T10 Group I: load tiered AGENTS.md/CLAUDE.md (managed/user/
-    // project/local) + memory prompt once, then assemble the real
-    // system prompt. The dynamic tail picks up env info, project
-    // instructions, memory, and MCP server instructions.
-    const turnInputs = await prepareTurnRuntimeInputs({
-      configStore,
-      workspaceRoot,
-      memoryDir,
-      memoryMdPath,
-      registry,
-    });
+    const loadTurnInputsFn = () =>
+      prepareTurnRuntimeInputs({
+        session,
+        configStore,
+        workspaceRoot,
+        memoryDir,
+        memoryMdPath,
+        registry,
+      });
 
     // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
     // the between-turn reload + system-prompt assembly + runTurn loop.
@@ -863,11 +901,7 @@ export async function oneShotCLI(
         input: resolvedUserMessage,
         configStore,
         configReloadLatch,
-        projectInstructions: turnInputs.projectInstructions,
-        memoryPromptText: turnInputs.memoryPromptText,
-        allMemories: turnInputs.allMemories,
-        enabledToolNames: turnInputs.enabledToolNames,
-        mcpServers: turnInputs.mcpServers,
+        loadTurnInputsFn,
         provider: resolvedProvider,
       })) {
         renderEvent(event);
@@ -1000,18 +1034,20 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       sessionSlot.current = session;
       delegateSessionHolder.current = session;
 
-      const turnInputs = await prepareTurnRuntimeInputs({
-        configStore,
-        workspaceRoot,
-        memoryDir,
-        memoryMdPath,
-        registry,
-      });
+      const loadTurnInputsFn = () =>
+        prepareTurnRuntimeInputs({
+          session,
+          configStore,
+          workspaceRoot,
+          memoryDir,
+          memoryMdPath,
+          registry,
+        });
       const uninstallTuiSessionContract = installTuiSessionContract({
         session,
         configStore,
         resolvedProvider,
-        turnInputs,
+        loadTurnInputsFn,
       });
 
       try {
@@ -1048,10 +1084,10 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
 }
 
 /**
- * Resume a prior session through the TUI. T12 Wave 5-B ships a stub
- * that looks up the rollout file on disk and bails with exit 1 when
- * the session id is unknown. Full history replay lands in a follow-up
- * (see TODO below).
+ * Resume a prior session through the TUI. The entry adapter verifies the
+ * requested id exists, then re-enters the shared bootstrap path with the
+ * original conversation id so rollout reconstruction can hydrate the
+ * session state and transcript before Ink mounts.
  */
 export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
   const agencHome = resolveAgencHomeFromEnv(process.env);

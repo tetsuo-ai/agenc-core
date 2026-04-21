@@ -28,6 +28,7 @@
 
 import React, { useEffect, useRef, type ReactNode } from "react";
 
+import type { Event } from "../../session/event-log.js";
 import {
   ApprovalOverlay,
   type ApprovalDecision,
@@ -50,7 +51,8 @@ export interface SessionLike {
   } | null;
   readonly abortController?: { readonly signal: AbortSignal };
   readonly cwd?: string;
-  readonly emit?: (event: { readonly kind: string; [k: string]: unknown }) => void;
+  readonly emit?: (event: Event | { readonly kind: string; [k: string]: unknown }) => void;
+  nextInternalSubId?(): string;
   readonly addPermissionRule?: (rule: unknown) => void;
 }
 
@@ -120,6 +122,38 @@ export interface InteractiveHandlerProps {
 
 const DEFAULT_GRACE_MS = 200;
 
+function emitSessionWarning(
+  session: SessionLike,
+  cause: string,
+  message: string,
+  extra: Record<string, unknown> = {},
+): void {
+  const nextInternalSubId =
+    typeof session.nextInternalSubId === "function"
+      ? session.nextInternalSubId.bind(session)
+      : null;
+  if (typeof session.emit !== "function" || nextInternalSubId === null) {
+    session.emit?.({
+      kind: `warning:${cause}`,
+      cause,
+      message,
+      ...extra,
+    });
+    return;
+  }
+  session.emit({
+    id: nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause,
+        message,
+        ...extra,
+      },
+    },
+  });
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // resolveWithGrace — exported for tests
 // ───────────────────────────────────────────────────────────────────────
@@ -151,13 +185,17 @@ export async function resolveWithGrace(
       behavior: "deny",
       source: "stale_pending_dropped",
     })) {
-      session.emit?.({
-        kind: "warning:stale_pending_dropped",
-        requestId: request.requestId,
-        toolName: request.toolName,
-        expectedTurnId: request.turnId,
-        actualTurnId: currentTurnId,
-      });
+      emitSessionWarning(
+        session,
+        "stale_pending_dropped",
+        `dropped stale approval request ${request.requestId} at turn boundary`,
+        {
+          requestId: request.requestId,
+          toolName: request.toolName,
+          expectedTurnId: request.turnId,
+          actualTurnId: currentTurnId,
+        },
+      );
     }
     return { bypassedModal: true, reason: "stale_pending_dropped" };
   }

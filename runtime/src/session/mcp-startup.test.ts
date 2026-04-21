@@ -253,6 +253,51 @@ describe("mcp-startup session-owned manager helpers", () => {
     });
     expect(service.getServerForTool?.("mcp.github.search")).toBe("github");
   });
+
+  it("surfaces effective connected-server instructions instead of an empty stub", async () => {
+    const manager = {
+      getConnectedServers: vi.fn(() => ["github"]),
+      getConfiguredServers: vi.fn(() => [
+        {
+          name: "github",
+          command: "github-mcp",
+          instructions: "Use for repo search.",
+        },
+        {
+          name: "filesystem",
+          command: "fs-mcp",
+          instructions: "Local files only.",
+        },
+      ]),
+      getServerConfig: vi.fn((name: string) =>
+        name === "github"
+          ? {
+              name: "github",
+              command: "github-mcp",
+              instructions: "Use for repo search.",
+            }
+          : undefined,
+      ),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager);
+    const effective = await service.effectiveServers({}, null);
+
+    expect(effective.get("github")).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        command: "github-mcp",
+        instructions: "Use for repo search.",
+      }),
+    );
+    expect(effective.get("filesystem")).toEqual(
+      expect.objectContaining({
+        enabled: false,
+        command: "fs-mcp",
+      }),
+    );
+    expect((effective.get("filesystem") as { instructions?: string } | undefined)?.instructions).toBeUndefined();
+  });
 });
 
 describe("mcp-startup.getMcpConfigFromEnv", () => {

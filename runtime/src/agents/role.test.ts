@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AgentRegistry } from "./registry.js";
 import {
@@ -15,47 +18,74 @@ import {
   tryResolveRoleConfig,
 } from "./role.js";
 
-// Each suite gets a fresh registry — nicknames now live on the
-// registry so there is no process-wide pool to reset.
 let registry: AgentRegistry;
+
+function restoreBuiltInRoles(): void {
+  registerAgentRole({
+    name: "explorer",
+    config: {
+      description: "Fast codebase exploration.",
+      configFile: "explorer.toml",
+      nicknameCandidates: ["scout", "ranger", "pathfinder", "seeker"],
+    },
+  });
+  registerAgentRole({
+    name: "worker",
+    config: {
+      description:
+        "Execution/production work — implement features, fix tests/bugs, " +
+        "split large refactors.",
+      nicknameCandidates: ["builder", "smith", "forge", "weaver"],
+    },
+  });
+  registerAgentRole({
+    name: "awaiter",
+    config: {
+      description: "Long-running polling subagent.",
+      configFile: "awaiter.toml",
+      background: true,
+      nicknameCandidates: ["sentinel", "watcher", "guardian", "keeper"],
+    },
+  });
+}
 
 beforeEach(() => {
   registry = new AgentRegistry();
+  restoreBuiltInRoles();
 });
 
 describe("role registry", () => {
   it("returns built-in default when name is undefined", () => {
-    const r = resolveAgentRole(undefined);
-    expect(r.name).toBe("default");
-    expect(r.config.nicknameCandidates).toContain("alpha");
+    const role = resolveAgentRole(undefined);
+    expect(role.name).toBe("default");
+    expect(role.config.nicknameCandidates).toContain("alpha");
   });
 
   it("falls back to default for unknown role names", () => {
-    const r = resolveAgentRole("unknown-role");
-    expect(r.name).toBe("default");
+    expect(resolveAgentRole("unknown-role").name).toBe("default");
   });
 
-  it("lists all built-in roles (default, explorer, worker, awaiter)", () => {
-    const names = listAgentRoles().map((r) => r.name);
+  it("lists all built-in roles", () => {
+    const names = listAgentRoles().map((role) => role.name);
     expect(names).toContain("default");
     expect(names).toContain("explorer");
     expect(names).toContain("worker");
     expect(names).toContain("awaiter");
   });
 
-  it("explorer has read-only allowlist + low reasoning", () => {
-    const r = getAgentRole("explorer")!;
-    expect(r.config.reasoningEffort).toBe("low");
-    expect(r.config.allowlist).toContain("system.readFile");
-    expect(r.config.allowlist).not.toContain("system.writeFile");
+  it("explorer resolves through codex-shaped config-file metadata instead of AgenC-only overlays", () => {
+    const role = getAgentRole("explorer")!;
+    expect(role.config.configFile).toBe("explorer.toml");
+    expect(role.config.reasoningEffort).toBeUndefined();
+    expect(role.config.allowlist).toBeUndefined();
   });
 
-  it("worker resolves with medium reasoning + worker nickname pool + no allowlist", () => {
-    const r = resolveAgentRole("worker");
-    expect(r.name).toBe("worker");
-    expect(r.config.reasoningEffort).toBe("medium");
-    expect(r.config.allowlist).toBeUndefined();
-    expect(r.config.nicknameCandidates).toEqual([
+  it("worker keeps nickname metadata but no built-in config-layer override", () => {
+    const role = resolveAgentRole("worker");
+    expect(role.name).toBe("worker");
+    expect(role.config.configFile).toBeUndefined();
+    expect(role.config.reasoningEffort).toBeUndefined();
+    expect(role.config.nicknameCandidates).toEqual([
       "builder",
       "smith",
       "forge",
@@ -63,10 +93,11 @@ describe("role registry", () => {
     ]);
   });
 
-  it("awaiter is background + long timeout (AgenC-only divergence from codex)", () => {
-    const r = getAgentRole("awaiter")!;
-    expect(r.config.background).toBe(true);
-    expect(r.config.timeoutMs).toBe(3_600_000);
+  it("awaiter derives runtime hints from built-in TOML while keeping background orchestration metadata", () => {
+    const role = getAgentRole("awaiter")!;
+    expect(role.config.background).toBe(true);
+    expect(role.config.reasoningEffort).toBe("low");
+    expect(role.config.timeoutMs).toBe(3_600_000);
   });
 
   it("registerAgentRole overrides built-ins by name", () => {
@@ -81,137 +112,145 @@ describe("role registry", () => {
 describe("nickname allocation", () => {
   it("dispenses distinct nicknames for the same role", () => {
     const role = getDefaultAgentRole();
-    const n1 = allocateNickname(role, registry);
-    const n2 = allocateNickname(role, registry);
-    expect(n1).not.toBe(n2);
+    const first = allocateNickname(role, registry);
+    const second = allocateNickname(role, registry);
+    expect(first).not.toBe(second);
   });
 
   it("cycles through candidates and appends ordinal suffix on overflow", () => {
     const role = getDefaultAgentRole();
     const allocated: string[] = [];
-    // The default pool has 8 candidates; exhaust them then force a cycle.
-    for (let i = 0; i < 10; i++) allocated.push(allocateNickname(role, registry));
-    // After exhaustion, expect at least one "the Nth" suffix format.
-    const suffixed = allocated.find((n) => /the \d+(?:st|nd|rd|th)/.test(n));
-    expect(suffixed).toBeDefined();
+    for (let i = 0; i < 10; i += 1) {
+      allocated.push(allocateNickname(role, registry));
+    }
+    expect(
+      allocated.find((nickname) => /the \d+(?:st|nd|rd|th)/.test(nickname)),
+    ).toBeDefined();
   });
 
   it("releases nickname back into the registry pool", () => {
     const role = getDefaultAgentRole();
-    const n = allocateNickname(role, registry);
-    expect(registry.hasNickname(n)).toBe(true);
-    releaseNickname(registry, n);
-    expect(registry.hasNickname(n)).toBe(false);
-    // A fresh registry returns the first candidate deterministically.
-    const fresh = new AgentRegistry();
-    const n2 = allocateNickname(role, fresh);
-    expect(n2).toBe(role.config.nicknameCandidates![0]);
+    const nickname = allocateNickname(role, registry);
+    expect(registry.hasNickname(nickname)).toBe(true);
+    releaseNickname(registry, nickname);
+    expect(registry.hasNickname(nickname)).toBe(false);
+
+    const freshRegistry = new AgentRegistry();
+    const recycled = allocateNickname(role, freshRegistry);
+    expect(recycled).toBe(role.config.nicknameCandidates![0]);
   });
 
   it("registry is the single source of truth — no double bookkeeping", () => {
     const role = getDefaultAgentRole();
-    const n = allocateNickname(role, registry);
-    expect(registry.hasNickname(n)).toBe(true);
-    // Releasing via the free function clears the registry's set.
-    releaseNickname(registry, n);
-    expect(registry.hasNickname(n)).toBe(false);
-    // Re-allocating on the same (now empty) pool yields the first
-    // candidate again, proving there is no hidden second set
-    // retaining the released name.
-    const n2 = allocateNickname(role, registry);
-    expect(n2).toBe(role.config.nicknameCandidates![0]);
+    const nickname = allocateNickname(role, registry);
+    expect(registry.hasNickname(nickname)).toBe(true);
+    releaseNickname(registry, nickname);
+    expect(registry.hasNickname(nickname)).toBe(false);
+    expect(allocateNickname(role, registry)).toBe(role.config.nicknameCandidates![0]);
   });
 
   it("two sibling spawns from the same role get distinct nicknames", () => {
     const role = resolveAgentRole("worker");
-    const n1 = allocateNickname(role, registry);
-    const n2 = allocateNickname(role, registry);
-    expect(n1).not.toBe(n2);
-    expect(role.config.nicknameCandidates).toContain(n1);
-    expect(role.config.nicknameCandidates).toContain(n2);
+    const first = allocateNickname(role, registry);
+    const second = allocateNickname(role, registry);
+    expect(first).not.toBe(second);
+    expect(role.config.nicknameCandidates).toContain(first);
+    expect(role.config.nicknameCandidates).toContain(second);
   });
 });
 
-describe("config-layer stack (Wave 3 port)", () => {
-  // The earlier `registerAgentRole overrides built-ins by name` test
-  // mutates the module-level registry; restore a clean explorer so
-  // this suite's assertions are not coupled to run order.
-  beforeEach(() => {
+describe("config-layer stack", () => {
+  it("applyRoleToConfig keeps explorer as a no-op when explorer.toml is empty", () => {
+    const explorer = getAgentRole("explorer")!;
+    const base = { cwd: "/tmp/project", reasoning_effort: "high" as const };
+    const next = applyRoleToConfig(explorer, base);
+    expect(next).toEqual(base);
+    expect(base.reasoning_effort).toBe("high");
+  });
+
+  it("applyRoleToConfig parses codex TOML aliases into canonical AgenC config keys", () => {
     registerAgentRole({
-      name: "explorer",
+      name: "custom-inline",
       config: {
-        description: "Fast codebase exploration.",
-        reasoningEffort: "low",
-        allowlist: ["system.readFile", "system.listDir"],
-        nicknameCandidates: ["scout", "ranger", "pathfinder", "seeker"],
+        description: "inline role",
+        configToml: [
+          'model = "role-model"',
+          'model_reasoning_effort = "high"',
+          'name = "ignored-role-metadata"',
+          'developer_instructions = "ignored"',
+        ].join("\n"),
       },
     });
-  });
 
-  it("applyRoleToConfig(explorer) sets reasoning=low + projects allowlist", () => {
-    const explorer = getAgentRole("explorer")!;
     const base = { cwd: "/tmp/project" };
-    const next = applyRoleToConfig(explorer, base);
-    expect(next.reasoningEffort).toBe("low");
-    expect(next.allowlist).toContain("system.readFile");
-    // Base sibling fields pass through untouched.
+    const next = applyRoleToConfig(getAgentRole("custom-inline")!, base);
     expect(next.cwd).toBe("/tmp/project");
-    // applyRoleToConfig is pure — base stays unchanged.
-    expect((base as { reasoningEffort?: string }).reasoningEffort).toBeUndefined();
+    expect(next.model).toBe("role-model");
+    expect(next.reasoning_effort).toBe("high");
+    expect("name" in next).toBe(false);
+    expect("developer_instructions" in next).toBe(false);
   });
 
-  it("applyRoleToConfig does not rewrite fields the role doesn't set", () => {
-    const defaultRole = getDefaultAgentRole();
-    const base = { reasoningEffort: "high" as const, cwd: "/x" };
-    const next = applyRoleToConfig(defaultRole, base);
-    // default role sets no reasoningEffort — base value sticks.
-    expect(next.reasoningEffort).toBe("high");
-    expect(next.cwd).toBe("/x");
-  });
-
-  it("buildConfigLayerStack: user layer overrides role layer", () => {
-    const base = { cwd: "/x" };
-    const effective = buildConfigLayerStack({
-      base,
-      roleName: "explorer",
-      userLayer: { reasoningEffort: "high" },
+  it("buildConfigLayerStack applies base → role → user precedence", () => {
+    registerAgentRole({
+      name: "custom-precedence",
+      config: {
+        description: "precedence role",
+        configToml: [
+          'model = "role-model"',
+          'model_reasoning_effort = "low"',
+        ].join("\n"),
+      },
     });
-    // role says low, user says high → user wins.
-    expect(effective.reasoningEffort).toBe("high");
-    // role-layer allowlist still flows through (user didn't touch it).
-    expect(effective.allowlist).toContain("system.readFile");
-  });
 
-  it("buildConfigLayerStack: base-role-user precedence", () => {
-    const base = {
-      cwd: "/x",
-      reasoningEffort: "medium" as const,
-      timeoutMs: 1000,
-    };
     const effective = buildConfigLayerStack({
-      base,
-      roleName: "awaiter",
-      userLayer: { timeoutMs: 42 },
+      base: { cwd: "/x", model: "base-model" },
+      roleName: "custom-precedence",
+      userLayer: { model: "user-model" },
     });
-    // awaiter projects background=true, reasoning=low, timeout=3_600_000.
-    // user layer then overrides timeoutMs → 42.
-    expect(effective.reasoningEffort).toBe("low");
-    expect(effective.background).toBe(true);
-    expect(effective.timeoutMs).toBe(42);
-    // base cwd still intact (not a role-override field).
+
     expect(effective.cwd).toBe("/x");
+    expect(effective.model).toBe("user-model");
+    expect(effective.reasoning_effort).toBe("low");
   });
 
-  it("buildConfigLayerStack: unknown role leaves base unchanged except user overlay", () => {
-    const base = { cwd: "/x", reasoningEffort: "medium" as const };
-    const effective = buildConfigLayerStack({
-      base,
-      roleName: "nope-not-a-role",
-      userLayer: { background: true },
+  it("buildConfigLayerStack resolves a role-selected profile against the merged config", () => {
+    registerAgentRole({
+      name: "profile-role",
+      config: {
+        description: "profile role",
+        configToml: 'profile = "fast"',
+      },
     });
-    expect(effective.reasoningEffort).toBe("medium");
-    expect(effective.background).toBe(true);
+
+    const effective = buildConfigLayerStack({
+      base: {
+        cwd: "/x",
+        profiles: {
+          fast: {
+            model: "fast-model",
+            approval_policy: "never",
+          },
+        },
+      },
+      roleName: "profile-role",
+    });
+
     expect(effective.cwd).toBe("/x");
+    expect(effective.model).toBe("fast-model");
+    expect(effective.approval_policy).toBe("never");
+  });
+
+  it("buildConfigLayerStack leaves unknown roles unchanged except for the user overlay", () => {
+    const effective = buildConfigLayerStack({
+      base: { cwd: "/x", reasoning_effort: "medium" as const },
+      roleName: "missing-role",
+      userLayer: { mode: "user-overlay" },
+    });
+
+    expect(effective.cwd).toBe("/x");
+    expect(effective.reasoning_effort).toBe("medium");
+    expect(effective.mode).toBe("user-overlay");
   });
 
   it("tryResolveRoleConfig returns undefined for unknown; resolveAgentRole falls back to default", () => {
@@ -221,29 +260,65 @@ describe("config-layer stack (Wave 3 port)", () => {
     expect(resolveAgentRole("unknown").name).toBe("default");
   });
 
-  it("loadRoleLayerToml stub returns empty object (T10 TODO)", () => {
-    const role = getAgentRole("explorer")!;
-    expect(loadRoleLayerToml(role)).toEqual({});
+  it("loadRoleLayerToml reads built-in TOML and strips user-role metadata from disk-backed TOML", () => {
+    expect(loadRoleLayerToml(getAgentRole("explorer")!)).toEqual({});
+
+    const dir = mkdtempSync(join(tmpdir(), "agenc-role-test-"));
+    const path = join(dir, "custom-role.toml");
+    writeFileSync(
+      path,
+      [
+        'name = "custom"',
+        'description = "Custom description"',
+        'nickname_candidates = ["one"]',
+        'developer_instructions = "ignored"',
+        'model = "file-model"',
+        'model_reasoning_effort = "medium"',
+      ].join("\n"),
+    );
+
+    registerAgentRole({
+      name: "file-backed-role",
+      config: {
+        description: "file-backed role",
+        configFile: path,
+      },
+    });
+
+    expect(loadRoleLayerToml(getAgentRole("file-backed-role")!)).toEqual({
+      model: "file-model",
+      model_reasoning_effort: "medium",
+    });
   });
 
-  it("formatRoleList produces a header + per-role summary", () => {
-    const text = formatRoleList(listAgentRoles());
+  it("formatRoleList uses codex-style locked-setting notes from role TOML", () => {
+    registerAgentRole({
+      name: "model-locked-role",
+      config: {
+        description: "Locked config role.",
+        configToml: [
+          'model = "gpt-test"',
+          'model_reasoning_effort = "high"',
+        ].join("\n"),
+      },
+    });
+
+    const text = formatRoleList([
+      getDefaultAgentRole(),
+      getAgentRole("model-locked-role")!,
+    ]);
+
     expect(text).toContain("Available roles:");
     expect(text).toContain("default");
-    expect(text).toContain("explorer:");
-    // Capability hint line for explorer should mention low reasoning.
-    expect(text).toMatch(/reasoning=low/);
-    // Worker should appear in the listing.
-    expect(text).toContain("worker:");
-    // Default role's description is present.
-    expect(text).toContain("Unrestricted subagent");
+    expect(text).toContain("Default agent.");
+    expect(text).toContain("model-locked-role:");
+    expect(text).toContain("model is set to `gpt-test`");
+    expect(text).toContain("reasoning effort is set to `high`");
   });
 
   it("formatRoleList skips duplicate names", () => {
     const explorer = getAgentRole("explorer")!;
     const text = formatRoleList([explorer, explorer]);
-    // explorer should appear exactly once.
-    const matches = text.match(/explorer:/g);
-    expect(matches?.length).toBe(1);
+    expect(text.match(/explorer:/g)?.length).toBe(1);
   });
 });

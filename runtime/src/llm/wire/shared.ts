@@ -13,6 +13,7 @@ import type {
   LLMToolChoice,
   LLMUsage,
 } from "../types.js";
+import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall } from "../types.js";
 
 export function coerceUsage(usage: {
@@ -79,6 +80,28 @@ export function toOpenAIMessageContent(
   });
 }
 
+export function toOpenAIToolMessageContent(
+  content: string | readonly LLMContentPart[],
+): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") return content;
+
+  const parts = content.map((part) => {
+    if (part.type === "text") {
+      return { type: "text", text: part.text };
+    }
+    return {
+      type: "image_url",
+      image_url: { url: part.image_url.url },
+    };
+  });
+
+  if (parts.length === 0) return "";
+  if (parts.length === 1 && parts[0]?.type === "text") {
+    return String(parts[0].text ?? "");
+  }
+  return parts;
+}
+
 export function toAnthropicMessageContent(
   content: string | readonly LLMContentPart[],
 ): Array<Record<string, unknown>> | string {
@@ -92,6 +115,61 @@ export function toAnthropicMessageContent(
       text: `[image: ${part.image_url.url}]`,
     };
   });
+}
+
+export function toAnthropicToolResultContent(
+  content: string | readonly LLMContentPart[],
+): Array<Record<string, unknown>> | string {
+  if (typeof content === "string") return content;
+
+  const parts = content.map((part) => {
+    if (part.type === "text") {
+      return { type: "text", text: part.text };
+    }
+    return {
+      type: "image",
+      source: {
+        type: "url",
+        url: part.image_url.url,
+      },
+    };
+  });
+
+  if (parts.length === 0) return "";
+  if (parts.length === 1 && parts[0]?.type === "text") {
+    return String(parts[0].text ?? "");
+  }
+  return parts;
+}
+
+export function toResponsesToolOutput(
+  content: string | readonly LLMContentPart[],
+): string | Array<Record<string, unknown>> {
+  if (typeof content === "string") return content;
+
+  const parts: Array<Record<string, unknown>> = [];
+  let hasImage = false;
+  for (const part of content) {
+    if (part.type === "text") {
+      if (part.text.length === 0) continue;
+      parts.push({ type: "input_text", text: part.text });
+      continue;
+    }
+    hasImage = true;
+    parts.push({
+      type: "input_image",
+      image_url: part.image_url.url,
+    });
+  }
+
+  if (parts.length === 0) return "";
+  if (!hasImage) {
+    return parts
+      .map((part) => String(part.text ?? ""))
+      .filter((text) => text.length > 0)
+      .join("\n");
+  }
+  return parts;
 }
 
 export function parseOpenAIToolChoice(
@@ -131,6 +209,12 @@ export function toAnthropicTools(tools: readonly LLMTool[]): Array<Record<string
     description: tool.function.description,
     input_schema: tool.function.parameters,
   }));
+}
+
+export function prepareMessagesForWire(
+  messages: readonly LLMMessage[],
+): readonly LLMMessage[] {
+  return normalizeMessagesForAPI(messages);
 }
 
 export function normalizeToolCalls(
@@ -229,6 +313,10 @@ export function withSerializedMetrics(
   options: LLMChatOptions | undefined,
 ) {
   const serialized = JSON.stringify(body);
+  const bodyRecord =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? (body as Record<string, unknown>)
+      : {};
   return {
     ...metrics,
     serializedChars: serialized.length,
@@ -236,7 +324,28 @@ export function withSerializedMetrics(
       typeof options?.toolChoice === "string"
         ? options.toolChoice
         : options?.toolChoice?.name,
+    store:
+      typeof bodyRecord.store === "boolean" ? bodyRecord.store : undefined,
     parallelToolCalls: options?.parallelToolCalls,
-    stream: undefined,
+    stream:
+      typeof bodyRecord.stream === "boolean" ? bodyRecord.stream : undefined,
+  };
+}
+
+export function withEndpointMarkers<
+  T extends ReturnType<typeof withSerializedMetrics>,
+>(
+  metrics: T,
+  endpoint: string,
+  response?: Record<string, unknown>,
+): T & { endpoint: string; responseId?: string } {
+  const responseId =
+    typeof response?.id === "string" && response.id.trim().length > 0
+      ? response.id.trim()
+      : undefined;
+  return {
+    ...metrics,
+    endpoint,
+    responseId,
   };
 }

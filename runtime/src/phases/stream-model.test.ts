@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { EventLog, type Event } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -8,8 +8,27 @@ import type {
   LLMMessage,
   LLMProvider,
   LLMResponse,
+  LLMTool,
+  LLMToolCall,
   StreamProgressCallback,
 } from "../llm/types.js";
+import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
+import type { Tool } from "../tools/types.js";
+
+const streamedDispatchCalls: string[] = [];
+
+vi.mock("./execute-tools.js", () => ({
+  ensureStreamingToolExecutor: () => ({ mocked: true }),
+  queueStreamingToolCall: (
+    _executor: unknown,
+    _block: unknown,
+    call: { id: string },
+  ) => {
+    streamedDispatchCalls.push(call.id);
+    return true;
+  },
+}));
+
 import {
   streamModel,
   type StreamModelRequestContract,
@@ -72,6 +91,7 @@ function mkRequest(
 function mkSession(
   provider: LLMProvider,
   budgetTracker: BudgetTracker | null = null,
+  registry?: ToolRegistry,
 ): {
   session: Session;
   events: Event[];
@@ -83,7 +103,10 @@ function mkSession(
   const session = {
     conversationId: "conv-stream",
     eventLog,
-    services: { provider },
+    services: {
+      provider,
+      ...(registry !== undefined ? { registry } : {}),
+    },
     budgetTracker,
     nextInternalSubId: () => `sub-${++subId}`,
     emit: (event: Event) => {
@@ -120,7 +143,95 @@ function mkProvider(
   };
 }
 
+function mkRegistry(tools: Tool[]): ToolRegistry {
+  return {
+    tools,
+    toLLMTools(): LLMTool[] {
+      return tools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      }));
+    },
+    dispatch: async (call: LLMToolCall): Promise<ToolDispatchResult> => {
+      const tool = tools.find((candidate) => candidate.name === call.name);
+      if (!tool) {
+        return {
+          content: JSON.stringify({ error: `unknown tool: ${call.name}` }),
+          isError: true,
+        };
+      }
+      const args = call.arguments ? JSON.parse(call.arguments) : {};
+      const result = await tool.execute(args);
+      return { content: result.content, isError: result.isError };
+    },
+  };
+}
+
 describe("streamModel — live assistant text sanitization", () => {
+  test("dispatches streamed tool calls before chatStream resolves", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const registry = mkRegistry([
+      {
+        name: "system.readFile",
+        description: "reads a file",
+        inputSchema: { type: "object" },
+        concurrencyClass: { kind: "shared_read" as const },
+        execute: async () => {
+          return { content: "file contents" };
+        },
+      },
+    ]);
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({
+        content: "Working...",
+        done: false,
+        toolCalls: [
+          {
+            id: "tool-1",
+            name: "system.readFile",
+            arguments: JSON.stringify({ path: "/tmp/demo.txt" }),
+          },
+        ],
+      });
+      expect(streamedDispatchCalls).toEqual(["tool-1"]);
+      return {
+        content: "Working...",
+        toolCalls: [
+          {
+            id: "tool-1",
+            name: "system.readFile",
+            arguments: JSON.stringify({ path: "/tmp/demo.txt" }),
+          },
+        ],
+        usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    });
+    const { session, events } = mkSession(provider, null, registry);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "hello" }]),
+        tools: registry.toLLMTools(),
+      },
+      undefined,
+    );
+
+    expect(state.toolUseBlocks.map((block) => block.id)).toEqual(["tool-1"]);
+    expect(streamedDispatchCalls).toEqual(["tool-1"]);
+    expect(events.some((event) => event.msg.type === "agent_message")).toBe(true);
+  });
+
   test("strips hidden tags and spoof patterns before delta/final event emission", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

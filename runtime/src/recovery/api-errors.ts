@@ -169,7 +169,10 @@ export function isWithheld413Message(msg: AssistantMessage): boolean {
 
 /** Whether the last iteration's stop-hook was blocking. */
 export function isStopHookBlocking(state: TurnState): boolean {
-  return state.stopHookActive === true;
+  return (
+    state.stopHookActive === true &&
+    state.transition?.reason === "stop_hook_blocking"
+  );
 }
 
 /**
@@ -183,7 +186,20 @@ export function isStopHookBlocking(state: TurnState): boolean {
  * by `onFallbackError`.
  */
 export function isStreamingFallbackOccured(state: TurnState): boolean {
-  return state.transition?.reason === "streaming_fallback_retry";
+  if (state.transition?.reason === "streaming_fallback_retry") {
+    return true;
+  }
+  const lastAssistant = state.assistantMessages.at(-1);
+  const lastStreamError = (
+    state as TurnState & { lastStreamError?: unknown }
+  ).lastStreamError;
+  return (
+    lastAssistant?.apiError === "provider_error" &&
+    lastAssistant.text !== undefined &&
+    lastAssistant.text.length > 0 &&
+    lastStreamError !== undefined &&
+    !isFallbackTriggeredError(lastStreamError)
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -6,7 +6,11 @@ import type { Session } from "../session/session.js";
 function stubSession(
   rolloutStore: { flushDurable: ReturnType<typeof vi.fn> } | null = null,
 ): Session {
-  return { rolloutStore } as unknown as Session;
+  return {
+    rolloutStore,
+    sessionConfiguration: { cwd: "/repo" },
+    config: { cwd: "/repo" },
+  } as unknown as Session;
 }
 
 const history: ReadonlyArray<LLMMessage> = [
@@ -87,6 +91,19 @@ describe("forkSubagent", () => {
       worktreePath: "/tmp/wt",
     });
     expect(res.directivePrompt).toContain("/tmp/wt");
+  });
+
+  it("explains how inherited paths map into an isolated worktree", async () => {
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: history,
+      mode: { kind: "new" },
+      taskPrompt: "t",
+      worktreePath: "/tmp/wt",
+    });
+    expect(res.directivePrompt).toContain("/repo");
+    expect(res.directivePrompt).toContain("/tmp/wt");
+    expect(res.directivePrompt).toContain("Translate inherited paths");
   });
 });
 

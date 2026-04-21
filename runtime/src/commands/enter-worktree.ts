@@ -4,7 +4,7 @@
  * Port of openclaude `tools/EnterWorktreeTool/EnterWorktreeTool.ts`
  * (127 LOC). Creates (or resumes) an isolated worktree at
  * `<project>/.agenc-worktrees/<slug>` and switches the current
- * session's cwd to point at it.
+ * session's next-turn cwd to point at it.
  *
  * @module
  */
@@ -21,6 +21,7 @@ import type { Session } from "../session/session.js";
 
 export interface EnterWorktreeOpts {
   readonly session: Session;
+  readonly cwd?: string;
   readonly slug: string;
   readonly base?: string;
   readonly enableSparseCheckout?: boolean;
@@ -36,13 +37,14 @@ export type EnterWorktreeOutcome =
   | { readonly kind: "rejected"; readonly reason: string };
 
 /**
- * Enter (or resume) a worktree. Returns the handle on success;
- * callers bind cwd via `process.chdir(handle.path)` or
- * `runWithCwdOverride(handle.path, fn)` (async agents).
+ * Enter (or resume) a worktree. Returns the handle on success; the
+ * caller records session-owned worktree state so future turns resolve
+ * against the worktree path without mutating process-global cwd.
  */
 export async function enterWorktree(
   opts: EnterWorktreeOpts,
 ): Promise<EnterWorktreeOutcome> {
+  const cwd = opts.cwd ?? opts.session.sessionConfiguration.cwd ?? process.cwd();
   try {
     validateWorktreeSlug(opts.slug);
   } catch (err) {
@@ -56,15 +58,15 @@ export async function enterWorktree(
     };
   }
 
-  const gitRoot = findGitRoot(process.cwd());
+  const gitRoot = findGitRoot(cwd);
   if (!gitRoot) {
     emitError(opts.session.eventLog, opts.session.nextInternalSubId(), {
       cause: "worktree_no_git_repo",
-      message: `cwd ${process.cwd()} is not inside a git repository`,
+      message: `cwd ${cwd} is not inside a git repository`,
     });
     return {
       kind: "rejected",
-      reason: `cwd ${process.cwd()} is not inside a git repository`,
+      reason: `cwd ${cwd} is not inside a git repository`,
     };
   }
 

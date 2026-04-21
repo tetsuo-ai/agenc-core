@@ -118,4 +118,47 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       .map((s) => s.id);
     expect(stillQueued.length).toBeGreaterThanOrEqual(1);
   });
+
+  test("uses tool.isConcurrencySafe for per-call downgrade", async () => {
+    let active = 0;
+    let peak = 0;
+    const tool: Tool = {
+      name: "system.readFile",
+      description: "conditionally parallel",
+      inputSchema: { type: "object" },
+      concurrencyClass: SHARED_READ,
+      isConcurrencySafe: (args) => args["safe"] === true,
+      execute: async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setTimeout(resolve, 15));
+        active -= 1;
+        return { content: "ok" };
+      },
+    };
+    const exec = new StreamingToolExecutor({
+      registry: mockRegistry(async (call) => {
+        const parsed = call.arguments ? JSON.parse(call.arguments) : {};
+        const result = await tool.execute(parsed);
+        return { content: result.content, isError: result.isError };
+      }, [tool]),
+    });
+    exec.addTool(
+      makeBlock("unsafe", "system.readFile"),
+      { id: "unsafe", name: "system.readFile", arguments: '{"safe":false}' },
+    );
+    exec.addTool(
+      makeBlock("safe", "system.readFile"),
+      { id: "safe", name: "system.readFile", arguments: '{"safe":true}' },
+    );
+    exec.close();
+
+    const seenIds: string[] = [];
+    for await (const result of exec.getRemainingResults()) {
+      seenIds.push(result.toolCall.id);
+    }
+
+    expect(seenIds).toEqual(["unsafe", "safe"]);
+    expect(peak).toBe(1);
+  });
 });

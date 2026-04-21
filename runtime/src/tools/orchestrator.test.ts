@@ -297,6 +297,25 @@ describe("requestApproval pipeline", () => {
     expect(noResolver).toHaveBeenCalledOnce();
   });
 
+  test("abort signal preempts a slow resolver", async () => {
+    const ctl = new AbortController();
+    const resolverSpy = vi.fn(
+      async () =>
+        await new Promise<ReviewDecision>((resolve) => {
+          setTimeout(() => resolve({ kind: "approved" }), 50);
+        }),
+    );
+    setTimeout(() => ctl.abort("user_interrupt"), 10);
+
+    const res = await requestApproval({
+      ctx: { ...mkCtx(), signal: ctl.signal },
+      resolver: { request: resolverSpy } as ApprovalResolver,
+    });
+
+    expect(res.decision.kind).toBe("abort");
+    expect(res.source).toBe("aborted");
+  });
+
   test("isApprovalAccepted covers all approve variants", () => {
     expect(isApprovalAccepted({ kind: "approved" })).toBe(true);
     expect(isApprovalAccepted({ kind: "approved_for_session" })).toBe(true);
@@ -555,6 +574,35 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
       decision: { kind: "denied" },
       name: "ApprovalRejectedError",
     });
+  });
+
+  test("needs_approval path: abort during approval rejects without dispatching", async () => {
+    const ctl = new AbortController();
+    const dispatched = vi.fn(async () => "ok");
+    const resolver: ApprovalResolver = {
+      request: async () =>
+        await new Promise<ReviewDecision>((resolve) => {
+          setTimeout(() => resolve({ kind: "approved" }), 50);
+        }),
+    };
+    setTimeout(() => ctl.abort("ctrl_c"), 10);
+
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: { ...mkCtx(), signal: ctl.signal },
+        signal: ctl.signal,
+        approvalPolicy: "untrusted",
+        sandboxMode: "workspace_write",
+        dispatch: dispatched,
+        approvalResolver: resolver,
+      }),
+    ).rejects.toMatchObject({
+      decision: { kind: "abort" },
+      message: "approval aborted",
+      name: "ApprovalRejectedError",
+    });
+    expect(dispatched).not.toHaveBeenCalled();
   });
 
   test("forbidden classification → ApprovalRejectedError, no dispatch", async () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -138,6 +138,70 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("hydrates the session permission registry from disk settings", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await mkdir(join(home, ".agenc"), { recursive: true });
+    await writeFile(
+      join(home, ".agenc", "settings.json"),
+      JSON.stringify(
+        {
+          permissions: {
+            defaultMode: "acceptEdits",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.session.permissionModeRegistry.current().mode).toBe(
+        "acceptEdits",
+      );
+      expect(
+        boot.session.sessionConfiguration.permissionContext?.mode,
+      ).toBe("acceptEdits");
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("reuses an explicit conversationId when resume bootstraps an existing session", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -231,6 +295,17 @@ describe("bootstrapLocalRuntimeSession", () => {
         type: "response_item",
         payload: { role: "assistant", content: "hi" },
       });
+      first.rolloutStore.appendRollout({
+        type: "turn_context",
+        payload: {
+          turnId: "turn-resume",
+          cwd: workspace,
+          approvalPolicy: "never",
+          sandboxPolicy: "read_only",
+          model: "grok-4-fast",
+          realtimeActive: true,
+        },
+      });
       first.session.emit({
         id: first.session.nextInternalSubId(),
         msg: { type: "user_message", payload: { message: "hello" } },
@@ -259,6 +334,17 @@ describe("bootstrapLocalRuntimeSession", () => {
         { role: "user", content: "hello" },
         { role: "assistant", content: "hi" },
       ]);
+      expect(resumed.initialState.previousTurnSettings).toEqual({
+        model: "grok-4-fast",
+        realtimeActive: true,
+      });
+      expect(resumed.initialState.referenceContextItem).toEqual(
+        expect.objectContaining({
+          turnId: "turn-resume",
+          model: "grok-4-fast",
+          realtimeActive: true,
+        }),
+      );
       expect(
         (resumed.session as unknown as {
           getInitialTranscriptEvents(): Array<{ type: string; payload: unknown }>;
@@ -459,6 +545,67 @@ describe("bootstrapLocalRuntimeSession", () => {
       await boot.shutdown();
 
       expect(getCurrentRuntimeSession()).toBeNull();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("bootstraps the real agent control plane, registers /root, and tears it down through lifecycle shutdown", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      const { ensureAgentControl } = await import("./delegate-tool.js");
+      const { control } = ensureAgentControl(boot.session);
+      const shutdownAllSpy = vi
+        .spyOn(control, "shutdownAll")
+        .mockResolvedValue(undefined);
+
+      const child = await control.spawn({ parentPath: "/root" });
+      expect(
+        boot.rolloutStore
+          .listThreadSpawnChildrenWithStatus(boot.conversationId, "open")
+          .map((edge) => edge.childThreadId),
+      ).toContain(child.agentId);
+
+      await boot.shutdown();
+      shutdown = null;
+
+      expect(shutdownAllSpy).toHaveBeenCalledWith("session_shutdown");
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

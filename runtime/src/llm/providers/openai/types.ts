@@ -12,6 +12,12 @@ export interface OpenAIOAuthConfig extends OAuthRefreshCallbacks {
   readonly refreshToken?: string;
 }
 
+export type OpenAIProviderAuthStrategy =
+  | "bearer"
+  | "optional_bearer"
+  | "none"
+  | "google_api_key";
+
 export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly apiKey?: string;
   readonly baseURL?: string;
@@ -23,4 +29,8 @@ export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly oauth?: OpenAIOAuthConfig;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
+  readonly providerName?: string;
+  readonly apiKeyEnvLabel?: string;
+  readonly authStrategy?: OpenAIProviderAuthStrategy;
+  readonly basePath?: string;
 }

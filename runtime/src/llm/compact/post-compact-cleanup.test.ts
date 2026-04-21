@@ -9,7 +9,7 @@
  * @module
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   IncrementalTracker,
   registerIncrementalTracker,
@@ -90,5 +90,13 @@ describe("runPostCompactCleanup (I-2)", () => {
     // Second call must not throw and must leave the tracker empty.
     runPostCompactCleanup();
     expect(tracker.previousResponseId()).toBeUndefined();
+  });
+
+  it("clears the active session-backed provider continuation state too", () => {
+    const clearProviderResponseId = vi.fn();
+
+    runPostCompactCleanup("compact", { clearProviderResponseId });
+
+    expect(clearProviderResponseId).toHaveBeenCalledTimes(1);
   });
 });

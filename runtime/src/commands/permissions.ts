@@ -476,6 +476,23 @@ async function handleModeSubcommand(
   }
   let nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
   await registry.update(nextCtx);
+  if (
+    typeof (
+      ctx.session as Session & {
+        syncPermissionContextFromRegistry?: (
+          nextCtx: ToolPermissionContext,
+        ) => Promise<void>;
+      }
+    ).syncPermissionContextFromRegistry === "function"
+  ) {
+    await (
+      ctx.session as Session & {
+        syncPermissionContextFromRegistry: (
+          nextCtx: ToolPermissionContext,
+        ) => Promise<void>;
+      }
+    ).syncPermissionContextFromRegistry(nextCtx);
+  }
 
   // I-8: surface mode change through the event bus so sidecars see it.
   try {
@@ -533,6 +550,23 @@ async function handleAcceptBypassSubcommand(
       bypassPermissionsAcceptedIn: [...existing, workspacePath],
     };
     await registry.update(nextCtx);
+    if (
+      typeof (
+        ctx.session as Session & {
+          syncPermissionContextFromRegistry?: (
+            nextCtx: ToolPermissionContext,
+          ) => Promise<void>;
+        }
+      ).syncPermissionContextFromRegistry === "function"
+    ) {
+      await (
+        ctx.session as Session & {
+          syncPermissionContextFromRegistry: (
+            nextCtx: ToolPermissionContext,
+          ) => Promise<void>;
+        }
+      ).syncPermissionContextFromRegistry(nextCtx);
+    }
   }
 
   // Persisted-config update. Best-effort: if persistence fails, we still

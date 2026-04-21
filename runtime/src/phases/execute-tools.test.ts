@@ -27,7 +27,11 @@ import {
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
-import { executeTools } from "./execute-tools.js";
+import {
+  ensureStreamingToolExecutor,
+  executeTools,
+  queueStreamingToolCall,
+} from "./execute-tools.js";
 
 function mkCtx(): TurnContext {
   return {
@@ -432,6 +436,56 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     await executeTools(state, mkCtx(), session);
 
     expect(progressEvents).toEqual(["line-1", "line-2"]);
+  });
+
+  test("mid-stream queued tools are not re-dispatched and keep progress before completion", async () => {
+    let executed = 0;
+    const eventTypes: string[] = [];
+    const tool: Tool = {
+      name: "bash-like",
+      description: "",
+      inputSchema: { type: "object" },
+      execute: async (args) => {
+        executed += 1;
+        const onProgress = (args as { __onProgress?: (e: { chunk: string }) => void })
+          .__onProgress;
+        onProgress?.({ chunk: "line-1" });
+        return { content: "done" };
+      },
+    };
+
+    const log = new EventLog();
+    log.subscribe((ev) => {
+      eventTypes.push(ev.msg.type);
+    });
+    const registry = mkRegistry([tool]);
+    const session = mkSession({ log, registry });
+    const call: LLMToolCall = {
+      id: "c-mid",
+      name: "bash-like",
+      arguments: "{}",
+    };
+    const state = mkState({ toolCalls: [call] });
+    const executor = ensureStreamingToolExecutor(state, mkCtx(), session);
+    queueStreamingToolCall(
+      executor,
+      { type: "tool_use", id: call.id, name: call.name, input: {} },
+      call,
+      session,
+    );
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(executed).toBe(1);
+    expect(eventTypes.filter((type) => type === "tool_call_started")).toHaveLength(1);
+    expect(eventTypes.indexOf("tool_progress")).toBeGreaterThan(
+      eventTypes.indexOf("tool_call_started"),
+    );
+    expect(eventTypes.indexOf("tool_call_completed")).toBeGreaterThan(
+      eventTypes.indexOf("tool_progress"),
+    );
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toBe("done");
   });
 
   // ───────────────────────────────────────────────────────────────────

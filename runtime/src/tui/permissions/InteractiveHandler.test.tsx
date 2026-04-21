@@ -70,18 +70,19 @@ function createResolver(): {
 // ─────────────────────────────────────────────────────────────────────
 
 interface FakeSession extends SessionLike {
-  emitted: Array<{ kind: string; [k: string]: unknown }>;
+  emitted: Array<unknown>;
   abortController: AbortController;
 }
 
 function createSession(opts?: { currentTurnId?: string | null }): FakeSession {
   const abortController = new AbortController();
-  const emitted: Array<{ kind: string; [k: string]: unknown }> = [];
+  const emitted: Array<unknown> = [];
   const currentTurnId = opts?.currentTurnId ?? "turn-1";
   const session: FakeSession = {
     abortController,
     cwd: "/tmp/agenc-test",
     emitted,
+    nextInternalSubId: () => "sub-stale-warning",
     activeTurn: {
       unsafePeek() {
         return currentTurnId === null ? null : { turnId: currentTurnId };
@@ -248,8 +249,19 @@ describe("InteractiveHandler", () => {
       behavior: "deny",
       source: "stale_pending_dropped",
     });
-    expect(session.emitted.some((e) => e.kind === "warning:stale_pending_dropped"))
-      .toBe(true);
+    expect(session.emitted).toContainEqual({
+      id: "sub-stale-warning",
+      msg: {
+        type: "warning",
+        payload: expect.objectContaining({
+          cause: "stale_pending_dropped",
+          requestId: "req-1",
+          toolName: "Bash",
+          expectedTurnId: "turn-OLD",
+          actualTurnId: "turn-NEW",
+        }),
+      },
+    });
     expect(overlay.pushed).toHaveLength(0);
   });
 

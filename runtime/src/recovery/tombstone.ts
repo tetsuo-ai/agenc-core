@@ -30,6 +30,7 @@ import type {
   UserMessage,
 } from "../session/turn-state.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import { appendTerminalToolResults } from "./terminal-tool-result.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Tombstone message shape
@@ -82,6 +83,14 @@ export function tombstoneOrphans(
   state: TurnState,
   opts: TombstoneOrphansOpts,
 ): ReadonlyArray<TombstoneMessage> {
+  if (opts.reason !== "model_fallback") {
+    appendTerminalToolResults(
+      state,
+      "aborted",
+      `recovery cleanup: ${opts.reason}`,
+    );
+  }
+
   const tombstones: TombstoneMessage[] = [];
   for (const msg of state.assistantMessages) {
     const tombstone: TombstoneMessage = {

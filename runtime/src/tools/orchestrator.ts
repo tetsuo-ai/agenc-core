@@ -120,6 +120,7 @@ export interface ApprovalCtx {
   readonly callId: string;
   readonly toolName: string;
   readonly turnId: string;
+  readonly signal?: AbortSignal;
   readonly guardianReviewId?: string;
   readonly retryReason?: string;
 }
@@ -371,13 +372,56 @@ export interface RequestApprovalOpts {
   /** Raw args fed to the decision hooks. Defaults to `{}` when absent. */
   readonly args?: Record<string, unknown>;
   readonly resolver?: ApprovalResolver;
+  readonly signal?: AbortSignal;
   /** Logger for "no resolver" default-deny event. Optional. */
   readonly onNoResolver?: (ctx: ApprovalCtx) => void;
 }
 
 export interface RequestApprovalResult {
   readonly decision: ReviewDecision;
-  readonly source: "hook" | "resolver" | "default_deny" | "permission_hook";
+  readonly source:
+    | "hook"
+    | "resolver"
+    | "default_deny"
+    | "permission_hook"
+    | "aborted";
+}
+
+function alreadyAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
+
+async function awaitWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    throw new Error(String(signal.reason ?? "aborted"));
+  }
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(String(signal.reason ?? "aborted")));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
 }
 
 /**
@@ -394,8 +438,21 @@ export interface RequestApprovalResult {
 export async function requestApproval(
   opts: RequestApprovalOpts,
 ): Promise<RequestApprovalResult> {
+  const signal = opts.signal ?? opts.ctx.signal;
+  if (alreadyAborted(signal)) {
+    return { decision: { kind: "abort" }, source: "aborted" };
+  }
+
   for (const hook of opts.hooks ?? []) {
-    const result = await hook(opts.ctx);
+    let result: ReviewDecision | undefined;
+    try {
+      result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
+    } catch (err) {
+      if (alreadyAborted(signal) || String(err).toLowerCase().includes("abort")) {
+        return { decision: { kind: "abort" }, source: "aborted" };
+      }
+      throw err;
+    }
     if (result !== undefined) {
       return { decision: result, source: "hook" };
     }
@@ -403,11 +460,22 @@ export async function requestApproval(
   // Typed permission decision hooks — walked BEFORE resolver / default_deny
   // so hook-driven allow/deny decisions bypass the raw-resolver modal.
   if (opts.permissionDecisionHooks && opts.permissionDecisionHooks.length > 0) {
-    const decision = await resolveHookPermissionDecision(
-      opts.ctx.toolName,
-      opts.args ?? {},
-      opts.permissionDecisionHooks,
-    );
+    let decision;
+    try {
+      decision = await awaitWithAbort(
+        resolveHookPermissionDecision(
+          opts.ctx.toolName,
+          opts.args ?? {},
+          opts.permissionDecisionHooks,
+        ),
+        signal,
+      );
+    } catch (err) {
+      if (alreadyAborted(signal) || String(err).toLowerCase().includes("abort")) {
+        return { decision: { kind: "abort" }, source: "aborted" };
+      }
+      throw err;
+    }
     if (decision.kind === "allow") {
       return { decision: { kind: "approved" }, source: "permission_hook" };
     }
@@ -417,8 +485,21 @@ export async function requestApproval(
     // `ask` / `pass` → fall through to resolver.
   }
   if (opts.resolver) {
-    const decision = await opts.resolver.request(opts.ctx);
-    return { decision, source: "resolver" };
+    try {
+      const decision = await awaitWithAbort(
+        opts.resolver.request({
+          ...opts.ctx,
+          ...(signal !== undefined ? { signal } : {}),
+        }),
+        signal,
+      );
+      return { decision, source: "resolver" };
+    } catch (err) {
+      if (alreadyAborted(signal) || String(err).toLowerCase().includes("abort")) {
+        return { decision: { kind: "abort" }, source: "aborted" };
+      }
+      throw err;
+    }
   }
   opts.onNoResolver?.(opts.ctx);
   return { decision: { kind: "denied" }, source: "default_deny" };
@@ -528,6 +609,7 @@ export async function attemptWithRetry<T>(opts: AttemptOpts<T>): Promise<T> {
 export interface OrchestrateToolCallOpts<T> {
   readonly tool: Tool;
   readonly approvalCtx: ApprovalCtx;
+  readonly signal?: AbortSignal;
   readonly approvalPolicy: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
   readonly payload?: ToolPayload;
@@ -562,6 +644,32 @@ export class ApprovalRejectedError extends Error {
   }
 }
 
+function resolveApprovalSignal(
+  opts: OrchestrateToolCallOpts<unknown>,
+): AbortSignal | undefined {
+  if (opts.signal) return opts.signal;
+  if (opts.approvalCtx.signal) return opts.approvalCtx.signal;
+  const sessionSignal =
+    opts.approvalCtx.invocation.session?.abortController?.signal;
+  if (sessionSignal) return sessionSignal;
+  return undefined;
+}
+
+function approvalRejectionMessage(
+  result: RequestApprovalResult,
+): string {
+  if (result.source === "default_deny") {
+    return "no_approval_resolver";
+  }
+  if (result.decision.kind === "timed_out") {
+    return "approval timed out";
+  }
+  if (result.decision.kind === "abort") {
+    return "approval aborted";
+  }
+  return "rejected by user";
+}
+
 /**
  * Port of codex `ToolOrchestrator::run` (orchestrator.rs:105-377).
  *
@@ -584,6 +692,7 @@ export class ApprovalRejectedError extends Error {
 export async function orchestrateToolCall<T>(
   opts: OrchestrateToolCallOpts<T>,
 ): Promise<T> {
+  const approvalSignal = resolveApprovalSignal(opts);
   // Step 1 — approval classification.
   const toolOverride = classifyToolApproval(opts.tool, {
     approvalPolicy: opts.approvalPolicy,
@@ -626,6 +735,7 @@ export async function orchestrateToolCall<T>(
     };
     const approval = await requestApproval({
       ctx: approvalCtx,
+      ...(approvalSignal !== undefined ? { signal: approvalSignal } : {}),
       ...(opts.permissionHooks !== undefined ? { hooks: opts.permissionHooks } : {}),
       ...(opts.permissionDecisionHooks !== undefined
         ? { permissionDecisionHooks: opts.permissionDecisionHooks }
@@ -638,11 +748,7 @@ export async function orchestrateToolCall<T>(
     });
     if (!isApprovalAccepted(approval.decision)) {
       throw new ApprovalRejectedError(
-        approval.source === "default_deny"
-          ? "no_approval_resolver"
-          : approval.decision.kind === "timed_out"
-            ? "approval timed out"
-            : "rejected by user",
+        approvalRejectionMessage(approval),
         approval.decision,
       );
     }
@@ -673,6 +779,7 @@ export async function orchestrateToolCall<T>(
       };
       const approval = await requestApproval({
         ctx: escalationCtx,
+        ...(approvalSignal !== undefined ? { signal: approvalSignal } : {}),
         ...(opts.permissionHooks !== undefined ? { hooks: opts.permissionHooks } : {}),
         ...(opts.permissionDecisionHooks !== undefined
           ? { permissionDecisionHooks: opts.permissionDecisionHooks }
@@ -685,11 +792,7 @@ export async function orchestrateToolCall<T>(
       });
       if (!isApprovalAccepted(approval.decision)) {
         throw new ApprovalRejectedError(
-          approval.source === "default_deny"
-            ? "no_approval_resolver"
-            : approval.decision.kind === "timed_out"
-              ? "approval timed out"
-              : "rejected by user",
+          approvalRejectionMessage(approval),
           approval.decision,
         );
       }

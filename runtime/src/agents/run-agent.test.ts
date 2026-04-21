@@ -1,3 +1,6 @@
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 /**
  * runAgent + initMcpForAgent — driver tests.
  *
@@ -12,6 +15,7 @@ import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
 import { AgentRegistry } from "./registry.js";
 import {
+  buildFilteredRegistry,
   initMcpForAgent,
   MCP_INIT_TIMEOUT_MS,
   runAgent,
@@ -27,6 +31,7 @@ import type {
   StreamProgressCallback,
 } from "../llm/types.js";
 import { Session, type Event, type SessionOpts, type SessionServices } from "../session/session.js";
+import { RolloutStore } from "../session/rollout-store.js";
 import type {
   Config,
   ManagedFeatures,
@@ -34,6 +39,10 @@ import type {
   SessionConfiguration,
 } from "../session/turn-context.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import {
+  SESSION_ALLOWED_ROOTS_ARG,
+  SESSION_ID_ARG,
+} from "../tools/system/filesystem.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -122,13 +131,18 @@ function mkRegistry(): ToolRegistry {
   };
 }
 
-function makeStubSession(
-  services: Partial<SessionServices> = {},
-): Session {
+function makeStubSession(opts: {
+  services?: Partial<SessionServices>;
+  sessionConfiguration?: SessionConfiguration;
+  config?: Config;
+  modelInfo?: ModelInfo;
+} = {}): Session {
   const state = {
-    sessionConfiguration: mkSessionConfiguration({
-      provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
-    }),
+    sessionConfiguration:
+      opts.sessionConfiguration ??
+      mkSessionConfiguration({
+        provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
+      }),
     history: [],
   };
   const session = new Session({
@@ -150,11 +164,11 @@ function makeStubSession(
       hooks: {
         executeStop: async () => ({}),
       },
-      ...services,
+      ...(opts.services ?? {}),
     } as unknown as SessionServices,
     jsRepl: { id: "repl-test" },
-    config: mkConfig(),
-    modelInfo: mkModelInfo(),
+    config: opts.config ?? mkConfig(),
+    modelInfo: opts.modelInfo ?? mkModelInfo(),
     eventQueue: new AsyncQueue<Event>(),
   });
   return session;
@@ -236,7 +250,7 @@ afterEach(() => {
 describe("runAgent", () => {
   it("drives a single provider turn and forwards the assistant text via upInbox", async () => {
     const provider = makeProvider([{ content: "hello world" }]);
-    const session = makeStubSession({ provider });
+    const session = makeStubSession({ services: { provider } });
     const { live } = await spawnLive(session);
 
     const sent: InterAgentCommunication[] = [];
@@ -271,11 +285,13 @@ describe("runAgent", () => {
     expect(result.finalMessage).toBe("hello world");
     expect(result.toolCallCount).toBe(0);
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.author).toBe(live.agentPath);
-    expect(sent[0]!.recipient).toBe("conv-parent");
-    expect(sent[0]!.direction).toBe("up");
-    expect(sent[0]!.content).toBe("hello world");
+    expect(
+      sent.map((msg) => msg.metadata?.kind),
+    ).toEqual(["subagent_status", "subagent_complete"]);
+    expect(sent[1]!.author).toBe(live.agentPath);
+    expect(sent[1]!.recipient).toBe("conv-parent");
+    expect(sent[1]!.direction).toBe("up");
+    expect(sent[1]!.content).toBe("hello world");
 
     expect(events.some((e) => e.kind === "run_complete")).toBe(true);
     expect(events.some((e) => e.kind === "status")).toBe(true);
@@ -285,7 +301,7 @@ describe("runAgent", () => {
 
   it("marks completed on success", async () => {
     const provider = makeProvider([{ content: "ok" }]);
-    const session = makeStubSession({ provider });
+    const session = makeStubSession({ services: { provider } });
     const { live } = await spawnLive(session);
 
     await collectRun(
@@ -313,28 +329,30 @@ describe("runAgent", () => {
       { content: "tool work complete" },
     ]);
     const session = makeStubSession({
-      provider,
-      registry: {
-        tools: [
-          {
-            name: "system.echo",
-            description: "echo",
-            inputSchema: { type: "object" },
-            execute: async () => ({ content: JSON.stringify({ ok: true }) }),
-          },
-        ],
-        toLLMTools: () => [
-          {
-            type: "function",
-            function: {
+      services: {
+        provider,
+        registry: {
+          tools: [
+            {
               name: "system.echo",
               description: "echo",
-              parameters: { type: "object" },
+              inputSchema: { type: "object" },
+              execute: async () => ({ content: JSON.stringify({ ok: true }) }),
             },
-          },
-        ],
-        dispatch: async () => ({ content: JSON.stringify({ ok: true }) }),
-      } satisfies ToolRegistry,
+          ],
+          toLLMTools: () => [
+            {
+              type: "function",
+              function: {
+                name: "system.echo",
+                description: "echo",
+                parameters: { type: "object" },
+              },
+            },
+          ],
+          dispatch: async () => ({ content: JSON.stringify({ ok: true }) }),
+        } satisfies ToolRegistry,
+      },
     });
     const { live } = await spawnLive(session);
 
@@ -352,6 +370,144 @@ describe("runAgent", () => {
     expect(result.toolCallCount).toBe(1);
   });
 
+  it("drains triggerTurn messages from the child downInbox into a follow-up turn", async () => {
+    const provider = makeProvider([{ content: "first turn" }, { content: "second turn" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+
+    live.downInbox.send({
+      author: "/root",
+      recipient: live.agentPath,
+      content: "follow up",
+      triggerTurn: true,
+      direction: "down",
+      metadata: { kind: "user_input" },
+    });
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    const secondCall = (
+      provider.chatStream as ReturnType<typeof vi.fn>
+    ).mock.calls[1]![0] as LLMMessage[];
+    expect(secondCall.at(-1)).toEqual({
+      role: "user",
+      content: "follow up",
+    });
+    expect(result.outcome).toBe("completed");
+    expect(result.finalMessage).toBe("second turn");
+  });
+
+  it("injects child session metadata and worktree roots into wrapped child tools", async () => {
+    const execute = vi.fn(async () => ({
+      content: JSON.stringify({ ok: true }),
+      isError: false,
+    }));
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute,
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({
+          content: JSON.stringify({ ok: true }),
+          isError: false,
+        }),
+      },
+      {
+        childConversationId: "child-123",
+        worktree: {
+          path: "/tmp/subagent-wt",
+          branch: "worktree-child",
+          gitRoot: "/repo",
+          created: false,
+        },
+      },
+    );
+
+    await registry.tools[0]!.execute({ value: "hello" });
+
+    expect(execute).toHaveBeenCalledOnce();
+    const parsed = execute.mock.calls[0]![0] as Record<string, unknown>;
+    expect(parsed[SESSION_ID_ARG]).toBe("child-123");
+    expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual(["/tmp/subagent-wt"]);
+    expect(parsed.value).toBe("hello");
+  });
+
+  it("mounts a child rollout store when the parent owns one", async () => {
+    const provider = makeProvider([{ content: "child wrote rollout" }]);
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-"));
+    const session = makeStubSession({
+      services: { provider },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd,
+        provider: provider as unknown as SessionConfiguration["provider"],
+      }),
+      config: {
+        ...mkConfig(),
+        cwd,
+      },
+    });
+    const parentRolloutStore = new RolloutStore({
+      cwd,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+    });
+    parentRolloutStore.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd,
+      originator: "run-agent-test",
+      agencVersion: "0.2.0",
+      model: session.modelInfo.slug,
+      modelProvider: provider.name,
+    });
+    session.mountRolloutStore(parentRolloutStore);
+
+    const { live } = await spawnLive(session);
+    const childSessionDir = join(
+      dirname(parentRolloutStore.store.sessionDir),
+      live.agentId,
+    );
+
+    try {
+      const { result } = await collectRun(
+        runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+        }),
+      );
+
+      expect(result.outcome).toBe("completed");
+      const rolloutFiles = readdirSync(childSessionDir).filter(
+        (entry) => entry.startsWith("rollout-") && entry.endsWith(".jsonl"),
+      );
+      expect(rolloutFiles.length).toBeGreaterThan(0);
+    } finally {
+      parentRolloutStore.close();
+      rmSync(childSessionDir, { recursive: true, force: true });
+      rmSync(parentRolloutStore.store.sessionDir, {
+        recursive: true,
+        force: true,
+      });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("marks errored when the provider rejects", async () => {
     const provider: LLMProvider = {
       name: "stub",
@@ -359,7 +515,7 @@ describe("runAgent", () => {
       chatStream: vi.fn().mockRejectedValue(new Error("provider_boom")),
       healthCheck: vi.fn().mockResolvedValue(true),
     };
-    const session = makeStubSession({ provider });
+    const session = makeStubSession({ services: { provider } });
     const { live } = await spawnLive(session);
 
     const { events, result } = await collectRun(
@@ -396,7 +552,7 @@ describe("runAgent", () => {
       chatStream,
       healthCheck: vi.fn().mockResolvedValue(true),
     };
-    const session = makeStubSession({ provider });
+    const session = makeStubSession({ services: { provider } });
     const { live } = await spawnLive(session);
 
     const iter = runAgent({
@@ -468,7 +624,7 @@ describe("initMcpForAgent", () => {
     const mcpManager = {
       isConnected: (name: string) => connected.get(name) ?? false,
     };
-    const session = makeStubSession({ mcpManager });
+    const session = makeStubSession({ services: { mcpManager } });
     const ctrl = new AbortController();
 
     const promise = initMcpForAgent({
@@ -494,7 +650,7 @@ describe("initMcpForAgent", () => {
     const mcpManager = {
       isConnected: (name: string) => connected.get(name) ?? false,
     };
-    const session = makeStubSession({ mcpManager });
+    const session = makeStubSession({ services: { mcpManager } });
     const ctrl = new AbortController();
     const result = await initMcpForAgent({
       parent: session as unknown as Parameters<typeof initMcpForAgent>[0]["parent"],
@@ -513,7 +669,7 @@ describe("initMcpForAgent", () => {
     const mcpManager = {
       isConnected: (name: string) => connected.get(name) ?? false,
     };
-    const session = makeStubSession({ mcpManager });
+    const session = makeStubSession({ services: { mcpManager } });
     const ctrl = new AbortController();
 
     const promise = initMcpForAgent({

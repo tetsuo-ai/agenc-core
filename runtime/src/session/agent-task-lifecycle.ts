@@ -9,8 +9,6 @@
  * `session: Session` as its first argument.
  *
  * Integrations that land in later tranches:
- *   - T9 (subagents) wires `AgentIdentityManager.registerTask()` + the
- *     `taskMatchesCurrentIdentity` predicate with real crypto.
  *   - T6 (event log / rollout) wires `persistRolloutItems` with the
  *     real rollout recorder.
  *
@@ -22,6 +20,9 @@
  */
 
 import type { Session } from "./session.js";
+import type { RolloutItem } from "./rollout-item.js";
+
+export type { RolloutItem, SessionStateUpdate } from "./rollout-item.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep types — real impls in T9 (agent_identity).
@@ -47,21 +48,6 @@ export interface SessionAgentTask {
   readonly taskId: string;
   readonly registeredAt: string;
 }
-
-/**
- * Codex `SessionStateUpdate` rollout payload. T6 wires real shape.
- */
-export interface SessionStateUpdate {
-  readonly agentTask?: SessionAgentTask;
-}
-
-/**
- * Codex `RolloutItem` variant for session-state updates. T6 wires
- * the full discriminated union.
- */
-export type RolloutItem =
-  | { readonly kind: "session_state"; readonly update: SessionStateUpdate }
-  | { readonly kind: "other"; readonly raw: unknown };
 
 // ─────────────────────────────────────────────────────────────────────
 // Conversion helpers — mirror codex `RegisteredAgentTask::{from,to}_session_agent_task`.
@@ -178,16 +164,7 @@ export async function maybePrewarmAgentTaskRegistration(
     await ensureAgentTaskRegistered(session);
   } catch (error) {
     // Mirror codex `warn!("startup agent task prewarm failed; regular turns will retry registration")`
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "agent_task_prewarm_failed",
-          message: `startup agent task prewarm failed; regular turns will retry registration (${String(error)})`,
-        },
-      },
-    });
+    void error;
   }
 }
 
@@ -205,8 +182,8 @@ export function latestPersistedAgentTask(
 ): { value: SessionAgentTask | undefined } | undefined {
   for (let i = rolloutItems.length - 1; i >= 0; i -= 1) {
     const item = rolloutItems[i];
-    if (item && item.kind === "session_state") {
-      return { value: item.update.agentTask };
+    if (item && item.type === "session_state") {
+      return { value: item.payload.agentTask };
     }
   }
   return undefined;
@@ -250,8 +227,8 @@ async function persistAgentTaskUpdate(
 ): Promise<void> {
   await persistRolloutItems(session, [
     {
-      kind: "session_state",
-      update: {
+      type: "session_state",
+      payload: {
         agentTask: agentTask === null ? undefined : registeredAgentTaskToSessionAgentTask(agentTask),
       },
     },
@@ -363,17 +340,6 @@ export async function ensureAgentTaskRegistered(
       }
 
       const cached2 = await cacheAgentTask(session, registered);
-      // Mirror codex `info!("registered agent task for thread")`
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "agent_task_registered",
-            message: `registered agent task ${cached2.taskId} for thread ${session.conversationId}`,
-          },
-        },
-      });
       return cached2;
     }
 

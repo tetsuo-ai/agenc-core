@@ -32,7 +32,6 @@ import type { TurnContext } from "../session/turn-context.js";
 import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
-  systemPromptSection,
   type SystemPromptSection,
 } from "./sections.js";
 
@@ -465,41 +464,80 @@ export async function assembleSystemPrompt(
 
   // Dynamic (post-boundary) tail. Sections returning null are dropped.
   const dynamicDecls: SystemPromptSection[] = [
-    systemPromptSection("session_guidance", () =>
-      getSessionGuidanceSection(enabledTools, agentsEnabled),
+    DANGEROUS_uncachedSystemPromptSection(
+      "session_guidance",
+      () => getSessionGuidanceSection(enabledTools, agentsEnabled),
+      "session-scoped guidance changes with tools/agent availability",
     ),
-    systemPromptSection("memory", () => getMemorySection(opts.memoryPrompt)),
-    systemPromptSection("project_instructions", () =>
-      opts.projectInstructions && opts.projectInstructions.trim().length > 0
-        ? opts.projectInstructions
-        : null,
+    DANGEROUS_uncachedSystemPromptSection(
+      "memory",
+      () => getMemorySection(opts.memoryPrompt),
+      "memory is rebuilt per turn and must not leak across sessions",
     ),
-    systemPromptSection("ant_model_override", () => getAntModelOverrideSection()),
-    systemPromptSection("env_info_simple", () => buildEnvInfoSection(envInfoInputs)),
-    systemPromptSection("language", () => getLanguageSection(opts.language)),
-    systemPromptSection("output_style", () =>
-      getOutputStyleSection(opts.outputStyle ?? null),
+    DANGEROUS_uncachedSystemPromptSection(
+      "project_instructions",
+      () =>
+        opts.projectInstructions && opts.projectInstructions.trim().length > 0
+          ? opts.projectInstructions
+          : null,
+      "AGENTS/CLAUDE inputs reload between turns and repos",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "ant_model_override",
+      () => getAntModelOverrideSection(),
+      "provider/model suffixes are selected per turn",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "env_info_simple",
+      () => buildEnvInfoSection(envInfoInputs),
+      "environment info includes wall-clock time and current branch",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "language",
+      () => getLanguageSection(opts.language),
+      "language preference can change with config reloads",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "output_style",
+      () => getOutputStyleSection(opts.outputStyle ?? null),
+      "output style is a per-turn preference",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "mcp_instructions",
       () => getMcpInstructionsSection(opts.mcpServers),
       "MCP servers connect/disconnect between turns",
     ),
-    systemPromptSection("scratchpad", () => getScratchpadSection(opts.scratchpadDir)),
-    systemPromptSection("frc", () =>
-      getFunctionResultClearingSection(opts.functionResultClearingEnabled ?? false),
+    DANGEROUS_uncachedSystemPromptSection(
+      "scratchpad",
+      () => getScratchpadSection(opts.scratchpadDir),
+      "scratchpad availability is session-specific",
     ),
-    systemPromptSection(
+    DANGEROUS_uncachedSystemPromptSection(
+      "frc",
+      () =>
+        getFunctionResultClearingSection(opts.functionResultClearingEnabled ?? false),
+      "function-result-clearing is config-driven",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
       "summarize_tool_results",
       () => (summarizeToolResults ? getSummarizeToolResultsSection() : null),
+      "summary hint toggles with turn-level settings",
     ),
-    systemPromptSection("numeric_length_anchors", () =>
-      opts.numericLengthAnchors ? getNumericLengthAnchorsSection() : null,
+    DANGEROUS_uncachedSystemPromptSection(
+      "numeric_length_anchors",
+      () => (opts.numericLengthAnchors ? getNumericLengthAnchorsSection() : null),
+      "length anchors are optional per turn",
     ),
-    systemPromptSection("token_budget", () =>
-      opts.tokenBudgetEnabled ? getTokenBudgetSection() : null,
+    DANGEROUS_uncachedSystemPromptSection(
+      "token_budget",
+      () => (opts.tokenBudgetEnabled ? getTokenBudgetSection() : null),
+      "token budget hint is optional per turn",
     ),
-    systemPromptSection("brief", () => getBriefSection()),
+    DANGEROUS_uncachedSystemPromptSection(
+      "brief",
+      () => getBriefSection(),
+      "brief mode is session-specific",
+    ),
   ];
 
   const resolved = await resolveSystemPromptSections(dynamicDecls);

@@ -554,4 +554,25 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(tiers.project?.content).toContain("INCLUDED");
     expect(tiers.project?.content).toContain("<!-- @include extra.md -->");
   });
+
+  test("loadTieredInstructions walks project docs from root to cwd", async () => {
+    const home = join(tmp, "home");
+    const repoRoot = join(tmp, "repo");
+    const pkgDir = join(repoRoot, "packages", "api");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
+    writeFileSync(join(pkgDir, "CLAUDE.md"), "PKG");
+
+    const tiers = await loadTieredInstructions({
+      cwd: pkgDir,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+    });
+    expect(tiers.project?.content).toContain("--- project-doc");
+    expect(tiers.project?.content).toContain("ROOT");
+    expect(tiers.project?.content).toContain("PKG");
+    expect(tiers.project?.path).toBe(join(pkgDir, "CLAUDE.md"));
+  });
 });

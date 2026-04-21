@@ -35,9 +35,18 @@ import type {
   ConcurrencyClassifiable,
   ToolCallRuntime,
 } from "./concurrency.js";
-import { classify, EXCLUSIVE } from "./concurrency.js";
-import type { LiveToolDispatchOptions, ToolRouter } from "./router.js";
+import {
+  classify,
+  defaultConcurrencyClassFor,
+  sharedServer,
+} from "./concurrency.js";
+import {
+  toolCallFromLLMToolCall,
+  type LiveToolDispatchOptions,
+  type ToolRouter,
+} from "./router.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
+import type { Tool } from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -173,10 +182,7 @@ export class StreamingToolExecutor {
    */
   addTool(block: ToolUseBlock, toolCall: LLMToolCall): void {
     if (this.closed || this.isAborting) return;
-    const classifiable: ConcurrencyClassifiable = {
-      name: toolCall.name,
-      concurrencyClass: this.lookupConcurrencyClassFor(toolCall.name),
-    };
+    const classifiable = this.resolveClassifiable(toolCall);
     let parsedArgs: Record<string, unknown> = {};
     try {
       parsedArgs = toolCall.arguments ? JSON.parse(toolCall.arguments) : {};
@@ -302,12 +308,29 @@ export class StreamingToolExecutor {
 
   private readonly concurrencyClassOverrides = new Map<string, ConcurrencyClass>();
 
-  private lookupConcurrencyClassFor(name: string): ConcurrencyClass {
-    const override = this.concurrencyClassOverrides.get(name);
-    if (override) return override;
-    const tool = this.registry.tools.find((t) => t.name === name);
-    const fromTool = (tool as { concurrencyClass?: ConcurrencyClass })?.concurrencyClass;
-    return fromTool ?? EXCLUSIVE;
+  private resolveClassifiable(toolCall: LLMToolCall): ConcurrencyClassifiable {
+    const override = this.concurrencyClassOverrides.get(toolCall.name);
+    const tool = this.registry.tools.find((candidate) => candidate.name === toolCall.name);
+    const routed = this.liveToolDispatch
+      ? toolCallFromLLMToolCall(toolCall, {
+          session: this.liveToolDispatch.options.session,
+        })
+      : null;
+    const resolvedServerId =
+      tool?.serverId ??
+      (routed?.payload.kind === "mcp" ? routed.payload.server : undefined);
+    const resolvedClass =
+      override ??
+      tool?.concurrencyClass ??
+      (resolvedServerId !== undefined
+        ? sharedServer(resolvedServerId)
+        : defaultConcurrencyClassFor(toolCall.name));
+    return {
+      name: toolCall.name,
+      concurrencyClass: resolvedClass,
+      isConcurrencySafe: (tool as Tool | undefined)?.isConcurrencySafe,
+      ...(resolvedServerId !== undefined ? { serverId: resolvedServerId } : {}),
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────

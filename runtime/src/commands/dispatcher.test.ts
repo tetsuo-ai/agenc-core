@@ -224,15 +224,7 @@ describe("maskSensitiveArgs", () => {
 
 describe("isBridgeSafeCommand", () => {
   it("allows known-safe commands", () => {
-    for (const name of [
-      "status",
-      "help",
-      "context",
-      "model",
-      "provider",
-      "clear",
-      "diff",
-    ]) {
+    for (const name of ["status", "help", "context", "diff"]) {
       expect(isBridgeSafeCommand(name)).toBe(true);
     }
   });
@@ -241,6 +233,9 @@ describe("isBridgeSafeCommand", () => {
     for (const name of [
       "exit",
       "compact",
+      "model",
+      "provider",
+      "clear",
       "permissions",
       "config",
       "resume",

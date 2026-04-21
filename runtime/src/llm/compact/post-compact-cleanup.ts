@@ -9,6 +9,7 @@ import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './micro-compact.js'
+import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
 
 /**
  * Run cleanup of caches and tracking state after compaction.
@@ -29,12 +30,16 @@ import { resetMicrocompactState } from './micro-compact.js'
  * pass querySource — undefined is only safe for callers that are
  * genuinely main-thread-only (/compact, /clear).
  */
-export function runPostCompactCleanup(querySource?: QuerySource): void {
+export function runPostCompactCleanup(
+  querySource?: QuerySource,
+  context?: Pick<CompactRuntimeContext, 'clearProviderResponseId'>,
+): void {
   // I-2 (docs/plan/invariants.md): clear `previous_response_id` on every
   // compaction. Calls into the T5 grok incremental tracker registry.
   // Other providers register their trackers the same way; T13 extends
   // with per-adapter normalizers.
   clearAllResponseIds()
+  context?.clearProviderResponseId?.()
 
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state

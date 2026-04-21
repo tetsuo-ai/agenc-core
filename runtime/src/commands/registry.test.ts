@@ -8,20 +8,14 @@ vi.mock("./exit-worktree.js", () => ({
   exitWorktree: vi.fn(),
 }));
 
-vi.mock("../utils/Shell.js", () => ({
-  setCwd: vi.fn(),
-}));
-
 import { CommandRegistry, buildDefaultRegistry } from "./registry.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
-import { setCwd } from "../utils/Shell.js";
 import type { SlashCommand, SlashCommandResult } from "./types.js";
 import type { PendingWorktreeState } from "../session/pending-worktree.js";
 
 const mockEnterWorktree = vi.mocked(enterWorktree);
 const mockExitWorktree = vi.mocked(exitWorktree);
-const mockSetCwd = vi.mocked(setCwd);
 
 function mkCmd(
   name: string,
@@ -232,6 +226,7 @@ describe("buildDefaultRegistry()", () => {
     const reg = buildDefaultRegistry();
     const command = reg.find("enter-worktree");
     const session = {
+      sessionConfiguration: { cwd: "/session-root" },
       pendingWorktreeState: null,
       setPendingWorktreeState(next: PendingWorktreeState | null) {
         this.pendingWorktreeState = next;
@@ -253,8 +248,12 @@ describe("buildDefaultRegistry()", () => {
         "Base commit: abc123",
       ].join("\n"),
     });
-    expect(chdirSpy).toHaveBeenCalledWith("/repo/.agenc-worktrees/feat");
-    expect(mockSetCwd).toHaveBeenCalledWith("/repo/.agenc-worktrees/feat");
+    expect(mockEnterWorktree).toHaveBeenCalledWith({
+      session,
+      cwd: "/session-root",
+      slug: "feat",
+    });
+    expect(chdirSpy).not.toHaveBeenCalled();
     expect(session.pendingWorktreeState).toEqual({
       handle: {
         path: "/repo/.agenc-worktrees/feat",
@@ -263,7 +262,7 @@ describe("buildDefaultRegistry()", () => {
         created: true,
       },
       baseCommit: "abc123",
-      originalCwd: "/repo",
+      originalCwd: "/session-root",
     });
   });
 
@@ -271,6 +270,7 @@ describe("buildDefaultRegistry()", () => {
     const reg = buildDefaultRegistry();
     const command = reg.find("enter-worktree");
     const session = {
+      sessionConfiguration: { cwd: "/session-root" },
       pendingWorktreeState: {
         handle: {
           path: "/repo/.agenc-worktrees/existing",
@@ -308,6 +308,7 @@ describe("buildDefaultRegistry()", () => {
     const reg = buildDefaultRegistry();
     const command = reg.find("exit-worktree");
     const session = {
+      sessionConfiguration: { cwd: "/session-root" },
       pendingWorktreeState: {
         handle: {
           path: "/repo/.agenc-worktrees/feat",
@@ -348,8 +349,7 @@ describe("buildDefaultRegistry()", () => {
         "Restored cwd: /repo",
       ].join("\n"),
     });
-    expect(chdirSpy).toHaveBeenLastCalledWith("/repo");
-    expect(mockSetCwd).toHaveBeenLastCalledWith("/repo");
+    expect(chdirSpy).not.toHaveBeenCalled();
     expect(session.pendingWorktreeState).toBeNull();
   });
 
@@ -366,6 +366,7 @@ describe("buildDefaultRegistry()", () => {
     const reg = buildDefaultRegistry();
     const command = reg.find("exit-worktree");
     const session = {
+      sessionConfiguration: { cwd: "/session-root" },
       pendingWorktreeState: {
         handle: {
           path: "/repo/.agenc-worktrees/feat",
@@ -384,6 +385,56 @@ describe("buildDefaultRegistry()", () => {
     await command!.execute({
       session: session as never,
       argsRaw: "remove --discard-changes",
+      cwd: "/repo/.agenc-worktrees/feat",
+      home: "/home/test",
+    });
+
+    expect(mockExitWorktree).toHaveBeenCalledWith({
+      session,
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+      action: "remove",
+      discardChanges: true,
+    });
+  });
+
+  it("accepts the legacy --discard alias through the canonical registry path", async () => {
+    mockExitWorktree.mockResolvedValueOnce({
+      kind: "removed",
+      path: "/repo/.agenc-worktrees/feat",
+      branch: "worktree-feat",
+      discardedFiles: true,
+      discardedCommits: true,
+      message:
+        "worktree removed at /repo/.agenc-worktrees/feat (branch=worktree-feat)",
+    });
+    const reg = buildDefaultRegistry();
+    const command = reg.find("exit-worktree");
+    const session = {
+      sessionConfiguration: { cwd: "/session-root" },
+      pendingWorktreeState: {
+        handle: {
+          path: "/repo/.agenc-worktrees/feat",
+          branch: "worktree-feat",
+          gitRoot: "/repo",
+          created: true,
+        },
+        baseCommit: "abc123",
+        originalCwd: "/repo",
+      } satisfies PendingWorktreeState,
+      setPendingWorktreeState(next: PendingWorktreeState | null) {
+        this.pendingWorktreeState = next;
+      },
+    };
+
+    await command!.execute({
+      session: session as never,
+      argsRaw: "remove --discard",
       cwd: "/repo/.agenc-worktrees/feat",
       home: "/home/test",
     });
@@ -421,6 +472,7 @@ describe("buildDefaultRegistry()", () => {
       originalCwd: "/repo",
     } satisfies PendingWorktreeState;
     const session = {
+      sessionConfiguration: { cwd: "/session-root" },
       pendingWorktreeState: pending,
       setPendingWorktreeState(next: PendingWorktreeState | null) {
         this.pendingWorktreeState = next;
@@ -440,6 +492,5 @@ describe("buildDefaultRegistry()", () => {
     });
     expect(session.pendingWorktreeState).toBe(pending);
     expect(chdirSpy).not.toHaveBeenCalled();
-    expect(mockSetCwd).not.toHaveBeenCalled();
   });
 });

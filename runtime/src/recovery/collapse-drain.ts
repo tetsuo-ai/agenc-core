@@ -29,6 +29,10 @@ import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
 
+type CollapseDrainTrackedState = TurnState & {
+  collapseDrainAttempted?: boolean;
+};
+
 // ─────────────────────────────────────────────────────────────────────
 // Driver surface — T10 context-collapse plugs in here
 // ─────────────────────────────────────────────────────────────────────
@@ -72,6 +76,14 @@ export interface CollapseDrainOutcome {
   readonly committed: number;
 }
 
+export function hasAttemptedCollapseDrain(state: TurnState): boolean {
+  return (state as CollapseDrainTrackedState).collapseDrainAttempted === true;
+}
+
+export function resetCollapseDrainAttempted(state: TurnState): void {
+  delete (state as CollapseDrainTrackedState).collapseDrainAttempted;
+}
+
 /**
  * Perform the one-shot drain. Returns `skipped_guard` when the state
  * shows we already drained this recovery pass (openclaude
@@ -87,7 +99,7 @@ export async function runCollapseDrain(
   opts: CollapseDrainOpts,
 ): Promise<CollapseDrainOutcome> {
   // I-42: one-shot guard — openclaude query.ts:1123.
-  if (state.transition?.reason === "collapse_drain_retry") {
+  if (hasAttemptedCollapseDrain(state)) {
     return { kind: "skipped_guard", committed: 0 };
   }
   const driver = opts.driver ?? NOOP_COLLAPSE_DRIVER;
@@ -102,6 +114,7 @@ export async function runCollapseDrain(
     const drainedMessages = [...result.messages];
     state.messages = drainedMessages;
     state.messagesForQuery = [...drainedMessages];
+    (state as CollapseDrainTrackedState).collapseDrainAttempted = true;
     state.transition = { reason: "collapse_drain_retry" };
     return { kind: "drained", committed: result.committed };
   }

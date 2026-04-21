@@ -21,6 +21,7 @@ import type {
   PreToolUseHook,
 } from "./tool-hooks.js";
 import { EventLog } from "../session/event-log.js";
+import { APPROVED_FOR_SESSION } from "../permissions/review-decision.js";
 import {
   attachContextDefaults,
   hasPermissionsToUseTool,
@@ -123,6 +124,20 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     setTimeout(() => ctl.abort("user"), 20);
     await expect(p).rejects.toThrow(/user|aborted/);
   });
+
+  test("timeout aborts the provided controller so the underlying tool can cancel", async () => {
+    const ctl = new AbortController();
+    await expect(
+      withTimeoutAndAbort(() => new Promise(() => {}), {
+        timeoutMs: 20,
+        toolName: "stub",
+        signal: ctl.signal,
+        abortController: ctl,
+      }),
+    ).rejects.toThrow(ToolTimeoutError);
+    expect(ctl.signal.aborted).toBe(true);
+    expect(String(ctl.signal.reason)).toContain("tool timeout");
+  });
 });
 
 describe("classifyToolError", () => {
@@ -205,6 +220,73 @@ describe("I-21 + I-44 requestApprovalWithAbortRace", () => {
     expect(result.allow).toBe(true);
   });
 
+  test("approved_for_session decisions populate the approval cache and skip the second modal", async () => {
+    const ctl = new AbortController();
+    let modalCalls = 0;
+    const cached = new Map<string, string>();
+    const cache = {
+      async withCachedApproval(opts: {
+        readonly keys: readonly unknown[];
+        readonly fetchDecision: () => Promise<{ readonly kind: string }>;
+      }) {
+        const key = JSON.stringify(opts.keys[0]);
+        if (cached.get(key) === "approved_for_session") {
+          return APPROVED_FOR_SESSION;
+        }
+        const decision = await opts.fetchDecision();
+        if (decision.kind === "approved_for_session") {
+          cached.set(key, decision.kind);
+        }
+        return decision;
+      },
+    };
+
+    const first = await requestApprovalWithAbortRace(
+      async () => {
+        modalCalls += 1;
+        return {
+          behavior: "allow",
+          decisionAtTurnId: "t1",
+          reviewDecision: APPROVED_FOR_SESSION,
+        };
+      },
+      {
+        tool: {} as Tool,
+        args: {},
+        currentTurnId: "t1",
+        signal: ctl.signal,
+        approvalCache: {
+          cache,
+          keys: [{ toolName: "system.bash", cwd: "/repo" }],
+        },
+      },
+    );
+    const second = await requestApprovalWithAbortRace(
+      async () => {
+        modalCalls += 1;
+        return {
+          behavior: "allow",
+          decisionAtTurnId: "t1",
+          reviewDecision: APPROVED_FOR_SESSION,
+        };
+      },
+      {
+        tool: {} as Tool,
+        args: {},
+        currentTurnId: "t1",
+        signal: ctl.signal,
+        approvalCache: {
+          cache,
+          keys: [{ toolName: "system.bash", cwd: "/repo" }],
+        },
+      },
+    );
+
+    expect(first.allow).toBe(true);
+    expect(second.allow).toBe(true);
+    expect(modalCalls).toBe(1);
+  });
+
   test("T6 gap #119: emits exec_approval_request + request_permissions when eventLog supplied", async () => {
     const ctl = new AbortController();
     const log = new EventLog();
@@ -264,6 +346,46 @@ describe("runToolUse end-to-end", () => {
     expect(out.isError).toBe(true);
     // per-tool timeoutMs:50 → message mentions 50ms (not the 30s default)
     expect(out.content).toContain("50ms");
+  });
+
+  test("injects __abortSignal so tools can observe runtime cancellation", async () => {
+    let sawAbortSignal = false;
+    let signalAbortedAtResolve = false;
+    const controller = new AbortController();
+    const tool: Tool = {
+      name: "abort-aware",
+      description: "",
+      inputSchema: {},
+      timeoutMs: 20,
+      execute: async (args) =>
+        await new Promise((resolve) => {
+          const signal = (
+            args as { __abortSignal?: AbortSignal }
+          ).__abortSignal;
+          sawAbortSignal = signal instanceof AbortSignal;
+          signal?.addEventListener(
+            "abort",
+            () => {
+              signalAbortedAtResolve = signal.aborted;
+              resolve({ content: "cancelled", isError: true });
+            },
+            { once: true },
+          );
+        }),
+    };
+
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c-abort", "abort-aware"),
+      abortController: controller,
+      signal: controller.signal,
+    });
+
+    expect(sawAbortSignal).toBe(true);
+    expect(signalAbortedAtResolve).toBe(true);
+    expect(controller.signal.aborted).toBe(true);
+    expect(out.isError).toBe(true);
   });
 
   test("I-15 oversized result truncated + warning emitted", async () => {

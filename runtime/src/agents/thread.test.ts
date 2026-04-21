@@ -17,6 +17,13 @@ function makeLive(): LiveAgent {
     upInbox: new Mailbox({ threadId: "thread-1" }),
     downInbox: new Mailbox({ threadId: "thread-1-down" }),
     abortController: new AbortController(),
+    metadata: {
+      agentId: "thread-1",
+      agentPath: "/root/alpha",
+      agentNickname: "alpha",
+      agentRole: "default",
+      depth: 1,
+    },
   };
 }
 
@@ -59,6 +66,71 @@ describe("AgentThread", () => {
     live.status.markRunning("turn-1");
     unsub();
     expect(seen).toContain("running");
+  });
+
+  it("rebindLive updates the exposed live handle and rebroadcasts status", () => {
+    const live1 = makeLive();
+    const thread = new AgentThread({
+      live: live1,
+      initialMessages: [],
+      forkMode: { kind: "new" },
+      taskPrompt: "hi",
+    });
+
+    const seen: string[] = [];
+    const unsubscribe = thread.onStatusChange((status) => {
+      seen.push(status.status);
+    });
+
+    const live2 = makeLive();
+    (live2 as { agentId: string }).agentId = "thread-2";
+    (live2 as { agentPath: string }).agentPath = "/root/beta";
+    (live2 as { nickname: string }).nickname = "beta";
+
+    thread.rebindLive(live2);
+    live2.status.markRunning("turn-2");
+    unsubscribe();
+
+    expect(thread.threadId).toBe("thread-2");
+    expect(thread.agentPath).toBe("/root/beta");
+    expect(thread.nickname).toBe("beta");
+    expect(seen).toContain("idle");
+    expect(seen).toContain("running");
+  });
+
+  it("rebindLive updates the default child-parent path when the thread owned it", async () => {
+    const delegateFn = vi.fn(async () => ({
+      kind: "async_launched" as const,
+      thread: new AgentThread({
+        live: makeLive(),
+        initialMessages: [],
+        forkMode: { kind: "new" },
+        taskPrompt: "child",
+      }),
+    }));
+
+    const thread = new AgentThread(
+      {
+        live: makeLive(),
+        initialMessages: [],
+        forkMode: { kind: "new" },
+        taskPrompt: "parent",
+      },
+      {
+        delegate: delegateFn as unknown as Parameters<typeof AgentThread>[1]["delegate"],
+        parent: {} as never,
+        control: {} as never,
+        registry: {} as never,
+        parentPath: "/root/alpha",
+      },
+    );
+
+    const rebound = makeLive();
+    (rebound as { agentPath: string }).agentPath = "/root/beta";
+    thread.rebindLive(rebound);
+    await thread.spawn({ taskPrompt: "go" });
+
+    expect(delegateFn.mock.calls[0]![0]!.parentPath).toBe("/root/beta");
   });
 });
 
@@ -104,6 +176,17 @@ describe("AgentThread — openclaude-parity getters", () => {
     expect(t.messages).toEqual(msgs);
   });
 
+  it("metadata mirrors the current live handle", () => {
+    const t = new AgentThread({
+      live: makeLive(),
+      initialMessages: [],
+      forkMode: { kind: "new" },
+      taskPrompt: "hi",
+    });
+    expect(t.metadata.agentPath).toBe("/root/alpha");
+    expect(t.metadata.agentNickname).toBe("alpha");
+  });
+
   it("memory returns [] until T10 wires the real store", () => {
     const t = new AgentThread({
       live: makeLive(),
@@ -136,6 +219,7 @@ describe("AgentThread — openclaude-parity getters", () => {
       } as never,
     });
     expect(t2.worktreePath).toBe("/tmp/wt");
+    expect(t2.worktreeBranch).toBe("feature-x");
   });
 });
 
@@ -285,5 +369,28 @@ describe("AgentThread — fork/spawn/join", () => {
     const result = await parent.join();
     expect(result.outcome).toBe("errored");
     expect(result.error).toBe("kaboom");
+  });
+
+  it("join() follows a rebound live handle", async () => {
+    const live1 = makeLive();
+    const thread = new AgentThread({
+      live: live1,
+      initialMessages: [],
+      forkMode: { kind: "new" },
+      taskPrompt: "parent",
+    });
+
+    const live2 = makeLive();
+    (live2 as { agentId: string }).agentId = "thread-2";
+    queueMicrotask(() => {
+      thread.rebindLive(live2);
+      live2.status.markRunning("turn-2");
+      live2.status.markCompleted("turn-2", "resumed done");
+    });
+
+    const result = await thread.join();
+    expect(result.threadId).toBe("thread-2");
+    expect(result.outcome).toBe("completed");
+    expect(result.finalMessage).toBe("resumed done");
   });
 });

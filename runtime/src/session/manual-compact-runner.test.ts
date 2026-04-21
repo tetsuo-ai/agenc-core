@@ -171,6 +171,10 @@ describe("runManualCompact", () => {
     expect(result.compactionResult).toBe(sessionMemoryResult);
     expect(result.displayText).toContain("Compacted");
     expect(mocks.runPostCompactCleanup).toHaveBeenCalledTimes(1);
+    expect(mocks.runPostCompactCleanup).toHaveBeenCalledWith(
+      "compact",
+      context,
+    );
     expect(mocks.notifyCompaction).not.toHaveBeenCalled();
     expect(mocks.suppressCompactWarning).toHaveBeenCalledTimes(1);
     expect(mocks.clearUserContextCache).toHaveBeenCalledTimes(1);
@@ -221,5 +225,9 @@ describe("runManualCompact", () => {
     expect(result.compactionResult).toBe(compactResult);
     expect(result.displayText).toContain("compact note");
     expect(mocks.setLastSummarizedMessageId).toHaveBeenCalledWith(undefined);
+    expect(mocks.runPostCompactCleanup).toHaveBeenCalledWith(
+      "compact",
+      context,
+    );
   });
 });

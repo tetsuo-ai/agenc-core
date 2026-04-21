@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseSSEFrames, SSETransport } from "./sse-post.js";
 
 describe("parseSSEFrames", () => {
@@ -55,6 +55,100 @@ describe("SSETransport", () => {
     expect(String(requests[0]?.headers?.["Last-Event-ID"])).toBe("5");
     expect(transport.getLastSequenceNum()).toBe(9);
     expect(data).toEqual(['{"type":"stream_event","chunk":"hi"}\n']);
+  });
+
+  it("treats HTTP 403 as a terminal close for the retained SSE seam", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 403 }));
+    const onClose = vi.fn();
+    const transport = new SSETransport(
+      new URL("https://example.test/session/1/events/stream"),
+      { Authorization: "Bearer old" },
+      undefined,
+      () => ({ Authorization: "Bearer new" }),
+      {
+        fetchImpl,
+      },
+    );
+    transport.setOnClose(onClose);
+
+    await transport.connect();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledWith(403);
+    expect(transport.isClosedStatus()).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("drops duplicate sequence frames during SSE replay", async () => {
+    const frame = [
+      "id: 9",
+      "event: client_event",
+      'data: {"event_id":"e-1","sequence_num":9,"event_type":"stream","source":"server","payload":{"type":"stream_event","chunk":"first"},"created_at":"2026-04-21T00:00:00Z"}',
+      "",
+      "id: 9",
+      "event: client_event",
+      'data: {"event_id":"e-1-dup","sequence_num":9,"event_type":"stream","source":"server","payload":{"type":"stream_event","chunk":"duplicate"},"created_at":"2026-04-21T00:00:01Z"}',
+      "",
+      "",
+    ].join("\n");
+    const data: string[] = [];
+    const transport = new SSETransport(
+      new URL("https://example.test/session/1/events/stream"),
+      { Authorization: "Bearer token" },
+      undefined,
+      undefined,
+      {
+        fetchImpl: async () => new Response(streamFrom(frame), { status: 200 }),
+      },
+    );
+
+    transport.setOnData((chunk) => {
+      data.push(chunk);
+    });
+
+    await transport.connect();
+
+    expect(transport.getLastSequenceNum()).toBe(9);
+    expect(data).toEqual(['{"type":"stream_event","chunk":"first"}\n']);
+  });
+
+  it("resets the reconnect budget after a long sleep gap before retrying", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network");
+    });
+    const transport = new SSETransport(
+      new URL("https://example.test/session/1/events/stream"),
+      { Authorization: "Bearer token" },
+      undefined,
+      undefined,
+      {
+        fetchImpl,
+        now: () => now,
+        random: () => 0.5,
+        sleepDetectionThresholdMs: 60_000,
+      },
+    );
+
+    await transport.connect();
+    expect(transport.getStateLabel()).toBe("reconnecting");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    now = 120_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    transport.close();
+    vi.useRealTimers();
   });
 });
 

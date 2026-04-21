@@ -502,6 +502,45 @@ describe("session-store", () => {
     }
   });
 
+  test("appendRollout inherits durable flushing for terminal event_msg rows", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-rollout-durable-terminal",
+      sessionId: "sess-rollout-durable-terminal",
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId: "sess-rollout-durable-terminal",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-rollout-durable-terminal",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    store.appendRollout({
+      type: "event_msg",
+      payload: {
+        id: "terminal-rollout-event",
+        msg: {
+          type: "turn_aborted",
+          payload: { turnId: "turn-rollout", reason: "process_killed" },
+        },
+      },
+    });
+
+    const lines = readFileSync(store.rolloutPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type?: string; payload?: { msg?: { type?: string } } });
+    expect(
+      lines.some(
+        (line) =>
+          line.type === "event_msg" &&
+          line.payload?.msg?.type === "turn_aborted",
+      ),
+    ).toBe(true);
+    store.close();
+  });
+
   test("I-38 fsync retry: both attempts fail — emits fsync_failed + routes to degraded", async () => {
     const store = new SessionStore({
       cwd: "/home/test-fsync-retry-fail",

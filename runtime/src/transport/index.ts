@@ -1,8 +1,16 @@
 import type { StdoutMessage } from "../entrypoints/sdk/controlTypes.js";
 
+// Retained openclaude session-ingress transport seam.
+// Codex app-server JSON-RPC ownership lives elsewhere.
 export type TransportMessage = StdoutMessage;
 export type HeaderMap = Record<string, string>;
 export type RefreshHeaders = () => HeaderMap;
+
+const TRANSPORT_AUTH_HEADER_NAMES = [
+  "Authorization",
+  "Cookie",
+  "X-Organization-Uuid",
+] as const;
 
 export interface Transport {
   connect(): Promise<void>;
@@ -45,6 +53,20 @@ export function withResolvedHeaders(
   };
 }
 
+export function authHeadersOnly(headers: HeaderMap): HeaderMap {
+  const authHeaders: HeaderMap = {};
+  for (const headerName of TRANSPORT_AUTH_HEADER_NAMES) {
+    const value = headers[headerName];
+    if (typeof value === "string" && value.length > 0) {
+      authHeaders[headerName] = value;
+    }
+  }
+  if (authHeaders.Cookie) {
+    delete authHeaders.Authorization;
+  }
+  return authHeaders;
+}
+
 export function messageUuid(message: TransportMessage): string | undefined {
   if (
     typeof message === "object" &&
@@ -60,4 +82,3 @@ export function messageUuid(message: TransportMessage): string | undefined {
 export function asNdjson(message: TransportMessage): string {
   return `${JSON.stringify(message)}\n`;
 }
-

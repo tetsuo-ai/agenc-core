@@ -215,4 +215,47 @@ describe("App", () => {
     expect(submit).toHaveBeenCalledWith("build a game");
     unmount();
   });
+
+  test("drops queued approvals without a live resolver and emits a session warning", async () => {
+    const emit = vi.fn();
+    const session = {
+      ...createFakeSession("default"),
+      emit,
+      nextInternalSubId: () => "sub-approval-missing",
+      permissionQueueOps: undefined as unknown,
+    } as SessionLike & {
+      permissionQueueOps?: {
+        push(request: Record<string, unknown>): void;
+      };
+    };
+
+    const { unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    expect(session.permissionQueueOps).toBeDefined();
+    session.permissionQueueOps?.push({
+      requestId: "req-missing-resolver",
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+      turnId: "turn-1",
+      message: "missing resolver",
+      submittedAt: Date.now(),
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(emit).toHaveBeenCalledWith({
+      id: "sub-approval-missing",
+      msg: {
+        type: "warning",
+        payload: expect.objectContaining({
+          cause: "approval_resolver_missing",
+          requestId: "req-missing-resolver",
+          toolName: "Bash",
+          turnId: "turn-1",
+        }),
+      },
+    });
+    unmount();
+  });
 });

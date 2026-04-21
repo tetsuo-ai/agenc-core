@@ -58,7 +58,7 @@ export interface InterAgentCommunication {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
-export type SendResult = "sent" | "dropped" | "rejected";
+export type SendResult = "sent" | "dropped";
 
 /** Synthetic sentinel returned by `drain()` after `close()`. */
 export interface AgentExitedSentinel {
@@ -137,15 +137,15 @@ export class Mailbox {
    * timer fires first the oldest is dropped, the overflow is
    * promoted, and the I-8 warning fires.
    *
-   * `'rejected'` means the mailbox is closed. In every other case
+   * A closed mailbox throws `MailboxClosedError`. In every other case
    * the message is accepted — either into the main queue or into
-   * the overflow slot — so `send()` never returns `'dropped'`
-   * today; any drop is deferred until the timer fires or a later
-   * overflow displaces the earlier one.
+   * the overflow slot — so `send()` never returns `'dropped'` today;
+   * any drop is deferred until the timer fires or a later overflow
+   * displaces the earlier one.
    */
   send(msg: Omit<InterAgentCommunication, "seq">): SendResult {
     if (this.closed) {
-      return "rejected";
+      throw new MailboxClosedError(this.threadId);
     }
     this.nextSeq += 1;
     const seq = this.nextSeq;

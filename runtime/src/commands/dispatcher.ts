@@ -297,9 +297,6 @@ const BRIDGE_SAFE: ReadonlySet<string> = new Set([
   "status",
   "help",
   "context",
-  "model",
-  "provider",
-  "clear",
   "diff",
 ]);
 
@@ -310,9 +307,9 @@ const BRIDGE_SAFE: ReadonlySet<string> = new Set([
  */
 // Kept alongside BRIDGE_SAFE to document the contract. Do not export as
 // a negation — checks MUST go through `isBridgeSafeCommand`.
-// (status / help / context / model / provider / clear / diff) are safe;
-// everything else (exit / compact / permissions / config / resume / fork
-// / init / plan) requires user confirmation at the bridge.
+// (status / help / context / diff) are safe; everything else mutates
+// session/runtime state or process ownership and requires direct user
+// confirmation at the bridge.
 
 export function isBridgeSafeCommand(name: string): boolean {
   return BRIDGE_SAFE.has(name);

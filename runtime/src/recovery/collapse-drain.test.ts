@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
   NOOP_COLLAPSE_DRIVER,
+  hasAttemptedCollapseDrain,
+  resetCollapseDrainAttempted,
   runCollapseDrain,
   type CollapseDrainDriver,
 } from "./collapse-drain.js";
@@ -30,6 +32,7 @@ function mkState(messages: LLMMessage[] = []): TurnState {
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
     pendingBudgetDecision: undefined,
+    lastResponseUsage: undefined,
     turnCount: 1,
     transition: undefined,
     stopHookActive: undefined,
@@ -42,7 +45,11 @@ const mockSession = {} as unknown as Session;
 describe("collapse-drain", () => {
   test("one-shot guard — already-drained state returns skipped_guard", async () => {
     const state = mkState();
-    state.transition = { reason: "collapse_drain_retry" };
+    (
+      state as TurnState & {
+        collapseDrainAttempted?: boolean;
+      }
+    ).collapseDrainAttempted = true;
     const out = await runCollapseDrain(state, { session: mockSession });
     expect(out.kind).toBe("skipped_guard");
   });
@@ -77,5 +84,38 @@ describe("collapse-drain", () => {
     if (out.kind === "drained") expect(out.committed).toBe(1);
     expect(state.messagesForQuery).toEqual(collapsed);
     expect(state.transition?.reason).toBe("collapse_drain_retry");
+  });
+
+  test("drain attempt stays one-shot even after run-turn clears transition", async () => {
+    const state = mkState([
+      { role: "user", content: "a" },
+      { role: "assistant", content: "b" },
+    ]);
+    const driver: CollapseDrainDriver = {
+      isEnabled: () => true,
+      async recoverFromOverflow() {
+        return {
+          committed: 1,
+          messages: [{ role: "user", content: "[collapsed]" }],
+        };
+      },
+    };
+
+    await runCollapseDrain(state, {
+      session: mockSession,
+      driver,
+    });
+    expect(hasAttemptedCollapseDrain(state)).toBe(true);
+
+    state.transition = undefined;
+
+    const next = await runCollapseDrain(state, {
+      session: mockSession,
+      driver,
+    });
+    expect(next.kind).toBe("skipped_guard");
+
+    resetCollapseDrainAttempted(state);
+    expect(hasAttemptedCollapseDrain(state)).toBe(false);
   });
 });

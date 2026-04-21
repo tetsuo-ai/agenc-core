@@ -64,6 +64,22 @@ export async function clearSession(session: Session): Promise<void> {
     if (svc[key]) maybeReset(svc[key]);
   }
 
+  if (
+    svc["toolApprovals"] &&
+    typeof (svc["toolApprovals"] as { clear?: () => void }).clear === "function"
+  ) {
+    (svc["toolApprovals"] as { clear: () => void }).clear();
+  }
+  if (
+    svc["networkApproval"] &&
+    typeof (
+      svc["networkApproval"] as { clearSessionHosts?: () => void }
+    ).clearSessionHosts === "function"
+  ) {
+    (svc["networkApproval"] as { clearSessionHosts: () => void })
+      .clearSessionHosts();
+  }
+
   // Budget tracker has no `reset()` but exposes sampling-gate reset.
   if (session.budgetTracker) {
     session.budgetTracker.resetSamplingGate?.();

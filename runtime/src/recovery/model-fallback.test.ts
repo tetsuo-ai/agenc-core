@@ -1,4 +1,8 @@
 import { describe, expect, test } from "vitest";
+import {
+  FACTORY_PROVIDER_MARKER,
+  FACTORY_PROVIDER_STATE,
+} from "../llm/provider.js";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnState, UserMessage } from "../session/turn-state.js";
@@ -217,5 +221,40 @@ describe("runModelFallback — T8 hardening", () => {
 
     expect(executor.discardCount).toBe(1);
     expect(state.streamingToolExecutor).toBeNull();
+  });
+
+  test("stages fallback switches with the compat provider identity, not the generic adapter name", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    (session.services.provider as Record<PropertyKey, unknown>).name = "openai";
+    (session.services.provider as Record<PropertyKey, unknown>)[
+      FACTORY_PROVIDER_MARKER
+    ] = true;
+    (session.services.provider as Record<PropertyKey, unknown>)[
+      FACTORY_PROVIDER_STATE
+    ] = {
+      provider: "openrouter",
+      options: {
+        apiKey: "or-test",
+        baseURL: "https://openrouter.ai/api/v1",
+        model: "openai/gpt-5",
+      },
+    };
+    const state = mkState({
+      assistantMessages: [
+        { uuid: "a1", role: "assistant", text: "partial", toolCalls: [] },
+      ],
+    });
+
+    runModelFallback({
+      session,
+      state,
+      error: new FallbackTriggeredError("openai/gpt-5", "openai/gpt-5-mini"),
+    });
+
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openrouter",
+      model: "openai/gpt-5-mini",
+    });
   });
 });

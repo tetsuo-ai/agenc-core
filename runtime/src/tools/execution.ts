@@ -49,12 +49,17 @@ import {
   type PostToolUseHook,
   type PreToolUseHook,
 } from "./tool-hooks.js";
+import { buildShellApprovalKey } from "../permissions/approval-cache.js";
 import type {
   CanUseToolFn,
   ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
+import {
+  reviewDecisionIsAllow,
+  type ReviewDecision,
+} from "../permissions/review-decision.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -223,10 +228,12 @@ export async function withTimeoutAndAbort<T>(
     readonly timeoutMs: number;
     readonly toolName: string;
     readonly signal?: AbortSignal;
+    readonly abortController?: AbortController;
   },
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let onAbort: (() => void) | null = null;
+  let settled = false;
 
   const cleanup = () => {
     if (timer) {
@@ -241,7 +248,21 @@ export async function withTimeoutAndAbort<T>(
 
   return new Promise<T>((resolve, reject) => {
     timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       cleanup();
+      if (
+        opts.abortController &&
+        !opts.abortController.signal.aborted
+      ) {
+        try {
+          opts.abortController.abort(
+            `tool timeout: ${opts.toolName} exceeded ${opts.timeoutMs}ms`,
+          );
+        } catch {
+          // already aborted
+        }
+      }
       reject(new ToolTimeoutError(opts.toolName, opts.timeoutMs));
     }, opts.timeoutMs);
     if (typeof (timer as { unref?: () => void }).unref === "function") {
@@ -250,11 +271,14 @@ export async function withTimeoutAndAbort<T>(
 
     if (opts.signal) {
       if (opts.signal.aborted) {
+        settled = true;
         cleanup();
         reject(new Error(String(opts.signal.reason ?? "aborted")));
         return;
       }
       onAbort = () => {
+        if (settled) return;
+        settled = true;
         cleanup();
         reject(new Error(String(opts.signal?.reason ?? "aborted")));
       };
@@ -263,10 +287,14 @@ export async function withTimeoutAndAbort<T>(
 
     fn().then(
       (value) => {
+        if (settled) return;
+        settled = true;
         cleanup();
         resolve(value);
       },
       (err) => {
+        if (settled) return;
+        settled = true;
         cleanup();
         reject(err);
       },
@@ -287,6 +315,7 @@ export interface ModalDecision {
   readonly behavior: "allow" | "deny" | "abort";
   readonly decisionAtTurnId: string;
   readonly message?: string;
+  readonly reviewDecision?: ReviewDecision;
 }
 
 export interface ApprovalRequestFn {
@@ -296,6 +325,20 @@ export interface ApprovalRequestFn {
     readonly currentTurnId: string;
     readonly signal: AbortSignal;
   }): Promise<ModalDecision>;
+}
+
+interface ApprovalCacheAdapter {
+  withCachedApproval(opts: {
+    readonly keys: readonly unknown[];
+    readonly fetchDecision: () => Promise<ReviewDecision>;
+  }): Promise<ReviewDecision>;
+}
+
+class ModalApprovalError extends Error {
+  constructor(readonly cause: string) {
+    super(cause);
+    this.name = "ModalApprovalError";
+  }
 }
 
 /**
@@ -322,8 +365,15 @@ export async function requestApprovalWithAbortRace(
     readonly callId?: string;
     /** Human-readable reason shown in the approval modal, if any. */
     readonly approvalReason?: string;
+    readonly approvalCache?: {
+      readonly keys: readonly unknown[];
+      readonly cache: ApprovalCacheAdapter;
+    };
   },
-): Promise<{ readonly allow: true } | { readonly allow: false; readonly cause: string }> {
+): Promise<
+  | { readonly allow: true; readonly reviewDecision: ReviewDecision }
+  | { readonly allow: false; readonly cause: string }
+> {
   // I-21 fast-path: already aborted.
   if (opts.signal.aborted) {
     return { allow: false, cause: "aborted_before_approval" };
@@ -367,10 +417,11 @@ export async function requestApprovalWithAbortRace(
 
   // Race the modal against the abort signal — signal wins even if the
   // modal would eventually resolve with 'allow'.
-  const decision = await new Promise<ModalDecision>((resolve) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
+  const fetchModalDecision = async (): Promise<ModalDecision> =>
+    await new Promise<ModalDecision>((resolve) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
       settled = true;
       resolve({
         behavior: "abort",
@@ -378,33 +429,61 @@ export async function requestApprovalWithAbortRace(
       });
     };
     opts.signal.addEventListener("abort", onAbort, { once: true });
-    request(opts).then(
-      (d) => {
-        if (settled) return;
-        settled = true;
-        opts.signal.removeEventListener("abort", onAbort);
-        resolve(d);
-      },
-      () => {
-        if (settled) return;
-        settled = true;
-        opts.signal.removeEventListener("abort", onAbort);
-        // A throwing modal is treated as abort for safety.
-        resolve({
-          behavior: "abort",
-          decisionAtTurnId: opts.currentTurnId,
-        });
-      },
-    );
-  });
+      request(opts).then(
+        (d) => {
+          if (settled) return;
+          settled = true;
+          opts.signal.removeEventListener("abort", onAbort);
+          resolve(d);
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          opts.signal.removeEventListener("abort", onAbort);
+          // A throwing modal is treated as abort for safety.
+          resolve({
+            behavior: "abort",
+            decisionAtTurnId: opts.currentTurnId,
+          });
+        },
+      );
+    });
 
-  // I-44: turn-id stamp must match the current turn.
-  if (decision.decisionAtTurnId !== opts.currentTurnId) {
-    return { allow: false, cause: "stale_modal_decision" };
+  const resolveModalReviewDecision = async (): Promise<ReviewDecision> => {
+    const decision = await fetchModalDecision();
+    if (decision.decisionAtTurnId !== opts.currentTurnId) {
+      throw new ModalApprovalError("stale_modal_decision");
+    }
+    if (decision.reviewDecision) {
+      if (!reviewDecisionIsAllow(decision.reviewDecision)) {
+        throw new ModalApprovalError(
+          decision.behavior === "deny" ? "denied" : "aborted",
+        );
+      }
+      return decision.reviewDecision;
+    }
+    if (decision.behavior === "allow") return { kind: "approved" };
+    if (decision.behavior === "deny") {
+      throw new ModalApprovalError("denied");
+    }
+    throw new ModalApprovalError("aborted");
+  };
+
+  try {
+    const reviewDecision =
+      opts.approvalCache && opts.approvalCache.keys.length > 0
+        ? await opts.approvalCache.cache.withCachedApproval({
+            keys: opts.approvalCache.keys,
+            fetchDecision: resolveModalReviewDecision,
+          })
+        : await resolveModalReviewDecision();
+    return { allow: true, reviewDecision };
+  } catch (error) {
+    if (error instanceof ModalApprovalError) {
+      return { allow: false, cause: error.cause };
+    }
+    throw error;
   }
-  if (decision.behavior === "allow") return { allow: true };
-  if (decision.behavior === "deny") return { allow: false, cause: "denied" };
-  return { allow: false, cause: "aborted" };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -769,6 +848,63 @@ export function defaultCheckModeStillAllowed(
   return true;
 }
 
+function resolveApprovalCache(
+  invocation: ToolInvocation,
+): ApprovalCacheAdapter | null {
+  const store = (
+    invocation.session.services as {
+      toolApprovals?: ApprovalCacheAdapter | null;
+    }
+  ).toolApprovals;
+  return store && typeof store.withCachedApproval === "function" ? store : null;
+}
+
+function buildApprovalCacheKeys(
+  tool: Tool,
+  invocation: ToolInvocation,
+  args: Record<string, unknown>,
+): readonly unknown[] {
+  const cwd =
+    typeof args.cwd === "string" && args.cwd.length > 0
+      ? args.cwd
+      : invocation.turn.cwd;
+  if (
+    tool.name === "system.bash" ||
+    tool.name === "Bash" ||
+    invocation.payload.kind === "local_shell"
+  ) {
+    const command = Array.isArray(args.args)
+      ? [
+          typeof args.command === "string" ? args.command : "",
+          ...args.args.filter((part): part is string => typeof part === "string"),
+        ].filter((part) => part.length > 0)
+      : invocation.payload.kind === "local_shell"
+        ? invocation.payload.params.command
+        : typeof args.command === "string"
+          ? [args.command]
+          : [];
+    if (command.length > 0) {
+      return [
+        buildShellApprovalKey({
+          command,
+          cwd,
+          sandbox_permissions: [invocation.turn.sandboxPolicy.value],
+          additional_permissions: [invocation.turn.approvalPolicy.value],
+        }),
+      ];
+    }
+  }
+  return [
+    {
+      toolName: tool.name,
+      cwd,
+      sandboxMode: invocation.turn.sandboxPolicy.value,
+      approvalPolicy: invocation.turn.approvalPolicy.value,
+      args,
+    },
+  ];
+}
+
 /**
  * Execute one tool invocation end-to-end.
  *
@@ -786,7 +922,8 @@ export async function runToolUse(
   rawArgs: string,
   opts: RunToolUseOptions,
 ): Promise<ToolOutput> {
-  const { tool, invocation, signal, currentTurnId } = opts;
+  const effectiveSignal = opts.signal ?? opts.abortController?.signal;
+  const { tool, invocation, currentTurnId } = opts;
   const subId = opts.subId ?? invocation.callId;
   const startedAt = performance.now();
 
@@ -920,15 +1057,23 @@ export async function runToolUse(
 
   // Step 2: I-21 + I-44 approval.
   if (opts.requestApproval) {
-    const effectiveSignal = signal ?? new AbortController().signal;
+    const approvalCache = resolveApprovalCache(invocation);
     const decision = await requestApprovalWithAbortRace(opts.requestApproval, {
       tool,
       args: parsedArgs,
       currentTurnId,
-      signal: effectiveSignal,
+      signal: effectiveSignal ?? new AbortController().signal,
       ...(opts.eventLog !== undefined ? { eventLog: opts.eventLog } : {}),
       subId,
       callId: invocation.callId,
+      ...(approvalCache !== null
+        ? {
+            approvalCache: {
+              cache: approvalCache,
+              keys: buildApprovalCacheKeys(tool, invocation, parsedArgs),
+            },
+          }
+        : {}),
     });
     if (!decision.allow) {
       const cause = decision.cause;
@@ -1023,14 +1168,24 @@ export async function runToolUse(
   // deep-equality checks / schema validators never see it — callers can
   // still retrieve it via direct key access.
   let argsForTool: Record<string, unknown> = args;
-  if (progressCallback) {
+  if (progressCallback || effectiveSignal) {
     argsForTool = { ...args };
-    Object.defineProperty(argsForTool, "__onProgress", {
-      value: progressCallback,
-      enumerable: false,
-      writable: false,
-      configurable: true,
-    });
+    if (progressCallback) {
+      Object.defineProperty(argsForTool, "__onProgress", {
+        value: progressCallback,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
+    if (effectiveSignal) {
+      Object.defineProperty(argsForTool, "__abortSignal", {
+        value: effectiveSignal,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
   }
 
   // Step 3: I-9 timeout + abort race.
@@ -1097,7 +1252,10 @@ export async function runToolUse(
       {
         timeoutMs,
         toolName: tool.name,
-        ...(signal !== undefined ? { signal } : {}),
+        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+        ...(opts.abortController !== undefined
+          ? { abortController: opts.abortController }
+          : {}),
       },
     );
   } catch (err) {

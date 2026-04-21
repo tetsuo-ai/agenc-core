@@ -1,22 +1,38 @@
-/**
- * Tests for the provider factory (T10 Fix-E integration point 4).
- *
- * The factory is the single entrypoint for provider construction so
- * T13's multi-provider work slots in without touching `bin/agenc.ts`
- * or other call sites. Today only Grok is wired; every other
- * `ProviderName` throws `ProviderNotImplementedError`.
- */
-
 import { describe, expect, test } from "vitest";
 import { GrokProvider } from "./grok/index.js";
-import { OpenAIProvider } from "./providers/openai/index.js";
+import { OllamaProvider } from "./ollama/index.js";
 import { AnthropicProvider } from "./providers/anthropic/index.js";
+import { GeminiProvider } from "./providers/gemini/index.js";
+import { LMStudioProvider } from "./providers/lmstudio/index.js";
+import { OpenAIProvider } from "./providers/openai/index.js";
+import type { OpenAIProviderConfig } from "./providers/openai/index.js";
 import {
   createProvider,
   isFactoryProvider,
-  ProviderNotImplementedError,
+  readProviderFactoryOptions,
+  readProviderIdentity,
   resolveProviderNameFromEnv,
 } from "./provider.js";
+
+function withEnv<T>(
+  overrides: Record<string, string | undefined>,
+  run: () => T,
+): T {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 describe("createProvider", () => {
   test("routes 'grok' to GrokProvider", () => {
@@ -29,51 +45,418 @@ describe("createProvider", () => {
   });
 
   test("routes 'openai' to OpenAIProvider", () => {
-    const prev = process.env.OPENAI_API_KEY;
-    process.env.OPENAI_API_KEY = "sk-test";
-    try {
-      const provider = createProvider("openai", {
-        model: "gpt-5.4",
-      });
-      expect(provider).toBeInstanceOf(OpenAIProvider);
-      expect(isFactoryProvider(provider)).toBe(true);
-    } finally {
-      if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
-      else delete process.env.OPENAI_API_KEY;
-    }
+    const provider = withEnv(
+      {
+        OPENAI_API_KEY: "sk-test",
+      },
+      () =>
+        createProvider("openai", {
+          model: "gpt-5.4",
+        }),
+    );
+    expect(provider).toBeInstanceOf(OpenAIProvider);
+    expect(isFactoryProvider(provider)).toBe(true);
+  });
+
+  test("preserves the live provider identity on OpenAI-compatible providers", () => {
+    const provider = withEnv(
+      {
+        OPENROUTER_API_KEY: "or-test",
+      },
+      () =>
+        createProvider("openrouter", {
+          model: "openai/gpt-5",
+        }),
+    );
+
+    expect(provider.name).toBe("openrouter");
+    expect(readProviderIdentity(provider)).toBe("openrouter");
+  });
+
+  test("uses the documented OpenAI default model when no model override is supplied", () => {
+    const provider = withEnv(
+      {
+        OPENAI_API_KEY: "sk-test",
+        OPENAI_MODEL: undefined,
+      },
+      () => createProvider("openai", {}),
+    );
+    expect(provider).toBeInstanceOf(OpenAIProvider);
+    expect(
+      (provider as unknown as { config: OpenAIProviderConfig }).config.model,
+    ).toBe("gpt-5");
   });
 
   test("routes 'anthropic' to AnthropicProvider", () => {
-    const prev = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = "anthropic-test";
-    try {
-      const provider = createProvider("anthropic", {
-        model: "claude-sonnet-4.5",
+    const provider = withEnv(
+      {
+        ANTHROPIC_API_KEY: "anthropic-test",
+      },
+      () =>
+        createProvider("anthropic", {
+          model: "claude-sonnet-4.5",
+        }),
+    );
+    expect(provider).toBeInstanceOf(AnthropicProvider);
+    expect(isFactoryProvider(provider)).toBe(true);
+  });
+
+  test("uses the documented Anthropic default model when no model override is supplied", () => {
+    const provider = withEnv(
+      {
+        ANTHROPIC_API_KEY: "anthropic-test",
+        ANTHROPIC_MODEL: undefined,
+      },
+      () => createProvider("anthropic", {}),
+    );
+    expect(provider).toBeInstanceOf(AnthropicProvider);
+    expect(
+      (provider as unknown as { config: { model: string } }).config.model,
+    ).toBe("claude-opus-4-7");
+  });
+
+  test("routes 'ollama' to OllamaProvider and strips a trailing /v1 host suffix", () => {
+    const provider = withEnv(
+      {
+        OLLAMA_BASE_URL: "http://localhost:11434/v1",
+      },
+      () =>
+        createProvider("ollama", {
+          model: "llama3.2",
+        }),
+    );
+    expect(provider).toBeInstanceOf(OllamaProvider);
+    expect(isFactoryProvider(provider)).toBe(true);
+    expect(
+      (provider as unknown as { config: { host?: string } }).config.host,
+    ).toBe("http://localhost:11434");
+  });
+
+  test.each([
+    {
+      name: "ollama",
+      env: {
+        OLLAMA_BASE_URL: undefined,
+        OLLAMA_MODEL: undefined,
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "http://localhost:11434",
+      expectedModel: "llama3.3",
+    },
+    {
+      name: "lmstudio",
+      env: {
+        LMSTUDIO_BASE_URL: undefined,
+        LMSTUDIO_MODEL: "qwen2.5-coder:7b",
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "http://localhost:1234/v1",
+      expectedModel: "qwen2.5-coder:7b",
+      expectedUseResponsesApi: false,
+      expectedInstance: LMStudioProvider,
+      assertApiKey: true,
+      expectedApiKey: undefined,
+    },
+    {
+      name: "lmstudio",
+      env: {
+        OPENAI_BASE_URL: "http://localhost:1234/v1",
+        OPENAI_API_KEY: undefined,
+      },
+      model: "qwen2.5-coder:7b",
+      expectedBaseURL: "http://localhost:1234/v1",
+      expectedModel: "qwen2.5-coder:7b",
+      expectedUseResponsesApi: false,
+      expectedInstance: LMStudioProvider,
+      assertApiKey: true,
+      expectedApiKey: undefined,
+    },
+    {
+      name: "lmstudio",
+      env: {
+        LMSTUDIO_API_KEY: "lmstudio-secret",
+      },
+      model: "qwen2.5-coder:7b",
+      expectedBaseURL: "http://localhost:1234/v1",
+      expectedModel: "qwen2.5-coder:7b",
+      expectedUseResponsesApi: false,
+      expectedInstance: LMStudioProvider,
+      assertApiKey: true,
+      expectedApiKey: "lmstudio-secret",
+    },
+    {
+      name: "openrouter",
+      env: {
+        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_BASE_URL: undefined,
+        OPENROUTER_MODEL: "openai/gpt-5",
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://openrouter.ai/api/v1",
+      expectedModel: "openai/gpt-5",
+      expectedUseResponsesApi: false,
+    },
+    {
+      name: "openrouter",
+      env: {
+        OPENROUTER_API_KEY: "or-test",
+        OPENAI_BASE_URL: undefined,
+      },
+      model: "openai/gpt-5-mini",
+      expectedBaseURL: "https://openrouter.ai/api/v1",
+      expectedModel: "openai/gpt-5-mini",
+      expectedUseResponsesApi: false,
+    },
+    {
+      name: "groq",
+      env: {
+        GROQ_API_KEY: "groq-test",
+        GROQ_BASE_URL: undefined,
+        GROQ_MODEL: undefined,
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://api.groq.com/openai/v1",
+      expectedModel: "llama-3.3-70b-versatile",
+      expectedUseResponsesApi: false,
+    },
+    {
+      name: "groq",
+      env: {
+        GROQ_API_KEY: "groq-test",
+        OPENAI_BASE_URL: undefined,
+      },
+      model: "llama-3.3-70b-versatile",
+      expectedBaseURL: "https://api.groq.com/openai/v1",
+      expectedModel: "llama-3.3-70b-versatile",
+      expectedUseResponsesApi: false,
+    },
+    {
+      name: "deepseek",
+      env: {
+        DEEPSEEK_API_KEY: "deepseek-test",
+        DEEPSEEK_BASE_URL: undefined,
+        DEEPSEEK_MODEL: undefined,
+        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_MODEL: "wrong-openai-model",
+      },
+      model: undefined,
+      expectedBaseURL: "https://api.deepseek.com/v1",
+      expectedModel: "deepseek-reasoner",
+      expectedUseResponsesApi: false,
+    },
+    {
+      name: "deepseek",
+      env: {
+        DEEPSEEK_API_KEY: "deepseek-test",
+        OPENAI_BASE_URL: undefined,
+      },
+      model: "deepseek-reasoner",
+      expectedBaseURL: "https://api.deepseek.com/v1",
+      expectedModel: "deepseek-reasoner",
+      expectedUseResponsesApi: false,
+    },
+    {
+      name: "gemini",
+      env: {
+        GEMINI_API_KEY: "gemini-test",
+        GEMINI_BASE_URL: undefined,
+      },
+      model: "gemini-2.5-pro",
+      expectedBaseURL: "https://generativelanguage.googleapis.com/v1beta",
+      expectedModel: "gemini-2.5-pro",
+      expectedUseResponsesApi: false,
+      expectedInstance: GeminiProvider,
+      assertApiKey: true,
+      expectedApiKey: "gemini-test",
+    },
+    {
+      name: "gemini",
+      env: {
+        GEMINI_API_KEY: "gemini-test",
+        GEMINI_BASE_URL:
+          "https://generativelanguage.googleapis.com/v1beta/openai",
+      },
+      model: "gemini-2.5-pro",
+      expectedBaseURL: "https://generativelanguage.googleapis.com/v1beta",
+      expectedModel: "gemini-2.5-pro",
+      expectedUseResponsesApi: false,
+      expectedInstance: GeminiProvider,
+      assertApiKey: true,
+      expectedApiKey: "gemini-test",
+    },
+  ] as const)(
+    "routes '$name' through the live provider path without leaking OPENAI globals",
+    ({
+      name,
+      env,
+      model,
+      expectedBaseURL,
+      expectedModel,
+      expectedUseResponsesApi,
+      expectedInstance,
+      assertApiKey,
+      expectedApiKey,
+    }) => {
+      const provider = withEnv(env, () =>
+        createProvider(name, model ? { model } : {}),
+      );
+      if (name === "ollama") {
+        expect(provider).toBeInstanceOf(OllamaProvider);
+        expect(isFactoryProvider(provider)).toBe(true);
+        const config = (provider as unknown as { config: { host?: string; model: string } }).config;
+        expect(config.host).toBe(expectedBaseURL);
+        expect(config.model).toBe(expectedModel);
+      } else {
+        expect(provider).toBeInstanceOf(expectedInstance ?? OpenAIProvider);
+        expect(isFactoryProvider(provider)).toBe(true);
+        const config = (provider as unknown as { config: OpenAIProviderConfig })
+          .config;
+        expect(config.baseURL).toBe(expectedBaseURL);
+        expect(config.model).toBe(expectedModel);
+        if (expectedUseResponsesApi !== undefined) {
+          expect(config.useResponsesApi).toBe(expectedUseResponsesApi);
+        }
+        if (assertApiKey === true) {
+          expect(config.apiKey).toBe(expectedApiKey);
+        }
+      }
+    },
+  );
+
+  test("tracks the canonical provider identity and rebuild options on OpenAI-compatible providers", () => {
+    const provider = withEnv(
+      {
+        OPENROUTER_API_KEY: "or-test",
+      },
+      () =>
+        createProvider("openrouter", {
+          model: "openai/gpt-5-mini",
+          baseURL: "https://router.example/api/v1",
+        }),
+    );
+
+    expect(readProviderIdentity(provider)).toBe("openrouter");
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      apiKey: "or-test",
+      baseURL: "https://router.example/api/v1",
+      model: "openai/gpt-5-mini",
+    });
+  });
+
+  test("rebuilds OpenAI provider state from OAuth runtime config without requiring OPENAI_API_KEY", () => {
+    const provider = withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+      },
+      () =>
+        createProvider("openai", {
+          model: "gpt-5.4",
+          extra: {
+            authMode: "oauth",
+            oauth: {
+              accessToken: "oauth-access",
+              refreshToken: "oauth-refresh",
+            },
+            organization: "org-test",
+            project: "proj-test",
+          },
+        }),
+    );
+
+    expect(provider).toBeInstanceOf(OpenAIProvider);
+    const options = readProviderFactoryOptions(provider);
+    expect(options.model).toBe("gpt-5.4");
+    expect(options.extra).toMatchObject({
+      authMode: "oauth",
+      organization: "org-test",
+      project: "proj-test",
+      oauth: {
+        accessToken: "oauth-access",
+        refreshToken: "oauth-refresh",
+      },
+    });
+  });
+
+  test.each([
+    {
+      name: "openrouter",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        OPENROUTER_API_KEY: undefined,
+        OPENROUTER_MODEL: "openai/gpt-5",
+      },
+      expected: /OPENROUTER_API_KEY|apiKey/i,
+    },
+    {
+      name: "groq",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        GROQ_API_KEY: undefined,
+        GROQ_MODEL: "llama-3.3-70b-versatile",
+      },
+      expected: /GROQ_API_KEY|apiKey/i,
+    },
+    {
+      name: "deepseek",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        DEEPSEEK_API_KEY: undefined,
+        DEEPSEEK_MODEL: "deepseek-reasoner",
+      },
+      expected: /DEEPSEEK_API_KEY|apiKey/i,
+    },
+    {
+      name: "gemini",
+      env: {
+        GOOGLE_API_KEY: "google-test",
+        GEMINI_API_KEY: undefined,
+        GEMINI_MODEL: "gemini-2.5-pro",
+      },
+      expected: /GEMINI_API_KEY|apiKey/i,
+    },
+  ] as const)(
+    "requires provider-specific auth for $name instead of falling back to unrelated globals",
+    ({ name, env, expected }) => {
+      withEnv(env, () => {
+        expect(() => createProvider(name, {})).toThrow(expected);
       });
-      expect(provider).toBeInstanceOf(AnthropicProvider);
-      expect(isFactoryProvider(provider)).toBe(true);
-    } finally {
-      if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
-      else delete process.env.ANTHROPIC_API_KEY;
-    }
+    },
+  );
+
+  test("does not reuse OPENAI_API_KEY as LMStudio auth state", () => {
+    const provider = withEnv(
+      {
+        OPENAI_API_KEY: "sk-openai",
+        LMSTUDIO_API_KEY: undefined,
+        LMSTUDIO_MODEL: "qwen2.5-coder:7b",
+      },
+      () => createProvider("lmstudio", {}),
+    );
+
+    expect(readProviderFactoryOptions(provider).apiKey).not.toBe("sk-openai");
   });
 
   test("'grok' without apiKey throws explanatory error", () => {
-    const prevXai = process.env.XAI_API_KEY;
-    const prevGrok = process.env.GROK_API_KEY;
-    const prevAgenc = process.env.AGENC_XAI_API_KEY;
-    delete process.env.XAI_API_KEY;
-    delete process.env.GROK_API_KEY;
-    delete process.env.AGENC_XAI_API_KEY;
-    try {
-      expect(() =>
-        createProvider("grok", { model: "grok-4-fast" }),
-      ).toThrow(/XAI_API_KEY|apiKey/i);
-    } finally {
-      if (prevXai !== undefined) process.env.XAI_API_KEY = prevXai;
-      if (prevGrok !== undefined) process.env.GROK_API_KEY = prevGrok;
-      if (prevAgenc !== undefined) process.env.AGENC_XAI_API_KEY = prevAgenc;
-    }
+    withEnv(
+      {
+        XAI_API_KEY: undefined,
+        GROK_API_KEY: undefined,
+        AGENC_XAI_API_KEY: undefined,
+      },
+      () => {
+        expect(() =>
+          createProvider("grok", { model: "grok-4-fast" }),
+        ).toThrow(/XAI_API_KEY|apiKey/i);
+      },
+    );
   });
 
   test("'grok' without model throws explanatory error", () => {
@@ -82,26 +465,48 @@ describe("createProvider", () => {
     ).toThrow(/AGENC_MODEL|model/i);
   });
 
-  test.each([
-    "ollama",
-    "lmstudio",
-    "openrouter",
-    "groq",
-    "deepseek",
-    "gemini",
-  ] as const)(
-    "'%s' throws ProviderNotImplementedError (T13 gap)",
-    (name) => {
-      expect(() =>
-        createProvider(name, { apiKey: "x", model: "y" }),
-      ).toThrow(ProviderNotImplementedError);
-    },
-  );
+  test("'openai' without apiKey throws explanatory error", () => {
+    withEnv(
+      {
+        OPENAI_API_KEY: undefined,
+      },
+      () => {
+        expect(() =>
+          createProvider("openai", { model: "gpt-5.4" }),
+        ).toThrow(/OPENAI_API_KEY|apiKey/i);
+      },
+    );
+  });
+
+  test("'openrouter' without a configured model throws explanatory error", () => {
+    withEnv(
+      {
+        OPENROUTER_API_KEY: "or-test",
+        OPENROUTER_MODEL: undefined,
+      },
+      () => {
+        expect(() => createProvider("openrouter", {})).toThrow(
+          /OPENROUTER_MODEL|model/i,
+        );
+      },
+    );
+  });
+
+  test("'lmstudio' without a configured model throws explanatory error", () => {
+    withEnv(
+      {
+        LMSTUDIO_MODEL: undefined,
+      },
+      () => {
+        expect(() => createProvider("lmstudio", {})).toThrow(
+          /LMSTUDIO_MODEL|model/i,
+        );
+      },
+    );
+  });
 
   test("unknown provider string bypassing the type system throws", () => {
     expect(() =>
-      // Runtime-only test: simulate a stringly-typed caller that
-      // the TS compiler would normally catch.
       createProvider("bogus" as unknown as "grok", {
         apiKey: "x",
         model: "y",
@@ -112,36 +517,48 @@ describe("createProvider", () => {
 
 describe("resolveProviderNameFromEnv", () => {
   test("defaults to 'grok' when AGENC_PROVIDER unset", () => {
-    const prev = process.env.AGENC_PROVIDER;
-    delete process.env.AGENC_PROVIDER;
-    try {
-      expect(resolveProviderNameFromEnv()).toBe("grok");
-    } finally {
-      if (prev !== undefined) process.env.AGENC_PROVIDER = prev;
-    }
+    withEnv(
+      {
+        AGENC_PROVIDER: undefined,
+      },
+      () => {
+        expect(resolveProviderNameFromEnv()).toBe("grok");
+      },
+    );
+  });
+
+  test("normalizes the xai alias to grok", () => {
+    withEnv(
+      {
+        AGENC_PROVIDER: "xai",
+      },
+      () => {
+        expect(resolveProviderNameFromEnv()).toBe("grok");
+      },
+    );
   });
 
   test("lowercases and trims AGENC_PROVIDER", () => {
-    const prev = process.env.AGENC_PROVIDER;
-    process.env.AGENC_PROVIDER = "  OpenAI  ";
-    try {
-      expect(resolveProviderNameFromEnv()).toBe("openai");
-    } finally {
-      if (prev !== undefined) process.env.AGENC_PROVIDER = prev;
-      else delete process.env.AGENC_PROVIDER;
-    }
+    withEnv(
+      {
+        AGENC_PROVIDER: "  OpenAI  ",
+      },
+      () => {
+        expect(resolveProviderNameFromEnv()).toBe("openai");
+      },
+    );
   });
 
   test("rejects unknown provider names", () => {
-    const prev = process.env.AGENC_PROVIDER;
-    process.env.AGENC_PROVIDER = "bogus";
-    try {
-      expect(() => resolveProviderNameFromEnv()).toThrow(
-        /not a known provider/i,
-      );
-    } finally {
-      if (prev !== undefined) process.env.AGENC_PROVIDER = prev;
-      else delete process.env.AGENC_PROVIDER;
-    }
+    withEnv(
+      {
+        AGENC_PROVIDER: "bogus",
+      },
+      () => {
+        expect(() => resolveProviderNameFromEnv()).toThrow(
+          /not a known provider/i,
+        );
+      },
+    );
   });
 });

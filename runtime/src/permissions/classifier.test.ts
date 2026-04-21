@@ -68,6 +68,31 @@ describe("classifyYoloAction", () => {
     expect(result.reason).toBe("bash_sandbox_safe");
   });
 
+  it("treats system.bash as the live runtime Bash surface", async () => {
+    const result = await classifyYoloAction({
+      messages: [],
+      action: { toolName: "system.bash", input: { command: "git status" } },
+      tools: [],
+      permissionContext: createEmptyToolPermissionContext(),
+    });
+    expect(result.shouldBlock).toBe(false);
+    expect(result.reason).toBe("bash_sandbox_safe");
+  });
+
+  it("normalizes local_shell argv payloads onto the Bash heuristic path", async () => {
+    const result = await classifyYoloAction({
+      messages: [],
+      action: {
+        toolName: "local_shell",
+        input: { command: ["git", "status"] },
+      },
+      tools: [],
+      permissionContext: createEmptyToolPermissionContext(),
+    });
+    expect(result.shouldBlock).toBe(false);
+    expect(result.reason).toBe("bash_sandbox_safe");
+  });
+
   it("blocks dangerous Bash commands", async () => {
     const result = await classifyYoloAction({
       messages: [],

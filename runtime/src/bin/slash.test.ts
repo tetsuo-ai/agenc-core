@@ -59,6 +59,13 @@ describe("runSlashCommand — skip / parse gating", () => {
     expect(result).toEqual({ kind: "skip" });
   });
 
+  it("returns { kind: 'skip' } for malformed slash syntax", async () => {
+    // Callers that already know the line is slash-intent can treat this
+    // as an invalid command shape instead of forwarding to the turn loop.
+    const result = await runSlashCommand("/Model", stubCtx());
+    expect(result).toEqual({ kind: "skip" });
+  });
+
   it("I-68: returns { kind: 'skip' } when a slash line is followed by non-whitespace lines", async () => {
     // The dispatcher's parser enforces I-68; when a following line has
     // non-whitespace content we reject the parse (null), which surfaces

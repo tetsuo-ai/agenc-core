@@ -1,13 +1,16 @@
 import type { StdoutMessage } from "../entrypoints/sdk/controlTypes.js";
+import { getSessionIngressAuthHeaders } from "../utils/sessionIngressAuth.js";
 import {
+  authHeadersOnly,
   defaultTransportTimers,
   type HeaderMap,
   type RefreshHeaders,
   type Transport,
   type TransportTimers,
-  withResolvedHeaders,
 } from "./index.js";
+import { applyRefreshedHeaders } from "./refresh-headers.js";
 
+// Retained openclaude CCR/session-ingress seam: SSE reads, POST writes.
 export const RECONNECT_BASE_DELAY_MS = 1_000;
 export const RECONNECT_MAX_DELAY_MS = 30_000;
 export const RECONNECT_GIVE_UP_MS = 600_000;
@@ -15,6 +18,7 @@ export const LIVENESS_TIMEOUT_MS = 45_000;
 export const POST_MAX_RETRIES = 10;
 export const POST_BASE_DELAY_MS = 500;
 export const POST_MAX_DELAY_MS = 8_000;
+export const SLEEP_DETECTION_THRESHOLD_MS = RECONNECT_MAX_DELAY_MS * 2;
 
 const PERMANENT_HTTP_CODES = new Set([401, 403, 404]);
 
@@ -47,6 +51,7 @@ export interface SSETransportOptions {
   readonly now?: () => number;
   readonly getAuthHeaders?: () => HeaderMap;
   readonly initialSequenceNum?: number;
+  readonly sleepDetectionThresholdMs?: number;
 }
 
 function mergeTimers(timers?: Partial<TransportTimers>): TransportTimers {
@@ -114,8 +119,11 @@ export class SSETransport implements Transport {
   private livenessTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private reconnectStartedAt: number | null = null;
+  private lastReconnectAttemptAt: number | null = null;
   private lastSequenceNum = 0;
-  private postUrl: string;
+  private readonly seenSequenceNums = new Set<number>();
+  private readonly postUrl: string;
+  private readonly sleepDetectionThresholdMs: number;
 
   constructor(
     url: URL,
@@ -131,9 +139,11 @@ export class SSETransport implements Transport {
     this.timers = mergeTimers(options.timers);
     this.random = options.random ?? Math.random;
     this.now = options.now ?? Date.now;
-    this.getAuthHeaders = options.getAuthHeaders ?? (() => ({}));
+    this.getAuthHeaders = options.getAuthHeaders ?? getSessionIngressAuthHeaders;
     this.lastSequenceNum = options.initialSequenceNum ?? 0;
     this.postUrl = convertSSEUrlToPostUrl(url);
+    this.sleepDetectionThresholdMs =
+      options.sleepDetectionThresholdMs ?? SLEEP_DETECTION_THRESHOLD_MS;
   }
 
   async connect(): Promise<void> {
@@ -154,8 +164,7 @@ export class SSETransport implements Transport {
         signal: this.abortController.signal,
       });
       if (!response.ok) {
-        const refreshed = response.status === 403 ? this.tryRefresh403() : false;
-        if (PERMANENT_HTTP_CODES.has(response.status) && !refreshed) {
+        if (PERMANENT_HTTP_CODES.has(response.status)) {
           this.state = "closed";
           this.onCloseCallback?.(response.status);
           return;
@@ -167,9 +176,11 @@ export class SSETransport implements Transport {
         this.handleConnectionError();
         return;
       }
+
       this.state = "connected";
       this.reconnectAttempts = 0;
       this.reconnectStartedAt = null;
+      this.lastReconnectAttemptAt = null;
       this.resetLivenessTimer();
       await this.readStream(response.body);
     } catch {
@@ -209,17 +220,15 @@ export class SSETransport implements Transport {
   }
 
   async write(message: StdoutMessage): Promise<void> {
-    const headers = {
-      ...this.getAuthHeaders(),
-      ...this.headers,
-      "Content-Type": "application/json",
-    };
-
     for (let attempt = 1; attempt <= POST_MAX_RETRIES; attempt += 1) {
+      const nextHeaders = this.buildWriteHeaders();
+      if (Object.keys(nextHeaders).length === 0) {
+        return;
+      }
       try {
         const response = await this.fetchImpl(this.postUrl, {
           method: "POST",
-          headers,
+          headers: nextHeaders,
           body: JSON.stringify(message),
         });
         if (response.status === 200 || response.status === 201) {
@@ -255,26 +264,21 @@ export class SSETransport implements Transport {
   }
 
   private buildReadHeaders(): HeaderMap {
+    const refreshedHeaders = applyRefreshedHeaders(this.headers, this.refreshHeaders);
+    const authHeaders = this.resolveAuthHeaders(refreshedHeaders);
     const headers: HeaderMap = {
-      ...this.getAuthHeaders(),
-      ...withResolvedHeaders(this.headers, this.refreshHeaders),
+      ...refreshedHeaders,
+      ...authHeaders,
       Accept: "text/event-stream",
     };
+    if (authHeaders.Cookie) {
+      delete headers.Authorization;
+    }
     if (this.lastSequenceNum > 0) {
       headers["Last-Event-ID"] = String(this.lastSequenceNum);
     }
     this.headers = { ...headers };
     return headers;
-  }
-
-  private tryRefresh403(): boolean {
-    if (!this.refreshHeaders) return false;
-    const next = this.refreshHeaders();
-    const changed = next.Authorization !== this.headers.Authorization;
-    if (changed) {
-      this.headers = { ...this.headers, ...next };
-    }
-    return changed;
   }
 
   private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
@@ -291,13 +295,14 @@ export class SSETransport implements Transport {
         buffer = parsed.remaining;
         for (const frame of parsed.frames) {
           this.resetLivenessTimer();
+          let isDuplicate = false;
           if (frame.id) {
             const sequence = Number.parseInt(frame.id, 10);
-            if (!Number.isNaN(sequence) && sequence > this.lastSequenceNum) {
-              this.lastSequenceNum = sequence;
+            if (!Number.isNaN(sequence)) {
+              isDuplicate = this.trackSequenceNumber(sequence);
             }
           }
-          if (frame.event && frame.data) {
+          if (!isDuplicate && frame.event && frame.data) {
             this.handleFrame(frame.event, frame.data);
           }
         }
@@ -315,12 +320,63 @@ export class SSETransport implements Transport {
     if (eventType !== "client_event") {
       return;
     }
-    const parsed = JSON.parse(data) as StreamClientEvent;
+
+    let parsed: StreamClientEvent;
+    try {
+      parsed = JSON.parse(data) as StreamClientEvent;
+    } catch {
+      return;
+    }
+
     const payload = parsed.payload;
     if (payload && typeof payload === "object" && "type" in payload) {
       this.onData?.(`${JSON.stringify(payload)}\n`);
     }
     this.onEventCallback?.(parsed);
+  }
+
+  private resolveAuthHeaders(baseHeaders: HeaderMap): HeaderMap {
+    const currentHeaders = authHeadersOnly(baseHeaders);
+    if (Object.keys(currentHeaders).length > 0) {
+      return currentHeaders;
+    }
+    return authHeadersOnly(this.getAuthHeaders());
+  }
+
+  private buildWriteHeaders(): HeaderMap {
+    const refreshedHeaders = applyRefreshedHeaders(this.headers, this.refreshHeaders);
+    this.headers = { ...refreshedHeaders };
+    const authHeaders = this.resolveAuthHeaders(refreshedHeaders);
+    if (Object.keys(authHeaders).length === 0) {
+      return {};
+    }
+    const headers: HeaderMap = {
+      ...authHeaders,
+      "Content-Type": "application/json",
+    };
+    if (headers.Cookie) {
+      delete headers.Authorization;
+    }
+    return headers;
+  }
+
+  private trackSequenceNumber(sequence: number): boolean {
+    if (this.seenSequenceNums.has(sequence)) {
+      return true;
+    }
+    this.seenSequenceNums.add(sequence);
+    if (this.seenSequenceNums.size > 1000) {
+      const threshold = this.lastSequenceNum - 200;
+      for (const seen of this.seenSequenceNums) {
+        if (seen < threshold) {
+          this.seenSequenceNums.delete(seen);
+        }
+      }
+    }
+    if (sequence > this.lastSequenceNum) {
+      this.lastSequenceNum = sequence;
+    }
+    return false;
   }
 
   private handleConnectionError(): void {
@@ -335,11 +391,30 @@ export class SSETransport implements Transport {
     if (this.reconnectStartedAt === null) {
       this.reconnectStartedAt = now;
     }
+
+    if (
+      this.lastReconnectAttemptAt !== null &&
+      now - this.lastReconnectAttemptAt > this.sleepDetectionThresholdMs
+    ) {
+      this.reconnectStartedAt = now;
+      this.reconnectAttempts = 0;
+    }
+    this.lastReconnectAttemptAt = now;
+
     const elapsed = now - this.reconnectStartedAt;
     if (elapsed >= RECONNECT_GIVE_UP_MS) {
       this.state = "closed";
       this.onCloseCallback?.();
       return;
+    }
+
+    if (this.refreshHeaders) {
+      this.headers = applyRefreshedHeaders(this.headers, this.refreshHeaders);
+    }
+
+    if (this.reconnectTimer !== null) {
+      this.timers.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
 
     this.state = "reconnecting";
@@ -386,6 +461,7 @@ function findFrameSeparator(buffer: string, start: number): number {
 export function convertSSEUrlToPostUrl(sseUrl: URL): string {
   const normalized = new URL(sseUrl.href);
   normalized.pathname = normalized.pathname.replace(/\/stream$/, "");
+  normalized.search = "";
   return normalized.href;
 }
 

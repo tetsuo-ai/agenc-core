@@ -19,8 +19,14 @@
  * @module
  */
 
-import type { LLMToolCall } from "../llm/types.js";
+import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
+import type {
+  AssistantMessage,
+  ToolUseBlock,
+  TurnState,
+  UserMessage,
+} from "../session/turn-state.js";
 
 export type TerminalToolCause =
   | "timeout"
@@ -94,4 +100,98 @@ export function synthesizeTerminalResults(
       ...(detail !== undefined ? { detail } : {}),
     }),
   );
+}
+
+function toolCallFromBlock(block: ToolUseBlock): LLMToolCall {
+  return {
+    id: block.id,
+    name: block.name,
+    arguments: JSON.stringify(block.input ?? {}),
+  };
+}
+
+/**
+ * Collect unresolved tool calls from the current assistant batch.
+ *
+ * Sources:
+ *   - parsed assistant toolCalls (preferred)
+ *   - raw `toolUseBlocks` fallback when the assistant batch was only
+ *     partially materialized before an abort/recovery path fired
+ *
+ * Resolved calls are filtered out using both the turn-local
+ * `state.toolResults` buffer and any already-appended `role:"tool"`
+ * messages in `state.messages`, so repeated cleanup passes do not
+ * duplicate synthetic terminal results.
+ */
+export function findOrphanToolCalls(
+  state: Pick<TurnState, "assistantMessages" | "toolUseBlocks" | "toolResults" | "messages">,
+): LLMToolCall[] {
+  const completedIds = new Set<string>();
+
+  for (const result of state.toolResults) {
+    const rec = result as Partial<UserMessage>;
+    if (typeof rec.toolCallId === "string" && rec.toolCallId.length > 0) {
+      completedIds.add(rec.toolCallId);
+    }
+  }
+
+  for (const message of state.messages) {
+    if (
+      message.role === "tool" &&
+      typeof message.toolCallId === "string" &&
+      message.toolCallId.length > 0
+    ) {
+      completedIds.add(message.toolCallId);
+    }
+  }
+
+  const pendingById = new Map<string, LLMToolCall>();
+  for (const msg of state.assistantMessages as readonly AssistantMessage[]) {
+    for (const call of msg.toolCalls) {
+      if (!completedIds.has(call.id)) {
+        pendingById.set(call.id, call);
+      }
+    }
+  }
+  for (const block of state.toolUseBlocks) {
+    if (!completedIds.has(block.id) && !pendingById.has(block.id)) {
+      pendingById.set(block.id, toolCallFromBlock(block));
+    }
+  }
+
+  return Array.from(pendingById.values());
+}
+
+/**
+ * Append synthetic terminal tool results to both the next-request
+ * message history (`state.messages`) and the turn-local `toolResults`
+ * buffer before a cleanup path clears the assistant/tool-use batch.
+ */
+export function appendTerminalToolResults(
+  state: Pick<TurnState, "assistantMessages" | "toolUseBlocks" | "toolResults" | "messages">,
+  cause: TerminalToolCause,
+  detail?: string,
+): TerminalToolResult[] {
+  const orphanCalls = findOrphanToolCalls(state);
+  if (orphanCalls.length === 0) return [];
+
+  const synthetic = synthesizeTerminalResults(orphanCalls, cause, detail);
+  for (const syn of synthetic) {
+    const userRecord: UserMessage = {
+      uuid: crypto.randomUUID(),
+      role: "user",
+      toolCallId: syn.toolCallId,
+      toolName: syn.toolName,
+      content: syn.content,
+    };
+    state.toolResults.push(userRecord);
+    const msg: LLMMessage = {
+      role: "tool",
+      toolCallId: syn.toolCallId,
+      content: syn.content,
+    };
+    state.messages.push(msg);
+  }
+
+  return synthetic;
 }

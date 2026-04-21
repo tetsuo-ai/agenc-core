@@ -1,3 +1,5 @@
+import { jsonStringify } from "../utils/slowOperations.js";
+
 export class RetryableError extends Error {
   readonly retryAfterMs?: number;
 
@@ -136,7 +138,7 @@ export class SerialBatchEventUploader<T> {
     while (count < this.pending.length && count < maxBatchSize) {
       let itemBytes: number;
       try {
-        itemBytes = Buffer.byteLength(JSON.stringify(this.pending[count]));
+        itemBytes = Buffer.byteLength(jsonStringify(this.pending[count]));
       } catch {
         this.pending.splice(count, 1);
         continue;
@@ -166,15 +168,16 @@ export class SerialBatchEventUploader<T> {
 
   private sleep(ms: number): Promise<void> {
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        this.sleepResolve = null;
-        resolve();
-      }, ms);
-      this.sleepResolve = () => {
-        clearTimeout(timer);
-        this.sleepResolve = null;
-        resolve();
-      };
+      this.sleepResolve = resolve;
+      setTimeout(
+        (self, nextResolve) => {
+          self.sleepResolve = null;
+          nextResolve();
+        },
+        ms,
+        this,
+        resolve,
+      );
     });
   }
 
@@ -190,4 +193,3 @@ export class SerialBatchEventUploader<T> {
     for (const resolve of resolvers) resolve();
   }
 }
-

@@ -296,20 +296,21 @@ function classifyRuntimeBashAction(
       readonly unavailable?: boolean;
     }
   | null {
-  if (action.toolName !== "Bash") return null;
-  if (!isBashPermissionInput(action.input)) {
+  if (!isRuntimeBackedBashToolName(action.toolName)) return null;
+  const normalizedInput = normalizeRuntimeBashInput(action.input);
+  if (normalizedInput === null) {
     return {
       shouldBlock: true,
-      reason: "runtime_classifier_manual_approval_required:Bash",
+      reason: `runtime_classifier_manual_approval_required:${action.toolName}`,
       unavailable: true,
     };
   }
 
-  const command = action.input.command.trim();
+  const command = normalizedInput.command.trim();
   if (command.length === 0) {
     return {
       shouldBlock: true,
-      reason: "runtime_classifier_manual_approval_required:Bash",
+      reason: `runtime_classifier_manual_approval_required:${action.toolName}`,
       unavailable: true,
     };
   }
@@ -322,7 +323,7 @@ function classifyRuntimeBashAction(
     };
   }
 
-  if (shouldUseSandbox(action.input)) {
+  if (shouldUseSandbox(normalizedInput)) {
     return {
       shouldBlock: false,
       reason: "bash_sandbox_safe",
@@ -331,14 +332,40 @@ function classifyRuntimeBashAction(
 
   return {
     shouldBlock: true,
-    reason: "runtime_classifier_manual_approval_required:Bash",
+    reason: `runtime_classifier_manual_approval_required:${action.toolName}`,
     unavailable: true,
   };
+}
+
+function isRuntimeBackedBashToolName(toolName: string): boolean {
+  return toolName === "Bash" || toolName === "system.bash" ||
+    toolName === "local_shell";
 }
 
 function isBashPermissionInput(input: unknown): input is BashPermissionInput {
   if (!input || typeof input !== "object") return false;
   return typeof (input as { command?: unknown }).command === "string";
+}
+
+function normalizeRuntimeBashInput(
+  input: unknown,
+): BashPermissionInput | null {
+  if (isBashPermissionInput(input)) {
+    return input;
+  }
+  if (
+    input &&
+    typeof input === "object" &&
+    Array.isArray((input as { command?: unknown }).command)
+  ) {
+    const command = (input as { command: readonly unknown[] }).command
+      .filter((part): part is string => typeof part === "string")
+      .join(" ")
+      .trim();
+    if (command.length === 0) return null;
+    return { command };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

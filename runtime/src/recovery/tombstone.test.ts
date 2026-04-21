@@ -17,10 +17,10 @@ function mkState(): TurnState {
         uuid: "a1",
         role: "assistant",
         text: "partial response before fallback",
-        toolCalls: [],
+        toolCalls: [{ id: "tc-1", name: "system.bash", arguments: "{}" }],
       },
     ],
-    toolUseBlocks: [],
+    toolUseBlocks: [{ type: "tool_use", id: "tc-1", name: "system.bash", input: {} }],
     needsFollowUp: true,
     toolResults: [],
     hasAttemptedReactiveCompact: false,
@@ -49,11 +49,24 @@ describe("tombstone", () => {
     expect(state.toolResults).toHaveLength(0);
     expect(state.toolUseBlocks).toHaveLength(0);
     expect(state.needsFollowUp).toBe(false);
-    expect(state.messages).toHaveLength(1);
-    const m = state.messages[0]!;
+    expect(state.messages).toHaveLength(2);
+    const m = state.messages.find((msg) => msg.role === "user")!;
     expect(m.role).toBe("user");
     expect(typeof m.content).toBe("string");
     expect(m.content as string).toContain("streaming_fallback");
+  });
+
+  test("streaming_fallback synthesizes orphan tool_result before buffers clear", () => {
+    const state = mkState();
+
+    tombstoneOrphans(state, {
+      reason: "streaming_fallback",
+    });
+
+    const toolMessages = state.messages.filter((m) => m.role === "tool");
+    expect(toolMessages).toHaveLength(1);
+    expect(toolMessages[0]).toMatchObject({ toolCallId: "tc-1" });
+    expect(String(toolMessages[0]?.content)).toContain("tool_use_error");
   });
 
   test("toTombstoneUserMessage includes preview when text available", () => {

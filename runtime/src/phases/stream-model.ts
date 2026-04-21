@@ -22,9 +22,10 @@
  *   I-77 (UI-spoof sanitization) — inline hidden tags stripped via
  *        the stream-parser before history injection.
  *
- * The StreamingToolExecutor hand-off for parallel tool dispatch lives
- * in T7; for T5 tool_use blocks are captured into `state.toolUseBlocks`
- * and run-turn dispatches them via the executeTools phase.
+ * Tool calls dispatch through the shared StreamingToolExecutor as soon
+ * as the provider streams them. Phase 5 still owns the final
+ * close/drain path so conversation ordering stays
+ * `assistant -> tool_result`.
  *
  * @module
  */
@@ -49,6 +50,10 @@ import {
   stripProposedPlanBlocks,
 } from "../llm/stream-parser.js";
 import { normalizeToolCallsForProvider } from "../llm/tool-call-normalize.js";
+import {
+  ensureStreamingToolExecutor,
+  queueStreamingToolCall,
+} from "./execute-tools.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
@@ -236,17 +241,6 @@ function assistantMessageFromResponse(
   };
 }
 
-function llmMessageFromResponse(response: LLMResponse): LLMMessage {
-  return {
-    role: "assistant",
-    content: response.content,
-    toolCalls:
-      response.toolCalls && response.toolCalls.length > 0
-        ? response.toolCalls
-        : undefined,
-  };
-}
-
 /**
  * Streaming-error class used to hoist provider errors into the commit
  * phase's terminal-decision logic without leaking Response types.
@@ -330,6 +324,9 @@ export async function streamModel(
     emittedVisibleText: "",
     warnedMatches: new Set<string>(),
   };
+  const providerName = session.services.provider.name;
+  const streamedToolCalls = new Map<string, LLMToolCall>();
+  const streamedToolBlocks = new Map<string, ToolUseBlock>();
 
   const onChunk = (chunk: LLMStreamChunk): void => {
     // I-11: any chunk resets the idle timer.
@@ -357,6 +354,29 @@ export async function streamModel(
       }
       emitSanitizedAssistantDelta(display, session);
     }
+
+    if (chunk.toolCalls && chunk.toolCalls.length > 0) {
+      const normalizedToolCalls = normalizeToolCallsForProvider(
+        providerName,
+        chunk.toolCalls,
+      );
+      if (normalizedToolCalls.length === 0) return;
+      const executor = ensureStreamingToolExecutor(
+        state,
+        ctx,
+        session,
+        scoped.signal,
+      );
+      for (const call of normalizedToolCalls) {
+        const block = parseToolUseBlocks([call])[0];
+        if (!block) continue;
+        streamedToolCalls.set(call.id, call);
+        streamedToolBlocks.set(block.id, block);
+        queueStreamingToolCall(executor, block, call, session);
+      }
+      state.toolUseBlocks = [...streamedToolBlocks.values()];
+      state.needsFollowUp = state.toolUseBlocks.length > 0;
+    }
   };
 
   let response: LLMResponse;
@@ -378,13 +398,27 @@ export async function streamModel(
     if (signal) signal.removeEventListener("abort", onExternalAbort);
   }
 
-  const assistant = assistantMessageFromResponse(
+  let assistant = assistantMessageFromResponse(
     response,
     planMode,
-    session.services.provider.name,
+    providerName,
   );
+  if (streamedToolCalls.size > 0) {
+    const mergedToolCalls = new Map(streamedToolCalls);
+    for (const call of assistant.toolCalls) {
+      mergedToolCalls.set(call.id, call);
+    }
+    assistant = {
+      ...assistant,
+      toolCalls: [...mergedToolCalls.values()],
+    };
+  }
   state.assistantMessages = [assistant];
-  state.toolUseBlocks = parseToolUseBlocks([...assistant.toolCalls]);
+  const mergedToolBlocks = new Map(streamedToolBlocks);
+  for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
+    mergedToolBlocks.set(block.id, block);
+  }
+  state.toolUseBlocks = [...mergedToolBlocks.values()];
   state.needsFollowUp = state.toolUseBlocks.length > 0;
 
   // Full final assistant_message event for renderers that batch on
@@ -411,7 +445,12 @@ export async function streamModel(
     };
   }
 
-  state.messages.push(llmMessageFromResponse(response));
+  state.messages.push({
+    role: "assistant",
+    content: response.content,
+    toolCalls:
+      assistant.toolCalls.length > 0 ? [...assistant.toolCalls] : undefined,
+  });
 
   // I-22: boundary check uses provider-reported completion tokens.
   // OpenClaude decides continuation from the finalized turn output,

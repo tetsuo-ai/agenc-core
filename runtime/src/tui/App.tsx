@@ -111,31 +111,68 @@ export interface AppProps {
 
 /**
  * Shape we expect on a `PendingPermissionRequest` once the evaluator is
- * wired (T12b/T13). The evaluator attaches a `resolveOnce` slot so the
- * TUI can deliver the user's decision back to the awaiter. The shape
- * is checked at runtime because T11's frozen `PendingPermissionRequest`
- * interface does not yet declare the slot; keeping this adapter soft
- * lets the TUI compile cleanly before the evaluator catches up.
+ * wired. The evaluator attaches a `resolveOnce` slot so the TUI can
+ * deliver the user's decision back to the awaiter. The shape is checked
+ * at runtime because T11's frozen `PendingPermissionRequest` interface
+ * does not yet declare the slot.
  */
 interface EvaluatorLinkedRequest extends PendingPermissionRequest {
   readonly resolveOnce?: InteractiveResolver;
 }
 
 /**
- * Convert a queue item into the handler's expected request shape. When
- * `resolveOnce` is missing (e.g. a stub pushed from a test that doesn't
- * own the awaiter) we substitute a no-op resolver so the handler's
- * unmount path still fires without dereferencing `undefined`.
+ * Runtime gate for approval requests. Requests without a live
+ * `resolveOnce` slot must not render a dead overlay: there is nobody to
+ * receive the user's decision, so the safest behavior is to drop the
+ * request + emit a warning.
  */
-function toHandlerRequest(
+function hasInteractiveResolver(
   request: EvaluatorLinkedRequest,
+): request is PendingPermissionRequest & { readonly resolveOnce: InteractiveResolver } {
+  return (
+    request.resolveOnce !== undefined &&
+    typeof request.resolveOnce.claim === "function" &&
+    typeof request.resolveOnce.isResolved === "function"
+  );
+}
+
+function emitSessionWarning(
+  session: AppSessionLike,
+  cause: string,
+  message: string,
+  extra: Record<string, unknown> = {},
+): void {
+  const nextInternalSubId =
+    typeof session.nextInternalSubId === "function"
+      ? session.nextInternalSubId.bind(session)
+      : null;
+  if (typeof session.emit !== "function" || nextInternalSubId === null) {
+    session.emit?.({
+      kind: `warning:${cause}`,
+      cause,
+      message,
+      ...extra,
+    });
+    return;
+  }
+  session.emit({
+    id: nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause,
+        message,
+        ...extra,
+      },
+    },
+  });
+}
+
+function toHandlerRequest(
+  request: PendingPermissionRequest & {
+    readonly resolveOnce: InteractiveResolver;
+  },
 ): InteractivePermissionRequest {
-  const resolver =
-    request.resolveOnce ??
-    ({
-      claim: () => false,
-      isResolved: () => true,
-    } as InteractiveResolver);
   return {
     requestId: request.requestId,
     toolName: request.toolName,
@@ -157,7 +194,7 @@ function TUIRoot({
   readonly model?: string;
   readonly initialPrompt?: string;
 }): React.ReactElement {
-  const { mode, session, pendingRequests } = useAgenCAppState();
+  const { mode, session, pendingRequests, permissionQueueOps } = useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
   // hook-only field is optional) so tests can pass a tiny stub. useQuery
   // wants `activeTurn` and `abortTerminal` as required fields; we cast
@@ -230,13 +267,35 @@ function TUIRoot({
     [session],
   );
 
+  const validPendingRequests = useMemo(
+    () => pendingRequests.filter(hasInteractiveResolver),
+    [pendingRequests],
+  );
+
+  useEffect(() => {
+    for (const request of pendingRequests) {
+      if (hasInteractiveResolver(request as EvaluatorLinkedRequest)) continue;
+      permissionQueueOps.remove(request.requestId);
+      emitSessionWarning(
+        session,
+        "approval_resolver_missing",
+        `dropped approval request ${request.requestId} because no live resolver was attached`,
+        {
+          requestId: request.requestId,
+          toolName: request.toolName,
+          turnId: request.turnId,
+        },
+      );
+    }
+  }, [pendingRequests, permissionQueueOps, session]);
+
   // Mount one InteractiveHandler per pending request. Each handler
   // owns its own lifecycle (grace race → overlay push → resolve), so
   // a render pass with N pending items gives us N orchestrators.
-  const permissionHandlers = pendingRequests.map((req) => (
+  const permissionHandlers = validPendingRequests.map((req) => (
     <InteractiveHandler
       key={req.requestId}
-      request={toHandlerRequest(req as EvaluatorLinkedRequest)}
+      request={toHandlerRequest(req)}
       session={session}
       overlayContext={overlayAdapter}
     />
@@ -373,8 +432,9 @@ export default App;
 export { TUIRoot };
 
 /**
- * The remaining evaluator-side work is limited to attaching a live
- * `resolveOnce: InteractiveResolver` to queued requests. The TUI now
- * exposes its queue ops on the session object and already consumes
- * `plan_*` entries from `session.eventLog` via `useQuery`.
+ * The remaining evaluator-side work is limited to producing queued
+ * requests with a live `resolveOnce: InteractiveResolver`. The TUI now
+ * consumes those requests directly, rejects resolver-less entries
+ * safely, and already consumes `plan_*` entries from `session.eventLog`
+ * via `useQuery`.
  */

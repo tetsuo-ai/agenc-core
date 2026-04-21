@@ -346,6 +346,35 @@ describe("assembleSystemPrompt", () => {
     expect(sections.length).toBeGreaterThan(10);
   });
 
+  test("dynamic sections reload instead of reusing stale process-global cache", async () => {
+    const first = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      projectInstructions: "PROJECT-ONE",
+      memoryPrompt: "MEMORY-ONE",
+      mcpServers: [{ name: "alpha", instructions: "ALPHA" }],
+      envForSimpleMode: {},
+    });
+    const second = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      projectInstructions: "PROJECT-TWO",
+      memoryPrompt: "MEMORY-TWO",
+      mcpServers: [{ name: "beta", instructions: "BETA" }],
+      envForSimpleMode: {},
+    });
+
+    expect(first.text).toContain("PROJECT-ONE");
+    expect(first.text).toContain("MEMORY-ONE");
+    expect(first.text).toContain("## alpha");
+    expect(second.text).toContain("PROJECT-TWO");
+    expect(second.text).toContain("MEMORY-TWO");
+    expect(second.text).toContain("## beta");
+    expect(second.text).not.toContain("PROJECT-ONE");
+    expect(second.text).not.toContain("MEMORY-ONE");
+    expect(second.text).not.toContain("## alpha");
+  });
+
   test("no optional inputs → coherent minimal prompt (doing_tasks present, tail has env only)", async () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,

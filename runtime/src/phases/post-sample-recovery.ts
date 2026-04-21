@@ -28,9 +28,15 @@ import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import { StreamModelError } from "./stream-model.js";
-import { isFallbackTriggeredError } from "../recovery/api-errors.js";
+import {
+  isFallbackTriggeredError,
+  isWithheld413Message,
+} from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
-import { runCollapseDrain } from "../recovery/collapse-drain.js";
+import {
+  resetCollapseDrainAttempted,
+  runCollapseDrain,
+} from "../recovery/collapse-drain.js";
 import { runReactiveCompact } from "../recovery/reactive-compact.js";
 import { runMaxOutputTokensRecovery } from "../recovery/max-output-tokens.js";
 import { runModelFallback } from "../recovery/model-fallback.js";
@@ -40,6 +46,7 @@ import {
 } from "../recovery/withhold-cascading.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
+import { executeStopFailureHooks } from "./stop-hooks.js";
 
 /**
  * Phase-3 entry point. Called by run-turn after the stream-model
@@ -63,6 +70,7 @@ export async function postSampleRecovery(
   // trigger ladder. Mid-stream overshoot is its own recovery branch.
   if (state.pendingBudgetDecision?.kind === "stop") {
     const continuationMessage = state.pendingBudgetDecision.reason;
+    resetCollapseDrainAttempted(state);
     emitWarning(
       session.eventLog,
       session.nextInternalSubId(),
@@ -88,6 +96,9 @@ export async function postSampleRecovery(
   }
 
   const lastMessage = state.assistantMessages.at(-1);
+  if (!lastMessage || !isWithheld413Message(lastMessage)) {
+    resetCollapseDrainAttempted(state);
+  }
   // StreamModelError may have been stashed on the budget decision
   // slot or surfaced by the caller as a thrown error. Phase-3 sees
   // a TurnState; the run-turn dispatcher forwards FallbackTriggered
@@ -125,6 +136,7 @@ export async function postSampleRecovery(
           cause: "prompt_too_long_exhausted",
           message: "413 recovery exhausted",
         });
+        await executeStopFailureHooks(c.state, ctx, c.session);
         return { kind: "surface", reason: "prompt_too_long" };
       },
 
@@ -144,6 +156,7 @@ export async function postSampleRecovery(
           cause: "image_error",
           message: "media-size recovery exhausted",
         });
+        await executeStopFailureHooks(c.state, ctx, c.session);
         return { kind: "surface", reason: "image_error" };
       },
 
@@ -160,6 +173,7 @@ export async function postSampleRecovery(
             cause: "max_output_tokens_exhausted",
             message: outcome.reason,
           });
+          await executeStopFailureHooks(c.state, ctx, c.session);
           return { kind: "surface", reason: outcome.reason };
         }
         return { kind: "pass" };

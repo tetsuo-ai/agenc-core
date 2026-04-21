@@ -258,7 +258,14 @@ export function classifyOpenAIHttpFailure(options: {
       retryable: false,
       status: options.status,
       message: body,
-      hint: 'Authentication failed. Verify API key, token source, and endpoint-specific auth headers.',
+      code:
+        options.status === 401
+          ? 'auth_invalid_api_key'
+          : 'auth_forbidden_org_project',
+      hint:
+        options.status === 401
+          ? 'Authentication failed. Verify the API key or OAuth token source for this provider.'
+          : 'Request was forbidden. Verify OpenAI organization/project headers and that the account can access this model.',
     }
   }
 

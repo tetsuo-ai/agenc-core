@@ -57,6 +57,7 @@ export interface CompactRuntimeContext {
     chainId?: string;
     depth?: number;
   };
+  clearProviderResponseId?: () => void;
   rolloutStore?: {
     getCompactionIndexSnapshot?: () => unknown;
     getToolResultBytesIndexSnapshot?: () => ReadonlyMap<string, number>;
@@ -80,6 +81,25 @@ type SessionConfigurationSnapshot = {
   collaborationMode?: {
     model?: string;
   };
+};
+
+type SessionCompactRuntimeSurface = {
+  readFileState?: Map<string, unknown>;
+  loadedNestedMemoryPaths?: Set<string>;
+  mcpClients?: readonly unknown[];
+  agentDefinitions?: {
+    activeAgents?: unknown[];
+  };
+  tasks?: Record<string, unknown>;
+  queryTracking?: {
+    chainId?: string;
+    depth?: number;
+  };
+  setStreamMode?: (mode: "requesting" | "responding" | null) => void;
+  setResponseLength?: (updater: (length: number) => number) => void;
+  onCompactProgress?: (event: unknown) => void;
+  setSDKStatus?: (status: "compacting" | null) => void;
+  addNotification?: (notification: unknown) => void;
 };
 
 function readSessionConfiguration(
@@ -113,9 +133,53 @@ function readCwd(session: Session, turnContext?: TurnContext): string | undefine
   return turnContext?.cwd ?? readSessionConfiguration(session)?.cwd;
 }
 
+function readSessionCompactRuntimeSurface(
+  session: Session,
+): SessionCompactRuntimeSurface {
+  const snapshot = session.state.unsafePeek() as Record<string, unknown>;
+  const direct = session as unknown as Record<string, unknown>;
+  const read = <T>(key: keyof SessionCompactRuntimeSurface): T | undefined => {
+    const directValue = direct[key];
+    if (directValue !== undefined) {
+      return directValue as T;
+    }
+    const snapshotValue = snapshot?.[key];
+    if (snapshotValue !== undefined) {
+      return snapshotValue as T;
+    }
+    return undefined;
+  };
+  return {
+    readFileState: read<Map<string, unknown>>("readFileState"),
+    loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
+    mcpClients: read<readonly unknown[]>("mcpClients"),
+    agentDefinitions: read<{ activeAgents?: unknown[] }>("agentDefinitions"),
+    tasks: read<Record<string, unknown>>("tasks"),
+    queryTracking: read<{ chainId?: string; depth?: number }>("queryTracking"),
+    setStreamMode: read<
+      (mode: "requesting" | "responding" | null) => void
+    >("setStreamMode"),
+    setResponseLength: read<(updater: (length: number) => number) => void>(
+      "setResponseLength",
+    ),
+    onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
+    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
+    addNotification: read<(notification: unknown) => void>("addNotification"),
+  };
+}
+
+function normalizeAgentDefinitions(
+  value: SessionCompactRuntimeSurface["agentDefinitions"],
+): { activeAgents: unknown[] } {
+  return {
+    activeAgents: Array.isArray(value?.activeAgents) ? [...value.activeAgents] : [],
+  };
+}
+
 function buildAppState(
   session: Session,
   turnContext?: TurnContext,
+  surface?: SessionCompactRuntimeSurface,
 ): CompactRuntimeAppState {
   const registry =
     session.permissionModeRegistry ??
@@ -128,8 +192,8 @@ function buildAppState(
     registry?.current?.() ?? createEmptyToolPermissionContext();
   return {
     toolPermissionContext,
-    tasks: {},
-    agentDefinitions: { activeAgents: [] },
+    tasks: surface?.tasks ?? {},
+    agentDefinitions: normalizeAgentDefinitions(surface?.agentDefinitions),
     effortValue:
       turnContext?.reasoningEffort &&
       turnContext.reasoningEffort !== "none"
@@ -150,31 +214,37 @@ export function createSessionBackedCompactContext(
     appendSystemPrompt?: string;
   },
 ): CompactRuntimeContext {
-  const appState = buildAppState(session, opts.turnContext);
+  const surface = readSessionCompactRuntimeSurface(session);
+  const getAppState = () => buildAppState(session, opts.turnContext, surface);
   const cwd = opts.cwd ?? readCwd(session, opts.turnContext);
+  const readFileState = surface.readFileState ?? new Map<string, unknown>();
+  const loadedNestedMemoryPaths =
+    surface.loadedNestedMemoryPaths ?? new Set<string>();
   return {
     abortController: session.abortController ?? new AbortController(),
     agentId: undefined,
     options: {
       tools: session.services.registry?.toLLMTools?.() ?? [],
       mainLoopModel: readMainLoopModel(session, opts.turnContext),
-      mcpClients: [],
+      mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       customSystemPrompt: opts.customSystemPrompt,
       appendSystemPrompt: opts.appendSystemPrompt,
       verbose: opts.verbose ?? false,
       querySource: opts.querySource,
-      agentDefinitions: appState.agentDefinitions,
+      agentDefinitions: normalizeAgentDefinitions(surface.agentDefinitions),
       isNonInteractiveSession: opts.isNonInteractiveSession,
       ...(cwd ? { cwd } : {}),
     },
-    getAppState: () => appState,
-    readFileState: new Map<string, unknown>(),
-    loadedNestedMemoryPaths: new Set<string>(),
-    setStreamMode: () => {},
-    setResponseLength: () => {},
-    onCompactProgress: () => {},
-    setSDKStatus: () => {},
-    addNotification: () => {},
+    getAppState,
+    readFileState,
+    loadedNestedMemoryPaths,
+    setStreamMode: surface.setStreamMode ?? (() => {}),
+    setResponseLength: surface.setResponseLength ?? (() => {}),
+    onCompactProgress: surface.onCompactProgress ?? (() => {}),
+    setSDKStatus: surface.setSDKStatus ?? (() => {}),
+    addNotification: surface.addNotification ?? (() => {}),
+    queryTracking: surface.queryTracking,
+    clearProviderResponseId: () => session.clearProviderResponseId(),
     rolloutStore: session.rolloutStore ?? undefined,
     session: session.rolloutStore
       ? { rolloutStore: session.rolloutStore }

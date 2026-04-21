@@ -86,6 +86,18 @@ export interface ToolResult {
 }
 
 /**
+ * Non-enumerable execution-only fields injected by `runToolUse()`.
+ *
+ * Tools may read these directly from the `args` object when they need
+ * streaming progress or hard-cancel support, but they must not depend
+ * on them being present for correctness.
+ */
+export interface ToolExecutionInjectedArgs {
+  readonly __onProgress?: (event: { readonly chunk: string; readonly stream?: "stdout" | "stderr" }) => void;
+  readonly __abortSignal?: AbortSignal;
+}
+
+/**
  * MCP-compatible tool interface.
  *
  * Tools are the atomic unit of functionality exposed to LLM agents.

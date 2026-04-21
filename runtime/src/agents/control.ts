@@ -9,18 +9,18 @@
  * spawn helpers, and subtree genealogy bookkeeping.
  *
  * Deferred (subsystems not yet in AgenC — track T10/T13):
- *   - Rollout-driven rehydrate body: `resumeAgentFromRollout()` exists
- *     and returns the root live handle only (no descendant walk) until
- *     the T6 rollout reader surface exposes persisted
- *     `thread_spawn_edge` records. The live-handle part of resume is
- *     fully functional via `resume()`.
+ *   - Rollout-driven rehydrate restores live handles + descendant
+ *     tree shape from the rollout-store-owned spawn-edge snapshot.
+ *     Full codex parity still needs the broader T6/T10 rollout/state
+ *     rehydrate surface for pending turn/tool state.
  *   - Exec-policy + shell-snapshot inheritance
  *     (`inheritedExecPolicyForSource`, `inheritedShellSnapshotForSource`)
  *     is stubbed pending T13's config refactor. Safe default: return
  *     undefined (child uses its own defaults).
- *   - Persisted spawn-edge writes (`persistThreadSpawnEdgeForSource`)
- *     are stubbed until the session exposes a state-db writer; the
- *     live subtree is tracked entirely in-memory via `parentOf`.
+ *   - Spawn-edge tracking is delegated to `RolloutStore`, which owns
+ *     the durable edge snapshot in this slice. AgentControl only
+ *     writes/reads through that API; it does not keep a second
+ *     persistence owner in memory.
  *   - `getAgentConfigSnapshot` / `getTotalTokenUsage` currently return
  *     conservative fallbacks (role-config blob + zeros). The codex
  *     parity surface is preserved so callers upgrade once the live
@@ -49,6 +49,9 @@
  */
 
 import { emitError, emitWarning } from "../session/event-log.js";
+import type {
+  ThreadSpawnEdgeStatus,
+} from "../session/rollout-store.js";
 import type { Session } from "../session/session.js";
 import { Mailbox, MailboxClosedError } from "./mailbox.js";
 import {
@@ -411,10 +414,13 @@ export class AgentControl {
       this.parentTokens.set(agent.agentPath, agent.abortController);
     }
 
-    // Best-effort persisted spawn-edge write (no-op stub today; the
-    // in-memory `parentOf` map is authoritative until the T10 state-
-    // db writer lands).
-    await this.persistThreadSpawnEdgeForSource(opts.parentPath, threadId);
+    // Persist the spawn edge through the rollout-store-owned snapshot
+    // so a fresh control plane can restore descendants later.
+    await this.persistThreadSpawnEdgeForSource(
+      opts.parentPath,
+      threadId,
+      metadata,
+    );
 
     return agent;
   }
@@ -610,6 +616,7 @@ export class AgentControl {
   async shutdown(threadId: ThreadId, reason = "shutdown"): Promise<void> {
     const agent = this.live.get(threadId);
     if (!agent) return;
+    const edgeStatus = edgeStatusForShutdownReason(reason);
 
     // Cascade first — shutdown descendants before parent so their
     // status transitions are visible in the event log.
@@ -634,6 +641,9 @@ export class AgentControl {
     this.session.childInboxes.delete(threadId);
     this.parentOf.delete(threadId);
     this.live.delete(threadId);
+    if (edgeStatus !== null) {
+      await this.setThreadSpawnEdgeStatus(threadId, edgeStatus);
+    }
   }
 
   /**
@@ -667,9 +677,9 @@ export class AgentControl {
    * subagent path, rebuild a fresh `LiveAgent` handle with new
    * mailboxes/status/abort so a caller can reconnect.
    *
-   * NOTE: T10 will extend this with rollout-backed state
-   * rehydration (persisted spawn edges, turn history, pending
-   * tool state). For now we only rebuild the live handle.
+   * NOTE: T10 will extend this with full rollout-backed turn/tool
+   * state rehydration. For now we rebuild the live handle and rely on
+   * durable spawn-edge snapshots for subtree recovery.
    */
   async resume(opts: {
     readonly parentPath: AgentPath;
@@ -774,12 +784,10 @@ export class AgentControl {
   /**
    * Port of codex `resume_agent_from_rollout` (control.rs:406).
    *
-   * Deferred (T10): descendant rehydrate depends on the rollout
-   * reader exposing persisted `thread_spawn_edge` records. Today we
-   * rebuild the root live handle only and emit a
-   * `rollout_resume_stub` warning. Returns the count of resumed live
-   * handles (0 when the metadata is insufficient, 1 when root was
-   * resumed).
+   * Rebuilds the root handle, then breadth-first reopens every tracked
+   * open descendant below it from the rollout-store-owned edge index.
+   * Parent failures short-circuit their subtree, matching codex's
+   * resume queue semantics.
    */
   async resumeAgentFromRollout(opts: {
     readonly rootThreadId: ThreadId;
@@ -789,35 +797,63 @@ export class AgentControl {
     readonly resumedCount: number;
     readonly rootLive: LiveAgent | null;
   }> {
-    void opts.rootThreadId;
-    const rootLive = await this.resume({
+    const rootLive = await this.resumeSingleAgentFromRollout({
       parentPath: opts.parentPath,
       metadata: opts.metadata,
     });
+    if (!rootLive) {
+      return { resumedCount: 0, rootLive: null };
+    }
 
-    const rolloutStore = (
-      this.session as unknown as { rolloutStore?: unknown }
-    ).rolloutStore;
+    const rolloutStore = this.session.rolloutStore;
     if (!rolloutStore) {
       emitWarning(
         this.session.eventLog,
         this.session.nextInternalSubId(),
-        "rollout_resume_stub",
-        `resumeAgentFromRollout returning live-handle-only (rollout reader unavailable)`,
+        "rollout_resume_unavailable",
+        "resumeAgentFromRollout could not restore descendants because no rollout store is mounted",
       );
-      return { resumedCount: rootLive ? 1 : 0, rootLive };
+      return { resumedCount: 1, rootLive };
     }
 
-    // TODO T10/T6: once the rollout reader exposes
-    // `listThreadSpawnChildren`, walk the queue exactly like codex
-    // `control.rs:424`.
-    emitWarning(
-      this.session.eventLog,
-      this.session.nextInternalSubId(),
-      "rollout_resume_stub",
-      `descendant rehydrate pending T10 rollout reader surface`,
-    );
-    return { resumedCount: rootLive ? 1 : 0, rootLive };
+    let resumedCount = 1;
+    const resumeQueue: ThreadId[] = [opts.rootThreadId];
+
+    while (resumeQueue.length > 0) {
+      const parentThreadId = resumeQueue.shift()!;
+      const children = rolloutStore.listThreadSpawnChildrenWithStatus(
+        parentThreadId,
+        "open",
+      );
+      for (const edge of children) {
+        const existing = this.live.get(edge.childThreadId);
+        if (existing) {
+          resumeQueue.push(existing.agentId);
+          continue;
+        }
+
+        try {
+          const childLive = await this.resumeSingleAgentFromRollout({
+            parentPath: edge.parentPath,
+            metadata: edge.metadata,
+          });
+          if (!childLive) {
+            continue;
+          }
+          resumedCount += 1;
+          resumeQueue.push(childLive.agentId);
+        } catch (err) {
+          emitWarning(
+            this.session.eventLog,
+            this.session.nextInternalSubId(),
+            "descendant_resume_failed",
+            `thread=${edge.childThreadId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+
+    return { resumedCount, rootLive };
   }
 
   /**
@@ -1191,17 +1227,34 @@ export class AgentControl {
 
   /**
    * Port of codex `persist_thread_spawn_edge_for_source`
-   * (`control.rs:1113`). Deferred (T10): AgenC's `RolloutStore` has
-   * no state-db writer yet. The in-memory `parentOf` map keeps
-   * subtree queries accurate today.
+   * (`control.rs:1113`). Stores an open edge snapshot in the
+   * rollout-store-owned durable index for later resume/tree recovery.
    */
   private async persistThreadSpawnEdgeForSource(
-    _parentPath: AgentPath,
-    _childThreadId: ThreadId,
+    parentPath: AgentPath,
+    childThreadId: ThreadId,
+    metadata?: AgentMetadata,
   ): Promise<void> {
-    void _parentPath;
-    void _childThreadId;
-    return;
+    const parentThreadId = this.agentIdForPath(parentPath);
+    if (!parentThreadId) return;
+    const rolloutStore = this.session.rolloutStore;
+    if (!rolloutStore) return;
+    const storedMetadata = metadata ?? this.registry.agentMetadataForThread(childThreadId);
+    if (!storedMetadata) return;
+    rolloutStore.upsertThreadSpawnEdge({
+      childThreadId,
+      parentThreadId,
+      parentPath,
+      metadata: cloneAgentMetadata(storedMetadata),
+      status: "open",
+    });
+  }
+
+  private async setThreadSpawnEdgeStatus(
+    childThreadId: ThreadId,
+    status: ThreadSpawnEdgeStatus,
+  ): Promise<void> {
+    this.session.rolloutStore?.setThreadSpawnEdgeStatus(childThreadId, status);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -1267,6 +1320,35 @@ export class AgentControl {
 export function renderInputPreview(input: string): string {
   const firstLine = input.split(/\r?\n/, 1)[0] ?? "";
   return firstLine.length > 200 ? `${firstLine.slice(0, 197)}...` : firstLine;
+}
+
+function cloneAgentMetadata(
+  metadata: AgentMetadata | undefined,
+): AgentMetadata {
+  return {
+    ...(metadata?.agentId !== undefined ? { agentId: metadata.agentId } : {}),
+    ...(metadata?.agentPath !== undefined ? { agentPath: metadata.agentPath } : {}),
+    ...(metadata?.agentNickname !== undefined
+      ? { agentNickname: metadata.agentNickname }
+      : {}),
+    ...(metadata?.agentRole !== undefined ? { agentRole: metadata.agentRole } : {}),
+    ...(metadata?.lastTaskMessage !== undefined
+      ? { lastTaskMessage: metadata.lastTaskMessage }
+      : {}),
+    depth: metadata?.depth ?? 0,
+  };
+}
+
+function edgeStatusForShutdownReason(
+  reason: string,
+): ThreadSpawnEdgeStatus | null {
+  if (
+    reason.includes("delegate_restart") ||
+    reason.includes("delegate_teardown")
+  ) {
+    return "closed";
+  }
+  return null;
 }
 
 /** Port of codex `agent_matches_prefix` (`control.rs:1173`). */

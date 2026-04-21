@@ -10,7 +10,13 @@ import {
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import { isAutoModeGateEnabled } from "../permissions/classifier.js";
+import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
+import {
+  NetworkApprovalService as RuntimeNetworkApprovalService,
+} from "../permissions/network-approval.js";
+import { initializeToolPermissionContext } from "../permissions/settings.js";
+import type { ReviewDecision } from "../permissions/review-decision.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionServices, type SessionState } from "../session/session.js";
 import {
@@ -37,6 +43,8 @@ import { CostSidecar } from "../session/cost.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
 import type { Event, EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
+import { AgentControl } from "../agents/control.js";
+import { AgentRegistry } from "../agents/registry.js";
 import {
   buildToolRegistry,
   type BuildToolRegistryOptions,
@@ -54,6 +62,7 @@ import {
   UnknownModelError,
   type AgenCConfig,
 } from "../config/index.js";
+import { bindSessionAgentControl } from "./delegate-tool.js";
 
 export const DEFAULT_MODEL = "grok-4-fast";
 
@@ -134,6 +143,10 @@ function buildPlaceholderServices(
   provider: LLMProvider,
   registry: ReturnType<typeof buildToolRegistry>,
   mcpManager: SessionServices["mcpManager"],
+  permissionModeRegistry: PermissionModeRegistry,
+  configStore: ConfigStore,
+  toolApprovals: RuntimeApprovalStore<unknown>,
+  networkApproval: RuntimeNetworkApprovalService,
 ): SessionServices {
   const noopAsync = async () => {
     /* placeholder */
@@ -190,8 +203,18 @@ function buildPlaceholderServices(
       listModels: async () => [],
     },
     toolApprovals: {
-      hasApproval: () => false,
-      approve: () => {},
+      hasApproval: (key: string) => toolApprovals.get(key) !== undefined,
+      approve: (key: string) => {
+        toolApprovals.set(key, { kind: "approved_for_session" });
+      },
+      clear: () => {
+        toolApprovals.clear();
+      },
+      withCachedApproval: ({ keys, fetchDecision }) =>
+        toolApprovals.withCachedApproval({
+          keys,
+          fetchDecision: () => fetchDecision() as Promise<ReviewDecision>,
+        }),
     },
     guardianRejections: new Map(),
     skillsManager: {
@@ -207,7 +230,20 @@ function buildPlaceholderServices(
       spawnAgent: async () => null,
       shutdownAgentTree: noopAsync,
     },
-    networkApproval: { enabled: () => false },
+    networkApproval: {
+      enabled: () => true,
+      clearSessionHosts: () => {
+        networkApproval.clearSessionHosts();
+      },
+      requestNetworkApproval: (opts: unknown) =>
+        networkApproval.requestNetworkApproval(
+          opts as Parameters<typeof networkApproval.requestNetworkApproval>[0],
+        ),
+      requestDeferredApproval: (opts: unknown) =>
+        networkApproval.requestDeferredApproval(
+          opts as Parameters<typeof networkApproval.requestDeferredApproval>[0],
+        ),
+    },
     threadStore: {
       threadName: async () => undefined,
       setThreadName: noopAsync,
@@ -216,9 +252,8 @@ function buildPlaceholderServices(
     codeModeService: { enabled: () => false },
     provider,
     registry,
-    permissionModeRegistry: new PermissionModeRegistry(
-      createEmptyToolPermissionContext(),
-    ),
+    permissionModeRegistry,
+    configStore,
   };
 }
 
@@ -319,7 +354,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
       ? {
         provider: {
           slug: params.provider,
-        } as SessionConfiguration["provider"],
+        } as unknown as SessionConfiguration["provider"],
       }
       : {}),
     collaborationMode: { model: params.model },
@@ -630,6 +665,26 @@ export async function bootstrapLocalRuntimeSession(
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
+  const permissionInit = await initializeToolPermissionContext({
+    env: {
+      home: agencHome,
+      cwd: workspaceRoot,
+      configStore,
+    },
+  });
+  const autoModeEnabled = isAutoModeGateEnabled();
+  const toolPermissionContext = {
+    ...permissionInit.toolPermissionContext,
+    isAutoModeAvailable: autoModeEnabled,
+    ...(permissionInit.toolPermissionContext.mode === "auto" && !autoModeEnabled
+      ? { mode: "default" as const, autoModeActive: false }
+      : {}),
+  };
+  const permissionModeRegistry = new PermissionModeRegistry(
+    toolPermissionContext,
+  );
+  const toolApprovals = new RuntimeApprovalStore<unknown>();
+  const networkApproval = new RuntimeNetworkApprovalService();
   const rawModel = configStore.current().model ?? DEFAULT_MODEL;
   const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
   const mcpManager = createSessionMcpManagerFromEnv(env);
@@ -651,12 +706,17 @@ export async function bootstrapLocalRuntimeSession(
   const config = buildMinimalConfig(workspaceRoot, model);
   const modelInfo = buildMinimalModelInfo(model);
   let initialState: SessionState = {
-    sessionConfiguration: sessionConfigurationFromAgenCConfig({
-      config: configStore.current(),
-      workspaceRoot,
-      model,
-      provider: resolvedProvider,
-    }),
+    sessionConfiguration: {
+      ...sessionConfigurationFromAgenCConfig({
+        config: configStore.current(),
+        workspaceRoot,
+        model,
+        provider: resolvedProvider,
+      }),
+      permissionContext: {
+        mode: toolPermissionContext.mode,
+      },
+    } as SessionConfiguration,
     history: [],
     ...(options.conversationId !== undefined
       ? { pendingSessionStartSource: "resume" as const }
@@ -672,9 +732,23 @@ export async function bootstrapLocalRuntimeSession(
       provider,
       registry,
       createSessionMcpService(mcpManager),
+      permissionModeRegistry,
+      configStore,
+      toolApprovals,
+      networkApproval,
     ),
     jsRepl: { id: `repl-${conversationId}` },
     initialTranscriptEvents,
+  });
+  const agentRegistry = new AgentRegistry();
+  const agentControl = new AgentControl({
+    session,
+    registry: agentRegistry,
+  });
+  agentControl.registerSessionRoot(conversationId);
+  bindSessionAgentControl(session, {
+    control: agentControl,
+    registry: agentRegistry,
   });
   await session.startMcpManager(mcpManager);
 
@@ -695,7 +769,11 @@ export async function bootstrapLocalRuntimeSession(
         /* best effort */
       });
     }
-    await shutdownSessionLifecycle({ session, mcpManager }).catch(() => {
+    await shutdownSessionLifecycle({
+      session,
+      agentControl,
+      mcpManager,
+    }).catch(() => {
       /* best effort */
     });
   };
@@ -742,6 +820,9 @@ export async function bootstrapLocalRuntimeSession(
           history: reconstruction.history,
           ...(reconstruction.previousTurnSettings !== undefined
             ? { previousTurnSettings: reconstruction.previousTurnSettings }
+            : {}),
+          ...(reconstruction.referenceContextItem !== undefined
+            ? { referenceContextItem: reconstruction.referenceContextItem }
             : {}),
         };
         await session.state.swap(initialState);

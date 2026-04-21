@@ -59,42 +59,32 @@ export async function retryWithOAuthRefresh<T>(
     1,
     options.maxConsecutiveFailures ?? MAX_CONSECUTIVE_AUTH_FAILURES,
   );
-  let nextState: OAuthRefreshState = { ...state };
 
   for (;;) {
     try {
-      const value = await operation(nextState.accessToken);
-      nextState = {
-        ...nextState,
-        consecutiveAuthFailures: 0,
-      };
-      return { value, state: nextState };
+      const value = await operation(state.accessToken);
+      state.consecutiveAuthFailures = 0;
+      return { value, state };
     } catch (error) {
       if (!isUnauthorized(error)) {
         throw error;
       }
-      nextState = {
-        ...nextState,
-        consecutiveAuthFailures: nextState.consecutiveAuthFailures + 1,
-      };
-      options.onAuthFailure?.(nextState.consecutiveAuthFailures);
-      if (nextState.consecutiveAuthFailures >= maxFailures) {
+      state.consecutiveAuthFailures += 1;
+      options.onAuthFailure?.(state.consecutiveAuthFailures);
+      if (state.consecutiveAuthFailures >= maxFailures) {
         throw error;
       }
 
       const outcome = await callbacks.refreshAccessToken({
-        attempt: nextState.consecutiveAuthFailures,
-        refreshToken: nextState.refreshToken,
+        attempt: state.consecutiveAuthFailures,
+        refreshToken: state.refreshToken,
         previousError: error,
       });
       if (outcome.kind !== "refreshed") {
         throw error;
       }
-      nextState = {
-        accessToken: outcome.accessToken,
-        refreshToken: outcome.refreshToken ?? nextState.refreshToken,
-        consecutiveAuthFailures: nextState.consecutiveAuthFailures,
-      };
+      state.accessToken = outcome.accessToken;
+      state.refreshToken = outcome.refreshToken ?? state.refreshToken;
     }
   }
 }

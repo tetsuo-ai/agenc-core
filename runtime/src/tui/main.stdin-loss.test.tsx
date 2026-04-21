@@ -30,6 +30,7 @@ function makeSession(overrides: Partial<StdinLossSession> = {}): StdinLossSessio
     services: { permissionModeRegistry: baseRegistry },
     abortTerminal: vi.fn(),
     emit: vi.fn(),
+    nextInternalSubId: () => "sub-stdin-loss",
     ...overrides,
   };
 }
@@ -168,6 +169,15 @@ describe("handleStdinLoss — flush barrier (I-19 step 2)", () => {
 
     expect(flushEventLog).toHaveBeenCalledTimes(1);
     expect(flushResolved).toBe(true);
+    expect(session.emit).toHaveBeenCalledWith({
+      id: "sub-stdin-loss",
+      msg: {
+        type: "warning",
+        payload: expect.objectContaining({
+          cause: "stdin_lost",
+        }),
+      },
+    });
     expect(exitSpy).toHaveBeenCalledWith(130);
     expect(unmount).toHaveBeenCalledTimes(1);
   });

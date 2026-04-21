@@ -18,7 +18,8 @@
  */
 
 import type { Session } from "../session/session.js";
-import type { AgentControl } from "./control.js";
+import type { LLMMessage } from "../llm/types.js";
+import type { AgentControl, LiveAgent } from "./control.js";
 import type { AgentRegistry, AgentPath } from "./registry.js";
 import type { ForkMode } from "./fork-context.js";
 import type { WorktreeHandle } from "./worktree.js";
@@ -82,8 +83,8 @@ export async function delegate(
       opts.parent.sessionConfiguration.cwd ||
       opts.parent.config.cwd ||
       process.cwd();
-    const gitRoot = findGitRoot(workspaceRoot);
-    if (!gitRoot) {
+    const canonicalGitRoot = findGitRoot(workspaceRoot);
+    if (!canonicalGitRoot) {
       return {
         kind: "rejected",
         reason: "worktree isolation requested but cwd is not inside a git repository",
@@ -91,10 +92,10 @@ export async function delegate(
     }
     try {
       worktree = await getOrCreateWorktree({
-        gitRoot,
+        gitRoot: canonicalGitRoot,
         slug: opts.worktreeSlug,
       });
-      baseCommit = await captureBaseCommit(gitRoot);
+      baseCommit = await captureBaseCommit(canonicalGitRoot);
     } catch (err) {
       return {
         kind: "rejected",
@@ -104,7 +105,7 @@ export async function delegate(
   }
 
   // Spawn the live agent (AgentControl owns depth + slot + metadata).
-  let live;
+  let live: LiveAgent;
   try {
     live = await opts.control.spawn({
       parentPath: opts.parentPath,
@@ -155,28 +156,29 @@ export async function delegate(
       },
     );
 
+  const execute = async (thread: AgentThread): Promise<RunAgentResult> =>
+    runDelegateAgentLoop({
+      thread,
+      parent: opts.parent,
+      parentPath: opts.parentPath,
+      control: opts.control,
+      taskPrompt: opts.taskPrompt,
+      initialMessages: fork.messages,
+      ...(worktree !== undefined ? { worktree } : {}),
+      ...(opts.toolAllowlist !== undefined
+        ? { toolAllowlist: opts.toolAllowlist }
+        : {}),
+      ...(opts.resumeManager !== undefined
+        ? { resumeManager: opts.resumeManager }
+        : {}),
+    });
+
   if (runInBackground || live.role.config.background) {
     // Async mode — fire-and-forget; caller sees the AgentThread handle.
     let thread!: AgentThread;
-    const joinPromise = (async () => {
+    const joinPromise = Promise.resolve().then(async () => {
       try {
-        const iter = runAgent({
-          live,
-          parent: opts.parent,
-          initialMessages: fork.messages,
-          taskPrompt: opts.taskPrompt,
-          ...(worktree !== undefined ? { worktree } : {}),
-          ...(opts.toolAllowlist !== undefined
-            ? { toolAllowlist: opts.toolAllowlist }
-            : {}),
-        });
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const step = await iter.next();
-          if (step.done) {
-            return step.value;
-          }
-        }
+        return await execute(thread);
       } finally {
         await teardown({
           thread,
@@ -186,34 +188,16 @@ export async function delegate(
           ...(baseCommit !== null ? { baseCommit } : {}),
         });
       }
-    })();
+    });
     thread = buildThread({ joinPromise });
     return { kind: "async_launched", thread };
   }
 
-  const thread = buildThread();
-
   // Sync mode — await completion.
-  const iter = runAgent({
-    live,
-    parent: opts.parent,
-    initialMessages: fork.messages,
-    taskPrompt: opts.taskPrompt,
-    ...(worktree !== undefined ? { worktree } : {}),
-    ...(opts.toolAllowlist !== undefined
-      ? { toolAllowlist: opts.toolAllowlist }
-      : {}),
-  });
-  let result: RunAgentResult | undefined;
+  const thread = buildThread();
+  let result: RunAgentResult;
   try {
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const step = await iter.next();
-      if (step.done) {
-        result = step.value;
-        break;
-      }
-    }
+    result = await execute(thread);
   } finally {
     await teardown({
       thread,
@@ -226,9 +210,165 @@ export async function delegate(
 
   return {
     kind: "sync_completed",
-    result: result!,
+    result,
     thread,
   };
+}
+
+async function runToCompletion(
+  params: Parameters<typeof runAgent>[0],
+): Promise<RunAgentResult> {
+  const iter = runAgent(params);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const step = await iter.next();
+    if (step.done) {
+      return step.value;
+    }
+  }
+}
+
+async function runDelegateAgentLoop(opts: {
+  readonly thread: AgentThread;
+  readonly parent: Session;
+  readonly parentPath: AgentPath;
+  readonly control: AgentControl;
+  readonly taskPrompt: string;
+  readonly initialMessages: ReadonlyArray<LLMMessage>;
+  readonly worktree?: WorktreeHandle;
+  readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly resumeManager?: ResumeManager;
+}): Promise<RunAgentResult> {
+  while (true) {
+    const live = opts.thread.live;
+    const result = await runToCompletion({
+      live,
+      parent: opts.parent,
+      initialMessages: opts.initialMessages,
+      taskPrompt: opts.taskPrompt,
+      ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
+      ...(opts.toolAllowlist !== undefined
+        ? { toolAllowlist: opts.toolAllowlist }
+        : {}),
+    });
+
+    if (result.outcome !== "errored") {
+      opts.resumeManager?.recordSuccess(live.agentId);
+      return result;
+    }
+
+    if (!opts.resumeManager) {
+      return result;
+    }
+
+    const decision = opts.resumeManager.recordFailure(
+      live.agentId,
+      result.error ?? new Error("subagent turn failed"),
+      opts.parent.abortController.signal.aborted ||
+        live.abortController.signal.aborted,
+    );
+
+    if (decision.kind === "abort") {
+      return result;
+    }
+
+    if (decision.kind === "restart") {
+      const restarted = await restartLiveAgent({
+        thread: opts.thread,
+        parent: opts.parent,
+        parentPath: opts.parentPath,
+        control: opts.control,
+      });
+      if (!restarted) {
+        return result;
+      }
+      opts.thread.rebindLive(restarted);
+      continue;
+    }
+
+    const nextLive = await recoverLiveAgent({
+      thread: opts.thread,
+      parent: opts.parent,
+      parentPath: opts.parentPath,
+      control: opts.control,
+    });
+    if (!nextLive) {
+      return result;
+    }
+    opts.thread.rebindLive(nextLive);
+  }
+}
+
+async function recoverLiveAgent(opts: {
+  readonly thread: AgentThread;
+  readonly parent: Session;
+  readonly parentPath: AgentPath;
+  readonly control: AgentControl;
+}): Promise<LiveAgent | null> {
+  const live = opts.thread.live;
+  emitWarning(
+    opts.parent.eventLog,
+    opts.parent.nextInternalSubId(),
+    "subagent_resume_retry",
+    `resume subagent ${live.agentPath} after ${live.status.value.status}`,
+  );
+
+  await opts.control.shutdown(
+    live.agentId,
+    "delegate_resume",
+  );
+
+  try {
+    const resumed = await opts.control.resumeAgentFromRollout({
+      rootThreadId: live.agentId,
+      parentPath: opts.parentPath,
+      metadata: live.metadata,
+    });
+    if (!resumed.rootLive) {
+      throw new Error(`unable to resume live handle for ${live.agentPath}`);
+    }
+    return resumed.rootLive;
+  } catch (err) {
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_resume_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+}
+
+async function restartLiveAgent(opts: {
+  readonly thread: AgentThread;
+  readonly parent: Session;
+  readonly parentPath: AgentPath;
+  readonly control: AgentControl;
+}): Promise<LiveAgent | null> {
+  const live = opts.thread.live;
+  emitWarning(
+    opts.parent.eventLog,
+    opts.parent.nextInternalSubId(),
+    "subagent_restart_retry",
+    `restart subagent ${live.agentPath} after hard failure`,
+  );
+
+  await opts.control.shutdown(live.agentId, "delegate_restart");
+
+  try {
+    return await opts.control.spawn({
+      parentPath: opts.parentPath,
+      roleName: live.metadata.agentRole ?? live.role.name,
+    });
+  } catch (err) {
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_restart_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

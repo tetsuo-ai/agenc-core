@@ -14,7 +14,7 @@
  * @module
  */
 import { stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 import { readTextFile } from "../utils/file-read.js";
 
@@ -97,6 +97,12 @@ export interface ProjectInstructions {
 }
 
 /**
+ * Root→cwd project-doc chain entry. Same payload shape as the singular
+ * loader so downstream callers can reuse the same truncation metadata.
+ */
+export type ProjectInstructionChainEntry = ProjectInstructions;
+
+/**
  * I-15-style truncation marker appended when a file exceeds the budget.
  */
 const TRUNCATION_MARKER =
@@ -170,6 +176,67 @@ export async function resolveInstructionFile(dir: string): Promise<string | null
 export async function loadProjectInstructions(
   opts: LoadProjectInstructionsOptions,
 ): Promise<ProjectInstructions | null> {
+  const chain = await loadProjectInstructionChain(opts);
+  return chain[0] ?? null;
+}
+
+function truncateContentToBytes(
+  content: string,
+  maxBytes: number,
+): { content: string; truncated: boolean } {
+  if (maxBytes <= 0) {
+    return { content: "", truncated: true };
+  }
+  const byteLen = Buffer.byteLength(content, "utf8");
+  if (byteLen <= maxBytes) {
+    return { content, truncated: false };
+  }
+  const buf = Buffer.from(content, "utf8");
+  return {
+    content: buf.subarray(0, maxBytes).toString("utf8") + TRUNCATION_MARKER,
+    truncated: true,
+  };
+}
+
+function directoriesFromRoot(rootDir: string, cwd: string): string[] {
+  const absRoot = resolve(rootDir);
+  const absCwd = resolve(cwd);
+  const rel = relative(absRoot, absCwd);
+  if (rel.startsWith("..") || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    return [absRoot];
+  }
+  if (rel === "") {
+    return [absRoot];
+  }
+  const dirs: string[] = [];
+  let current = absCwd;
+  while (true) {
+    dirs.push(current);
+    if (current === absRoot) {
+      break;
+    }
+    const parent = dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return dirs.reverse();
+}
+
+/**
+ * Walk from the discovered project root to `cwd` inclusive, collecting
+ * every directory-level instruction file in root→cwd order. Each
+ * directory contributes at most one file according to
+ * {@link resolveInstructionFile}'s precedence.
+ *
+ * The byte budget applies to the concatenated chain, matching codex's
+ * `project_doc_max_bytes` behavior. When the budget is exhausted the
+ * final included entry is truncated and the walk stops.
+ */
+export async function loadProjectInstructionChain(
+  opts: LoadProjectInstructionsOptions,
+): Promise<readonly ProjectInstructionChainEntry[]> {
   const markers =
     opts.projectRootMarkers && opts.projectRootMarkers.length > 0
       ? opts.projectRootMarkers
@@ -180,43 +247,46 @@ export async function loadProjectInstructions(
       : DEFAULT_PROJECT_DOC_MAX_BYTES;
 
   if (maxBytes === 0) {
-    return null;
+    return [];
   }
 
   const root = await findProjectRoot(opts.cwd, markers);
   if (!root) {
-    return null;
+    return [];
+  }
+  const chain: ProjectInstructionChainEntry[] = [];
+  let remainingBytes = maxBytes;
+
+  for (const dir of directoriesFromRoot(root.rootDir, opts.cwd)) {
+    const filePath = await resolveInstructionFile(dir);
+    if (!filePath) {
+      continue;
+    }
+
+    let rawContent: string;
+    try {
+      rawContent = await readTextFile(filePath);
+    } catch {
+      continue;
+    }
+
+    const truncated = truncateContentToBytes(rawContent, remainingBytes);
+    chain.push({
+      path: filePath,
+      content: truncated.content,
+      truncated: truncated.truncated,
+      rootMarkerFound: root.marker,
+      rootDir: root.rootDir,
+    });
+
+    remainingBytes -= Math.min(
+      remainingBytes,
+      Buffer.byteLength(rawContent, "utf8"),
+    );
+    if (truncated.truncated || remainingBytes <= 0) {
+      break;
+    }
   }
 
-  const filePath = await resolveInstructionFile(root.rootDir);
-  if (!filePath) {
-    return null;
-  }
-
-  let content: string;
-  try {
-    content = await readTextFile(filePath);
-  } catch {
-    return null;
-  }
-
-  let truncated = false;
-  // Use UTF-8 byte length — matches codex Rust behavior and catches
-  // multibyte characters that would blow past the budget.
-  const byteLen = Buffer.byteLength(content, "utf8");
-  if (byteLen > maxBytes) {
-    // Truncate in characters but safely — Buffer byte-slice can split
-    // surrogate pairs; re-encode/decode instead.
-    const buf = Buffer.from(content, "utf8");
-    content = buf.subarray(0, maxBytes).toString("utf8") + TRUNCATION_MARKER;
-    truncated = true;
-  }
-
-  return {
-    path: filePath,
-    content,
-    truncated,
-    rootMarkerFound: root.marker,
-    rootDir: root.rootDir,
-  };
+  return chain;
 }
