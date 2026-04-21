@@ -29,6 +29,11 @@ import {
   type CompiledJobExecutionDenyReason,
   type CompiledJobExecutionGovernor,
 } from "./compiled-job-execution-governor.js";
+import {
+  evaluateCompiledJobDependencyChecks,
+  type CompiledJobDependencyCheck,
+  type CompiledJobDependencyDenyReason,
+} from "./compiled-job-dependencies.js";
 import type {
   MetricsProvider,
   TaskExecutionContext,
@@ -50,6 +55,7 @@ type CompiledJobBlockReason =
   | CompiledJobLaunchDenyReason
   | CompiledJobVersionDenyReason
   | CompiledJobExecutionDenyReason
+  | CompiledJobDependencyDenyReason
   | "runtime_missing_required_tools"
   | "runtime_side_effect_tools_blocked";
 
@@ -62,6 +68,7 @@ export interface CompiledJobChatTaskHandlerOptions {
   readonly versionControls?: Partial<CompiledJobVersionControls>;
   readonly executionBudgetControls?: Partial<CompiledJobExecutionBudgetControls>;
   readonly executionGovernor?: CompiledJobExecutionGovernor;
+  readonly dependencyChecks?: readonly CompiledJobDependencyCheck[];
   readonly env?: NodeJS.ProcessEnv;
   readonly channel?: string;
   readonly senderId?: string;
@@ -103,6 +110,22 @@ export function createCompiledJobChatTaskHandler(
       context,
     );
     const metrics = context.metrics ?? new NoopMetrics();
+
+    const dependencyDecision = await evaluateCompiledJobDependencyChecks({
+      context,
+      checks: options.dependencyChecks,
+    });
+    if (!dependencyDecision.allowed) {
+      const message =
+        dependencyDecision.message ??
+        "Compiled job dependency preflight denied execution";
+      recordCompiledJobBlockedRun(context, logger, metrics, {
+        reason: dependencyDecision.reason ?? "dependency_preflight_failed",
+        message,
+        dependency: dependencyDecision.dependency,
+      });
+      throw new Error(message);
+    }
 
     const versionDecision = evaluateCompiledJobVersionAccess({
       compilerVersion: compiledJob.audit.compilerVersion,
@@ -224,6 +247,7 @@ function recordCompiledJobBlockedRun(
     readonly message: string;
     readonly blockedToolNames?: readonly string[];
     readonly missingToolNames?: readonly string[];
+    readonly dependency?: string;
   },
 ): void {
   const compiledJob = context.compiledJob;
@@ -250,6 +274,7 @@ function recordCompiledJobBlockedRun(
     compiledPlanHash: compiledJob.audit.compiledPlanHash,
     blockedToolNames: input.blockedToolNames,
     missingToolNames: input.missingToolNames,
+    dependency: input.dependency,
   });
 }
 

@@ -79,6 +79,34 @@ describe("CompiledJobAlertSink", () => {
     });
   });
 
+  it("surfaces dependency failure spikes through the same blocked-run alerts", () => {
+    const sink = new CompiledJobAlertSink({
+      totalBlockedThreshold: 99,
+      blockedReasonThreshold: 2,
+      now: () => 2_500,
+    });
+    const telemetry = new UnifiedTelemetryCollector({ sinks: [sink] });
+
+    telemetry.counter(METRIC_NAMES.COMPILED_JOB_BLOCKED, 2, {
+      reason: "dependency_network_broker_unavailable",
+      job_type: "web_research_brief",
+    });
+
+    telemetry.flush();
+
+    expect(sink.getRecentAlerts()).toContainEqual({
+      id: "compiled_job.blocked_reason_spike:dependency_network_broker_unavailable:2500",
+      severity: "warn",
+      code: "compiled_job.blocked_reason_spike",
+      message:
+        "Compiled job blocked-run spike detected for dependency_network_broker_unavailable: 2 blocked runs since the last telemetry flush",
+      createdAt: 2_500,
+      delta: 2,
+      threshold: 2,
+      reason: "dependency_network_broker_unavailable",
+    });
+  });
+
   it("dedupes repeated alerts inside the dedupe window", () => {
     let now = 10_000;
     const sink = new CompiledJobAlertSink({
