@@ -140,6 +140,29 @@ describe('IDL exports', () => {
     ]);
   });
 
+  it('supports the legacy initiate_dispute account order for devnet compatibility', () => {
+    const connection = new Connection('http://127.0.0.1:8899', 'confirmed');
+    const wallet = new Wallet(Keypair.generate());
+    const provider = new AnchorProvider(connection, wallet, { commitment: 'confirmed' });
+    const customId = Keypair.generate().publicKey;
+    const program = createProgram(provider, customId, 'legacyInitiateDispute');
+    const initiateDispute = program.idl.instructions.find(
+      (ix: { name: string }) => ix.name === 'initiateDispute',
+    );
+
+    expect(initiateDispute.accounts.map((account: { name: string }) => account.name)).toEqual([
+      'dispute',
+      'task',
+      'agent',
+      'protocolConfig',
+      'initiatorClaim',
+      'workerAgent',
+      'workerClaim',
+      'authority',
+      'systemProgram',
+    ]);
+  });
+
   it('has accounts array with entries', () => {
     expect(Array.isArray(IDL.accounts)).toBe(true);
     expect(IDL.accounts.length).toBeGreaterThan(0);

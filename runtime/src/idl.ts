@@ -23,6 +23,7 @@ export type { AgencCoordination };
 
 type NamedIdlEntry = { name: string };
 type NamedIdlInstruction = NamedIdlEntry & { accounts?: unknown[] };
+export type ProgramLayoutMode = "default" | "legacyInitiateDispute";
 
 // The published protocol package currently diverges from the deployed
 // marketplace/task-dispute account layouts on devnet. Override the stale
@@ -329,6 +330,85 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
     },
   ],
 } as const;
+
+const LEGACY_INITIATE_DISPUTE_ACCOUNT_LAYOUT = [
+  {
+    name: "dispute",
+    writable: true,
+    pda: {
+      seeds: [
+        { kind: "const", value: [100, 105, 115, 112, 117, 116, 101] },
+        { kind: "arg", path: "dispute_id" },
+      ],
+    },
+  },
+  {
+    name: "task",
+    writable: true,
+    pda: {
+      seeds: [
+        { kind: "const", value: [116, 97, 115, 107] },
+        { kind: "account", path: "task.creator", account: "Task" },
+        { kind: "account", path: "task.task_id", account: "Task" },
+      ],
+    },
+  },
+  {
+    name: "agent",
+    writable: true,
+    pda: {
+      seeds: [
+        { kind: "const", value: [97, 103, 101, 110, 116] },
+        {
+          kind: "account",
+          path: "agent.agent_id",
+          account: "AgentRegistration",
+        },
+      ],
+    },
+  },
+  {
+    name: "protocol_config",
+    pda: {
+      seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+    },
+  },
+  {
+    name: "initiator_claim",
+    docs: ["Optional: Initiator's claim if they are a worker (not the creator)"],
+    optional: true,
+    pda: {
+      seeds: [
+        { kind: "const", value: [99, 108, 97, 105, 109] },
+        { kind: "account", path: "task" },
+        { kind: "account", path: "agent" },
+      ],
+    },
+  },
+  {
+    name: "worker_agent",
+    docs: [
+      "Optional: Worker agent to be disputed (required when initiator is task creator)",
+    ],
+    writable: true,
+    optional: true,
+  },
+  {
+    name: "worker_claim",
+    docs: ["Optional: Worker's claim (required when worker_agent is provided)"],
+    optional: true,
+  },
+  {
+    name: "authority",
+    writable: true,
+    signer: true,
+    relations: ["agent"],
+  },
+  {
+    name: "system_program",
+    address: "11111111111111111111111111111111",
+  },
+] as const;
 
 // The published protocol package can lag behind the runtime's supported V2 flow.
 // Merge these entries in locally so Program.methods exposes the task validation
@@ -1315,12 +1395,16 @@ function mergeIdlEntries<T extends NamedIdlEntry>(
 
 function overrideInstructionAccounts(
   existing: readonly NamedIdlInstruction[] | undefined,
+  mode: ProgramLayoutMode = "default",
 ): NamedIdlInstruction[] {
   return (existing ?? []).map((instruction) => {
     const override =
-      MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES[
-        instruction.name as keyof typeof MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES
-      ];
+      mode === "legacyInitiateDispute" &&
+      instruction.name === "initiate_dispute"
+        ? LEGACY_INITIATE_DISPUTE_ACCOUNT_LAYOUT
+        : MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES[
+            instruction.name as keyof typeof MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES
+          ];
     if (!override) {
       return instruction;
     }
@@ -1331,13 +1415,17 @@ function overrideInstructionAccounts(
   });
 }
 
-function augmentIdl(baseIdl: Idl): Idl {
+function augmentIdl(
+  baseIdl: Idl,
+  mode: ProgramLayoutMode = "default",
+): Idl {
   return {
     ...baseIdl,
     instructions: mergeIdlEntries(
       mergeIdlEntries(
         overrideInstructionAccounts(
           baseIdl.instructions as NamedIdlInstruction[] | undefined,
+          mode,
         ) as unknown as NamedIdlEntry[],
         TASK_VALIDATION_V2_INSTRUCTIONS as unknown as NamedIdlEntry[],
       ),
@@ -1368,6 +1456,11 @@ function augmentIdl(baseIdl: Idl): Idl {
  */
 export const IDL: Idl = {
   ...augmentIdl(AGENC_COORDINATION_IDL as Idl),
+  address: PROGRAM_ID.toBase58(),
+};
+
+const LEGACY_INITIATE_DISPUTE_IDL: Idl = {
+  ...augmentIdl(AGENC_COORDINATION_IDL as Idl, "legacyInitiateDispute"),
   address: PROGRAM_ID.toBase58(),
 };
 
@@ -1406,12 +1499,16 @@ export function validateIdl(idl: Idl = IDL): void {
  *
  * @internal
  */
-function getIdlForProgram(programId: PublicKey): Idl {
+function getIdlForProgram(
+  programId: PublicKey,
+  mode: ProgramLayoutMode = "default",
+): Idl {
+  const baseIdl = mode === "legacyInitiateDispute" ? LEGACY_INITIATE_DISPUTE_IDL : IDL;
   if (programId.equals(PROGRAM_ID)) {
-    return IDL;
+    return baseIdl;
   }
   // Create IDL copy with custom program address for local testing
-  return { ...IDL, address: programId.toBase58() };
+  return { ...baseIdl, address: programId.toBase58() };
 }
 
 /**
@@ -1457,12 +1554,13 @@ function createReadOnlyProvider(connection: Connection): AnchorProvider {
 export function createProgram(
   provider: AnchorProvider,
   programId: PublicKey = PROGRAM_ID,
+  mode: ProgramLayoutMode = "default",
 ): Program<AgencCoordination> {
   validateIdl();
   // Cast to AgencCoordination for type-safe Program access
   // Anchor's Program class handles snake_case ↔ camelCase mapping internally
   return new Program<AgencCoordination>(
-    getIdlForProgram(programId) as AgencCoordination,
+    getIdlForProgram(programId, mode) as AgencCoordination,
     provider,
   );
 }
@@ -1485,12 +1583,13 @@ export function createProgram(
 export function createReadOnlyProgram(
   connection: Connection,
   programId: PublicKey = PROGRAM_ID,
+  mode: ProgramLayoutMode = "default",
 ): Program<AgencCoordination> {
   validateIdl();
   // Cast to AgencCoordination for type-safe Program access
   // Anchor's Program class handles snake_case ↔ camelCase mapping internally
   return new Program<AgencCoordination>(
-    getIdlForProgram(programId) as AgencCoordination,
+    getIdlForProgram(programId, mode) as AgencCoordination,
     createReadOnlyProvider(connection),
   );
 }

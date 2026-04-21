@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { PublicKey, Keypair, SystemProgram } from "@solana/web3.js";
 import { DisputeOperations, type DisputeOpsConfig } from "./operations.js";
+import * as idlModule from "../idl.js";
 import {
   parseOnChainDispute,
   parseOnChainDisputeVote,
@@ -31,7 +32,7 @@ import {
 import { PROGRAM_ID, SEEDS } from "@tetsuo-ai/sdk";
 import { silentLogger } from "../utils/logger.js";
 import { generateAgentId } from "../utils/encoding.js";
-import { findAuthorityRateLimitPda } from "../agent/pda.js";
+import { findAuthorityRateLimitPda, findProtocolPda } from "../agent/pda.js";
 import { deriveTaskSubmissionPda } from "../task/pda.js";
 
 // ============================================================================
@@ -112,6 +113,9 @@ function createMockProgram(overrides: Record<string, any> = {}) {
     programId: PROGRAM_ID,
     provider: {
       publicKey: randomPubkey(),
+      connection: {
+        getAccountInfo: vi.fn().mockResolvedValue(null),
+      },
     },
     account: {
       dispute: {
@@ -381,6 +385,7 @@ describe("DisputeOperations", () => {
   const agentId = generateAgentId();
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     program = createMockProgram();
     ops = new DisputeOperations({
       program,
@@ -665,6 +670,47 @@ describe("DisputeOperations", () => {
           }),
         ]),
       );
+    });
+
+    it("retries with the legacy devnet dispute layout when protocol_config appears uninitialized", async () => {
+      const legacyProgram = createMockProgram();
+      const createProgramSpy = vi
+        .spyOn(idlModule, "createProgram")
+        .mockReturnValue(legacyProgram as never);
+
+      program._rpcMock.mockRejectedValueOnce(
+        new Error(
+          "AnchorError caused by account: protocol_config. Error Code: AccountNotInitialized. Error Number: 3012. Error Message: The program expected this account to be already initialized.",
+        ),
+      );
+
+      const result = await ops.initiateDispute({
+        disputeId: randomBytes(32),
+        taskPda: randomPubkey(),
+        taskId: randomBytes(32),
+        evidenceHash: randomBytes(32),
+        resolutionType: 0,
+        evidence: "creator retries with legacy compatibility layout",
+      });
+
+      expect(result.transactionSignature).toBe("mock-signature");
+      expect(createProgramSpy).toHaveBeenCalledWith(
+        program.provider,
+        program.programId,
+        "legacyInitiateDispute",
+      );
+      expect(legacyProgram._methodBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          protocolConfig: findProtocolPda(program.programId),
+          authority: legacyProgram.provider.publicKey,
+        }),
+      );
+      expect(
+        legacyProgram._methodBuilder.accountsPartial.mock.calls[0][0],
+      ).not.toHaveProperty("authorityRateLimit");
+      expect(
+        legacyProgram._methodBuilder.accountsPartial.mock.calls[0][0],
+      ).not.toHaveProperty("taskSubmission");
     });
 
     it("maps InsufficientEvidence error", async () => {
