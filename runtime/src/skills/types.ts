@@ -35,6 +35,44 @@ export enum SkillState {
 }
 
 /**
+ * A typed review request for a mutating skill action.
+ *
+ * Side-effecting skill flows should call this before signing, submitting,
+ * spending, or otherwise performing an irreversible external action.
+ */
+export interface SkillSideEffectReviewRequest {
+  /** Skill responsible for the action */
+  readonly skillName: string;
+  /** Specific action requesting approval */
+  readonly actionName: string;
+  /** Normalized effect kind for routing and logging */
+  readonly effectKind: "swap" | "transfer_sol" | "transfer_token";
+  /** Human-readable summary shown to the reviewer */
+  readonly summary: string;
+  /** Structured metadata describing the pending side effect */
+  readonly metadata?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Result of a side-effect review request.
+ */
+export interface SkillSideEffectReviewResult {
+  /** Whether the action is approved to proceed */
+  readonly approved: boolean;
+  /** Optional reviewer identity */
+  readonly reviewedBy?: string;
+  /** Optional denial or audit reason */
+  readonly reason?: string;
+}
+
+/**
+ * Hook invoked before a skill performs an irreversible side effect.
+ */
+export type SkillSideEffectReviewer = (
+  request: SkillSideEffectReviewRequest,
+) => Promise<SkillSideEffectReviewResult>;
+
+/**
  * Context provided to skills during initialization.
  *
  * Contains the shared resources a skill needs to interact
@@ -47,6 +85,8 @@ export interface SkillContext {
   readonly wallet: Wallet;
   /** Logger instance */
   readonly logger: Logger;
+  /** Optional review broker for irreversible skill side effects */
+  readonly reviewBeforeSideEffect?: SkillSideEffectReviewer;
 }
 
 /**

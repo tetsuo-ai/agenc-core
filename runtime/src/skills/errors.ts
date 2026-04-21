@@ -93,3 +93,31 @@ export class SkillAlreadyRegisteredError extends RuntimeError {
     this.skillName = skillName;
   }
 }
+
+/**
+ * Error thrown when a mutating skill action lacks required approval.
+ */
+export class SkillApprovalRequiredError extends RuntimeError {
+  /** The name of the skill */
+  public readonly skillName: string;
+  /** The action requesting approval */
+  public readonly actionName: string;
+  /** Optional actor that reviewed the request */
+  public readonly reviewedBy?: string;
+
+  constructor(
+    skillName: string,
+    actionName: string,
+    reason: string,
+    reviewedBy?: string,
+  ) {
+    super(
+      `Skill action "${actionName}" on "${skillName}" requires review before side effects: ${reason}`,
+      RuntimeErrorCodes.EXECUTOR_STATE_ERROR,
+    );
+    this.name = "SkillApprovalRequiredError";
+    this.skillName = skillName;
+    this.actionName = actionName;
+    this.reviewedBy = reviewedBy;
+  }
+}
