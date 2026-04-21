@@ -17,6 +17,7 @@ import type { CompiledJob } from "./compiled-job.js";
 import {
   createCompiledJobExecutionRuntime,
 } from "./compiled-job-runtime.js";
+import { createCompiledJobExecutionGovernor } from "./compiled-job-execution-governor.js";
 import {
   createCompiledJobChatTaskHandler,
 } from "./compiled-job-chat-handler.js";
@@ -413,5 +414,107 @@ describe("compiled job chat task handler", () => {
     );
     expect(provider.chat).not.toHaveBeenCalled();
     expect(provider.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("enforces execution concurrency limits before dispatching the model", async () => {
+    let releaseFirstExecution: (() => void) | undefined;
+    const provider = createMockProvider([
+      {
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+      {
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    provider.chat.mockImplementationOnce(
+      async () =>
+        await new Promise((resolve) => {
+          releaseFirstExecution = () => {
+            resolve({
+              content: "Research brief with citations",
+              toolCalls: [],
+              usage: {
+                promptTokens: 8,
+                completionTokens: 6,
+                totalTokens: 14,
+              },
+              model: "mock-model",
+              finishReason: "stop",
+            });
+          };
+        }),
+    );
+    provider.chatStream.mockImplementationOnce(
+      async (_messages, onChunk) =>
+        await new Promise((resolve) => {
+          releaseFirstExecution = () => {
+            onChunk({ content: "", done: true } satisfies LLMStreamChunk);
+            resolve({
+              content: "Research brief with citations",
+              toolCalls: [],
+              usage: {
+                promptTokens: 8,
+                completionTokens: 6,
+                totalTokens: 14,
+              },
+              model: "mock-model",
+              finishReason: "stop",
+            });
+          };
+        }),
+    );
+    provider.chatStream.mockImplementationOnce(async (_messages, onChunk) => {
+      onChunk({ content: "", done: true } satisfies LLMStreamChunk);
+      return {
+        content: "Research brief with citations",
+        toolCalls: [],
+        usage: { promptTokens: 8, completionTokens: 6, totalTokens: 14 },
+        model: "mock-model",
+        finishReason: "stop",
+      };
+    });
+
+    const executor = new ChatExecutor({
+      providers: [provider],
+      allowedTools: ["system.httpGet", "system.pdfExtractText"],
+    });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      executionGovernor: createCompiledJobExecutionGovernor({
+        controls: {
+          maxConcurrentRuns: 1,
+        },
+      }),
+    });
+
+    const firstRun = handler(createContext());
+    await vi.waitFor(() => {
+      expect(
+        provider.chat.mock.calls.length + provider.chatStream.mock.calls.length,
+      ).toBeGreaterThan(0);
+    });
+
+    await expect(handler(createContext())).rejects.toThrow(
+      "Compiled marketplace job concurrency limit reached (1/1 active)",
+    );
+
+    releaseFirstExecution?.();
+    await expect(firstRun).resolves.toMatchObject({
+      proofHash: expect.any(Uint8Array),
+      resultData: expect.any(Uint8Array),
+    });
   });
 });

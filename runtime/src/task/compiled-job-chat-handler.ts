@@ -14,6 +14,12 @@ import {
   resolveCompiledJobLaunchControls,
   type CompiledJobLaunchControls,
 } from "./compiled-job-launch-controls.js";
+import {
+  createCompiledJobExecutionGovernor,
+  resolveCompiledJobExecutionBudgetControls,
+  type CompiledJobExecutionBudgetControls,
+  type CompiledJobExecutionGovernor,
+} from "./compiled-job-execution-governor.js";
 import type { TaskExecutionContext, TaskExecutionResult, TaskHandler } from "./types.js";
 
 const DEFAULT_SUPPORTED_JOB_TYPES = ["web_research_brief"] as const;
@@ -32,6 +38,8 @@ export interface CompiledJobChatTaskHandlerOptions {
   readonly logger?: Logger;
   readonly supportedJobTypes?: readonly string[];
   readonly launchControls?: Partial<CompiledJobLaunchControls>;
+  readonly executionBudgetControls?: Partial<CompiledJobExecutionBudgetControls>;
+  readonly executionGovernor?: CompiledJobExecutionGovernor;
   readonly env?: NodeJS.ProcessEnv;
   readonly channel?: string;
   readonly senderId?: string;
@@ -55,6 +63,14 @@ export function createCompiledJobChatTaskHandler(
     base: options.launchControls,
     env: options.env,
   });
+  const executionGovernor =
+    options.executionGovernor ??
+    createCompiledJobExecutionGovernor({
+      controls: resolveCompiledJobExecutionBudgetControls({
+        base: options.executionBudgetControls,
+        env: options.env,
+      }),
+    });
 
   return async (context: TaskExecutionContext): Promise<TaskExecutionResult> => {
     const { compiledJob, compiledJobRuntime } = requireCompiledJobContext(
@@ -71,55 +87,67 @@ export function createCompiledJobChatTaskHandler(
         launchDecision.message ?? "Compiled job launch controls denied execution",
       );
     }
-
-    const scopedTooling = compiledJobRuntime.buildScopedTooling(
-      options.toolRegistry,
-      logger,
-    );
-    if (scopedTooling.blockedToolNames.length > 0) {
+    const executionDecision = executionGovernor.acquire(compiledJob.jobType);
+    if (!executionDecision.allowed) {
       throw new Error(
-        `Compiled job runtime blocked side-effect tools for ${compiledJob.policy.riskTier} execution: ${scopedTooling.blockedToolNames.join(", ")}`,
+        executionDecision.message ??
+          "Compiled job execution budgets denied execution",
       );
     }
-    if (scopedTooling.missingToolNames.length > 0) {
-      throw new Error(
-        `Compiled job runtime is missing required tools: ${scopedTooling.missingToolNames.join(", ")}`,
+    const executionLease = executionDecision.lease;
+
+    try {
+      const scopedTooling = compiledJobRuntime.buildScopedTooling(
+        options.toolRegistry,
+        logger,
       );
+      if (scopedTooling.blockedToolNames.length > 0) {
+        throw new Error(
+          `Compiled job runtime blocked side-effect tools for ${compiledJob.policy.riskTier} execution: ${scopedTooling.blockedToolNames.join(", ")}`,
+        );
+      }
+      if (scopedTooling.missingToolNames.length > 0) {
+        throw new Error(
+          `Compiled job runtime is missing required tools: ${scopedTooling.missingToolNames.join(", ")}`,
+        );
+      }
+
+      const message =
+        options.buildMessage?.(context) ??
+        buildCompiledJobTaskMessage(context, {
+          channel: options.channel,
+          senderId: options.senderId,
+          senderName: options.senderName,
+        });
+      const promptEnvelope = normalizePromptEnvelope(
+        options.buildPromptEnvelope?.(context) ??
+          buildCompiledJobTaskPromptEnvelope(context),
+      );
+
+      const result = await executeChatToLegacyResult(
+        options.chatExecutor,
+        compiledJobRuntime.applyChatExecuteParams({
+          message,
+          history: [],
+          promptEnvelope,
+          sessionId: message.sessionId,
+          toolHandler: scopedTooling.toolHandler,
+          signal: context.signal,
+        }),
+      );
+
+      const finalContent = result.content.trim();
+      if (finalContent.length === 0) {
+        throw new Error("Compiled job execution returned empty output");
+      }
+
+      return {
+        proofHash: sha256Bytes(finalContent),
+        resultData: fixedWidthUtf8(finalContent, RESULT_DATA_BYTES),
+      };
+    } finally {
+      executionLease?.release();
     }
-
-    const message =
-      options.buildMessage?.(context) ??
-      buildCompiledJobTaskMessage(context, {
-        channel: options.channel,
-        senderId: options.senderId,
-        senderName: options.senderName,
-      });
-    const promptEnvelope = normalizePromptEnvelope(
-      options.buildPromptEnvelope?.(context) ??
-        buildCompiledJobTaskPromptEnvelope(context),
-    );
-
-    const result = await executeChatToLegacyResult(
-      options.chatExecutor,
-      compiledJobRuntime.applyChatExecuteParams({
-        message,
-        history: [],
-        promptEnvelope,
-        sessionId: message.sessionId,
-        toolHandler: scopedTooling.toolHandler,
-        signal: context.signal,
-      }),
-    );
-
-    const finalContent = result.content.trim();
-    if (finalContent.length === 0) {
-      throw new Error("Compiled job execution returned empty output");
-    }
-
-    return {
-      proofHash: sha256Bytes(finalContent),
-      resultData: fixedWidthUtf8(finalContent, RESULT_DATA_BYTES),
-    };
   };
 }
 

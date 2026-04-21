@@ -55,12 +55,14 @@ interface BudgetLedger {
   readonly runtimeMs: SlidingWindowState;
 }
 
-function createBudgetLedger(config: {
+export interface BudgetStateConfig {
   rateWindowMs?: number;
   tokenWindowMs?: number;
   lamportWindowMs?: number;
   runtimeWindowMs?: number;
-} = {}): BudgetLedger {
+}
+
+function createBudgetLedger(config: BudgetStateConfig = {}): BudgetLedger {
   return {
     toolCallRate: createSlidingWindow(config.rateWindowMs ?? 60_000),
     tokenSpend: createSlidingWindow(config.tokenWindowMs ?? 60 * 60 * 1000),
@@ -75,6 +77,7 @@ function createBudgetLedger(config: {
  */
 export class BudgetStateService {
   private readonly bySession = new Map<string, BudgetLedger>();
+  constructor(private readonly config: BudgetStateConfig = {}) {}
 
   recordToolCall(sessionId: string, nowMs: number): void {
     const ledger = this.ensure(sessionId);
@@ -144,7 +147,7 @@ export class BudgetStateService {
   private ensure(sessionId: string): BudgetLedger {
     let ledger = this.bySession.get(sessionId);
     if (!ledger) {
-      ledger = createBudgetLedger();
+      ledger = createBudgetLedger(this.config);
       this.bySession.set(sessionId, ledger);
     }
     return ledger;
