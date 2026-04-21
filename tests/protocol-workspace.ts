@@ -17,6 +17,35 @@ function hasAnchorToml(workspaceRoot: string): boolean {
   return pathExists(path.join(workspaceRoot, "Anchor.toml"));
 }
 
+function hasBuiltProtocolTargetIdl(workspaceRoot: string): boolean {
+  return pathExists(
+    path.join(workspaceRoot, "target", "idl", "agenc_coordination.json"),
+  );
+}
+
+function hasBuiltProtocolProgramBinary(workspaceRoot: string): boolean {
+  const candidates = [
+    path.join(workspaceRoot, "target", "deploy", "agenc_coordination.so"),
+    path.join(
+      workspaceRoot,
+      "programs",
+      "agenc-coordination",
+      "target",
+      "deploy",
+      "agenc_coordination.so",
+    ),
+    path.resolve(
+      workspaceRoot,
+      "..",
+      "target",
+      "deploy",
+      "agenc_coordination.so",
+    ),
+  ];
+
+  return candidates.some((candidate) => pathExists(candidate));
+}
+
 function getProtocolWorkspaceCandidates(): string[] {
   const envRoot = process.env.AGENC_PROTOCOL_WORKSPACE_ROOT;
   return [
@@ -46,7 +75,9 @@ export function resolveProtocolWorkspaceRoot(): string {
 
 export function isProtocolWorkspaceAvailable(): boolean {
   return getProtocolWorkspaceCandidates().some((candidate) =>
-    hasAnchorToml(candidate),
+    hasAnchorToml(candidate)
+      && hasBuiltProtocolTargetIdl(candidate)
+      && hasBuiltProtocolProgramBinary(candidate),
   );
 }
 

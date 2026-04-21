@@ -26,6 +26,11 @@ export { NoopTelemetryCollector } from "./noop.js";
 
 // Sinks
 export { ConsoleSink, CallbackSink } from "./sinks.js";
+export {
+  CompiledJobAlertSink,
+  type CompiledJobTelemetryAlert,
+  type CompiledJobAlertSinkOptions,
+} from "./compiled-job-alerts.js";
 
 // Metric names
 export { TELEMETRY_METRIC_NAMES } from "./metric-names.js";

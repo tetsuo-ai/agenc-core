@@ -1273,6 +1273,9 @@ export {
   // Built-in sinks
   ConsoleSink,
   CallbackSink,
+  CompiledJobAlertSink,
+  type CompiledJobTelemetryAlert,
+  type CompiledJobAlertSinkOptions,
   // Error class
   TelemetryError,
   // Metric name constants
