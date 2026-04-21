@@ -5,9 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { AnchorProvider, type Program } from "@coral-xyz/anchor";
+import bs58 from "bs58";
 import { Connection, PublicKey, type Keypair } from "@solana/web3.js";
 import {
   AgentCapabilities,
+  AgentStatus,
   createProgram,
   createReadOnlyProgram,
   findProtocolPda,
@@ -41,7 +43,11 @@ const DEFAULT_MAX_WAIT_SECONDS = 90;
 const DEFAULT_ENDPOINT_BASE = "https://agenc.local";
 const DEFAULT_FEE_BUFFER_LAMPORTS = 20_000_000n;
 const DEFAULT_AUTHORITY_FEE_BUFFER_LAMPORTS = 10_000_000n;
+const DEFAULT_RPC_RETRY_ATTEMPTS = 5;
+const DEFAULT_RPC_RETRY_DELAY_MS = 1_500;
 const ARTIFACT_DIR = path.join(os.tmpdir(), "agenc-marketplace-smoke");
+const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
+const AGENT_AUTHORITY_OFFSET = 40;
 
 interface SignerContext {
   label: string;
@@ -227,6 +233,45 @@ function stringifyUnknown(value: unknown): string {
   }
 }
 
+function isRpcRateLimitError(error: unknown): boolean {
+  const message = stringifyUnknown(error);
+  return (
+    message.includes("429 Too Many Requests") ||
+    message.includes('"code":429') ||
+    message.includes('"code": 429') ||
+    message.includes("Too many requests for a specific RPC call")
+  );
+}
+
+async function withRpcRateLimitRetry<T>(
+  label: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const retryAttempts = readNumberEnv(
+    "AGENC_RPC_RETRY_ATTEMPTS",
+    DEFAULT_RPC_RETRY_ATTEMPTS,
+  );
+  let delayMs = readNumberEnv(
+    "AGENC_RPC_RETRY_DELAY_MS",
+    DEFAULT_RPC_RETRY_DELAY_MS,
+  );
+
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await action();
+    } catch (error) {
+      if (!isRpcRateLimitError(error) || attempt >= retryAttempts) {
+        throw error;
+      }
+      console.log(
+        `[retry] ${label} hit RPC 429, sleeping ${delayMs}ms before retry ${attempt + 1}/${retryAttempts}`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs *= 2;
+    }
+  }
+}
+
 function buildBaseOptions(rpcUrl: string, programId?: string): BaseCliOptions {
   return {
     help: false,
@@ -290,10 +335,84 @@ async function ensureBalance(
 async function loadProtocolConfig(
   program: Program<AgencCoordination>,
 ): Promise<ProtocolConfig> {
-  const raw = await (program.account as any).protocolConfig.fetch(
-    findProtocolPda(program.programId),
+  const raw = await withRpcRateLimitRetry(
+    "protocol config fetch",
+    async () =>
+      (program.account as any).protocolConfig.fetch(
+        findProtocolPda(program.programId),
+      ),
   );
   return parseProtocolConfig(raw);
+}
+
+async function validateProtocolConfigHealth(
+  connection: Connection,
+  program: Program<AgencCoordination>,
+  protocolConfig: ProtocolConfig,
+): Promise<void> {
+  if (!protocolConfig.multisigOwners.some((owner) => owner.equals(protocolConfig.authority))) {
+    throw new Error(
+      `Protocol authority ${protocolConfig.authority.toBase58()} is not present in multisig owners for program ${program.programId.toBase58()}`,
+    );
+  }
+  if (protocolConfig.multisigThreshold > protocolConfig.multisigOwners.length) {
+    throw new Error(
+      `Protocol multisig threshold ${protocolConfig.multisigThreshold} exceeds owner count ${protocolConfig.multisigOwners.length} for program ${program.programId.toBase58()}`,
+    );
+  }
+
+  const treasuryInfo = await withRpcRateLimitRetry(
+    "protocol treasury fetch",
+    async () => connection.getAccountInfo(protocolConfig.treasury, "confirmed"),
+  );
+  if (!treasuryInfo) {
+    throw new Error(
+      `Protocol treasury ${protocolConfig.treasury.toBase58()} is missing on-chain for program ${program.programId.toBase58()}; reward settlement will fail until protocol config is repaired.`,
+    );
+  }
+}
+
+async function findExistingAgentPda(
+  signer: SignerContext,
+  connection: Connection,
+): Promise<PublicKey | null> {
+  return withRpcRateLimitRetry(
+    `${signer.label} existing-agent lookup`,
+    async () => {
+      const matches = await connection.getProgramAccounts(signer.program.programId, {
+        filters: [
+          { memcmp: { offset: 0, bytes: bs58.encode(AGENT_DISCRIMINATOR) } },
+          {
+            memcmp: {
+              offset: AGENT_AUTHORITY_OFFSET,
+              bytes: signer.keypair.publicKey.toBase58(),
+            },
+          },
+        ],
+      });
+
+      if (matches.length === 0) {
+        return null;
+      }
+      if (matches.length === 1) {
+        return matches[0]!.pubkey;
+      }
+
+      const fetchedAccounts = await (signer.program.account as any).agentRegistration.fetchMultiple(
+        matches.map((entry) => entry.pubkey),
+      );
+      const activeMatches = matches.filter((_, index) => {
+        const raw = fetchedAccounts[index];
+        if (!raw) return false;
+        try {
+          return parseAgentState(raw).status === AgentStatus.Active;
+        } catch {
+          return false;
+        }
+      });
+      return (activeMatches[0] ?? matches[0])!.pubkey;
+    },
+  );
 }
 
 async function registerOrLoadAgent(
@@ -304,6 +423,38 @@ async function registerOrLoadAgent(
   stakeAmount: bigint,
   minimumExpectedStake: bigint,
 ): Promise<AgentActor> {
+  const existingAgentPda = await findExistingAgentPda(signer, connection);
+  if (existingAgentPda) {
+    const rawAgent = await withRpcRateLimitRetry(
+      `${signer.label} existing-agent fetch`,
+      async () =>
+        (signer.program.account as any).agentRegistration.fetch(existingAgentPda),
+    );
+    const agent = parseAgentState(rawAgent);
+
+    if (!agent.authority.equals(signer.keypair.publicKey)) {
+      throw new Error(
+        `${signer.label} agent authority mismatch for ${existingAgentPda.toBase58()}`,
+      );
+    }
+    if (!hasCapability(agent.capabilities, requiredCapabilities)) {
+      throw new Error(
+        `${signer.label} agent ${existingAgentPda.toBase58()} does not have required capabilities ${requiredCapabilities.toString()}`,
+      );
+    }
+    if (agent.stake < minimumExpectedStake) {
+      throw new Error(
+        `${signer.label} agent ${existingAgentPda.toBase58()} has insufficient stake ${agent.stake.toString()} < ${minimumExpectedStake.toString()}`,
+      );
+    }
+
+    return {
+      ...signer,
+      agentPda: existingAgentPda,
+      agentId: agent.agentId,
+    };
+  }
+
   const registerTool = createAgencTools({
     connection,
     wallet: keypairToWallet(signer.keypair),
@@ -598,6 +749,7 @@ async function initial(): Promise<void> {
       `PROTOCOL_AUTHORITY_WALLET ${authoritySigner.keypair.publicKey.toBase58()} does not match protocol authority ${protocolConfig.authority.toBase58()}`,
     );
   }
+  await validateProtocolConfigHealth(connection, readOnlyProgram, protocolConfig);
 
   const creatorStake = maxBigInt(
     protocolConfig.minAgentStake,

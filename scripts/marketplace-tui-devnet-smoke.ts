@@ -14,6 +14,7 @@ import {
   createProgram,
   createReadOnlyProgram,
   findProtocolPda,
+  GovernanceOperations,
   hasCapability,
   keypairToWallet,
   ReputationEconomyOperations,
@@ -42,11 +43,14 @@ import { createAgencTools } from "../runtime/src/tools/agenc/index.js";
 
 const DEFAULT_RPC_URL =
   process.env.AGENC_RPC_URL ?? "https://api.devnet.solana.com";
-const DEFAULT_TASK_REWARD_LAMPORTS = 1_000_000n;
+const DEFAULT_TASK_REWARD_LAMPORTS = 10_000_000n;
 const DEFAULT_SKILL_PRICE_LAMPORTS = 500_000n;
 const DEFAULT_REPUTATION_STAKE_LAMPORTS = 1_000_000n;
 const DEFAULT_DELEGATION_AMOUNT = 137;
 const DEFAULT_PROPOSAL_VOTING_PERIOD = 600;
+const DEFAULT_GOVERNANCE_EXECUTION_DELAY = 60;
+const DEFAULT_GOVERNANCE_QUORUM_BPS = 1000;
+const DEFAULT_GOVERNANCE_APPROVAL_THRESHOLD_BPS = 5001;
 const DEFAULT_MAX_WAIT_SECONDS = 300;
 const DEFAULT_STATE_WAIT_SECONDS = 45;
 const DEFAULT_RPC_COOLDOWN_MS = 1_000;
@@ -58,6 +62,8 @@ const DEFAULT_AUTHORITY_FEE_BUFFER_LAMPORTS = 1_000_000n;
 const ARTIFACT_DIR = path.join(os.tmpdir(), "agenc-marketplace-tui-smoke");
 const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
 const AGENT_AUTHORITY_OFFSET = 40;
+const DEBUG_SIGNER_RESOLUTION =
+  process.env.AGENC_TUI_SIGNER_DEBUG === "1";
 
 type MarketRunner = (
   context: CliRuntimeContext,
@@ -226,17 +232,24 @@ async function withRpcRateLimitRetry<T>(
   label: string,
   action: () => Promise<T>,
 ): Promise<T> {
-  let delayMs = DEFAULT_RPC_RETRY_DELAY_MS;
+  const retryAttempts = readNumberEnv(
+    "AGENC_RPC_RETRY_ATTEMPTS",
+    DEFAULT_RPC_RETRY_ATTEMPTS,
+  );
+  let delayMs = readNumberEnv(
+    "AGENC_RPC_RETRY_DELAY_MS",
+    DEFAULT_RPC_RETRY_DELAY_MS,
+  );
 
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await action();
     } catch (error) {
-      if (!isRpcRateLimitError(error) || attempt >= DEFAULT_RPC_RETRY_ATTEMPTS) {
+      if (!isRpcRateLimitError(error) || attempt >= retryAttempts) {
         throw error;
       }
       console.log(
-        `[retry] ${label} hit RPC 429, sleeping ${delayMs}ms before retry ${attempt + 1}/${DEFAULT_RPC_RETRY_ATTEMPTS}`,
+        `[retry] ${label} hit RPC 429, sleeping ${delayMs}ms before retry ${attempt + 1}/${retryAttempts}`,
       );
       await sleep(delayMs);
       delayMs *= 2;
@@ -383,10 +396,135 @@ async function countAgentRegistrations(
 async function loadProtocolConfig(
   program: ReturnType<typeof createReadOnlyProgram> | ReturnType<typeof createProgram>,
 ): Promise<ProtocolConfig> {
-  const raw = await (program.account as any).protocolConfig.fetch(
-    findProtocolPda(program.programId),
+  const raw = await withRpcRateLimitRetry(
+    "protocol config fetch",
+    async () =>
+      (program.account as any).protocolConfig.fetch(
+        findProtocolPda(program.programId),
+      ),
   );
   return parseProtocolConfig(raw);
+}
+
+async function validateProtocolConfigHealth(
+  connection: Connection,
+  program: ReturnType<typeof createReadOnlyProgram> | ReturnType<typeof createProgram>,
+  protocolConfig: ProtocolConfig,
+): Promise<void> {
+  if (!protocolConfig.multisigOwners.some((owner) => owner.equals(protocolConfig.authority))) {
+    throw new Error(
+      `Protocol authority ${protocolConfig.authority.toBase58()} is not present in multisig owners for program ${program.programId.toBase58()}`,
+    );
+  }
+  if (protocolConfig.multisigThreshold > protocolConfig.multisigOwners.length) {
+    throw new Error(
+      `Protocol multisig threshold ${protocolConfig.multisigThreshold} exceeds owner count ${protocolConfig.multisigOwners.length} for program ${program.programId.toBase58()}`,
+    );
+  }
+
+  const treasuryInfo = await withRpcRateLimitRetry(
+    "protocol treasury fetch",
+    async () => connection.getAccountInfo(protocolConfig.treasury, "confirmed"),
+  );
+  if (!treasuryInfo) {
+    throw new Error(
+      `Protocol treasury ${protocolConfig.treasury.toBase58()} is missing on-chain for program ${program.programId.toBase58()}; reward settlement will fail until protocol config is repaired.`,
+    );
+  }
+}
+
+async function ensureGovernanceInitialized(
+  authoritySigner: SignerContext,
+  protocolConfig: ProtocolConfig,
+  votingPeriod: number,
+): Promise<void> {
+  if (!authoritySigner.keypair.publicKey.equals(protocolConfig.authority)) {
+    throw new Error(
+      `Authority wallet ${authoritySigner.keypair.publicKey.toBase58()} does not match protocol authority ${protocolConfig.authority.toBase58()}`,
+    );
+  }
+
+  const governanceOps = new GovernanceOperations({
+    program: authoritySigner.program,
+    agentId: new Uint8Array(32),
+    logger: silentLogger,
+  });
+
+  const governanceConfig = await withRpcRateLimitRetry(
+    "governance config fetch",
+    async () => governanceOps.fetchGovernanceConfig(),
+  );
+  if (governanceConfig) {
+    if (!governanceConfig.authority.equals(protocolConfig.authority)) {
+      throw new Error(
+        `Governance authority ${governanceConfig.authority.toBase58()} does not match protocol authority ${protocolConfig.authority.toBase58()}`,
+      );
+    }
+    console.log(
+      `[config] governance already initialized: authority=${governanceConfig.authority.toBase58()} minProposalStake=${governanceConfig.minProposalStake.toString()} votingPeriod=${governanceConfig.votingPeriod}`,
+    );
+    return;
+  }
+
+  const minProposalStake =
+    protocolConfig.minAgentStake > 0n ? protocolConfig.minAgentStake : 1n;
+  const initialized = await withRpcRateLimitRetry(
+    "governance initialize",
+    async () =>
+      governanceOps.initializeGovernance({
+        votingPeriod,
+        executionDelay: DEFAULT_GOVERNANCE_EXECUTION_DELAY,
+        quorumBps: DEFAULT_GOVERNANCE_QUORUM_BPS,
+        approvalThresholdBps: DEFAULT_GOVERNANCE_APPROVAL_THRESHOLD_BPS,
+        minProposalStake,
+      }),
+  );
+  console.log(
+    `[config] governance initialized: ${initialized.governanceConfigPda.toBase58()} (${initialized.transactionSignature})`,
+  );
+}
+
+async function findExistingAgentPda(
+  signer: SignerContext,
+  connection: Connection,
+): Promise<PublicKey | null> {
+  return withRpcRateLimitRetry(
+    `${signer.label} existing-agent lookup`,
+    async () => {
+      const matches = await connection.getProgramAccounts(signer.program.programId, {
+        filters: [
+          { memcmp: { offset: 0, bytes: bs58.encode(AGENT_DISCRIMINATOR) } },
+          {
+            memcmp: {
+              offset: AGENT_AUTHORITY_OFFSET,
+              bytes: signer.keypair.publicKey.toBase58(),
+            },
+          },
+        ],
+      });
+
+      if (matches.length === 0) {
+        return null;
+      }
+      if (matches.length === 1) {
+        return matches[0]!.pubkey;
+      }
+
+      const fetchedAccounts = await (signer.program.account as any).agentRegistration.fetchMultiple(
+        matches.map((entry) => entry.pubkey),
+      );
+      const activeMatches = matches.filter((_, index) => {
+        const raw = fetchedAccounts[index];
+        if (!raw) return false;
+        try {
+          return parseAgentState(raw).status === AgentStatus.Active;
+        } catch {
+          return false;
+        }
+      });
+      return (activeMatches[0] ?? matches[0])!.pubkey;
+    },
+  );
 }
 
 async function registerOrLoadAgent(
@@ -397,6 +535,38 @@ async function registerOrLoadAgent(
   stakeAmount: bigint,
   minimumExpectedStake: bigint,
 ): Promise<AgentActor> {
+  const existingAgentPda = await findExistingAgentPda(signer, connection);
+  if (existingAgentPda) {
+    const rawAgent = await withRpcRateLimitRetry(
+      `${signer.label} existing-agent fetch`,
+      async () =>
+        (signer.program.account as any).agentRegistration.fetch(existingAgentPda),
+    );
+    const agent = parseAgentState(rawAgent);
+
+    if (!agent.authority.equals(signer.keypair.publicKey)) {
+      throw new Error(
+        `${signer.label} agent authority mismatch for ${existingAgentPda.toBase58()}`,
+      );
+    }
+    if (!hasCapability(agent.capabilities, requiredCapabilities)) {
+      throw new Error(
+        `${signer.label} agent ${existingAgentPda.toBase58()} does not have required capabilities ${requiredCapabilities.toString()}`,
+      );
+    }
+    if (agent.stake < minimumExpectedStake) {
+      throw new Error(
+        `${signer.label} agent ${existingAgentPda.toBase58()} has insufficient stake ${agent.stake.toString()} < ${minimumExpectedStake.toString()}`,
+      );
+    }
+
+    return {
+      ...signer,
+      agentPda: existingAgentPda,
+      agentId: agent.agentId,
+    };
+  }
+
   const registerTool = createAgencTools({
     connection,
     wallet: keypairToWallet(signer.keypair),
@@ -464,7 +634,24 @@ function installMarketplaceCliOverrides(runtime: SmokeRuntime): void {
         program: runtime.readOnlyProgram,
       };
     },
-    async createSignerProgramContext() {
+    async createSignerProgramContext(options) {
+      if (options.keypairPath) {
+        for (const signer of runtime.signersByKey.values()) {
+          if (signer.walletPath === options.keypairPath) {
+            if (DEBUG_SIGNER_RESOLUTION) {
+              console.log(
+                `[debug] signer context via keypairPath ${options.keypairPath} -> ${signer.label} ${signer.keypair.publicKey.toBase58()}`,
+              );
+            }
+            return {
+              connection: runtime.connection,
+              program: signer.program,
+            };
+          }
+        }
+        throw new Error(`Unknown signer keypair path: ${options.keypairPath}`);
+      }
+
       if (!activeSignerKey) {
         throw new Error("Missing active signer key for marketplace command");
       }
@@ -472,6 +659,11 @@ function installMarketplaceCliOverrides(runtime: SmokeRuntime): void {
       const signer = runtime.signersByKey.get(activeSignerKey);
       if (!signer) {
         throw new Error(`Unknown signer context: ${activeSignerKey}`);
+      }
+      if (DEBUG_SIGNER_RESOLUTION) {
+        console.log(
+          `[debug] signer context via activeSignerKey ${activeSignerKey} -> ${signer.label} ${signer.keypair.publicKey.toBase58()}`,
+        );
       }
 
       return {
@@ -706,10 +898,12 @@ function createTtyOutput(): {
 
 async function runTuiSession(
   baseOptions: BaseCliOptions,
-  signerKey: string,
+  signer: SignerContext | AgentActor,
   lines: string[],
 ): Promise<string> {
-  await sleep(DEFAULT_RPC_COOLDOWN_MS);
+  await sleep(
+    readNumberEnv("AGENC_RPC_COOLDOWN_MS", DEFAULT_RPC_COOLDOWN_MS),
+  );
 
   const input = createTtyInput();
   const stdout = createTtyOutput();
@@ -740,7 +934,10 @@ async function runTuiSession(
     maybeFeedNextLine();
   });
 
-  activeSignerKey = signerKey;
+  activeSignerKey =
+    "agentPda" in signer
+      ? signer.agentPda.toBase58()
+      : signer.walletPath;
   try {
     const code = await runMarketTuiCommand(
       {
@@ -756,6 +953,7 @@ async function runTuiSession(
       {
         ...baseOptions,
         outputFormat: "table",
+        keypairPath: signer.walletPath,
       },
       {
         stdin: input,
@@ -802,14 +1000,47 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function extractJsonString(text: string, key: string): string {
-  const pattern = new RegExp(`"${escapeRegExp(key)}"\\s*:\\s*"([^"]+)"`, "g");
+function extractPayloadRecord(
+  text: string,
+  title: string,
+): Record<string, unknown> {
+  const pattern = new RegExp(
+    `${escapeRegExp(title)}\\n-+\\n([\\s\\S]*?)\\n\\[enter\\] continue`,
+    "g",
+  );
   const matches = [...text.matchAll(pattern)];
   const match = matches[matches.length - 1];
   if (!match) {
-    throw new Error(`Could not find ${key} in TUI output:\n${text}`);
+    throw new Error(`Could not find ${title} payload in TUI output:\n${text}`);
   }
-  return match[1];
+  try {
+    return asRecord(JSON.parse(match[1]!.trim()) as unknown, `${title}.payload`);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse ${title} payload: ${error instanceof Error ? error.message : String(error)}\n${match[1]}`,
+    );
+  }
+}
+
+function extractPayloadString(text: string, title: string, key: string): string {
+  const payload = extractPayloadRecord(text, title);
+  const direct = payload[key];
+  if (typeof direct === "string" && direct.length > 0) {
+    return direct;
+  }
+  const nestedResult = payload.result;
+  if (
+    nestedResult &&
+    typeof nestedResult === "object" &&
+    !Array.isArray(nestedResult)
+  ) {
+    return getStringField(
+      nestedResult as Record<string, unknown>,
+      key,
+      `${title}.payload.result`,
+    );
+  }
+  return getStringField(payload, key, `${title}.payload`);
 }
 
 function formatVotePairs(
@@ -950,10 +1181,11 @@ async function selectDelegationTarget(
 
 async function resolveDisputeViaTui(
   baseOptions: BaseCliOptions,
+  authoritySigner: SignerContext,
   disputePda: string,
   votes: Array<{ votePda: string; arbiterAgentPda: string }>,
 ): Promise<void> {
-  const text = await runTuiSession(baseOptions, "authority", [
+  const text = await runTuiSession(baseOptions, authoritySigner, [
     "4",
     `resolve ${disputePda}`,
     formatVotePairs(votes),
@@ -994,30 +1226,41 @@ async function waitForTaskCreationCooldown(
 
 async function createTaskViaTui(
   baseOptions: BaseCliOptions,
-  signerKey: string,
+  signer: AgentActor,
   description: string,
   rewardLamports: bigint,
   requiredCapabilities: number,
   taskCreationCooldownSeconds: number,
 ): Promise<{ text: string; taskPda: string }> {
-  await waitForTaskCreationCooldown(signerKey, taskCreationCooldownSeconds);
+  await waitForTaskCreationCooldown(
+    signer.agentPda.toBase58(),
+    taskCreationCooldownSeconds,
+  );
 
-  const text = await runTuiSession(baseOptions, signerKey, [
+  // Keep this sequence aligned with the prompts in runtime/src/cli/marketplace-tui.ts.
+  const text = await runTuiSession(baseOptions, signer, [
     "1",
     "create",
     description,
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
     rewardLamports.toString(),
     requiredCapabilities.toString(),
     "",
     "",
     "",
+    "auto",
     "",
     "back",
     "q",
   ]);
   assertTuiSuccess(text, "task creation");
-  const taskPda = extractJsonString(text, "taskPda");
-  taskCreationMsBySigner.set(signerKey, Date.now());
+  const taskPda = extractPayloadString(text, "task creation", "taskPda");
+  taskCreationMsBySigner.set(signer.agentPda.toBase58(), Date.now());
   return { text, taskPda };
 }
 
@@ -1047,6 +1290,18 @@ async function runInitial(): Promise<void> {
   const maxWaitSeconds = readNumberEnv(
     "AGENC_MAX_WAIT_SECONDS",
     DEFAULT_MAX_WAIT_SECONDS,
+  );
+  const rpcCooldownMs = readNumberEnv(
+    "AGENC_RPC_COOLDOWN_MS",
+    DEFAULT_RPC_COOLDOWN_MS,
+  );
+  const rpcRetryAttempts = readNumberEnv(
+    "AGENC_RPC_RETRY_ATTEMPTS",
+    DEFAULT_RPC_RETRY_ATTEMPTS,
+  );
+  const rpcRetryDelayMs = readNumberEnv(
+    "AGENC_RPC_RETRY_DELAY_MS",
+    DEFAULT_RPC_RETRY_DELAY_MS,
   );
   const artifactPath = getFlagValue("--artifact");
 
@@ -1112,6 +1367,7 @@ async function runInitial(): Promise<void> {
       `PROTOCOL_AUTHORITY_WALLET ${authoritySigner.keypair.publicKey.toBase58()} does not match protocol authority ${protocolConfig.authority.toBase58()}`,
     );
   }
+  await validateProtocolConfigHealth(connection, readOnlyProgram, protocolConfig);
 
   const creatorStake = maxBigInt(
     protocolConfig.minAgentStake,
@@ -1226,6 +1482,9 @@ async function runInitial(): Promise<void> {
   console.log(`[config] delegation amount: ${delegationAmount}`);
   console.log(`[config] proposal voting period: ${proposalVotingPeriod}`);
   console.log(`[config] max wait seconds: ${maxWaitSeconds}`);
+  console.log(`[config] rpc cooldown ms: ${rpcCooldownMs}`);
+  console.log(`[config] rpc retry attempts: ${rpcRetryAttempts}`);
+  console.log(`[config] rpc retry delay ms: ${rpcRetryDelayMs}`);
   console.log(`[config] agent registration rent lamports: ${agentRegistrationRentLamports.toString()}`);
   console.log(`[config] creator wallet: ${creatorSigner.keypair.publicKey.toBase58()}`);
   console.log(`[config] worker wallet: ${workerSigner.keypair.publicKey.toBase58()}`);
@@ -1278,16 +1537,28 @@ async function runInitial(): Promise<void> {
   console.log(`[agent] arbiter-b: ${arbiterB.agentPda.toBase58()}`);
   console.log(`[agent] arbiter-c: ${arbiterC.agentPda.toBase58()}`);
 
+  await ensureGovernanceInitialized(
+    authoritySigner,
+    protocolConfig,
+    proposalVotingPeriod,
+  );
+
   const runtime: SmokeRuntime = {
     connection,
     readOnlyProgram,
     signersByKey: new Map<string, SignerContext>([
       [creator.agentPda.toBase58(), creator],
+      [creator.walletPath, creator],
       [worker.agentPda.toBase58(), worker],
+      [worker.walletPath, worker],
       [arbiterA.agentPda.toBase58(), arbiterA],
+      [arbiterA.walletPath, arbiterA],
       [arbiterB.agentPda.toBase58(), arbiterB],
+      [arbiterB.walletPath, arbiterB],
       [arbiterC.agentPda.toBase58(), arbiterC],
+      [arbiterC.walletPath, arbiterC],
       ["authority", authoritySigner],
+      [authoritySigner.walletPath, authoritySigner],
     ]),
   };
   installMarketplaceCliOverrides(runtime);
@@ -1313,7 +1584,7 @@ async function runInitial(): Promise<void> {
     );
 
     console.log("[tui] reputation summary start");
-    const summaryText = await runTuiSession(baseOptions, creatorKey, [
+    const summaryText = await runTuiSession(baseOptions, creator, [
       "5",
       "summary",
       "",
@@ -1324,7 +1595,7 @@ async function runInitial(): Promise<void> {
     console.log("[tui] reputation summary done");
 
     console.log("[tui] reputation stake start");
-    const stakeText = await runTuiSession(baseOptions, creatorKey, [
+    const stakeText = await runTuiSession(baseOptions, creator, [
       "5",
       "stake",
       reputationStakeLamports.toString(),
@@ -1366,7 +1637,7 @@ async function runInitial(): Promise<void> {
     );
     if (!delegationSelection.reusedExisting) {
       console.log("[tui] reputation delegate start");
-      const delegateText = await runTuiSession(baseOptions, creatorKey, [
+      const delegateText = await runTuiSession(baseOptions, creator, [
         "5",
         "delegate",
         String(delegationAmount),
@@ -1412,14 +1683,26 @@ async function runInitial(): Promise<void> {
     console.log("[phase] task cancel flow");
     const { taskPda: cancelTaskPda } = await createTaskViaTui(
       baseOptions,
-      creatorKey,
+      creator,
       `tui-cancel-${runId}`,
       taskRewardLamports,
       AgentCapabilities.COMPUTE,
       protocolConfig.taskCreationCooldown,
     );
+    await waitFor("cancel task creation settlement", DEFAULT_STATE_WAIT_SECONDS, async () => {
+      const task = await fetchTaskDetail(baseOptions, cancelTaskPda);
+      const status = getStringField(task, "status", "cancelCreatedTask");
+      const creator = getStringField(task, "creator", "cancelCreatedTask");
+      if (status !== "open") {
+        throw new Error(`task status is ${status}`);
+      }
+      if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
+        throw new Error(`task creator ${creator} does not match creator wallet`);
+      }
+      return task;
+    });
 
-    const cancelText = await runTuiSession(baseOptions, creatorKey, [
+    const cancelText = await runTuiSession(baseOptions, creator, [
       "1",
       `cancel ${cancelTaskPda}`,
       "",
@@ -1440,14 +1723,30 @@ async function runInitial(): Promise<void> {
     console.log("[phase] task completion flow");
     const { taskPda: completeTaskPda } = await createTaskViaTui(
       baseOptions,
-      creatorKey,
+      creator,
       `tui-complete-${runId}`,
       taskRewardLamports,
       AgentCapabilities.COMPUTE,
       protocolConfig.taskCreationCooldown,
     );
+    await waitFor(
+      "completion task creation settlement",
+      DEFAULT_STATE_WAIT_SECONDS,
+      async () => {
+        const task = await fetchTaskDetail(baseOptions, completeTaskPda);
+        const status = getStringField(task, "status", "completeCreatedTask");
+        const creator = getStringField(task, "creator", "completeCreatedTask");
+        if (status !== "open") {
+          throw new Error(`task status is ${status}`);
+        }
+        if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
+          throw new Error(`task creator ${creator} does not match creator wallet`);
+        }
+        return task;
+      },
+    );
 
-    const claimText = await runTuiSession(baseOptions, workerKey, [
+    const claimText = await runTuiSession(baseOptions, worker, [
       "1",
       `claim ${completeTaskPda}`,
       "",
@@ -1455,7 +1754,7 @@ async function runInitial(): Promise<void> {
       "q",
     ]);
     assertTuiSuccess(claimText, "task claim");
-    const completeClaimPda = extractJsonString(claimText, "claimPda");
+    const completeClaimPda = extractPayloadString(claimText, "task claim", "claimPda");
 
     await waitFor("claimed task worker count", DEFAULT_STATE_WAIT_SECONDS, async () => {
       const task = await fetchTaskDetail(baseOptions, completeTaskPda);
@@ -1466,7 +1765,7 @@ async function runInitial(): Promise<void> {
       return task;
     });
 
-    const completionText = await runTuiSession(baseOptions, workerKey, [
+    const completionText = await runTuiSession(baseOptions, worker, [
       "1",
       `complete ${completeTaskPda}`,
       `tui complete ${runId}`,
@@ -1503,7 +1802,7 @@ async function runInitial(): Promise<void> {
     const skillPda = getStringField(skillRegistration, "skillPda", "registerSkill");
     console.log(`[skill] registered ${skillPda}`);
 
-    const skillDetailText = await runTuiSession(baseOptions, workerKey, [
+    const skillDetailText = await runTuiSession(baseOptions, worker, [
       "2",
       `detail ${skillPda}`,
       "",
@@ -1512,7 +1811,7 @@ async function runInitial(): Promise<void> {
     ]);
     assertTuiSuccess(skillDetailText, "skill detail");
 
-    const skillPurchaseText = await runTuiSession(baseOptions, workerKey, [
+    const skillPurchaseText = await runTuiSession(baseOptions, worker, [
       "2",
       `purchase ${skillPda}`,
       "",
@@ -1529,7 +1828,7 @@ async function runInitial(): Promise<void> {
       return skill;
     });
 
-    const skillRateText = await runTuiSession(baseOptions, workerKey, [
+    const skillRateText = await runTuiSession(baseOptions, worker, [
       "2",
       `rate ${skillPda}`,
       "5",
@@ -1573,7 +1872,7 @@ async function runInitial(): Promise<void> {
     );
     console.log(`[proposal] created ${proposalPda}`);
 
-    const governanceDetailText = await runTuiSession(baseOptions, creatorKey, [
+    const governanceDetailText = await runTuiSession(baseOptions, creator, [
       "3",
       `detail ${proposalPda}`,
       "",
@@ -1582,7 +1881,7 @@ async function runInitial(): Promise<void> {
     ]);
     assertTuiSuccess(governanceDetailText, "governance proposal detail");
 
-    const governanceVoteText = await runTuiSession(baseOptions, creatorKey, [
+    const governanceVoteText = await runTuiSession(baseOptions, creator, [
       "3",
       `vote ${proposalPda}`,
       "yes",
@@ -1606,14 +1905,26 @@ async function runInitial(): Promise<void> {
     console.log("[phase] dispute flow");
     const { taskPda: disputeTaskPda } = await createTaskViaTui(
       baseOptions,
-      creatorKey,
+      creator,
       `tui-dispute-${runId}`,
       taskRewardLamports,
       AgentCapabilities.COMPUTE,
       protocolConfig.taskCreationCooldown,
     );
+    await waitFor("dispute task creation settlement", DEFAULT_STATE_WAIT_SECONDS, async () => {
+      const task = await fetchTaskDetail(baseOptions, disputeTaskPda);
+      const status = getStringField(task, "status", "disputeCreatedTask");
+      const creator = getStringField(task, "creator", "disputeCreatedTask");
+      if (status !== "open") {
+        throw new Error(`task status is ${status}`);
+      }
+      if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
+        throw new Error(`task creator ${creator} does not match creator wallet`);
+      }
+      return task;
+    });
 
-    const disputeClaimText = await runTuiSession(baseOptions, workerKey, [
+    const disputeClaimText = await runTuiSession(baseOptions, worker, [
       "1",
       `claim ${disputeTaskPda}`,
       "",
@@ -1621,9 +1932,9 @@ async function runInitial(): Promise<void> {
       "q",
     ]);
     assertTuiSuccess(disputeClaimText, "task claim");
-    const disputeClaimPda = extractJsonString(disputeClaimText, "claimPda");
+    const disputeClaimPda = extractPayloadString(disputeClaimText, "task claim", "claimPda");
 
-    const taskDisputeText = await runTuiSession(baseOptions, creatorKey, [
+    const taskDisputeText = await runTuiSession(baseOptions, creator, [
       "1",
       `dispute ${disputeTaskPda}`,
       `creator dispute ${runId}`,
@@ -1633,9 +1944,9 @@ async function runInitial(): Promise<void> {
       "q",
     ]);
     assertTuiSuccess(taskDisputeText, "task dispute");
-    const disputePda = extractJsonString(taskDisputeText, "disputePda");
+    const disputePda = extractPayloadString(taskDisputeText, "task dispute", "disputePda");
 
-    const disputeDetailText = await runTuiSession(baseOptions, creatorKey, [
+    const disputeDetailText = await runTuiSession(baseOptions, creator, [
       "4",
       `detail ${disputePda}`,
       "",
@@ -1685,7 +1996,7 @@ async function runInitial(): Promise<void> {
       return;
     }
 
-    await resolveDisputeViaTui(baseOptions, disputePda, arbiterVotes);
+    await resolveDisputeViaTui(baseOptions, authoritySigner, disputePda, arbiterVotes);
 
     const disputeAfterResolve = await waitFor(
       "resolved dispute status",
@@ -1787,7 +2098,7 @@ async function runResume(): Promise<void> {
       return;
     }
 
-    await resolveDisputeViaTui(baseOptions, artifact.disputePda, artifact.arbiterVotes);
+    await resolveDisputeViaTui(baseOptions, authoritySigner, artifact.disputePda, artifact.arbiterVotes);
 
     const disputeAfterResolve = await waitFor(
       "resumed dispute resolution",
