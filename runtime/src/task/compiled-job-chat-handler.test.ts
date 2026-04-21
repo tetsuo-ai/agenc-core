@@ -18,6 +18,7 @@ import {
   createCompiledJobExecutionRuntime,
 } from "./compiled-job-runtime.js";
 import { createCompiledJobExecutionGovernor } from "./compiled-job-execution-governor.js";
+import type { CompiledJobDependencyCheck } from "./compiled-job-dependencies.js";
 import {
   createCompiledJobChatTaskHandler,
 } from "./compiled-job-chat-handler.js";
@@ -716,6 +717,151 @@ describe("compiled job chat task handler", () => {
       "Compiled job execution blocked",
       expect.objectContaining({
         reason: "execution_global_concurrency_limit",
+      }),
+    );
+  });
+
+  it("fails closed when a runtime dependency check denies execution", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+
+    const dependencyChecks: readonly CompiledJobDependencyCheck[] = [
+      () => ({
+        allowed: false,
+        reason: "dependency_network_broker_unavailable",
+        message: "Compiled job network broker is unavailable",
+        dependency: "network_broker",
+      }),
+    ];
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      dependencyChecks,
+    });
+
+    await expect(handler(createContext())).rejects.toThrow(
+      "Compiled job network broker is unavailable",
+    );
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(provider.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("records telemetry when dependency preflight denies execution", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+      dependencyChecks: [
+        () => ({
+          allowed: false,
+          reason: "dependency_review_broker_unavailable",
+          message: "Compiled job review broker is unavailable",
+          dependency: "review_broker",
+        }),
+      ],
+    });
+    const context = createContext(undefined, {
+      metrics: metrics.provider,
+    });
+
+    await expect(handler(context)).rejects.toThrow(
+      "Compiled job review broker is unavailable",
+    );
+
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_BLOCKED,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "dependency_review_broker_unavailable",
+        job_type: "web_research_brief",
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job execution blocked",
+      expect.objectContaining({
+        reason: "dependency_review_broker_unavailable",
+        message: "Compiled job review broker is unavailable",
+        dependency: "review_broker",
+      }),
+    );
+  });
+
+  it("records telemetry when dependency preflight throws", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+      dependencyChecks: [
+        () => {
+          throw new Error("sandbox pool exhausted");
+        },
+      ],
+    });
+    const context = createContext(undefined, {
+      metrics: metrics.provider,
+    });
+
+    await expect(handler(context)).rejects.toThrow(
+      "Compiled job dependency preflight failed: sandbox pool exhausted",
+    );
+
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_BLOCKED,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "dependency_preflight_failed",
+        job_type: "web_research_brief",
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job execution blocked",
+      expect.objectContaining({
+        reason: "dependency_preflight_failed",
+        message:
+          "Compiled job dependency preflight failed: sandbox pool exhausted",
       }),
     );
   });
