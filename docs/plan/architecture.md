@@ -519,3 +519,107 @@ a second cutover.
 `commands/dispatcher.ts` exposes a closed allowlist of commands safe
 to run from a remote-origin / daemon-bridged CLI front end. Unknown
 commands fail closed.
+
+## TUI Module (T12)
+
+**Location:** `runtime/src/tui/`
+
+T12 ships the Ink-based terminal UI that wraps the T11 runtime. The
+module is laid out so the locked upstream port stays isolated from
+the AgenC-authored cockpit, transcript, composer, permissions, and
+keybinding code.
+
+### Module tree
+
+- `ink/` — **LOCKED verbatim port** (~30 files, ~9000 LOC) covering
+  the Ink renderer, reconciler, node-cache, frame-diff pass,
+  keypress parser, termio primitives, and focus/terminal state.
+  Modifications must land with an explicit migration note in the
+  commit message. Upstream bumps re-copy the subtree wholesale.
+  - `ink/vendored/` — small shims (env, semver, intl, etc.) for
+    imports that escape the `ink/` subtree in upstream sources.
+    Kept tiny so the locked-port boundary stays clean.
+- `cockpit/` — `Banner`, `ArtPanel`, `Splash`, `StatusLineConfig`.
+  The framed top-of-screen AgenC chrome; separate from the locked
+  Ink primitives so it can be restyled without touching the port.
+- `transcript/` — `MessageList`, `StreamingMessage` (I-77 scanner),
+  `ExecCell`, `SlashResultRenderer`, `PlanProgress`. Renders the
+  turn stream, slash-command output, plan progress, and live
+  model output.
+- `composer/` — `Composer` (I-69 paste-in-flight + I-71 mention
+  validator), `useComposerState`, `history`, `Palette`,
+  `palette-sources`, `paste-store` (I-67 C0/C1 sanitizer),
+  `image-paste` (3-platform clipboard probe), `drag-drop`.
+- `permissions/` — `ApprovalOverlay` (I-21 abort-signal subscriber
+  + I-72 modal keybinding-context), `InteractiveHandler` (I-44
+  turn-id stamp + I-90 stale-drop + 200 ms classifier grace).
+- `keybindings/` — `defaultBindings`, `KeybindingContext`,
+  `loadUserBindings`. Provides `chat`/`modal`/`plan` context
+  switching so I-72 can suspend composer bindings while a modal
+  owns focus.
+- `hooks/` — `useQuery`, `useMarkdownStream`, `useInput`,
+  `useAnimationTick`. React-side observation hooks for the runtime
+  query iterator and streamed markdown buffers.
+- `state/` — `AppState`, `plan-state`. Central React context
+  carrying session handle, config store, and plan-mode status.
+- `overlay/` — `OverlayProvider`. Stack-based overlay manager;
+  `InteractiveHandler` pushes `ApprovalOverlay` frames here.
+- `App.tsx` — root component wired to the AgenC context tree.
+- `main.tsx` — Ink bootstrap; owns the I-19 `handleStdinLoss`
+  path and stdin/stdout/stderr wiring.
+- `theme.ts` — palette + border-style tokens shared by cockpit,
+  transcript, composer, and permissions components.
+
+### Root provider tree
+
+The App root composes, from outside in: the six Ink contexts
+(`StdinContext`, `StdoutContext`, `StderrContext`, `AppContext`,
+`FocusContext`, `ErrorContext`), then AgenC-owned providers —
+`AgenCAppStateProvider`, `KeybindingProvider`, `OverlayProvider` —
+so downstream consumers can call `useInput`, `useKeybinding`,
+`useOverlay`, and `useAppState` without threading any runtime
+references through props.
+
+### CLI branching
+
+`runtime/src/bin/route.ts::routeCLI` is the single dispatcher the
+`bin/agenc.ts` entry calls on startup. It branches between three
+entrypoints based on argv and session state:
+
+- `oneShotCLI(userMessage)` — headless one-shot; no TUI mount.
+- `bootTUIEntry({...})` — full interactive TUI boot.
+- `resumeTUIEntry({...})` — resume an existing session into the
+  TUI (state rehydrated via `RolloutStore`).
+
+This keeps the stdin-loss path (I-19), the SIGHUP hook (I-46), and
+the TUI mount/unmount lifecycle isolated from the one-shot
+provider-call path.
+
+### Invariants enforced
+
+- I-19 — TUI stdin loss = graceful exit (`main.tsx::handleStdinLoss`).
+- I-21 — Approval modal ⊥ abort (`ApprovalOverlay`).
+- I-66 — Frame-diff snapshots terminal size (`ink/ink.tsx`).
+- I-67 — Paste C0/C1 sanitization (`composer/paste-store.ts`).
+- I-69 — Multi-line paste atomic w.r.t. Enter (`composer/Composer.tsx`).
+- I-70 — Render throttle on input idle (`ink/ink.tsx`).
+- I-71 — `@mention` path-boundary validator (`composer/Composer.tsx`).
+- I-72 — Modal input focus exclusive (`permissions/ApprovalOverlay.tsx`
+  + `keybindings/KeybindingContext.tsx`).
+- I-77 — Model output UI-spoof sanitization (`transcript/StreamingMessage.tsx`).
+- I-90 — Stale pending permission dropped on turn boundary
+  (`permissions/InteractiveHandler.tsx`).
+
+### Deferred to T13+
+
+The following surfaces are intentionally **not** in T12 and land
+later:
+
+- `/copy` command (transcript export).
+- Shell config auto-detect (zsh/bash integration probe).
+- Auto-updater for the installed `@tetsuo-ai/agenc` wrapper.
+- Classifier YOLO real xAI call — T12 ships the stub which always
+  falls through to the modal; T13 replaces it with the live call.
+- I-57 provider capability registry (currently stubbed in
+  `commands/model.ts::checkModelHistoryCompat`).
+- Voice input, vim mode, multi-pane.

@@ -12,12 +12,16 @@
  * first, falling back to the legacy `collaborationMode.model === "plan"`
  * gate so existing callers keep working.
  *
- * NOTE: The `[plan]` prefix hack emitted by `startPlanItem` / `pushPlanDelta`
- * / `completePlanItemWithText` is deliberately kept — extending the
- * `EventMsg` union with dedicated `plan_delta` and `plan_item_completed`
- * variants is deferred to T12 (TUI realtime) to avoid scope creep in T11.
- * TODO(T12): replace `[plan:...]` prefixes with first-class EventMsg
- * variants once the TUI realtime surface lands.
+ * T12 Wave 4-C: `startPlanItem` / `pushPlanDelta` /
+ * `completePlanItemWithText` now emit typed `plan_started` /
+ * `plan_delta` / `plan_item_completed` EventMsg variants alongside the
+ * legacy `[plan:...]`-prefixed `agent_message`/`agent_message_delta`
+ * events. The legacy emits are retained as a back-compat pass-through
+ * for callers that were observing the pre-T12 surface (e.g. rollouts,
+ * non-TUI sidecars) — TUI consumers should filter on the new typed
+ * variants. `emitPlanExited` is a new helper the `ExitPlanMode` tool
+ * and `/plan` slash-command invoke to close out the plan-progress
+ * surface on the TUI side.
  *
  * Mapping (codex → AgenC):
  *   turn.rs:1537 handle_plan_segments                → handlePlanSegments
@@ -35,12 +39,12 @@
  * today as a simple structural check; T11 (modes + slash commands)
  * replaces the gate with the real `PlanMode` collaboration-mode kind.
  *
- * The event surface intentionally re-uses AgenC's existing 18-variant
- * EventMsg union: plan deltas/items are modeled as
- * `agent_message_delta`/`agent_message` with an inline `[plan]`
- * prefix until T11 extends the union with dedicated `plan_delta` /
- * `plan_item_completed` variants. This keeps the ported control flow
- * intact without requiring a speculative schema change.
+ * The event surface extends the AgenC EventMsg union with dedicated
+ * `plan_started` / `plan_delta` / `plan_item_completed` / `plan_exited`
+ * variants (T12 Wave 4-C). The legacy `[plan:...]`-prefixed
+ * `agent_message_delta` / `agent_message` emits are retained as a
+ * back-compat pass-through so pre-T12 consumers (rollouts, non-TUI
+ * sidecars) keep seeing the stream boundary.
  *
  * @module
  */
@@ -280,35 +284,112 @@ export function handlePlanSegments(
   }
 }
 
+/**
+ * Resolve a turn id from the turn context for the typed plan EventMsg
+ * variants. Prefers `ctx.subId` (the canonical AgenC turn identifier);
+ * falls back to the empty string so helpers stay pure when a test
+ * stub ships a TurnContext without the field.
+ */
+function resolveTurnId(ctx: TurnContext): string {
+  const subId = (ctx as unknown as { subId?: string }).subId;
+  return typeof subId === "string" ? subId : "";
+}
+
+/**
+ * Extract a short "title" from the leading line of the plan item's
+ * accumulated text. Used as the header in the typed `plan_started`
+ * event. Falls back to `state.planItemState.itemId` so the TUI always
+ * has something to render.
+ */
+function resolvePlanTitle(state: PlanModeStreamState): string {
+  const acc = state.planItemState.accumulatedText.trim();
+  if (acc.length === 0) return state.planItemState.itemId;
+  const firstLine = acc.split(/\r?\n/, 1)[0] ?? state.planItemState.itemId;
+  return firstLine.slice(0, 120);
+}
+
+/**
+ * Back-compat pass-through for the T11-era `[plan:...]`-prefixed
+ * `agent_message_delta` / `agent_message` emits.
+ *
+ * @deprecated — use typed `plan_started`/`plan_delta`/
+ *   `plan_item_completed` EventMsg variants. Kept on the emit path so
+ *   pre-T12 consumers (rollouts, non-TUI sidecars) still see the
+ *   stream boundary.
+ */
+function emitLegacyPlanSignal(session: Session, msg: EventMsg): void {
+  const maybeEmit = (session as unknown as {
+    emit?: (ev: { id: string; msg: EventMsg }) => void;
+  }).emit;
+  if (typeof maybeEmit !== "function") return;
+  emit(session, msg);
+}
+
 function startPlanItem(
   session: Session,
-  _ctx: TurnContext,
+  ctx: TurnContext,
   state: PlanModeStreamState,
 ): void {
   if (state.planItemState.started || state.planItemState.completed) return;
   state.planItemState.started = true;
-  // TODO T12: replace this `[plan:…]` prefix hack with a dedicated
-  // `plan_item_started` (or `plan_delta`) EventMsg variant once the TUI
-  // realtime surface lands. Kept here so rollouts still see the stream
-  // boundary without forcing a speculative schema change.
-  emit(session, {
+
+  const turnId = resolveTurnId(ctx);
+  const planItemId = state.planItemState.itemId;
+
+  // Typed variant lands on TUI consumers (T12 Wave 4-C).
+  const maybeEmit = (session as unknown as {
+    emit?: (ev: { id: string; msg: EventMsg }) => void;
+  }).emit;
+  if (typeof maybeEmit === "function") {
+    emit(session, {
+      type: "plan_started",
+      payload: {
+        turnId,
+        planItemId,
+        title: resolvePlanTitle(state),
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  // Legacy `[plan:…]` prefix — retained for pre-T12 consumers so
+  // rollouts still see the stream boundary.
+  emitLegacyPlanSignal(session, {
     type: "agent_message_delta",
-    payload: { delta: `[plan:${state.planItemState.itemId}]` },
+    payload: { delta: `[plan:${planItemId}]` },
   });
 }
 
 function pushPlanDelta(
   session: Session,
-  _ctx: TurnContext,
+  ctx: TurnContext,
   state: PlanModeStreamState,
   delta: string,
 ): void {
   if (state.planItemState.completed || delta.length === 0) return;
   state.planItemState.accumulatedText += delta;
-  // TODO T12: add a dedicated `plan_delta` EventMsg variant. Until then,
-  // fan the delta out as an `agent_message_delta` so rollouts still see
-  // the streamed plan text.
-  emit(session, {
+
+  const turnId = resolveTurnId(ctx);
+  const planItemId = state.planItemState.itemId;
+
+  // Typed variant — streamed plan text for the TUI plan-progress panel.
+  const maybeEmit = (session as unknown as {
+    emit?: (ev: { id: string; msg: EventMsg }) => void;
+  }).emit;
+  if (typeof maybeEmit === "function") {
+    emit(session, {
+      type: "plan_delta",
+      payload: {
+        turnId,
+        planItemId,
+        delta,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  // Legacy `agent_message_delta` pass-through for pre-T12 consumers.
+  emitLegacyPlanSignal(session, {
     type: "agent_message_delta",
     payload: { delta },
   });
@@ -316,19 +397,58 @@ function pushPlanDelta(
 
 function completePlanItemWithText(
   session: Session,
-  _ctx: TurnContext,
+  ctx: TurnContext,
   state: PlanModeStreamState,
   text: string,
 ): void {
   if (state.planItemState.completed || !state.planItemState.started) return;
   state.planItemState.completed = true;
-  // TODO T12: add a dedicated `plan_item_completed` EventMsg variant. Until
-  // then, emit the completion as an `agent_message` with a `[plan:…]`
-  // prefix so the stream is still observable without a speculative
-  // schema change.
-  emit(session, {
+
+  const turnId = resolveTurnId(ctx);
+  const planItemId = state.planItemState.itemId;
+
+  // Typed variant — carries the fully accumulated plan text for
+  // rollout replay and archival rendering.
+  const maybeEmit = (session as unknown as {
+    emit?: (ev: { id: string; msg: EventMsg }) => void;
+  }).emit;
+  if (typeof maybeEmit === "function") {
+    emit(session, {
+      type: "plan_item_completed",
+      payload: {
+        turnId,
+        planItemId,
+        finalText: text,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  // Legacy `[plan:…] <text>` agent_message pass-through.
+  emitLegacyPlanSignal(session, {
     type: "agent_message",
-    payload: { message: `[plan:${state.planItemState.itemId}] ${text}` },
+    payload: { message: `[plan:${planItemId}] ${text}` },
+  });
+}
+
+/**
+ * Emit a `plan_exited` EventMsg (T12 Wave 4-C). Invoked by the
+ * `ExitPlanMode` tool and the `/plan` slash-command leave path so TUI
+ * consumers can close the plan-progress surface. Pre-T12 consumers see
+ * no legacy counterpart here — the `warning:mode_exited_plan` event
+ * the tool already emits covers the legacy signal.
+ */
+export function emitPlanExited(session: Session, ctx: TurnContext): void {
+  const maybeEmit = (session as unknown as {
+    emit?: (ev: { id: string; msg: EventMsg }) => void;
+  }).emit;
+  if (typeof maybeEmit !== "function") return;
+  emit(session, {
+    type: "plan_exited",
+    payload: {
+      turnId: resolveTurnId(ctx),
+      timestamp: Date.now(),
+    },
   });
 }
 

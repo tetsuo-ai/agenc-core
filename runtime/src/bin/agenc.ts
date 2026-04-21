@@ -25,10 +25,16 @@
  *   I-52 (AGENC_HOME / $HOME/.agenc writable precheck)
  */
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { createProvider, type ProviderName } from "../llm/provider.js";
+import {
+  routeCLI,
+  stripRoutingFlags,
+  type BootTUIArgs,
+  type ResumeTUIArgs,
+} from "./route.js";
 import type { LLMProvider, LLMToolCall } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { Session } from "../session/session.js";
@@ -155,7 +161,10 @@ async function readStdin(signal: AbortSignal): Promise<string> {
 }
 
 async function resolveUserMessage(signal: AbortSignal): Promise<string> {
-  const argv = process.argv.slice(2);
+  // Strip routing-level flags (--no-tui, --resume) before treating the
+  // residue as the prompt; T12 routing peels these off upstream but
+  // legacy entry paths still call `resolveUserMessage` directly.
+  const argv = stripRoutingFlags(process.argv.slice(2));
   if (argv.length > 0) {
     return argv.join(" ").trim();
   }
@@ -268,16 +277,28 @@ export interface ConfigReloadLatch {
   requested: boolean;
 }
 
-function installSignalHandlers(
+export function installSignalHandlers(
   getSession: () => Session | null,
   configReloadLatch: ConfigReloadLatch,
 ): void {
+  // Wave 5-B: tear the Ink tree down before we abort the session so a
+  // lingering renderer can't paint into a terminal that's about to be
+  // reset by `signal-exit`. No-op when no TUI is active.
+  const unmountActiveInk = (): void => {
+    try {
+      activeInkUnmount?.();
+    } catch {
+      // Ink may have torn itself down already.
+    }
+  };
   // I-45: SIGTERM — orderly shutdown, exit 0.
   process.once("SIGTERM", () => {
+    unmountActiveInk();
     getSession()?.abortTerminal("signal_received");
   });
   // I-46: SIGHUP — same path as stdin loss (T12 wires the stdin handler).
   process.once("SIGHUP", () => {
+    unmountActiveInk();
     getSession()?.abortTerminal("stdin_lost");
   });
   // I-47: SIGUSR1 — config reload requested (takes effect next turn per I-30).
@@ -1091,10 +1112,42 @@ export class TurnStateAccumulator {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// main
+// Wave 5-B: shared module-level unmount ref. Signal handlers call this
+// before `session.abortTerminal(...)` so the Ink tree tears down cleanly
+// when a TUI is active. The wrapper is `null` while only the one-shot
+// path is running.
 // ─────────────────────────────────────────────────────────────────────
 
-export async function main(): Promise<number> {
+let activeInkUnmount: (() => void) | null = null;
+
+/** Test-only helper — reset the module-level unmount ref between tests. */
+export function __resetActiveInkUnmountForTest(): void {
+  activeInkUnmount = null;
+}
+
+/** Test-only helper — install an unmount hook from unit tests. */
+export function __setActiveInkUnmountForTest(fn: (() => void) | null): void {
+  activeInkUnmount = fn;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// One-shot CLI — the legacy non-TUI path.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Run a single turn through the phase machine and exit. This is the
+ * original `main()` body preserved verbatim; Wave 5-B introduces
+ * routing above it so piped + `--no-tui` invocations still see the same
+ * pixel-identical behavior.
+ *
+ * When `userMessage` is a non-empty string (routing path), it's used as
+ * the prompt directly. Otherwise the function falls back to the
+ * `resolveUserMessage` argv/stdin pipeline so legacy entry paths still
+ * work without a pre-resolved prompt.
+ */
+export async function oneShotCLI(
+  userMessage: string | null = null,
+): Promise<number> {
   // I-51: init step abort + reverse-cleanup stack. Signal handlers for
   // Ctrl+C / SIGTERM / SIGHUP during init feed this controller; each
   // async init step observes signal.aborted.
@@ -1121,8 +1174,13 @@ export async function main(): Promise<number> {
     const apiKey = resolveApiKey();
     throwIfAborted("resolveApiKey");
 
-    // Step 3: resolve user message (may block on stdin).
-    const userMessage = await resolveUserMessage(initAbort.signal);
+    // Step 3: resolve user message. The router may have pre-resolved
+    // the prompt from argv; fall through to stdin when nothing was
+    // passed (preserves the legacy piped-only path).
+    const resolvedUserMessage =
+      userMessage !== null && userMessage.length > 0
+        ? userMessage
+        : await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
     // Step 3b: boot ConfigStore (loads ~/.agenc/config.toml + env
@@ -1501,7 +1559,7 @@ export async function main(): Promise<number> {
     //      context, keybindings, resume, fork, plan, permissions,
     //      config, model, provider, compact), and dispatches with the
     //      full `SlashCommandContext`.
-    const worktreeCommand = parseSlashCommand(userMessage);
+    const worktreeCommand = parseSlashCommand(resolvedUserMessage);
     let pendingWorktree: PendingWorktreeState | null = null;
     const originalCwd = processCwd();
     if (worktreeCommand) {
@@ -1542,9 +1600,9 @@ export async function main(): Promise<number> {
     // dispatcher when the input actually parses as a slash command;
     // otherwise fall through to the LLM turn. The dispatcher has its
     // own unknown-command reporting + result rendering.
-    if (parseDispatcherInput(userMessage)) {
+    if (parseDispatcherInput(resolvedUserMessage)) {
       try {
-        const runResult = await runSlashCommand(userMessage, {
+        const runResult = await runSlashCommand(resolvedUserMessage, {
           session,
           cwd: processCwd(),
           home: agencHome,
@@ -1638,7 +1696,7 @@ export async function main(): Promise<number> {
       for await (const event of runSingleTurn({
         session,
         ctx,
-        input: userMessage,
+        input: resolvedUserMessage,
         configStore,
         configReloadLatch,
         projectInstructions: assembledProjectInstructions,
@@ -1693,6 +1751,173 @@ export async function main(): Promise<number> {
   } finally {
     uninstallInitSignals();
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T12 Wave 5-B — TUI entry adapters
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Load `tui/main.js` via dynamic import so the main `tsconfig.json`
+ * (which excludes `src/tui/**`) can still typecheck `bin/agenc.ts`.
+ * The TUI module itself is compiled through `tsconfig.tui.json`.
+ */
+async function loadBootTUI(): Promise<
+  (opts: {
+    session: unknown;
+    configStore: unknown;
+    model?: string;
+    initialPrompt?: string;
+  }) => Promise<{ unmount: () => void; waitUntilExit: () => Promise<void> }>
+> {
+  // The path is relative to the *compiled* output layout (both
+  // `src/bin/agenc.ts` and `src/tui/main.tsx` emit into sibling
+  // directories under `dist/`). We dodge static resolution by passing
+  // the specifier through a variable — the main `tsconfig.json`
+  // excludes `src/tui/**` so a direct `import("../tui/main.js")`
+  // would fail to typecheck for lack of JSX configuration. The TUI
+  // module is compiled through `tsconfig.tui.json` + tsup; runtime
+  // resolution works unchanged because `dist/tui/main.js` sits next
+  // to `dist/bin/agenc.js`.
+  const specifier = "../tui/main.js";
+  const mod = (await import(specifier)) as {
+    readonly bootTUI: (opts: {
+      session: unknown;
+      configStore: unknown;
+      model?: string;
+      initialPrompt?: string;
+    }) => Promise<{
+      unmount: () => void;
+      waitUntilExit: () => Promise<void>;
+    }>;
+  };
+  return mod.bootTUI;
+}
+
+/**
+ * Boot the TUI with a pre-populated composer prompt. Wave 5-B wires the
+ * option through to `bootTUI`; actual composer wiring is a follow-up
+ * (see TODO inside the composer reducer).
+ */
+export async function bootTUIEntry(args: BootTUIArgs): Promise<number> {
+  // Init the minimal session bag the TUI needs (api key + config).
+  // `oneShotCLI` owns full session construction; the TUI path will be
+  // fleshed out across Waves 6+ to share that pipeline. For now we
+  // return a non-zero exit code if bootstrap fails so scripts can
+  // distinguish TUI boot failure from normal exit.
+  const apiKey = resolveApiKey();
+  const agencHome = resolveAgencHomeFromEnv(process.env);
+  const configStore = new ConfigStore({
+    home: agencHome,
+    env: process.env,
+  });
+  await configStore.reload();
+  const rawModel = configStore.current().model ?? DEFAULT_MODEL;
+  const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
+  const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+  const registry = buildToolRegistry({ workspaceRoot });
+  const provider: LLMProvider = createProvider(
+    resolvedProvider as ProviderName,
+    {
+      apiKey,
+      model,
+      tools: registry.toLLMTools(),
+    },
+  );
+  const conversationId = `conv-${Date.now().toString(36)}`;
+  const config = buildMinimalConfig(workspaceRoot, model);
+  const services = buildPlaceholderServices(provider, registry);
+  const initialState: SessionState = {
+    sessionConfiguration: sessionConfigurationFromAgenCConfig({
+      config: configStore.current(),
+      workspaceRoot,
+      model,
+    }),
+    history: [],
+  };
+  const session = new Session({
+    conversationId,
+    initialState,
+    features: config.features,
+    services,
+    jsRepl: { id: `repl-${conversationId}` },
+  });
+
+  const boot = await loadBootTUI();
+  const handle = await boot({
+    session,
+    configStore,
+    model,
+    ...(args.initialPrompt !== undefined
+      ? { initialPrompt: args.initialPrompt }
+      : {}),
+  });
+  activeInkUnmount = handle.unmount;
+  try {
+    await handle.waitUntilExit();
+    return 0;
+  } finally {
+    activeInkUnmount = null;
+    await session.shutdown().catch(() => {
+      /* best effort */
+    });
+  }
+}
+
+/**
+ * Resume a prior session through the TUI. T12 Wave 5-B ships a stub
+ * that looks up the rollout file on disk and bails with exit 1 when
+ * the session id is unknown. Full history replay lands in a follow-up
+ * (see TODO below).
+ */
+export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
+  const agencHome = resolveAgencHomeFromEnv(process.env);
+  // Fast-path lookup — we just need to confirm the id exists under
+  // `<agencHome>/sessions/<id>.json` OR in any per-project rollout
+  // directory. Per the task spec, treat a missing session as a hard
+  // fail so the caller sees `agenc: session not found: <id>` and exit 1.
+  const sessionPath = join(agencHome, "sessions", `${args.resumeId}.json`);
+  if (!existsSync(sessionPath)) {
+    // Look for the id inside any project rollout directory before
+    // giving up so resume still works regardless of where the session
+    // was recorded.
+    const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+    const projectDir = getProjectDir(workspaceRoot);
+    const rolloutDir = join(projectDir, "sessions", args.resumeId);
+    if (!existsSync(rolloutDir)) {
+      process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+      return 1;
+    }
+  }
+
+  // TODO T12b: full session resume with history replay. For now we just
+  // boot an empty TUI so the session id is validated but the transcript
+  // starts clean. Wave 6 will thread the rollout into the TUI state.
+  process.stderr.write(
+    `agenc: resume: replaying history for ${args.resumeId} is not yet implemented; booting empty TUI\n`,
+  );
+  return bootTUIEntry({});
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// main — Wave 5-B routing entrypoint
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Top-level dispatcher. Branches between the full Ink TUI and the
+ * legacy one-shot CLI based on argv + stdio state. See `./route.ts`
+ * for the routing table.
+ */
+export async function main(): Promise<number> {
+  return routeCLI({
+    argv: process.argv,
+    isTTY: Boolean(process.stdin.isTTY),
+    isStdoutTTY: Boolean(process.stdout.isTTY),
+    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args),
+    oneShotCLI: (userMessage: string) =>
+      oneShotCLI(userMessage.length > 0 ? userMessage : null),
+    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args),
+  });
 }
 
 /**

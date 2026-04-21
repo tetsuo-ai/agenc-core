@@ -323,7 +323,14 @@ export type EventMsg =
   | {
       readonly type: "deprecation_notice";
       readonly payload: DeprecationNoticeEvent;
-    };
+    }
+  | { readonly type: "plan_started"; readonly payload: PlanStartedEvent }
+  | { readonly type: "plan_delta"; readonly payload: PlanDeltaEvent }
+  | {
+      readonly type: "plan_item_completed";
+      readonly payload: PlanItemCompletedEvent;
+    }
+  | { readonly type: "plan_exited"; readonly payload: PlanExitedEvent };
 
 /**
  * Structured deprecation-notice payload. Emitted whenever the runtime
@@ -342,6 +349,54 @@ export interface DeprecationNoticeEvent {
   readonly reason: string;
   readonly replacement?: string;
   readonly deprecated_since?: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Plan-mode EventMsg variants (T12 Wave 4-C)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Emitted when the streaming pipeline starts a new plan item inside a
+ * plan-mode turn. Downstream renderers group `plan_delta`s by
+ * `planItemId` until the matching `plan_item_completed` arrives.
+ */
+export interface PlanStartedEvent {
+  readonly turnId: string;
+  readonly planItemId: string;
+  readonly title: string;
+  readonly timestamp: number;
+}
+
+/**
+ * Emitted for each streamed delta inside an active plan item. The TUI
+ * transcript concatenates these to render the in-flight plan body.
+ */
+export interface PlanDeltaEvent {
+  readonly turnId: string;
+  readonly planItemId: string;
+  readonly delta: string;
+  readonly timestamp: number;
+}
+
+/**
+ * Emitted when a plan item is finalized — carries the fully accumulated
+ * plan text for rollout replay and archival rendering.
+ */
+export interface PlanItemCompletedEvent {
+  readonly turnId: string;
+  readonly planItemId: string;
+  readonly finalText: string;
+  readonly timestamp: number;
+}
+
+/**
+ * Emitted when plan mode exits (either the `ExitPlanMode` tool fires or
+ * the user leaves plan mode via the `/plan` slash command). Downstream
+ * renderers use this to close the plan-progress surface.
+ */
+export interface PlanExitedEvent {
+  readonly turnId: string;
+  readonly timestamp: number;
 }
 
 /**
@@ -375,6 +430,10 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "stream_error",
     "warning",
     "deprecation_notice",
+    "plan_started",
+    "plan_delta",
+    "plan_item_completed",
+    "plan_exited",
   ]),
 );
 

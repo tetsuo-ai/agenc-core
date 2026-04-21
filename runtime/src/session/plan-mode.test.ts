@@ -18,6 +18,7 @@ import {
   createPlanModeStreamState,
   emitStreamedAssistantTextDelta,
   flushAssistantTextSegmentsAll,
+  handlePlanSegments,
   isPlanMode,
   maybeCompletePlanItemFromMessage,
   realtimeTextForEvent,
@@ -289,6 +290,101 @@ describe("realtimeTextForEvent", () => {
         payload: { cause: "x", message: "y" },
       }),
     ).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T12 Wave 4-C: typed plan EventMsg variants
+// ─────────────────────────────────────────────────────────────────────
+
+describe("plan EventMsg variants (T12 Wave 4-C)", () => {
+  test("startPlanItem emits plan_started when session.emit is wired", () => {
+    const { session, events } = mkSession();
+    const ctx = mkCtx("plan");
+    const state = createPlanModeStreamState("turn-t12");
+    // Driving startPlanItem via the exported `handlePlanSegments` path
+    // keeps the test at the public surface — the helper is internal.
+    handlePlanSegments(session, ctx, state, "item-1", [
+      { kind: "proposed_plan_start" },
+    ]);
+    const started = events.filter((e) => e.msg.type === "plan_started");
+    expect(started.length).toBe(1);
+    if (started[0]?.msg.type === "plan_started") {
+      expect(started[0].msg.payload.planItemId).toBe("turn-t12-plan");
+      expect(typeof started[0].msg.payload.timestamp).toBe("number");
+    }
+  });
+
+  test("pushPlanDelta emits plan_delta", () => {
+    const { session, events } = mkSession();
+    const ctx = mkCtx("plan");
+    const state = createPlanModeStreamState("turn-t12");
+    handlePlanSegments(session, ctx, state, "item-1", [
+      { kind: "proposed_plan_start" },
+      { kind: "proposed_plan_delta", delta: "step one" },
+      { kind: "proposed_plan_delta", delta: " step two" },
+    ]);
+    const deltas = events.filter((e) => e.msg.type === "plan_delta");
+    expect(deltas.length).toBe(2);
+    if (deltas[0]?.msg.type === "plan_delta") {
+      expect(deltas[0].msg.payload.delta).toBe("step one");
+      expect(deltas[0].msg.payload.planItemId).toBe("turn-t12-plan");
+    }
+  });
+
+  test("completePlanItemWithText emits plan_item_completed", () => {
+    const { session, events } = mkSession();
+    const ctx = mkCtx("plan");
+    const state = createPlanModeStreamState("turn-t12");
+    state.planItemState.started = true;
+
+    maybeCompletePlanItemFromMessage(session, ctx, state, {
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: "Plan follows.\n<plan>1. Explore\n2. Build</plan>",
+        },
+      ],
+    });
+    const completed = events.filter(
+      (e) => e.msg.type === "plan_item_completed",
+    );
+    expect(completed.length).toBe(1);
+    if (completed[0]?.msg.type === "plan_item_completed") {
+      expect(completed[0].msg.payload.planItemId).toBe("turn-t12-plan");
+      expect(completed[0].msg.payload.finalText).toMatch(/1\. Explore/);
+    }
+  });
+
+  test("legacy fallback: when session.emit is undefined, plan helpers do not throw and skip the legacy agent_message emits", () => {
+    // Synthesize a Session stub whose `emit` is explicitly undefined so
+    // the back-compat guard in `emitLegacyPlanSignal` fires.
+    const eventLog = new EventLog();
+    const captured: Event[] = [];
+    eventLog.subscribe((e) => captured.push(e));
+    let subId = 0;
+    const legacySession = {
+      conversationId: "conv-legacy",
+      eventLog,
+      nextInternalSubId: () => `s-${++subId}`,
+      // NOTE: no `emit` method — forces the legacy pass-through to skip.
+    } as unknown as Session;
+
+    const ctx = mkCtx("plan");
+    const state = createPlanModeStreamState("turn-legacy");
+
+    // None of these should throw even though `session.emit` is absent.
+    expect(() =>
+      handlePlanSegments(legacySession, ctx, state, "item-legacy", [
+        { kind: "proposed_plan_start" },
+        { kind: "proposed_plan_delta", delta: "legacy delta" },
+      ]),
+    ).not.toThrow();
+
+    // And no events reach the event log because the stub has no emit
+    // wiring at all (both typed + legacy paths are gated on emit).
+    expect(captured.length).toBe(0);
   });
 });
 

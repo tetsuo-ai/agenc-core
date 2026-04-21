@@ -640,20 +640,24 @@ crashes. Unexpected stdin closure should mean "user is gone, save
 state and shut down cleanly," not "unhandled exception, lose the
 last 100ms of events."
 
-**Enforced in:** `runtime/src/tui/ink/ink.tsx` — wrap stdin readable
-listener; on `close` or `error` event, dispatch
-`session.abortTerminal('stdin_lost')` then await fsync barrier.
+**Enforced in:** `runtime/src/tui/main.tsx::handleStdinLoss`
+(~lines 138-200) — `bootTUI` registers
+`stdin.once('close'|'end'|'error')` handlers at ~lines 244-246
+that call `handleStdinLoss`, which (1) invokes
+`session.abortTerminal('stdin_lost')`, (2) awaits `flushEventLog`
+with a hard cap (or a 200ms fallback grace), (3) emits
+`warning:stdin_lost` via `session.emit`, (4) unmounts the Ink
+tree, and (5) calls `process.exit(130)`.
 
-**Scheduled for:** T12 (TUI). **Partial satisfaction today:** the
-bin-level SIGHUP hook at `runtime/src/bin/agenc.ts:214`
-(`process.once("SIGHUP", ...)`) routes SIGHUP through
-`session.abortTerminal("stdin_lost")`, covering the
-controlling-terminal-closed case for headless / one-shot runs per
-I-46. Full stdin-close + EPIPE handling lands with T12.
+**STATUS:** WIRED (T12). `runtime/src/tui/main.tsx` ships the full
+I-19 protocol. The bin-level SIGHUP hook at
+`runtime/src/bin/agenc.ts` still routes SIGHUP through
+`session.abortTerminal('stdin_lost')` per I-46 for the
+headless / one-shot path.
 
-**Test:** `tui/ink/stdin-loss.test.ts` — simulate stdin `close`
-event mid-stream; assert clean shutdown sequence, exit code 130, no
-unhandled rejection.
+**Test:** `runtime/src/tui/main.stdin-loss.test.tsx` — simulate
+stdin `close`/`end`/`error` mid-stream; assert clean shutdown
+sequence, exit code 130, no unhandled rejection.
 
 ---
 
@@ -704,13 +708,20 @@ stale decision.
 Without explicit ordering, the modal can resolve with `'allow'`
 after the abort, dispatching a tool the user just tried to cancel.
 
-**Enforced in:** `runtime/src/tui/permissions/InteractiveHandler.tsx`
-— modal subscribes to `session.abortController.signal`; on abort,
-resolves immediately with `{behavior:'abort'}`.
+**Enforced in:** `runtime/src/tui/permissions/ApprovalOverlay.tsx`
+(~lines 217-245) — the overlay subscribes to
+`session.abortController.signal` on mount, switches the keybinding
+context to `modal` (I-72), and on abort resolves immediately with
+`{behavior:'abort'}`. `runtime/src/tui/permissions/InteractiveHandler.tsx`
+(~lines 292-395) is the lifecycle owner that mounts the overlay
+and claims `abort` on unmount if the request is still unresolved.
 
-**Test:** `tui/permissions/InteractiveHandler.test.tsx` — open
-modal, fire abort, assert modal resolves with abort decision and
-tool is NOT dispatched.
+**STATUS:** WIRED (T12). Both the modal's abort-signal listener
+and the handler's unmount-claim path are live.
+
+**Test:** `runtime/src/tui/permissions/InteractiveHandler.test.tsx`
+— open modal, fire abort, assert modal resolves with abort
+decision and tool is NOT dispatched.
 
 ---
 
@@ -911,33 +922,32 @@ keep this section navigable.
 
 ## TUI & input (I-66..I-72)
 
-> **Scheduled for T12 (TUI tranche).** AgenC has no Ink/TUI surface
-> yet; the `runtime/src/tui/...` paths cited below do not exist.
-> Every I-66..I-72 row is T12-deferred except I-68, which lands in
-> T11 (commands dispatcher) — its parse-rule is dispatcher-side,
-> but it's grouped here because first-line semantics are driven by
-> TUI paste detection.
+> **STATUS: WIRED (T12).** The Ink/TUI surface landed in T12. All
+> `runtime/src/tui/...` paths cited below are live. I-68 is the
+> dispatcher-side parse rule that shipped in T11; the remaining
+> I-66, I-67, I-69, I-70, I-71, I-72 rows are all wired in the T12
+> TUI tranche.
 
 ### I-66 · Frame-diff snapshots terminal size at start of pass
-**NEW.** SIGWINCH mid-frame-diff produces blit at stale dimensions. Rule: capture `(cols, rows)` at start of `onRender()`; reject the patch + restart frame if dims change before completion. **Where:** `runtime/src/tui/ink/render-node-to-output.ts` (T12 scope). **Scheduled for:** T12.
+**NEW.** SIGWINCH mid-frame-diff produces blit at stale dimensions. Rule: capture `(cols, rows)` at start of `onRender()`; reject the patch + restart frame if dims change before completion. **Where:** `runtime/src/tui/ink/ink.tsx` (~lines 499, 805-833) — `onRender()` snapshots terminal dims at pass start and restarts the frame if they change mid-render. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/ink/render-node-to-output.i66.test.ts`.
 
 ### I-67 · Pasted text is C0/C1-control-character sanitized
-**NEW.** Pasted text containing `\x1b[...` ANSI sequences renders without injection but becomes a semantic Trojan if forwarded to a tool. Rule: paste handler strips bytes in `0x00-0x1F` (except `\n`, `\t`) and `0x80-0x9F` before storing. Emit `warning:'paste_sanitized'` with byte count. **Where:** `runtime/src/tui/composer/image-paste.ts` (T12 scope). **Scheduled for:** T12.
+**NEW.** Pasted text containing `\x1b[...` ANSI sequences renders without injection but becomes a semantic Trojan if forwarded to a tool. Rule: paste handler strips bytes in `0x00-0x1F` (except `\n`, `\t`) and `0x80-0x9F` before storing. Emit `warning:'paste_sanitized'` with byte count. **Where:** `runtime/src/tui/composer/paste-store.ts` (~lines 55-92) — per-chunk scrubber strips C0 (0x00-0x1F except `\n`/`\t`) and C1 (0x80-0x9F) bytes; the store emits `paste-sanitized` with stripped byte counts. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/composer/paste-store.test.ts`.
 
 ### I-68 · Slash command recognized only on first line
 **NEW.** Pasted text starting with `/model gpt-5\nsome prompt\n...` should NOT trigger `/model`; today it would. Rule: `parseSlashCommand()` matches `^/[a-z]+(?:\s|$)` against ONLY the first line; multi-line input never dispatches a slash command. **Where:** `runtime/src/commands/dispatcher.ts`. **Status:** WIRED (T11) — enforced in `runtime/src/commands/dispatcher.ts::parseSlashCommand`, which splits on `\n` and requires every subsequent line to be whitespace-only before dispatching (documented inline with the I-68 fence).
 
 ### I-69 · Multi-line paste is atomic w.r.t. Enter
-**NEW.** User pastes 3 lines, reflexively hits Enter after line 1 — submission strips lines 2-3. Rule: `Composer` tracks `paste-in-flight` state; while true, Enter is buffered, not dispatched. Cleared on paste-complete event (whichever terminal-specific hook fires last). **Where:** `runtime/src/tui/composer/Composer.tsx` (T12 scope). **Scheduled for:** T12.
+**NEW.** User pastes 3 lines, reflexively hits Enter after line 1 — submission strips lines 2-3. Rule: `Composer` tracks `paste-in-flight` state; while true, Enter is buffered, not dispatched. Cleared on paste-complete event (whichever terminal-specific hook fires last). **Where:** `runtime/src/tui/composer/Composer.tsx` (~lines 9-15, 282) — the paste-in-flight reducer buffers Enter and replays it once the paste-complete event lands. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/composer/Composer.test.tsx`.
 
 ### I-70 · Render throttles on terminal-input idle (background tab)
-**NEW.** Streams in a tmux pane the user has switched away from accumulate frame backlog → stutter on return. Rule: if no stdin event in 5s + not in alt-screen mode, drop render rate from `FRAME_INTERVAL_MS` to 1 FPS until next keystroke. **Where:** `runtime/src/tui/ink/ink.tsx` render scheduler (T12 scope). **Scheduled for:** T12.
+**NEW.** Streams in a tmux pane the user has switched away from accumulate frame backlog → stutter on return. Rule: if no stdin event in 5s + not in alt-screen mode, drop render rate from `FRAME_INTERVAL_MS` to 1 FPS until next keystroke. **Where:** `runtime/src/tui/ink/ink.tsx` (~lines 188-266, 1356-1360) — two pre-built throttles (`fastSchedule` at `FRAME_INTERVAL_MS`, `idleSchedule` at `I70_IDLE_INTERVAL_MS`) swap on stdin-idle-without-alt-screen. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/ink/ink.i70.test.ts`.
 
 ### I-71 · `@mention` path boundary validator (privacy hardening)
-**NEW.** `@/etc/passwd` or `@../../../secret.key` silently attaches and ships to the model. Rule: before attachment, resolve the path; if outside `session.cwd` AND outside an explicit `config.attachments.allowedRoots[]` list, reject + emit `error:'mention_outside_workspace'` + show user a clear "blocked: path outside workspace" message. Configurable for users who deliberately want broader scope. **Where:** `runtime/src/tui/composer/Composer.tsx` mention parser (T12 scope). **Scheduled for:** T12.
+**NEW.** `@/etc/passwd` or `@../../../secret.key` silently attaches and ships to the model. Rule: before attachment, resolve the path; if outside `session.cwd` AND outside an explicit `config.attachments.allowedRoots[]` list, reject + emit `error:'mention_outside_workspace'` + show user a clear "blocked: path outside workspace" message. Configurable for users who deliberately want broader scope. **Where:** `runtime/src/tui/composer/Composer.tsx` (~lines 15-17, 97-165, 328-351) — `validateMentionPath` / `scanMentions` resolve each `@path` against `session.cwd` and `config.attachments.allowedRoots`, and the composer emits `warning:mention_outside_workspace` on reject. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/composer/Composer.test.tsx`.
 
 ### I-72 · Modal input focus is exclusive
-**NEW.** Approval modal open + user types into composer → keystrokes delivered to both. Modal might dismiss on a key meant for the input. Rule: while a modal is rendered, the underlying `Composer` listens but does not consume keystrokes; queues them and replays after modal resolves. Implemented via Ink's `FocusManager` `isModalOverlayActive` flag. **Where:** `runtime/src/tui/components/Composer.tsx` + `runtime/src/tui/permissions/InteractiveHandler.tsx` (T12 scope). **Scheduled for:** T12.
+**NEW.** Approval modal open + user types into composer → keystrokes delivered to both. Modal might dismiss on a key meant for the input. Rule: while a modal is rendered, the underlying `Composer` listens but does not consume keystrokes; queues them and replays after modal resolves. Implemented via Ink's `FocusManager` `isModalOverlayActive` flag. **Where:** `runtime/src/tui/permissions/ApprovalOverlay.tsx` (~lines 217-266) — on mount the overlay calls `setActiveContext('modal')` and registers `modal:*` keybindings; unmount restores the `chat` context. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/permissions/ApprovalOverlay.test.tsx`.
 
 ---
 
@@ -980,7 +990,7 @@ scale, pure observation). Each carries source provenance.
 **NEW.** `listTools` response is parsed without size limit; a hostile MCP server returning 1GB JSON OOMs the runtime. Rule: cap the entire `listTools` response payload at `MAX_MCP_CATALOG_BYTES = 5_000_000` (5 MB). Exceed → soft-fail server (per I-6) with `stream_error:'mcp_catalog_too_large'`. **Where:** `runtime/src/mcp-client/tool-bridge.ts` — wrap `client.listTools()` with size check on raw response body.
 
 ### I-77 · Model output sanitization for UI-spoofing patterns
-**NEW.** Model can emit text matching real approval modal labels (`[Approval Required] Run bash? [y/n]`), tricking reflexive user input. Rule: before yielding assistant text to the TUI, scan for known UI-control patterns (`[Approval`, `[Allow/Deny]`, `[Yes/No]:`, ANSI escape sequences). On match, prefix with visible `[MODEL OUTPUT]` marker in a distinct color and emit `warning:'model_ui_spoof_pattern'`. Strict mode (config opt-in) replaces the pattern entirely. **Where:** `runtime/src/llm/stream-parser.ts` (sanitize) + `runtime/src/tui/transcript/StreamingMessage.tsx` (visual marker).
+**NEW.** Model can emit text matching real approval modal labels (`[Approval Required] Run bash? [y/n]`), tricking reflexive user input. Rule: before yielding assistant text to the TUI, scan for known UI-control patterns (`[Approval`, `[Allow/Deny]`, `[Yes/No]:`, ANSI escape sequences). On match, prefix with visible `[MODEL OUTPUT]` marker in a distinct color and emit `warning:'model_ui_spoof_pattern'`. Strict mode (config opt-in) replaces the pattern entirely. **Where:** `runtime/src/tui/transcript/StreamingMessage.tsx` (~lines 39-182, 278-323) — `scanForUISpoof` is a pure/stateless sanitizer; `StreamingMessage` wraps matched spans with `{bad:…}` markers rendered as highlighted `<Text>` spans and fires a one-shot `session.emitEvent('warning:model_ui_spoof_pattern', …)` per frame. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/transcript/StreamingMessage.test.tsx`.
 
 ## Data integrity & encoding (I-78..I-81)
 
@@ -1049,15 +1059,24 @@ The phase-5 `execute-tools` caller passes `{turnId, toolResultBytes}` with each 
 
 ---
 
+## TUI turn-boundary hygiene (I-90)
+
+### I-90 · Stale pending permission requests dropped on turn boundary
+**NEW.** When the active turn changes (provider switch via I-13, new prompt, recovery re-entry), a pending permission request authored under the old turn must not be resolved as if it were still live. Rule: any `PendingPermissionRequest` whose `turnId` !== current active turn's `turnId` is dropped silently via `warning:stale_pending_dropped` + `resolveOnce.claim({behavior: 'deny', source: 'stale_pending_dropped'})`. Enforced at modal mount time in `InteractiveHandler` BEFORE the 200ms classifier grace race. **Where:** `runtime/src/tui/permissions/InteractiveHandler.tsx` (~lines 240-260) — `resolveWithGrace` reads `session.activeTurn.unsafePeek().turnId` and short-circuits on mismatch. **STATUS:** WIRED (T12). **Test:** `runtime/src/tui/permissions/InteractiveHandler.test.tsx` exercises the stale-turn drop without mounting the modal.
+
+---
+
 ## Status (updated)
 
-All **88 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second sweep, I-23..I-72 third multi-agent sweep, **I-73..I-88** fourth verification sweep.
+All **89 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second sweep, I-23..I-72 third multi-agent sweep, I-73..I-88 fourth verification sweep, and **I-90** added during the T12 TUI tranche for turn-boundary permission hygiene.
 
 **Source provenance for I-73..I-88:**
 
 - **PORT** (3): I-80, I-81, I-82 — copy openclaude pattern
 - **EXTEND** (3): I-75, I-84, I-87 — broaden existing invariant
 - **NEW** (10): everything else
+
+**I-90** is NEW (T12) — no upstream precedent for the turn-id stamp + mount-time drop.
 
 ---
 
@@ -1165,17 +1184,19 @@ All **88 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second swe
 | **I-87..I-88 Production operational** | T6 + T9 + T4 | — |
 | I-87 Drain timeout (extends I-33) | T9 (lifecycle) | extends I-33 |
 | I-88 Compaction `toolResultBytes` index | T4 (compact) + T6 (session-store index) | — |
+| **I-90 Stale pending permission dropped** | T12 (permissions UI) | extends I-44 (turn-id stamp) |
 
 ---
 
 ## Status
 
-All 88 invariants are **decisions, not speculation**. They close
-design holes from four review passes: I-1..I-8 (first), I-9..I-22
+All 89 invariants are **decisions, not speculation**. They close
+design holes from four review passes — I-1..I-8 (first), I-9..I-22
 (edge-case sweep), I-23..I-72 (multi-agent flowchart sweep), and
-I-73..I-88 (verification sweep). Any tranche PR that touches a
-listed primary/cross-cutting area must cite the invariant number
-in its description.
+I-73..I-88 (verification sweep) — plus **I-90**, added during the
+T12 TUI tranche for turn-boundary permission hygiene. Any tranche
+PR that touches a listed primary/cross-cutting area must cite the
+invariant number in its description.
 
 **Source provenance per invariant:**
 

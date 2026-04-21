@@ -1,0 +1,290 @@
+/**
+ * MessageList — scrolling transcript of turn events.
+ *
+ * Each entry in `messages` is a `TranscriptMessage` produced by the Wave
+ * 4 session → transcript bridge from the T11 `turn_start` / `assistant_text`
+ * / `tool_call` / `tool_result` / `turn_complete` / `warning` / `error`
+ * stream. The list renders inside a Wave 1 `<ScrollBox>` with
+ * sticky-follow-to-bottom behavior: if the operator has not scrolled off
+ * the bottom, new messages pin the view to the latest entry; if they've
+ * scrolled up, the transcript stays where they left it so incoming tool
+ * output doesn't yank them forward.
+ *
+ * The scroll-follow decision is made against `ScrollBox`'s own
+ * `isSticky()` signal. `ScrollBox` sets that flag whenever the user is
+ * at the bottom or when `scrollToBottom()` runs; manual `scrollTo` /
+ * `scrollBy` calls from the operator clear it. We call `scrollToBottom()`
+ * on each new message only while that flag is still set — matching the
+ * "do not pull me forward" expectation above.
+ *
+ * @module
+ */
+
+import React, { useEffect, useRef } from "react";
+
+import Box from "../ink/components/Box.js";
+import Text from "../ink/components/Text.js";
+import ScrollBox, {
+  type ScrollBoxHandle,
+} from "../ink/components/ScrollBox.js";
+import { theme } from "../theme.js";
+
+import { StreamingMessage } from "./StreamingMessage.js";
+import { ExecCell } from "./ExecCell.js";
+
+/* ────────────────────────────────────────────────────────────────────── */
+/* Types                                                                   */
+/* ────────────────────────────────────────────────────────────────────── */
+
+export type TranscriptMessageKind =
+  | "user"
+  | "assistant"
+  | "tool_call"
+  | "tool_result"
+  | "warning"
+  | "error"
+  | "slash_result";
+
+export interface TranscriptMessage {
+  /** Stable id used as React key — usually event id or synthesized. */
+  readonly id: string;
+  /** Turn this message belongs to. Lets callers group by turn for search. */
+  readonly turnId: string;
+  readonly kind: TranscriptMessageKind;
+  /** Display text. For `tool_call` this is the printable command summary. */
+  readonly content: string;
+
+  // Kind-specific fields. All optional — the dispatcher only reads what
+  // it needs per kind.
+  readonly toolName?: string;
+  readonly toolArgs?: unknown;
+  readonly isError?: boolean;
+  readonly timestamp: number;
+
+  /**
+   * When the message is a `tool_call` for a shell-exec tool, these
+   * carry the stream output plus the resolved exit state so the row
+   * can be rendered through `<ExecCell>` instead of the one-line
+   * summary. All other kinds leave these undefined.
+   */
+  readonly execCommand?: string;
+  readonly execStdout?: string;
+  readonly execStderr?: string;
+  readonly execExitCode?: number;
+  readonly execDurationMs?: number;
+  readonly execTimedOut?: boolean;
+}
+
+export interface MessageListProps {
+  readonly messages: readonly TranscriptMessage[];
+  /** True while an assistant_text stream is still landing deltas. */
+  readonly isStreaming?: boolean;
+  /** Hook for future transcript-search jump. Not used in Wave 4-A. */
+  readonly onJumpTo?: (msgId: string) => void;
+}
+
+/* ────────────────────────────────────────────────────────────────────── */
+/* Helpers                                                                 */
+/* ────────────────────────────────────────────────────────────────────── */
+
+const TOOL_ARGS_MAX = 80;
+
+/**
+ * Truncate a string to `max` chars with an ellipsis suffix. Exported
+ * separately only so tests can assert its behavior; this is intentionally
+ * a small, boring utility.
+ */
+export function truncate(input: string, max: number = TOOL_ARGS_MAX): string {
+  if (typeof input !== "string" || input.length <= max) return input;
+  return `${input.slice(0, Math.max(0, max - 1))}\u2026`;
+}
+
+function safeStringify(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    // Circular refs, BigInts, etc. Fall through to a String() cast so we
+    // still show *something* instead of crashing the transcript.
+    return String(value);
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────── */
+/* Row dispatcher                                                          */
+/* ────────────────────────────────────────────────────────────────────── */
+
+interface MessageRowProps {
+  readonly message: TranscriptMessage;
+}
+
+function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
+  switch (message.kind) {
+    case "user":
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.primary}>{"\u25B8 "}</Text>
+          <Text color={theme.colors.primary}>{message.content}</Text>
+        </Box>
+      );
+
+    case "assistant":
+      return <StreamingMessage content={message.content} isComplete />;
+
+    case "tool_call": {
+      // When the tool call carries exec fields we prefer the full ExecCell
+      // rendering — matches Codex/Claude Code's approach where shell
+      // commands get their own framed block. Otherwise fall back to the
+      // compact one-liner.
+      if (typeof message.execCommand === "string") {
+        return (
+          <ExecCell
+            command={message.execCommand}
+            stdout={message.execStdout ?? ""}
+            stderr={message.execStderr ?? ""}
+            {...(message.execExitCode !== undefined
+              ? { exitCode: message.execExitCode }
+              : {})}
+            {...(message.execDurationMs !== undefined
+              ? { durationMs: message.execDurationMs }
+              : {})}
+            {...(message.execTimedOut !== undefined
+              ? { timedOut: message.execTimedOut }
+              : {})}
+          />
+        );
+      }
+      const argSummary = truncate(safeStringify(message.toolArgs));
+      return (
+        <Box flexDirection="row">
+          <Text dim>
+            {"\u2192 "}
+            {message.toolName ?? "tool"}
+            {"("}
+            {argSummary}
+            {")"}
+          </Text>
+        </Box>
+      );
+    }
+
+    case "tool_result":
+      return (
+        <Box flexDirection="row">
+          <Text
+            color={
+              message.isError ? theme.colors.error : theme.colors.success
+            }
+          >
+            {message.isError ? "\u2717" : "\u2713"}
+          </Text>
+          <Text>{" "}</Text>
+          <Text dim>{truncate(message.content)}</Text>
+        </Box>
+      );
+
+    case "warning":
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.warning}>
+            {"\u26A0 "}
+            {message.content}
+          </Text>
+        </Box>
+      );
+
+    case "error":
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.error}>
+            {"\u2717 "}
+            {message.content}
+          </Text>
+        </Box>
+      );
+
+    case "slash_result":
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.dim}>{message.content}</Text>
+        </Box>
+      );
+
+    default:
+      // Exhaustive check — if a new kind is added and falls through here
+      // we'd rather show nothing than throw in the render loop.
+      return null;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────── */
+/* Component                                                               */
+/* ────────────────────────────────────────────────────────────────────── */
+
+export const MessageList: React.FC<MessageListProps> = ({
+  messages,
+  isStreaming = false,
+}) => {
+  const scrollRef = useRef<ScrollBoxHandle | null>(null);
+  // Remember whether the operator was glued to the bottom at the moment
+  // the last message arrived. Using a ref here instead of state avoids
+  // re-rendering the whole list on every scroll tick.
+  const stickyRef = useRef<boolean>(true);
+  const lastLengthRef = useRef<number>(messages.length);
+
+  // Keep the sticky flag in sync with the real ScrollBox state. `subscribe`
+  // fires for imperative scrollTo/scrollBy — exactly the operator-driven
+  // scroll events that should break stickiness.
+  useEffect(() => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const update = (): void => {
+      stickyRef.current = handle.isSticky();
+    };
+    update();
+    const unsubscribe = handle.subscribe(update);
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  // On new messages, follow-to-bottom iff we were sticky before the
+  // growth. Also refresh stickyRef afterwards so subsequent inserts
+  // reuse the latest state without waiting for the subscribe callback.
+  useEffect(() => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const grew = messages.length > lastLengthRef.current;
+    lastLengthRef.current = messages.length;
+    if (!grew) return;
+    if (stickyRef.current) {
+      handle.scrollToBottom();
+      stickyRef.current = true;
+    }
+  }, [messages.length]);
+
+  return (
+    <ScrollBox
+      ref={scrollRef}
+      flexDirection="column"
+      flexGrow={1}
+      stickyScroll
+    >
+      <Box flexDirection="column">
+        {messages.map((message) => (
+          <Box key={message.id} flexDirection="column">
+            <MessageRow message={message} />
+          </Box>
+        ))}
+        {isStreaming ? (
+          <Box flexDirection="row">
+            <Text dim>{"\u2026"}</Text>
+          </Box>
+        ) : null}
+      </Box>
+    </ScrollBox>
+  );
+};
+
+export default MessageList;

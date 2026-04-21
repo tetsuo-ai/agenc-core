@@ -25,6 +25,8 @@
     "node_modules",
     "dist",
     "**/*.test.ts",
-    "src/llm/compact/**/*.ts"
+    "**/*.test.tsx",
+    "src/llm/compact/**/*.ts",
+    "src/tui/**/*"
   ]
 }

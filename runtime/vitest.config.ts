@@ -10,7 +10,11 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     pool: 'forks',
-    include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
+    include: [
+      'src/**/*.test.ts',
+      'src/**/*.test.tsx',
+      'tests/**/*.test.ts',
+    ],
     exclude: [
       'node_modules',
       'dist',

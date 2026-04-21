@@ -155,6 +155,31 @@ export interface McpServerConfig {
 }
 
 /**
+ * T12 Wave 4-B: status line configuration.
+ *
+ * Lets operators choose which items the TUI cockpit status line shows
+ * and in what order (model slug, permission mode, cwd basename, git
+ * branch, etc.). The TUI renderer consumes this through
+ * `src/tui/cockpit/StatusLineConfig.tsx`; item keys are validated
+ * defensively at render time, so a misspelled key just omits that
+ * segment instead of crashing the cockpit.
+ */
+export interface PartialStatusLineConfig {
+  readonly items?: readonly string[];
+}
+
+/**
+ * T12 Wave 4-B: output style configuration.
+ *
+ * Thin field reserved for cockpit palette selection (`"dark"`, `"light"`,
+ * etc.). Kept deliberately open-ended so later waves can light up
+ * additional theme names without another schema round-trip.
+ */
+export interface PartialOutputStyleConfig {
+  readonly theme?: string;
+}
+
+/**
  * Permissions block as it appears in `~/.agenc/config.toml` (or any
  * settings.json the loader folds in). Mirrors the subset of
  * `SettingsPermissionsBlock` in `src/permissions/settings.ts` that is
@@ -223,6 +248,8 @@ export interface AgenCConfig {
   readonly managedWorkspaces?: ManagedWorkspacesConfig;
   readonly permissions?: PermissionsConfig;
   readonly privateStorage?: PrivateStorageConfig;
+  readonly statusLine?: PartialStatusLineConfig;
+  readonly outputStyle?: PartialOutputStyleConfig;
   readonly telemetryOptIn?: boolean;
 
   // ── AgenC-specific additions ──────────────────────────────────────
@@ -266,12 +293,14 @@ export interface AgenCConfig {
  *   - env              → T11 (shell env injection policy)
  *   - apiKeyHelper     → T11 (external API-key resolver hook)
  *   - cleanupPeriodDays → T11 (rollout/history retention)
- *   - statusLine       → T12 (TUI status line renderer)
- *   - outputStyle      → T12 (TUI output style)
  *   - enabledPlugins   → T11 (plugin loader)
  *
  * Lit up by T11 (no longer deferred):
  *   - permissions      → see `PermissionsConfig` above.
+ *
+ * Lit up by T12 Wave 4-B (no longer deferred):
+ *   - statusLine       → see `PartialStatusLineConfig` above.
+ *   - outputStyle      → see `PartialOutputStyleConfig` above.
  *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
@@ -296,8 +325,6 @@ export const DEFERRED_OPENCLAUDE_KEYS: readonly string[] = Object.freeze([
   "env",
   "apiKeyHelper",
   "cleanupPeriodDays",
-  "statusLine",
-  "outputStyle",
   "enabledPlugins",
 ]);
 
@@ -331,6 +358,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "managedWorkspaces",
   "permissions",
   "privateStorage",
+  "statusLine",
+  "outputStyle",
   "telemetryOptIn",
   "toolBudget",
   "stream_watchdog_timeout_ms",
@@ -604,6 +633,97 @@ export function validatePermissionsConfig(
   }
 
   return Object.freeze(out as PermissionsConfig);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T12 Wave 4-B: statusLine / outputStyle block validation
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Error thrown when a `statusLine` or `outputStyle` block fails schema
+ * validation. Carries the offending field path so operator-facing
+ * warnings can point at the exact subkey.
+ */
+export class InvalidStatusLineConfigError extends Error {
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid statusLine.${field}: ${detail}`);
+    this.name = "InvalidStatusLineConfigError";
+    this.field = field;
+  }
+}
+
+export class InvalidOutputStyleConfigError extends Error {
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid outputStyle.${field}: ${detail}`);
+    this.name = "InvalidOutputStyleConfigError";
+    this.field = field;
+  }
+}
+
+/**
+ * Validate a raw `statusLine` block (typically coming from TOML or
+ * settings.json) and return a frozen {@link PartialStatusLineConfig}.
+ * Returns `undefined` for `undefined` input. Throws
+ * {@link InvalidStatusLineConfigError} on shape violations.
+ *
+ * Unknown sub-fields are silently dropped — `items` is the single
+ * contract surface today. If a new key is added to
+ * `PartialStatusLineConfig`, it must be wired through here too.
+ */
+export function validateStatusLineConfig(
+  raw: unknown,
+): PartialStatusLineConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new InvalidStatusLineConfigError("", "expected plain object");
+  }
+
+  const out: { -readonly [K in keyof PartialStatusLineConfig]: PartialStatusLineConfig[K] } = {};
+
+  if (raw.items !== undefined) {
+    if (!Array.isArray(raw.items)) {
+      throw new InvalidStatusLineConfigError("items", "expected string[]");
+    }
+    for (const item of raw.items) {
+      if (typeof item !== "string") {
+        throw new InvalidStatusLineConfigError(
+          "items",
+          `array element is not a string: ${typeof item}`,
+        );
+      }
+    }
+    out.items = Object.freeze([...(raw.items as string[])]);
+  }
+
+  return Object.freeze(out as PartialStatusLineConfig);
+}
+
+/**
+ * Validate a raw `outputStyle` block and return a frozen
+ * {@link PartialOutputStyleConfig}. Returns `undefined` for `undefined`
+ * input. Throws {@link InvalidOutputStyleConfigError} on shape
+ * violations.
+ */
+export function validateOutputStyleConfig(
+  raw: unknown,
+): PartialOutputStyleConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new InvalidOutputStyleConfigError("", "expected plain object");
+  }
+
+  const out: { -readonly [K in keyof PartialOutputStyleConfig]: PartialOutputStyleConfig[K] } = {};
+
+  if (raw.theme !== undefined) {
+    if (typeof raw.theme !== "string") {
+      throw new InvalidOutputStyleConfigError("theme", "expected string");
+    }
+    out.theme = raw.theme;
+  }
+
+  return Object.freeze(out as PartialOutputStyleConfig);
 }
 
 // ─────────────────────────────────────────────────────────────────────

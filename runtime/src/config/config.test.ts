@@ -12,9 +12,12 @@ import {
   resolveModelDisambiguated,
   AmbiguousModelError,
   InvalidPermissionsConfigError,
+  InvalidStatusLineConfigError,
   UnknownModelError,
   isValidPermissionMode,
   validatePermissionsConfig,
+  validateStatusLineConfig,
+  validateOutputStyleConfig,
   KNOWN_CONFIG_KEYS,
   DEFERRED_OPENCLAUDE_KEYS,
 } from "./schema.js";
@@ -261,6 +264,36 @@ describe("schema: permissions block (T11)", () => {
     expect(isValidPermissionMode("nonsense")).toBe(false);
     expect(isValidPermissionMode(null)).toBe(false);
     expect(isValidPermissionMode(42)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T12 Wave 4-B: statusLine / outputStyle block
+// ─────────────────────────────────────────────────────────────────────
+
+describe("schema: statusLine / outputStyle block (T12)", () => {
+  test("validateStatusLineConfig accepts a well-formed items array", () => {
+    const out = validateStatusLineConfig({ items: ["model", "mode"] });
+    expect(out).toBeDefined();
+    expect(out?.items).toEqual(["model", "mode"]);
+    expect(Object.isFrozen(out)).toBe(true);
+  });
+
+  test("validateStatusLineConfig rejects non-array items", () => {
+    expect(() =>
+      validateStatusLineConfig({ items: 123 as unknown as string[] }),
+    ).toThrow(InvalidStatusLineConfigError);
+  });
+
+  test("validateOutputStyleConfig accepts a theme string", () => {
+    const out = validateOutputStyleConfig({ theme: "dark" });
+    expect(out).toBeDefined();
+    expect(out?.theme).toBe("dark");
+  });
+
+  test("statusLine is registered as a known key, not deferred", () => {
+    expect(KNOWN_CONFIG_KEYS.includes("statusLine")).toBe(true);
+    expect(DEFERRED_OPENCLAUDE_KEYS.includes("statusLine")).toBe(false);
   });
 });
 
