@@ -475,6 +475,65 @@ describe("compiled job chat task handler", () => {
     );
   });
 
+  it("records telemetry when version controls block a compiled job", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+      versionControls: {
+        enabledCompilerVersions: ["agenc.approved-task-template.v1"],
+      },
+    });
+
+    const context = createContext(undefined, {
+      metrics: metrics.provider,
+    });
+
+    await expect(handler(context)).rejects.toThrow(
+      'Compiled job compiler version "agenc.web.bounded-task-template.v1" is not enabled in runtime version controls',
+    );
+
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_BLOCKED,
+      value: 1,
+      labels: {
+        reason: "compiler_version_not_enabled",
+        job_type: "web_research_brief",
+        risk_tier: "L0",
+        template_id: "web_research_brief",
+        compiler_version: "agenc.web.bounded-task-template.v1",
+        policy_version: "agenc.runtime.compiled-job-policy.v1",
+      },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job execution blocked",
+      expect.objectContaining({
+        reason: "compiler_version_not_enabled",
+        message:
+          'Compiled job compiler version "agenc.web.bounded-task-template.v1" is not enabled in runtime version controls',
+        taskPda: context.taskPda.toBase58(),
+      }),
+    );
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(provider.chatStream).not.toHaveBeenCalled();
+  });
+
   it("honors per-job launch allowlists from env", async () => {
     const provider = createMockProvider([
       {

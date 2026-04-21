@@ -12,6 +12,7 @@ export * from "./compiled-job-enforcement.js";
 export * from "./compiled-job-execution-governor.js";
 export * from "./compiled-job-launch-controls.js";
 export * from "./compiled-job-runtime.js";
+export * from "./compiled-job-version-controls.js";
 export * from "./operations.js";
 export * from "./discovery.js";
 export * from "./executor.js";

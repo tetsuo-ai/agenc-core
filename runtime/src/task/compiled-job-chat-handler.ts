@@ -17,6 +17,12 @@ import {
   type CompiledJobLaunchDenyReason,
 } from "./compiled-job-launch-controls.js";
 import {
+  evaluateCompiledJobVersionAccess,
+  resolveCompiledJobVersionControls,
+  type CompiledJobVersionControls,
+  type CompiledJobVersionDenyReason,
+} from "./compiled-job-version-controls.js";
+import {
   createCompiledJobExecutionGovernor,
   resolveCompiledJobExecutionBudgetControls,
   type CompiledJobExecutionBudgetControls,
@@ -42,6 +48,7 @@ const DEFAULT_SYSTEM_PROMPT =
 
 type CompiledJobBlockReason =
   | CompiledJobLaunchDenyReason
+  | CompiledJobVersionDenyReason
   | CompiledJobExecutionDenyReason
   | "runtime_missing_required_tools"
   | "runtime_side_effect_tools_blocked";
@@ -52,6 +59,7 @@ export interface CompiledJobChatTaskHandlerOptions {
   readonly logger?: Logger;
   readonly supportedJobTypes?: readonly string[];
   readonly launchControls?: Partial<CompiledJobLaunchControls>;
+  readonly versionControls?: Partial<CompiledJobVersionControls>;
   readonly executionBudgetControls?: Partial<CompiledJobExecutionBudgetControls>;
   readonly executionGovernor?: CompiledJobExecutionGovernor;
   readonly env?: NodeJS.ProcessEnv;
@@ -77,6 +85,10 @@ export function createCompiledJobChatTaskHandler(
     base: options.launchControls,
     env: options.env,
   });
+  const versionControls = resolveCompiledJobVersionControls({
+    base: options.versionControls,
+    env: options.env,
+  });
   const executionGovernor =
     options.executionGovernor ??
     createCompiledJobExecutionGovernor({
@@ -91,6 +103,22 @@ export function createCompiledJobChatTaskHandler(
       context,
     );
     const metrics = context.metrics ?? new NoopMetrics();
+
+    const versionDecision = evaluateCompiledJobVersionAccess({
+      compilerVersion: compiledJob.audit.compilerVersion,
+      policyVersion: compiledJob.audit.policyVersion,
+      controls: versionControls,
+    });
+    if (!versionDecision.allowed) {
+      const message =
+        versionDecision.message ??
+        "Compiled job version controls denied execution";
+      recordCompiledJobBlockedRun(context, logger, metrics, {
+        reason: versionDecision.reason ?? "compiler_version_disabled",
+        message,
+      });
+      throw new Error(message);
+    }
 
     const launchDecision = evaluateCompiledJobLaunchAccess({
       jobType: compiledJob.jobType,
