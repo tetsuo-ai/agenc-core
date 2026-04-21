@@ -27,7 +27,7 @@
  *
  * @module
  */
-import { readFile, realpath, stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
@@ -546,9 +546,3 @@ export function assembleTieredInstructions(tiers: TieredInstructions): string {
 // Re-exports for convenience — keeps downstream imports single-file.
 export { loadProjectInstructions } from "./project-instructions.js";
 export type { ProjectInstructions } from "./project-instructions.js";
-
-/** Consumed by tests and downstream inspection — lets callers know how
- *  many bytes are still unread in case they want to alert on the cap. */
-export async function rawReadForTests(path: string): Promise<string> {
-  return await readFile(path, "utf8");
-}

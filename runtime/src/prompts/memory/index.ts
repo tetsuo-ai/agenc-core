@@ -50,6 +50,7 @@ export {
   type TurnState,
   type MemoryCandidate,
   type ExtractMemoriesFn,
+  type EmitMemoryWarningFn,
 } from "./auto-save.js";
 
 export {

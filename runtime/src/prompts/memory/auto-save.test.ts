@@ -98,6 +98,19 @@ describe("shouldExtract (pure threshold predicate)", () => {
     };
     expect(shouldExtract({ ...emptyState }, ts)).toBe(false);
   });
+
+  test("returns false when zero token growth blocks both branches", () => {
+    // T10 A+ Fix-α residual #4: even when the tool-call burst threshold
+    // is met AND the natural-break flag would otherwise qualify, a zero
+    // token growth must block extraction. Both `shouldExtract` branches
+    // require `hasGrowth`.
+    const ts: TurnState = {
+      tokensConsumed: 0,
+      toolCallsIssued: AUTO_SAVE_MIN_TOOL_CALLS,
+      lastTurnHadNoTools: false,
+    };
+    expect(shouldExtract({ ...emptyState }, ts)).toBe(false);
+  });
 });
 
 describe("isMemoryWorthy", () => {

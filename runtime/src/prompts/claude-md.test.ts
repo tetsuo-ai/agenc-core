@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -438,6 +445,98 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(res.text).toContain("(rejected: max_bytes");
     expect(res.text).toContain("cap=256B");
   });
+
+  // ---- T10 A+ Fix-γ: URI-encoded traversal, EACCES mid-walk, read_error ----
+
+  test(
+    "URI-encoded traversal `%2E%2E` is NOT decoded (treated literally, not_found)",
+    async () => {
+      const repo = join(tmp, "repo");
+      const outside = join(tmp, "outside");
+      mkdirSync(repo);
+      mkdirSync(outside);
+      writeFileSync(join(outside, "a.md"), "SECRET");
+      // `.%2E/a.md` — if decoded, this would be `../a.md` escaping the repo.
+      // We assert NO decoding happens: the literal segment `.%2E` does not
+      // exist inside the repo, so the target resolves to a missing file and
+      // is dropped as `not_found`, not `path_escape`. Either way, no
+      // SECRET content leaks into the expansion output.
+      const res = await resolveIncludes("@include .%2E/a.md", {
+        baseDir: repo,
+        projectRoot: repo,
+      });
+      expect(res.included).toHaveLength(0);
+      expect(res.dropped).toHaveLength(1);
+      // Literal segment `.%2E` lives under the repo lexically, realpath of
+      // the missing candidate fails, so boundary check fails closed and we
+      // probe existence → `not_found`.
+      expect(res.dropped[0]!.reason).toBe("not_found");
+      expect(res.text).not.toContain("SECRET");
+      expect(res.text).toContain(
+        "<!-- @include .%2E/a.md (rejected: not_found) -->",
+      );
+    },
+  );
+
+  posixTest(
+    "EACCES mid-walk: parent dir becomes unreadable → fail-closed (not_found)",
+    async () => {
+      const repo = join(tmp, "repo");
+      const locked = join(repo, "locked");
+      mkdirSync(locked, { recursive: true });
+      writeFileSync(join(locked, "unreachable.md"), "HIDDEN");
+      // Lock the parent directory so realpath/stat on the child fails
+      // with EACCES mid-walk. Use chmod 000 to block both read and
+      // traverse permissions.
+      chmodSync(locked, 0o000);
+      try {
+        const res = await resolveIncludes("@include locked/unreachable.md", {
+          baseDir: repo,
+          projectRoot: repo,
+        });
+        expect(res.included).toHaveLength(0);
+        expect(res.dropped).toHaveLength(1);
+        // Fail-closed: realpath EACCES returns false from isPathWithinReal,
+        // then pathExists also fails, so we report `not_found`. Either way
+        // the file contents never leak.
+        expect(res.dropped[0]!.reason).toBe("not_found");
+        expect(res.text).not.toContain("HIDDEN");
+      } finally {
+        // Restore perms so rmSync cleanup in afterEach succeeds.
+        chmodSync(locked, 0o755);
+      }
+    },
+  );
+
+  posixTest(
+    "read_error marker emitted when file is stat-able but not readable",
+    async () => {
+      const repo = join(tmp, "repo");
+      mkdirSync(repo);
+      const unreadable = join(repo, "locked.md");
+      writeFileSync(unreadable, "SENSITIVE");
+      // Mode 000: stat() succeeds (parent dir readable/traversable) but
+      // open() for read fails with EACCES → resolveIncludes hits the
+      // `readTextFile` catch and drops with `read_error`, emitting the
+      // rejection marker.
+      chmodSync(unreadable, 0o000);
+      try {
+        const res = await resolveIncludes("@include locked.md", {
+          baseDir: repo,
+          projectRoot: repo,
+        });
+        expect(res.included).toHaveLength(0);
+        expect(res.dropped).toHaveLength(1);
+        expect(res.dropped[0]!.reason).toBe("read_error");
+        expect(res.text).not.toContain("SENSITIVE");
+        expect(res.text).toContain(
+          "<!-- @include locked.md (rejected: read_error) -->",
+        );
+      } finally {
+        chmodSync(unreadable, 0o644);
+      }
+    },
+  );
 
   test("loadTieredInstructions propagates @include into project tier", async () => {
     const home = join(tmp, "home");

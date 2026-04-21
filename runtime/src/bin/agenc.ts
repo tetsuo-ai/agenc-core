@@ -36,6 +36,7 @@ import type {
   SessionServices,
   SessionState,
 } from "../session/session.js";
+import type { Event } from "../session/event-log.js";
 import {
   buildTurnContext,
   type Config,
@@ -675,9 +676,11 @@ export function resolveModelOrExit(
       exit(1);
     }
     if (err instanceof UnknownModelError) {
-      errSink(
-        `agenc: unknown model '${slug}'. Known providers: ${Object.keys(catalog).join(", ")}\n`,
-      );
+      // UnknownModelError already composes the canonical message with
+      // the provider list + "Use provider:model form" guidance (see
+      // `UnknownModelError.providers`). Keep the `agenc: ` CLI prefix
+      // + trailing newline here; everything else comes from the error.
+      errSink(`agenc: ${err.message}\n`);
       exit(1);
     }
     throw err;
@@ -971,10 +974,117 @@ export async function* runSingleTurn(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// T10 A+ Fix-α — TurnStateAccumulator
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Subscribes to the session's EventLog and maintains the cumulative
+ * token + tool counters the memory auto-save sidecar needs to evaluate
+ * `shouldExtract()`.
+ *
+ * Semantics line up with `shouldExtract` (auto-save.ts):
+ *   - `tokensConsumed`: cumulative sum of every `token_count.totalTokens`
+ *     emitted since session start (each `token_count` event carries
+ *     per-stream usage, not cumulative, per stream-model.ts:281).
+ *   - `toolCallsIssued`: cumulative count of `tool_call_completed`
+ *     events since session start.
+ *   - `lastTurnHadNoTools`: latched per turn — set to `true` when the
+ *     last completed turn emitted zero `tool_call_started` events,
+ *     `false` otherwise. Updated on `turn_complete`. Between turns
+ *     `currentTurnHadTools` is reset by `turn_started`.
+ *
+ * Tracking tool calls via `tool_call_completed` matches the task
+ * contract; tracking "this turn had tools" via `tool_call_started`
+ * correctly flags turns that started a tool but never finished one
+ * (abort mid-tool), so the natural-break branch of `shouldExtract`
+ * doesn't fire mid-tool-use.
+ */
+export class TurnStateAccumulator {
+  private tokensConsumed = 0;
+  private toolCallsIssued = 0;
+  private currentTurnHadTools = false;
+  private lastTurnHadNoTools = false;
+  private unsubscribe: (() => void) | null = null;
+
+  /** Attach to an EventLog. Idempotent — re-subscribing is a no-op. */
+  subscribe(log: { subscribe: (fn: (e: Event) => void) => () => void }): void {
+    if (this.unsubscribe !== null) return;
+    this.unsubscribe = log.subscribe((event) => this.onEvent(event));
+  }
+
+  /** Detach from the EventLog. Safe to call multiple times. */
+  detach(): void {
+    if (this.unsubscribe !== null) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+  }
+
+  /** Observe one event. Exposed for direct calls in tests. */
+  onEvent(event: Event): void {
+    switch (event.msg.type) {
+      case "turn_started": {
+        // Reset the per-turn tool flag; counters stay cumulative.
+        this.currentTurnHadTools = false;
+        return;
+      }
+      case "tool_call_started": {
+        this.currentTurnHadTools = true;
+        return;
+      }
+      case "tool_call_completed": {
+        this.toolCallsIssued += 1;
+        this.currentTurnHadTools = true;
+        return;
+      }
+      case "token_count": {
+        // `token_count.totalTokens` is per-stream usage, not cumulative
+        // (stream-model.ts:281). Sum them across the session.
+        const delta = event.msg.payload.totalTokens ?? 0;
+        if (delta > 0) this.tokensConsumed += delta;
+        return;
+      }
+      case "turn_complete": {
+        this.lastTurnHadNoTools = !this.currentTurnHadTools;
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /**
+   * Read-through view of the accumulator. Returns a snapshot object
+   * with the three fields the memory auto-save sidecar consumes. Safe
+   * to call at any time (values are primitives; no copy semantics
+   * required).
+   */
+  snapshot(): {
+    readonly tokensConsumed: number;
+    readonly toolCallsIssued: number;
+    readonly lastTurnHadNoTools: boolean;
+  } {
+    return {
+      tokensConsumed: this.tokensConsumed,
+      toolCallsIssued: this.toolCallsIssued,
+      lastTurnHadNoTools: this.lastTurnHadNoTools,
+    };
+  }
+
+  /** Reset counters to zero. Intended for tests + session recycling. */
+  reset(): void {
+    this.tokensConsumed = 0;
+    this.toolCallsIssued = 0;
+    this.currentTurnHadTools = false;
+    this.lastTurnHadNoTools = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // main
 // ─────────────────────────────────────────────────────────────────────
 
-async function main(): Promise<number> {
+export async function main(): Promise<number> {
   // I-51: init step abort + reverse-cleanup stack. Signal handlers for
   // Ctrl+C / SIGTERM / SIGHUP during init feed this controller; each
   // async init step observes signal.aborted.
@@ -1160,7 +1270,7 @@ async function main(): Promise<number> {
         originator: "agenc-cli",
         agencVersion: "0.2.0",
         model,
-        modelProvider: "grok",
+        modelProvider: resolvedProvider,
       });
       session.mountRolloutStore(rolloutStore);
       cleanup.push("rollout-store.close", () => rolloutStore?.close());
@@ -1285,31 +1395,41 @@ async function main(): Promise<number> {
       session: () => sessionRefForMemory.current,
       memoryDir,
     });
-    // Per-turn telemetry closure — `turn_complete` payloads do not
-    // carry cumulative token/tool counters today, so the sidecar
-    // returns a conservative bookkeeping snapshot driven by the
-    // session's budgetTracker totals. When T6 enriches turn_complete
-    // with per-turn deltas the closure upgrades without API churn.
-    const getTurnState = (): MemoryTurnState | null => {
-      const tracker = session.budgetTracker;
-      const usage = (tracker as unknown as {
-        lifetimeUsage?: () => {
-          promptTokens?: number;
-          completionTokens?: number;
-          totalTokens?: number;
-        };
-      }).lifetimeUsage?.();
-      const totalTokens = usage?.totalTokens ?? 0;
-      return {
-        tokensConsumed: totalTokens,
-        toolCallsIssued: 0,
-        lastTurnHadNoTools: false,
-      };
-    };
+    // T10 A+ Fix-α: real per-turn telemetry. The accumulator
+    // subscribes to the session EventLog BEFORE the sidecar so
+    // `tool_call_completed`, `token_count`, `turn_started`, and
+    // `turn_complete` events update the cumulative counters that back
+    // `shouldExtract`. Without this, `getTurnState` returned zeros and
+    // the auto-save predicate could never fire in production.
+    const turnStateAccumulator = new TurnStateAccumulator();
+    turnStateAccumulator.subscribe(session.eventLog);
+    cleanup.push("turn-state-accumulator.detach", () =>
+      turnStateAccumulator.detach(),
+    );
+    const getTurnState = (): MemoryTurnState | null =>
+      turnStateAccumulator.snapshot();
     const memoryAutoSaveSidecar = registerAutoSaveSidecar({
       session: { memoryDir, memoryMdPath },
       extractor: extractMemoriesFn,
       getTurnState,
+      // I-8: route `memory_write_contention` warnings (from
+      // FsLockTimeoutError / FsLockUnavailableError inside
+      // writeMemoryFile / upsertIndexEntry) through the typed event
+      // bus instead of stderr.
+      emitWarning: (message: string) => {
+        const active = sessionRefForMemory.current;
+        if (active === null) return;
+        active.emit({
+          id: active.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "memory_write_contention",
+              message,
+            },
+          },
+        });
+      },
     });
     sidecarManager.register(memoryAutoSaveSidecar);
 
@@ -1336,7 +1456,7 @@ async function main(): Promise<number> {
         payload: {
           sessionId: conversationId,
           model,
-          modelProviderId: "grok",
+          modelProviderId: resolvedProvider,
           cwd: workspaceRoot,
           historyLogId: 0,
           historyEntryCount: 0,
@@ -1446,7 +1566,7 @@ async function main(): Promise<number> {
         allMemories,
         enabledToolNames,
         mcpServers,
-        provider: "grok",
+        provider: resolvedProvider,
       })) {
         renderEvent(event);
         if (event.type === "turn_complete") {
@@ -1495,14 +1615,42 @@ async function main(): Promise<number> {
   }
 }
 
-void (async () => {
-  try {
-    const code = await main();
-    process.exit(code);
-  } catch (error) {
-    process.stderr.write(
-      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-    process.exit(1);
-  }
-})();
+/**
+ * Detect whether this module is being invoked as the CLI entrypoint
+ * (via `node dist/bin/agenc.js` or the `agenc` binary) rather than
+ * imported by tests / other code. Only the direct-invocation path
+ * drains the main loop and calls `process.exit()`.
+ *
+ * Tests import `main` explicitly and drive it with their own stubs;
+ * they MUST NOT trigger the IIFE.
+ *
+ * Detection strategy: inspect `process.argv[1]` (Node fills this with
+ * the resolved script path when the file is the direct entry point).
+ * Works under both CJS and ESM emit from tsup without touching
+ * `import.meta`, which is forbidden in the CJS output target.
+ */
+function isDirectInvocation(): boolean {
+  // Env opt-out: tests can force the IIFE off even on odd harnesses.
+  if (process.env.AGENC_CLI_ENTRY_DISABLE === "1") return false;
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  // The CLI binary resolves to `<prefix>/bin/agenc.js` (or `.mjs`) and
+  // the `agenc` shim in `package.json.bin` symlinks to this script.
+  // Match the tail of the entry path so both `node .../agenc.js` and
+  // the installed `agenc` CLI pass the check.
+  return /[\\/]bin[\\/]agenc(?:\.[mc]?js)?$/.test(argv1);
+}
+
+if (isDirectInvocation()) {
+  void (async () => {
+    try {
+      const code = await main();
+      process.exit(code);
+    } catch (error) {
+      process.stderr.write(
+        `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exit(1);
+    }
+  })();
+}

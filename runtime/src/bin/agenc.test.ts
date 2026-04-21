@@ -27,7 +27,9 @@ import {
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
   PROVIDER_MODEL_CATALOG,
+  TurnStateAccumulator,
   buildExtractMemoriesViaSubagent,
+  main,
   maybeReloadConfigBetweenTurns,
   parseExtractedMemoryCandidates,
   resolveModelOrExit,
@@ -1187,5 +1189,409 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     });
     for await (const ev of iter) collected.push(ev);
     expect(collected).toEqual(events);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 A+ Fix-α — TurnStateAccumulator
+// ─────────────────────────────────────────────────────────────────────
+
+describe("TurnStateAccumulator", () => {
+  it("starts with zero counters", () => {
+    const acc = new TurnStateAccumulator();
+    expect(acc.snapshot()).toEqual({
+      tokensConsumed: 0,
+      toolCallsIssued: 0,
+      lastTurnHadNoTools: false,
+    });
+  });
+
+  it("accumulates token_count deltas across multiple emissions", () => {
+    const acc = new TurnStateAccumulator();
+    acc.onEvent({
+      id: "1",
+      msg: { type: "token_count", payload: { totalTokens: 500 } },
+    } as never);
+    acc.onEvent({
+      id: "2",
+      msg: { type: "token_count", payload: { totalTokens: 1500 } },
+    } as never);
+    expect(acc.snapshot().tokensConsumed).toBe(2000);
+  });
+
+  it("increments toolCallsIssued on tool_call_completed", () => {
+    const acc = new TurnStateAccumulator();
+    acc.onEvent({
+      id: "a",
+      msg: {
+        type: "tool_call_completed",
+        payload: { callId: "c1", result: "ok", isError: false },
+      },
+    } as never);
+    acc.onEvent({
+      id: "b",
+      msg: {
+        type: "tool_call_completed",
+        payload: { callId: "c2", result: "ok", isError: false },
+      },
+    } as never);
+    expect(acc.snapshot().toolCallsIssued).toBe(2);
+  });
+
+  it("sets lastTurnHadNoTools=true when a turn completes with no tool calls", () => {
+    const acc = new TurnStateAccumulator();
+    acc.onEvent({
+      id: "ts",
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    } as never);
+    acc.onEvent({
+      id: "tc",
+      msg: { type: "turn_complete", payload: { turnId: "t1" } },
+    } as never);
+    expect(acc.snapshot().lastTurnHadNoTools).toBe(true);
+  });
+
+  it("sets lastTurnHadNoTools=false when a turn had a tool call", () => {
+    const acc = new TurnStateAccumulator();
+    acc.onEvent({
+      id: "ts",
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    } as never);
+    acc.onEvent({
+      id: "tool",
+      msg: {
+        type: "tool_call_completed",
+        payload: { callId: "c1", result: "ok", isError: false },
+      },
+    } as never);
+    acc.onEvent({
+      id: "tc",
+      msg: { type: "turn_complete", payload: { turnId: "t1" } },
+    } as never);
+    expect(acc.snapshot().lastTurnHadNoTools).toBe(false);
+  });
+
+  it("resets the per-turn tool flag on turn_started so stale flags don't carry across turns", () => {
+    const acc = new TurnStateAccumulator();
+    // Turn 1: has tool
+    acc.onEvent({
+      id: "s1",
+      msg: { type: "turn_started", payload: { turnId: "t1" } },
+    } as never);
+    acc.onEvent({
+      id: "t1",
+      msg: {
+        type: "tool_call_completed",
+        payload: { callId: "c1", result: "ok", isError: false },
+      },
+    } as never);
+    acc.onEvent({
+      id: "c1",
+      msg: { type: "turn_complete", payload: { turnId: "t1" } },
+    } as never);
+    expect(acc.snapshot().lastTurnHadNoTools).toBe(false);
+    // Turn 2: no tool — latch must flip to true.
+    acc.onEvent({
+      id: "s2",
+      msg: { type: "turn_started", payload: { turnId: "t2" } },
+    } as never);
+    acc.onEvent({
+      id: "c2",
+      msg: { type: "turn_complete", payload: { turnId: "t2" } },
+    } as never);
+    expect(acc.snapshot().lastTurnHadNoTools).toBe(true);
+    // Tool count is cumulative — still 1.
+    expect(acc.snapshot().toolCallsIssued).toBe(1);
+  });
+
+  it("subscribe + detach plug into an EventLog without losing state", () => {
+    const acc = new TurnStateAccumulator();
+    type Listener = (e: unknown) => void;
+    const listeners = new Set<Listener>();
+    const fakeLog = {
+      subscribe(fn: Listener) {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      },
+    };
+    acc.subscribe(fakeLog as never);
+    expect(listeners.size).toBe(1);
+    // Simulate an emit.
+    for (const fn of listeners)
+      fn({
+        id: "x",
+        msg: { type: "token_count", payload: { totalTokens: 7_500 } },
+      });
+    expect(acc.snapshot().tokensConsumed).toBe(7_500);
+    acc.detach();
+    expect(listeners.size).toBe(0);
+    // After detach, further emits are unhooked; counters stay put.
+    expect(acc.snapshot().tokensConsumed).toBe(7_500);
+  });
+
+  it("reset() zeros all counters", () => {
+    const acc = new TurnStateAccumulator();
+    acc.onEvent({
+      id: "a",
+      msg: { type: "token_count", payload: { totalTokens: 9_999 } },
+    } as never);
+    acc.onEvent({
+      id: "b",
+      msg: {
+        type: "tool_call_completed",
+        payload: { callId: "c1", result: "ok", isError: false },
+      },
+    } as never);
+    acc.reset();
+    expect(acc.snapshot()).toEqual({
+      tokensConsumed: 0,
+      toolCallsIssued: 0,
+      lastTurnHadNoTools: false,
+    });
+  });
+
+  it("ignores unrelated event types (no-op fall-through)", () => {
+    const acc = new TurnStateAccumulator();
+    acc.onEvent({
+      id: "w",
+      msg: {
+        type: "warning",
+        payload: { cause: "unrelated", message: "noise" },
+      },
+    } as never);
+    expect(acc.snapshot()).toEqual({
+      tokensConsumed: 0,
+      toolCallsIssued: 0,
+      lastTurnHadNoTools: false,
+    });
+  });
+
+  it("feeds shouldExtract far above the production floor when events accumulate", async () => {
+    // End-to-end: drive enough token_count + tool_call_completed events
+    // past the T10-C thresholds and confirm the snapshot would trip
+    // `shouldExtract`. Regression guard for the prod getTurnState bug
+    // where zeros kept the predicate permanently false.
+    const acc = new TurnStateAccumulator();
+    // 2 token_count events totalling 6_000 tokens → > 5_000 floor.
+    acc.onEvent({
+      id: "1",
+      msg: { type: "token_count", payload: { totalTokens: 3_000 } },
+    } as never);
+    acc.onEvent({
+      id: "2",
+      msg: { type: "token_count", payload: { totalTokens: 3_000 } },
+    } as never);
+    // 5 tool_call_completed events → meets tool-burst floor.
+    for (let i = 0; i < 5; i++) {
+      acc.onEvent({
+        id: `t${i}`,
+        msg: {
+          type: "tool_call_completed",
+          payload: { callId: `c${i}`, result: "ok", isError: false },
+        },
+      } as never);
+    }
+    const { shouldExtract } = await import("../prompts/memory/auto-save.js");
+    const snap = acc.snapshot();
+    expect(
+      shouldExtract(
+        { tokensAtLastExtraction: 0, toolCallsAtLastExtraction: 0, inFlight: null },
+        { ...snap, lastTurnHadNoTools: snap.lastTurnHadNoTools },
+      ),
+    ).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 A+ Fix-α — memory_write_contention emits through session.emit
+// ─────────────────────────────────────────────────────────────────────
+
+describe("memory_write_contention routing (I-8)", () => {
+  it("writeMemoryFile invokes emitWarning when FsLockTimeoutError fires", async () => {
+    // Pre-create the sibling `<path>.lock` file so the fs-level
+    // exclusive lock cannot be acquired; with a 50ms timeout the
+    // write attempt times out and the contention path runs.
+    const { writeMemoryFile } = await import(
+      "../prompts/memory/auto-save.js"
+    );
+    const { _clearMemoryWriteLocksForTest } = await import(
+      "../prompts/memory/loader.js"
+    );
+    const { lockfilePathFor } = await import("../prompts/memory/fs-lock.js");
+    const { writeFile: fsWrite } = await import("node:fs/promises");
+
+    const { dir, session } = await setupMemoryDir();
+    _resetAutoSaveStateForTest(session);
+    _clearMemoryWriteLocksForTest();
+
+    const candidatePath = join(dir, "topic.md");
+    // Seed the lockfile so `fs.open(..., 'wx')` hits EEXIST each poll.
+    await fsWrite(
+      lockfilePathFor(candidatePath),
+      JSON.stringify({ pid: 999999, ts: Date.now() }),
+      "utf8",
+    );
+
+    const warnings: string[] = [];
+    const candidate: MemoryCandidate = {
+      filePath: candidatePath,
+      frontmatter: {
+        name: "topic-one",
+        description: "a concrete topic",
+        type: "feedback",
+        extra: {},
+      },
+      body:
+        "This memory body is long enough to pass isMemoryWorthy (>20 chars).",
+    };
+    await writeMemoryFile(
+      candidate,
+      { timeoutMs: 50, retryMs: 10 },
+      (m) => warnings.push(m),
+    );
+    expect(warnings.length).toBeGreaterThanOrEqual(1);
+    expect(warnings[0]).toMatch(/memory_write_contention/);
+    // No file should have been written — contention path skips.
+    const fs = await import("node:fs/promises");
+    await expect(fs.readFile(candidatePath, "utf8")).rejects.toThrow();
+  });
+
+  it("falls back to console.warn when no emitWarning is wired (test-fixture friendly)", async () => {
+    const { writeMemoryFile } = await import(
+      "../prompts/memory/auto-save.js"
+    );
+    const { _clearMemoryWriteLocksForTest } = await import(
+      "../prompts/memory/loader.js"
+    );
+    const { lockfilePathFor } = await import("../prompts/memory/fs-lock.js");
+    const { writeFile: fsWrite } = await import("node:fs/promises");
+
+    const { dir, session } = await setupMemoryDir();
+    _resetAutoSaveStateForTest(session);
+    _clearMemoryWriteLocksForTest();
+    const candidatePath = join(dir, "topic.md");
+    await fsWrite(
+      lockfilePathFor(candidatePath),
+      JSON.stringify({ pid: 999999, ts: Date.now() }),
+      "utf8",
+    );
+    const candidate: MemoryCandidate = {
+      filePath: candidatePath,
+      frontmatter: {
+        name: "topic-one",
+        description: "fallback console test",
+        type: "feedback",
+        extra: {},
+      },
+      body:
+        "Body long enough to pass isMemoryWorthy threshold — keep this.",
+    };
+    const originalWarn = console.warn;
+    const seen: string[] = [];
+    console.warn = (...args: unknown[]) => {
+      seen.push(args.map((a) => String(a)).join(" "));
+    };
+    try {
+      await writeMemoryFile(candidate, { timeoutMs: 50, retryMs: 10 });
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(
+      seen.some((line) => line.includes("memory_write_contention")),
+    ).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// T10 A+ Fix-α — full-IIFE / main() smoke test
+// ─────────────────────────────────────────────────────────────────────
+
+describe("main() full-IIFE smoke", () => {
+  it("runs the full main() path with stubbed provider + runTurn and exits 0", async () => {
+    // Covers: argv resolution → HOME validation → ConfigStore boot →
+    //          model resolve → provider construction → Session +
+    //          sidecars → runSingleTurn → turn_complete → shutdown.
+    // All externals are stubbed so no disk writes leak outside the
+    // per-test AGENC_HOME and no network calls are issued.
+
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-main-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-cwd-"));
+
+    // Hijack process.argv + env for this run. Snapshot + restore.
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+    process.argv = [process.argv[0] ?? "node", "agenc-test-entry", "hi"];
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    // Stub createProvider via module-level mock.
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+
+    // Stub runTurn so the phase machine yields a canned turn_complete
+    // and returns `{reason:'completed'}` without ever touching the
+    // stubbed provider's chat method.
+    const runTurnMod = await import("../session/run-turn.js");
+    const runTurnSpy = vi
+      .spyOn(runTurnMod, "runTurn")
+      .mockImplementation(async function* (): AsyncGenerator<
+        unknown,
+        unknown
+      > {
+        yield {
+          type: "turn_complete",
+          content: "ok",
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          stopReason: "completed",
+        };
+        return { reason: "completed" };
+      } as never);
+
+    // Capture unhandled promise rejections so we can fail the test if
+    // anything leaked.
+    const rejections: unknown[] = [];
+    const onUnhandled = (r: unknown) => rejections.push(r);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const code = await main();
+      expect(code).toBe(0);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(runTurnSpy).toHaveBeenCalledTimes(1);
+      // Provider arg should be the resolved provider name ('grok'
+      // from default 'grok-4-fast'), not a stray literal.
+      expect(createProviderSpy.mock.calls[0]![0]).toBe("grok");
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+      createProviderSpy.mockRestore();
+      runTurnSpy.mockRestore();
+      process.argv = prevArgv;
+      // Restore env precisely so parallel tests aren't polluted.
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+    expect(rejections).toEqual([]);
   });
 });

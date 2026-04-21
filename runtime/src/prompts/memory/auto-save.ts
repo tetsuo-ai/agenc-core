@@ -183,6 +183,14 @@ export function isMemoryWorthy(candidate: MemoryCandidate): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
+ * I-8 callback: routes `memory_write_contention` warnings through a
+ * typed-event sink. When omitted (e.g. test fixtures), the write path
+ * falls back to `console.warn` so the warning still surfaces without
+ * forcing callers to wire an event bus.
+ */
+export type EmitMemoryWarningFn = (message: string) => void;
+
+/**
  * I-29 journal fallback, minimum viable form: when the cross-process
  * lock cannot be acquired or the filesystem refuses the lockfile, we
  * log a `memory_write_contention` warning and skip the write. A later
@@ -191,13 +199,17 @@ export function isMemoryWorthy(candidate: MemoryCandidate): boolean {
 function emitWriteContentionWarning(
   filePath: string,
   err: FsLockTimeoutError | FsLockUnavailableError,
+  emitWarning?: EmitMemoryWarningFn,
 ): void {
-  // Keep this as a bare `console.warn` so it flows through whatever
-  // log capture the runtime has installed, without pulling logger
-  // config into the memory module.
-  console.warn(
-    `memory_write_contention: skipped write to ${filePath} (${err.name}: ${err.message})`,
-  );
+  const message = `memory_write_contention: skipped write to ${filePath} (${err.name}: ${err.message})`;
+  if (emitWarning !== undefined) {
+    emitWarning(message);
+    return;
+  }
+  // Fallback for test fixtures / callers that haven't wired an event
+  // bus. Keep it a bare `console.warn` so output still flows through
+  // whatever log capture the runtime has installed.
+  console.warn(message);
 }
 
 /**
@@ -215,6 +227,7 @@ function emitWriteContentionWarning(
 export async function writeMemoryFile(
   candidate: MemoryCandidate,
   opts?: FsLockOpts,
+  emitWarning?: EmitMemoryWarningFn,
 ): Promise<void> {
   const lock = getMemoryWriteLock(candidate.filePath);
   try {
@@ -234,7 +247,7 @@ export async function writeMemoryFile(
       err instanceof FsLockTimeoutError ||
       err instanceof FsLockUnavailableError
     ) {
-      emitWriteContentionWarning(candidate.filePath, err);
+      emitWriteContentionWarning(candidate.filePath, err, emitWarning);
       return;
     }
     throw err;
@@ -255,6 +268,7 @@ export async function upsertIndexEntry(
   memoryMdPath: string,
   candidate: MemoryCandidate,
   opts?: FsLockOpts,
+  emitWarning?: EmitMemoryWarningFn,
 ): Promise<void> {
   const lock = getMemoryWriteLock(memoryMdPath);
   try {
@@ -306,7 +320,7 @@ export async function upsertIndexEntry(
       err instanceof FsLockTimeoutError ||
       err instanceof FsLockUnavailableError
     ) {
-      emitWriteContentionWarning(memoryMdPath, err);
+      emitWriteContentionWarning(memoryMdPath, err, emitWarning);
       return;
     }
     throw err;
@@ -329,6 +343,7 @@ export async function maybeAutoSaveMemory(
   session: AutoSaveSession,
   turnState: TurnState,
   extractor: ExtractMemoriesFn = stubExtractor,
+  emitWarning?: EmitMemoryWarningFn,
 ): Promise<void> {
   const state = getState(session);
 
@@ -345,8 +360,13 @@ export async function maybeAutoSaveMemory(
       );
       for (const candidate of candidates) {
         if (!isMemoryWorthy(candidate)) continue;
-        await writeMemoryFile(candidate);
-        await upsertIndexEntry(session.memoryMdPath, candidate);
+        await writeMemoryFile(candidate, undefined, emitWarning);
+        await upsertIndexEntry(
+          session.memoryMdPath,
+          candidate,
+          undefined,
+          emitWarning,
+        );
       }
       state.tokensAtLastExtraction = turnState.tokensConsumed;
       state.toolCallsAtLastExtraction = turnState.toolCallsIssued;
@@ -373,8 +393,21 @@ export function registerAutoSaveSidecar(params: {
   readonly session: AutoSaveSession;
   readonly extractor?: ExtractMemoriesFn;
   readonly getTurnState: () => TurnState | null;
+  /**
+   * I-8 routing callback for `memory_write_contention` warnings. When
+   * omitted, the write-contention path falls back to `console.warn`
+   * (test-fixture friendly). In production, `bin/agenc.ts` wires this
+   * to `session.emit({type:'warning', payload:{cause:'memory_write_contention', message}})`
+   * so contention routes through the typed event bus instead of stderr.
+   */
+  readonly emitWarning?: EmitMemoryWarningFn;
 }): Sidecar {
-  const { session, extractor = stubExtractor, getTurnState } = params;
+  const {
+    session,
+    extractor = stubExtractor,
+    getTurnState,
+    emitWarning,
+  } = params;
   return {
     name: "memory-auto-save",
     onEvent(event: Event) {
@@ -382,7 +415,12 @@ export function registerAutoSaveSidecar(params: {
       const turnState = getTurnState();
       if (turnState === null) return;
       // Fire-and-forget; errors swallowed inside maybeAutoSaveMemory.
-      void maybeAutoSaveMemory(session, turnState, extractor).catch(() => {});
+      void maybeAutoSaveMemory(
+        session,
+        turnState,
+        extractor,
+        emitWarning,
+      ).catch(() => {});
     },
   };
 }

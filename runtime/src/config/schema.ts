@@ -175,7 +175,70 @@ export interface AgenCConfig {
 // defaultConfig
 // ─────────────────────────────────────────────────────────────────────
 
+/*
+ * DEFERRED_KEYS — in-file audit trail (T10 A+ Fix-β).
+ *
+ * Top-level keys accepted by codex or openclaude config surfaces that
+ * AgenC intentionally routes into `_unknown` today. They are NOT silent
+ * drops: `normalizeRawConfig` preserves them verbatim so a future
+ * tranche can light them up without losing operator intent already
+ * stored on disk. Grep-anchor: "DEFERRED_KEYS".
+ *
+ * Codex-rooted, deferred:
+ *   - notify           → T11 (hook-style post-turn notifications)
+ *   - otel             → T12 (OTel exporters — depends on observability)
+ *   - plugins          → T11 (plugin loader)
+ *   - history          → T11 (rollout/history retention policy)
+ *   - log_dir          → T11 (operator-overridable log root)
+ *   - file_opener      → T11 (editor integration)
+ *   - review_model     → T13 (review-lane model override)
+ *   - model_verbosity  → T13 (provider-facing verbosity knob)
+ *   - service_tier     → T13 (OpenAI service-tier passthrough)
+ *   - analytics        → T12 (analytics opt-in knobs)
+ *
+ * Openclaude-rooted, deferred:
+ *   - permissions      → T11 (permissions DSL + evaluator)
+ *   - env              → T11 (shell env injection policy)
+ *   - apiKeyHelper     → T11 (external API-key resolver hook)
+ *   - cleanupPeriodDays → T11 (rollout/history retention)
+ *   - statusLine       → T12 (TUI status line renderer)
+ *   - outputStyle      → T12 (TUI output style)
+ *   - enabledPlugins   → T11 (plugin loader)
+ *
+ * Adding one of these to the schema means: (a) add it to
+ * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
+ * extend the merge + env-override paths if it reaches the runtime,
+ * (d) remove it from this block. Don't forget to drop the matching
+ * `_unknown` test if the key is tested via `_unknown` today.
+ */
+export const DEFERRED_CODEX_KEYS: readonly string[] = Object.freeze([
+  "notify",
+  "otel",
+  "plugins",
+  "history",
+  "log_dir",
+  "file_opener",
+  "review_model",
+  "model_verbosity",
+  "service_tier",
+  "analytics",
+]);
+
+export const DEFERRED_OPENCLAUDE_KEYS: readonly string[] = Object.freeze([
+  "permissions",
+  "env",
+  "apiKeyHelper",
+  "cleanupPeriodDays",
+  "statusLine",
+  "outputStyle",
+  "enabledPlugins",
+]);
+
 // Known top-level keys — anything else goes into `_unknown` (I-26).
+// See DEFERRED_CODEX_KEYS / DEFERRED_OPENCLAUDE_KEYS above for the list
+// of keys intentionally absent from this array while their tranches
+// catch up. Forward-compat: unknown keys land on `_unknown` rather than
+// being dropped.
 export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "model",
   "model_provider",
@@ -403,9 +466,24 @@ export class AmbiguousModelError extends Error {
 }
 
 export class UnknownModelError extends Error {
-  constructor(slug: string) {
-    super(`Unknown model slug "${slug}" — no provider advertises this model`);
+  /**
+   * Provider ids from the catalog the resolver consulted, frozen so
+   * callers (CLI exit path, tests) can reuse the list without risk of
+   * mutation. Empty list is legal — it just means the catalog was
+   * empty when the error fired.
+   */
+  readonly providers: readonly string[];
+
+  constructor(slug: string, providers: readonly string[] = []) {
+    const frozen = Object.freeze([...providers]);
+    const providerList =
+      frozen.length > 0 ? frozen.join(", ") : "(none configured)";
+    super(
+      `unknown model '${slug}'. Known providers: ${providerList}. ` +
+        `Use provider:model form.`,
+    );
     this.name = "UnknownModelError";
+    this.providers = frozen;
   }
 }
 
@@ -424,6 +502,7 @@ export function resolveModelDisambiguated(
   slug: string,
   providerCatalog: Readonly<Record<string, readonly string[]>>,
 ): ProviderModelPair {
+  const providerIds = Object.keys(providerCatalog);
   // Explicit "provider:model" form.
   const colonIdx = slug.indexOf(":");
   if (colonIdx > 0) {
@@ -431,10 +510,10 @@ export function resolveModelDisambiguated(
     const model = slug.slice(colonIdx + 1);
     const providerModels = providerCatalog[provider];
     if (!providerModels) {
-      throw new UnknownModelError(slug);
+      throw new UnknownModelError(slug, providerIds);
     }
     if (!providerModels.includes(model)) {
-      throw new UnknownModelError(slug);
+      throw new UnknownModelError(slug, providerIds);
     }
     return Object.freeze({ provider, model });
   }
@@ -448,7 +527,7 @@ export function resolveModelDisambiguated(
   }
 
   if (candidates.length === 0) {
-    throw new UnknownModelError(slug);
+    throw new UnknownModelError(slug, providerIds);
   }
   if (candidates.length >= 2) {
     throw new AmbiguousModelError(slug, candidates);

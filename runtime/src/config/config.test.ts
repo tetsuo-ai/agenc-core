@@ -203,6 +203,43 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
       resolveModelDisambiguated("bogus:grok-4-fast", catalog),
     ).toThrow(UnknownModelError);
   });
+
+  test("UnknownModelError.providers carries the frozen catalog list", () => {
+    let caught: unknown;
+    try {
+      resolveModelDisambiguated("mystery-model", catalog);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(UnknownModelError);
+    const err = caught as UnknownModelError;
+    expect([...err.providers].sort()).toEqual([
+      "openai",
+      "openrouter",
+      "xai",
+    ]);
+    // providers array is frozen — mutating attempts are rejected in
+    // strict mode (TypeScript already forbids push on readonly; guard
+    // the runtime immutability here).
+    expect(Object.isFrozen(err.providers)).toBe(true);
+    // Message includes the provider list + "Use provider:model form".
+    expect(err.message).toContain("unknown model 'mystery-model'");
+    expect(err.message).toContain("openai");
+    expect(err.message).toContain("Use provider:model form");
+  });
+
+  test("UnknownModelError with empty catalog still composes a message", () => {
+    let caught: unknown;
+    try {
+      resolveModelDisambiguated("anything", {});
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(UnknownModelError);
+    const err = caught as UnknownModelError;
+    expect(err.providers).toEqual([]);
+    expect(err.message).toContain("(none configured)");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -270,6 +307,69 @@ approval_policy = "never"
 
   test("rejects malformed TOML with TomlParseError", () => {
     expect(() => parseToml(`model =`)).toThrow(TomlParseError);
+  });
+
+  test("duplicate key assignment warns + keeps last-write-wins", () => {
+    const warnings: Array<{
+      key: string;
+      previousValue: unknown;
+      newValue: unknown;
+    }> = [];
+    const out = parseToml(
+      `model = "first"\nmodel = "second"\n`,
+      {
+        onDuplicateKey: (w) => {
+          warnings.push({
+            key: w.key,
+            previousValue: w.previousValue,
+            newValue: w.newValue,
+          });
+        },
+      },
+    );
+    expect(out.model).toBe("second");
+    expect(warnings).toEqual([
+      { key: "model", previousValue: "first", newValue: "second" },
+    ]);
+  });
+
+  test("duplicate key fires with fully-qualified dotted path under [table]", () => {
+    const warnings: string[] = [];
+    const out = parseToml(
+      `
+[mcp_servers.github]
+command = "gh-a"
+command = "gh-b"
+      `,
+      { onDuplicateKey: (w) => warnings.push(w.key) },
+    );
+    const servers = out.mcp_servers as Record<string, Record<string, unknown>>;
+    expect(servers.github?.command).toBe("gh-b");
+    expect(warnings).toEqual(["mcp_servers.github.command"]);
+  });
+
+  test("table redefinition [foo] twice warns without throwing", () => {
+    const warnings: string[] = [];
+    const out = parseToml(
+      `
+[foo]
+a = 1
+
+[foo]
+b = 2
+      `,
+      { onDuplicateKey: (w) => warnings.push(w.key) },
+    );
+    const foo = out.foo as Record<string, unknown>;
+    expect(foo.a).toBe(1);
+    expect(foo.b).toBe(2);
+    expect(warnings).toEqual(["foo"]);
+  });
+
+  test("default onDuplicateKey handler is a no-op (no throw)", () => {
+    expect(() =>
+      parseToml(`model = "a"\nmodel = "b"\n`),
+    ).not.toThrow();
   });
 });
 
@@ -376,6 +476,41 @@ web_search = true
     const out = await loadConfig({ home: dir });
     expect(out.config.reasoning_effort).toBe("high");
     expect(out.config._unknown?.model_reasoning_effort).toBeUndefined();
+  });
+
+  test("duplicate key warns via onWarn, keeps last-write-wins", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `model = "grok-3"\nmodel = "grok-4-fast"\n`,
+    );
+    const warnings: string[] = [];
+    const out = await loadConfig({
+      home: dir,
+      onWarn: (m) => warnings.push(m),
+    });
+    expect(out.exists).toBe(true);
+    expect(out.parseError).toBeUndefined();
+    expect(out.config.model).toBe("grok-4-fast");
+    expect(
+      warnings.some(
+        (w) => w.includes("duplicate key") && w.includes(`"model"`),
+      ),
+    ).toBe(true);
+  });
+
+  test("UTF-8 BOM-prefixed config.toml parses cleanly (I-81)", async () => {
+    // Windows editors often save config.toml with a UTF-8 BOM. The
+    // loader must route through readTextFile so the BOM is stripped
+    // before parseToml sees the bytes.
+    writeFileSync(
+      join(dir, "config.toml"),
+      `\uFEFFmodel = "grok-3"\nmax_turns = 12\n`,
+      "utf8",
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.parseError).toBeUndefined();
+    expect(out.config.model).toBe("grok-3");
+    expect(out.config.max_turns).toBe(12);
   });
 });
 
@@ -647,5 +782,37 @@ describe("ConfigStore", () => {
     await store.reload();
     expect(good).toHaveBeenCalledTimes(1);
     expect(warnings.some((w) => w.includes("subscriber threw"))).toBe(true);
+  });
+
+  test("concurrent reload() calls both resolve, last-finisher snapshot wins", async () => {
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "config.toml");
+    writeFileSync(path, `model = "first"\n`);
+
+    const store = new ConfigStore({ home: dir, env: {} });
+
+    // Fire #1 against the on-disk contents, then rewrite the file and
+    // fire #2 before #1 settles. Both calls share a loader that reads
+    // the file lazily inside the promise, so the second reload observes
+    // the updated content.
+    const first = store.reload();
+    writeFileSync(path, `model = "second"\n`);
+    const second = store.reload();
+
+    // Neither promise rejects.
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.model).toBeDefined();
+    expect(b.model).toBeDefined();
+
+    // Both inputs land as valid AgenCConfig values. Which model name
+    // each promise observes depends on FS race ordering on the host,
+    // but the store's final snapshot must equal the value returned by
+    // whichever reload settled last.
+    const finalSnapshot = store.current();
+    expect(finalSnapshot.model === "first" || finalSnapshot.model === "second").toBe(true);
+    // Snapshot matches one of the two promise returns (no torn state).
+    expect(
+      finalSnapshot.model === a.model || finalSnapshot.model === b.model,
+    ).toBe(true);
   });
 });

@@ -23,8 +23,23 @@
 // This is enough for AgenC's config surface (codex + openclaude fields).
 // Unknown TOML values are still parsed and surfaced to the caller via
 // `normalizeRawConfig` (→ `_unknown` side-table).
+//
+// Duplicate-key handling (TOML 1.0 §6):
+//   TOML strictly forbids redefining a key or redeclaring a non-array-of-
+//   tables table. AgenC's posture is "don't hard-fail on config", so the
+//   parser intentionally adopts lenient-with-warn semantics: duplicate
+//   assignments and table redefinitions are accepted as last-write-wins,
+//   and the optional `onDuplicateKey` callback fires with the fully-
+//   qualified key path plus the previous/new values. Callers (loadConfig,
+//   ConfigStore) thread an `onWarn` sink down so operator-visible
+//   warnings surface without aborting boot. Default callback is a no-op
+//   so the parser remains usable outside the runtime.
+//
+// I-81: every utf8 file read at a runtime boundary routes through
+// `utils/file-read.ts::readTextFile` so UTF-8 BOM is stripped and line
+// endings are normalized before parsing; loadConfig below uses that
+// helper instead of a raw `fs.readFile` to preserve the invariant.
 
-import { readFile } from "node:fs/promises";
 import { resolve as pathResolve } from "node:path";
 import type { AgenCConfig } from "./schema.js";
 import {
@@ -34,6 +49,7 @@ import {
   normalizeRawConfig,
 } from "./schema.js";
 import { resolveAgencHome } from "./env.js";
+import { readTextFile } from "../utils/file-read.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Parser
@@ -55,14 +71,38 @@ export class TomlParseError extends Error {
   }
 }
 
+/**
+ * Fired on duplicate-key assignment or table redefinition. `key` is the
+ * fully qualified dotted path (e.g. `"mcp_servers.github.command"`);
+ * `previousValue` / `newValue` are the pre- and post-write values.
+ * Lenient-with-warn (see file header): the parser keeps last-write-wins,
+ * so `newValue` is what lands in the parsed tree.
+ */
+export interface TomlDuplicateKeyWarning {
+  readonly key: string;
+  readonly previousValue: TomlValue;
+  readonly newValue: TomlValue;
+  readonly line: number;
+}
+
+export type TomlDuplicateKeyHandler = (
+  warning: TomlDuplicateKeyWarning,
+) => void;
+
 interface ParseState {
   src: string;
   pos: number;
   line: number;
+  onDuplicateKey: TomlDuplicateKeyHandler;
 }
 
-function newState(src: string): ParseState {
-  return { src, pos: 0, line: 1 };
+function newState(
+  src: string,
+  onDuplicateKey: TomlDuplicateKeyHandler = () => {
+    /* lenient-with-warn default: no-op. */
+  },
+): ParseState {
+  return { src, pos: 0, line: 1, onDuplicateKey };
 }
 
 function peek(s: ParseState, ahead = 0): string {
@@ -311,7 +351,7 @@ function parseInlineTable(
     }
     advance(s);
     const value = parseValue(s);
-    setNested(out, keyPath, value, s.line);
+    setNested(s, out, keyPath, value, keyPath);
     skipWhitespaceInline(s);
     if (peek(s) === ",") {
       advance(s);
@@ -329,11 +369,22 @@ function parseInlineTable(
   throw new TomlParseError("unterminated inline table", s.line);
 }
 
+/**
+ * Assign `value` at `path` inside `root`. On leaf collision (duplicate
+ * key assignment) the previous value is overwritten last-write-wins and
+ * `s.onDuplicateKey` is fired with the fully-qualified dotted path
+ * joined from `qualifiedPath` (caller-supplied so warnings carry the
+ * absolute path — e.g. `mcp_servers.github.command` — rather than a
+ * table-local slice). Intermediate path collisions with a non-table
+ * value still throw `TomlParseError` because overwriting a scalar with
+ * a table would silently reshape the document.
+ */
 function setNested(
+  s: ParseState,
   root: Record<string, TomlValue>,
   path: string[],
   value: TomlValue,
-  line: number,
+  qualifiedPath: string[],
 ): void {
   let cur: Record<string, TomlValue> = root;
   for (let i = 0; i < path.length - 1; i += 1) {
@@ -352,11 +403,21 @@ function setNested(
     } else {
       throw new TomlParseError(
         `key path collision at "${path.slice(0, i + 1).join(".")}"`,
-        line,
+        s.line,
       );
     }
   }
-  cur[path[path.length - 1]!] = value;
+  const leaf = path[path.length - 1]!;
+  if (Object.prototype.hasOwnProperty.call(cur, leaf)) {
+    const previousValue = cur[leaf]!;
+    s.onDuplicateKey({
+      key: qualifiedPath.join("."),
+      previousValue,
+      newValue: value,
+      line: s.line,
+    });
+  }
+  cur[leaf] = value;
 }
 
 function ensureTablePath(
@@ -415,10 +476,32 @@ function ensureArrayOfTables(
   return fresh;
 }
 
-export function parseToml(src: string): Record<string, TomlValue> {
+export interface ParseTomlOptions {
+  /**
+   * Fires on duplicate key assignment or `[header]` table redeclaration.
+   * Lenient-with-warn semantics (see file header): the duplicate is
+   * accepted last-write-wins; this callback surfaces the collision so
+   * the caller can emit an operator-visible warning.
+   */
+  readonly onDuplicateKey?: TomlDuplicateKeyHandler;
+}
+
+export function parseToml(
+  src: string,
+  options?: ParseTomlOptions,
+): Record<string, TomlValue> {
   const root: Record<string, TomlValue> = {};
-  const s = newState(src);
+  const s = newState(src, options?.onDuplicateKey);
   let currentTable = root;
+  // Path prefix of the currently-selected table, tracked so duplicate-
+  // key warnings fired from `setNested` carry a fully-qualified dotted
+  // path (`mcp_servers.github.command`) instead of a table-local slice.
+  let currentTablePath: string[] = [];
+  // Tracks `[header]` tables declared explicitly so a second
+  // declaration of the same table header fires the duplicate-key
+  // warning. Implicit intermediate tables created by dotted
+  // keys/headers don't count as a declaration.
+  const declaredTables = new Set<string>();
 
   while (s.pos < s.src.length) {
     // Skip leading whitespace / blank lines / comments.
@@ -455,6 +538,7 @@ export function parseToml(src: string): Record<string, TomlValue> {
       }
       skipLine(s);
       currentTable = ensureArrayOfTables(root, path, s.line);
+      currentTablePath = path;
       continue;
     }
 
@@ -473,7 +557,26 @@ export function parseToml(src: string): Record<string, TomlValue> {
         throw new TomlParseError("trailing content after ']'", s.line);
       }
       skipLine(s);
-      currentTable = ensureTablePath(root, path, s.line);
+      const qualified = path.join(".");
+      if (declaredTables.has(qualified)) {
+        // TOML 1.0 §6: table redefinition is a spec error. Lenient-
+        // with-warn: surface the collision but keep traversing into
+        // the same table so subsequent keys land in the existing
+        // subtree. The duplicate's previous/new values coincide
+        // because the target table object is shared.
+        const existing = ensureTablePath(root, path, s.line);
+        s.onDuplicateKey({
+          key: qualified,
+          previousValue: existing,
+          newValue: existing,
+          line: s.line,
+        });
+        currentTable = existing;
+      } else {
+        currentTable = ensureTablePath(root, path, s.line);
+        declaredTables.add(qualified);
+      }
+      currentTablePath = path;
       continue;
     }
 
@@ -488,7 +591,10 @@ export function parseToml(src: string): Record<string, TomlValue> {
     }
     advance(s);
     const value = parseValue(s);
-    setNested(currentTable, keyPath, value, s.line);
+    setNested(s, currentTable, keyPath, value, [
+      ...currentTablePath,
+      ...keyPath,
+    ]);
     skipWhitespaceInline(s);
     if (peek(s) === "#") skipLine(s);
     else if (peek(s) === "\n") advance(s);
@@ -544,7 +650,11 @@ export async function loadConfig(
 
   let raw: string;
   try {
-    raw = await readFile(path, "utf8");
+    // I-81 + I-80: route through `readTextFile` so UTF-8 BOM is
+    // stripped and line endings normalize to LF before the TOML
+    // parser sees the bytes. Matches the raw-readFile ENOENT path
+    // exactly — `readTextFile` re-throws the ErrnoException untouched.
+    raw = await readTextFile(path);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
@@ -565,7 +675,14 @@ export async function loadConfig(
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = parseToml(raw) as Record<string, unknown>;
+    parsed = parseToml(raw, {
+      onDuplicateKey: (warning) => {
+        onWarn(
+          `[agenc:config] duplicate key "${warning.key}" at ${path}:` +
+            `${warning.line} (last-write-wins)`,
+        );
+      },
+    }) as Record<string, unknown>;
   } catch (error) {
     const msg =
       error instanceof Error ? error.message : String(error);
