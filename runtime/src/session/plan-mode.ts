@@ -52,6 +52,10 @@
 import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
 import type { EventMsg } from "./event-log.js";
+import {
+  extractProposedPlanText,
+  stripCitations,
+} from "../llm/stream-parser.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Minimal types (T11 replaces with protocol-authoritative shapes)
@@ -531,12 +535,12 @@ export function flushAssistantTextSegmentsAll(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * If `item` is an assistant message that contains a proposed-plan block,
- * finalize the plan item from its text.
+ * If `item` is an assistant message that contains a proposed-plan
+ * block, finalize the plan item from its text.
  *
- * Codex calls `extract_proposed_plan_text` from the stream parser. We
- * mirror that with a minimal regex that matches `<plan>…</plan>` or the
- * sentinel that the parser emits. T11 swaps in the real extractor.
+ * Mirrors codex `maybe_complete_plan_item_from_message`: use the shared
+ * proposed-plan parser contract and strip citations from the finalized
+ * plan text before emitting completion.
  */
 export function maybeCompletePlanItemFromMessage(
   session: Session,
@@ -550,40 +554,17 @@ export function maybeCompletePlanItemFromMessage(
   for (const entry of content) {
     if (entry.type === "output_text" && typeof entry.text === "string") {
       text += entry.text;
-    } else if (
-      entry.type === undefined &&
-      typeof entry.text === "string"
-    ) {
-      text += entry.text;
     }
   }
   const planText = extractProposedPlanText(text);
-  if (planText === undefined) {
-    // Fall back: if the stream already buffered plan deltas, close with
-    // the accumulated text so downstream sees a single `plan_item_done`.
-    if (state.planItemState.started && !state.planItemState.completed) {
-      completePlanItemWithText(
-        session,
-        ctx,
-        state,
-        state.planItemState.accumulatedText,
-      );
-      return true;
-    }
-    return false;
-  }
+  if (planText === undefined) return false;
+
+  const { visibleText: strippedPlanText } = stripCitations(planText);
   if (!state.planItemState.started) {
     startPlanItem(session, ctx, state);
   }
-  completePlanItemWithText(session, ctx, state, planText);
+  completePlanItemWithText(session, ctx, state, strippedPlanText);
   return true;
-}
-
-/** Minimal stand-in for codex `extract_proposed_plan_text`. */
-function extractProposedPlanText(text: string): string | undefined {
-  const match = text.match(/<plan>([\s\S]*?)<\/plan>/i);
-  if (!match) return undefined;
-  return match[1]!.trim();
 }
 
 // ─────────────────────────────────────────────────────────────────────

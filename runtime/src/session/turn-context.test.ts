@@ -18,6 +18,7 @@ import {
   codexHome,
   deepFreeze,
   deriveFileSystemSandboxPolicyForMode,
+  deriveNetworkSandboxPolicyForMode,
   imageGenerationToolAuthAllowed,
   isChatgptAuth,
   newDefaultTurn,
@@ -183,7 +184,7 @@ describe("SessionConfiguration helpers", () => {
     expect(a.cwd).toBe("/tmp");
   });
 
-  test("apply: cwd-only update preserves fileSystemSandboxPolicy", () => {
+  test("apply: cwd-only update preserves richer fileSystemSandboxPolicy", () => {
     const current = mkSessionConfiguration();
     const next = applySessionConfiguration(current, { cwd: "/workspace/v2" });
     expect(next.cwd).toBe("/workspace/v2");
@@ -194,6 +195,23 @@ describe("SessionConfiguration helpers", () => {
     expect(next.fileSystemSandboxPolicy.denyWrite).toEqual([
       "/workspace/secrets",
     ]);
+  });
+
+  test("apply: cwd-only update reroots legacy-derived fileSystemSandboxPolicy", () => {
+    const current: SessionConfiguration = {
+      ...mkSessionConfiguration(),
+      cwd: "/workspace/v1",
+      sandboxPolicy: { value: "workspace_write" },
+      fileSystemSandboxPolicy: deriveFileSystemSandboxPolicyForMode(
+        "workspace_write",
+        "/workspace/v1",
+      ),
+    };
+    const next = applySessionConfiguration(current, { cwd: "/workspace/v2" });
+    expect(next.cwd).toBe("/workspace/v2");
+    expect(next.fileSystemSandboxPolicy).toEqual(
+      deriveFileSystemSandboxPolicyForMode("workspace_write", "/workspace/v2"),
+    );
   });
 
   test("apply: approval + sandbox policy fields merge correctly", () => {
@@ -221,6 +239,12 @@ describe("SessionConfiguration helpers", () => {
     );
     expect(next.fileSystemSandboxPolicy.allowWrite).toEqual([current.cwd]);
     expect(next.fileSystemSandboxPolicy.denyWrite).toEqual([]);
+    expect(next.networkSandboxPolicy).toEqual(
+      deriveNetworkSandboxPolicyForMode(
+        "workspace_write",
+        current.networkSandboxPolicy,
+      ),
+    );
   });
 
   test("apply: empty updates returns an equivalent configuration", () => {
@@ -383,13 +407,39 @@ describe("applySessionConfiguration sandbox cascade", () => {
     expect(next.fileSystemSandboxPolicy.allowWrite).toEqual(["/workspace/v2"]);
   });
 
-  test("deriveFileSystemSandboxPolicyForMode is the exported helper", () => {
+  test("sandbox change refreshes networkSandboxPolicy from the new sandbox mode", () => {
+    const current: SessionConfiguration = {
+      ...mkSessionConfiguration(),
+      sandboxPolicy: { value: "read_only" },
+      networkSandboxPolicy: {
+        allowlist: ["api.example.com"],
+        denylist: ["blocked.example.com"],
+        allowManagedDomainsOnly: false,
+        enabled: false,
+      },
+    };
+    const next = applySessionConfiguration(current, {
+      sandboxPolicy: "danger_full_access",
+    });
+    expect(next.networkSandboxPolicy).toEqual({
+      allowlist: ["api.example.com"],
+      denylist: ["blocked.example.com"],
+      allowManagedDomainsOnly: false,
+      enabled: true,
+    });
+  });
+
+  test("derived sandbox-policy helpers are exported", () => {
     expect(
       deriveFileSystemSandboxPolicyForMode("workspace_write", "/w").allowWrite,
     ).toEqual(["/w"]);
     expect(
       deriveFileSystemSandboxPolicyForMode("read_only", "/w").denyWrite,
     ).toEqual(["/w"]);
+    expect(deriveNetworkSandboxPolicyForMode("danger_full_access").enabled).toBe(
+      true,
+    );
+    expect(deriveNetworkSandboxPolicyForMode("read_only").enabled).toBe(false);
   });
 });
 
@@ -432,12 +482,83 @@ describe("codex-parity turn-builder helpers", () => {
     expect(session.config.model).toBe(originalModel);
   });
 
+  test("buildPerTurnConfig rebuilds from SessionConfiguration original config and overlays session fields", () => {
+    const originalConfig: Config = {
+      ...mkConfig(),
+      cwd: "/original-cwd",
+      modelReasoningEffort: "low",
+      modelReasoningSummary: "none",
+      serviceTier: "base-tier",
+      personality: "base-personality",
+      approvalsReviewer: "base-reviewer",
+      permissions: {
+        ...mkConfig().permissions,
+        allowLoginShell: false,
+      },
+    };
+    const session = mkSessionForTurn({
+      config: {
+        ...mkConfig(),
+        cwd: "/live-cwd",
+        modelReasoningEffort: "none",
+        permissions: {
+          ...mkConfig().permissions,
+          allowLoginShell: true,
+        },
+      },
+      sessionConfiguration: {
+        ...mkSessionConfiguration(),
+        cwd: "/session-cwd",
+        collaborationMode: { model: "test-model", reasoningEffort: "high" },
+        modelReasoningSummary: "detailed",
+        serviceTier: "priority",
+        personality: "session-personality",
+        approvalsReviewer: "session-reviewer",
+        originalConfigDoNotUse: originalConfig,
+      },
+    });
+
+    const snap = buildPerTurnConfig(session);
+
+    expect(snap.cwd).toBe("/session-cwd");
+    expect(snap.modelReasoningEffort).toBe("high");
+    expect(snap.modelReasoningSummary).toBe("detailed");
+    expect(snap.serviceTier).toBe("priority");
+    expect(snap.personality).toBe("session-personality");
+    expect(snap.approvalsReviewer).toBe("session-reviewer");
+    expect(snap.permissions.allowLoginShell).toBe(false);
+    expect(session.config.permissions.allowLoginShell).toBe(true);
+  });
+
   test("newDefaultTurnWithSubId uses the supplied sub-id and produces a frozen config", () => {
-    const session = mkSessionForTurn();
+    const session = mkSessionForTurn({
+      config: {
+        ...mkConfig(),
+        cwd: "/live-cwd",
+        permissions: {
+          ...mkConfig().permissions,
+          allowLoginShell: true,
+        },
+      },
+      sessionConfiguration: {
+        ...mkSessionConfiguration(),
+        cwd: "/session-cwd",
+        originalConfigDoNotUse: {
+          ...mkConfig(),
+          cwd: "/original-cwd",
+          permissions: {
+            ...mkConfig().permissions,
+            allowLoginShell: false,
+          },
+        },
+      },
+    });
     const ctx = newDefaultTurnWithSubId(session, "sub-fixed");
     expect(ctx.subId).toBe("sub-fixed");
     expect(Object.isFrozen(ctx.config)).toBe(true);
-    expect(ctx.cwd).toBe(session.sessionConfiguration.cwd);
+    expect(ctx.cwd).toBe("/session-cwd");
+    expect(ctx.config.cwd).toBe("/session-cwd");
+    expect(ctx.config.permissions.allowLoginShell).toBe(false);
   });
 
   test("newDefaultTurn allocates a sub-id via the session allocator", () => {

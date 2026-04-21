@@ -60,14 +60,14 @@ describe('microCompact MCP tool compaction', () => {
   // built-in and MCP tools are treated consistently.
 
   test('module exports load correctly', async () => {
-    const mod = await import('./microCompact.js')
-    expect(mod.microcompactMessages).toBeFunction()
-    expect(mod.estimateMessageTokens).toBeFunction()
-    expect(mod.evaluateTimeBasedTrigger).toBeFunction()
+    const mod = await import('./micro-compact.js')
+    expect(typeof mod.microcompactMessages).toBe('function')
+    expect(typeof mod.estimateMessageTokens).toBe('function')
+    expect(typeof mod.evaluateTimeBasedTrigger).toBe('function')
   })
 
   test('estimateMessageTokens counts MCP tool_use blocks', async () => {
-    const { estimateMessageTokens } = await import('./microCompact.js')
+    const { estimateMessageTokens } = await import('./micro-compact.js')
 
     const builtinMessages: Message[] = [
       assistantWithToolUse('Read', 'tool-builtin-1'),
@@ -92,7 +92,7 @@ describe('microCompact MCP tool compaction', () => {
   })
 
   test('microcompactMessages processes MCP tools without error', async () => {
-    const { microcompactMessages } = await import('./microCompact.js')
+    const { microcompactMessages } = await import('./micro-compact.js')
 
     const messages: Message[] = [
       assistantWithToolUse('mcp__slack__send_message', 'tool-mcp-2'),
@@ -109,7 +109,7 @@ describe('microCompact MCP tool compaction', () => {
   })
 
   test('microcompactMessages processes mixed built-in and MCP tools', async () => {
-    const { microcompactMessages } = await import('./microCompact.js')
+    const { microcompactMessages } = await import('./micro-compact.js')
 
     const messages: Message[] = [
       assistantWithToolUse('Read', 'tool-read-1'),

@@ -26,10 +26,11 @@
 
 import type { AgentControl } from "../agents/control.js";
 import type { MCPManager } from "../mcp-client/manager.js";
+import { monotonicMs } from "../utils/monotonic.js";
 import { emitWarning } from "./event-log.js";
 import type { Session } from "./session.js";
 
-/** Outer wall-clock budget for the full lifecycle teardown (ms). */
+/** Outer monotonic budget for the full lifecycle teardown (ms). */
 export const SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS = 5_000;
 
 export interface SessionLifecycleOpts {
@@ -58,7 +59,7 @@ export async function shutdownSessionLifecycle(
 ): Promise<void> {
   const budgetMs =
     opts.shutdownBudgetMs ?? SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS;
-  const deadline = Date.now() + budgetMs;
+  const deadlineMs = monotonicMs() + budgetMs;
 
   // Step 1: quiesce.
   if (!opts.session.abortController.signal.aborted) {
@@ -70,7 +71,7 @@ export async function shutdownSessionLifecycle(
   if (opts.agentControl) {
     await raceBudget(
       opts.agentControl.shutdownAll("session_shutdown"),
-      deadline,
+      deadlineMs,
       "agent_control_shutdown",
       opts.session,
     );
@@ -79,7 +80,7 @@ export async function shutdownSessionLifecycle(
   // Step 3: I-33 + I-87 mailbox drain via Session.shutdown().
   await raceBudget(
     opts.session.shutdown(),
-    deadline,
+    deadlineMs,
     "session_inner_shutdown",
     opts.session,
   );
@@ -89,7 +90,7 @@ export async function shutdownSessionLifecycle(
     try {
       await raceBudget(
         opts.mcpManager.stop(),
-        deadline,
+        deadlineMs,
         "mcp_manager_stop",
         opts.session,
       );
@@ -110,11 +111,11 @@ export async function shutdownSessionLifecycle(
 
 async function raceBudget(
   task: Promise<void>,
-  deadline: number,
+  deadlineMs: number,
   step: string,
   session: Session,
 ): Promise<void> {
-  const remaining = Math.max(0, deadline - Date.now());
+  const remaining = Math.max(0, deadlineMs - monotonicMs());
   if (remaining <= 0) {
     emitWarning(
       session.eventLog,

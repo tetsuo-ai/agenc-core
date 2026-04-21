@@ -55,15 +55,12 @@ describe("compactCommand", () => {
     }
   });
 
-  it("runs or stays pending when no turn is active", async () => {
+  it("runs when no turn is active", async () => {
     const session = stubSession({ activeTurn: null });
     const outcome = await runCompact(session, "");
-    // The compact/ tree is typecheck-excluded in the current build, so
-    // the dynamic import may or may not succeed. Either "ran" (import
-    // worked) or "pending" (import failed silently) is acceptable, but
-    // the outcome MUST NOT be "blocked" when no turn is active.
-    expect(outcome.kind).not.toBe("blocked");
-    expect(["ran", "pending"]).toContain(outcome.kind);
+    // T4 gap 1: the cleanup import is now static and wired end-to-end,
+    // so the outcome MUST be "ran" on the happy path.
+    expect(outcome.kind).toBe("ran");
   });
 
   it("returns a compact result when no turn is active", async () => {
@@ -103,11 +100,8 @@ describe("compactCommand", () => {
       formatCompactOutcome({ kind: "ran", instructions: "tighten" }),
     ).toMatch(/tighten/);
     expect(
-      formatCompactOutcome({ kind: "pending", instructions: "" }),
-    ).toMatch(/pending T5b/);
-    expect(
-      formatCompactOutcome({ kind: "pending", instructions: "note me" }),
-    ).toMatch(/note me/);
+      formatCompactOutcome({ kind: "error", cause: "boom" }),
+    ).toMatch(/Compaction failed: boom/);
   });
 
   it("does not mention branded references in output strings", async () => {

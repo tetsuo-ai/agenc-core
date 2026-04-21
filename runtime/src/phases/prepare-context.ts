@@ -27,11 +27,14 @@
  *      and cumulative tokens cross the blocking limit.
  *
  * The compact-boundary projection is live in T5; the compaction
- * pipeline stages 2-7 call into `runtime/src/llm/compact/**` which is
- * typecheck-excluded until T5b/T6 (see `tsconfig.json` exclude block).
- * The call sites are present below as runtime-dynamic invocations
- * through `safeCompactRequire()`. When the exclude is lifted, the
- * stages light up without this file changing.
+ * pipeline stages 2-7 call into `runtime/src/llm/compact/**` via
+ * literal-path dynamic imports (`safeCompactImport`) so tsup traces
+ * each stage module into the runtime bundle. I-18 is reachable
+ * through stage 6 (`autoCompactIfNeeded` -> `compactConversation` ->
+ * `assertCompactionShrank`), so a near-identity summary on the
+ * autocompact path throws `CompactionShrinkRatioError`, which the
+ * caller's catch uses to bump the
+ * `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3` circuit breaker.
  *
  * Invariants wired:
  *   I-2  (clearResponseId on compact) — handled by
@@ -48,20 +51,56 @@ import type { Config, TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 
 /**
- * Dynamic loader for the compact/ subsystem. Compact/ lives under a
- * typecheck exclude until T5b/T6 lifts it, so we cannot import at the
- * top level without breaking typecheck. `require` at runtime is the
- * AgenC translation of openclaude's feature-guarded `require('./...')`
- * pattern. Result is `null` if the module tree fails to resolve (its
- * external deps aren't in place yet) — callers treat that as "stage
+ * Dynamic loader for the compact/ subsystem. Each compact stage is
+ * loaded through a literal-path dynamic `import()` so tsup/esbuild
+ * traces the module into the runtime bundle (variable-path dynamic
+ * imports are NOT traced). Result is `null` when the module tree
+ * fails to resolve at runtime — callers treat that as "stage
  * disabled", matching openclaude's feature-off behavior.
+ *
+ * Historical: the previous `safeCompactRequire` helper silently
+ * swallowed every load failure. That hid real module-evaluation
+ * regressions (a compact stage throwing at import time looked
+ * identical to a stage not yet wired). Runtime `MODULE_NOT_FOUND` /
+ * `ERR_MODULE_NOT_FOUND` is the only benign failure mode here and is
+ * still silent, because with literal dynamic imports those only fire
+ * when the bundler genuinely did not trace the module (legitimate
+ * "stage disabled"). Every other error path now emits
+ * `warning:compact_stage_failed` so silent regressions can't hide.
+ *
+ * `stageLabel` is embedded in the emitted warning so operators can
+ * see which compaction stage failed without decoding bundler paths.
  */
-function safeCompactRequire<T = unknown>(specifier: string): T | null {
+async function safeCompactImport<T = unknown>(
+  stageLabel: "snip_compact" | "micro_compact" | "auto_compact",
+  loader: () => Promise<unknown>,
+  session?: Session,
+): Promise<T | null> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require(specifier);
+    const mod = await loader();
     return mod as T;
-  } catch {
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+    // Expected when the bundler legitimately tree-shook this stage
+    // (no import graph ties to it) — stays silent to avoid per-turn
+    // warning spam.
+    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") {
+      session?.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "compact_stage_failed",
+            message: `compact stage ${stageLabel} failed to load: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          },
+        },
+      });
+    }
     return null;
   }
 }
@@ -346,12 +385,13 @@ export async function prepareContext(
   // Stage 1: compact-boundary projection (openclaude query.ts:369).
   let messagesForQuery = getMessagesAfterCompactBoundary(state.messages);
 
-  // Stages 2-7: compaction pipeline. Each stage is a runtime-dynamic
-  // call into `runtime/src/llm/compact/**` which is typecheck-
-  // excluded until T5b/T6 lifts its external-dep stubs. Until then,
-  // safeCompactRequire returns null and the stage is a no-op. The
-  // control-flow shape (what order things fire, what happens on
-  // success, what happens on failure) is live.
+  // Stages 2-7: compaction pipeline. Stages 3/4/6 dynamically import
+  // into `runtime/src/llm/compact/**` via `safeCompactImport` so
+  // tsup/esbuild traces each stage module into the runtime bundle.
+  // A stage that fails to resolve returns `null` and becomes a no-op
+  // for that turn; a stage that resolves but throws during load or
+  // execution emits `warning:compact_stage_failed` with the stage
+  // label.
 
   // Stage 2 — I-88-driven tool-result budgeting (ports
   // openclaude `query.ts:~369` + `toolResultStorage.ts`).
@@ -399,8 +439,10 @@ export async function prepareContext(
 
   // Stage 3: snip compaction.
   let snipTokensFreed = 0;
-  const snipMod = safeCompactRequire<SnipCompactModule>(
-    "../llm/compact/snip-compact.js",
+  const snipMod = await safeCompactImport<SnipCompactModule>(
+    "snip_compact",
+    () => import("../llm/compact/snip-compact.js"),
+    session,
   );
   if (snipMod?.snipCompactIfNeeded) {
     try {
@@ -409,13 +451,19 @@ export async function prepareContext(
       snipTokensFreed = result.tokensFreed;
       state.snipTokensFreed = snipTokensFreed;
     } catch (error) {
+      // Real error emission (was silent in the pre-T4-gap helper).
+      // Unified `compact_stage_failed` cause keeps every compaction
+      // failure under one greppable event class — see the load-side
+      // emission in `safeCompactImport`.
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
           type: "warning",
           payload: {
-            cause: "snip_compact_failed",
-            message: error instanceof Error ? error.message : String(error),
+            cause: "compact_stage_failed",
+            message: `compact stage snip_compact threw: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         },
       });
@@ -423,8 +471,10 @@ export async function prepareContext(
   }
 
   // Stage 4: microCompact.
-  const microMod = safeCompactRequire<MicroCompactModule>(
-    "../llm/compact/micro-compact.js",
+  const microMod = await safeCompactImport<MicroCompactModule>(
+    "micro_compact",
+    () => import("../llm/compact/micro-compact.js"),
+    session,
   );
   if (microMod?.microcompactMessages) {
     try {
@@ -440,8 +490,10 @@ export async function prepareContext(
         msg: {
           type: "warning",
           payload: {
-            cause: "micro_compact_failed",
-            message: error instanceof Error ? error.message : String(error),
+            cause: "compact_stage_failed",
+            message: `compact stage micro_compact threw: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         },
       });
@@ -453,9 +505,19 @@ export async function prepareContext(
   // feature flag is unset by default in T5, so the call is a no-op
   // until the T7 context-collapse port lands.
 
-  // Stage 6: autoCompactIfNeeded.
-  const autoMod = safeCompactRequire<AutoCompactModule>(
-    "../llm/compact/auto-compact.js",
+  // Stage 6: autoCompactIfNeeded. Live caller-chain endpoint for
+  // I-18 (docs/plan/invariants.md:592-619): when the token threshold
+  // fires, `autoCompactIfNeeded` invokes `compactConversation`, which
+  // calls `assertCompactionShrank` at the tail. A near-identity
+  // summary throws `CompactionShrinkRatioError`; the inner catch in
+  // `auto-compact.ts` increments `consecutiveFailures` on the
+  // returned tracking state, and we thread that forward onto
+  // `state.autoCompactTracking` below so the circuit breaker honours
+  // `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3`.
+  const autoMod = await safeCompactImport<AutoCompactModule>(
+    "auto_compact",
+    () => import("../llm/compact/auto-compact.js"),
+    session,
   );
   if (autoMod?.autoCompactIfNeeded) {
     try {
@@ -500,13 +562,16 @@ export async function prepareContext(
         };
       }
     } catch (error) {
+      // Real error emission; unified cause with stages 3 & 4.
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
           type: "warning",
           payload: {
-            cause: "auto_compact_failed",
-            message: error instanceof Error ? error.message : String(error),
+            cause: "compact_stage_failed",
+            message: `compact stage auto_compact threw: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           },
         },
       });

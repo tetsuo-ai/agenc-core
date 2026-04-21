@@ -21,17 +21,17 @@ import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
 import {
   getDynamicConfig_BLOCKS_ON_INIT,
   getFeatureValue_CACHED_MAY_BE_STALE,
-} from '../analytics/growthbook.js'
-import { logEvent } from '../analytics/index.js'
+} from '../../services/analytics/growthbook.js'
+import { logEvent } from '../../services/analytics/index.js'
 import {
   isSessionMemoryEmpty,
   truncateSessionMemoryForCompact,
-} from '../SessionMemory/prompts.js'
+} from '../../services/SessionMemory/prompts.js'
 import {
   getLastSummarizedMessageId,
   getSessionMemoryContent,
   waitForSessionMemoryExtraction,
-} from '../SessionMemory/sessionMemoryUtils.js'
+} from '../../services/SessionMemory/sessionMemoryUtils.js'
 import {
   annotateBoundaryWithPreservedSegment,
   buildPostCompactMessages,
@@ -135,7 +135,7 @@ async function initSessionMemoryCompactConfig(): Promise<void> {
 export function hasTextBlocks(message: Message): boolean {
   if (message.type === 'assistant') {
     const content = message.message.content
-    return content.some(block => block.type === 'text')
+    return content.some((block: any) => block.type === 'text')
   }
   if (message.type === 'user') {
     const content = message.message.content
@@ -143,7 +143,7 @@ export function hasTextBlocks(message: Message): boolean {
       return content.length > 0
     }
     if (Array.isArray(content)) {
-      return content.some(block => block.type === 'text')
+      return content.some((block: any) => block.type === 'text')
     }
   }
   return false

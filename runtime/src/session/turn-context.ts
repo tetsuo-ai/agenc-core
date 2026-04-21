@@ -126,6 +126,8 @@ export interface NetworkSandboxPolicy {
   readonly allowlist: ReadonlyArray<string>;
   readonly denylist: ReadonlyArray<string>;
   readonly allowManagedDomainsOnly: boolean;
+  /** T5 placeholder for codex `Enabled` vs `Restricted` network access. */
+  readonly enabled?: boolean;
 }
 
 /** Codex `NetworkProxy`. T13 (transport) lands real impl. */
@@ -258,7 +260,7 @@ export interface SessionConfiguration {
    * per-turn config. T10 replaces with the real typed config once the config
    * surface lands.
    */
-  readonly originalConfigDoNotUse?: unknown;
+  readonly originalConfigDoNotUse?: Config;
   /** Codex `metrics_service_name` — optional service name tag for metrics. */
   readonly metricsServiceName?: string;
   /** Codex `app_server_client_version`. Pairs with `appServerClientName`. */
@@ -334,6 +336,9 @@ export interface Config {
   readonly model: string;
   readonly modelReasoningEffort?: ReasoningEffort;
   readonly modelReasoningSummary?: ReasoningSummary;
+  readonly serviceTier?: string;
+  readonly personality?: Personality;
+  readonly approvalsReviewer?: string;
   readonly cwd: string;
   readonly features: ManagedFeatures;
   readonly multiAgentV2: {
@@ -822,18 +827,23 @@ export function threadConfigSnapshot(
  *
  *   - Legacy-FS-policy preservation on cwd-only updates. If only `cwd`
  *     changes and the current `fileSystemSandboxPolicy` matches the
- *     default derived from the legacy `sandboxPolicy`, re-derive from
- *     the new cwd; otherwise preserve the existing richer policy.
- *   - Sandbox-policy changes invalidate the derived split policy, so
- *     callers should rebuild it downstream (parity with codex's
- *     `from_legacy_sandbox_policy_preserving_deny_entries` path; here we
- *     simply do not overwrite it — the full rebuild lands with T11).
+ *     default derived from the legacy `sandboxPolicy`, re-derive it for
+ *     the new cwd; otherwise preserve the richer split policy unchanged.
+ *   - Sandbox-policy changes rebuild the derived network/filesystem
+ *     split policies from the new legacy sandbox mode.
  */
 export function applySessionConfiguration(
   current: SessionConfiguration,
   updates: SessionSettingsUpdate,
 ): SessionConfiguration {
   const next: Mutable<SessionConfiguration> = { ...current };
+  const fileSystemPolicyMatchesLegacy = fileSystemSandboxPolicyEquals(
+    current.fileSystemSandboxPolicy,
+    deriveFileSystemSandboxPolicyForMode(
+      current.sandboxPolicy.value,
+      current.cwd,
+    ),
+  );
 
   if (updates.collaborationMode !== undefined) {
     next.collaborationMode = updates.collaborationMode;
@@ -867,6 +877,10 @@ export function applySessionConfiguration(
         ? { allowed: current.sandboxPolicy.allowed }
         : {}),
     };
+    next.networkSandboxPolicy = deriveNetworkSandboxPolicyForMode(
+      updates.sandboxPolicy,
+      current.networkSandboxPolicy,
+    );
     sandboxPolicyChanged = true;
   }
   if (updates.windowsSandboxLevel !== undefined) {
@@ -879,24 +893,23 @@ export function applySessionConfiguration(
     next.cwd = updates.cwd;
   }
 
-  // codex parity (session.rs `apply_sandbox_policy_changes`):
-  //   - sandbox policy changed -> rebuild fileSystemSandboxPolicy from
-  //     the new mode so downstream readers see a consistent split
-  //     policy. The full deny-entry-preserving rebuild lands with T11;
-  //     this intermediate mapping is faithful to codex's
-  //     `FileSystemSandboxPolicy::from_legacy_sandbox_policy` default
-  //     projection for each mode.
-  //   - cwd-only change (sandbox unchanged): never overwrite
-  //     `fileSystemSandboxPolicy`. The cwd change alone does not
-  //     invalidate the allow/deny lists the operator configured; richer
-  //     policies must survive a directory move unchanged.
+  // codex parity (session.rs `SessionConfiguration::apply`):
+  //   - sandbox policy changed -> rebuild the split filesystem policy
+  //     from the new legacy mode. T5 only has the default projection;
+  //     T11 wires the richer deny-entry-preserving variant.
+  //   - cwd-only change -> reroot only when the current split policy is
+  //     still the legacy-derived one; richer policies survive unchanged.
   if (sandboxPolicyChanged) {
     next.fileSystemSandboxPolicy = deriveFileSystemSandboxPolicyForMode(
       next.sandboxPolicy.value,
       next.cwd,
     );
+  } else if (cwdChanged && fileSystemPolicyMatchesLegacy) {
+    next.fileSystemSandboxPolicy = deriveFileSystemSandboxPolicyForMode(
+      next.sandboxPolicy.value,
+      next.cwd,
+    );
   }
-  void cwdChanged;
 
   if (updates.appServerClientName !== undefined) {
     next.appServerClientName = updates.appServerClientName;
@@ -963,6 +976,43 @@ export function deriveFileSystemSandboxPolicyForMode(
         denyRead: [],
       };
   }
+}
+
+/**
+ * Rebuild a `NetworkSandboxPolicy` from a legacy `SandboxPolicy`.
+ *
+ * Codex's real network policy is binary (`Enabled` vs `Restricted`).
+ * T5 keeps the placeholder allow/deny lists untouched and mirrors the
+ * binary state via `enabled` so sandbox-policy updates do not leave a
+ * stale per-session network snapshot behind.
+ */
+export function deriveNetworkSandboxPolicyForMode(
+  mode: SandboxPolicy,
+  current?: NetworkSandboxPolicy,
+): NetworkSandboxPolicy {
+  const enabled = mode === "danger_full_access";
+  return {
+    allowlist: current?.allowlist ?? [],
+    denylist: current?.denylist ?? [],
+    allowManagedDomainsOnly: current?.allowManagedDomainsOnly ?? false,
+    enabled,
+  };
+}
+
+function fileSystemSandboxPolicyEquals(
+  a: FileSystemSandboxPolicy,
+  b: FileSystemSandboxPolicy,
+): boolean {
+  return (
+    readonlyArrayEquals(a.allowWrite, b.allowWrite) &&
+    readonlyArrayEquals(a.denyWrite, b.denyWrite) &&
+    readonlyArrayEquals(a.allowRead, b.allowRead) &&
+    readonlyArrayEquals(a.denyRead, b.denyRead)
+  );
+}
+
+function readonlyArrayEquals<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1124,26 +1174,39 @@ export interface SessionForTurn {
 /**
  * Codex `Session::build_per_turn_config` (turn_context.rs:303).
  *
- * Returns a frozen `Config` snapshot for this turn. The snapshot is a
- * deep-clone-then-deep-freeze of the session's live `config`, with any
- * caller overrides layered on top before freeze. I-30: callers MUST
- * read the returned snapshot rather than the live session config for
- * the lifetime of the turn — mutating the snapshot throws.
+ * Returns a frozen `Config` snapshot for this turn. The snapshot is
+ * rebuilt from `SessionConfiguration` atop the original session config
+ * blob (`originalConfigDoNotUse`) when available, matching codex's
+ * `build_per_turn_config`, then caller overrides are layered on top
+ * before freeze. I-30: callers MUST read the returned snapshot rather
+ * than the live session config for the lifetime of the turn —
+ * mutating the snapshot throws.
  */
 export function buildPerTurnConfig(
   session: SessionForTurn,
   overrides?: Partial<Config>,
 ): Readonly<Config> {
-  const preservedFeatures = session.config.features;
-  const cloned = cloneConfigForSnapshot(session.config);
-  (cloned as Mutable<Config>).features = preservedFeatures;
+  const sourceConfig =
+    session.sessionConfiguration.originalConfigDoNotUse ?? session.config;
+  const cloned = cloneConfigForSnapshot(sourceConfig);
+  const mutableCloned = cloned as Mutable<Config>;
+  mutableCloned.features = sourceConfig.features;
+  mutableCloned.cwd = session.sessionConfiguration.cwd;
+  mutableCloned.modelReasoningEffort =
+    session.sessionConfiguration.collaborationMode.reasoningEffort;
+  mutableCloned.modelReasoningSummary =
+    session.sessionConfiguration.modelReasoningSummary;
+  mutableCloned.serviceTier = session.sessionConfiguration.serviceTier;
+  mutableCloned.personality = session.sessionConfiguration.personality;
+  mutableCloned.approvalsReviewer =
+    session.sessionConfiguration.approvalsReviewer;
   if (overrides !== undefined) {
     for (const key of Object.keys(overrides) as Array<keyof Config>) {
       const value = overrides[key];
       if (value !== undefined) {
         // Per-key assignment widens Config[keyof Config] to an intersection;
         // cast through `unknown` to sidestep TS's indexed-write narrowing.
-        (cloned as unknown as Record<string, unknown>)[key] = value;
+        (mutableCloned as unknown as Record<string, unknown>)[key] = value;
       }
     }
   }
@@ -1161,6 +1224,7 @@ export function newDefaultTurnWithSubId(
   session: SessionForTurn,
   subId: string,
 ): TurnContext {
+  const perTurnConfig = buildPerTurnConfig(session);
   // I-30 snapshot: read the registry exactly once at turn construction.
   // Evaluator I-3 re-reads stay on the live registry; this snapshot is
   // only for per-turn observers that need to know the mode that was
@@ -1169,7 +1233,7 @@ export function newDefaultTurnWithSubId(
   return buildTurnContext({
     conversationId: session.conversationId,
     subId,
-    config: session.config,
+    config: perTurnConfig,
     modelInfo: session.modelInfo,
     provider: session.provider,
     sessionConfiguration: session.sessionConfiguration,

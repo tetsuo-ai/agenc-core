@@ -196,7 +196,7 @@ describe("flushAssistantTextSegmentsAll", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("maybeCompletePlanItemFromMessage", () => {
-  test("fires plan-complete event when message contains <plan> block", () => {
+  test("fires plan-complete event when message contains a proposed_plan block", () => {
     const { session, events } = mkSession();
     const ctx = mkCtx("plan");
     const state = createPlanModeStreamState("turn-xyz");
@@ -208,8 +208,15 @@ describe("maybeCompletePlanItemFromMessage", () => {
       content: [
         {
           type: "output_text",
-          text:
-            "Here is my plan:\n<plan>1. Explore\n2. Build\n3. Verify</plan>\nok.",
+          text: [
+            "Here is my plan:",
+            "<proposed_plan>",
+            "1. Explore",
+            "2. Build",
+            "3. Verify",
+            "</proposed_plan>",
+            "ok.",
+          ].join("\n"),
         },
       ],
     });
@@ -224,7 +231,37 @@ describe("maybeCompletePlanItemFromMessage", () => {
     }
   });
 
-  test("no-op when message has no plan block and no accumulated deltas", () => {
+  test("strips citations from the finalized proposed plan text", () => {
+    const { session, events } = mkSession();
+    const ctx = mkCtx("plan");
+    const state = createPlanModeStreamState("turn-xyz");
+    state.planItemState.started = true;
+
+    const completed = maybeCompletePlanItemFromMessage(session, ctx, state, {
+      role: "assistant",
+      content: [
+        {
+          type: "output_text",
+          text: [
+            "<proposed_plan>",
+            "1. Explore <oai-mem-citation>doc-1</oai-mem-citation>",
+            "</proposed_plan>",
+          ].join("\n"),
+        },
+      ],
+    });
+
+    expect(completed).toBe(true);
+    const planEvents = events.filter(
+      (e) => e.msg.type === "plan_item_completed",
+    );
+    expect(planEvents.length).toBe(1);
+    if (planEvents[0]?.msg.type === "plan_item_completed") {
+      expect(planEvents[0].msg.payload.finalText).toBe("1. Explore \n");
+    }
+  });
+
+  test("no-op when message has no proposed_plan block and no accumulated deltas", () => {
     const { session, events } = mkSession();
     const ctx = mkCtx("plan");
     const state = createPlanModeStreamState("turn-xyz");
@@ -239,6 +276,23 @@ describe("maybeCompletePlanItemFromMessage", () => {
     expect(events.length).toBe(0);
   });
 
+  test("does not complete from accumulated plan deltas when the final message lacks a proposed_plan block", () => {
+    const { session, events } = mkSession();
+    const ctx = mkCtx("plan");
+    const state = createPlanModeStreamState("turn-xyz");
+    state.planItemState.started = true;
+    state.planItemState.accumulatedText = "1. Explore\n2. Build\n";
+
+    const completed = maybeCompletePlanItemFromMessage(session, ctx, state, {
+      role: "assistant",
+      content: [{ type: "output_text", text: "No embedded plan block here." }],
+    });
+
+    expect(completed).toBe(false);
+    expect(state.planItemState.completed).toBe(false);
+    expect(events.length).toBe(0);
+  });
+
   test("ignores non-assistant roles", () => {
     const { session, events } = mkSession();
     const ctx = mkCtx("plan");
@@ -246,7 +300,7 @@ describe("maybeCompletePlanItemFromMessage", () => {
 
     const completed = maybeCompletePlanItemFromMessage(session, ctx, state, {
       role: "user",
-      content: [{ type: "output_text", text: "<plan>nope</plan>" }],
+      content: [{ type: "output_text", text: "<proposed_plan>\nnope\n</proposed_plan>" }],
     });
 
     expect(completed).toBe(false);
@@ -343,7 +397,13 @@ describe("plan EventMsg variants (T12 Wave 4-C)", () => {
       content: [
         {
           type: "output_text",
-          text: "Plan follows.\n<plan>1. Explore\n2. Build</plan>",
+          text: [
+            "Plan follows.",
+            "<proposed_plan>",
+            "1. Explore",
+            "2. Build",
+            "</proposed_plan>",
+          ].join("\n"),
         },
       ],
     });

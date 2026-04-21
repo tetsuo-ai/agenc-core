@@ -223,17 +223,20 @@ class InitCleanupStack {
  * init step, which in turn throws InitAbortedError; the top-level
  * catcher runs reverse-cleanup before exit.
  */
-function installInitSignalHandlers(initAbort: AbortController): () => void {
+export function installInitSignalHandlers(
+  initAbort: AbortController,
+  proc: Pick<NodeJS.Process, "once" | "removeListener"> = process,
+): () => void {
   const onSigInt = () => initAbort.abort("SIGINT during init");
   const onSigTerm = () => initAbort.abort("SIGTERM during init");
   const onSigHup = () => initAbort.abort("SIGHUP during init");
-  process.once("SIGINT", onSigInt);
-  process.once("SIGTERM", onSigTerm);
-  process.once("SIGHUP", onSigHup);
+  proc.once("SIGINT", onSigInt);
+  proc.once("SIGTERM", onSigTerm);
+  proc.once("SIGHUP", onSigHup);
   return () => {
-    process.removeListener("SIGINT", onSigInt);
-    process.removeListener("SIGTERM", onSigTerm);
-    process.removeListener("SIGHUP", onSigHup);
+    proc.removeListener("SIGINT", onSigInt);
+    proc.removeListener("SIGTERM", onSigTerm);
+    proc.removeListener("SIGHUP", onSigHup);
   };
 }
 
@@ -241,16 +244,24 @@ function installInitSignalHandlers(initAbort: AbortController): () => void {
 // I-52: validate AGENC_HOME / $HOME/.agenc writable before anything else.
 // ─────────────────────────────────────────────────────────────────────
 
-function validateAgencHome(): string {
-  const explicit = process.env.AGENC_HOME;
-  const home = explicit ?? (process.env.HOME ? `${process.env.HOME}/.agenc` : "");
+export function validateAgencHome(
+  env: NodeJS.ProcessEnv = process.env,
+  mkdir: typeof mkdirSync = mkdirSync,
+): string {
+  const explicit = env.AGENC_HOME;
+  const home =
+    explicit && explicit.length > 0
+      ? explicit
+      : env.HOME && env.HOME.length > 0
+        ? `${env.HOME}/.agenc`
+        : "";
   if (!home) {
     throw new Error(
       "HOME unset and AGENC_HOME unset — set AGENC_HOME to a writable dir",
     );
   }
   try {
-    mkdirSync(home, { recursive: true });
+    mkdir(home, { recursive: true });
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "EROFS" || code === "EACCES") {
@@ -280,6 +291,7 @@ export interface ConfigReloadLatch {
 export function installSignalHandlers(
   getSession: () => Session | null,
   configReloadLatch: ConfigReloadLatch,
+  proc: Pick<NodeJS.Process, "once" | "on"> = process,
 ): void {
   // Wave 5-B: tear the Ink tree down before we abort the session so a
   // lingering renderer can't paint into a terminal that's about to be
@@ -292,18 +304,18 @@ export function installSignalHandlers(
     }
   };
   // I-45: SIGTERM — orderly shutdown, exit 0.
-  process.once("SIGTERM", () => {
+  proc.once("SIGTERM", () => {
     unmountActiveInk();
     getSession()?.abortTerminal("signal_received");
   });
   // I-46: SIGHUP — same path as stdin loss (T12 wires the stdin handler).
-  process.once("SIGHUP", () => {
+  proc.once("SIGHUP", () => {
     unmountActiveInk();
     getSession()?.abortTerminal("stdin_lost");
   });
   // I-47: SIGUSR1 — config reload requested (takes effect next turn per I-30).
   //       SIGUSR2 — state dump to ~/.agenc/diag-<pid>-<ts>.json (T-future).
-  process.on("SIGUSR1", () => {
+  proc.on("SIGUSR1", () => {
     // T10 Group I: latch only. The between-turn drain runs the real
     // ConfigStore.reload() + clearSystemPromptSections() + emits a
     // warning event once the current turn (if any) completes.
@@ -319,7 +331,7 @@ export function installSignalHandlers(
       },
     });
   });
-  process.on("SIGUSR2", () => {
+  proc.on("SIGUSR2", () => {
     // T-future: dump session state. Logged as a warning so we can audit.
     getSession()?.emit({
       id: "startup",

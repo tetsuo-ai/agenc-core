@@ -133,17 +133,26 @@ describe("App", () => {
     unmount();
   });
 
-  test("adjustPending re-renders consumers with updated count", async () => {
+  test("permissionQueueOps.push re-renders consumers with the queued request", async () => {
     const session = createFakeSession("default");
-    const counts: number[] = [];
+    const queueSnapshots: number[] = [];
     function Consumer(): null {
-      const { pendingRequests, adjustPending } = useAgenCAppState();
-      counts.push(pendingRequests);
+      const { pendingRequests, permissionQueueOps } = useAgenCAppState();
+      queueSnapshots.push(pendingRequests.length);
       React.useEffect(() => {
-        // Trigger one increment on mount so the consumer observes a
-        // post-mount re-render from mutation.
-        adjustPending(1);
-      }, [adjustPending]);
+        // Push a synthetic pending request on mount so the consumer
+        // observes a post-mount re-render from the queue mutation —
+        // same intent as the old adjustPending test, now exercising
+        // the real queue surface.
+        permissionQueueOps.push({
+          requestId: "req-1",
+          toolName: "Bash",
+          toolInput: { command: "ls" },
+          turnId: "turn-1",
+          message: "test",
+          submittedAt: Date.now(),
+        });
+      }, [permissionQueueOps]);
       return null;
     }
     const { unmount } = await mount(
@@ -155,8 +164,8 @@ describe("App", () => {
       </AgenCAppStateProvider>,
     );
     await new Promise((r) => setTimeout(r, 20));
-    expect(counts[0]).toBe(0);
-    expect(counts).toContain(1);
+    expect(queueSnapshots[0]).toBe(0);
+    expect(queueSnapshots).toContain(1);
     unmount();
   });
 

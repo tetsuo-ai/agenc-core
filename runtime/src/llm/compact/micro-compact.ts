@@ -17,9 +17,9 @@ import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../analytics/index.js'
-import { notifyCacheDeletion } from '../api/promptCacheBreakDetection.js'
-import { roughTokenCountEstimation } from '../tokenEstimation.js'
+} from '../../services/analytics/index.js'
+import { notifyCacheDeletion } from '../../services/api/promptCacheBreakDetection.js'
+import { roughTokenCountEstimation } from '../../services/tokenEstimation.js'
 import {
   clearCompactWarningSuppression,
   suppressCompactWarning,
@@ -59,22 +59,22 @@ function isCompactableTool(name: string): boolean {
 
 // Lazy-initialized cached MC module and state to avoid importing in external builds.
 // The imports and state live inside feature() checks for dead code elimination.
-let cachedMCModule: typeof import('./cachedMicrocompact.js') | null = null
-let cachedMCState: import('./cachedMicrocompact.js').CachedMCState | null = null
+let cachedMCModule: typeof import('./cached-micro-compact.js') | null = null
+let cachedMCState: import('./cached-micro-compact.js').CachedMCState | null = null
 let pendingCacheEdits:
-  | import('./cachedMicrocompact.js').CacheEditsBlock
+  | import('./cached-micro-compact.js').CacheEditsBlock
   | null = null
 
 async function getCachedMCModule(): Promise<
-  typeof import('./cachedMicrocompact.js')
+  typeof import('./cached-micro-compact.js')
 > {
   if (!cachedMCModule) {
-    cachedMCModule = await import('./cachedMicrocompact.js')
+    cachedMCModule = await import('./cached-micro-compact.js')
   }
   return cachedMCModule
 }
 
-function ensureCachedMCState(): import('./cachedMicrocompact.js').CachedMCState {
+function ensureCachedMCState(): import('./cached-micro-compact.js').CachedMCState {
   if (!cachedMCState && cachedMCModule) {
     cachedMCState = cachedMCModule.createCachedMCState()
   }
@@ -92,7 +92,7 @@ function ensureCachedMCState(): import('./cachedMicrocompact.js').CachedMCState 
  * Clears the pending state (caller must pin them after insertion).
  */
 export function consumePendingCacheEdits():
-  | import('./cachedMicrocompact.js').CacheEditsBlock
+  | import('./cached-micro-compact.js').CacheEditsBlock
   | null {
   const edits = pendingCacheEdits
   pendingCacheEdits = null
@@ -103,7 +103,7 @@ export function consumePendingCacheEdits():
  * Get all previously-pinned cache edits that must be re-sent at their
  * original positions for cache hits.
  */
-export function getPinnedCacheEdits(): import('./cachedMicrocompact.js').PinnedCacheEdits[] {
+export function getPinnedCacheEdits(): import('./cached-micro-compact.js').PinnedCacheEdits[] {
   if (!cachedMCState) {
     return []
   }
@@ -116,7 +116,7 @@ export function getPinnedCacheEdits(): import('./cachedMicrocompact.js').PinnedC
  */
 export function pinCacheEdits(
   userMessageIndex: number,
-  block: import('./cachedMicrocompact.js').CacheEditsBlock,
+  block: import('./cached-micro-compact.js').CacheEditsBlock,
 ): void {
   if (cachedMCState) {
     cachedMCState.pinnedEdits.push({ userMessageIndex, block })
@@ -478,7 +478,7 @@ function maybeTimeBasedMicrocompact(
       return message
     }
     let touched = false
-    const newContent = message.message.content.map(block => {
+    const newContent = message.message.content.map((block: any) => {
       if (
         block.type === 'tool_result' &&
         clearSet.has(block.tool_use_id) &&

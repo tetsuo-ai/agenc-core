@@ -238,6 +238,47 @@ describe("Session.setPendingProviderSwitch", () => {
   });
 });
 
+describe("Session.abortTerminal", () => {
+  it("emits turn_aborted with the real active turn id", async () => {
+    const session = buildSession();
+    await session.activeTurn.swap({
+      turnId: "turn-live",
+      startedAtMs: 123,
+      abortController: new AbortController(),
+    });
+
+    session.abortTerminal("stdin_lost");
+
+    const emitted = session.txEvent.tryRecv();
+    expect(emitted).toMatchObject({
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: "turn-live",
+          reason: "stdin_lost",
+        },
+      },
+    });
+  });
+
+  it("omits turnId when no turn is active", () => {
+    const session = buildSession();
+
+    session.abortTerminal("signal_received");
+
+    const emitted = session.txEvent.tryRecv();
+    expect(emitted).toMatchObject({
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: undefined,
+          reason: "signal_received",
+        },
+      },
+    });
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // TurnContext.permissionMode snapshot (I-30)
 // ─────────────────────────────────────────────────────────────────────

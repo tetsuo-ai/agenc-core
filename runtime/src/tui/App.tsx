@@ -1,91 +1,288 @@
 /**
  * AgenC TUI root React component.
  *
- * Wave 2 scope: layer the AgenC-side providers on top of the Ink
- * contexts that ship with the reconciler. The Ink class component in
- * `ink/components/App.tsx` is what gets mounted by `render()` at the
- * top of the tree; it already provides `TerminalSizeContext`,
- * `AppContext`, `StdinContext`, `TerminalFocusContext`, `ClockContext`,
- * and `CursorDeclarationContext` to all descendants. This component
- * therefore lives inside those six contexts — we do NOT wrap them
- * again here (wrapping them a second time would pin stale values).
- *
- * The provider stack this module owns, outer to inner:
+ * T12 closure: this module replaces the placeholder `[transcript]` /
+ * `[composer]` slots with the real, production-wired composition:
  *
  *     <AgenCAppStateProvider>
- *       <KeybindingProvider>
+ *       <KeybindingProvider bindings={...}>
  *         <OverlayProvider>
  *           <TUIRoot />
  *         </OverlayProvider>
  *       </KeybindingProvider>
  *     </AgenCAppStateProvider>
  *
- * `KeybindingProvider` comes from Wave 2-B's
- * `runtime/src/tui/keybindings/KeybindingContext.tsx` once that lands.
- * Until then we import the placeholder stub exported by
- * `./state/AppState.tsx`.
+ * `TUIRoot` itself now mounts:
+ *   - <Banner> — cockpit status row (mode/model/phase/plan/streaming).
+ *   - <MessageList> — transcript derived from `useQuery`'s PhaseEvent
+ *     stream through the `eventsToMessages` adapter.
+ *   - <Composer> — multi-line prompt input; submit calls
+ *     `session.submit?.(...)` when available, cancel calls
+ *     `session.abortTerminal?.('user_cancel')`.
+ *   - One <InteractiveHandler> per live pending permission request —
+ *     these are invisible orchestrators; the visible overlay is
+ *     pushed onto the overlay stack from inside the handler.
+ *   - The overlay stack itself, rendered after the main column so
+ *     modals (approval dialog, etc.) layer on top in document order
+ *     (Ink has no true absolute positioning).
+ *
+ * The real `KeybindingProvider` ships in
+ * `runtime/src/tui/keybindings/KeybindingContext.tsx`; the passthrough
+ * stub that used to live in `state/AppState.tsx` is retained only as a
+ * deprecated alias for legacy imports.
  */
 
-import React, { type ReactNode } from "react";
+import React, { useContext, useMemo, type ReactNode } from "react";
 
 import Box from "./ink/components/Box.js";
-import Text from "./ink/components/Text.js";
+import StdinContext from "./ink/components/StdinContext.js";
 
 import {
   AgenCAppStateProvider,
-  KeybindingProvider,
   useAgenCAppState,
   type ConfigStoreLike,
-  type SessionLike,
+  type SessionLike as AppStateSessionLike,
 } from "./state/AppState.js";
+import { KeybindingProvider } from "./keybindings/KeybindingContext.js";
+import type {
+  BindingContext,
+  BindingMap,
+} from "./keybindings/defaultBindings.js";
 import { OverlayProvider, useOverlayStack } from "./overlay/OverlayProvider.js";
 import { Banner } from "./cockpit/Banner.js";
+import { MessageList } from "./transcript/MessageList.js";
+import { Composer, type ComposerSession } from "./composer/Composer.js";
+import {
+  InteractiveHandler,
+  type InteractivePermissionRequest,
+  type InteractiveResolver,
+  type OverlayContextLike,
+} from "./permissions/InteractiveHandler.js";
+import { useQuery, type SessionLike as QuerySessionLike } from "./hooks/useQuery.js";
+import { eventsToMessages } from "./state/events-to-messages.js";
+import { isPlanActive, type PlanEvent } from "./state/plan-state.js";
+import type { PendingPermissionRequest } from "../permissions/context.js";
+
+// ────────────────────────────────────────────────────────────────────────
+// Public surface
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Structural type for the `<App>` `session` prop.
+ *
+ * The three nested consumers (`useQuery`, `InteractiveHandler`,
+ * `AgenCAppStateProvider`) each declare their own `SessionLike` with
+ * slightly different required/optional shapes for `activeTurn`. The
+ * widened `AppStateSessionLike` from `state/AppState.tsx` already
+ * declares every hook-only field as optional, which matches
+ * `InteractiveHandler`'s expectations and is structurally compatible
+ * with `useQuery` as long as the runtime actually wires those fields
+ * (the real Session class does; test stubs forward what they need).
+ *
+ * Rather than force every test stub to declare a non-null `activeTurn`
+ * and a required `abortTerminal`, App.tsx narrow-casts to the
+ * stricter `useQuery` shape at its single use site. `AppSessionLike`
+ * stays the widened alias so consumers like `main.tsx`'s
+ * `StdinLossSession` keep passing verbatim.
+ */
+export type AppSessionLike = AppStateSessionLike;
 
 export interface AppProps {
-  readonly session: SessionLike;
+  readonly session: AppSessionLike;
   readonly configStore: ConfigStoreLike;
-  /**
-   * Optional override for the keybinding map. Wave 2-B owns the real
-   * resolver; App.tsx just forwards whatever it receives through the
-   * placeholder provider.
-   */
-  readonly bindings?: unknown;
-  /**
-   * Model label shown in the cockpit banner. Wave 4-B will derive this
-   * from config/session state; Wave 2 accepts it as a prop so tests can
-   * drive the value directly.
-   */
+  /** Optional binding overrides. Forwarded to the real KeybindingProvider. */
+  readonly bindings?: Record<BindingContext, BindingMap>;
+  /** Model label shown in the cockpit banner. */
   readonly model?: string;
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// Adapters — wrap the structural `PendingPermissionRequest` in the
+// `InteractiveResolver` contract that `<InteractiveHandler>` consumes.
+// ────────────────────────────────────────────────────────────────────────
+
 /**
- * Thin placeholder for the three cockpit regions. Wave 3 (transcript)
- * and Waves 4-5 (cockpit + composer) fill these in; for now we render
- * empty slots with AgenC palette tags so later waves can slot cleanly.
+ * Shape we expect on a `PendingPermissionRequest` once the evaluator is
+ * wired (T12b/T13). The evaluator attaches a `resolveOnce` slot so the
+ * TUI can deliver the user's decision back to the awaiter. The shape
+ * is checked at runtime because T11's frozen `PendingPermissionRequest`
+ * interface does not yet declare the slot; keeping this adapter soft
+ * lets the TUI compile cleanly before the evaluator catches up.
  */
+interface EvaluatorLinkedRequest extends PendingPermissionRequest {
+  readonly resolveOnce?: InteractiveResolver;
+}
+
+/**
+ * Convert a queue item into the handler's expected request shape. When
+ * `resolveOnce` is missing (e.g. a stub pushed from a test that doesn't
+ * own the awaiter) we substitute a no-op resolver so the handler's
+ * unmount path still fires without dereferencing `undefined`.
+ */
+function toHandlerRequest(
+  request: EvaluatorLinkedRequest,
+): InteractivePermissionRequest {
+  const resolver =
+    request.resolveOnce ??
+    ({
+      claim: () => false,
+      isResolved: () => true,
+    } as InteractiveResolver);
+  return {
+    requestId: request.requestId,
+    toolName: request.toolName,
+    toolInput: request.toolInput,
+    turnId: request.turnId,
+    message: request.message,
+    resolveOnce: resolver,
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// TUIRoot — the real composition
+// ────────────────────────────────────────────────────────────────────────
+
 function TUIRoot({
   model,
 }: {
   readonly model?: string;
 }): React.ReactElement {
-  const { mode } = useAgenCAppState();
-  const { overlays } = useOverlayStack();
+  const { mode, session, pendingRequests } = useAgenCAppState();
+  // The AppState-side `SessionLike` is intentionally permissive (every
+  // hook-only field is optional) so tests can pass a tiny stub. useQuery
+  // wants `activeTurn` and `abortTerminal` as required fields; we cast
+  // here because the runtime contract (either the real Session or a
+  // test stub that implements useQuery's surface) is responsible for
+  // providing them. When they're missing, useQuery's internal
+  // `warnOnce` path no-ops gracefully.
+  const { events, isStreaming, submit } = useQuery(
+    session as unknown as QuerySessionLike,
+  );
+  const overlay = useOverlayStack();
+
+  // Derive transcript messages from phase events on every render. The
+  // adapter is pure and cheap, so useMemo's only job here is to keep
+  // referential identity stable for MessageList's sticky-scroll
+  // bookkeeping.
+  const messages = useMemo(() => eventsToMessages(events), [events]);
+
+  // Plan events live on the broader EventMsg stream, not PhaseEvent. The
+  // session will surface them through a parallel subscription once T13
+  // lands; for now we filter defensively so a future addition to
+  // PhaseEvent picks up automatically.
+  const planEvents = useMemo<readonly PlanEvent[]>(() => {
+    const out: PlanEvent[] = [];
+    for (const ev of events as readonly { readonly type?: unknown }[]) {
+      const type = (ev as { readonly type?: unknown }).type;
+      if (typeof type !== "string" || !type.startsWith("plan_")) continue;
+      // Translate event-log style `{type, payload}` rows into the
+      // PlanEvent-side `{kind, ...}` shape. Missing payloads leave the
+      // event on the cutting-room floor.
+      const payload = (ev as { readonly payload?: unknown }).payload;
+      if (payload && typeof payload === "object") {
+        out.push({ kind: type, ...(payload as object) } as PlanEvent);
+      }
+    }
+    return out;
+  }, [events]);
+  const hasPlanActive = isPlanActive(planEvents);
+
+  // Overlay context adapter. `InteractiveHandler` wants a minimal
+  // `push(node) => dispose` surface; the OverlayProvider exposes
+  // `pushOverlay(node) => id` + `popOverlay(id)`. Wrapping once here
+  // keeps the contract narrow for the handler.
+  const overlayAdapter = useMemo<OverlayContextLike>(
+    () => ({
+      push: (node: ReactNode) => {
+        const id = overlay.pushOverlay(node);
+        return () => overlay.popOverlay(id);
+      },
+    }),
+    [overlay],
+  );
+
+  // Build the Composer session adapter from whatever the caller passed.
+  // Composer needs `cwd` + optional `home`; the wider Session shape
+  // provides both when they're set. We fall back to `process.cwd()` so
+  // mention validation has something deterministic to work with.
+  const composerSession = useMemo<ComposerSession>(
+    () => ({
+      cwd:
+        typeof session.cwd === "string" && session.cwd.length > 0
+          ? session.cwd
+          : process.cwd(),
+      home:
+        typeof (session as { readonly home?: unknown }).home === "string"
+          ? ((session as { readonly home?: string }).home as string)
+          : undefined,
+    }),
+    [session],
+  );
+
+  // Mount one InteractiveHandler per pending request. Each handler
+  // owns its own lifecycle (grace race → overlay push → resolve), so
+  // a render pass with N pending items gives us N orchestrators.
+  const permissionHandlers = pendingRequests.map((req) => (
+    <InteractiveHandler
+      key={req.requestId}
+      request={toHandlerRequest(req as EvaluatorLinkedRequest)}
+      session={session}
+      overlayContext={overlayAdapter}
+    />
+  ));
+
+  const handleSubmit = (text: string): void => {
+    // `useQuery.submit` is a terminal-safe wrapper that logs if the
+    // underlying session doesn't expose a submit hook; dropped input
+    // is an observability signal, not a crash.
+    void submit(text).catch(() => {
+      // Submit failures surface through the session emit channel in
+      // real runs; swallow here so a rejected promise doesn't become
+      // an unhandled promise rejection in the Ink scheduler.
+    });
+  };
+
+  const handleCancel = (): void => {
+    try {
+      session.abortTerminal?.("user_cancel");
+    } catch {
+      // abortTerminal is best-effort; the composer already cleared
+      // its local buffer before calling us.
+    }
+  };
+
   return (
     <Box flexDirection="column">
       {/* cockpit region (top) */}
       <Box flexDirection="column">
-        <Banner mode={mode} model={model} />
+        <Banner
+          mode={mode}
+          model={model}
+          isStreaming={isStreaming}
+          hasPlanActive={hasPlanActive}
+        />
       </Box>
-      {/* transcript region (middle, flex:1) — filled by Wave 3 */}
+
+      {/* transcript region (middle, flex:1) */}
       <Box flexDirection="column" flexGrow={1}>
-        <Text dim>[transcript]</Text>
+        <MessageList messages={messages} isStreaming={isStreaming} />
       </Box>
-      {/* composer region (bottom) — filled by Wave 4-A */}
+
+      {/* composer region (bottom) */}
       <Box flexDirection="column">
-        <Text dim>[composer]</Text>
+        <Composer
+          session={composerSession}
+          onSubmit={handleSubmit}
+          onCancel={handleCancel}
+        />
       </Box>
-      {/* overlay stack — rendered above everything else */}
-      {overlays.map((entry) => (
+
+      {/* invisible orchestrators — one per pending permission request */}
+      {permissionHandlers}
+
+      {/* overlay stack rendered after the main column so modals appear
+          last in document order (Ink has no absolute positioning) */}
+      {overlay.overlays.map((entry) => (
         <OverlayFrame key={entry.id}>{entry.node}</OverlayFrame>
       ))}
     </Box>
@@ -96,6 +293,38 @@ function OverlayFrame({ children }: { readonly children: ReactNode }) {
   return <Box flexDirection="column">{children}</Box>;
 }
 
+// ────────────────────────────────────────────────────────────────────────
+// App provider stack
+// ────────────────────────────────────────────────────────────────────────
+
+/**
+ * Tiny adapter component: reads Ink's `StdinContext` (provided by the
+ * Ink root) and forwards its `internal_eventEmitter` to the AgenC
+ * `KeybindingProvider` so keypresses flow into the binding registry in
+ * production. When the Ink root isn't present (default context value),
+ * the default context's `internal_eventEmitter` is still a valid
+ * `EventEmitter` — it just never emits — so the provider safely
+ * no-ops until a real Ink root mounts above.
+ */
+function KeybindingsFromStdin({
+  bindings,
+  children,
+}: {
+  readonly bindings?: Record<BindingContext, BindingMap>;
+  readonly children: ReactNode;
+}): React.ReactElement {
+  const stdinCtx = useContext(StdinContext);
+  const emitter = stdinCtx.internal_eventEmitter;
+  return (
+    <KeybindingProvider
+      {...(bindings ? { bindings } : {})}
+      stdinContext={{ internal_eventEmitter: emitter }}
+    >
+      {children}
+    </KeybindingProvider>
+  );
+}
+
 export const App: React.FC<AppProps> = ({
   session,
   configStore,
@@ -104,13 +333,34 @@ export const App: React.FC<AppProps> = ({
 }) => {
   return (
     <AgenCAppStateProvider session={session} configStore={configStore}>
-      <KeybindingProvider bindings={bindings}>
+      <KeybindingsFromStdin {...(bindings ? { bindings } : {})}>
         <OverlayProvider>
           <TUIRoot model={model} />
         </OverlayProvider>
-      </KeybindingProvider>
+      </KeybindingsFromStdin>
     </AgenCAppStateProvider>
   );
 };
 
 export default App;
+
+// Re-exported so tests that want to poke at the placeholder renderer
+// (or extend it with extra decorations like an ArtPanel) have a clean
+// import path.
+export { TUIRoot };
+
+/**
+ * TODO(T12b/T13): the evaluator must push onto
+ * `useAgenCAppState().permissionQueueOps` when a permission request is
+ * created. Today the queue starts empty and stays empty; once the
+ * evaluator bridge lands, a PendingPermissionRequest with a live
+ * `resolveOnce: InteractiveResolver` will appear here and
+ * InteractiveHandler will drive it through the modal.
+ *
+ * TODO(T12b/T13): plan events currently arrive through the EventMsg
+ * channel (`{type:'plan_started', payload:{...}}`) on the runtime side,
+ * not the PhaseEvent channel that useQuery subscribes to. Either surface
+ * plan events through useQuery's channel, or expose a second
+ * subscription for PlanProgress — this stub filter is a bridge, not a
+ * long-term shape.
+ */

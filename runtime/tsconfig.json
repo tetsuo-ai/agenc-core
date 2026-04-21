@@ -3,7 +3,8 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
+    "jsx": "react-jsx",
+    "lib": ["ES2023"],
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -18,7 +19,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "bun:bundle": ["./src/build/feature.ts"],
+      "src/*": ["./src/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": [
@@ -26,7 +32,6 @@
     "dist",
     "**/*.test.ts",
     "**/*.test.tsx",
-    "src/llm/compact/**/*.ts",
     "src/tui/**/*"
   ]
 }

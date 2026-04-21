@@ -11,14 +11,15 @@ import {
  * `codex-rs/utils/stream-parser/src/`:
  *
  *   - `citation.rs` / `strip_citations`         — <oai-mem-citation>…</oai-mem-citation>
- *   - `proposed_plan.rs` / `strip_proposed_plan_blocks` — <proposed_plan>…</proposed_plan>
+ *   - `proposed_plan.rs` / `strip_proposed_plan_blocks` — line-delimited
+ *        <proposed_plan>…</proposed_plan> blocks
  *   - `inline_hidden_tag.rs`                    — generic literal-tag stripper
  *
  * The codex parser handles streaming (partial chunks that split a tag
  * across a `push_str` boundary). Here we ship a full-string stripper
- * for each tag family plus a streaming `InlineHiddenTagParser` class
- * for phase-5 consumers that feed per-chunk output from the provider
- * stream.
+ * for each tag family, a streaming `InlineHiddenTagParser` for inline
+ * hidden tags, and a dedicated `ProposedPlanStreamParser` that
+ * preserves codex's line-based proposed-plan contract.
  *
  * Invariants covered here:
  *   I-54 (tool-call schema validation)      — T7 wires the Zod
@@ -27,11 +28,9 @@ import {
  *   I-77 (model UI-spoof sanitization)      — strip/extract runs
  *        before any TUI rendering.
  *
- * T7 tightens the streaming semantics (currently the streaming class
- * buffers a partial open tag at the end of a push_str but emits the
- * rest of the chunk unchanged). For T5 the synchronous/full-string
- * strip functions are exact-match with codex output on complete text;
- * the streaming class is a best-effort chunked emitter.
+ * T7 tightens the remaining streaming semantics for generic inline
+ * tags. For T5 the proposed-plan parser matches codex's finished-text
+ * behaviour and streaming tag-recognition contract.
  *
  * @module
  */
@@ -128,24 +127,226 @@ export function stripCitations(text: string): {
   };
 }
 
+export type ProposedPlanSegment =
+  | { readonly kind: "normal"; readonly text: string }
+  | { readonly kind: "proposed_plan_start" }
+  | { readonly kind: "proposed_plan_delta"; readonly text: string }
+  | { readonly kind: "proposed_plan_end" };
+
+const PROPOSED_PLAN_TAG = {
+  open: PLAN_OPEN,
+  close: PLAN_CLOSE,
+} as const;
+
+class TaggedLineParser {
+  private activeTag = false;
+  private detectTag = true;
+  private lineBuffer = "";
+
+  parse(delta: string): ProposedPlanSegment[] {
+    const segments: ProposedPlanSegment[] = [];
+    let run = "";
+
+    for (const ch of delta) {
+      if (this.detectTag) {
+        if (run.length > 0) {
+          this.pushText(run, segments);
+          run = "";
+        }
+        this.lineBuffer += ch;
+        if (ch === "\n") {
+          this.finishLine(segments);
+          continue;
+        }
+        const slug = this.lineBuffer.trimStart();
+        if (slug.length === 0 || this.isTagPrefix(slug)) {
+          continue;
+        }
+        const buffered = this.lineBuffer;
+        this.lineBuffer = "";
+        this.detectTag = false;
+        this.pushText(buffered, segments);
+        continue;
+      }
+
+      run += ch;
+      if (ch === "\n") {
+        this.pushText(run, segments);
+        run = "";
+        this.detectTag = true;
+      }
+    }
+
+    if (run.length > 0) {
+      this.pushText(run, segments);
+    }
+
+    return segments;
+  }
+
+  finish(): ProposedPlanSegment[] {
+    const segments: ProposedPlanSegment[] = [];
+    if (this.lineBuffer.length > 0) {
+      const buffered = this.lineBuffer;
+      this.lineBuffer = "";
+      const withoutNewline = buffered.endsWith("\n")
+        ? buffered.slice(0, -1)
+        : buffered;
+      const slug = withoutNewline.trimStart().trimEnd();
+
+      if (this.matchesOpen(slug) && !this.activeTag) {
+        pushProposedPlanSegment(segments, { kind: "proposed_plan_start" });
+        this.activeTag = true;
+      } else if (this.matchesClose(slug) && this.activeTag) {
+        pushProposedPlanSegment(segments, { kind: "proposed_plan_end" });
+        this.activeTag = false;
+      } else {
+        this.pushText(buffered, segments);
+      }
+    }
+    if (this.activeTag) {
+      pushProposedPlanSegment(segments, { kind: "proposed_plan_end" });
+      this.activeTag = false;
+    }
+    this.detectTag = true;
+    return segments;
+  }
+
+  private finishLine(segments: ProposedPlanSegment[]): void {
+    const line = this.lineBuffer;
+    this.lineBuffer = "";
+    const withoutNewline = line.endsWith("\n") ? line.slice(0, -1) : line;
+    const slug = withoutNewline.trimStart().trimEnd();
+
+    if (this.matchesOpen(slug) && !this.activeTag) {
+      pushProposedPlanSegment(segments, { kind: "proposed_plan_start" });
+      this.activeTag = true;
+      this.detectTag = true;
+      return;
+    }
+
+    if (this.matchesClose(slug) && this.activeTag) {
+      pushProposedPlanSegment(segments, { kind: "proposed_plan_end" });
+      this.activeTag = false;
+      this.detectTag = true;
+      return;
+    }
+
+    this.detectTag = true;
+    this.pushText(line, segments);
+  }
+
+  private pushText(text: string, segments: ProposedPlanSegment[]): void {
+    if (text.length === 0) return;
+    if (this.activeTag) {
+      pushProposedPlanSegment(segments, {
+        kind: "proposed_plan_delta",
+        text,
+      });
+      return;
+    }
+    pushProposedPlanSegment(segments, { kind: "normal", text });
+  }
+
+  private isTagPrefix(slug: string): boolean {
+    const trimmed = slug.trimEnd();
+    return (
+      PROPOSED_PLAN_TAG.open.startsWith(trimmed) ||
+      PROPOSED_PLAN_TAG.close.startsWith(trimmed)
+    );
+  }
+
+  private matchesOpen(slug: string): boolean {
+    return slug === PROPOSED_PLAN_TAG.open;
+  }
+
+  private matchesClose(slug: string): boolean {
+    return slug === PROPOSED_PLAN_TAG.close;
+  }
+}
+
+function pushProposedPlanSegment(
+  segments: ProposedPlanSegment[],
+  segment: ProposedPlanSegment,
+): void {
+  if (segment.kind === "normal") {
+    if (segment.text.length === 0) return;
+    const last = segments.at(-1);
+    if (last?.kind === "normal") {
+      segments[segments.length - 1] = {
+        kind: "normal",
+        text: last.text + segment.text,
+      };
+      return;
+    }
+    segments.push(segment);
+    return;
+  }
+
+  if (segment.kind === "proposed_plan_delta") {
+    if (segment.text.length === 0) return;
+    const last = segments.at(-1);
+    if (last?.kind === "proposed_plan_delta") {
+      segments[segments.length - 1] = {
+        kind: "proposed_plan_delta",
+        text: last.text + segment.text,
+      };
+      return;
+    }
+    segments.push(segment);
+    return;
+  }
+
+  segments.push(segment);
+}
+
+function mapProposedPlanSegments(
+  segments: ProposedPlanSegment[],
+): StreamTextChunk<ProposedPlanSegment> {
+  let visibleText = "";
+  for (const segment of segments) {
+    if (segment.kind === "normal") {
+      visibleText += segment.text;
+    }
+  }
+  return { visibleText, extracted: segments };
+}
+
 /**
  * Strip `<proposed_plan>…</proposed_plan>` blocks from a complete
  * string. Mirrors codex `strip_proposed_plan_blocks`.
  */
 export function stripProposedPlanBlocks(text: string): string {
-  return stripInlineHiddenTags(text, [
-    { tag: "proposed_plan", open: PLAN_OPEN, close: PLAN_CLOSE },
-  ]).visibleText;
+  const parser = new ProposedPlanStreamParser();
+  const out = parser.pushStr(text);
+  const tail = parser.finish();
+  return out.visibleText + tail.visibleText;
 }
 
 /**
- * Extract proposed_plan text content from a complete string.
+ * Extract proposed-plan text content from a complete string.
  * Mirrors codex `extract_proposed_plan_text`.
  */
-export function extractProposedPlanText(text: string): ReadonlyArray<string> {
-  return stripInlineHiddenTags(text, [
-    { tag: "proposed_plan", open: PLAN_OPEN, close: PLAN_CLOSE },
-  ]).extracted.map((e) => e.content);
+export function extractProposedPlanText(text: string): string | undefined {
+  const parser = new ProposedPlanStreamParser();
+  let planText = "";
+  let sawPlanBlock = false;
+  const extracted = [...parser.pushStr(text).extracted, ...parser.finish().extracted];
+  for (const segment of extracted) {
+    switch (segment.kind) {
+      case "proposed_plan_start":
+        sawPlanBlock = true;
+        planText = "";
+        break;
+      case "proposed_plan_delta":
+        planText += segment.text;
+        break;
+      case "normal":
+      case "proposed_plan_end":
+        break;
+    }
+  }
+  return sawPlanBlock ? planText : undefined;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -297,9 +498,15 @@ export class CitationStreamParser extends InlineHiddenTagParser<"citation"> {
   }
 }
 
-export class ProposedPlanStreamParser extends InlineHiddenTagParser<"proposed_plan"> {
-  constructor() {
-    super([{ tag: "proposed_plan", open: PLAN_OPEN, close: PLAN_CLOSE }]);
+export class ProposedPlanStreamParser {
+  private readonly parser = new TaggedLineParser();
+
+  pushStr(chunk: string): StreamTextChunk<ProposedPlanSegment> {
+    return mapProposedPlanSegments(this.parser.parse(chunk));
+  }
+
+  finish(): StreamTextChunk<ProposedPlanSegment> {
+    return mapProposedPlanSegments(this.parser.finish());
   }
 }
 

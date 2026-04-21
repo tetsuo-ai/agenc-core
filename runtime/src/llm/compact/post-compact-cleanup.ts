@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
 import { getUserContext } from '../../context.js'
+import { clearAllResponseIds } from '../grok/incremental.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
@@ -33,15 +34,7 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
   // compaction. Calls into the T5 grok incremental tracker registry.
   // Other providers register their trackers the same way; T13 extends
   // with per-adapter normalizers.
-  //
-  // The import is relative to runtime/src/llm/compact/ and resolves
-  // once the compact/** typecheck exclude is lifted (T5b/T6). Until
-  // then the call still runs at runtime because tsup bundles sources
-  // regardless of typecheck exclude status.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  ;(
-    require('../grok/incremental.js') as typeof import('../grok/incremental.js')
-  ).clearAllResponseIds()
+  clearAllResponseIds()
 
   // Subagents (agent:*) run in the same process and share module-level
   // state with the main thread. Only reset main-thread module-level state
@@ -57,7 +50,7 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     if (isMainThreadCompact) {
       /* eslint-disable @typescript-eslint/no-require-imports */
       ;(
-        require('../contextCollapse/index.js') as typeof import('../contextCollapse/index.js')
+        require('../../services/contextCollapse/index.js') as typeof import('../../services/contextCollapse/index.js')
       ).resetContextCollapse()
       /* eslint-enable @typescript-eslint/no-require-imports */
     }

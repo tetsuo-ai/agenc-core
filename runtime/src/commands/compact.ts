@@ -11,20 +11,20 @@
  * `/compact`.
  *
  * When no turn is active the command calls `runPostCompactCleanup`
- * (landing in T5b when the `compact/` typecheck exclude is lifted).
- * Until then the practical effect is an info message that compaction
- * is pending-wire, so the slash-command is discoverable and the
- * dispatcher does not crash on a missing implementation.
+ * which enforces I-2 (clear `previous_response_id` on every compaction)
+ * and related post-compact cache resets. The cleanup is imported
+ * statically now that the `compact/` typecheck exclude is lifted.
  *
  * Optional `instructions` argument (free-form text) is accepted and
- * forwarded to the compact pipeline once T5b wires it; for now it is
- * echoed back in the info message so `/help` users can see that the
- * arg is recognised.
+ * forwarded to the compact pipeline once the full compaction pass is
+ * wired; for now it is echoed back in the output so `/help` users can
+ * see that the arg is recognised.
  *
  * @module
  */
 
 import type { Session } from "../session/session.js";
+import { runPostCompactCleanup } from "../llm/compact/post-compact-cleanup.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -33,49 +33,25 @@ import {
 } from "./types.js";
 
 /**
- * Outcome of an attempted compaction. `pending` means the compact
- * pipeline is not wired yet (current T11 state); `ran` means
- * `runPostCompactCleanup` executed; `blocked` means the mid-stream
- * guard refused.
+ * Outcome of an attempted compaction. `ran` means
+ * `runPostCompactCleanup` executed successfully; `blocked` means the
+ * mid-stream guard refused; `error` means the cleanup itself threw
+ * (surfaced instead of being silently swallowed).
  */
 export type CompactOutcome =
-  | { readonly kind: "pending"; readonly instructions: string }
   | { readonly kind: "ran"; readonly instructions: string }
-  | { readonly kind: "blocked"; readonly reason: string };
-
-/**
- * Attempt to invoke `runPostCompactCleanup` from the compact module.
- * Returns true on success, false when the module is not yet reachable
- * from typecheck (T5b lifts the exclude).
- *
- * Kept as a dynamic import so this file stays typecheck-clean while the
- * `src/llm/compact/**` tree is excluded via tsconfig.
- */
-// TODO T5b: wire real runPostCompactCleanup once compact/ is un-excluded
-async function tryRunPostCompactCleanup(): Promise<boolean> {
-  try {
-    // Dynamic import through a variable path avoids a static dependency
-    // on the typecheck-excluded `src/llm/compact/**` tree (tsconfig
-    // exclude list). When T5b lifts the exclude this can become a
-    // regular top-of-file import.
-    const modulePath = "../llm/compact/post-compact-cleanup.js";
-    const mod = (await import(modulePath)) as {
-      runPostCompactCleanup?: (querySource?: unknown) => void;
-    };
-    if (typeof mod.runPostCompactCleanup === "function") {
-      mod.runPostCompactCleanup();
-      return true;
-    }
-    return false;
-  } catch {
-    // Module absent or failing to resolve — T5b wires this properly.
-    return false;
-  }
-}
+  | { readonly kind: "blocked"; readonly reason: string }
+  | { readonly kind: "error"; readonly cause: string };
 
 /**
  * Drive the compaction flow. Returns a structured outcome so tests can
  * assert on the decision without parsing the text message.
+ *
+ * Errors from `runPostCompactCleanup` are caught and returned as a
+ * structured `error` outcome instead of being silently swallowed —
+ * I-2 requires the `previous_response_id` clear to fire end-to-end on
+ * every `/compact`, so a swallowed failure would leave the invariant
+ * broken with no user-visible signal.
  */
 export async function runCompact(
   session: Session,
@@ -97,11 +73,13 @@ export async function runCompact(
     };
   }
 
-  const ran = await tryRunPostCompactCleanup();
-  if (ran) {
-    return { kind: "ran", instructions };
+  try {
+    runPostCompactCleanup();
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    return { kind: "error", cause };
   }
-  return { kind: "pending", instructions };
+  return { kind: "ran", instructions };
 }
 
 /**
@@ -115,14 +93,8 @@ export function formatCompactOutcome(outcome: CompactOutcome): string {
       return outcome.instructions.length > 0
         ? `Compaction complete. Custom instructions noted: ${outcome.instructions}`
         : "Compaction complete.";
-    case "pending":
-      return (
-        "Compaction requested, but the compact pipeline is not wired in " +
-        "this build (pending T5b/T6). No changes were made." +
-        (outcome.instructions.length > 0
-          ? ` Instructions captured for the future pipeline: ${outcome.instructions}`
-          : "")
-      );
+    case "error":
+      return `Compaction failed: ${outcome.cause}`;
   }
 }
 
@@ -134,7 +106,7 @@ export const compactCommand: SlashCommand = {
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
       const outcome = await runCompact(ctx.session, ctx.argsRaw);
-      if (outcome.kind === "blocked") {
+      if (outcome.kind === "blocked" || outcome.kind === "error") {
         return {
           kind: "error",
           message: formatCompactOutcome(outcome),

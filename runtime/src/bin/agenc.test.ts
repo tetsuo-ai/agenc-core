@@ -28,13 +28,18 @@ import { buildDelegateTool } from "./delegate-tool.js";
 import {
   PROVIDER_MODEL_CATALOG,
   TurnStateAccumulator,
+  __resetActiveInkUnmountForTest,
+  __setActiveInkUnmountForTest,
   buildExtractMemoriesViaSubagent,
+  installInitSignalHandlers,
+  installSignalHandlers,
   main,
   maybeReloadConfigBetweenTurns,
   parseExtractedMemoryCandidates,
   resolveModelOrExit,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
+  validateAgencHome,
   type ConfigReloadLatch,
 } from "./agenc.js";
 import { ConfigStore, defaultConfig } from "../config/index.js";
@@ -73,6 +78,38 @@ const HANDLE = {
   gitRoot: "/repo",
   created: true,
 };
+
+type MockProcess = Pick<NodeJS.Process, "once" | "on" | "removeListener">;
+
+function createMockSignalProcess(): {
+  proc: MockProcess;
+  onceHandlers: Map<string, () => void>;
+  onHandlers: Map<string, () => void>;
+  removeListener: ReturnType<typeof vi.fn>;
+} {
+  const onceHandlers = new Map<string, () => void>();
+  const onHandlers = new Map<string, () => void>();
+  const removeListener = vi.fn();
+  return {
+    proc: {
+      once: vi.fn((signal: string, handler: () => void) => {
+        onceHandlers.set(signal, handler);
+        return process;
+      }) as MockProcess["once"],
+      on: vi.fn((signal: string, handler: () => void) => {
+        onHandlers.set(signal, handler);
+        return process;
+      }) as MockProcess["on"],
+      removeListener: vi.fn((signal: string, handler: () => void) => {
+        removeListener(signal, handler);
+        return process;
+      }) as MockProcess["removeListener"],
+    },
+    onceHandlers,
+    onHandlers,
+    removeListener,
+  };
+}
 
 describe("parseSlashCommand", () => {
   it("returns null for non-slash input", () => {
@@ -665,8 +702,191 @@ afterEach(async () => {
     await rm(memTmpDir, { recursive: true, force: true });
     memTmpDir = undefined;
   }
+  vi.restoreAllMocks();
+  __resetActiveInkUnmountForTest();
   clearSystemPromptSections();
   _clearMemoryWriteLocksForTest();
+});
+
+describe("validateAgencHome", () => {
+  it("prefers a non-empty AGENC_HOME and creates the directory", async () => {
+    const base = await mkdtemp(join(tmpdir(), "agenc-home-explicit-"));
+    const explicitHome = join(base, "custom-home");
+    try {
+      expect(
+        validateAgencHome({
+          AGENC_HOME: explicitHome,
+          HOME: "/ignored",
+        } as NodeJS.ProcessEnv),
+      ).toBe(explicitHome);
+      await writeFile(join(explicitHome, "probe.txt"), "ok", "utf8");
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to $HOME/.agenc when AGENC_HOME is unset or empty", async () => {
+    const homeRoot = await mkdtemp(join(tmpdir(), "agenc-home-fallback-"));
+    const expectedHome = join(homeRoot, ".agenc");
+    try {
+      expect(
+        validateAgencHome({ HOME: homeRoot } as NodeJS.ProcessEnv),
+      ).toBe(expectedHome);
+      expect(
+        validateAgencHome({
+          AGENC_HOME: "",
+          HOME: homeRoot,
+        } as NodeJS.ProcessEnv),
+      ).toBe(expectedHome);
+      await writeFile(join(expectedHome, "probe.txt"), "ok", "utf8");
+    } finally {
+      await rm(homeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("throws a clear error when HOME and AGENC_HOME are both unset", () => {
+    expect(() => validateAgencHome({})).toThrow(
+      /HOME unset and AGENC_HOME unset/,
+    );
+  });
+
+  it("wraps EACCES and EROFS as actionable writable-dir failures", () => {
+    for (const code of ["EACCES", "EROFS"] as const) {
+      expect(() =>
+        validateAgencHome(
+          { AGENC_HOME: "/tmp/agenc-home" } as NodeJS.ProcessEnv,
+          (() => {
+            const err = new Error(`${code} failure`) as NodeJS.ErrnoException;
+            err.code = code;
+            throw err;
+          }) as typeof import("node:fs").mkdirSync,
+        ),
+      ).toThrow(new RegExp(`not writable \\(${code}\\)`));
+    }
+  });
+});
+
+describe("installInitSignalHandlers", () => {
+  it("maps init signals to abort reasons and unregisters the same handlers", () => {
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+      const { proc, onceHandlers, removeListener } = createMockSignalProcess();
+      const abort = new AbortController();
+      const uninstall = installInitSignalHandlers(abort, proc);
+
+      expect(onceHandlers.has(signal)).toBe(true);
+      onceHandlers.get(signal)!();
+      expect(abort.signal.aborted).toBe(true);
+      expect(abort.signal.reason).toBe(`${signal} during init`);
+
+      uninstall();
+      expect(removeListener).toHaveBeenCalledWith(
+        signal,
+        onceHandlers.get(signal),
+      );
+    }
+  });
+});
+
+describe("installSignalHandlers", () => {
+  it("SIGTERM unmounts Ink before aborting the terminal", () => {
+    const { proc, onceHandlers } = createMockSignalProcess();
+    const abortTerminal = vi.fn();
+    const unmount = vi.fn();
+    __setActiveInkUnmountForTest(unmount);
+
+    installSignalHandlers(
+      () =>
+        ({
+          abortTerminal,
+        }) as never,
+      { requested: false },
+      proc,
+    );
+
+    onceHandlers.get("SIGTERM")!();
+    expect(unmount).toHaveBeenCalledTimes(1);
+    expect(abortTerminal).toHaveBeenCalledWith("signal_received");
+    expect(unmount.mock.invocationCallOrder[0]).toBeLessThan(
+      abortTerminal.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("SIGHUP unmounts Ink before marking stdin_lost", () => {
+    const { proc, onceHandlers } = createMockSignalProcess();
+    const abortTerminal = vi.fn();
+    const unmount = vi.fn();
+    __setActiveInkUnmountForTest(unmount);
+
+    installSignalHandlers(
+      () =>
+        ({
+          abortTerminal,
+        }) as never,
+      { requested: false },
+      proc,
+    );
+
+    onceHandlers.get("SIGHUP")!();
+    expect(unmount).toHaveBeenCalledTimes(1);
+    expect(abortTerminal).toHaveBeenCalledWith("stdin_lost");
+    expect(unmount.mock.invocationCallOrder[0]).toBeLessThan(
+      abortTerminal.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("SIGUSR1 latches config reload and emits the documented warning", () => {
+    const { proc, onHandlers } = createMockSignalProcess();
+    const emit = vi.fn();
+    const latch: ConfigReloadLatch = { requested: false };
+
+    installSignalHandlers(
+      () =>
+        ({
+          emit,
+        }) as never,
+      latch,
+      proc,
+    );
+
+    onHandlers.get("SIGUSR1")!();
+    expect(latch.requested).toBe(true);
+    expect(emit).toHaveBeenCalledWith({
+      id: "startup",
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "config_reload_requested",
+          message: "config reload will take effect at next turn (I-30)",
+        },
+      },
+    });
+  });
+
+  it("SIGUSR2 emits the documented state-dump warning", () => {
+    const { proc, onHandlers } = createMockSignalProcess();
+    const emit = vi.fn();
+
+    installSignalHandlers(
+      () =>
+        ({
+          emit,
+        }) as never,
+      { requested: false },
+      proc,
+    );
+
+    onHandlers.get("SIGUSR2")!();
+    expect(emit).toHaveBeenCalledWith({
+      id: "startup",
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "state_dump_requested",
+          message: "state dump requested (T-future)",
+        },
+      },
+    });
+  });
 });
 
 async function setupMemoryDir(): Promise<{

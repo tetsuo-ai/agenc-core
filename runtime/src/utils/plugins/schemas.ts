@@ -1,0 +1,106 @@
+// @ts-nocheck
+// Stub — feature-gated path; real implementation lives in openclaude upstream.
+const __stubProxy: any = new Proxy(function __stub(..._args: any[]): any { return __stubProxy; }, {
+  get(target, prop) {
+    if (prop === 'then') return undefined;
+    if (prop === Symbol.toPrimitive) return () => '';
+    if (prop === Symbol.iterator) return function* () {};
+    if (prop === Symbol.asyncIterator) return async function* () {};
+    if (prop === 'length') return 0;
+    if (prop === 'size') return 0;
+    if (prop === 'cache') return new Map();
+    return __stubProxy;
+  },
+  apply() { return __stubProxy; },
+  construct() { return __stubProxy; },
+  has() { return true; },
+  set() { return true; },
+});
+export type ALLOWED_OFFICIAL_MARKETPLACE_NAMES<_T = any> = any;
+export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type BLOCKED_OFFICIAL_NAME_PATTERN<_T = any> = any;
+export const BLOCKED_OFFICIAL_NAME_PATTERN: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type CommandMetadata<_T = any> = any;
+export const CommandMetadata: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type CommandMetadataSchema<_T = any> = any;
+export const CommandMetadataSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type DependencyRefSchema<_T = any> = any;
+export const DependencyRefSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPlugin<_T = any> = any;
+export const InstalledPlugin: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPluginSchema<_T = any> = any;
+export const InstalledPluginSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPluginsFileSchema<_T = any> = any;
+export const InstalledPluginsFileSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPluginsFileSchemaV1<_T = any> = any;
+export const InstalledPluginsFileSchemaV1: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPluginsFileSchemaV2<_T = any> = any;
+export const InstalledPluginsFileSchemaV2: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPluginsFileV1<_T = any> = any;
+export const InstalledPluginsFileV1: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type InstalledPluginsFileV2<_T = any> = any;
+export const InstalledPluginsFileV2: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type KnownMarketplace<_T = any> = any;
+export const KnownMarketplace: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type KnownMarketplaceSchema<_T = any> = any;
+export const KnownMarketplaceSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type KnownMarketplacesFile<_T = any> = any;
+export const KnownMarketplacesFile: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type KnownMarketplacesFileSchema<_T = any> = any;
+export const KnownMarketplacesFileSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type LspServerConfigSchema<_T = any> = any;
+export const LspServerConfigSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type MarketplaceSource<_T = any> = any;
+export const MarketplaceSource: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type MarketplaceSourceSchema<_T = any> = any;
+export const MarketplaceSourceSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type OFFICIAL_GITHUB_ORG<_T = any> = any;
+export const OFFICIAL_GITHUB_ORG: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginAuthor<_T = any> = any;
+export const PluginAuthor: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginAuthorSchema<_T = any> = any;
+export const PluginAuthorSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginHooksSchema<_T = any> = any;
+export const PluginHooksSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginId<_T = any> = any;
+export const PluginId: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginIdSchema<_T = any> = any;
+export const PluginIdSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginInstallationEntry<_T = any> = any;
+export const PluginInstallationEntry: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginInstallationEntrySchema<_T = any> = any;
+export const PluginInstallationEntrySchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginManifest<_T = any> = any;
+export const PluginManifest: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginManifestChannel<_T = any> = any;
+export const PluginManifestChannel: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginManifestSchema<_T = any> = any;
+export const PluginManifestSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginMarketplace<_T = any> = any;
+export const PluginMarketplace: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginMarketplaceEntry<_T = any> = any;
+export const PluginMarketplaceEntry: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginMarketplaceEntrySchema<_T = any> = any;
+export const PluginMarketplaceEntrySchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginMarketplaceSchema<_T = any> = any;
+export const PluginMarketplaceSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginScope<_T = any> = any;
+export const PluginScope: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginScopeSchema<_T = any> = any;
+export const PluginScopeSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginSource<_T = any> = any;
+export const PluginSource: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type PluginSourceSchema<_T = any> = any;
+export const PluginSourceSchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type SettingsPluginEntrySchema<_T = any> = any;
+export const SettingsPluginEntrySchema: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type isBlockedOfficialName<_T = any> = any;
+export const isBlockedOfficialName: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type isLocalMarketplaceSource<_T = any> = any;
+export const isLocalMarketplaceSource: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type isLocalPluginSource<_T = any> = any;
+export const isLocalPluginSource: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type isMarketplaceAutoUpdate<_T = any> = any;
+export const isMarketplaceAutoUpdate: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;
+export type validateOfficialNameSource<_T = any> = any;
+export const validateOfficialNameSource: { <T = any>(..._args: any[]): any; [k: string]: any; new (..._args: any[]): any } = __stubProxy as any;

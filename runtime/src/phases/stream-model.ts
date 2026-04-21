@@ -28,16 +28,173 @@
  * @module
  */
 
-import type { LLMMessage, LLMResponse, LLMStreamChunk, LLMToolCall } from "../llm/types.js";
+import type {
+  LLMChatOptions,
+  LLMMessage,
+  LLMResponse,
+  LLMStreamChunk,
+  LLMTool,
+  LLMToolCall,
+} from "../llm/types.js";
 import {
   installStreamWatchdog,
   STREAM_IDLE_ABORT_REASON,
 } from "../llm/stream-watchdog.js";
-import { sanitizeModelOutput } from "../llm/stream-parser.js";
+import {
+  CitationStreamParser,
+  ProposedPlanStreamParser,
+  sanitizeModelOutput,
+  stripCitations,
+  stripProposedPlanBlocks,
+} from "../llm/stream-parser.js";
 import { normalizeToolCallsForProvider } from "../llm/tool-call-normalize.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
+
+export interface StreamModelRequestContract {
+  readonly input: ReadonlyArray<LLMMessage>;
+  readonly tools: ReadonlyArray<LLMTool>;
+  readonly parallelToolCalls: boolean;
+  readonly baseInstructions: string;
+}
+
+interface AssistantDisplayState {
+  parser: AssistantVisibleTextStreamParser;
+  visibleText: string;
+  emittedVisibleText: string;
+  warnedMatches: Set<string>;
+}
+
+class AssistantVisibleTextStreamParser {
+  private readonly citations = new CitationStreamParser();
+  private readonly plan?: ProposedPlanStreamParser;
+
+  constructor(planMode: boolean) {
+    this.plan = planMode ? new ProposedPlanStreamParser() : undefined;
+  }
+
+  pushStr(chunk: string): string {
+    const citationChunk = this.citations.pushStr(chunk);
+    return this.pushVisibleText(citationChunk.visibleText);
+  }
+
+  finish(): string {
+    const citationChunk = this.citations.finish();
+    let visibleText = this.pushVisibleText(citationChunk.visibleText);
+    if (this.plan) {
+      visibleText += this.plan.finish().visibleText;
+    }
+    return visibleText;
+  }
+
+  private pushVisibleText(text: string): string {
+    if (!this.plan || text.length === 0) return text;
+    return this.plan.pushStr(text).visibleText;
+  }
+}
+
+function isPlanMode(ctx: TurnContext): boolean {
+  const permissionMode = (
+    ctx as TurnContext & {
+      sessionConfiguration?: {
+        permissionContext?: { mode?: string };
+      };
+    }
+  ).sessionConfiguration?.permissionContext?.mode;
+  if (permissionMode === "plan") return true;
+  return ctx.collaborationMode.model === "plan";
+}
+
+function toVisibleAssistantText(
+  rawText: string,
+  planMode: boolean,
+): { readonly text: string; readonly matches: ReadonlyArray<string> } {
+  const citationsStripped = stripCitations(rawText).visibleText;
+  const planVisibleText = planMode
+    ? stripProposedPlanBlocks(citationsStripped)
+    : citationsStripped;
+  const sanitized = sanitizeModelOutput(planVisibleText, { strict: true });
+  return {
+    text: sanitized.text,
+    matches: sanitized.matches,
+  };
+}
+
+function buildProviderMessages(
+  request: StreamModelRequestContract,
+): LLMMessage[] {
+  const input = [...request.input];
+  const baseInstructions = request.baseInstructions.trim();
+  if (
+    baseInstructions.length === 0 ||
+    input.some((message) => message.role === "system")
+  ) {
+    return input;
+  }
+  return [{ role: "system", content: baseInstructions }, ...input];
+}
+
+function buildProviderOptions(
+  request: StreamModelRequestContract,
+  ctx: TurnContext,
+  signal: AbortSignal,
+): LLMChatOptions {
+  const allowedToolNames = request.tools.map((spec) => spec.function.name);
+  return {
+    signal,
+    parallelToolCalls: request.parallelToolCalls,
+    toolRouting: { allowedToolNames },
+    reasoningEffort:
+      ctx.reasoningEffort && ctx.reasoningEffort !== "none"
+        ? ctx.reasoningEffort
+        : undefined,
+  };
+}
+
+function emitSpoofWarnings(
+  display: AssistantDisplayState,
+  matches: ReadonlyArray<string>,
+  session: Session,
+): void {
+  const unseen = matches.filter((label) => !display.warnedMatches.has(label));
+  if (unseen.length === 0) return;
+  for (const label of unseen) display.warnedMatches.add(label);
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "warning",
+      payload: {
+        cause: "model_ui_spoof_pattern",
+        message: `model output matched spoof pattern(s): ${unseen.join(", ")}`,
+      },
+    },
+  });
+}
+
+function emitSanitizedAssistantDelta(
+  display: AssistantDisplayState,
+  session: Session,
+): void {
+  const sanitized = sanitizeModelOutput(display.visibleText, { strict: true });
+  if (sanitized.matches.length > 0) {
+    emitSpoofWarnings(display, sanitized.matches, session);
+  }
+  if (!sanitized.text.startsWith(display.emittedVisibleText)) {
+    display.emittedVisibleText = sanitized.text;
+    return;
+  }
+  const delta = sanitized.text.slice(display.emittedVisibleText.length);
+  display.emittedVisibleText = sanitized.text;
+  if (delta.length === 0) return;
+  session.emit({
+    id: session.nextInternalSubId(),
+    msg: {
+      type: "agent_message_delta",
+      payload: { delta },
+    },
+  });
+}
 
 function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
   if (toolCalls.length === 0) return [];
@@ -59,25 +216,10 @@ function parseToolUseBlocks(toolCalls: LLMToolCall[]): ToolUseBlock[] {
 
 function assistantMessageFromResponse(
   response: LLMResponse,
+  planMode: boolean,
   providerName: string,
-  session: Session,
 ): AssistantMessage {
-  // I-77: strip UI-spoof patterns from model output before it reaches
-  // history or any renderer. On a match, emit a warning so post-mortem
-  // telemetry can see the spoof attempt.
-  const sanitized = sanitizeModelOutput(response.content ?? "");
-  if (sanitized.spoofed) {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "model_ui_spoof_pattern",
-          message: `model output matched spoof pattern(s): ${sanitized.matches.join(", ")}`,
-        },
-      },
-    });
-  }
+  const visible = toVisibleAssistantText(response.content ?? "", planMode);
   // I-55: normalize tool_use blocks into canonical shape before the
   // validator sees them (provider-family quirks collapsed here).
   const normalizedToolCalls = normalizeToolCallsForProvider(
@@ -87,7 +229,7 @@ function assistantMessageFromResponse(
   return {
     uuid: crypto.randomUUID(),
     role: "assistant",
-    text: sanitized.text,
+    text: visible.text,
     toolCalls: normalizedToolCalls,
     apiError: response.finishReason === "error" ? "provider_error" : undefined,
   };
@@ -137,8 +279,9 @@ function estimateChunkTokens(chunk: LLMStreamChunk): number {
 
 export async function streamModel(
   state: TurnState,
-  _ctx: TurnContext,
+  ctx: TurnContext,
   session: Session,
+  request: StreamModelRequestContract,
   signal?: AbortSignal,
 ): Promise<TurnState> {
   if (signal?.aborted) {
@@ -147,7 +290,8 @@ export async function streamModel(
     );
   }
 
-  const messages = state.messagesForQuery;
+  const planMode = isPlanMode(ctx);
+  const messages = buildProviderMessages(request);
 
   // Scoped AbortController: aborted by either the external signal or
   // the watchdog, whichever fires first.
@@ -181,6 +325,12 @@ export async function streamModel(
 
   let budgetExceededMidStream = false;
   let budgetExceededMessage = "";
+  const display: AssistantDisplayState = {
+    parser: new AssistantVisibleTextStreamParser(planMode),
+    visibleText: "",
+    emittedVisibleText: "",
+    warnedMatches: new Set<string>(),
+  };
 
   const onChunk = (chunk: LLMStreamChunk): void => {
     // I-11: any chunk resets the idle timer.
@@ -197,15 +347,18 @@ export async function streamModel(
       }
     }
 
-    // Incremental assistant_message_delta emission for renderers.
+    // Incremental assistant_message_delta emission for renderers. The
+    // visible text goes through the same hidden-tag stripping + UI-spoof
+    // sanitization pipeline as the final assistant message so raw tags
+    // never reach the UI.
     if (chunk.content && chunk.content.length > 0) {
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "agent_message_delta",
-          payload: { delta: chunk.content },
-        },
-      });
+      if (chunk.resetBuffer) {
+        display.parser = new AssistantVisibleTextStreamParser(planMode);
+        display.visibleText = display.parser.pushStr(chunk.content);
+      } else {
+        display.visibleText += display.parser.pushStr(chunk.content);
+      }
+      emitSanitizedAssistantDelta(display, session);
     }
   };
 
@@ -214,7 +367,7 @@ export async function streamModel(
     response = await session.services.provider.chatStream(
       messages,
       onChunk,
-      { signal: scoped.signal },
+      buildProviderOptions(request, ctx, scoped.signal),
     );
   } catch (error) {
     if (scoped.signal.aborted && watchdog.firedAt !== null) {
@@ -239,8 +392,8 @@ export async function streamModel(
 
   const assistant = assistantMessageFromResponse(
     response,
+    planMode,
     session.services.provider.name,
-    session,
   );
   state.assistantMessages = [assistant];
   state.toolUseBlocks = parseToolUseBlocks([...assistant.toolCalls]);
@@ -248,12 +401,12 @@ export async function streamModel(
 
   // Full final assistant_message event for renderers that batch on
   // completion rather than consuming per-chunk deltas.
-  if (response.content && response.content.length > 0) {
+  if (assistant.text && assistant.text.length > 0) {
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
         type: "agent_message",
-        payload: { message: response.content },
+        payload: { message: assistant.text },
       },
     });
   }

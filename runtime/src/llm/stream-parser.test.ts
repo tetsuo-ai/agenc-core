@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   CitationStreamParser,
+  type ProposedPlanSegment,
   ProposedPlanStreamParser,
   extractProposedPlanText,
   sanitizeModelOutput,
@@ -26,9 +27,31 @@ describe("stream-parser", () => {
   });
 
   test("stripProposedPlanBlocks removes plan blocks", () => {
-    const text = "pre<proposed_plan>inner</proposed_plan>post";
-    expect(stripProposedPlanBlocks(text)).toBe("prepost");
-    expect([...extractProposedPlanText(text)]).toEqual(["inner"]);
+    const text = "pre\n<proposed_plan>\ninner\n</proposed_plan>\npost";
+    expect(stripProposedPlanBlocks(text)).toBe("pre\npost");
+    expect(extractProposedPlanText(text)).toBe("inner\n");
+  });
+
+  test("extractProposedPlanText returns the last proposed-plan block", () => {
+    const text = [
+      "before",
+      "<proposed_plan>",
+      "first",
+      "</proposed_plan>",
+      "<proposed_plan>",
+      "second",
+      "</proposed_plan>",
+      "after",
+    ].join("\n");
+
+    expect(extractProposedPlanText(text)).toBe("second\n");
+  });
+
+  test("extractProposedPlanText ignores inline tag text that is not alone on a line", () => {
+    const text = "before <proposed_plan>\nstep\n</proposed_plan>\nafter";
+
+    expect(extractProposedPlanText(text)).toBeUndefined();
+    expect(stripProposedPlanBlocks(text)).toBe(text);
   });
 
   test("CitationStreamParser handles tag split across chunks", () => {
@@ -44,15 +67,41 @@ describe("stream-parser", () => {
     expect(extracted.map((e) => e.content)).toEqual(["source A"]);
   });
 
-  test("ProposedPlanStreamParser emits extracted plan content across chunks", () => {
+  test("ProposedPlanStreamParser emits plan segments across chunks", () => {
     const parser = new ProposedPlanStreamParser();
-    const a = parser.pushStr("head<proposed_plan>step ");
-    const b = parser.pushStr("one</proposed_plan>tail");
+    const a = parser.pushStr("head\n<proposed");
+    const b = parser.pushStr("_plan>\nstep ");
+    const c = parser.pushStr("one\n</proposed_plan>\ntail");
     const tail = parser.finish();
-    const visible = a.visibleText + b.visibleText + tail.visibleText;
-    expect(visible).toBe("headtail");
-    const extracted = [...a.extracted, ...b.extracted].map((e) => e.content);
-    expect(extracted).toEqual(["step one"]);
+    const visible =
+      a.visibleText + b.visibleText + c.visibleText + tail.visibleText;
+    expect(visible).toBe("head\ntail");
+    const extracted: ProposedPlanSegment[] = [
+      ...a.extracted,
+      ...b.extracted,
+      ...c.extracted,
+      ...tail.extracted,
+    ];
+    expect(extracted).toEqual([
+      { kind: "normal", text: "head\n" },
+      { kind: "proposed_plan_start" },
+      { kind: "proposed_plan_delta", text: "step " },
+      { kind: "proposed_plan_delta", text: "one\n" },
+      { kind: "proposed_plan_end" },
+      { kind: "normal", text: "tail" },
+    ]);
+  });
+
+  test("ProposedPlanStreamParser auto-closes unterminated plan block at EOF", () => {
+    const parser = new ProposedPlanStreamParser();
+    const a = parser.pushStr("<proposed_plan>\nstep one\n");
+    const tail = parser.finish();
+    expect(a.visibleText + tail.visibleText).toBe("");
+    expect([...a.extracted, ...tail.extracted]).toEqual([
+      { kind: "proposed_plan_start" },
+      { kind: "proposed_plan_delta", text: "step one\n" },
+      { kind: "proposed_plan_end" },
+    ]);
   });
 });
 

@@ -55,7 +55,11 @@ import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
 import { prepareContext } from "../phases/prepare-context.js";
-import { streamModel, StreamModelError } from "../phases/stream-model.js";
+import {
+  streamModel,
+  StreamModelError,
+  type StreamModelRequestContract,
+} from "../phases/stream-model.js";
 import { isTransientProviderError } from "../recovery/api-errors.js";
 import {
   RECONNECT_MAX_ATTEMPTS,
@@ -137,24 +141,166 @@ export type CompactionPhase = "pre_turn" | "in_turn" | "post_turn";
 export type InitialContextInjection = "inject" | "do_not_inject";
 
 /**
+ * Structural shape of the resolved `autoCompactIfNeeded` export. Mirrors
+ * `src/llm/compact/auto-compact.ts::autoCompactIfNeeded` and the loose
+ * shape used in `prepare-context.ts` Stage 6 so both call sites share
+ * one type. Compact module lives under a typecheck-excluded tree (its
+ * external deps are not all ported yet), so the parameter list stays
+ * loose (`unknown[]`).
+ */
+export interface AutoCompactResult {
+  readonly wasCompacted: boolean;
+  readonly compactionResult?: {
+    summaryMessages?: LLMMessage[];
+    attachments?: LLMMessage[];
+    hookResults?: LLMMessage[];
+  };
+  readonly consecutiveFailures?: number;
+}
+export type AutoCompactImpl = (
+  ...args: unknown[]
+) => Promise<AutoCompactResult>;
+
+// Test-only override — when set, `runAutoCompact` calls this instead of
+// dynamic-require'ing the real `auto-compact.js`. Lets unit tests assert
+// the dispatcher was reached with the expected arguments without
+// spinning up the full compact subsystem. Clear via
+// `setAutoCompactImplForTests(null)` between tests.
+let autoCompactImplOverride: AutoCompactImpl | null = null;
+
+export function setAutoCompactImplForTests(
+  impl: AutoCompactImpl | null,
+): void {
+  autoCompactImplOverride = impl;
+}
+
+function resolveAutoCompactImpl(): AutoCompactImpl | null {
+  if (autoCompactImplOverride) return autoCompactImplOverride;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("../llm/compact/auto-compact.js") as {
+      autoCompactIfNeeded?: AutoCompactImpl;
+    };
+    return mod?.autoCompactIfNeeded ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Port of codex `run_auto_compact` (turn.rs:790-818). Dispatcher that
  * picks between inline and remote compact task based on provider info.
  * AgenC has only the inline path today; T13 adds the remote-compact
  * path for providers that expose a server-side compact endpoint.
+ *
+ * Behavior:
+ *   - Resolves `autoCompactIfNeeded` (real module or test override).
+ *     When nothing is wired yet (external deps not ported), returns
+ *     false and the caller proceeds with uncompacted state — same
+ *     feature-off fallback used by `prepare-context.ts` Stage 6.
+ *   - Calls `autoCompactIfNeeded` with the session's current messages
+ *     plus per-turn context. Threshold/circuit-breaker logic lives
+ *     inside the compact module; the dispatcher is a thin wrapper.
+ *   - When `state` is provided and compaction ran, splices the post-
+ *     compact messages back into `state.messages` / `state.messagesForQuery`
+ *     and stamps `state.autoCompactTracking` so the next phase sees the
+ *     compacted view. (codex's pre-sampling compact runs before the
+ *     first phase iteration; mutating state here is how we guarantee
+ *     `prepareContext` reads the compacted view.)
+ *   - Never swallows errors silently — emits `warning:auto_compact_failed`
+ *     and returns false so the caller proceeds with uncompacted state.
+ *
+ * Returns true when compaction actually ran.
  */
 async function runAutoCompact(
-  _session: Session,
-  _ctx: TurnContext,
+  session: Session,
+  ctx: TurnContext,
   _initialContextInjection: InitialContextInjection,
-  _reason: CompactionReason,
-  _phase: CompactionPhase,
-): Promise<void> {
-  // The inline compact task lives in `runtime/src/llm/compact/auto-compact.ts::autoCompactIfNeeded`.
-  // The call site lives in prepare-context.ts (runtime-dynamic require
-  // while compact/** is typecheck-excluded). This dispatcher is a
-  // thin wrapper preserving codex's control-flow shape; the actual
-  // invocation happens inside the phase loop.
-  // T13 adds the remote-compact branch based on `provider.info()`.
+  reason: CompactionReason,
+  phase: CompactionPhase,
+  state?: TurnState,
+): Promise<boolean> {
+  const impl = resolveAutoCompactImpl();
+  if (!impl) return false;
+
+  // Source-of-truth for the message set depends on when the dispatcher
+  // is called. Pre-sampling compact runs before the phase loop, so
+  // `state.messages` holds the seed history. Inline compact (T13)
+  // called mid-loop would prefer `messagesForQuery`. Prefer the latter
+  // when populated, fall back to `messages`.
+  const messages =
+    state && state.messagesForQuery.length > 0
+      ? state.messagesForQuery
+      : (state?.messages ?? []);
+
+  try {
+    const result = await impl(
+      messages,
+      ctx,
+      state?.autoCompactTracking,
+      state?.snipTokensFreed ?? 0,
+      // Per-reason querySource keeps the compact module's telemetry
+      // distinguishable between pre-turn downshift and pre-turn
+      // context-limit triggers. Uses openclaude's canonical source id.
+      reason === "model_downshift"
+        ? "model_downshift"
+        : "repl_main_thread",
+    );
+
+    if (result.wasCompacted && state) {
+      const cr = result.compactionResult;
+      if (cr && (cr.summaryMessages || cr.attachments || cr.hookResults)) {
+        const compacted: LLMMessage[] = [
+          ...(cr.summaryMessages ?? []),
+          ...(cr.attachments ?? []),
+          ...(cr.hookResults ?? []),
+        ];
+        // Replace both the full history view and the per-iteration
+        // projection so `prepareContext` (next phase) sees the compacted
+        // view on its first stage.
+        state.messages = compacted;
+        state.messagesForQuery = [...compacted];
+      }
+      // Stamp auto-compact tracking so the commit phase emits the
+      // boundary marker (runtime/src/phases/commit.ts).
+      state.autoCompactTracking = {
+        compacted: true,
+        turnId: `auto-${reason}-${phase}-${Date.now().toString(36)}`,
+        turnCounter: 0,
+        consecutiveFailures: 0,
+      };
+      return true;
+    }
+
+    if (
+      result.consecutiveFailures !== undefined &&
+      state?.autoCompactTracking
+    ) {
+      state.autoCompactTracking = {
+        ...state.autoCompactTracking,
+        consecutiveFailures: result.consecutiveFailures,
+      };
+    }
+
+    return result.wasCompacted === true;
+  } catch (error) {
+    // Never silently swallow compact failures. Emit a structured
+    // warning carrying the reason/phase so downstream observability can
+    // distinguish model-downshift compacts from context-limit compacts.
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "auto_compact_failed",
+          message: `${reason}/${phase}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        },
+      },
+    });
+    return false;
+  }
 }
 
 /**
@@ -169,6 +315,7 @@ export async function maybeRunPreviousModelInlineCompact(
   session: Session,
   ctx: TurnContext,
   _totalUsageTokens: number,
+  state?: TurnState,
 ): Promise<boolean> {
   // A1 fix: codex resolves the previous model's TurnContext via
   // `turn_context.with_model(previous_turn_settings.model, models_manager)`
@@ -214,6 +361,7 @@ export async function maybeRunPreviousModelInlineCompact(
     "do_not_inject",
     "model_downshift",
     "pre_turn",
+    state,
   );
   return true;
 }
@@ -229,12 +377,14 @@ export async function maybeRunPreviousModelInlineCompact(
 async function runPreSamplingCompact(
   session: Session,
   ctx: TurnContext,
+  state?: TurnState,
 ): Promise<boolean> {
   const totalUsageTokensBefore = getTotalTokenUsage(session);
   let preSamplingCompacted = await maybeRunPreviousModelInlineCompact(
     session,
     ctx,
     totalUsageTokensBefore,
+    state,
   );
   const totalUsageTokens = getTotalTokenUsage(session);
   const autoCompactLimit =
@@ -247,6 +397,7 @@ async function runPreSamplingCompact(
       "do_not_inject",
       "context_limit",
       "pre_turn",
+      state,
     );
     preSamplingCompacted = true;
   }
@@ -310,6 +461,22 @@ export function builtTools(session: Session, _ctx: TurnContext): ReadonlyArray<L
   return session.services.registry.toLLMTools();
 }
 
+function buildSamplingRequestContract(
+  state: TurnState,
+  session: Session,
+  ctx: TurnContext,
+): StreamModelRequestContract {
+  const baseInstructions = (
+    ctx as TurnContext & { baseInstructions?: string }
+  ).baseInstructions;
+  return buildPrompt(
+    state.messagesForQuery,
+    builtTools(session, ctx),
+    ctx,
+    baseInstructions ?? "",
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Codex port: sampling request orchestration
 // ─────────────────────────────────────────────────────────────────────
@@ -347,6 +514,7 @@ async function tryRunSamplingRequest(
 ): Promise<SamplingRequestResult> {
   // Phase 1: prepare context.
   await prepareContext(state, ctx, session, signal);
+  const request = buildSamplingRequestContract(state, session, ctx);
 
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
@@ -366,7 +534,7 @@ async function tryRunSamplingRequest(
   // Phase 2: stream model.
   let streamModelError: StreamModelError | null = null;
   try {
-    await streamModel(state, ctx, session, signal);
+    await streamModel(state, ctx, session, request, signal);
   } catch (error) {
     if (error instanceof StreamModelError) {
       streamModelError = error;
@@ -384,15 +552,19 @@ async function tryRunSamplingRequest(
     };
     const planStream = withPlan.planModeStream;
     if (planStream) {
-      const last = state.assistantMessages.at(-1);
-      if (last && typeof last.text === "string" && last.text.length > 0) {
+      const last = state.messages.at(-1);
+      if (
+        last?.role === "assistant" &&
+        typeof last.content === "string" &&
+        last.content.length > 0
+      ) {
         planModeHelpers.maybeCompletePlanItemFromMessage(
           session,
           ctx,
           planStream,
           {
             role: "assistant",
-            content: [{ type: "output_text", text: last.text }],
+            content: [{ type: "output_text", text: last.content }],
           },
         );
       }
@@ -919,12 +1091,25 @@ export async function* runTurn(
     },
   });
 
+  // Seed the initial TurnState BEFORE pre-sampling compact so the
+  // dispatcher can splice post-compact messages back into state and the
+  // first `prepareContext` call reads the compacted view. Codex's
+  // equivalent operates on the session-held conversation directly;
+  // AgenC's phase machine reads `state.messages`, so the compact result
+  // has to land there.
+  const { system, prior, user } = buildSeedMessages(opts, userMessage);
+  const priorFull = system ? [system, ...prior] : prior;
+
+  let state: TurnState = buildInitialTurnState(ctx, user, {
+    priorMessages: priorFull,
+  });
+
   // Codex: run_pre_sampling_compact before any phase runs. Returns
   // whether compaction happened; if yes and we had a prewarmed
   // client session, reset it (codex 155-157 — AgenC has no prewarm
   // today).
   try {
-    await runPreSamplingCompact(session, ctx);
+    await runPreSamplingCompact(session, ctx, state);
   } catch (error) {
     session.emit({
       id: session.nextInternalSubId(),
@@ -948,13 +1133,6 @@ export async function* runTurn(
     };
     return terminal;
   }
-
-  const { system, prior, user } = buildSeedMessages(opts, userMessage);
-  const priorFull = system ? [system, ...prior] : prior;
-
-  let state: TurnState = buildInitialTurnState(ctx, user, {
-    priorMessages: priorFull,
-  });
 
   const signal = mergeSignals(opts.signal, session.abortController.signal);
 

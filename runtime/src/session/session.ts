@@ -754,6 +754,7 @@ export class Session {
    */
   abortTerminal(reason: AbortReason): void {
     if (this.abortController.signal.aborted) return;
+    const activeTurnId = this.activeTurn.unsafePeek()?.turnId;
     this.abortController.abort(reason);
     // Emit a typed event so I-8 is satisfied.
     this.emit({
@@ -761,7 +762,7 @@ export class Session {
       msg: {
         type: "turn_aborted",
         payload: {
-          turnId: "current",
+          turnId: activeTurnId,
           reason,
         },
       },

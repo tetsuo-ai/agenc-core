@@ -26,6 +26,22 @@ const external = [
   'playwright',
   'edge-tts',
   '@modelcontextprotocol/sdk',
+  // Optional peer deps that the compact subsystem (and other
+  // openclaude-derived modules) reach through guarded dynamic imports.
+  // Marked external so tsup does not try to bundle them at build time;
+  // they will resolve (or fail gracefully) at runtime.
+  '@anthropic-ai/bedrock-sdk',
+  '@aws-sdk/client-bedrock',
+  '@aws-sdk/client-bedrock-runtime',
+  '@aws-sdk/client-sts',
+  '@smithy/core',
+  '@smithy/node-http-handler',
+  'axios',
+  'fflate',
+  'google-auth-library',
+  'semver',
+  'sharp',
+  'yaml',
 ];
 
 export default defineConfig({
@@ -37,4 +53,10 @@ export default defineConfig({
   target: 'es2022',
   sourcemap: true,
   external,
+  esbuildOptions(options) {
+    options.alias = {
+      ...(options.alias ?? {}),
+      'bun:bundle': './src/build/feature.ts',
+    };
+  },
 });

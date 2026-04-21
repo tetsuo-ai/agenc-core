@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS,
   shutdownSessionLifecycle,
@@ -14,6 +14,11 @@ function stubSession() {
     shutdown: vi.fn().mockResolvedValue(undefined),
   } as unknown as Parameters<typeof shutdownSessionLifecycle>[0]["session"];
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe("shutdownSessionLifecycle", () => {
   it("aborts the session controller first (I-7 quiesce)", async () => {
@@ -60,13 +65,53 @@ describe("shutdownSessionLifecycle", () => {
     (session.shutdown as any) = vi
       .fn()
       .mockImplementation(() => new Promise<never>(() => {}));
-    const started = Date.now();
+    const started = performance.now();
     await shutdownSessionLifecycle({
       session,
       shutdownBudgetMs: 50,
     });
-    const elapsed = Date.now() - started;
+    const elapsed = performance.now() - started;
     expect(elapsed).toBeLessThan(500);
+  });
+
+  it("I-82: later shutdown steps use monotonic remaining budget after a wall-clock jump", async () => {
+    vi.useFakeTimers();
+    let wallClockMs = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => wallClockMs);
+
+    const session = stubSession();
+    (session.shutdown as any) = vi
+      .fn()
+      .mockImplementation(() => new Promise<never>(() => {}));
+
+    const agentControl = {
+      shutdownAll: vi.fn().mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            setTimeout(() => {
+              wallClockMs -= 5_000;
+              resolve();
+            }, 30);
+          }),
+      ),
+    };
+
+    let settled = false;
+    const shutdown = shutdownSessionLifecycle({
+      session,
+      agentControl: agentControl as any,
+      shutdownBudgetMs: 50,
+    }).then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(30);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(25);
+    await shutdown;
+
+    expect(settled).toBe(true);
   });
 
   it("MCP stop failure does not propagate", async () => {

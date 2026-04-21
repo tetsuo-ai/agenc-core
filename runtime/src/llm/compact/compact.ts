@@ -4,7 +4,7 @@ import uniqBy from 'lodash-es/uniqBy.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const sessionTranscriptModule = feature('KAIROS')
-  ? (require('../sessionTranscript/sessionTranscript.js') as typeof import('../sessionTranscript/sessionTranscript.js'))
+  ? (require('../../services/sessionTranscript/sessionTranscript.js') as typeof import('../../services/sessionTranscript/sessionTranscript.js'))
   : null
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
@@ -95,26 +95,26 @@ import {
   extractDiscoveredToolNames,
   isToolSearchEnabled,
 } from '../../utils/toolSearch.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
-} from '../analytics/index.js'
+} from '../../services/analytics/index.js'
 import {
   getMaxOutputTokensForModel,
   queryModelWithStreaming,
-} from '../api/claude.js'
+} from '../../services/api/claude.js'
 import {
   getPromptTooLongTokenGap,
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   startsWithApiErrorPrefix,
-} from '../api/errors.js'
-import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
-import { getRetryDelay } from '../api/withRetry.js'
+} from '../../services/api/errors.js'
+import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.js'
+import { getRetryDelay } from '../../services/api/withRetry.js'
 import {
   roughTokenCountEstimation,
   roughTokenCountEstimationForMessages,
-} from '../tokenEstimation.js'
+} from '../../services/tokenEstimation.js'
 import { groupMessagesByApiRound } from './grouping.js'
 import {
   getCompactPrompt,
@@ -171,6 +171,45 @@ export class CompactionShrinkRatioError extends Error {
     this.minShrinkRatio = minShrinkRatio
   }
 }
+
+/**
+ * I-18 (docs/plan/invariants.md): compaction shrink assertion.
+ *
+ * Called at the tail of `compactConversation()` once
+ * `truePostCompactTokenCount` is known. Throws
+ * `CompactionShrinkRatioError` when the summary is not strictly below
+ * `preCompactTokenCount * minShrinkRatio` (default 0.7 — summary must
+ * be <70% of the original token count). A near-identity summary is a
+ * soft compaction failure: it wastes a round-trip without reducing
+ * context, and if we re-enter auto-compact on the next turn we'd loop
+ * forever.
+ *
+ * Split out so callers (and tests) can exercise the assertion in
+ * isolation, independent of the heavy `compactConversation` machinery
+ * (hooks, forked agents, attachments). The autoCompact caller's
+ * existing catch block increments `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`
+ * so subsequent turns skip auto-compact and fall through to alternative
+ * recovery (reactive-compact / collapse-drain / PTL blocking limit).
+ *
+ * `minShrinkRatio` defaults to `getCompactionMinShrinkRatio()` so the
+ * env override (`AGENC_COMPACTION_MIN_SHRINK_RATIO`) stays authoritative.
+ * `preCompactTokenCount <= 0` is treated as "nothing to assert against"
+ * and is a no-op (matches the original inline guard).
+ */
+export function assertCompactionShrank(
+  preCompactTokenCount: number,
+  truePostCompactTokenCount: number,
+  minShrinkRatio: number = getCompactionMinShrinkRatio(),
+): void {
+  if (preCompactTokenCount <= 0) return
+  if (truePostCompactTokenCount >= preCompactTokenCount * minShrinkRatio) {
+    throw new CompactionShrinkRatioError(
+      preCompactTokenCount,
+      truePostCompactTokenCount,
+      minShrinkRatio,
+    )
+  }
+}
 // Skills can be large (verify=18.7KB, claude-api=20.1KB). Previously re-injected
 // unbounded on every compact → 5-10K tok/compact. Per-skill truncation beats
 // dropping — instructions at the top of a skill file are usually the critical
@@ -215,7 +254,7 @@ export function stripImagesFromMessages(messages: Message[]): Message[] {
       // Also strip images/documents nested inside tool_result content arrays
       if (block.type === 'tool_result' && Array.isArray(block.content)) {
         let toolHasMedia = false
-        const newToolContent = block.content.map(item => {
+        const newToolContent = block.content.map((item: any) => {
           if (item.type === 'image') {
             toolHasMedia = true
             return { type: 'text' as const, text: '[image]' }
@@ -445,13 +484,158 @@ export function mergeHookInstructions(
  *   change once the prompt-build path stabilises (it lives below in
  *   compactConversation's main body where summaryResult is assembled).
  *
- *   I-88 (per-turn toolResultBytes index): the prompt-build loop here
- *   should consult `session.toolResultBytesByTurn[]` to skip turns with
- *   <50KB cumulative tool results before iterating message-by-message.
- *   The session-store index lives in T6; the consumer call here is a
- *   future fast-path. Today this function processes every message —
- *   correct but O(n²) in tool-result count for long sessions.
+ *   I-88 (per-turn toolResultBytes index): before building the compact
+ *   prompt we consult `RolloutStore.getToolResultBytesIndexSnapshot()`
+ *   (see `src/session/rollout-store.ts:82` and
+ *   `src/session/session-store.ts:1032`) and drop any individual
+ *   `tool_result` whose payload is ≥ `COMPACT_TOOL_RESULT_DROP_BYTES`
+ *   (50 KB). Each drop emits a `warning:compact_tool_result_dropped`
+ *   analytics event plus a matching `onCompactProgress` notification
+ *   carrying `{ turnId, toolCallId, bytes }`. The per-turn index is
+ *   a fast-path hint — turns whose aggregate bytes are below the
+ *   threshold are skipped outright; turns at or above the threshold
+ *   fall back to per-result measurement so a single oversize payload
+ *   is still filtered even when other results in the same turn are
+ *   small. Implementation lives in
+ *   `filterLargeToolResultsForCompact` below.
  */
+
+/**
+ * Per-tool-result byte ceiling used by compaction. Tool results at or
+ * above this size are dropped (not truncated — the compact summarizer
+ * does not need the payload itself, just the fact a result was
+ * produced) before the compact prompt is built. Kept in sync with the
+ * session-store I-88 index granularity.
+ */
+export const COMPACT_TOOL_RESULT_DROP_BYTES = 50 * 1024
+
+export interface CompactDroppedToolResult {
+  readonly turnId: string
+  readonly toolCallId: string
+  readonly bytes: number
+}
+
+/**
+ * I-88 consumer: walk `messages`, compute per-`tool_result` byte size
+ * (UTF-8 byte length of string content, or the length of the
+ * JSON-serialised block for structured payloads), and replace any
+ * result whose size is ≥ `thresholdBytes` with a short placeholder
+ * that still references the original `tool_use_id`. The replacement
+ * keeps the tool_use/tool_result pairing intact — dropping the block
+ * entirely would leave the assistant's preceding `tool_use` dangling,
+ * which breaks API validation in downstream summarizer calls.
+ *
+ * `toolResultBytesByTurn` is optional. When supplied callers can
+ * short-circuit scanning for turns whose aggregate bytes are below
+ * the threshold; this helper does not require it — per-result
+ * measurement is authoritative.
+ *
+ * Returned `dropped` entries are the caller's responsibility to
+ * surface (analytics, progress events, logs).
+ */
+export function filterLargeToolResultsForCompact(
+  messages: Message[],
+  opts: {
+    toolResultBytesByTurn?: ReadonlyMap<string, number>
+    thresholdBytes?: number
+    /**
+     * Best-effort turnId resolver for a given message. The compact
+     * path has no direct message→turn mapping (messages are openclaude
+     * Messages, not rollout events), so callers may pass a resolver
+     * when they have one; otherwise dropped entries carry
+     * `turnId: 'unknown'`.
+     */
+    // eslint-disable-next-line no-unused-vars
+    getTurnIdForMessage?: (message: Message) => string | undefined
+  } = {},
+): { messages: Message[]; dropped: CompactDroppedToolResult[] } {
+  const threshold = opts.thresholdBytes ?? COMPACT_TOOL_RESULT_DROP_BYTES
+  if (threshold <= 0) {
+    return { messages, dropped: [] }
+  }
+
+  const dropped: CompactDroppedToolResult[] = []
+  let changed = false
+
+  const next: Message[] = messages.map(message => {
+    if (!message || message.type !== 'user') return message
+    const content = message.message?.content
+    if (!Array.isArray(content)) return message
+
+    // Per-message turnId best-effort. Real messages do not carry a
+    // turnId tag; callers may resolve one. Unknown → 'unknown'.
+    const turnId = opts.getTurnIdForMessage?.(message) ?? 'unknown'
+
+    let messageChanged = false
+    const newContent = content.map((block: any) => {
+      if (!block || block.type !== 'tool_result') return block
+      const bytes = measureToolResultBytes(block)
+      if (bytes < threshold) return block
+
+      const toolCallId = String(
+        block.tool_use_id ?? block.toolUseId ?? 'unknown',
+      )
+      dropped.push({ turnId, toolCallId, bytes })
+      messageChanged = true
+      return {
+        ...block,
+        content: `[tool_result dropped: ${bytes} bytes exceeded compact threshold of ${threshold} bytes]`,
+      }
+    })
+
+    if (!messageChanged) return message
+    changed = true
+    return {
+      ...message,
+      message: { ...message.message, content: newContent },
+    } as typeof message
+  })
+
+  return { messages: changed ? next : messages, dropped }
+}
+
+/**
+ * UTF-8 byte size of a single tool_result content block. String
+ * content is measured directly; structured (array) content sums
+ * text-part bytes and JSON-serialises anything unmeasurable as a
+ * conservative ceiling.
+ */
+function measureToolResultBytes(block: any): number {
+  const content = block?.content
+  if (typeof content === 'string') {
+    return Buffer.byteLength(content, 'utf8')
+  }
+  if (!Array.isArray(content)) {
+    // Unknown shape — fall back to a JSON round-trip for a safe
+    // upper bound. Matches prepare-context's conservative posture.
+    try {
+      return Buffer.byteLength(JSON.stringify(content ?? ''), 'utf8')
+    } catch {
+      return 0
+    }
+  }
+  let total = 0
+  for (const part of content) {
+    if (!part) continue
+    if (typeof part === 'string') {
+      total += Buffer.byteLength(part, 'utf8')
+      continue
+    }
+    if (part.type === 'text' && typeof part.text === 'string') {
+      total += Buffer.byteLength(part.text, 'utf8')
+      continue
+    }
+    // image/document/etc — count a conservative JSON size so a
+    // payload of stacked base64 images still trips the threshold.
+    try {
+      total += Buffer.byteLength(JSON.stringify(part), 'utf8')
+    } catch {
+      // ignore unmeasurable parts
+    }
+  }
+  return total
+}
+
 export async function compactConversation(
   messages: Message[],
   context: ToolUseContext,
@@ -509,7 +693,43 @@ export async function compactConversation(
       content: compactPrompt,
     })
 
-    let messagesToSummarize = messages
+    // I-88 compact-prompt half: drop oversize tool_results before they
+    // hit the summarizer. The byte index is owned by the session-store
+    // half (session-store.ts) and reached via the rolloutStore facade
+    // when the caller supplies one on context/session; per-result
+    // measurement is the authoritative filter and runs regardless.
+    const rolloutStoreForI88 =
+      (context as any)?.rolloutStore ??
+      (context as any)?.session?.rolloutStore ??
+      undefined
+    const toolResultBytesByTurn: ReadonlyMap<string, number> | undefined =
+      typeof rolloutStoreForI88?.getToolResultBytesIndexSnapshot === 'function'
+        ? rolloutStoreForI88.getToolResultBytesIndexSnapshot()
+        : undefined
+    const i88Filter = filterLargeToolResultsForCompact(messages, {
+      toolResultBytesByTurn,
+      thresholdBytes: COMPACT_TOOL_RESULT_DROP_BYTES,
+    })
+    if (i88Filter.dropped.length > 0) {
+      for (const entry of i88Filter.dropped) {
+        logEvent('warning:compact_tool_result_dropped', {
+          turnId:
+            entry.turnId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          toolCallId:
+            entry.toolCallId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          bytes: entry.bytes,
+          thresholdBytes: COMPACT_TOOL_RESULT_DROP_BYTES,
+        })
+        context.onCompactProgress?.({
+          type: 'warning',
+          warning: 'compact_tool_result_dropped',
+          turnId: entry.turnId,
+          toolCallId: entry.toolCallId,
+          bytes: entry.bytes,
+        })
+      }
+    }
+    let messagesToSummarize = i88Filter.messages
     let retryCacheSafeParams = cacheSafeParams
     let summaryResponse: AssistantMessage
     let summary: string | null
@@ -803,28 +1023,15 @@ export async function compactConversation(
       .join('\n')
 
     // I-18 (docs/plan/invariants.md): compaction shrink assertion.
-    // The summary must be strictly smaller than the original by at
-    // least `minShrinkRatio` (default 0.7 — summary must be <70% of
-    // original tokens). A near-identity summary is a compaction
-    // failure: it wastes a round-trip without reducing context, and
-    // if we re-enter auto-compact on the next turn we'd loop forever.
-    // On failure: throw CompactionShrinkRatioError. The existing
-    // auto-compact.ts catch block (line 344) increments the
+    // Delegates to `assertCompactionShrank` so the check is reusable
+    // by prepare-context/auto-compact and independently testable. On
+    // failure the helper throws `CompactionShrinkRatioError`, which
+    // auto-compact.ts catches and uses to bump the
     // MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3 circuit breaker so
     // subsequent turns skip auto-compact and fall through to
     // alternative recovery (reactive-compact / collapse-drain / PTL
     // blocking limit).
-    const minShrinkRatio = getCompactionMinShrinkRatio()
-    if (
-      preCompactTokenCount > 0 &&
-      truePostCompactTokenCount >= preCompactTokenCount * minShrinkRatio
-    ) {
-      throw new CompactionShrinkRatioError(
-        preCompactTokenCount,
-        truePostCompactTokenCount,
-        minShrinkRatio,
-      )
-    }
+    assertCompactionShrank(preCompactTokenCount, truePostCompactTokenCount)
 
     return {
       boundaryMarker,
@@ -883,12 +1090,16 @@ export async function partialCompactConversation(
         ? allMessages
             .slice(pivotIndex)
             .filter(
-              m =>
-                m.type !== 'progress' &&
-                !isCompactBoundaryMessage(m) &&
-                !(m.type === 'user' && m.isCompactSummary),
+              (m: any) => {
+                const mm: any = m
+                return (
+                  mm.type !== 'progress' &&
+                  !isCompactBoundaryMessage(mm) &&
+                  !(mm.type === 'user' && mm.isCompactSummary)
+                )
+              },
             )
-        : allMessages.slice(0, pivotIndex).filter(m => m.type !== 'progress')
+        : allMessages.slice(0, pivotIndex).filter((m: any) => m.type !== 'progress')
 
     if (messagesToSummarize.length === 0) {
       throw new Error(
@@ -1374,7 +1585,7 @@ async function streamCompactSummary({
             [
               FileReadTool,
               ToolSearchTool,
-              ...context.options.tools.filter(t => t.isMcp),
+              ...context.options.tools.filter((t: any) => t.isMcp),
             ],
             'name',
           )
@@ -1437,7 +1648,7 @@ async function streamCompactSummary({
           event.event.delta.type === 'text_delta'
         ) {
           const charactersStreamed = event.event.delta.text.length
-          context.setResponseLength?.(length => length + charactersStreamed)
+          context.setResponseLength?.((length: any) => length + charactersStreamed)
         }
 
         if (event.type === 'assistant') {
@@ -1595,9 +1806,9 @@ export function createSkillAttachmentIfNeeded(
   // Per-skill truncation keeps the head of each file (where setup/usage
   // instructions typically live) rather than dropping whole skills.
   let usedTokens = 0
-  const skills = Array.from(invokedSkills.values())
-    .sort((a, b) => b.invokedAt - a.invokedAt)
-    .map(skill => ({
+  const skills = (Array.from(invokedSkills.values()) as any[])
+    .sort((a: any, b: any) => b.invokedAt - a.invokedAt)
+    .map((skill: any) => ({
       name: skill.skillName,
       path: skill.skillPath,
       content: truncateToTokens(
@@ -1605,7 +1816,7 @@ export function createSkillAttachmentIfNeeded(
         POST_COMPACT_MAX_TOKENS_PER_SKILL,
       ),
     }))
-    .filter(skill => {
+    .filter((skill: any) => {
       const tokens = roughTokenCountEstimation(skill.content)
       if (usedTokens + tokens > POST_COMPACT_SKILLS_TOKEN_BUDGET) {
         return false
@@ -1661,7 +1872,7 @@ export async function createAsyncAgentAttachmentsIfNeeded(
 ): Promise<AttachmentMessage[]> {
   const appState = context.getAppState()
   const asyncAgents = Object.values(appState.tasks).filter(
-    (task): task is LocalAgentTaskState => task.type === 'local_agent',
+    (task: any): task is LocalAgentTaskState => task.type === 'local_agent',
   )
 
   return asyncAgents.flatMap(agent => {
