@@ -22,6 +22,8 @@ import { useKeybinding } from "../keybindings/KeybindingContext.js";
 export interface UseInputHandlers {
   /** Fires on the `chat:submit` keybinding (Enter by default). */
   readonly onSubmit?: (text: string) => void;
+  /** Fires on the `chat:acceptSuggestion` keybinding (Tab by default). */
+  readonly onAcceptSuggestion?: () => void;
   /** Fires on the `chat:cancel` keybinding (Escape by default). */
   readonly onCancel?: () => void;
   /** Fires on the `chat:cycleMode` keybinding (Shift+Tab / Meta+M). */
@@ -52,6 +54,7 @@ const NOOP = (): void => {
  */
 export function useInput(handlers: UseInputHandlers = {}): void {
   const submitFn = handlers.onSubmit;
+  const acceptSuggestionFn = handlers.onAcceptSuggestion;
   const cancelFn = handlers.onCancel;
   const cycleFn = handlers.onCycleMode;
   const pasteFn = handlers.onPaste;
@@ -59,6 +62,11 @@ export function useInput(handlers: UseInputHandlers = {}): void {
   useKeybinding(
     "chat:submit",
     submitFn ? () => submitFn("") : NOOP,
+    "chat",
+  );
+  useKeybinding(
+    "chat:acceptSuggestion",
+    acceptSuggestionFn ?? NOOP,
     "chat",
   );
   useKeybinding("chat:cancel", cancelFn ?? NOOP, "chat");

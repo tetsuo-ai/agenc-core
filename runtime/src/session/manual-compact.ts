@@ -6,6 +6,11 @@ import {
 import { createSessionBackedCompactContext } from "../llm/compact/runtime-context.js";
 import { runManualCompact } from "../llm/compact/manual-compact.js";
 import type { Message } from "../types/message.js";
+import {
+  createSyntheticUserCaveatMessage,
+  createUserMessage,
+  formatCommandInputTags,
+} from "../utils/messages.js";
 import type { Session, SessionState } from "./session.js";
 
 export type SessionManualCompactOutcome =
@@ -24,9 +29,24 @@ function readSessionMessages(session: Session): Message[] {
 
 async function applyCompactedHistory(
   session: Session,
+  instructionsRaw: string,
+  displayText: string,
   compactionResult: CompactionResult,
 ): Promise<void> {
-  const compactedMessages = buildPostCompactMessages(compactionResult);
+  const retainedSlashMessages = buildRetainedSlashMessages(
+    instructionsRaw,
+    displayText,
+  );
+  const compactionResultWithSlashMessages: CompactionResult = {
+    ...compactionResult,
+    messagesToKeep: [
+      ...(compactionResult.messagesToKeep ?? []),
+      ...retainedSlashMessages,
+    ],
+  };
+  const compactedMessages = buildPostCompactMessages(
+    compactionResultWithSlashMessages,
+  );
   const currentState = session.state.unsafePeek() as SessionState;
   await session.state.swap({
     ...currentState,
@@ -35,7 +55,7 @@ async function applyCompactedHistory(
   session.rolloutStore?.appendRollout(
     {
       type: "compacted",
-      payload: buildCompactedRolloutItem(compactionResult),
+      payload: buildCompactedRolloutItem(compactionResultWithSlashMessages),
     },
     { durable: true },
   );
@@ -76,7 +96,12 @@ export async function runSessionManualCompact(
 
   try {
     const result = await runManualCompact(instructions, context);
-    await applyCompactedHistory(session, result.compactionResult);
+    await applyCompactedHistory(
+      session,
+      instructionsRaw,
+      result.displayText ?? "Compaction complete.",
+      result.compactionResult,
+    );
     return {
       kind: "ran",
       text: result.displayText ?? "Compaction complete.",
@@ -86,4 +111,27 @@ export async function runSessionManualCompact(
     const cause = err instanceof Error ? err.message : String(err);
     return { kind: "error", cause };
   }
+}
+
+function buildRetainedSlashMessages(
+  instructionsRaw: string,
+  displayText: string,
+): Message[] {
+  const messages: Message[] = [
+    createSyntheticUserCaveatMessage(),
+    createUserMessage({
+      content: formatCommandInputTags("compact", instructionsRaw),
+    }),
+  ];
+  if (displayText.length > 0) {
+    messages.push(
+      createUserMessage({
+        content: `<local-command-stdout>${displayText}</local-command-stdout>`,
+        // Keep the retained stdout as the newest compact-tail message so
+        // resume/replay choose the post-compact leaf consistently.
+        timestamp: new Date(Date.now() + 100).toISOString(),
+      }),
+    );
+  }
+  return messages;
 }

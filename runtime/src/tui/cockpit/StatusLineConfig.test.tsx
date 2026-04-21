@@ -188,17 +188,32 @@ describe("StatusLineConfig", () => {
     );
     await new Promise((r) => setTimeout(r, 60));
     const text = collectText(getRoot(stdout));
-    // Items are rendered as `label:value` so "model:grok-4" appears
-    // before "mode:plan" which appears before "cwd:myproject".
-    const modelIdx = text.indexOf("model:");
-    const modeIdx = text.indexOf("mode:");
-    const cwdIdx = text.indexOf("cwd:");
+    const modelIdx = text.indexOf("grok-4");
+    const modeIdx = text.indexOf("plan");
+    const cwdIdx = text.indexOf("myproject");
+    expect(text).toContain("MODEL");
+    expect(text).toContain("MODE");
+    expect(text).toContain("CWD");
     expect(modelIdx).toBeGreaterThan(-1);
     expect(modeIdx).toBeGreaterThan(modelIdx);
     expect(cwdIdx).toBeGreaterThan(modeIdx);
-    expect(text).toContain("grok-4");
-    expect(text).toContain("plan");
-    expect(text).toContain("myproject");
+    unmount();
+  });
+
+  test("component renders context as a compact usage meter", async () => {
+    const { stdout, unmount } = await mount(
+      <StatusLineConfig
+        items={["context", "tokens"]}
+        session={{ contextPercent: 82, tokensUsed: 12_345 }}
+        cwd="/home/user/myproject"
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("CONTEXT");
+    expect(text).toContain("82% [####-]");
+    expect(text).toContain("TOKENS");
+    expect(text).toContain("12.3k");
     unmount();
   });
 });

@@ -138,6 +138,164 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("reuses an explicit conversationId when resume bootstraps an existing session", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-resume-123",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.conversationId).toBe("conv-resume-123");
+      expect(boot.session.conversationId).toBe("conv-resume-123");
+      expect(boot.rolloutStore.rolloutPath).toContain("conv-resume-123");
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("hydrates reconstructed history and seeded transcript events when resuming", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let secondShutdown: (() => Promise<void>) | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-resume-hydrated",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      firstShutdown = first.shutdown;
+
+      first.rolloutStore.appendRollout({
+        type: "response_item",
+        payload: { role: "user", content: "hello" },
+      });
+      first.rolloutStore.appendRollout({
+        type: "response_item",
+        payload: { role: "assistant", content: "hi" },
+      });
+      first.session.emit({
+        id: first.session.nextInternalSubId(),
+        msg: { type: "user_message", payload: { message: "hello" } },
+      });
+      first.session.emit({
+        id: first.session.nextInternalSubId(),
+        msg: { type: "agent_message", payload: { message: "hi" } },
+      });
+      first.rolloutStore.flushDurable();
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-resume-hydrated",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      secondShutdown = resumed.shutdown;
+
+      expect(resumed.initialState.history).toEqual([
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "hi" },
+      ]);
+      expect(
+        (resumed.session as unknown as {
+          getInitialTranscriptEvents(): Array<{ type: string; payload: unknown }>;
+        }).getInitialTranscriptEvents(),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "user_message",
+            payload: expect.objectContaining({ message: "hello" }),
+          }),
+          expect.objectContaining({
+            type: "agent_message",
+            payload: expect.objectContaining({ message: "hi" }),
+          }),
+        ]),
+      );
+      resumed.rolloutStore.flushDurable();
+      expect(
+        resumed.rolloutStore.readAll().some(
+          (item) =>
+            item.type === "event_msg" &&
+            item.payload.msg.type === "session_configured" &&
+            item.payload.msg.payload.initialMessages.length >= 2,
+        ),
+      ).toBe(true);
+    } finally {
+      await secondShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("hydrates the live MCP manager from AGENC_MCP_SERVERS before session startup", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));

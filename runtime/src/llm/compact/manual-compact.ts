@@ -8,6 +8,8 @@ import {
   compactConversation,
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
+  ERROR_MESSAGE_USER_ABORT,
+  mergeHookInstructions,
   type CompactionResult,
 } from './compact.js'
 import type { CompactRuntimeContext } from './context.js'
@@ -19,9 +21,49 @@ import { trySessionMemoryCompaction } from './session-memory-compact.js'
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import type { Message } from '../../types/message.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
+import { executePreCompactHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js'
+
+type ReactiveCompactModule = {
+  isReactiveOnlyMode?: () => boolean
+  reactiveCompactOnPromptTooLong?: (
+    messages: Message[],
+    cacheSafeParams: Awaited<ReturnType<typeof buildCompactCacheSafeParams>>,
+    opts: {
+      customInstructions?: string
+      trigger: 'manual'
+    },
+  ) => Promise<
+    | {
+        ok: true
+        result: CompactionResult
+      }
+    | {
+        ok: false
+        reason:
+          | 'too_few_groups'
+          | 'aborted'
+          | 'exhausted'
+          | 'error'
+          | 'media_unstrippable'
+      }
+  >
+}
+
+async function resolveReactiveCompact(): Promise<ReactiveCompactModule | null> {
+  if (!feature('REACTIVE_COMPACT')) {
+    return null
+  }
+  try {
+    return (await import(
+      '../../services/compact/reactiveCompact.js'
+    )) as ReactiveCompactModule
+  } catch {
+    return null
+  }
+}
 
 export interface ManualCompactResult {
   readonly type: 'compact'
@@ -81,6 +123,13 @@ export async function runManualCompact(
       }
     }
 
+    // Reactive-only mode: keep the session-memory-first ordering from
+    // openclaude, then hand manual /compact to the reactive path.
+    const reactiveCompact = await resolveReactiveCompact()
+    if (reactiveCompact?.isReactiveOnlyMode?.() === true) {
+      return await compactViaReactive(messages, context, customInstructions)
+    }
+
     // Fall back to traditional compaction
     // Run microcompact first to reduce tokens before summarization
     const microcompactResult = await microcompactMessages(messages, context)
@@ -121,6 +170,87 @@ export async function runManualCompact(
       logError(error)
       throw new Error(`Error during compaction: ${error}`)
     }
+  }
+}
+
+async function compactViaReactive(
+  messages: Message[],
+  context: CompactRuntimeContext,
+  customInstructions: string,
+): Promise<ManualCompactResult> {
+  const reactive = await resolveReactiveCompact()
+  if (
+    !reactive ||
+    typeof reactive.reactiveCompactOnPromptTooLong !== 'function'
+  ) {
+    throw new Error(ERROR_MESSAGE_INCOMPLETE_RESPONSE)
+  }
+
+  context.onCompactProgress?.({
+    type: 'hooks_start',
+    hookType: 'pre_compact',
+  })
+  context.setSDKStatus?.('compacting')
+
+  try {
+    const [hookResult, cacheSafeParams] = await Promise.all([
+      executePreCompactHooks(
+        { trigger: 'manual', customInstructions: customInstructions || null },
+        context.abortController.signal,
+      ),
+      buildCompactCacheSafeParams(context, messages),
+    ])
+    const mergedInstructions = mergeHookInstructions(
+      customInstructions,
+      hookResult.newCustomInstructions,
+    )
+
+    context.setStreamMode?.('requesting')
+    context.setResponseLength?.(() => 0)
+    context.onCompactProgress?.({ type: 'compact_start' })
+
+    const outcome = await reactive.reactiveCompactOnPromptTooLong(
+      messages,
+      cacheSafeParams,
+      { customInstructions: mergedInstructions, trigger: 'manual' },
+    )
+
+    if (!outcome.ok) {
+      switch (outcome.reason) {
+        case 'too_few_groups':
+          throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+        case 'aborted':
+          throw new Error(ERROR_MESSAGE_USER_ABORT)
+        case 'exhausted':
+        case 'error':
+        case 'media_unstrippable':
+          throw new Error(ERROR_MESSAGE_INCOMPLETE_RESPONSE)
+      }
+    }
+
+    setLastSummarizedMessageId(undefined)
+    runPostCompactCleanup()
+    suppressCompactWarning()
+    getUserContext.cache.clear?.()
+
+    const combinedMessage =
+      [hookResult.userDisplayMessage, outcome.result.userDisplayMessage]
+        .filter(Boolean)
+        .join('\n') || undefined
+
+    return {
+      type: 'compact',
+      compactionResult: {
+        ...outcome.result,
+        userDisplayMessage: combinedMessage,
+      },
+      displayText: buildDisplayText(context, combinedMessage),
+    }
+  } finally {
+    context.setStreamMode?.('requesting')
+    context.setResponseLength?.(() => 0)
+    context.onCompactProgress?.({ type: 'compact_end' })
+    context.setSDKStatus?.(null)
   }
 }
 

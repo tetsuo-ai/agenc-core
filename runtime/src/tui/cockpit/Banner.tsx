@@ -1,30 +1,18 @@
 /**
- * Cockpit banner — top-of-TUI status strip.
+ * Cockpit banner — top-of-TUI control rail.
  *
  * Wave 4-B scope: the full banner. Subscribes (through props) to
  * session + mode registry state surfaced by `AgenCAppStateProvider`
- * and renders a single-row status line shaped like:
+ * and renders a denser cockpit header with:
  *
- *   [▸ run:abc123] [model:grok-4] [mode:default · press Shift+Tab to cycle]
- *     [phase:stream_model] [tools:2]
+ *   - a leading live/ready status signal
+ *   - high-visibility mode + model chips
+ *   - compact secondary telemetry (plan, phase, tools, run id)
+ *   - a compressed mode-cycle hint instead of a full sentence
  *
- * Visual rules:
- *   - Mode segment uses the palette from `theme.colors.mode*` keyed by
- *     the currently active `PermissionMode`.
- *   - When `hasPlanActive` is truthy a leading `[PLAN]` marker is
- *     prepended in the theme's warning colour. We use the bracket
- *     marker rather than an emoji so terminals without a full emoji
- *     font still show the signal.
- *   - When `isStreaming` is truthy we render a rotating spinner glyph.
- *     The glyph is advanced by subscribing to `useAnimationTick()`
- *     (Wave 2) so the banner re-renders in sync with the Ink clock
- *     rather than owning its own timer.
- *
- * Accessibility / contrast:
- *   - Every segment is bracketed so readers in a monochrome terminal
- *     still see separators.
- *   - The "press Shift+Tab to cycle" hint is dimmed so it does not
- *     compete visually with the mode label itself.
+ * The visual hierarchy intentionally borrows from the denser Codex /
+ * OpenClaude footer patterns, but keeps AgenC's watch palette and
+ * chrome so the surface still feels native to this runtime.
  */
 
 import React from "react";
@@ -79,6 +67,31 @@ function modeColor(mode: PermissionMode): string {
   }
 }
 
+function modeLabel(mode: PermissionMode): string {
+  switch (mode) {
+    case "acceptEdits":
+      return "accept";
+    case "bypassPermissions":
+      return "bypass";
+    case "dontAsk":
+      return "silent";
+    default:
+      return mode;
+  }
+}
+
+function phaseColor(phase: string | undefined): string {
+  if (typeof phase !== "string" || phase.length === 0) {
+    return theme.colors.muted;
+  }
+  const normalized = phase.toLowerCase();
+  if (/(error|fail|blocked|cancel)/.test(normalized)) return theme.colors.error;
+  if (/(tool|exec)/.test(normalized)) return theme.colors.accent;
+  if (/plan/.test(normalized)) return theme.colors.modePlan;
+  if (/(stream|model|token)/.test(normalized)) return theme.colors.primary;
+  return theme.colors.info;
+}
+
 /**
  * Short form of the run id so the banner stays on one line in narrow
  * terminals. Takes the last 8 characters to match the session-id short
@@ -92,20 +105,75 @@ function shortRunId(runId: string | undefined): string | undefined {
   return trimmed.slice(-8);
 }
 
-/**
- * Tiny helper so each bracketed segment looks consistent without each
- * call site re-implementing the same `[ ... ]` wrapping.
- */
+function Chip({
+  label,
+  value,
+  valueColor = theme.colors.ink,
+  compact = false,
+}: {
+  readonly label: string;
+  readonly value: React.ReactNode;
+  readonly valueColor?: string;
+  readonly compact?: boolean;
+}): React.ReactElement {
+  const labelText = compact ? label : label.toUpperCase();
+  return (
+    <Box flexDirection="row" marginRight={1}>
+      <Text backgroundColor={theme.colors.surface} color={theme.colors.muted}>
+        {` ${labelText} `}
+      </Text>
+      <Text
+        backgroundColor={theme.colors.surfaceAlt}
+        color={valueColor}
+        bold
+        wrap="truncate"
+      >
+        {" "}
+        {value}
+        {" "}
+      </Text>
+    </Box>
+  );
+}
+
+function LeadStatus({
+  isStreaming,
+  spinnerFrame,
+  phase,
+}: {
+  readonly isStreaming?: boolean;
+  readonly spinnerFrame?: string;
+  readonly phase?: string;
+}): React.ReactElement {
+  const liveColor = isStreaming ? theme.colors.primary : theme.colors.muted;
+  const liveLabel = isStreaming ? "LIVE" : "READY";
+  const glyph = isStreaming ? (spinnerFrame ?? SPINNER_FRAMES[0]) : "•";
+
+  return (
+    <Box flexDirection="row" alignItems="center" marginRight={1}>
+      <Text color={liveColor}>{glyph}</Text>
+      <Text> </Text>
+      <Text color={theme.colors.ink} bold>
+        {liveLabel}
+      </Text>
+      {phase !== undefined && phase.length > 0 ? (
+        <>
+          <Text color={theme.colors.dim}> / </Text>
+          <Text color={phaseColor(phase)}>{phase}</Text>
+        </>
+      ) : null}
+    </Box>
+  );
+}
+
 function Segment({
   children,
 }: {
   readonly children: React.ReactNode;
 }): React.ReactElement {
   return (
-    <Box>
-      <Text dim>[</Text>
+    <Box flexDirection="row" alignItems="center" marginRight={1}>
       {children}
-      <Text dim>]</Text>
     </Box>
   );
 }
@@ -135,72 +203,62 @@ export const Banner: React.FC<BannerProps> = ({
   const modeAccent = modeColor(mode);
 
   return (
-    <Box borderStyle="single" paddingX={1} flexDirection="row" flexWrap="wrap">
+    <Box
+      borderStyle="round"
+      borderColor={theme.colors.lineStrong}
+      borderText={{ content: " AgenC cockpit ", position: "top", align: "start", offset: 1 }}
+      paddingX={1}
+      flexDirection="row"
+      flexWrap="wrap"
+    >
+      <LeadStatus
+        isStreaming={isStreaming}
+        spinnerFrame={spinnerFrame}
+        phase={phase}
+      />
+
       {hasPlanActive ? (
-        <>
-          <Text color={theme.colors.warning} bold>
-            [PLAN]
-          </Text>
-          <Text> </Text>
-        </>
+        <Chip
+          label="plan"
+          value="ready"
+          valueColor={theme.colors.warning}
+        />
       ) : null}
 
-      {isStreaming ? (
-        <>
-          <Text color={theme.colors.primary}>{spinnerFrame ?? SPINNER_FRAMES[0]}</Text>
-          <Text> </Text>
-        </>
-      ) : null}
+      <Chip
+        label="mode"
+        value={`${indicator} ${modeLabel(mode)}`}
+        valueColor={modeAccent}
+      />
 
-      <Segment>
-        <Text color={modeAccent}>{indicator}</Text>
-        {run !== undefined ? (
-          <>
-            <Text> </Text>
-            <Text dim>run:</Text>
-            <Text>{run}</Text>
-          </>
-        ) : (
-          <>
-            <Text> </Text>
-            <Text dim>run:</Text>
-            <Text dim>—</Text>
-          </>
-        )}
-      </Segment>
-      <Text> </Text>
-
-      <Segment>
-        <Text dim>model:</Text>
-        <Text>{model ?? "grok"}</Text>
-      </Segment>
-      <Text> </Text>
-
-      <Segment>
-        <Text dim>mode:</Text>
-        <Text color={modeAccent} bold>
-          {mode}
-        </Text>
-        <Text dim> · press Shift+Tab to cycle</Text>
-      </Segment>
-      <Text> </Text>
-
-      {phase !== undefined && phase.length > 0 ? (
-        <>
-          <Segment>
-            <Text dim>phase:</Text>
-            <Text>{phase}</Text>
-          </Segment>
-          <Text> </Text>
-        </>
-      ) : null}
+      <Chip
+        label="model"
+        value={model ?? "grok"}
+        valueColor={theme.colors.ink}
+      />
 
       {tools !== undefined ? (
-        <Segment>
-          <Text dim>tools:</Text>
-          <Text color={theme.colors.accent}>{String(tools)}</Text>
-        </Segment>
+        <Chip
+          label="tools"
+          value={String(tools)}
+          valueColor={theme.colors.accent}
+          compact
+        />
       ) : null}
+
+      {run !== undefined ? (
+        <Chip
+          label="run"
+          value={run}
+          valueColor={theme.colors.secondary}
+          compact
+        />
+      ) : null}
+
+      <Segment>
+        <Text color={theme.colors.dim}>⇧Tab</Text>
+        <Text color={theme.colors.muted}> cycle</Text>
+      </Segment>
     </Box>
   );
 };

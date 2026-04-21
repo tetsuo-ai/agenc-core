@@ -17,10 +17,18 @@ import instances from "../ink/instances.js";
 import type { DOMElement } from "../ink/dom.js";
 import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
+import StdinContext from "../ink/components/StdinContext.js";
+import {
+  AgenCAppStateProvider,
+  useAgenCAppState,
+  type ConfigStoreLike,
+  type SessionLike,
+} from "../state/AppState.js";
 import {
   KeybindingProvider,
   useKeybinding,
 } from "../keybindings/KeybindingContext.js";
+import type { PendingPermissionRequest } from "../../permissions/context.js";
 import {
   ApprovalOverlay,
   BashRequest,
@@ -140,6 +148,7 @@ function makeRequest(
   overrides?: Partial<ApprovalOverlayProps["request"]>,
 ): ApprovalOverlayProps["request"] {
   return {
+    requestId: "req-1",
     tool: "Bash",
     args: { command: "ls -la" },
     workspacePath: "/tmp/agenc-test",
@@ -162,6 +171,79 @@ async function renderSubcomponent(
   return text;
 }
 
+function createFakeSession(
+  initialMode: "default" | "plan" = "default",
+): SessionLike & {
+  __setMode: (mode: "default" | "plan") => void;
+} {
+  const listeners = new Set<(next: "default" | "plan", previous: "default" | "plan") => void>();
+  let mode: "default" | "plan" = initialMode;
+  return {
+    services: {
+      permissionModeRegistry: {
+        current: () => ({ mode }),
+        subscribeToModeChange: (cb) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        },
+      },
+    },
+    __setMode(next) {
+      const previous = mode;
+      mode = next;
+      for (const cb of Array.from(listeners)) cb(next, previous);
+    },
+  };
+}
+
+const FAKE_CONFIG_STORE: ConfigStoreLike = { snapshot: {} };
+
+function createStdinContext(emitter: EventEmitter) {
+  return {
+    stdin: process.stdin,
+    setRawMode: () => undefined,
+    isRawModeSupported: true,
+    internal_exitOnCtrlC: true,
+    internal_eventEmitter: emitter,
+    internal_querier: null,
+  } as React.ContextType<typeof StdinContext>;
+}
+
+function QueueSeeder({
+  requests,
+}: {
+  readonly requests: readonly PendingPermissionRequest[];
+}): null {
+  const { permissionQueueOps } = useAgenCAppState();
+  React.useEffect(() => {
+    for (const request of requests) {
+      permissionQueueOps.push(request);
+    }
+  }, [permissionQueueOps, requests]);
+  return null;
+}
+
+function withProviders(
+  element: React.ReactElement,
+  opts?: {
+    readonly emitter?: EventEmitter;
+    readonly queue?: readonly PendingPermissionRequest[];
+  },
+): React.ReactElement {
+  const emitter = opts?.emitter ?? new EventEmitter();
+  const session = createFakeSession();
+  return (
+    <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+      <QueueSeeder requests={opts?.queue ?? []} />
+      <StdinContext.Provider value={createStdinContext(emitter)}>
+        <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+          {element}
+        </KeybindingProvider>
+      </StdinContext.Provider>
+    </AgenCAppStateProvider>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────
@@ -176,30 +258,28 @@ describe("ApprovalOverlay", () => {
   });
 
   test("renders header with tool name", async () => {
-    const emitter = new EventEmitter();
     const { unmount, getText } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withProviders(
         <ApprovalOverlay
           request={makeRequest({ tool: "write_file" })}
           onResolve={() => undefined}
           abortSignal={new AbortController().signal}
-        />
-      </KeybindingProvider>,
+        />,
+      ),
     );
-    expect(getText()).toContain("Permission needed: write_file");
+    expect(getText()).toContain("Approval needed · write_file");
     unmount();
   });
 
   test("renders workspace path", async () => {
-    const emitter = new EventEmitter();
     const { unmount, getText } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withProviders(
         <ApprovalOverlay
           request={makeRequest({ workspacePath: "/srv/agenc/workspace" })}
           onResolve={() => undefined}
           abortSignal={new AbortController().signal}
-        />
-      </KeybindingProvider>,
+        />,
+      ),
     );
     expect(getText()).toContain("/srv/agenc/workspace");
     unmount();
@@ -223,7 +303,7 @@ describe("ApprovalOverlay", () => {
     );
     expect(text).toContain("/tmp/x.txt");
     expect(text).toContain("line-0");
-    expect(text).toContain("line-9");
+    expect(text).toContain("line-7");
     expect(text).toContain("…");
     // Lines past the cap must be dropped.
     expect(text).not.toContain("line-15");
@@ -250,13 +330,14 @@ describe("ApprovalOverlay", () => {
     const abortController = new AbortController();
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withProviders(
         <ApprovalOverlay
           request={makeRequest()}
           onResolve={onResolve}
           abortSignal={abortController.signal}
-        />
-      </KeybindingProvider>,
+        />,
+        { emitter },
+      ),
     );
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
@@ -273,13 +354,14 @@ describe("ApprovalOverlay", () => {
     const abortController = new AbortController();
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withProviders(
         <ApprovalOverlay
           request={makeRequest()}
           onResolve={onResolve}
           abortSignal={abortController.signal}
-        />
-      </KeybindingProvider>,
+        />,
+        { emitter },
+      ),
     );
 
     emitter.emit("input", makeKeyEvent({ sequence: "a" }));
@@ -299,13 +381,14 @@ describe("ApprovalOverlay", () => {
       const emitter = new EventEmitter();
       const onResolve = vi.fn<[ApprovalDecision], void>();
       const { unmount } = await mount(
-        <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        withProviders(
           <ApprovalOverlay
             request={makeRequest()}
             onResolve={onResolve}
             abortSignal={new AbortController().signal}
-          />
-        </KeybindingProvider>,
+          />,
+          { emitter },
+        ),
       );
       emitter.emit("input", makeKeyEvent({ sequence: "d" }));
       await new Promise((r) => setTimeout(r, 20));
@@ -319,13 +402,14 @@ describe("ApprovalOverlay", () => {
       const emitter = new EventEmitter();
       const onResolve = vi.fn<[ApprovalDecision], void>();
       const { unmount } = await mount(
-        <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        withProviders(
           <ApprovalOverlay
             request={makeRequest()}
             onResolve={onResolve}
             abortSignal={new AbortController().signal}
-          />
-        </KeybindingProvider>,
+          />,
+          { emitter },
+        ),
       );
       emitter.emit("input", makeKeyEvent({ name: "escape" }));
       await new Promise((r) => setTimeout(r, 20));
@@ -341,13 +425,14 @@ describe("ApprovalOverlay", () => {
     const abortController = new AbortController();
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withProviders(
         <ApprovalOverlay
           request={makeRequest()}
           onResolve={onResolve}
           abortSignal={abortController.signal}
-        />
-      </KeybindingProvider>,
+        />,
+        { emitter },
+      ),
     );
 
     abortController.abort();
@@ -369,14 +454,21 @@ describe("ApprovalOverlay", () => {
     }
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
-        <ChatSubmitProbe />
-        <ApprovalOverlay
-          request={makeRequest()}
-          onResolve={onResolve}
-          abortSignal={new AbortController().signal}
-        />
-      </KeybindingProvider>,
+      <AgenCAppStateProvider
+        session={createFakeSession()}
+        configStore={FAKE_CONFIG_STORE}
+      >
+        <StdinContext.Provider value={createStdinContext(emitter)}>
+          <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+            <ChatSubmitProbe />
+            <ApprovalOverlay
+              request={makeRequest()}
+              onResolve={onResolve}
+              abortSignal={new AbortController().signal}
+            />
+          </KeybindingProvider>
+        </StdinContext.Provider>
+      </AgenCAppStateProvider>,
     );
 
     // Enter under modal context fires modal:confirm (→ onResolve allow)
@@ -396,6 +488,76 @@ describe("ApprovalOverlay", () => {
     // Re-mount a bare chat-only tree to prove the next render restarts
     // cleanly. (Reusing the emitter after unmount is not safe — the
     // previous provider has torn down its subscription.)
+  });
+
+  test("shows queue position and backlog from app state", async () => {
+    const queue: PendingPermissionRequest[] = [
+      {
+        requestId: "req-1",
+        toolName: "Bash",
+        toolInput: { command: "git status" },
+        turnId: "turn-1",
+        message: "first",
+        submittedAt: Date.now() - 2_000,
+      },
+      {
+        requestId: "req-2",
+        toolName: "system.writeFile",
+        toolInput: { path: "/tmp/x.txt", content: "hello" },
+        turnId: "turn-1",
+        message: "second",
+        submittedAt: Date.now() - 1_000,
+      },
+    ];
+    const { unmount, getText } = await mount(
+      withProviders(
+        <ApprovalOverlay
+          request={makeRequest({
+            requestId: "req-1",
+            tool: "Bash",
+            args: { command: "git status" },
+          })}
+          onResolve={() => undefined}
+          abortSignal={new AbortController().signal}
+        />,
+        { queue },
+      ),
+    );
+    const text = getText();
+    expect(text).toContain("Queue 1/2");
+    expect(text).toContain("queue · 1 waiting behind this request");
+    expect(text).toContain("git status");
+    unmount();
+  });
+
+  test("details focus blocks accidental Enter approval until focus returns to actions", async () => {
+    const emitter = new EventEmitter();
+    const onResolve = vi.fn<[ApprovalDecision], void>();
+    const { unmount } = await mount(
+      withProviders(
+        <ApprovalOverlay
+          request={makeRequest()}
+          onResolve={onResolve}
+          abortSignal={new AbortController().signal}
+        />,
+        { emitter },
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "tab" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onResolve).not.toHaveBeenCalled();
+
+    emitter.emit("input", makeKeyEvent({ name: "escape" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0]).toEqual({ behavior: "allow" });
+    unmount();
   });
 });
 

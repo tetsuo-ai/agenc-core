@@ -31,6 +31,7 @@ import React, { useEffect } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
+import { theme } from "../theme.js";
 
 import type { SlashCommandResult } from "../../commands/types.js";
 
@@ -74,18 +75,24 @@ export const SlashResultRenderer: React.FC<SlashResultProps> = ({
     case "text":
       return (
         <Box borderStyle="round" paddingX={1} flexDirection="column">
-          <Text dim>{input}</Text>
+          <Text color={theme.colors.dim}>{input}</Text>
           <Text>{result.text}</Text>
         </Box>
       );
 
     case "compact":
-      return <Text dim>{`${input}  ${result.text}`}</Text>;
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.accent}>{input}</Text>
+          <Text dim>{` · ${result.text}`}</Text>
+        </Box>
+      );
 
     case "prompt":
       return (
-        <Box flexDirection="column">
-          <Text color="cyan">{`${PROMPT_SIGIL} ${input}`}</Text>
+        <Box borderStyle="round" paddingX={1} flexDirection="column">
+          <Text color={theme.colors.primary}>{`${PROMPT_SIGIL} ${input}`}</Text>
+          <Text dim>next prompt</Text>
           <Text>{result.content}</Text>
         </Box>
       );
@@ -93,11 +100,22 @@ export const SlashResultRenderer: React.FC<SlashResultProps> = ({
     case "skip":
       return null;
 
-    case "exit":
-      return <Text color="red">{`Exiting (code ${result.code})`}</Text>;
+    case "exit": {
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.warning}>/exit</Text>
+          <Text dim>{` · code ${result.code}`}</Text>
+        </Box>
+      );
+    }
 
     case "error":
-      return <Text color="red">{`agenc: ${result.message}`}</Text>;
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.error}>{input}</Text>
+          <Text color={theme.colors.error}>{` · ${result.message}`}</Text>
+        </Box>
+      );
 
     default: {
       // Exhaustiveness guard — if a new kind is added to the union

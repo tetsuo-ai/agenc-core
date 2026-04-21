@@ -46,6 +46,18 @@ describe("composerReducer", () => {
     expect(next.cursor).toBe(1);
   });
 
+  test("REPLACE_RANGE swaps only the targeted token and lands the cursor after the replacement", () => {
+    const start = freshState({ value: "/he foo", cursor: 3 });
+    const next = composerReducer(start, {
+      type: "REPLACE_RANGE",
+      start: 0,
+      end: 3,
+      text: "/help",
+    });
+    expect(next.value).toBe("/help foo");
+    expect(next.cursor).toBe(5);
+  });
+
   test("SUBMIT commits value to history and resets the buffer", () => {
     const start = freshState({ value: "hello", cursor: 5 });
     const next = composerReducer(start, { type: "SUBMIT" });

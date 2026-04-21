@@ -134,7 +134,7 @@ describe('microCompact MCP tool compaction', () => {
     expect(result.messages.length).toBe(messages.length)
   })
 
-  test('microcompactMessages clears older role-based tool results on the live path', async () => {
+  test('microcompactMessages leaves older role-based tool results intact on the live path', async () => {
     const { microcompactMessages } = await import('./micro-compact.js')
     const toolUseContext = {
       modelInfo: { slug: 'claude-3-5-sonnet-20241022' },
@@ -165,9 +165,7 @@ describe('microCompact MCP tool compaction', () => {
     const toolMessages = result.messages.filter((message) => message.role === 'tool')
 
     expect(toolMessages).toHaveLength(7)
-    expect(toolMessages[0]?.content).toContain('[Old tool result content cleared]')
-    expect(toolMessages[1]?.content).toContain('[Old tool result content cleared]')
-    for (const toolMessage of toolMessages.slice(2)) {
+    for (const toolMessage of toolMessages) {
       expect(toolMessage?.content).toBe('x'.repeat(200))
     }
   })

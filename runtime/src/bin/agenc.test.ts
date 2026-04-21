@@ -38,6 +38,7 @@ import {
   maybeReloadConfigBetweenTurns,
   parseExtractedMemoryCandidates,
   resolveModelOrExit,
+  resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
   validateAgencHome,
@@ -1729,7 +1730,7 @@ describe("memory_write_contention routing (I-8)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("main() full-IIFE smoke", () => {
-  it("bootTUIEntry reuses bootstrap-owned session bring-up and teardown", async () => {
+  it("bootTUIEntry reuses bootstrap-owned session bring-up, shared tools, and teardown", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cwd-"));
     const prevEnv = { ...process.env };
@@ -1755,6 +1756,17 @@ describe("main() full-IIFE smoke", () => {
                 totalTokens: 2,
               },
             }),
+            chatStream: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+              model: "grok-4-fast",
+              finishReason: "stop",
+            }),
           }) as never,
       );
     const startMcpSpy = vi
@@ -1763,9 +1775,16 @@ describe("main() full-IIFE smoke", () => {
 
     const waitUntilExit = vi.fn().mockResolvedValue(undefined);
     const unmount = vi.fn();
-    const bootTUISpy = vi.fn().mockResolvedValue({
-      unmount,
-      waitUntilExit,
+    let capturedSession: {
+      conversationId: string;
+      services: { registry: { tools: Array<{ name: string }> } };
+      submit?: (message: string) => Promise<void>;
+      subscribeToEvents?: (cb: (event: { type: string }) => void) => () => void;
+      flushEventLog?: () => Promise<void>;
+    } | null = null;
+    const bootTUISpy = vi.fn(async (opts: { session: typeof capturedSession }) => {
+      capturedSession = opts?.session as typeof capturedSession;
+      return { unmount, waitUntilExit };
     });
     vi.doMock("../tui/main.js", () => ({
       bootTUI: bootTUISpy,
@@ -1784,8 +1803,81 @@ describe("main() full-IIFE smoke", () => {
           initialPrompt: "queue this",
         }),
       );
+      expect(capturedSession).not.toBeNull();
+      expect(
+        capturedSession!.services.registry.tools.some(
+          (tool) => tool.name === "system.agent.delegate",
+        ),
+      ).toBe(true);
+      expect(typeof capturedSession!.submit).toBe("function");
+      expect(typeof capturedSession!.subscribeToEvents).toBe("function");
+      expect(typeof capturedSession!.flushEventLog).toBe("function");
       expect(waitUntilExit).toHaveBeenCalledTimes(1);
       expect(getCurrentRuntimeSession()).toBeNull();
+    } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resumeTUIEntry keeps the requested session id instead of minting a fresh one", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-resume-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-resume-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    await mkdir(join(tmpHome, "sessions"), { recursive: true });
+    await writeFile(join(tmpHome, "sessions", "resume-123.json"), "{}");
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+
+    let capturedConversationId: string | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: { conversationId: string } }) => {
+        capturedConversationId = opts.session.conversationId;
+        return {
+          unmount: vi.fn(),
+          waitUntilExit: vi.fn().mockResolvedValue(undefined),
+        };
+      }),
+    }));
+
+    try {
+      const code = await resumeTUIEntry({ resumeId: "resume-123" });
+      expect(code).toBe(0);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(startMcpSpy).toHaveBeenCalledTimes(1);
+      expect(capturedConversationId).toBe("resume-123");
     } finally {
       createProviderSpy.mockRestore();
       startMcpSpy.mockRestore();

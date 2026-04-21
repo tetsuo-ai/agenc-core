@@ -17,14 +17,25 @@ ownership is fully consolidated.
 
 ## True Local Runtime Owners
 
+- `runtime/src/bin/route.ts`
+  Interactive route gate for one-shot CLI vs TUI vs resume. It is a
+  live entry surface, but it must stay a pure router and must not grow
+  bootstrap/session semantics.
 - `runtime/src/bin/agenc.ts`
-  Interactive CLI bootstrap. It still owns session bootstrap and the
-  top-level `buildTurnContext(...)` call today, but the approved cutover
-  target is bootstrap plus UI surface only.
+  Interactive CLI adapter. It owns the one-shot loop plus
+  `bootTUIEntry(...)` / `resumeTUIEntry(...)` handoff, but it no longer
+  owns `buildTurnContext(...)` directly.
+- `runtime/src/bin/bootstrap.ts`
+  Canonical local bootstrap owner. It owns session creation/resume,
+  sidecar and MCP startup wiring, and the current `buildTurnContext(...)`
+  handoff into the codex session kernel.
+- `runtime/src/tui/main.tsx`
+  Ink/TUI bootstrap surface. It owns terminal lifecycle and stdin-loss
+  handling for the live cockpit, but it must not grow session bootstrap
+  or legacy runtime-owner imports.
 - `runtime/src/bin/slash.ts`
-  Slash-command wrapper. It is a live entrypoint but not a long-term
-  runtime owner; the manifest keeps it explicit so the check can reject
-  new legacy imports there.
+  Slash-command wrapper and registry bridge gate. It is a live entry
+  surface, but not a separate runtime owner.
 - `runtime/src/tasks/LocalMainSessionTask.ts`
   Background main-session path. The approved plan names
   `startBackgroundSession`; the live tree currently exposes
@@ -64,11 +75,11 @@ surfaces, not proof of local runtime ownership.
 
 ## Fabricated-Context Seams
 
-These are either real context-fabrication sites today or near-boundary
-files that must stay listed until the cutover removes the seam:
+Owner-owned context fabrication is declared directly on the owner
+records in the machine-readable contract below. The files listed here
+are the remaining non-owner seams or near-boundary paths that still need
+explicit tracking until the cutover removes them:
 
-- `runtime/src/bin/agenc.ts`
-- `runtime/src/commands/compact.ts`
 - `runtime/src/utils/forkedAgent.ts`
 - `runtime/src/utils/hooks/execAgentHook.ts`
 - `runtime/src/commands/context/context-noninteractive.ts`
@@ -137,8 +148,10 @@ No current non-runtime consumer is approved for
 - `runtime/src/tools/AgentTool/**` is treated as a legacy owner family.
   Existing direct imports that are still transitional must be declared as
   explicit exceptions in the machine-readable contract; new ones fail.
-- `buildTurnContext(...)` is only allowed as a known owner/seam call.
-  Any new call site must be added to the manifest intentionally.
+- `buildTurnContext(...)` is only allowed as a manifest-declared
+  owner/seam call. Today the canonical bootstrap owner is
+  `runtime/src/bin/bootstrap.ts`; any new call site must be added to the
+  manifest intentionally.
 - `ToolUseContext` fabrication is a seam, not an invisible convenience.
   New object-literal fabrication sites fail unless the manifest is
   updated first.
@@ -171,17 +184,41 @@ JSON together.
   "runtimeSourceRoot": "runtime/src",
   "trueLocalRuntimeOwners": [
     {
-      "id": "cli_bootstrap",
+      "id": "cli_route",
+      "path": "runtime/src/bin/route.ts",
+      "kind": "live_entrypoint",
+      "ownedSurface": "interactive route gate for one-shot CLI vs TUI vs resume",
+      "disposition": "pure routing surface only; must not grow session or bootstrap semantics"
+    },
+    {
+      "id": "cli_entry",
       "path": "runtime/src/bin/agenc.ts",
       "kind": "live_entrypoint",
-      "ownedSurface": "interactive CLI bootstrap and current turn bootstrap",
-      "disposition": "cut over first; keep only bootstrap plus UI surface"
+      "ownedSurface": "one-shot CLI loop plus bootTUIEntry/resumeTUIEntry adapters",
+      "disposition": "live adapter surface only; turn bootstrap lives in runtime/src/bin/bootstrap.ts"
+    },
+    {
+      "id": "session_bootstrap",
+      "path": "runtime/src/bin/bootstrap.ts",
+      "kind": "bootstrap_owner",
+      "ownedSurface": "session create/resume bootstrap, MCP/sidecar wiring, and TurnContext handoff",
+      "disposition": "canonical local bootstrap owner after the codex cutover",
+      "expectedHeuristics": [
+        "build_turn_context_call"
+      ]
+    },
+    {
+      "id": "tui_boot",
+      "path": "runtime/src/tui/main.tsx",
+      "kind": "ui_entrypoint",
+      "ownedSurface": "Ink mount path, terminal lifecycle, and stdin-loss handling",
+      "disposition": "UI surface only; session bootstrap must stay outside the TUI tree"
     },
     {
       "id": "slash_adapter",
       "path": "runtime/src/bin/slash.ts",
       "kind": "live_entrypoint",
-      "ownedSurface": "slash-command wrapper and bridge gate",
+      "ownedSurface": "slash-command wrapper and registry bridge gate",
       "disposition": "thin adapter only; no standalone runtime ownership"
     },
     {
@@ -268,18 +305,6 @@ JSON together.
     }
   ],
   "fabricatedContextSeams": [
-    {
-      "path": "runtime/src/bin/agenc.ts",
-      "status": "known_current_owner",
-      "expectedHeuristics": [
-        "build_turn_context_call"
-      ]
-    },
-    {
-      "path": "runtime/src/commands/compact.ts",
-      "status": "known_transitional_seam",
-      "expectedHeuristics": []
-    },
     {
       "path": "runtime/src/utils/forkedAgent.ts",
       "status": "known_transitional_seam",
@@ -475,7 +500,10 @@ JSON together.
   ],
   "checkConfig": {
     "liveEntrypoints": [
+      "runtime/src/bin/route.ts",
       "runtime/src/bin/agenc.ts",
+      "runtime/src/bin/bootstrap.ts",
+      "runtime/src/tui/main.tsx",
       "runtime/src/bin/slash.ts",
       "runtime/src/tasks/LocalMainSessionTask.ts",
       "runtime/src/agents/delegate.ts"
@@ -498,20 +526,7 @@ JSON together.
         "reason": "legacy subagent owner family"
       }
     ],
-    "directImportExceptions": [
-      {
-        "importer": "runtime/src/tasks/LocalMainSessionTask.ts",
-        "target": "runtime/src/query.ts",
-        "severity": "warning",
-        "reason": "known transitional background-session import until session ownership moves out of query.ts"
-      },
-      {
-        "importer": "runtime/src/tasks/LocalMainSessionTask.ts",
-        "target": "runtime/src/tools/AgentTool/loadAgentsDir.ts",
-        "severity": "warning",
-        "reason": "known transitional agent-definition import until delegate and background-session ownership converge"
-      }
-    ],
+    "directImportExceptions": [],
     "helperImportPolicies": [
       {
         "target": "runtime/src/services/compact/grouping.ts",
@@ -536,10 +551,7 @@ JSON together.
       }
     ],
     "allowlistedFabricationSeams": [
-      "runtime/src/bin/agenc.ts",
-      "runtime/src/commands/compact.ts",
       "runtime/src/utils/forkedAgent.ts",
-      "runtime/src/utils/hooks/execAgentHook.ts",
       "runtime/src/services/MagicDocs/magicDocs.ts",
       "runtime/src/tools/AgentTool/runAgent.ts"
     ]

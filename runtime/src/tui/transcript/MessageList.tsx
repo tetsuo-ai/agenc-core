@@ -30,7 +30,9 @@ import ScrollBox, {
 import { theme } from "../theme.js";
 
 import { StreamingMessage } from "./StreamingMessage.js";
-import { ExecCell } from "./ExecCell.js";
+import { ExecCell, collapseOutput } from "./ExecCell.js";
+import { SlashResultRenderer } from "./SlashResultRenderer.js";
+import type { SlashCommandResult } from "../../commands/types.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
 /* Types                                                                   */
@@ -41,6 +43,8 @@ export type TranscriptMessageKind =
   | "assistant"
   | "tool_call"
   | "tool_result"
+  | "activity"
+  | "meta"
   | "warning"
   | "error"
   | "slash_result";
@@ -59,7 +63,13 @@ export interface TranscriptMessage {
   readonly toolName?: string;
   readonly toolArgs?: unknown;
   readonly isError?: boolean;
+  readonly isComplete?: boolean;
+  readonly label?: string;
+  readonly callId?: string;
+  readonly progressStream?: "stdout" | "stderr" | "status";
   readonly timestamp: number;
+  readonly slashInput?: string;
+  readonly slashResult?: SlashCommandResult;
 
   /**
    * When the message is a `tool_call` for a shell-exec tool, these
@@ -130,7 +140,12 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       );
 
     case "assistant":
-      return <StreamingMessage content={message.content} isComplete />;
+      return (
+        <StreamingMessage
+          content={message.content}
+          isComplete={message.isComplete !== false}
+        />
+      );
 
     case "tool_call": {
       // When the tool call carries exec fields we prefer the full ExecCell
@@ -157,30 +172,64 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       }
       const argSummary = truncate(safeStringify(message.toolArgs));
       return (
-        <Box flexDirection="row">
-          <Text dim>
-            {"\u2192 "}
-            {message.toolName ?? "tool"}
-            {"("}
-            {argSummary}
-            {")"}
-          </Text>
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text dim>
+              {"\u2192 "}
+              {message.toolName ?? "tool"}
+            </Text>
+            {argSummary.length > 0 ? (
+              <Text dim>{`(${argSummary})`}</Text>
+            ) : null}
+            {message.isComplete === false ? <Text dim>{" \u2026"}</Text> : null}
+          </Box>
+          {message.label ? (
+            <Text color={theme.colors.dim}>{message.label}</Text>
+          ) : null}
         </Box>
       );
     }
+
+    case "activity": {
+      const color =
+        message.progressStream === "stderr"
+          ? theme.colors.warning
+          : theme.colors.dim;
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text color={theme.colors.dim}>{"\u00B7 "}</Text>
+            <Text color={color}>
+              {message.label ? `${message.label}: ` : ""}
+              {collapseOutput(message.content, 4, 2)}
+            </Text>
+          </Box>
+        </Box>
+      );
+    }
+
+    case "meta":
+      return (
+        <Box flexDirection="row">
+          <Text color={theme.colors.accent}>
+            {"["}
+            {message.label ?? "meta"}
+            {"] "}
+          </Text>
+          <Text dim>{message.content}</Text>
+        </Box>
+      );
 
     case "tool_result":
       return (
         <Box flexDirection="row">
           <Text
-            color={
-              message.isError ? theme.colors.error : theme.colors.success
-            }
+            color={message.isError ? theme.colors.error : theme.colors.success}
           >
             {message.isError ? "\u2717" : "\u2713"}
           </Text>
-          <Text>{" "}</Text>
-          <Text dim>{truncate(message.content)}</Text>
+          <Text> </Text>
+          <Text dim>{collapseOutput(message.content, 4, 2)}</Text>
         </Box>
       );
 
@@ -205,11 +254,15 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       );
 
     case "slash_result":
-      return (
-        <Box flexDirection="row">
-          <Text color={theme.colors.dim}>{message.content}</Text>
-        </Box>
-      );
+      if (message.slashInput && message.slashResult) {
+        return (
+          <SlashResultRenderer
+            input={message.slashInput}
+            result={message.slashResult}
+          />
+        );
+      }
+      return <Text color={theme.colors.dim}>{message.content}</Text>;
 
     default:
       // Exhaustive check — if a new kind is added and falls through here
@@ -264,20 +317,20 @@ export const MessageList: React.FC<MessageListProps> = ({
     }
   }, [messages.length]);
 
+  const hasInlineStreamingAssistant =
+    messages.length > 0 &&
+    messages[messages.length - 1]?.kind === "assistant" &&
+    messages[messages.length - 1]?.isComplete === false;
+
   return (
-    <ScrollBox
-      ref={scrollRef}
-      flexDirection="column"
-      flexGrow={1}
-      stickyScroll
-    >
+    <ScrollBox ref={scrollRef} flexDirection="column" flexGrow={1} stickyScroll>
       <Box flexDirection="column">
         {messages.map((message) => (
           <Box key={message.id} flexDirection="column">
             <MessageRow message={message} />
           </Box>
         ))}
-        {isStreaming ? (
+        {isStreaming && !hasInlineStreamingAssistant ? (
           <Box flexDirection="row">
             <Text dim>{"\u2026"}</Text>
           </Box>

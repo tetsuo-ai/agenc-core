@@ -16,6 +16,17 @@ const manifestPath = path.join(
 const runtimeSourceRoot = path.join(runtimeRoot, "src");
 const SOURCE_FILE_RE = /\.(?:ts|tsx|mts|cts)$/;
 const TEST_FILE_RE = /\.test\.(?:ts|tsx|mts|cts)$/;
+const ENTRYPOINT_OWNER_KINDS = new Set([
+  "live_entrypoint",
+  "bootstrap_owner",
+  "ui_entrypoint",
+]);
+const RISKY_FABRICATION_HEURISTICS = new Set([
+  "build_turn_context_call",
+  "tool_use_context_object_literal",
+  "create_subagent_context_call",
+  "declares_create_subagent_context",
+]);
 
 function toPosixPath(value) {
   return value.split(path.sep).join("/");
@@ -297,18 +308,36 @@ function getDirectImportException(manifest, importer, target) {
   );
 }
 
+function getOwnerHeuristicEntries(manifest) {
+  return manifest.trueLocalRuntimeOwners
+    .filter(
+      (owner) =>
+        !owner.path.endsWith("/**") &&
+        Array.isArray(owner.expectedHeuristics) &&
+        owner.expectedHeuristics.length > 0,
+    )
+    .map((owner) => ({
+      path: owner.path,
+      expectedHeuristics: owner.expectedHeuristics,
+      label: `owner ${owner.id}`,
+    }));
+}
+
+function getDeclaredLiveEntrypoints(manifest) {
+  return manifest.trueLocalRuntimeOwners
+    .filter(
+      (owner) =>
+        !owner.path.endsWith("/**") && ENTRYPOINT_OWNER_KINDS.has(owner.kind),
+    )
+    .map((owner) => owner.path);
+}
+
 function findUnexpectedHelperImporters(target, allowedImporters, reverseImports) {
   const currentImporters = reverseImports.get(target) ?? [];
   return currentImporters.filter((importer) => !allowedImporters.includes(importer));
 }
 
 function findNewFabricationSites(sourceAnalysis, allowlistedSeams) {
-  const riskyHeuristics = new Set([
-    "build_turn_context_call",
-    "tool_use_context_object_literal",
-    "create_subagent_context_call",
-    "declares_create_subagent_context",
-  ]);
   const scanRoots = [
     "runtime/src/bin/",
     "runtime/src/commands/",
@@ -325,11 +354,15 @@ function findNewFabricationSites(sourceAnalysis, allowlistedSeams) {
       if (!scanRoots.some((root) => filePath.startsWith(root))) {
         return false;
       }
-      return heuristics.some((heuristic) => riskyHeuristics.has(heuristic));
+      return heuristics.some((heuristic) =>
+        RISKY_FABRICATION_HEURISTICS.has(heuristic),
+      );
     })
     .map(({ filePath, heuristics }) => ({
       filePath,
-      heuristics: heuristics.filter((heuristic) => riskyHeuristics.has(heuristic)),
+      heuristics: heuristics.filter((heuristic) =>
+        RISKY_FABRICATION_HEURISTICS.has(heuristic),
+      ),
     }));
 }
 
@@ -365,6 +398,8 @@ for (const entry of runtimeFiles) {
 }
 
 const analysisByFile = makeLookup(sourceAnalysis, (entry) => entry.filePath);
+const ownerHeuristicEntries = getOwnerHeuristicEntries(manifest);
+const declaredLiveEntrypoints = unique(getDeclaredLiveEntrypoints(manifest)).sort();
 const reverseImports = new Map();
 for (const { filePath, imports } of sourceAnalysis) {
   for (const imported of imports) {
@@ -380,6 +415,9 @@ for (const [target, importers] of reverseImports.entries()) {
 const manifestExactPaths = [];
 for (const owner of manifest.trueLocalRuntimeOwners) {
   if (!owner.path.endsWith("/**")) {
+    manifestExactPaths.push(owner.path);
+  }
+  if (Array.isArray(owner.expectedHeuristics) && owner.expectedHeuristics.length > 0) {
     manifestExactPaths.push(owner.path);
   }
 }
@@ -426,6 +464,28 @@ if (missingManifestPaths.length > 0) {
 const errors = [];
 const warnings = [];
 
+const missingConfiguredLiveEntrypoints = declaredLiveEntrypoints.filter(
+  (entrypoint) => !manifest.checkConfig.liveEntrypoints.includes(entrypoint),
+);
+if (missingConfiguredLiveEntrypoints.length > 0) {
+  errors.push(
+    `checkConfig.liveEntrypoints is missing declared live owners:\n${formatList(
+      missingConfiguredLiveEntrypoints,
+    )}`,
+  );
+}
+
+const undocumentedConfiguredLiveEntrypoints = manifest.checkConfig.liveEntrypoints.filter(
+  (entrypoint) => !declaredLiveEntrypoints.includes(entrypoint),
+);
+if (undocumentedConfiguredLiveEntrypoints.length > 0) {
+  errors.push(
+    `checkConfig.liveEntrypoints includes paths not declared in trueLocalRuntimeOwners:\n${formatList(
+      undocumentedConfiguredLiveEntrypoints,
+    )}`,
+  );
+}
+
 for (const entrypoint of manifest.checkConfig.liveEntrypoints) {
   const analysis = analysisByFile.get(entrypoint);
   if (!analysis) {
@@ -455,6 +515,41 @@ for (const entrypoint of manifest.checkConfig.liveEntrypoints) {
   }
 }
 
+for (const exception of manifest.checkConfig.directImportExceptions) {
+  const analysis = analysisByFile.get(exception.importer);
+  if (!analysis) {
+    errors.push(`direct import exception importer missing from analysis: ${exception.importer}`);
+    continue;
+  }
+  if (!manifest.checkConfig.liveEntrypoints.includes(exception.importer)) {
+    errors.push(
+      `direct import exception importer is not a declared live entrypoint: ${exception.importer}`,
+    );
+  }
+  if (!analysis.imports.includes(exception.target)) {
+    errors.push(
+      `direct import exception is stale: ${exception.importer} no longer imports ${exception.target}`,
+    );
+  }
+}
+
+for (const owner of ownerHeuristicEntries) {
+  const analysis = analysisByFile.get(owner.path);
+  if (!analysis) {
+    errors.push(`${owner.label} missing from analysis: ${owner.path}`);
+    continue;
+  }
+
+  const missingHeuristics = owner.expectedHeuristics.filter(
+    (heuristic) => !analysis.heuristics.includes(heuristic),
+  );
+  if (missingHeuristics.length > 0) {
+    errors.push(
+      `${owner.path} no longer matches ${owner.label} heuristics: ${missingHeuristics.join(", ")}`,
+    );
+  }
+}
+
 for (const seam of manifest.fabricatedContextSeams) {
   const analysis = analysisByFile.get(seam.path);
   if (!analysis) {
@@ -468,6 +563,23 @@ for (const seam of manifest.fabricatedContextSeams) {
   if (missingHeuristics.length > 0) {
     errors.push(
       `${seam.path} no longer matches manifest seam heuristics: ${missingHeuristics.join(", ")}`,
+    );
+  }
+}
+
+for (const seamPath of manifest.checkConfig.allowlistedFabricationSeams) {
+  const analysis = analysisByFile.get(seamPath);
+  if (!analysis) {
+    errors.push(`allowlisted fabrication seam missing from analysis: ${seamPath}`);
+    continue;
+  }
+
+  const riskyHeuristics = analysis.heuristics.filter((heuristic) =>
+    RISKY_FABRICATION_HEURISTICS.has(heuristic),
+  );
+  if (riskyHeuristics.length === 0) {
+    errors.push(
+      `allowlisted fabrication seam is stale: ${seamPath} no longer matches risky heuristics`,
     );
   }
 }
@@ -510,9 +622,19 @@ for (const policy of manifest.checkConfig.helperImportPolicies) {
   }
 }
 
+const ownerFabricationAllowlist = ownerHeuristicEntries
+  .filter(({ expectedHeuristics }) =>
+    expectedHeuristics.some((heuristic) =>
+      RISKY_FABRICATION_HEURISTICS.has(heuristic),
+    ),
+  )
+  .map(({ path }) => path);
 const newFabricationSites = findNewFabricationSites(
   sourceAnalysis,
-  manifest.checkConfig.allowlistedFabricationSeams,
+  unique([
+    ...manifest.checkConfig.allowlistedFabricationSeams,
+    ...ownerFabricationAllowlist,
+  ]),
 );
 if (newFabricationSites.length > 0) {
   errors.push(
@@ -539,6 +661,7 @@ log(`manifest schema v${manifest.schemaVersion} loaded from docs/plan/runtime-ow
 log(`checked ${sourceAnalysis.length} runtime source files`);
 log(
   `validated ${manifest.checkConfig.liveEntrypoints.length} live entrypoints, ` +
+    `${ownerHeuristicEntries.length} owner-owned context sites, ` +
     `${manifest.fabricatedContextSeams.length} fabricated-context seams, and ` +
     `${manifest.checkConfig.helperImportPolicies.length} helper import policies`,
 );

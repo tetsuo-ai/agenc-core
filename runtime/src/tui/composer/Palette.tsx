@@ -40,6 +40,8 @@ export interface PaletteItem {
   readonly label: string;
   /** Secondary dimmed line. Not matched against `query`. */
   readonly description?: string;
+  /** Extra search terms such as aliases. */
+  readonly keywords?: readonly string[];
   /** What gets inserted into the composer on select. */
   readonly value: string;
 }
@@ -71,6 +73,8 @@ interface RankedItem {
   readonly matches: readonly number[];
   /** Tier: 0=prefix, 1=word-boundary, 2=subsequence. Lower is better. */
   readonly tier: number;
+  /** Tiebreak for non-label hits: label > keyword > description. */
+  readonly targetPriority: number;
 }
 
 const WORD_BOUNDARY_RE = /[\s_\-/@.:]/;
@@ -129,6 +133,105 @@ function subsequenceIndices(
   return out;
 }
 
+interface MatchTarget {
+  readonly text: string;
+  readonly offset: number;
+  readonly targetPriority: number;
+  readonly exposeMatches: boolean;
+}
+
+function buildMatchTargets(item: PaletteItem): MatchTarget[] {
+  const targets: MatchTarget[] = [];
+  const trimmedLabel =
+    item.label.startsWith("/") || item.label.startsWith("@")
+      ? item.label.slice(1)
+      : item.label;
+  targets.push({
+    text: trimmedLabel,
+    offset: trimmedLabel === item.label ? 0 : 1,
+    targetPriority: 0,
+    exposeMatches: true,
+  });
+  for (const keyword of item.keywords ?? []) {
+    if (typeof keyword !== "string" || keyword.trim().length === 0) continue;
+    targets.push({
+      text: keyword.trim(),
+      offset: 0,
+      targetPriority: 1,
+      exposeMatches: false,
+    });
+  }
+  if (typeof item.description === "string" && item.description.trim().length > 0) {
+    targets.push({
+      text: item.description.trim(),
+      offset: 0,
+      targetPriority: 2,
+      exposeMatches: false,
+    });
+  }
+  return targets;
+}
+
+function chooseBetterRank(
+  current: RankedItem | null,
+  next: RankedItem,
+): RankedItem {
+  if (current === null) return next;
+  if (next.tier < current.tier) return next;
+  if (next.tier > current.tier) return current;
+  if (next.targetPriority < current.targetPriority) return next;
+  return current;
+}
+
+function rankItem(item: PaletteItem, query: string): RankedItem | null {
+  let best: RankedItem | null = null;
+
+  for (const target of buildMatchTargets(item)) {
+    const lower = target.text.toLowerCase();
+    const qLower = query.toLowerCase();
+    if (lower.startsWith(qLower)) {
+      const matches: number[] = [];
+      for (let i = 0; i < query.length; i += 1) {
+        matches.push(i + target.offset);
+      }
+      best = chooseBetterRank(best, {
+        item,
+        matches: target.exposeMatches ? matches : [],
+        tier: 0,
+        targetPriority: target.targetPriority,
+      });
+      continue;
+    }
+
+    const boundary = subsequenceIndices(target.text, query, true);
+    if (boundary !== null) {
+      best = chooseBetterRank(best, {
+        item,
+        matches: target.exposeMatches
+          ? boundary.map((idx) => idx + target.offset)
+          : [],
+        tier: 1,
+        targetPriority: target.targetPriority,
+      });
+      continue;
+    }
+
+    const plain = subsequenceIndices(target.text, query, false);
+    if (plain !== null) {
+      best = chooseBetterRank(best, {
+        item,
+        matches: target.exposeMatches
+          ? plain.map((idx) => idx + target.offset)
+          : [],
+        tier: 2,
+        targetPriority: target.targetPriority,
+      });
+    }
+  }
+
+  return best;
+}
+
 /**
  * Rank `items` against `query`. Items that fail every match tier are
  * dropped. The remaining list is sorted by (tier asc, label-length asc,
@@ -148,39 +251,17 @@ export function fuzzyMatch(
   }
 
   const ranked: RankedItem[] = [];
-  const qLower = query.toLowerCase();
 
   for (const item of items) {
-    const label = item.label;
-    const labelLower = label.toLowerCase();
-
-    // Tier 0: prefix match.
-    if (labelLower.startsWith(qLower)) {
-      const matches: number[] = [];
-      for (let i = 0; i < query.length; i += 1) matches.push(i);
-      ranked.push({ item, matches, tier: 0 });
-      continue;
-    }
-
-    // Tier 1: word-boundary subsequence. Each char of the query lands on
-    // a boundary position in the label. This captures patterns like `sc`
-    // -> `statusCompact` (s at index 0, c at index 6).
-    const boundary = subsequenceIndices(label, query, true);
-    if (boundary !== null) {
-      ranked.push({ item, matches: boundary, tier: 1 });
-      continue;
-    }
-
-    // Tier 2: plain subsequence.
-    const plain = subsequenceIndices(label, query, false);
-    if (plain !== null) {
-      ranked.push({ item, matches: plain, tier: 2 });
-      continue;
-    }
+    const rankedItem = rankItem(item, query);
+    if (rankedItem !== null) ranked.push(rankedItem);
   }
 
   ranked.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
+    if (a.targetPriority !== b.targetPriority) {
+      return a.targetPriority - b.targetPriority;
+    }
     const lenDiff = a.item.label.length - b.item.label.length;
     if (lenDiff !== 0) return lenDiff;
     if (a.item.id < b.item.id) return -1;
@@ -201,38 +282,26 @@ function fuzzyMatchWithIndices(
   query: string,
 ): RankedItem[] {
   if (query.length === 0) {
-    return items.map((item) => ({ item, matches: [], tier: 0 }));
+    return items.map((item) => ({
+      item,
+      matches: [],
+      tier: 0,
+      targetPriority: 0,
+    }));
   }
 
   const ranked: RankedItem[] = [];
-  const qLower = query.toLowerCase();
 
   for (const item of items) {
-    const label = item.label;
-    const labelLower = label.toLowerCase();
-
-    if (labelLower.startsWith(qLower)) {
-      const matches: number[] = [];
-      for (let i = 0; i < query.length; i += 1) matches.push(i);
-      ranked.push({ item, matches, tier: 0 });
-      continue;
-    }
-
-    const boundary = subsequenceIndices(label, query, true);
-    if (boundary !== null) {
-      ranked.push({ item, matches: boundary, tier: 1 });
-      continue;
-    }
-
-    const plain = subsequenceIndices(label, query, false);
-    if (plain !== null) {
-      ranked.push({ item, matches: plain, tier: 2 });
-      continue;
-    }
+    const rankedItem = rankItem(item, query);
+    if (rankedItem !== null) ranked.push(rankedItem);
   }
 
   ranked.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
+    if (a.targetPriority !== b.targetPriority) {
+      return a.targetPriority - b.targetPriority;
+    }
     const lenDiff = a.item.label.length - b.item.label.length;
     if (lenDiff !== 0) return lenDiff;
     if (a.item.id < b.item.id) return -1;
@@ -310,7 +379,7 @@ function renderLabelSegments(
  * flow on select.
  */
 export const Palette: React.FC<PaletteProps> = ({
-  trigger: _trigger,
+  trigger,
   query,
   items,
   maxRows = 8,
@@ -374,6 +443,7 @@ export const Palette: React.FC<PaletteProps> = ({
   useKeybinding("history:prev", moveUp, "chat");
   useKeybinding("history:next", moveDown, "chat");
   useKeybinding("chat:submit", confirm, "chat");
+  useKeybinding("chat:acceptSuggestion", confirm, "chat");
   useKeybinding("chat:cancel", dismiss, "chat");
 
   // Theme colors arrive typed as raw strings so they can carry either ansi
@@ -407,6 +477,11 @@ export const Palette: React.FC<PaletteProps> = ({
       paddingX={1}
       flexDirection="column"
     >
+      <Text color={dimColor}>
+        {trigger === "/"
+          ? "Commands  Tab/Enter accept  Up/Down move"
+          : "Mentions  Tab/Enter accept  Up/Down move"}
+      </Text>
       {visible.map((entry, idx) => {
         const isSelected = idx === selectedIdx;
         const labelNodes = renderLabelSegments(

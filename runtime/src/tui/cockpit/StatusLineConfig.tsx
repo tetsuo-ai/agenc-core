@@ -34,6 +34,7 @@ import React, { useEffect, useState } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
+import type { PermissionMode } from "../../permissions/types.js";
 import { theme } from "../theme.js";
 
 const execFileAsync = promisify(execFile);
@@ -232,6 +233,124 @@ interface ResolvedItem {
   readonly value: string;
 }
 
+const PERMISSION_MODES: ReadonlySet<string> = new Set([
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "dontAsk",
+  "auto",
+  "bubble",
+]);
+
+function isPermissionMode(value: string): value is PermissionMode {
+  return PERMISSION_MODES.has(value);
+}
+
+function displayMode(mode: PermissionMode): string {
+  switch (mode) {
+    case "acceptEdits":
+      return "accept";
+    case "bypassPermissions":
+      return "bypass";
+    case "dontAsk":
+      return "silent";
+    default:
+      return mode;
+  }
+}
+
+function modeValueColor(mode: PermissionMode): string {
+  switch (mode) {
+    case "acceptEdits":
+      return theme.colors.modeAcceptEdits;
+    case "plan":
+      return theme.colors.modePlan;
+    case "bypassPermissions":
+    case "dontAsk":
+      return theme.colors.modeBypass;
+    case "auto":
+      return theme.colors.modeAuto;
+    case "bubble":
+      return theme.colors.dim;
+    case "default":
+    default:
+      return theme.colors.modeDefault;
+  }
+}
+
+function formatTokenCount(raw: string): string {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return raw || "0";
+  if (parsed >= 1_000_000) return `${(parsed / 1_000_000).toFixed(1)}m`;
+  if (parsed >= 1_000) return `${(parsed / 1_000).toFixed(1)}k`;
+  return String(Math.round(parsed));
+}
+
+function usageMeter(rawPercent: string): { readonly display: string; readonly color: string } {
+  const parsed = Number(rawPercent);
+  const percent = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
+  const filled = Math.max(0, Math.min(5, Math.round(percent / 20)));
+  const meter = `[${"#".repeat(filled)}${"-".repeat(5 - filled)}]`;
+  if (percent >= 90) {
+    return { display: `${Math.round(percent)}% ${meter}`, color: theme.colors.error };
+  }
+  if (percent >= 70) {
+    return { display: `${Math.round(percent)}% ${meter}`, color: theme.colors.warning };
+  }
+  return { display: `${Math.round(percent)}% ${meter}`, color: theme.colors.success };
+}
+
+function renderItemValue(item: ResolvedItem): { readonly text: string; readonly color: string } {
+  switch (item.key) {
+    case "mode":
+      if (isPermissionMode(item.value)) {
+        return {
+          text: `${theme.modeIndicatorChar[item.value]} ${displayMode(item.value)}`,
+          color: modeValueColor(item.value),
+        };
+      }
+      return { text: item.value || "—", color: theme.colors.modeDefault };
+    case "context": {
+      const usage = usageMeter(item.value);
+      return { text: usage.display, color: usage.color };
+    }
+    case "tokens":
+      return { text: formatTokenCount(item.value), color: theme.colors.accent };
+    case "git":
+      return { text: item.value || "—", color: theme.colors.secondary };
+    case "cwd":
+      return { text: item.value || "—", color: theme.colors.primary };
+    case "session":
+      return { text: item.value || "—", color: theme.colors.secondary };
+    case "time":
+      return { text: item.value || "—", color: theme.colors.info };
+    case "model":
+      return { text: item.value || "—", color: theme.colors.ink };
+    default:
+      return { text: item.value || "—", color: theme.colors.primary };
+  }
+}
+
+function StatusChip({ item }: { readonly item: ResolvedItem }): React.ReactElement {
+  const rendered = renderItemValue(item);
+  return (
+    <Box flexDirection="row" marginRight={1}>
+      <Text backgroundColor={theme.colors.surface} color={theme.colors.muted}>
+        {` ${item.label.toUpperCase()} `}
+      </Text>
+      <Text
+        backgroundColor={theme.colors.surfaceAlt}
+        color={rendered.color}
+        bold
+        wrap="truncate"
+      >
+        {` ${rendered.text} `}
+      </Text>
+    </Box>
+  );
+}
+
 export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
   items,
   session,
@@ -268,11 +387,7 @@ export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
   return (
     <Box flexDirection="row" flexWrap="wrap">
       {resolved.map((item, idx) => (
-        <Box key={`${item.key}-${idx}`}>
-          {idx > 0 ? <Text dim> · </Text> : null}
-          <Text dim>{item.label}:</Text>
-          <Text color={theme.colors.primary}>{item.value || "—"}</Text>
-        </Box>
+        <StatusChip key={`${item.key}-${idx}`} item={item} />
       ))}
     </Box>
   );

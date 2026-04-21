@@ -314,6 +314,71 @@ describe("Session MCP ownership seams", () => {
   });
 });
 
+describe("Session turn-driver hooks", () => {
+  it("fans out phase events through subscribeToEvents", () => {
+    const session = buildSession();
+    const seen: Array<{ type: string }> = [];
+    const unsubscribe = session.subscribeToEvents((event) => {
+      seen.push(event as { type: string });
+    });
+
+    session.emitPhaseEvent({ type: "turn_start", turnIndex: 0 });
+    expect(seen).toEqual([{ type: "turn_start", turnIndex: 0 }]);
+
+    unsubscribe();
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "",
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      },
+      stopReason: "completed",
+    });
+    expect(seen).toEqual([{ type: "turn_start", turnIndex: 0 }]);
+  });
+
+  it("serializes submit calls through the installed hook", async () => {
+    const session = buildSession();
+    const started: string[] = [];
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+
+    session.installTurnDriverHooks({
+      submit: vi.fn(async (message: string) => {
+        started.push(message);
+        if (message === "first") {
+          await firstGate;
+        }
+      }),
+    });
+
+    const first = session.submit("first");
+    const second = session.submit("second");
+    await Promise.resolve();
+    expect(started).toEqual(["first"]);
+
+    releaseFirst();
+    await first;
+    await second;
+    expect(started).toEqual(["first", "second"]);
+  });
+
+  it("flushEventLog falls back to the rollout store when no hook is installed", async () => {
+    const session = buildSession();
+    const flushDurable = vi.fn();
+    session.rolloutStore = {
+      flushDurable,
+    } as unknown as Session["rolloutStore"];
+
+    await session.flushEventLog();
+    expect(flushDurable).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // TurnContext.permissionMode snapshot (I-30)
 // ─────────────────────────────────────────────────────────────────────

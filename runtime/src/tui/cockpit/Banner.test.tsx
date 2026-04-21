@@ -125,9 +125,10 @@ describe("Banner", () => {
   test("renders with default mode", async () => {
     const { stdout, unmount } = await mount(<Banner mode="default" />);
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("mode:");
+    expect(text).toContain("MODE");
     expect(text).toContain("default");
-    expect(text).toContain("model:");
+    expect(text).toContain("MODEL");
+    expect(text).toContain("READY");
     unmount();
   });
 
@@ -135,7 +136,8 @@ describe("Banner", () => {
     const { stdout, unmount } = await mount(<Banner mode="plan" />);
     const root = getRoot(stdout);
     // Walk the tree collecting (textStyles.color, text) pairs and check
-    // at least one "plan" string is painted with the plan-mode colour.
+    // at least one mode-value string containing "plan" is painted with
+    // the plan-mode colour.
     const matches: string[] = [];
     const walk = (n: DOMElement): void => {
       for (const child of n.childNodes) {
@@ -145,7 +147,7 @@ describe("Banner", () => {
           const style = (el as unknown as { textStyles?: { color?: string } })
             .textStyles;
           const inner = collectText(el);
-          if (style?.color === theme.colors.modePlan && inner === "plan") {
+          if (style?.color === theme.colors.modePlan && inner.includes("plan")) {
             matches.push(inner);
           }
         }
@@ -153,7 +155,7 @@ describe("Banner", () => {
       }
     };
     walk(root);
-    expect(matches).toContain("plan");
+    expect(matches.some((match) => match.includes("plan"))).toBe(true);
     unmount();
   });
 
@@ -162,7 +164,7 @@ describe("Banner", () => {
       <Banner mode="default" activeToolCount={3} />,
     );
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("tools:");
+    expect(text).toContain("tools");
     expect(text).toContain("3");
     unmount();
   });
@@ -172,14 +174,15 @@ describe("Banner", () => {
       <Banner mode="plan" hasPlanActive />,
     );
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("[PLAN]");
+    expect(text).toContain("PLAN");
+    expect(text).toContain("ready");
     unmount();
   });
 
   test("no plan marker when plan is inactive", async () => {
     const { stdout, unmount } = await mount(<Banner mode="default" />);
     const text = collectText(getRoot(stdout));
-    expect(text).not.toContain("[PLAN]");
+    expect(text).not.toContain("PLAN");
     unmount();
   });
 

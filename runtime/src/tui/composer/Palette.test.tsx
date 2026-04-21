@@ -142,6 +142,17 @@ describe("fuzzyMatch", () => {
     expect(fuzzyMatch(items, "HEL").map((i) => i.id)).toEqual(["a"]);
   });
 
+  test("matches slash commands by name without requiring the leading slash", () => {
+    const items: PaletteItem[] = [
+      { id: "help", label: "/help", value: "/help" },
+      { id: "hello", label: "/hello", value: "/hello" },
+    ];
+    expect(fuzzyMatch(items, "he").map((item) => item.id)).toEqual([
+      "help",
+      "hello",
+    ]);
+  });
+
   test("matches across word boundaries (sc -> statusCompact)", () => {
     const items: PaletteItem[] = [
       { id: "a", label: "statusCompact", value: "/statusCompact" },
@@ -151,6 +162,25 @@ describe("fuzzyMatch", () => {
     // `statusCompact` matches on the s at 0 and C at 6 (word-boundary tier).
     // `someotherthing` is a plain subsequence match; it should rank lower.
     expect(ranked[0]?.id).toBe("a");
+  });
+
+  test("matches aliases carried through keywords", () => {
+    const items: PaletteItem[] = [
+      {
+        id: "context",
+        label: "/context",
+        keywords: ["ctx"],
+        description: "inspect context",
+        value: "/context",
+      },
+      {
+        id: "clear",
+        label: "/clear",
+        description: "clear transcript context",
+        value: "/clear",
+      },
+    ];
+    expect(fuzzyMatch(items, "ctx")[0]?.id).toBe("context");
   });
 });
 
@@ -258,6 +288,30 @@ describe("<Palette>", () => {
       </KeybindingProvider>,
     );
     emitter.emit("input", makeParsedKeyEvent({ name: "return" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0]?.[0].value).toBe("/help");
+    unmount();
+  });
+
+  test("Tab also confirms the current selection", async () => {
+    const emitter = new EventEmitter();
+    const onSelect = vi.fn();
+    const items: PaletteItem[] = [
+      { id: "help", label: "/help", value: "/help" },
+    ];
+    const { unmount } = await mount(
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        <Palette
+          trigger="/"
+          query=""
+          items={items}
+          placement="above"
+          onSelect={onSelect}
+          onClose={() => undefined}
+        />
+      </KeybindingProvider>,
+    );
+    emitter.emit("input", makeParsedKeyEvent({ name: "tab" }));
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect.mock.calls[0]?.[0].value).toBe("/help");
     unmount();

@@ -18,6 +18,8 @@ import {
   useQuery,
   type SessionLike,
 } from "./useQuery.js";
+import type { Event } from "../../session/event-log.js";
+import type { TranscriptSourceEvent } from "../state/events-to-messages.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -62,15 +64,20 @@ async function mount(
 
 interface FakeSession extends SessionLike {
   emit: (event: PhaseEvent) => void;
+  emitEventLog: (event: Event) => void;
 }
 
 function createFakeSession(options?: {
   withSubscribe?: boolean;
   withSubmit?: boolean;
+  withEventLog?: boolean;
+  initialTranscriptEvents?: readonly TranscriptSourceEvent[];
 }): FakeSession {
   const withSubscribe = options?.withSubscribe ?? true;
   const withSubmit = options?.withSubmit ?? true;
+  const withEventLog = options?.withEventLog ?? false;
   const listeners = new Set<(e: PhaseEvent) => void>();
+  const eventLogListeners = new Set<(event: Event) => void>();
   return {
     activeTurn: null,
     ...(withSubscribe
@@ -81,6 +88,21 @@ function createFakeSession(options?: {
           },
         }
       : {}),
+    ...(withEventLog
+      ? {
+          eventLog: {
+            subscribe(cb: (event: Event) => void) {
+              eventLogListeners.add(cb);
+              return () => eventLogListeners.delete(cb);
+            },
+          },
+        }
+      : {}),
+    ...(options?.initialTranscriptEvents
+      ? {
+          initialTranscriptEvents: options.initialTranscriptEvents,
+        }
+      : {}),
     ...(withSubmit
       ? {
           submit: vi.fn(async (_msg: string) => undefined),
@@ -89,6 +111,9 @@ function createFakeSession(options?: {
     abortTerminal: () => undefined,
     emit(event: PhaseEvent) {
       for (const cb of Array.from(listeners)) cb(event);
+    },
+    emitEventLog(event: Event) {
+      for (const cb of Array.from(eventLogListeners)) cb(event);
     },
   };
 }
@@ -151,6 +176,59 @@ describe("useQuery", () => {
     unmount();
   });
 
+  test("hydrates initial transcript events for resumed sessions", async () => {
+    const session = createFakeSession({
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-resume" } },
+        { type: "user_message", payload: { message: "resume me" } },
+      ],
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    expect(latest).not.toBeNull();
+    expect(latest!.events).toHaveLength(2);
+    expect(latest!.currentTurnId).toBe("turn-resume");
+    unmount();
+  });
+
+  test("prefers eventLog transcript events when available", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-1",
+      msg: {
+        type: "turn_started",
+        payload: { turnId: "turn-eventlog" },
+      },
+      seq: 1,
+    });
+    session.emitEventLog({
+      id: "evt-2",
+      msg: {
+        type: "user_message",
+        payload: { message: "hello from event log" },
+      },
+      seq: 2,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(2);
+    expect(latest!.isStreaming).toBe(true);
+    expect(latest!.currentTurnId).toBe("turn-eventlog");
+    unmount();
+  });
+
   test("submit forwards to session.submit when available", async () => {
     const session = createFakeSession();
     let latest: ReturnType<typeof useQuery> | null = null;
@@ -184,7 +262,7 @@ describe("useQuery", () => {
       expect(latest!.events).toEqual([]);
       expect(latest!.isStreaming).toBe(false);
       expect(
-        stderrWrites.some((line) => line.includes("subscribeToEvents")),
+        stderrWrites.some((line) => line.includes("transcript stream")),
       ).toBe(true);
       unmount();
     } finally {

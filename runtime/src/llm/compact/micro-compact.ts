@@ -302,61 +302,14 @@ async function localMicrocompactPath(
     return { messages }
   }
 
-  const toolMessages = messages
-    .map((message, index) => ({ message, index }))
-    .filter(entry => isRoleBasedToolMessage(entry.message))
-
-  if (toolMessages.length <= config.triggerThreshold) {
-    return { messages }
+  const toolMessages = messages.filter(message => isRoleBasedToolMessage(message))
+  if (toolMessages.length > config.triggerThreshold) {
+    logForDebugging(
+      'Cached MC skipped for role-based history: cache_edits require openclaude-style tool_result blocks, and live tool messages must stay intact unless an explicit content-clearing path fires.',
+    )
   }
 
-  const keepRecent = Math.max(1, config.keepRecent)
-  const deleteCount = Math.max(0, toolMessages.length - keepRecent)
-  const toDelete = toolMessages.slice(0, deleteCount)
-  if (toDelete.length === 0) {
-    return { messages }
-  }
-
-  const next = messages.slice()
-  let tokensSaved = 0
-  for (const { message, index } of toDelete) {
-    if (message.content === TIME_BASED_MC_CLEARED_MESSAGE) {
-      continue
-    }
-    const originalText = localMessageContentText(message.content)
-    const originalTokens = roughTokenCountEstimation(originalText)
-    const clearedTokens = roughTokenCountEstimation(TIME_BASED_MC_CLEARED_MESSAGE)
-    next[index] = {
-      ...message,
-      content: TIME_BASED_MC_CLEARED_MESSAGE,
-    }
-    tokensSaved += Math.max(0, originalTokens - clearedTokens)
-  }
-
-  if (tokensSaved === 0) {
-    return { messages }
-  }
-
-  logEvent('tengu_cached_microcompact', {
-    toolsDeleted: toDelete.length,
-    deletedToolIds: toDelete
-      .map(entry => entry.message.toolCallId ?? `tool-${entry.index}`)
-      .join(',') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    activeToolCount: toolMessages.length - toDelete.length,
-    triggerType:
-      'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    threshold: config.triggerThreshold,
-    keepRecent: config.keepRecent,
-  })
-
-  suppressCompactWarning()
-  resetMicrocompactState()
-
-  if (feature('PROMPT_CACHE_BREAK_DETECTION') && querySource) {
-    notifyCacheDeletion(querySource)
-  }
-
-  return { messages: next }
+  return { messages }
 }
 
 export async function microcompactMessages(

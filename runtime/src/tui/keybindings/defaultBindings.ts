@@ -28,6 +28,7 @@ export type BindingCommand =
   | "history:next"
   | "chat:cycleMode"
   | "chat:submit"
+  | "chat:acceptSuggestion"
   | "chat:newline"
   | "chat:cancel"
   | "chat:externalEditor"
@@ -174,7 +175,9 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
   chat: {
     [normalizeKeySequence(MODE_CYCLE_KEY)]: "chat:cycleMode",
     [normalizeKeySequence("enter")]: "chat:submit",
+    [normalizeKeySequence("tab")]: "chat:acceptSuggestion",
     [normalizeKeySequence("shift+enter")]: "chat:newline",
+    [normalizeKeySequence("ctrl+j")]: "chat:newline",
     [normalizeKeySequence("escape")]: "chat:cancel",
     [normalizeKeySequence("up")]: "history:prev",
     [normalizeKeySequence("down")]: "history:next",
@@ -206,6 +209,7 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "history:next",
   "chat:cycleMode",
   "chat:submit",
+  "chat:acceptSuggestion",
   "chat:newline",
   "chat:cancel",
   "chat:externalEditor",

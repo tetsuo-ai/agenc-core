@@ -98,4 +98,13 @@ describe("DEFAULT_BINDINGS", () => {
       expect(seen.has(command), `command '${command}' is not bound`).toBe(true);
     }
   });
+
+  test("binds Tab to suggestion accept and ctrl+j to newline", () => {
+    expect(DEFAULT_BINDINGS.chat[normalizeKeySequence("tab")]).toBe(
+      "chat:acceptSuggestion",
+    );
+    expect(DEFAULT_BINDINGS.chat[normalizeKeySequence("ctrl+j")]).toBe(
+      "chat:newline",
+    );
+  });
 });

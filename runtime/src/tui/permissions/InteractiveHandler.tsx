@@ -49,6 +49,7 @@ import {
   ApprovalOverlay,
   type ApprovalDecision,
 } from "./ApprovalOverlay.js";
+import { useOptionalAgenCAppState } from "../state/AppState.js";
 import {
   classifyYoloAction,
   type YoloClassifierResult,
@@ -295,6 +296,7 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
   overlayContext,
   graceMs = DEFAULT_GRACE_MS,
 }) => {
+  const appState = useOptionalAgenCAppState();
   // Track the overlay disposer so unmount can pop the modal if still
   // visible. Also record the cancellation flag for an in-flight grace
   // race so an unmount before modal push doesn't leak an overlay.
@@ -310,7 +312,10 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
     void (async () => {
       const outcome = await resolveWithGrace(request, session, { graceMs });
       if (cancelledRef.current) return;
-      if (outcome.bypassedModal) return;
+      if (outcome.bypassedModal) {
+        appState?.permissionQueueOps.remove(request.requestId);
+        return;
+      }
 
       // Mount the approval modal and wire resolution back through the
       // request's resolve slot.
@@ -328,6 +333,8 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
             disposeRef.current = null;
           }
         }
+
+        appState?.permissionQueueOps.remove(request.requestId);
 
         if (
           decision.behavior === "allow-session" &&
@@ -355,6 +362,7 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
       disposeRef.current = overlayContext.push(
         <ApprovalOverlay
           request={{
+            requestId: request.requestId,
             tool: request.toolName,
             args: (request.toolInput ?? {}) as Record<string, unknown>,
             workspacePath,
@@ -386,6 +394,7 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
           source: "component_unmounted",
         });
       }
+      appState?.permissionQueueOps.remove(request.requestId);
     };
     // `request` and `session` are treated as stable for the lifetime of a
     // single mount — the orchestrator spawns a fresh handler per pending

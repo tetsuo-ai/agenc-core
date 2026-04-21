@@ -25,7 +25,9 @@ import type { PaletteItem } from "./Palette.js";
 /** Minimal shape of a registry entry the palette consumes. */
 export interface SlashCommandLike {
   readonly name: string;
+  readonly aliases?: readonly string[];
   readonly description?: string;
+  readonly immediate?: boolean;
   readonly userInvocable?: boolean;
 }
 
@@ -45,12 +47,30 @@ export function getSlashCommandItems(
   registry: SlashCommandRegistryLike,
 ): PaletteItem[] {
   const out: PaletteItem[] = [];
-  for (const cmd of registry.list()) {
-    if (cmd.userInvocable === false) continue;
+  const visible = registry
+    .list()
+    .filter((cmd) => cmd.userInvocable !== false)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const cmd of visible) {
+    const aliases = (cmd.aliases ?? []).filter(
+      (alias) => typeof alias === "string" && alias.length > 0,
+    );
+    const descriptionParts: string[] = [];
+    if (typeof cmd.description === "string" && cmd.description.length > 0) {
+      descriptionParts.push(cmd.description);
+    }
+    if (cmd.immediate) {
+      descriptionParts.push("local");
+    }
+    if (aliases.length > 0) {
+      descriptionParts.push(aliases.map((alias) => `/${alias}`).join(" "));
+    }
     out.push({
       id: cmd.name,
       label: `/${cmd.name}`,
-      description: cmd.description,
+      description: descriptionParts.join(" • "),
+      keywords: [cmd.name, ...aliases],
       value: `/${cmd.name}`,
     });
   }

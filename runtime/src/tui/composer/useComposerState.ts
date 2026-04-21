@@ -30,6 +30,7 @@ export interface ComposerState {
 
 export type ComposerAction =
   | { type: "INSERT"; text: string }
+  | { type: "REPLACE_RANGE"; start: number; end: number; text: string }
   | { type: "DELETE_BACKWARD" }
   | { type: "DELETE_FORWARD" }
   | { type: "MOVE_CURSOR"; delta: number }
@@ -119,6 +120,23 @@ export function composerReducer(
         ...state,
         value: nextValue,
         cursor: cursor + text.length,
+      };
+    }
+    case "REPLACE_RANGE": {
+      const start = clampCursor(
+        Math.min(action.start, action.end),
+        state.value.length,
+      );
+      const end = clampCursor(
+        Math.max(action.start, action.end),
+        state.value.length,
+      );
+      const nextValue =
+        state.value.slice(0, start) + action.text + state.value.slice(end);
+      return {
+        ...state,
+        value: nextValue,
+        cursor: start + action.text.length,
       };
     }
     case "NEWLINE": {

@@ -27,6 +27,13 @@ export type Theme = {
     readonly warning: string;
     readonly success: string;
     readonly dim: string;
+    readonly ink: string;
+    readonly muted: string;
+    readonly info: string;
+    readonly line: string;
+    readonly lineStrong: string;
+    readonly surface: string;
+    readonly surfaceAlt: string;
     readonly modeDefault: string;
     readonly modeAcceptEdits: string;
     readonly modePlan: string;
@@ -52,18 +59,25 @@ export type Theme = {
  */
 const DEFAULT_THEME: Theme = Object.freeze({
   colors: Object.freeze({
-    primary: "cyan",
-    secondary: "magenta",
-    accent: "yellow",
-    error: "red",
-    warning: "yellow",
-    success: "green",
-    dim: "gray",
-    modeDefault: "cyan",
-    modeAcceptEdits: "green",
-    modePlan: "magenta",
-    modeBypass: "red",
-    modeAuto: "yellow",
+    primary: "ansi256(117)",
+    secondary: "ansi256(177)",
+    accent: "ansi256(213)",
+    error: "ansi256(203)",
+    warning: "ansi256(221)",
+    success: "ansi256(50)",
+    dim: "ansi256(97)",
+    ink: "ansi256(225)",
+    muted: "ansi256(189)",
+    info: "ansi256(111)",
+    line: "ansi256(54)",
+    lineStrong: "ansi256(99)",
+    surface: "ansi256(233)",
+    surfaceAlt: "ansi256(236)",
+    modeDefault: "ansi256(117)",
+    modeAcceptEdits: "ansi256(50)",
+    modePlan: "ansi256(177)",
+    modeBypass: "ansi256(203)",
+    modeAuto: "ansi256(221)",
   }) as Theme["colors"],
   border: Object.freeze({
     soft: "single",
@@ -97,49 +111,103 @@ type WatchPrimitivesModule = {
 let cachedTheme: Theme | null = null;
 let loadAttempted = false;
 
-function coerceAnsi(input: unknown, fallback: string): string {
-  return typeof input === "string" && input.length > 0 ? input : fallback;
+const NAMED_COLOR_MAP: Readonly<Record<string, string>> = Object.freeze({
+  black: "ansi:black",
+  red: "ansi:red",
+  green: "ansi:green",
+  yellow: "ansi:yellow",
+  blue: "ansi:blue",
+  magenta: "ansi:magenta",
+  cyan: "ansi:cyan",
+  white: "ansi:white",
+  gray: "ansi:blackBright",
+  grey: "ansi:blackBright",
+  brightBlack: "ansi:blackBright",
+  brightRed: "ansi:redBright",
+  brightGreen: "ansi:greenBright",
+  brightYellow: "ansi:yellowBright",
+  brightBlue: "ansi:blueBright",
+  brightMagenta: "ansi:magentaBright",
+  brightCyan: "ansi:cyanBright",
+  brightWhite: "ansi:whiteBright",
+});
+
+const ANSI_256_RE = /^\x1b\[(?:38|48);5;(\d+)m$/;
+const ANSI_RGB_RE = /^\x1b\[(?:38|48);2;(\d+);(\d+);(\d+)m$/;
+
+function normalizeColor(input: unknown, fallback: string): string {
+  if (typeof input !== "string" || input.length === 0) return fallback;
+  if (
+    input.startsWith("ansi:") ||
+    input.startsWith("ansi256(") ||
+    input.startsWith("rgb(") ||
+    input.startsWith("#")
+  ) {
+    return input;
+  }
+
+  const named = NAMED_COLOR_MAP[input];
+  if (named !== undefined) return named;
+
+  const indexed = ANSI_256_RE.exec(input);
+  if (indexed !== null) {
+    return `ansi256(${indexed[1]})`;
+  }
+
+  const rgb = ANSI_RGB_RE.exec(input);
+  if (rgb !== null) {
+    return `rgb(${rgb[1]},${rgb[2]},${rgb[3]})`;
+  }
+
+  return fallback;
 }
 
 function buildTheme(primitives: WatchPrimitivesModule | null): Theme {
   const color = primitives?.color ?? {};
   return Object.freeze({
     colors: Object.freeze({
-      primary: coerceAnsi(
+      primary: normalizeColor(
         color["cyan"],
         DEFAULT_THEME.colors.primary,
       ),
-      secondary: coerceAnsi(
+      secondary: normalizeColor(
         color["magenta"],
         DEFAULT_THEME.colors.secondary,
       ),
-      accent: coerceAnsi(
+      accent: normalizeColor(
         color["amber"],
         DEFAULT_THEME.colors.accent,
       ),
-      error: coerceAnsi(color["red"], DEFAULT_THEME.colors.error),
-      warning: coerceAnsi(color["yellow"], DEFAULT_THEME.colors.warning),
-      success: coerceAnsi(color["green"], DEFAULT_THEME.colors.success),
-      dim: coerceAnsi(color["fog"], DEFAULT_THEME.colors.dim),
-      modeDefault: coerceAnsi(color["cyan"], DEFAULT_THEME.colors.modeDefault),
-      modeAcceptEdits: coerceAnsi(
+      error: normalizeColor(color["red"], DEFAULT_THEME.colors.error),
+      warning: normalizeColor(color["yellow"], DEFAULT_THEME.colors.warning),
+      success: normalizeColor(color["green"], DEFAULT_THEME.colors.success),
+      dim: normalizeColor(color["fog"], DEFAULT_THEME.colors.dim),
+      ink: normalizeColor(color["ink"], DEFAULT_THEME.colors.ink),
+      muted: normalizeColor(color["softInk"], DEFAULT_THEME.colors.muted),
+      info: normalizeColor(color["teal"], DEFAULT_THEME.colors.info),
+      line: normalizeColor(color["border"], DEFAULT_THEME.colors.line),
+      lineStrong: normalizeColor(
+        color["borderStrong"],
+        DEFAULT_THEME.colors.lineStrong,
+      ),
+      surface: normalizeColor(color["panelAltBg"], DEFAULT_THEME.colors.surface),
+      surfaceAlt: normalizeColor(
+        color["panelHiBg"],
+        DEFAULT_THEME.colors.surfaceAlt,
+      ),
+      modeDefault: normalizeColor(color["cyan"], DEFAULT_THEME.colors.modeDefault),
+      modeAcceptEdits: normalizeColor(
         color["green"],
         DEFAULT_THEME.colors.modeAcceptEdits,
       ),
-      modePlan: coerceAnsi(
+      modePlan: normalizeColor(
         color["magenta"],
         DEFAULT_THEME.colors.modePlan,
       ),
-      modeBypass: coerceAnsi(color["red"], DEFAULT_THEME.colors.modeBypass),
-      modeAuto: coerceAnsi(color["yellow"], DEFAULT_THEME.colors.modeAuto),
+      modeBypass: normalizeColor(color["red"], DEFAULT_THEME.colors.modeBypass),
+      modeAuto: normalizeColor(color["yellow"], DEFAULT_THEME.colors.modeAuto),
     }) as Theme["colors"],
-    border: Object.freeze({
-      soft: coerceAnsi(color["border"], DEFAULT_THEME.border.soft),
-      strong: coerceAnsi(
-        color["borderStrong"],
-        DEFAULT_THEME.border.strong,
-      ),
-    }) as Theme["border"],
+    border: DEFAULT_THEME.border,
     spacing: DEFAULT_THEME.spacing,
     modeIndicatorChar: DEFAULT_THEME.modeIndicatorChar,
   }) as Theme;

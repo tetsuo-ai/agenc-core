@@ -59,6 +59,21 @@ describe("getSlashCommandItems", () => {
     expect(exit?.label).toBe("/exit");
     expect(exit?.value).toBe("/exit");
   });
+
+  test("surfaces aliases and local-command metadata for discovery", () => {
+    const registry = makeRegistry([
+      {
+        name: "context",
+        aliases: ["ctx"],
+        description: "inspect context",
+        immediate: true,
+      },
+    ]);
+    const item = getSlashCommandItems(registry)[0];
+    expect(item?.keywords).toContain("ctx");
+    expect(item?.description).toContain("local");
+    expect(item?.description).toContain("/ctx");
+  });
 });
 
 describe("getMentionItems", () => {

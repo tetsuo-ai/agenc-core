@@ -1,73 +1,56 @@
 /**
- * Wave 5-A: ApprovalOverlay — permission-approval modal for the AgenC TUI.
+ * Operator-grade approval overlay for the AgenC TUI.
  *
- * The overlay is pushed onto the overlay stack by {@link InteractiveHandler}
- * whenever the 200 ms classifier grace window falls through to "ask the
- * user". Its job is intentionally narrow:
+ * The overlay intentionally keeps the control flow narrow — a single
+ * request in, a single approval decision out — while surfacing enough
+ * queue and request context for fast operator review:
  *
- *   1. Render a compact, brand-neutral summary of the pending tool call
- *      (header, args preview, workspace path, optional reason). Tool-specific
- *      renderers short-circuit the generic JSON preview for the common
- *      cases (Bash, write_file, edit_file).
- *   2. Own a modal KeybindingContext while mounted (I-72). Chat-level
- *      bindings are suspended so the composer cannot consume approval
- *      keys from underneath the dialog. The previous context is restored
- *      on unmount.
- *   3. Listen for the caller's AbortSignal (I-21). An abort immediately
- *      resolves with `{behavior: 'abort'}` — never with `'deny'` — so the
- *      evaluator's awaiter unsticks with the correct source. The abort
- *      listener unsubscribes on unmount to avoid leaking beyond the modal
- *      lifetime.
+ *   - compact tool-specific preview
+ *   - explicit queue position / backlog visibility
+ *   - focus-safe detail tabs (summary / preview / raw / queue)
+ *   - richer file / command drilldowns without leaving the modal
  *
- * The four decision paths:
- *   - Enter / 'Y'       → `{behavior: 'allow'}`
- *   - 'A'               → `{behavior: 'allow-session', addRule: true}`
- *   - 'D' / 'N' / Esc   → `{behavior: 'deny'}`
- *   - AbortSignal fire  → `{behavior: 'abort'}`
- *
- * All decisions route through `onResolve` exactly once. A latch
- * (`resolvedRef`) guards against a late key arriving after an abort has
- * already been delivered and vice versa; the parent
- * {@link InteractiveHandler} also guards via its `resolveOnce` slot, but
- * we keep the local latch so this component is defensible on its own in
- * tests that don't mount a handler.
- *
- * @module
+ * Decision handling still routes through `onResolve` exactly once.
  */
 
-import React, { useCallback, useEffect, useRef } from "react";
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import Box from "../ink/components/Box.js";
+import StdinContext from "../ink/components/StdinContext.js";
 import Text from "../ink/components/Text.js";
+import type { InputEvent } from "../ink/events/input-event.js";
 import type { Color } from "../ink/styles.js";
 import { theme } from "../theme.js";
+import { useOptionalAgenCAppState } from "../state/AppState.js";
 import {
   useKeybinding,
   useSetKeybindingContext,
 } from "../keybindings/KeybindingContext.js";
-
-// ───────────────────────────────────────────────────────────────────────
-// Public types
-// ───────────────────────────────────────────────────────────────────────
+import type { PendingPermissionRequest } from "../../permissions/context.js";
 
 export type ApprovalBehavior = "allow" | "allow-session" | "deny" | "abort";
+type FocusZone = "decision" | "details";
+type DetailTab = "summary" | "preview" | "raw" | "queue";
+type RiskLevel = "low" | "medium" | "high";
 
 export interface ApprovalDecision {
   readonly behavior: ApprovalBehavior;
-  /** When `behavior === 'allow-session'`, whether to persist an allow rule. */
   readonly addRule?: boolean;
 }
 
 export interface ApprovalOverlayRequest {
-  /** Tool name (e.g. `"Bash"` or `"system.writeFile"`). */
+  readonly requestId: string;
   readonly tool: string;
-  /** Arguments passed to the tool; rendered truncated. */
   readonly args: Record<string, unknown>;
-  /** Session CWD for the modal footer. */
   readonly workspacePath: string;
-  /** Optional human-readable justification for the ask. */
   readonly reason?: string;
-  /** I-44 turn stamp (surfaced for test assertions; not used in render). */
   readonly turnId: string;
 }
 
@@ -77,16 +60,14 @@ export interface ApprovalOverlayProps {
   readonly abortSignal: AbortSignal;
 }
 
-// ───────────────────────────────────────────────────────────────────────
-// Rendering helpers — kept pure so the sub-components are unit-testable
-// without mounting the full overlay.
-// ───────────────────────────────────────────────────────────────────────
-
-/** Number of visible lines before `…` truncation in generic renderers. */
-const MAX_PREVIEW_LINES = 10;
-
-/** Number of lines in the args JSON preview. */
-const MAX_ARGS_LINES = 4;
+const MAX_PREVIEW_LINES = 8;
+const MAX_ARGS_LINES = 18;
+const DETAIL_TABS: readonly DetailTab[] = [
+  "summary",
+  "preview",
+  "raw",
+  "queue",
+];
 
 function truncateLines(source: string, maxLines: number): string {
   if (typeof source !== "string" || source.length === 0) return "";
@@ -107,20 +88,148 @@ function coerceString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-// ───────────────────────────────────────────────────────────────────────
-// Tool-specific renderers (exported for direct test coverage)
-// ───────────────────────────────────────────────────────────────────────
+function countLines(value: string): number {
+  return value.length === 0 ? 0 : value.split("\n").length;
+}
 
-/** `Bash` / `system.bash` request — renders the verbatim command. */
+function byteSize(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+function truncateInline(value: string, max = 64): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function humanizeAge(submittedAt: number | undefined): string {
+  if (!submittedAt || !Number.isFinite(submittedAt)) return "now";
+  const ageMs = Math.max(0, Date.now() - submittedAt);
+  if (ageMs < 1000) return "now";
+  if (ageMs < 60_000) return `${Math.round(ageMs / 1000)}s`;
+  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m`;
+  return `${Math.round(ageMs / 3_600_000)}h`;
+}
+
+function extractPath(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  return coerceString(
+    record.path ??
+      record.file_path ??
+      record.filePath ??
+      record.target ??
+      record.cwd,
+  );
+}
+
+function extractCommand(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  return coerceString(record.command ?? record.cmd);
+}
+
+function summarizeScope(tool: string, args: unknown): string {
+  const command = extractCommand(args);
+  if (command.length > 0) {
+    return truncateInline(command.split("\n")[0] ?? command, 72);
+  }
+  const path = extractPath(args);
+  if (path.length > 0) {
+    return truncateInline(path, 72);
+  }
+  return tool;
+}
+
+function inferRisk(tool: string, args: unknown): {
+  readonly level: RiskLevel;
+  readonly label: string;
+  readonly notes: readonly string[];
+} {
+  const lowerTool = tool.toLowerCase();
+  const path = extractPath(args).toLowerCase();
+  const command = extractCommand(args).toLowerCase();
+  const notes: string[] = [];
+
+  if (
+    lowerTool.includes("delete") ||
+    lowerTool.includes("edit") ||
+    lowerTool.includes("write")
+  ) {
+    notes.push("mutates filesystem state");
+  }
+  if (path.includes(".env") || path.includes("config")) {
+    notes.push("touches configuration");
+  }
+  if (
+    /(^|\s)(rm|mv|chmod|chown|sudo|git reset|git clean|docker|kubectl|terraform|npm publish|pnpm publish|yarn publish)\b/.test(
+      command,
+    )
+  ) {
+    notes.push("destructive or privileged shell command");
+    return { level: "high", label: "HIGH", notes };
+  }
+  if (
+    lowerTool.includes("edit") ||
+    lowerTool.includes("write") ||
+    /(^|\s)(curl|wget|scp|ssh|rsync)\b/.test(command)
+  ) {
+    if (command.length > 0 && !notes.includes("mutates filesystem state")) {
+      notes.push("shell command with external side effects");
+    }
+    return { level: "medium", label: "MED", notes };
+  }
+  if (command.length > 0 || lowerTool.includes("bash")) {
+    notes.push("shell execution");
+  }
+  return {
+    level: notes.length > 0 ? "medium" : "low",
+    label: notes.length > 0 ? "MED" : "LOW",
+    notes,
+  };
+}
+
+function tabLabel(tab: DetailTab): string {
+  switch (tab) {
+    case "summary":
+      return "Summary";
+    case "preview":
+      return "Preview";
+    case "raw":
+      return "Raw";
+    case "queue":
+      return "Queue";
+  }
+}
+
+function riskColor(level: RiskLevel): Color {
+  switch (level) {
+    case "high":
+      return theme.colors.error as Color;
+    case "medium":
+      return theme.colors.warning as Color;
+    case "low":
+      return theme.colors.success as Color;
+  }
+}
+
+function queueEntryLabel(request: PendingPermissionRequest): string {
+  return `${request.toolName} · ${summarizeScope(
+    request.toolName,
+    request.toolInput,
+  )}`;
+}
+
+function queuePositionLabel(index: number, total: number): string {
+  if (total <= 0) return "Queue 0/0";
+  return `Queue ${index + 1}/${total}`;
+}
+
 export const BashRequest: React.FC<{ args: unknown }> = ({ args }) => {
-  const command =
-    args && typeof args === "object"
-      ? coerceString((args as Record<string, unknown>).command)
-      : "";
+  const command = extractCommand(args);
   const preview = truncateLines(command, MAX_PREVIEW_LINES);
   return (
     <Box flexDirection="column">
-      <Text dim>  command:</Text>
+      <Text dim>{`command · ${countLines(command)} lines`}</Text>
       <Box borderStyle="round" paddingX={1} flexDirection="column">
         <Text>{preview.length > 0 ? preview : "(empty)"}</Text>
       </Box>
@@ -128,16 +237,15 @@ export const BashRequest: React.FC<{ args: unknown }> = ({ args }) => {
   );
 };
 
-/** `write_file` / `system.writeFile` — shows path + truncated content. */
 export const WriteFileRequest: React.FC<{ args: unknown }> = ({ args }) => {
   const record = (args ?? {}) as Record<string, unknown>;
-  const path = coerceString(record.path);
+  const path = extractPath(args);
   const content = coerceString(record.content);
   const preview = truncateLines(content, MAX_PREVIEW_LINES);
   return (
     <Box flexDirection="column">
-      <Text dim>{`  path: ${path || "(none)"}`}</Text>
-      <Text dim>  content:</Text>
+      <Text dim>{`path · ${path || "(none)"}`}</Text>
+      <Text dim>{`payload · ${countLines(content)} lines · ${byteSize(content)} bytes`}</Text>
       <Box borderStyle="round" paddingX={1} flexDirection="column">
         <Text>{preview.length > 0 ? preview : "(empty)"}</Text>
       </Box>
@@ -145,35 +253,41 @@ export const WriteFileRequest: React.FC<{ args: unknown }> = ({ args }) => {
   );
 };
 
-/** `edit_file` / `system.editFile` — path + diff line counts. */
 export const EditFileRequest: React.FC<{ args: unknown }> = ({ args }) => {
   const record = (args ?? {}) as Record<string, unknown>;
-  const path = coerceString(record.path);
+  const path = extractPath(args);
   const oldText = coerceString(record.oldText ?? record.old_text);
   const newText = coerceString(record.newText ?? record.new_text);
-  const oldLines = oldText.length === 0 ? 0 : oldText.split("\n").length;
-  const newLines = newText.length === 0 ? 0 : newText.split("\n").length;
+  const oldPreview = truncateLines(oldText, 4);
+  const newPreview = truncateLines(newText, 4);
   return (
     <Box flexDirection="column">
-      <Text dim>{`  path: ${path || "(none)"}`}</Text>
-      <Text dim>{`  diff: -${oldLines} / +${newLines} lines`}</Text>
+      <Text dim>{`path · ${path || "(none)"}`}</Text>
+      <Text dim>{`diff · -${countLines(oldText)} / +${countLines(newText)} lines`}</Text>
+      <Text dim>before</Text>
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{oldPreview.length > 0 ? oldPreview : "(empty)"}</Text>
+      </Box>
+      <Text dim>after</Text>
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{newPreview.length > 0 ? newPreview : "(empty)"}</Text>
+      </Box>
     </Box>
   );
 };
 
-/** Default — generic JSON preview truncated to MAX_ARGS_LINES. */
 export const GenericRequest: React.FC<{ args: unknown }> = ({ args }) => {
-  const formatted = safeStringify(args ?? {});
-  const preview = truncateLines(formatted, MAX_ARGS_LINES);
+  const preview = truncateLines(safeStringify(args ?? {}), MAX_ARGS_LINES);
   return (
     <Box flexDirection="column">
-      <Text dim>  args:</Text>
-      <Text>{preview}</Text>
+      <Text dim>args</Text>
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{preview}</Text>
+      </Box>
     </Box>
   );
 };
 
-/** Dispatch table: tool name → renderer. */
 function renderToolBody(tool: string, args: unknown): React.ReactElement {
   switch (tool) {
     case "Bash":
@@ -190,20 +304,52 @@ function renderToolBody(tool: string, args: unknown): React.ReactElement {
   }
 }
 
-// ───────────────────────────────────────────────────────────────────────
-// ApprovalOverlay
-// ───────────────────────────────────────────────────────────────────────
-
 export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
   request,
   onResolve,
   abortSignal,
 }) => {
-  // Local single-shot latch. The caller (InteractiveHandler) also has
-  // a resolveOnce slot, but keeping a component-local latch lets the
-  // overlay be used in tests without an enclosing handler and still
-  // guarantee `onResolve` fires at most once.
+  const appState = useOptionalAgenCAppState();
+  const stdin = useContext(StdinContext);
+  const [focusZone, setFocusZone] = useState<FocusZone>("decision");
+  const [detailTab, setDetailTab] = useState<DetailTab>("summary");
   const resolvedRef = useRef(false);
+
+  const queue = appState?.permissionQueue ?? [];
+  const queueIndex = queue.findIndex((entry) => entry.requestId === request.requestId);
+  const activeQueueEntry =
+    queueIndex >= 0
+      ? queue[queueIndex]
+      : ({
+          requestId: request.requestId,
+          toolName: request.tool,
+          toolInput: request.args,
+          turnId: request.turnId,
+          message: request.reason ?? "",
+          submittedAt: Date.now(),
+        } as PendingPermissionRequest);
+  const queuePosition = queueIndex >= 0 ? queueIndex : 0;
+  const queuedCount = queue.length > 0 ? queue.length : 1;
+  const queuedBehind = Math.max(0, queuedCount - queuePosition - 1);
+  const risk = useMemo(
+    () => inferRisk(request.tool, request.args),
+    [request.args, request.tool],
+  );
+  const warningColor = theme.colors.warning as Color;
+  const accentColor = theme.colors.accent as Color;
+  const focusColor =
+    focusZone === "decision"
+      ? (theme.colors.primary as Color)
+      : (theme.colors.secondary as Color);
+  const detailTabs = useMemo(() => DETAIL_TABS.slice(), []);
+  const rawPreview = useMemo(
+    () => truncateLines(safeStringify(request.args ?? {}), MAX_ARGS_LINES),
+    [request.args],
+  );
+  const queuePreview = useMemo(
+    () => queue.slice(queuePosition, queuePosition + 4),
+    [queue, queuePosition],
+  );
 
   const resolveOnce = useCallback(
     (decision: ApprovalDecision) => {
@@ -214,7 +360,6 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     [onResolve],
   );
 
-  // ── I-72: take exclusive modal focus on mount, restore 'chat' on unmount
   const setActiveContext = useSetKeybindingContext();
   useEffect(() => {
     setActiveContext("modal");
@@ -223,12 +368,8 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     };
   }, [setActiveContext]);
 
-  // ── I-21: abort-safe. Subscribe on mount, unsubscribe on unmount.
   useEffect(() => {
     if (!abortSignal) return;
-    // If the signal is already aborted by the time we mount, resolve
-    // synchronously on the next microtask so React doesn't see a state
-    // update during the render phase.
     if (abortSignal.aborted) {
       queueMicrotask(() => resolveOnce({ behavior: "abort" }));
       return;
@@ -242,22 +383,24 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     };
   }, [abortSignal, resolveOnce]);
 
-  // ── Decision handlers wired to modal-context bindings.
   const onAllow = useCallback(() => {
+    if (focusZone !== "decision") return;
     resolveOnce({ behavior: "allow" });
-  }, [resolveOnce]);
+  }, [focusZone, resolveOnce]);
 
   const onAllowSession = useCallback(() => {
+    if (focusZone !== "decision") return;
     resolveOnce({ behavior: "allow-session", addRule: true });
-  }, [resolveOnce]);
+  }, [focusZone, resolveOnce]);
 
   const onDeny = useCallback(() => {
+    if (focusZone !== "decision") {
+      setFocusZone("decision");
+      return;
+    }
     resolveOnce({ behavior: "deny" });
-  }, [resolveOnce]);
+  }, [focusZone, resolveOnce]);
 
-  // Enter fires the same path as 'Y'; Escape and 'N' fire the same path
-  // as 'D'. We register each binding command explicitly so the provider
-  // routes the correct chord.
   useKeybinding("modal:confirm", onAllow, "modal");
   useKeybinding("modal:yes", onAllow, "modal");
   useKeybinding("modal:allowSession", onAllowSession, "modal");
@@ -265,30 +408,153 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
   useKeybinding("modal:no", onDeny, "modal");
   useKeybinding("modal:cancel", onDeny, "modal");
 
+  const cycleDetailTab = useCallback((delta: number) => {
+    setDetailTab((current) => {
+      const currentIndex = detailTabs.indexOf(current);
+      const nextIndex =
+        (currentIndex + delta + detailTabs.length) % detailTabs.length;
+      return detailTabs[nextIndex] ?? current;
+    });
+  }, [detailTabs]);
+
+  useEffect(() => {
+    const emitter = stdin.internal_eventEmitter;
+    if (!emitter) return;
+    const listener = (event: InputEvent): void => {
+      if (resolvedRef.current) return;
+      if (event.key.tab) {
+        setFocusZone((current) =>
+          current === "decision" ? "details" : "decision",
+        );
+        return;
+      }
+      if (focusZone !== "details") return;
+      if (event.key.escape) {
+        setFocusZone("decision");
+        return;
+      }
+      if (
+        event.key.leftArrow ||
+        event.key.upArrow ||
+        (!event.key.ctrl && !event.key.meta && (event.input === "h" || event.input === "k"))
+      ) {
+        cycleDetailTab(-1);
+        return;
+      }
+      if (
+        event.key.rightArrow ||
+        event.key.downArrow ||
+        (!event.key.ctrl && !event.key.meta && (event.input === "j" || event.input === "l"))
+      ) {
+        cycleDetailTab(1);
+      }
+    };
+    emitter.on("input", listener);
+    return () => {
+      emitter.removeListener("input", listener);
+    };
+  }, [cycleDetailTab, focusZone, stdin]);
+
   const body = renderToolBody(request.tool, request.args);
-  const warningColor = theme.colors.warning as Color;
 
   return (
     <Box
       borderStyle="double"
       padding={1}
       flexDirection="column"
-      borderColor={warningColor}
+      borderColor={focusColor}
     >
-      <Text color={warningColor}>
-        {`\u26A0 Permission needed: ${request.tool}`}
-      </Text>
-      {body}
-      <Text dim>{`  workspace: ${request.workspacePath}`}</Text>
-      {request.reason ? (
-        <Text dim>{`  reason: ${request.reason}`}</Text>
-      ) : null}
-      <Box marginTop={1} flexDirection="column">
-        <Text>[Y] Allow once  (Enter)</Text>
-        <Text>[A] Allow this session</Text>
-        <Text>[D] Deny  (N / Esc)</Text>
+      <Box justifyContent="space-between">
+        <Text color={warningColor}>{`Approval needed · ${request.tool}`}</Text>
+        <Text color={riskColor(risk.level)}>{`${risk.label} RISK`}</Text>
       </Box>
-      <Text dim>Ctrl+C = abort</Text>
+      <Text dim>
+        {`${queuePositionLabel(queuePosition, queuedCount)} · ${humanizeAge(
+          activeQueueEntry.submittedAt,
+        )} old · turn ${request.turnId}`}
+      </Text>
+      <Text dim>{`workspace · ${request.workspacePath}`}</Text>
+      <Text dim>{`scope · ${summarizeScope(request.tool, request.args)}`}</Text>
+      {request.reason ? <Text dim>{`reason · ${request.reason}`}</Text> : null}
+      {activeQueueEntry.blockedPath ? (
+        <Text dim>{`blocked path · ${activeQueueEntry.blockedPath}`}</Text>
+      ) : null}
+      {activeQueueEntry.suggestions && activeQueueEntry.suggestions.length > 0 ? (
+        <Text dim>{`suggestions · ${activeQueueEntry.suggestions.length} policy updates available`}</Text>
+      ) : null}
+      {risk.notes.length > 0 ? (
+        <Text dim>{`signal · ${risk.notes.join(" · ")}`}</Text>
+      ) : null}
+
+      <Box marginTop={1} flexDirection="column">
+        <Text color={accentColor}>
+          {detailTabs
+            .map((tab) =>
+              tab === detailTab ? `[${tabLabel(tab)}]` : tabLabel(tab),
+            )
+            .join("  ")}
+        </Text>
+        <Text dim>
+          {focusZone === "details"
+            ? "Details focused · Tab/Esc returns to actions · arrows or H/J/K/L switch tabs"
+            : "Actions focused · Tab moves into details"}
+        </Text>
+      </Box>
+
+      <Box
+        marginTop={1}
+        borderStyle="round"
+        borderColor={focusZone === "details" ? focusColor : warningColor}
+        paddingX={1}
+        flexDirection="column"
+      >
+        {detailTab === "summary" ? (
+          <Box flexDirection="column">
+            <Text>{`queue · ${queuedBehind} waiting behind this request`}</Text>
+            <Text>{`tool · ${request.tool}`}</Text>
+            <Text>{`request id · ${request.requestId}`}</Text>
+            <Text>{`cwd · ${request.workspacePath}`}</Text>
+            <Text>{`age · ${humanizeAge(activeQueueEntry.submittedAt)}`}</Text>
+          </Box>
+        ) : null}
+        {detailTab === "preview" ? body : null}
+        {detailTab === "raw" ? (
+          <Box flexDirection="column">
+            <Text dim>raw args</Text>
+            <Text>{rawPreview}</Text>
+          </Box>
+        ) : null}
+        {detailTab === "queue" ? (
+          <Box flexDirection="column">
+            {queuePreview.map((entry, index) => (
+              <Text key={entry.requestId}>
+                {`${index === 0 ? ">" : " "} ${queuePosition + index + 1}. ${queueEntryLabel(
+                  entry,
+                )} · ${humanizeAge(entry.submittedAt)}`}
+              </Text>
+            ))}
+            {queuePreview.length === 0 ? (
+              <Text>{`> 1. ${request.tool} · ${summarizeScope(
+                request.tool,
+                request.args,
+              )}`}</Text>
+            ) : null}
+          </Box>
+        ) : null}
+      </Box>
+
+      <Box
+        marginTop={1}
+        borderStyle="round"
+        borderColor={focusZone === "decision" ? focusColor : accentColor}
+        paddingX={1}
+        flexDirection="column"
+      >
+        <Text>{`[Y] Allow once${focusZone === "decision" ? "  <Enter>" : ""}`}</Text>
+        <Text>[A] Allow this session</Text>
+        <Text>{`[D] Deny${focusZone === "decision" ? "  <N / Esc>" : "  <Esc returns to actions>"}`}</Text>
+        <Text dim>Ctrl+C aborts the pending request</Text>
+      </Box>
     </Box>
   );
 };

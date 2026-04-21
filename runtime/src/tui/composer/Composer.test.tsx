@@ -21,9 +21,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
+import StdinContext from "../ink/components/StdinContext.js";
 import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
+import { AgenCAppStateProvider, useAgenCAppState } from "../state/AppState.js";
 import { Composer, validateMentionPath } from "./Composer.js";
 import { PasteStore } from "./paste-store.js";
 
@@ -100,6 +102,52 @@ function renderedTextOf(stdout: PassThrough): string {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+function createAppStateSession() {
+  return {
+    services: {
+      permissionModeRegistry: {
+        current: () => ({ mode: "default" as const }),
+        subscribeToModeChange: () => () => undefined,
+      },
+    },
+    abortTerminal: vi.fn(),
+  };
+}
+
+function SetStreaming({
+  active,
+}: {
+  readonly active: boolean;
+}): null {
+  const { setStreaming } = useAgenCAppState();
+  React.useEffect(() => {
+    setStreaming(active);
+  }, [active, setStreaming]);
+  return null;
+}
+
+function withInputProviders(
+  emitter: EventEmitter,
+  child: React.ReactElement,
+): React.ReactElement {
+  return (
+    <StdinContext.Provider
+      value={{
+        stdin: process.stdin,
+        setRawMode: () => undefined,
+        isRawModeSupported: true,
+        internal_exitOnCtrlC: true,
+        internal_eventEmitter: emitter,
+        internal_querier: null,
+      }}
+    >
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        {child}
+      </KeybindingProvider>
+    </StdinContext.Provider>
+  );
+}
+
 describe("Composer", () => {
   let tmpHome: string;
 
@@ -115,18 +163,47 @@ describe("Composer", () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();
     const { unmount, stdout } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withInputProviders(
+        emitter,
         <Composer
           session={{ cwd: tmpHome, home: tmpHome }}
           onSubmit={onSubmit}
           pasteStore={new PasteStore()}
         />
-      </KeybindingProvider>,
+      ),
     );
     // Cursor glyph should be somewhere in the output; if the component
     // threw during render the `renderedTextOf` helper would see nothing
     // (stdout would be closed by the unmount path instead).
     void renderedTextOf(stdout);
+    unmount();
+  });
+
+  test("printable keypresses update the buffer and backspace edits in place", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
+    emitter.emit("input", makeKeyEvent({ name: "i", sequence: "i" }));
+    emitter.emit("input", makeKeyEvent({ name: "backspace" }));
+    emitter.emit("input", makeKeyEvent({ name: "!", sequence: "!" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith("h!");
     unmount();
   });
 
@@ -146,17 +223,20 @@ describe("Composer", () => {
     }
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
-        <Composer
-          session={{ cwd: tmpHome, home: tmpHome }}
-          onSubmit={(v) => {
-            lastValue = v;
-            onSubmit(v);
-          }}
-          pasteStore={store}
-        />
-        <ValueSpy onUpdate={() => undefined} />
-      </KeybindingProvider>,
+      withInputProviders(
+        emitter,
+        <>
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={(v) => {
+              lastValue = v;
+              onSubmit(v);
+            }}
+            pasteStore={store}
+          />
+          <ValueSpy onUpdate={() => undefined} />
+        </>
+      ),
     );
 
     // Feed "hi" by emitting printable key events. The provider sees
@@ -183,19 +263,87 @@ describe("Composer", () => {
     const store = new PasteStore();
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+      withInputProviders(
+        emitter,
         <Composer
           session={{ cwd: tmpHome, home: tmpHome }}
           onSubmit={onSubmit}
           pasteStore={store}
         />
-      </KeybindingProvider>,
+      ),
     );
     store.pushChunk("alpha");
     await new Promise((r) => setTimeout(r, 650));
     // The paste lifecycle must drive `consumeBuffer` exactly once.
     // After completion the store's buffer is drained.
     expect(store.consumeBuffer()).toBe("");
+    unmount();
+  });
+
+  test("Enter confirms the slash palette before submitting the composer", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "/", sequence: "/" }));
+    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
+    emitter.emit("input", makeKeyEvent({ name: "e", sequence: "e" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(onSubmit).toHaveBeenCalledWith("/help ");
+    unmount();
+  });
+
+  test("active turns block submit, then Escape clears draft before aborting", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const onCancel = vi.fn();
+    const appStateSession = createAppStateSession();
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={appStateSession} configStore={{}}>
+        <SetStreaming active />
+        {withInputProviders(
+          emitter,
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={onSubmit}
+            onCancel={onCancel}
+            pasteStore={new PasteStore()}
+          />,
+        )}
+      </AgenCAppStateProvider>,
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
+    emitter.emit("input", makeKeyEvent({ name: "i", sequence: "i" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    emitter.emit("input", makeKeyEvent({ name: "escape" }));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(onCancel).not.toHaveBeenCalled();
+
+    emitter.emit("input", makeKeyEvent({ name: "escape" }));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(onCancel).toHaveBeenCalledTimes(1);
     unmount();
   });
 

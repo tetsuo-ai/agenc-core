@@ -351,7 +351,7 @@ describe("prepareContext Stage 3/4 wiring", () => {
     expect(getPrepareContextTerminal(state)).toBeUndefined();
   });
 
-  test("microcompact clears older tool results on the live path", async () => {
+  test("microcompact leaves older tool results intact on the live path", async () => {
     const events: Event[] = [];
     const session = mkSession(events);
     const state = mkState([
@@ -375,13 +375,7 @@ describe("prepareContext Stage 3/4 wiring", () => {
 
     const toolMessages = state.messagesForQuery.filter((m) => m.role === "tool");
     expect(toolMessages).toHaveLength(7);
-    expect(toolMessages[0]?.content).toContain(
-      "[Old tool result content cleared]",
-    );
-    expect(toolMessages[1]?.content).toContain(
-      "[Old tool result content cleared]",
-    );
-    for (const toolMessage of toolMessages.slice(2)) {
+    for (const toolMessage of toolMessages) {
       expect(toolMessage?.content).toBe(repeat(200));
     }
     expect(getPrepareContextTerminal(state)).toBeUndefined();

@@ -18,6 +18,13 @@ const REQUIRED_COLOR_KEYS: ReadonlyArray<keyof ReturnType<typeof getTheme>["colo
   "warning",
   "success",
   "dim",
+  "ink",
+  "muted",
+  "info",
+  "line",
+  "lineStrong",
+  "surface",
+  "surfaceAlt",
   "modeDefault",
   "modeAcceptEdits",
   "modePlan",
@@ -59,8 +66,9 @@ describe("theme", () => {
     // default, which is already the fallback path we want to exercise.
     __resetThemeForTests();
     const snapshot = getTheme();
-    expect(snapshot.colors.primary).toBe("cyan");
-    expect(snapshot.colors.error).toBe("red");
+    expect(snapshot.colors.primary).toBe("ansi256(117)");
+    expect(snapshot.colors.error).toBe("ansi256(203)");
+    expect(snapshot.colors.surface).toBe("ansi256(233)");
     expect(snapshot.modeIndicatorChar.default).toBe("›");
   });
 });

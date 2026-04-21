@@ -107,6 +107,13 @@ export interface SessionState {
   sessionConfiguration: SessionConfiguration;
   /** Conversation history items (T6 fleshes out via rollout reducer). */
   history: unknown[];
+  /** Resume-time carryover for model-downshift and context-window checks. */
+  previousTurnSettings?: {
+    readonly model: string;
+    readonly realtimeActive?: boolean;
+    readonly contextWindow?: number;
+    readonly modelInfo?: { readonly contextWindow?: number };
+  };
   /** Pending session-start hook source (codex line 841). T10 wires. */
   pendingSessionStartSource?: SessionStartSource;
 }
@@ -447,6 +454,13 @@ export interface SessionOpts {
    *  wires the real config resolver; T5 accepts it via opts for
    *  CLI-level override. */
   readonly budgetTracker?: BudgetTracker | null;
+  /** Seeded transcript events used by the TUI on first mount. */
+  readonly initialTranscriptEvents?: readonly unknown[];
+}
+
+export interface SessionTurnDriverHooks {
+  readonly submit: (message: string) => Promise<void>;
+  readonly flushEventLog?: () => Promise<void> | void;
 }
 
 /**
@@ -559,6 +573,24 @@ export class Session {
   rolloutStore: RolloutStore | null = null;
 
   /**
+   * TUI-facing PhaseEvent subscribers. The one-shot CLI renders these
+   * directly from the generator; the live TUI needs an in-session bus
+   * so `useQuery` can observe the same stream.
+   */
+  private readonly phaseEventListeners = new Set<
+    (event: PhaseEvent) => void
+  >();
+
+  /** Bootstrap-owned submit hook used by the TUI contract. */
+  private turnDriverHooks: SessionTurnDriverHooks | null = null;
+
+  /** Serialize submit calls so the session keeps a single active turn. */
+  private submitQueue: Promise<void> = Promise.resolve();
+
+  /** Seeded transcript event stream used by the TUI resume path. */
+  private initialTranscriptEvents: readonly unknown[] = [];
+
+  /**
    * T11 W4: session-scoped denial tracking. Mutated in place by the
    * permission evaluator (matches openclaude's `Object.assign` contract)
    * so denial limits (3 consecutive / 20 total) persist across turns in
@@ -634,6 +666,7 @@ export class Session {
     this.nextInternalSubIdValue = 0;
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
     this.budgetTracker = opts.budgetTracker ?? null;
+    this.initialTranscriptEvents = opts.initialTranscriptEvents ?? [];
   }
 
   // ───────────────────────────────────────────────────────────
@@ -806,6 +839,56 @@ export class Session {
       if (next.done) return next.value;
       yield next.value;
     }
+  }
+
+  installTurnDriverHooks(hooks: SessionTurnDriverHooks | null): void {
+    this.turnDriverHooks = hooks;
+  }
+
+  setInitialTranscriptEvents(events: readonly unknown[]): void {
+    this.initialTranscriptEvents = events;
+  }
+
+  getInitialTranscriptEvents(): readonly unknown[] {
+    return this.initialTranscriptEvents;
+  }
+
+  subscribeToEvents(cb: (event: PhaseEvent) => void): () => void {
+    this.phaseEventListeners.add(cb);
+    return () => {
+      this.phaseEventListeners.delete(cb);
+    };
+  }
+
+  emitPhaseEvent(event: PhaseEvent): void {
+    for (const listener of this.phaseEventListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Keep parity with EventLog subscriber isolation.
+      }
+    }
+  }
+
+  async submit(message: string): Promise<void> {
+    const hooks = this.turnDriverHooks;
+    if (hooks === null) {
+      throw new Error("Session submit hook is not installed");
+    }
+    const run = this.submitQueue.then(() => hooks.submit(message));
+    this.submitQueue = run.catch(() => {
+      /* keep the queue alive for the next submit */
+    });
+    return run;
+  }
+
+  async flushEventLog(): Promise<void> {
+    const flush = this.turnDriverHooks?.flushEventLog;
+    if (flush) {
+      await flush();
+      return;
+    }
+    this.rolloutStore?.flushDurable();
   }
 
   /**

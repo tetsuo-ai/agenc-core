@@ -26,6 +26,7 @@
  */
 
 import React, {
+  useContext,
   useCallback,
   useEffect,
   useMemo,
@@ -34,15 +35,23 @@ import React, {
 } from "react";
 import { isAbsolute, relative, resolve } from "node:path";
 
+import { buildDefaultRegistry } from "../../commands/registry.js";
+import { getGlobalCommandRegistry } from "../../commands/types.js";
 import Box from "../ink/components/Box.js";
+import StdinContext from "../ink/components/StdinContext.js";
 import Text from "../ink/components/Text.js";
+import type { InputEvent } from "../ink/events/input-event.js";
+import type { Color } from "../ink/styles.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
+import { useAgenCAppState } from "../state/AppState.js";
 import { theme } from "../theme.js";
 import {
   getPasteStore,
   type PasteEvent,
   type PasteStore,
 } from "./paste-store.js";
+import { Palette, fuzzyMatch, type PaletteItem } from "./Palette.js";
+import { getSlashCommandItems } from "./palette-sources.js";
 import {
   HISTORY_FILE_REL,
   appendHistory,
@@ -207,6 +216,94 @@ function RenderedBuffer({
   );
 }
 
+let cachedFallbackSlashItems: readonly PaletteItem[] | null = null;
+
+function getSlashPaletteItems(): readonly PaletteItem[] {
+  const registry = getGlobalCommandRegistry();
+  if (registry) {
+    return getSlashCommandItems(registry);
+  }
+  if (cachedFallbackSlashItems === null) {
+    cachedFallbackSlashItems = getSlashCommandItems(buildDefaultRegistry());
+  }
+  return cachedFallbackSlashItems;
+}
+
+interface LineBounds {
+  readonly cursor: number;
+  readonly lineStart: number;
+  readonly lineEnd: number;
+}
+
+function getLineBounds(value: string, cursor: number): LineBounds {
+  const safeCursor = Math.max(0, Math.min(cursor, value.length));
+  const prevNewline = value.lastIndexOf("\n", Math.max(0, safeCursor - 1));
+  const lineStart = prevNewline === -1 ? 0 : prevNewline + 1;
+  const nextNewline = value.indexOf("\n", safeCursor);
+  const lineEnd = nextNewline === -1 ? value.length : nextNewline;
+  return { cursor: safeCursor, lineStart, lineEnd };
+}
+
+interface SlashDraft {
+  readonly query: string;
+  readonly replaceStart: number;
+  readonly replaceEnd: number;
+  readonly cursorInsideToken: boolean;
+}
+
+function readSlashDraft(value: string, cursor: number): SlashDraft | null {
+  const bounds = getLineBounds(value, cursor);
+  const line = value.slice(bounds.lineStart, bounds.lineEnd);
+  const leadingWhitespace = line.match(/^\s*/)?.[0].length ?? 0;
+  if ((line[leadingWhitespace] ?? "") !== "/") return null;
+
+  const replaceStart = bounds.lineStart + leadingWhitespace;
+  let replaceEnd = replaceStart;
+  while (replaceEnd < value.length) {
+    const next = value[replaceEnd];
+    if (next === undefined || next === "\n" || /\s/.test(next)) break;
+    replaceEnd += 1;
+  }
+
+  return {
+    query: value.slice(replaceStart + 1, replaceEnd),
+    replaceStart,
+    replaceEnd,
+    cursorInsideToken:
+      bounds.cursor >= replaceStart + 1 && bounds.cursor <= replaceEnd,
+  };
+}
+
+function hasSlashMultilineConflict(value: string): boolean {
+  const lines = value.split("\n");
+  if (lines.length <= 1) return false;
+  const first = lines[0]?.trimStart() ?? "";
+  if (!first.startsWith("/")) return false;
+  for (let i = 1; i < lines.length; i += 1) {
+    if ((lines[i] ?? "").trim().length > 0) return true;
+  }
+  return false;
+}
+
+function isPrintableInputEvent(event: InputEvent): boolean {
+  if (typeof event.input !== "string" || event.input.length === 0) return false;
+  if (event.key.return || event.key.escape || event.key.tab) return false;
+  if (
+    event.key.upArrow ||
+    event.key.downArrow ||
+    event.key.leftArrow ||
+    event.key.rightArrow ||
+    event.key.home ||
+    event.key.end ||
+    event.key.backspace ||
+    event.key.delete
+  ) {
+    return false;
+  }
+  if (event.key.ctrl || event.key.super) return false;
+  return true;
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Main component
 // ────────────────────────────────────────────────────────────────────────
@@ -238,6 +335,47 @@ export const Composer: React.FC<ComposerProps> = ({
   }, [session.home]);
 
   const { state, dispatch } = useComposerState({ initialHistory });
+  const stdin = useContext(StdinContext);
+
+  let appState:
+    | ReturnType<typeof useAgenCAppState>
+    | null = null;
+  try {
+    appState = useAgenCAppState();
+  } catch {
+    appState = null;
+  }
+
+  const mode = appState?.mode ?? "default";
+  const isStreaming = appState?.isStreaming ?? false;
+  const pendingRequestCount = appState?.pendingRequests.length ?? 0;
+  const hasPendingTurn = isStreaming || pendingRequestCount > 0;
+
+  const slashItems = useMemo(() => getSlashPaletteItems(), []);
+  const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(
+    null,
+  );
+  const slashDraft = useMemo(
+    () => readSlashDraft(state.value, state.cursor),
+    [state.value, state.cursor],
+  );
+  const slashTokenKey = slashDraft
+    ? `${slashDraft.replaceStart}:${slashDraft.replaceEnd}:${slashDraft.query}`
+    : null;
+  const slashMatches = useMemo(
+    () => (slashDraft ? fuzzyMatch(slashItems, slashDraft.query) : []),
+    [slashDraft, slashItems],
+  );
+  const showSlashPalette =
+    Boolean(slashDraft?.cursorInsideToken) &&
+    slashTokenKey !== dismissedSlashToken;
+  const slashPreviewItem = slashMatches[0] ?? null;
+  const slashConflict = hasSlashMultilineConflict(state.value);
+  useEffect(() => {
+    if (slashTokenKey === null && dismissedSlashToken !== null) {
+      setDismissedSlashToken(null);
+    }
+  }, [dismissedSlashToken, slashTokenKey]);
 
   // Hold the latest `state.value` in a ref so imperative callbacks
   // (paste-complete → appendHistory) can read the freshest buffer
@@ -268,6 +406,49 @@ export const Composer: React.FC<ComposerProps> = ({
     return unsubscribe;
   }, [store, dispatch]);
 
+  // ── raw stdin → reducer bridge ─────────────────────────────────────
+  useEffect(() => {
+    const emitter = stdin.internal_eventEmitter;
+    const onInput = (event: InputEvent): void => {
+      if (isPrintableInputEvent(event) && event.input.length > 1) {
+        store.pushChunk(event.input);
+        return;
+      }
+
+      if (event.key.leftArrow || (event.key.ctrl && event.input === "b")) {
+        dispatch({ type: "MOVE_CURSOR", delta: -1 });
+        return;
+      }
+      if (event.key.rightArrow || (event.key.ctrl && event.input === "f")) {
+        dispatch({ type: "MOVE_CURSOR", delta: 1 });
+        return;
+      }
+      if (event.key.home || (event.key.ctrl && event.input === "a")) {
+        dispatch({ type: "MOVE_CURSOR_HOME" });
+        return;
+      }
+      if (event.key.end || (event.key.ctrl && event.input === "e")) {
+        dispatch({ type: "MOVE_CURSOR_END" });
+        return;
+      }
+      if (event.key.backspace) {
+        dispatch({ type: "DELETE_BACKWARD" });
+        return;
+      }
+      if (event.key.delete) {
+        dispatch({ type: "DELETE_FORWARD" });
+        return;
+      }
+      if (!isPrintableInputEvent(event)) return;
+      dispatch({ type: "INSERT", text: event.input });
+    };
+
+    emitter.on("input", onInput);
+    return () => {
+      emitter.removeListener("input", onInput);
+    };
+  }, [dispatch, stdin, store]);
+
   // ── keybindings ────────────────────────────────────────────────────
   const onSubmitRef = useRef(onSubmit);
   useEffect(() => {
@@ -277,6 +458,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const home = session.home ?? process.env.HOME ?? "";
 
   const handleSubmit = useCallback((): void => {
+    if (showSlashPalette || hasPendingTurn) return;
     if (store.isInFlight() || valueRef.current.length === 0) {
       // While a paste is mid-stream, forward the press to the reducer
       // which will buffer it (I-69). Empty submits are quietly dropped.
@@ -299,24 +481,32 @@ export const Composer: React.FC<ComposerProps> = ({
         // Silent — history is best-effort.
       });
     }
-  }, [dispatch, home, session.cwd, store]);
+  }, [dispatch, hasPendingTurn, home, session.cwd, showSlashPalette, store]);
 
   const handleCancel = useCallback((): void => {
+    if (showSlashPalette) return;
+    if (valueRef.current.length > 0) {
+      dispatch({ type: "CLEAR" });
+      return;
+    }
+    if (!hasPendingTurn) return;
     dispatch({ type: "CLEAR" });
     if (onCancel) onCancel();
-  }, [dispatch, onCancel]);
+  }, [dispatch, hasPendingTurn, onCancel, showSlashPalette]);
 
   const handleNewline = useCallback((): void => {
     dispatch({ type: "NEWLINE" });
   }, [dispatch]);
 
   const handleHistoryPrev = useCallback((): void => {
+    if (showSlashPalette) return;
     dispatch({ type: "HISTORY_PREV" });
-  }, [dispatch]);
+  }, [dispatch, showSlashPalette]);
 
   const handleHistoryNext = useCallback((): void => {
+    if (showSlashPalette) return;
     dispatch({ type: "HISTORY_NEXT" });
-  }, [dispatch]);
+  }, [dispatch, showSlashPalette]);
 
   useKeybinding("chat:submit", handleSubmit, "chat");
   useKeybinding("chat:cancel", handleCancel, "chat");
@@ -361,21 +551,138 @@ export const Composer: React.FC<ComposerProps> = ({
   }, [mentions, session]);
 
   const rejected = mentions.filter((m) => !m.validation.ok);
+  const colors = theme.colors;
+  const promptGlyph =
+    theme.modeIndicatorChar[
+      mode as keyof typeof theme.modeIndicatorChar
+    ] ?? theme.modeIndicatorChar.default;
+  const accentColor = (
+    pendingRequestCount > 0
+      ? colors.warning
+      : isStreaming
+        ? colors.accent
+        : colors.primary
+  ) as Color;
+  const handleSlashSelect = useCallback(
+    (item: PaletteItem): void => {
+      if (!slashDraft) return;
+      setDismissedSlashToken(null);
+      const trailing = state.value.slice(slashDraft.replaceEnd);
+      const needsTrailingSpace =
+        trailing.length === 0 || !/^\s/.test(trailing);
+      dispatch({
+        type: "REPLACE_RANGE",
+        start: slashDraft.replaceStart,
+        end: slashDraft.replaceEnd,
+        text: `${item.value}${needsTrailingSpace ? " " : ""}`,
+      });
+    },
+    [dispatch, slashDraft, state.value],
+  );
+
+  const statusLine = useMemo(() => {
+    if (pendingRequestCount > 0) {
+      return {
+        color: colors.warning,
+        text: "Approval pending. Resolve the modal with Y/N/A/D before sending the next turn.",
+      };
+    }
+    if (isStreaming) {
+      return {
+        color: colors.accent,
+        text: "Turn active. Keep drafting; Enter waits until the current turn is done.",
+      };
+    }
+    if (state.pasteInFlight) {
+      const suffix =
+        state.pendingEnters > 0
+          ? ` Enter queued x${state.pendingEnters}.`
+          : "";
+      return {
+        color: colors.secondary,
+        text: `Paste in progress.${suffix}`,
+      };
+    }
+    if (slashConflict) {
+      return {
+        color: colors.warning,
+        text: "Slash commands submit on a single line. Extra lines keep this as plain text.",
+      };
+    }
+    if (slashDraft && slashDraft.query.length === 0) {
+      return {
+        color: colors.primary,
+        text: "Browse commands with Up/Down. Tab or Enter inserts the selected command.",
+      };
+    }
+    if (slashDraft && slashPreviewItem) {
+      return {
+        color: colors.primary,
+        text:
+          slashPreviewItem.description ??
+          `${slashPreviewItem.label} is available.`,
+      };
+    }
+    return {
+      color: colors.dim,
+      text: "Type a prompt or / for commands. Shift+Enter or Ctrl+J adds a newline.",
+    };
+  }, [
+    isStreaming,
+    pendingRequestCount,
+    slashConflict,
+    slashDraft,
+    slashPreviewItem,
+    state.pasteInFlight,
+    state.pendingEnters,
+  ]);
 
   // ── render ─────────────────────────────────────────────────────────
-  const { colors } = theme;
   return (
     <Box flexDirection="column">
-      <Box>
-        <Text color={colors.primary}>{"> "}</Text>
-        <RenderedBuffer value={state.value} cursor={state.cursor} />
-      </Box>
-      {rejected.map((m) => (
-        <Box key={m.raw}>
-          <Text color={colors.warning}>{"\u26A0 outside workspace: "}</Text>
-          <Text color={colors.error}>{m.raw}</Text>
+      {showSlashPalette ? (
+        <Palette
+          trigger="/"
+          query={slashDraft?.query ?? ""}
+          items={slashItems}
+          placement="above"
+          onSelect={handleSlashSelect}
+          onClose={() => {
+            if (slashTokenKey !== null) {
+              setDismissedSlashToken(slashTokenKey);
+            }
+          }}
+        />
+      ) : null}
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={accentColor}
+        paddingX={1}
+      >
+        <Box>
+          <Text color={accentColor}>
+            {`${promptGlyph} `}
+          </Text>
+          <RenderedBuffer value={state.value} cursor={state.cursor} />
         </Box>
-      ))}
+        <Box>
+          <Text color={statusLine.color as Color}>{statusLine.text}</Text>
+        </Box>
+        {rejected.map((m) => (
+          <Box key={m.raw}>
+            <Text color={colors.warning}>{"\u26A0 outside workspace: "}</Text>
+            <Text color={colors.error}>{m.raw}</Text>
+          </Box>
+        ))}
+        {state.value.length > 0 && hasPendingTurn ? (
+          <Box>
+            <Text color={colors.dim}>
+              {"Esc clears the draft first. Press Esc again on an empty composer to interrupt the turn."}
+            </Text>
+          </Box>
+        ) : null}
+      </Box>
     </Box>
   );
 };

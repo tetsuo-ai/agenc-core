@@ -122,6 +122,27 @@ describe("useInput", () => {
     unmount();
   });
 
+  test("wires acceptSuggestion to Tab without firing submit", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const onAcceptSuggestion = vi.fn();
+    function Consumer(): null {
+      useInput({ onSubmit, onAcceptSuggestion });
+      return null;
+    }
+    const { unmount } = await mount(
+      <KeybindingProvider
+        stdinContext={{ internal_eventEmitter: emitter }}
+      >
+        <Consumer />
+      </KeybindingProvider>,
+    );
+    emitter.emit("input", makeParsedKeyEvent({ name: "tab" }));
+    expect(onAcceptSuggestion).toHaveBeenCalledTimes(1);
+    expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
   test("does not throw when no handlers are provided", async () => {
     const emitter = new EventEmitter();
     function Consumer(): null {

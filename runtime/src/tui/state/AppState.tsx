@@ -120,8 +120,14 @@ export interface AgenCAppStateValue {
   readonly session: SessionLike;
   readonly configStore: ConfigStoreLike;
   readonly isStreaming: boolean;
+  /** Full live permission queue in FIFO order. */
+  readonly permissionQueue: readonly PendingPermissionRequest[];
   /** Live queue of pending permission requests awaiting operator review. */
   readonly pendingRequests: readonly PendingPermissionRequest[];
+  /** Request id currently surfaced to the approval UI, if any. */
+  readonly activePermissionRequestId: string | null;
+  /** Total queued permission requests, including the active one. */
+  readonly queuedPermissionCount: number;
   /** Bump `isStreaming` on. Exposed so later waves can drive the cockpit. */
   setStreaming: (next: boolean) => void;
   /**
@@ -152,7 +158,7 @@ export function AgenCAppStateProvider({
     () => session.services.permissionModeRegistry.current().mode,
   );
   const [isStreaming, setStreaming] = useState<boolean>(false);
-  const [pendingRequests, setPendingRequests] = useState<
+  const [permissionQueue, setPermissionQueue] = useState<
     readonly PendingPermissionRequest[]
   >([]);
 
@@ -179,7 +185,7 @@ export function AgenCAppStateProvider({
   const opsRef = useRef<PermissionQueueOps | null>(null);
   if (opsRef.current === null) {
     opsRef.current = createPermissionQueueOps((updater) => {
-      setPendingRequests((prev) => updater(prev));
+      setPermissionQueue((prev) => updater(prev));
     });
   }
 
@@ -189,6 +195,11 @@ export function AgenCAppStateProvider({
   // future-proofing for T12b/T13.
   const sessionOps = session.permissionQueueOps;
   const exposedOps = sessionOps ?? opsRef.current;
+  const pendingRequests = useMemo<readonly PendingPermissionRequest[]>(
+    () => (permissionQueue.length > 0 ? [permissionQueue[0]!] : []),
+    [permissionQueue],
+  );
+  const activePermissionRequestId = pendingRequests[0]?.requestId ?? null;
 
   const memoSetStreaming = useCallback((next: boolean) => {
     setStreaming(next);
@@ -200,7 +211,10 @@ export function AgenCAppStateProvider({
       session,
       configStore,
       isStreaming,
+      permissionQueue,
       pendingRequests,
+      activePermissionRequestId,
+      queuedPermissionCount: permissionQueue.length,
       setStreaming: memoSetStreaming,
       permissionQueueOps: exposedOps,
     }),
@@ -209,7 +223,9 @@ export function AgenCAppStateProvider({
       session,
       configStore,
       isStreaming,
+      permissionQueue,
       pendingRequests,
+      activePermissionRequestId,
       memoSetStreaming,
       exposedOps,
     ],
@@ -234,6 +250,14 @@ export function useAgenCAppState(): AgenCAppStateValue {
     );
   }
   return ctx;
+}
+
+/**
+ * Optional variant for leaf components that can render outside the app-state
+ * provider in focused unit tests.
+ */
+export function useOptionalAgenCAppState(): AgenCAppStateValue | null {
+  return useContext(AgenCAppStateContext);
 }
 
 /**

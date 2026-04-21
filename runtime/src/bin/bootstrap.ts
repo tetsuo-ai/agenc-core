@@ -35,7 +35,8 @@ import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
-import type { Event } from "../session/event-log.js";
+import type { Event, EventMsg } from "../session/event-log.js";
+import type { RolloutItem } from "../session/rollout-item.js";
 import {
   buildToolRegistry,
   type BuildToolRegistryOptions,
@@ -68,6 +69,66 @@ export const PROVIDER_MODEL_CATALOG: Readonly<Record<string, readonly string[]>>
       "grok-code-fast-1",
     ]) as readonly string[],
   });
+
+const TRANSCRIPT_BOOT_EVENT_TYPES = new Set<string>([
+  "turn_started",
+  "turn_complete",
+  "turn_aborted",
+  "user_message",
+  "agent_message",
+  "agent_message_delta",
+  "tool_call_started",
+  "tool_call_completed",
+  "tool_progress",
+  "exec_command_begin",
+  "exec_command_end",
+  "context_compacted",
+  "warning",
+  "error",
+  "stream_error",
+  "deprecation_notice",
+  "plan_started",
+  "plan_delta",
+  "plan_item_completed",
+  "plan_exited",
+]);
+
+type BootstrapTranscriptEvent = {
+  readonly id?: string;
+  readonly seq?: number;
+  readonly type: string;
+  readonly payload: unknown;
+};
+
+function transcriptEventsFromRollout(
+  items: ReadonlyArray<RolloutItem>,
+): BootstrapTranscriptEvent[] {
+  const out: BootstrapTranscriptEvent[] = [];
+  for (const item of items) {
+    if (item.type !== "event_msg") continue;
+    const type = item.payload.msg.type;
+    if (!TRANSCRIPT_BOOT_EVENT_TYPES.has(type)) continue;
+    out.push({
+      id: item.payload.id,
+      seq: item.payload.seq,
+      type,
+      payload: item.payload.msg.payload,
+    });
+  }
+  return out;
+}
+
+function transcriptMessagesFrom(
+  events: ReadonlyArray<BootstrapTranscriptEvent>,
+): EventMsg[] {
+  return events.map(
+    (event) =>
+      ({
+        type: event.type,
+        payload: event.payload,
+      }) as EventMsg,
+  );
+}
 
 function buildPlaceholderServices(
   provider: LLMProvider,
@@ -522,6 +583,7 @@ export interface BootstrapLocalRuntimeSessionOptions {
   readonly apiKey: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly cwd?: string;
+  readonly conversationId?: string;
   readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
 }
 
@@ -576,17 +638,23 @@ export async function bootstrapLocalRuntimeSession(
       tools: registry.toLLMTools(),
     },
   );
-  const conversationId = `conv-${Date.now().toString(36)}`;
+  const conversationId =
+    options.conversationId ?? `conv-${Date.now().toString(36)}`;
   const config = buildMinimalConfig(workspaceRoot, model);
   const modelInfo = buildMinimalModelInfo(model);
-  const initialState: SessionState = {
+  let initialState: SessionState = {
     sessionConfiguration: sessionConfigurationFromAgenCConfig({
       config: configStore.current(),
       workspaceRoot,
       model,
     }),
     history: [],
+    ...(options.conversationId !== undefined
+      ? { pendingSessionStartSource: "resume" as const }
+      : {}),
   };
+  let initialTranscriptEvents: readonly BootstrapTranscriptEvent[] = [];
+  let initialMessages: ReadonlyArray<EventMsg> = [];
   const session = new Session({
     conversationId,
     initialState,
@@ -597,6 +665,7 @@ export async function bootstrapLocalRuntimeSession(
       createSessionMcpService(mcpManager),
     ),
     jsRepl: { id: `repl-${conversationId}` },
+    initialTranscriptEvents,
   });
   await session.startMcpManager(mcpManager);
 
@@ -629,6 +698,7 @@ export async function bootstrapLocalRuntimeSession(
       cwd: workspaceRoot,
       sessionId: conversationId,
       agencVersion: "0.2.0",
+      ...(options.conversationId !== undefined ? { resume: true } : {}),
       ...(sessionProjectRootMarkers !== undefined
         ? { projectRootMarkers: sessionProjectRootMarkers }
         : {}),
@@ -658,6 +728,20 @@ export async function bootstrapLocalRuntimeSession(
         const reconstruction = reconstructFromRollout(existingItems, {
           ...(indexSnapshot ? { indexSnapshot } : {}),
         });
+        initialState = {
+          ...initialState,
+          history: reconstruction.history,
+          ...(reconstruction.previousTurnSettings !== undefined
+            ? { previousTurnSettings: reconstruction.previousTurnSettings }
+            : {}),
+        };
+        await session.state.swap(initialState);
+        initialTranscriptEvents = transcriptEventsFromRollout([
+          ...existingItems,
+          ...reconstruction.synthesizedEvents,
+        ]);
+        initialMessages = transcriptMessagesFrom(initialTranscriptEvents);
+        session.setInitialTranscriptEvents(initialTranscriptEvents);
         if (reconstruction.synthesizedEvents.length > 0) {
           for (const synth of reconstruction.synthesizedEvents) {
             if (synth.type === "event_msg") {
@@ -782,8 +866,8 @@ export async function bootstrapLocalRuntimeSession(
           modelProviderId: resolvedProvider,
           cwd: workspaceRoot,
           historyLogId: 0,
-          historyEntryCount: 0,
-          initialMessages: [],
+          historyEntryCount: initialState.history.length,
+          initialMessages,
           rolloutPath: rolloutStore.rolloutPath,
         },
       },

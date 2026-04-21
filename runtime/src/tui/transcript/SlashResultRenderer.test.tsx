@@ -129,7 +129,7 @@ describe("<SlashResultRenderer>", () => {
 
   test("kind: 'prompt' fires onPromptInject exactly once on mount", async () => {
     const spy = vi.fn();
-    const { unmount } = await mount(
+    const { stdout, unmount } = await mount(
       <SlashResultRenderer
         input="/resume"
         result={{ kind: "prompt", content: "please summarize" }}
@@ -138,6 +138,8 @@ describe("<SlashResultRenderer>", () => {
     );
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy).toHaveBeenCalledWith("please summarize");
+    const text = collectText(getRootNode(stdout));
+    expect(text).toContain("next prompt");
     unmount();
   });
 
@@ -155,12 +157,12 @@ describe("<SlashResultRenderer>", () => {
       <SlashResultRenderer input="/exit" result={{ kind: "exit", code: 2 }} />,
     );
     const text = collectText(getRootNode(stdout));
-    expect(text).toContain("Exiting");
+    expect(text).toContain("/exit");
     expect(text).toContain("2");
     unmount();
   });
 
-  test("kind: 'error' prefixes the message with agenc:", async () => {
+  test("kind: 'error' shows the originating command", async () => {
     const { stdout, unmount } = await mount(
       <SlashResultRenderer
         input="/badcmd"
@@ -168,7 +170,7 @@ describe("<SlashResultRenderer>", () => {
       />,
     );
     const text = collectText(getRootNode(stdout));
-    expect(text).toContain("agenc:");
+    expect(text).toContain("/badcmd");
     expect(text).toContain("unknown command");
     unmount();
   });

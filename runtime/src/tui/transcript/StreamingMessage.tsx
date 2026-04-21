@@ -73,7 +73,8 @@ const SPOOF_PATTERNS: readonly SpoofPattern[] = [
   {
     label: "ansi-escape",
     // eslint-disable-next-line no-control-regex
-    regex: /(?:\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\\x1b\[[0-9;?]*[A-Za-z]|\\u001b\[[0-9;?]*[A-Za-z])/g,
+    regex:
+      /(?:\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\\x1b\[[0-9;?]*[A-Za-z]|\\u001b\[[0-9;?]*[A-Za-z])/g,
   },
   // "Enter to approve" / "Press Enter" / "Press Y" style prompt spoofs.
   { label: "press-enter-approve", regex: /Enter to approve/gi },
@@ -298,14 +299,21 @@ export const StreamingMessage: React.FC<StreamingMessageProps> = ({
     }
   }, [scan.hasSpoof, scan.patterns, session]);
 
+  const showStreamingMarker = !isComplete;
+
   if (content.length === 0 && !isComplete) {
-    return <Box flexDirection="column" />;
+    return (
+      <Box flexDirection="column">
+        <Text dim>{"\u2026"}</Text>
+      </Box>
+    );
   }
 
   if (!scan.hasSpoof) {
     return (
       <Box flexDirection="column">
         <Text>{display}</Text>
+        {showStreamingMarker ? <Text dim>{"\u2026"}</Text> : null}
       </Box>
     );
   }
@@ -321,6 +329,7 @@ export const StreamingMessage: React.FC<StreamingMessageProps> = ({
       </Box>
       <Box flexDirection="column">
         <Text>{renderSanitized(scan.sanitized)}</Text>
+        {showStreamingMarker ? <Text dim>{"\u2026"}</Text> : null}
       </Box>
     </Box>
   );

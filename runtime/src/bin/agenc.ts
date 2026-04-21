@@ -64,7 +64,10 @@ import {
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
-import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
+import {
+  bootstrapLocalRuntimeSession,
+  type BootstrapLocalRuntimeSessionOptions,
+} from "./bootstrap.js";
 import {
   loadTieredInstructions,
   assembleTieredInstructions,
@@ -486,6 +489,128 @@ export async function* runSingleTurn(
   }
 }
 
+interface PreparedTurnRuntimeInputs {
+  readonly projectInstructions: string;
+  readonly memoryPromptText: string;
+  readonly allMemories: readonly MemoryEntry[];
+  readonly enabledToolNames: ReadonlySet<string>;
+  readonly mcpServers: readonly McpServerInstructionsInput[];
+}
+
+async function prepareTurnRuntimeInputs(params: {
+  readonly configStore: ConfigStore;
+  readonly workspaceRoot: string;
+  readonly memoryDir: string;
+  readonly memoryMdPath: string;
+  readonly registry: { readonly tools: readonly { readonly name: string }[] };
+}): Promise<PreparedTurnRuntimeInputs> {
+  const currentConfig = params.configStore.current();
+  const projectInstructionsResult = await loadTieredInstructions({
+    cwd: params.workspaceRoot,
+    ...(currentConfig.project_root_markers !== undefined
+      ? { projectRootMarkers: currentConfig.project_root_markers }
+      : {}),
+    ...(currentConfig.project_doc_max_bytes !== undefined
+      ? { projectDocMaxBytes: currentConfig.project_doc_max_bytes }
+      : {}),
+  });
+  const assembledProjectInstructions = assembleTieredInstructions(
+    projectInstructionsResult,
+  );
+
+  const loadedMemory = await loadMemoryPrompt({
+    memoryDir: params.memoryDir,
+    memoryMdPath: params.memoryMdPath,
+  });
+  const memoryScan = await scanMemoryDir(params.memoryDir);
+
+  return {
+    projectInstructions: assembledProjectInstructions,
+    memoryPromptText: loadedMemory.text,
+    allMemories: memoryScan.entries,
+    enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
+    mcpServers: [],
+  };
+}
+
+function createSharedBootstrapTooling(): {
+  readonly sessionSlot: SessionSlot;
+  readonly delegateSessionHolder: { current: Session | null };
+  readonly toolRegistryOptions: NonNullable<
+    BootstrapLocalRuntimeSessionOptions["toolRegistryOptions"]
+  >;
+} {
+  const sessionSlot: SessionSlot = { current: null };
+  const delegateSessionHolder: { current: Session | null } = {
+    current: null,
+  };
+  const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
+  const delegateTool = buildDelegateTool({
+    getSession: () => delegateSessionHolder.current,
+  });
+  return {
+    sessionSlot,
+    delegateSessionHolder,
+    toolRegistryOptions: {
+      bashExecObserver,
+      extraTools: [delegateTool],
+    },
+  };
+}
+
+function installTuiSessionContract(params: {
+  readonly session: Session;
+  readonly configStore: ConfigStore;
+  readonly resolvedProvider: string;
+  readonly turnInputs: PreparedTurnRuntimeInputs;
+}): () => void {
+  const configReloadLatch: ConfigReloadLatch = { requested: false };
+  let sessionRef: Session | null = params.session;
+  installSignalHandlers(() => sessionRef, configReloadLatch);
+
+  params.session.installTurnDriverHooks({
+    submit: async (message: string) => {
+      const ctx = params.session.newDefaultTurn();
+      const startedAtMs = Date.now();
+      await params.session.activeTurn.swap({
+        turnId: ctx.subId,
+        startedAtMs,
+        abortController: new AbortController(),
+      });
+      try {
+        for await (const event of runSingleTurn({
+          session: params.session,
+          ctx,
+          input: message,
+          configStore: params.configStore,
+          configReloadLatch,
+          projectInstructions: params.turnInputs.projectInstructions,
+          memoryPromptText: params.turnInputs.memoryPromptText,
+          allMemories: params.turnInputs.allMemories,
+          enabledToolNames: params.turnInputs.enabledToolNames,
+          mcpServers: params.turnInputs.mcpServers,
+          provider: params.resolvedProvider,
+        })) {
+          params.session.emitPhaseEvent(event);
+        }
+      } finally {
+        const current = params.session.activeTurn.unsafePeek();
+        if (current?.turnId === ctx.subId) {
+          await params.session.activeTurn.swap(null);
+        }
+      }
+    },
+    flushEventLog: () => {
+      params.session.rolloutStore?.flushDurable();
+    },
+  });
+
+  return () => {
+    sessionRef = null;
+    params.session.installTurnDriverHooks(null);
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Wave 5-B: shared module-level unmount ref. Signal handlers call this
 // before `session.abortTerminal(...)` so the Ink tree tears down cleanly
@@ -562,14 +687,11 @@ export async function oneShotCLI(
     // one-shot CLI and TUI entry adapters construct their Session
     // through this helper so the entry surface owns less runtime
     // setup directly.
-    const sessionSlot: SessionSlot = { current: null };
-    const delegateSessionHolder: { current: Session | null } = {
-      current: null,
-    };
-    const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
-    const delegateTool = buildDelegateTool({
-      getSession: () => delegateSessionHolder.current,
-    });
+    const {
+      sessionSlot,
+      delegateSessionHolder,
+      toolRegistryOptions,
+    } = createSharedBootstrapTooling();
     const {
       agencHome,
       configStore,
@@ -585,10 +707,7 @@ export async function oneShotCLI(
       apiKey,
       env: process.env,
       cwd: processCwd(),
-      toolRegistryOptions: {
-        bashExecObserver,
-        extraTools: [delegateTool],
-      },
+      toolRegistryOptions,
     });
     throwIfAborted("bootstrapLocalRuntimeSession");
 
@@ -725,34 +844,13 @@ export async function oneShotCLI(
     // project/local) + memory prompt once, then assemble the real
     // system prompt. The dynamic tail picks up env info, project
     // instructions, memory, and MCP server instructions.
-    const currentConfig = configStore.current();
-    const projectInstructionsResult = await loadTieredInstructions({
-      cwd: workspaceRoot,
-      ...(currentConfig.project_root_markers !== undefined
-        ? { projectRootMarkers: currentConfig.project_root_markers }
-        : {}),
-      ...(currentConfig.project_doc_max_bytes !== undefined
-        ? { projectDocMaxBytes: currentConfig.project_doc_max_bytes }
-        : {}),
-    });
-    const assembledProjectInstructions = assembleTieredInstructions(
-      projectInstructionsResult,
-    );
-
-    const loadedMemory = await loadMemoryPrompt({
+    const turnInputs = await prepareTurnRuntimeInputs({
+      configStore,
+      workspaceRoot,
       memoryDir,
       memoryMdPath,
+      registry,
     });
-
-    // Scan the memory directory once so every turn can consult the
-    // full set for per-turn attachment selection.
-    const memoryScan = await scanMemoryDir(memoryDir);
-    const allMemories: readonly MemoryEntry[] = memoryScan.entries;
-
-    const mcpServers: McpServerInstructionsInput[] = [];
-    const enabledToolNames = new Set<string>(
-      registry.tools.map((t) => t.name),
-    );
 
     // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
     // the between-turn reload + system-prompt assembly + runTurn loop.
@@ -765,11 +863,11 @@ export async function oneShotCLI(
         input: resolvedUserMessage,
         configStore,
         configReloadLatch,
-        projectInstructions: assembledProjectInstructions,
-        memoryPromptText: loadedMemory.text,
-        allMemories,
-        enabledToolNames,
-        mcpServers,
+        projectInstructions: turnInputs.projectInstructions,
+        memoryPromptText: turnInputs.memoryPromptText,
+        allMemories: turnInputs.allMemories,
+        enabledToolNames: turnInputs.enabledToolNames,
+        mcpServers: turnInputs.mcpServers,
         provider: resolvedProvider,
       })) {
         renderEvent(event);
@@ -865,41 +963,77 @@ async function loadBootTUI(): Promise<
   return mod.bootTUI;
 }
 
+type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
+
 /**
  * Boot the TUI with a pre-populated composer prompt. Wave 5-B wires the
  * option through to `bootTUI`; actual composer wiring is a follow-up
  * (see TODO inside the composer reducer).
  */
-export async function bootTUIEntry(args: BootTUIArgs): Promise<number> {
+export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   try {
     validateAgencHome();
     const apiKey = resolveApiKey();
     const {
+      sessionSlot,
+      delegateSessionHolder,
+      toolRegistryOptions,
+    } = createSharedBootstrapTooling();
+    const {
       configStore,
+      workspaceRoot,
+      resolvedProvider,
+      registry,
       model,
       session,
+      memoryDir,
+      memoryMdPath,
       shutdown,
     } = await bootstrapLocalRuntimeSession({
       apiKey,
       env: process.env,
       cwd: processCwd(),
+      toolRegistryOptions,
+      ...(args.resumeId !== undefined ? { conversationId: args.resumeId } : {}),
     });
-
-    const boot = await loadBootTUI();
-    const handle = await boot({
-      session,
-      configStore,
-      model,
-      ...(args.initialPrompt !== undefined
-        ? { initialPrompt: args.initialPrompt }
-        : {}),
-    });
-    activeInkUnmount = handle.unmount;
     try {
-      await handle.waitUntilExit();
-      return 0;
+      sessionSlot.current = session;
+      delegateSessionHolder.current = session;
+
+      const turnInputs = await prepareTurnRuntimeInputs({
+        configStore,
+        workspaceRoot,
+        memoryDir,
+        memoryMdPath,
+        registry,
+      });
+      const uninstallTuiSessionContract = installTuiSessionContract({
+        session,
+        configStore,
+        resolvedProvider,
+        turnInputs,
+      });
+
+      try {
+        const boot = await loadBootTUI();
+        const handle = await boot({
+          session,
+          configStore,
+          model,
+          ...(args.initialPrompt !== undefined
+            ? { initialPrompt: args.initialPrompt }
+            : {}),
+        });
+        activeInkUnmount = handle.unmount;
+        await handle.waitUntilExit();
+        return 0;
+      } finally {
+        activeInkUnmount = null;
+        uninstallTuiSessionContract();
+      }
     } finally {
-      activeInkUnmount = null;
+      sessionSlot.current = null;
+      delegateSessionHolder.current = null;
       await shutdown().catch(() => {
         /* best effort */
       });
@@ -939,13 +1073,7 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
     }
   }
 
-  // TODO T12b: full session resume with history replay. For now we just
-  // boot an empty TUI so the session id is validated but the transcript
-  // starts clean. Wave 6 will thread the rollout into the TUI state.
-  process.stderr.write(
-    `agenc: resume: replaying history for ${args.resumeId} is not yet implemented; booting empty TUI\n`,
-  );
-  return bootTUIEntry({});
+  return bootTUIEntry({ resumeId: args.resumeId });
 }
 
 // ─────────────────────────────────────────────────────────────────────

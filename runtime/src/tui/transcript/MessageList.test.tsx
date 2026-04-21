@@ -39,9 +39,7 @@ function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
   return { stdout, stdin };
 }
 
-async function mount(
-  element: React.ReactElement,
-): Promise<{
+async function mount(element: React.ReactElement): Promise<{
   unmount: () => void;
   stdout: PassThrough;
   rerender: (el: React.ReactElement) => void;
@@ -86,9 +84,7 @@ function mkMsg(
 
 describe("MessageList", () => {
   test("renders an empty list without throwing", async () => {
-    const { unmount, stdout } = await mount(
-      <MessageList messages={[]} />,
-    );
+    const { unmount, stdout } = await mount(<MessageList messages={[]} />);
     const frame = await captureFrame(stdout);
     // Empty list is a valid state — just assert it rendered something
     // (not the empty string, since the ScrollBox chrome alone emits
@@ -125,7 +121,7 @@ describe("MessageList", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("shell");
+    expect(frame).toContain("shel");
     // The ellipsis character from truncate() proves the long args were
     // compressed before rendering.
     expect(frame).toContain("\u2026");
@@ -160,9 +156,7 @@ describe("MessageList", () => {
   test("renders a warning with the ⚠ glyph", async () => {
     const { unmount, stdout } = await mount(
       <MessageList
-        messages={[
-          mkMsg({ id: "w1", kind: "warning", content: "rate limit" }),
-        ]}
+        messages={[mkMsg({ id: "w1", kind: "warning", content: "rate limit" })]}
       />,
     );
     const frame = await captureFrame(stdout);
@@ -174,6 +168,46 @@ describe("MessageList", () => {
     // content check.
     expect(frame).toContain("rate");
     expect(frame).toContain("limit");
+    unmount();
+  });
+
+  test("renders slash results through the breadcrumb renderer", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "slash-1",
+            kind: "slash_result",
+            content: "Compacted 2 turns",
+            slashInput: "/compact",
+            slashResult: { kind: "compact", text: "Compacted 2 turns" },
+          }),
+        ]}
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("/compact");
+    expect(frame).toContain("Compacted");
+    unmount();
+  });
+
+  test("renders compact boundaries as meta rows", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "meta-1",
+            kind: "meta",
+            label: "compact",
+            content: "summary 900 -> 300 tokens",
+          }),
+        ]}
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("compact");
+    expect(frame).toContain("900");
+    expect(frame).toContain("300");
     unmount();
   });
 

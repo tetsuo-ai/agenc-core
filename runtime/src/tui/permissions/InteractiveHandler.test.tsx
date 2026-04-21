@@ -31,6 +31,11 @@ import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
+  AgenCAppStateProvider,
+  useAgenCAppState,
+  type ConfigStoreLike,
+} from "../state/AppState.js";
+import {
   InteractiveHandler,
   resolveWithGrace,
   type InteractivePermissionRequest,
@@ -114,6 +119,19 @@ function createSession(opts?: { currentTurnId?: string | null }): FakeSession {
     },
   };
   return session;
+}
+
+const FAKE_CONFIG_STORE: ConfigStoreLike = { snapshot: {} };
+
+function createProviderSession() {
+  return {
+    services: {
+      permissionModeRegistry: {
+        current: () => ({ mode: "default" as const }),
+        subscribeToModeChange: () => () => undefined,
+      },
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -444,6 +462,67 @@ describe("InteractiveHandler", () => {
     expect(payloads[0]).toMatchObject({
       behavior: "allow",
     });
+    unmount();
+  });
+
+  test("auto-approved request is removed from the app-state queue so the next request can advance", async () => {
+    mockedClassifier().mockResolvedValue({
+      shouldBlock: false,
+      reason: "allowlist",
+      unavailable: false,
+      model: "mocked",
+      usage: null,
+      durationMs: 1,
+      stage: "fast",
+    });
+
+    const { resolver, payloads } = createResolver();
+    const session = createSession({ currentTurnId: "turn-1" });
+    const queueLengths: number[] = [];
+
+    function QueueObserver(): null {
+      const { permissionQueue, permissionQueueOps } = useAgenCAppState();
+      queueLengths.push(permissionQueue.length);
+      React.useEffect(() => {
+        permissionQueueOps.push({
+          requestId: "req-1",
+          toolName: "Bash",
+          toolInput: { command: "ls -la" },
+          turnId: "turn-1",
+          message: "test",
+          submittedAt: Date.now(),
+        });
+      }, [permissionQueueOps]);
+      return null;
+    }
+
+    const overlay = createOverlayContext();
+
+    const request = makeRequest(resolver, { turnId: "turn-1" });
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider
+        session={createProviderSession()}
+        configStore={FAKE_CONFIG_STORE}
+      >
+        <KeybindingProvider
+          stdinContext={{ internal_eventEmitter: new EventEmitter() }}
+        >
+          <QueueObserver />
+          <InteractiveHandler
+            request={request}
+            session={session}
+            overlayContext={overlay}
+          />
+        </KeybindingProvider>
+      </AgenCAppStateProvider>,
+    );
+
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({ behavior: "allow" });
+    expect(queueLengths[queueLengths.length - 1]).toBe(0);
     unmount();
   });
 
