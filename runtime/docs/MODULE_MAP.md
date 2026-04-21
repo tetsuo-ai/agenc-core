@@ -71,4 +71,5 @@ This file is the navigation guide for `runtime/src/`.
 - [../../docs/CODEBASE_MAP.md](../../docs/CODEBASE_MAP.md) for repo-wide navigation
 - [../../docs/RUNTIME_API.md](../../docs/RUNTIME_API.md) for runtime API details
 - [./MARKETPLACE_OPERATOR_SURFACE.md](./MARKETPLACE_OPERATOR_SURFACE.md) for the MARKET/TOOLS split and terminal marketplace commands
+- [./compiled-job-phase1-launch-readiness.md](./compiled-job-phase1-launch-readiness.md) for compiled marketplace launch gates, runbook steps, retention posture, and release checklist
 - [../../docs/architecture/runtime-layers.md](../../docs/architecture/runtime-layers.md) for dependency layering
