@@ -107,6 +107,66 @@ describe("CompiledJobAlertSink", () => {
     });
   });
 
+  it("emits alerts for compiled-job policy failure spikes", () => {
+    const sink = new CompiledJobAlertSink({
+      totalBlockedThreshold: 99,
+      blockedReasonThreshold: 99,
+      policyFailureThreshold: 2,
+      now: () => 3_000,
+    });
+    const telemetry = new UnifiedTelemetryCollector({ sinks: [sink] });
+
+    telemetry.counter(METRIC_NAMES.COMPILED_JOB_POLICY_FAILURE, 2, {
+      reason: "network_access_denied",
+      violation_code: "network_access_denied",
+      job_type: "web_research_brief",
+    });
+
+    telemetry.flush();
+
+    expect(sink.getRecentAlerts()).toContainEqual({
+      id: "compiled_job.policy_failure_spike:network_access_denied:3000",
+      severity: "warn",
+      code: "compiled_job.policy_failure_spike",
+      message:
+        "Compiled job policy failures spike detected for network_access_denied: 2 events since the last telemetry flush",
+      createdAt: 3_000,
+      delta: 2,
+      threshold: 2,
+      reason: "network_access_denied",
+    });
+  });
+
+  it("emits alerts for compiled-job domain denial spikes", () => {
+    const sink = new CompiledJobAlertSink({
+      totalBlockedThreshold: 99,
+      blockedReasonThreshold: 99,
+      domainDeniedThreshold: 2,
+      now: () => 3_500,
+    });
+    const telemetry = new UnifiedTelemetryCollector({ sinks: [sink] });
+
+    telemetry.counter(METRIC_NAMES.COMPILED_JOB_DOMAIN_DENIED, 2, {
+      reason: "tool_domain_blocked",
+      job_type: "web_research_brief",
+      tool_name: "system.httpGet",
+    });
+
+    telemetry.flush();
+
+    expect(sink.getRecentAlerts()).toContainEqual({
+      id: "compiled_job.domain_denied_spike:tool_domain_blocked:3500",
+      severity: "warn",
+      code: "compiled_job.domain_denied_spike",
+      message:
+        "Compiled job domain denials spike detected for tool_domain_blocked: 2 events since the last telemetry flush",
+      createdAt: 3_500,
+      delta: 2,
+      threshold: 2,
+      reason: "tool_domain_blocked",
+    });
+  });
+
   it("dedupes repeated alerts inside the dedupe window", () => {
     let now = 10_000;
     const sink = new CompiledJobAlertSink({

@@ -278,6 +278,12 @@ describe("METRIC_NAMES", () => {
     expect(METRIC_NAMES.COMPILED_JOB_BLOCKED).toBe(
       "agenc.task.compiled_job.blocked.count",
     );
+    expect(METRIC_NAMES.COMPILED_JOB_POLICY_FAILURE).toBe(
+      "agenc.task.compiled_job.policy_failure.count",
+    );
+    expect(METRIC_NAMES.COMPILED_JOB_DOMAIN_DENIED).toBe(
+      "agenc.task.compiled_job.domain_denied.count",
+    );
   });
 });
 

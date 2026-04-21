@@ -5,6 +5,8 @@ import type { TelemetrySink, TelemetrySnapshot } from "./types.js";
 
 const DEFAULT_TOTAL_BLOCKED_THRESHOLD = 10;
 const DEFAULT_REASON_BLOCKED_THRESHOLD = 5;
+const DEFAULT_POLICY_FAILURE_THRESHOLD = 5;
+const DEFAULT_DOMAIN_DENIED_THRESHOLD = 3;
 const DEFAULT_MAX_RECENT_ALERTS = 20;
 const DEFAULT_DEDUPE_WINDOW_MS = 5 * 60_000;
 
@@ -13,7 +15,9 @@ export interface CompiledJobTelemetryAlert {
   readonly severity: "warn" | "error";
   readonly code:
     | "compiled_job.blocked_runs_spike"
-    | "compiled_job.blocked_reason_spike";
+    | "compiled_job.blocked_reason_spike"
+    | "compiled_job.policy_failure_spike"
+    | "compiled_job.domain_denied_spike";
   readonly message: string;
   readonly createdAt: number;
   readonly delta: number;
@@ -24,6 +28,8 @@ export interface CompiledJobTelemetryAlert {
 export interface CompiledJobAlertSinkOptions {
   readonly totalBlockedThreshold?: number;
   readonly blockedReasonThreshold?: number;
+  readonly policyFailureThreshold?: number;
+  readonly domainDeniedThreshold?: number;
   readonly maxRecentAlerts?: number;
   readonly dedupeWindowMs?: number;
   readonly now?: () => number;
@@ -40,6 +46,8 @@ export class CompiledJobAlertSink implements TelemetrySink {
 
   private readonly totalBlockedThreshold: number;
   private readonly blockedReasonThreshold: number;
+  private readonly policyFailureThreshold: number;
+  private readonly domainDeniedThreshold: number;
   private readonly maxRecentAlerts: number;
   private readonly dedupeWindowMs: number;
   private readonly now: () => number;
@@ -53,6 +61,10 @@ export class CompiledJobAlertSink implements TelemetrySink {
       options.totalBlockedThreshold ?? DEFAULT_TOTAL_BLOCKED_THRESHOLD;
     this.blockedReasonThreshold =
       options.blockedReasonThreshold ?? DEFAULT_REASON_BLOCKED_THRESHOLD;
+    this.policyFailureThreshold =
+      options.policyFailureThreshold ?? DEFAULT_POLICY_FAILURE_THRESHOLD;
+    this.domainDeniedThreshold =
+      options.domainDeniedThreshold ?? DEFAULT_DOMAIN_DENIED_THRESHOLD;
     this.maxRecentAlerts = options.maxRecentAlerts ?? DEFAULT_MAX_RECENT_ALERTS;
     this.dedupeWindowMs = options.dedupeWindowMs ?? DEFAULT_DEDUPE_WINDOW_MS;
     this.now = options.now ?? (() => Date.now());
@@ -61,7 +73,21 @@ export class CompiledJobAlertSink implements TelemetrySink {
 
   flush(snapshot: TelemetrySnapshot): void {
     const counters = extractCompiledJobBlockedCounters(snapshot.counters);
-    if (counters.length === 0) {
+    const policyFailureCounters = extractCounterReasonDeltas(
+      snapshot.counters,
+      this.previousCounters,
+      METRIC_NAMES.COMPILED_JOB_POLICY_FAILURE,
+    );
+    const domainDeniedCounters = extractCounterReasonDeltas(
+      snapshot.counters,
+      this.previousCounters,
+      METRIC_NAMES.COMPILED_JOB_DOMAIN_DENIED,
+    );
+    if (
+      counters.length === 0 &&
+      policyFailureCounters.size === 0 &&
+      domainDeniedCounters.size === 0
+    ) {
       return;
     }
 
@@ -122,6 +148,21 @@ export class CompiledJobAlertSink implements TelemetrySink {
         now,
       );
     }
+
+    this.emitMetricReasonAlerts({
+      now,
+      counters: policyFailureCounters,
+      threshold: this.policyFailureThreshold,
+      code: "compiled_job.policy_failure_spike",
+      noun: "policy failures",
+    });
+    this.emitMetricReasonAlerts({
+      now,
+      counters: domainDeniedCounters,
+      threshold: this.domainDeniedThreshold,
+      code: "compiled_job.domain_denied_spike",
+      noun: "domain denials",
+    });
   }
 
   getRecentAlerts(): readonly CompiledJobTelemetryAlert[] {
@@ -159,6 +200,35 @@ export class CompiledJobAlertSink implements TelemetrySink {
       reason: alert.reason,
     });
   }
+
+  private emitMetricReasonAlerts(input: {
+    readonly now: number;
+    readonly counters: ReadonlyMap<string, number>;
+    readonly threshold: number;
+    readonly code:
+      | "compiled_job.policy_failure_spike"
+      | "compiled_job.domain_denied_spike";
+    readonly noun: string;
+  }): void {
+    for (const [reason, delta] of input.counters) {
+      if (delta < input.threshold) continue;
+      this.emitAlert(
+        {
+          id: `${input.code}:${reason}:${input.now}`,
+          severity: delta >= input.threshold * 2 ? "error" : "warn",
+          code: input.code,
+          message:
+            `Compiled job ${input.noun} spike detected for ${reason}: ${delta} events ` +
+            "since the last telemetry flush",
+          createdAt: input.now,
+          delta,
+          threshold: input.threshold,
+          reason,
+        },
+        input.now,
+      );
+    }
+  }
 }
 
 function extractCompiledJobBlockedCounters(
@@ -178,6 +248,31 @@ function extractCompiledJobBlockedCounters(
       value,
       labels: parseCompositeLabels(key),
     }));
+}
+
+function extractCounterReasonDeltas(
+  counters: Record<string, number>,
+  previousCounters: Map<string, number>,
+  metricName: string,
+): Map<string, number> {
+  const deltas = new Map<string, number>();
+  for (const [key, value] of Object.entries(counters).filter(([entryKey]) =>
+    entryKey === metricName || entryKey.startsWith(`${metricName}|`),
+  )) {
+    const previous = previousCounters.get(key);
+    const delta =
+      previous === undefined
+        ? value
+        : value >= previous
+          ? value - previous
+          : value;
+    previousCounters.set(key, value);
+    if (delta <= 0) continue;
+    const labels = parseCompositeLabels(key);
+    const reason = labels.reason ?? "unknown";
+    deltas.set(reason, (deltas.get(reason) ?? 0) + delta);
+  }
+  return deltas;
 }
 
 function parseCompositeLabels(key: string): Record<string, string> {

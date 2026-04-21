@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ChatExecutor } from "../llm/chat-executor.js";
 import { executeChatToLegacyResult } from "../llm/execute-chat.js";
+import type { ToolHandler } from "../llm/types.js";
 import {
   normalizePromptEnvelope,
   type PromptEnvelopeInput,
@@ -58,6 +59,14 @@ type CompiledJobBlockReason =
   | CompiledJobDependencyDenyReason
   | "runtime_missing_required_tools"
   | "runtime_side_effect_tools_blocked";
+
+type CompiledJobPolicyFailureReason =
+  | "network_access_denied"
+  | "policy_violation";
+
+type CompiledJobDomainDeniedReason =
+  | "network_access_denied"
+  | "tool_domain_blocked";
 
 export interface CompiledJobChatTaskHandlerOptions {
   readonly chatExecutor: ChatExecutor;
@@ -218,7 +227,12 @@ export function createCompiledJobChatTaskHandler(
           history: [],
           promptEnvelope,
           sessionId: message.sessionId,
-          toolHandler: scopedTooling.toolHandler,
+          toolHandler: createObservedCompiledJobToolHandler({
+            context,
+            logger,
+            metrics,
+            toolHandler: scopedTooling.toolHandler,
+          }),
           signal: context.signal,
         }),
       );
@@ -236,6 +250,72 @@ export function createCompiledJobChatTaskHandler(
       executionLease?.release();
     }
   };
+}
+
+function createObservedCompiledJobToolHandler(input: {
+  readonly context: TaskExecutionContext;
+  readonly logger: Logger;
+  readonly metrics: MetricsProvider;
+  readonly toolHandler: ToolHandler;
+}): ToolHandler {
+  return async (name, args) => {
+    const result = await input.toolHandler(name, args);
+    observeCompiledJobToolResult({
+      context: input.context,
+      logger: input.logger,
+      metrics: input.metrics,
+      toolName: name,
+      result,
+    });
+    return result;
+  };
+}
+
+function observeCompiledJobToolResult(input: {
+  readonly context: TaskExecutionContext;
+  readonly logger: Logger;
+  readonly metrics: MetricsProvider;
+  readonly toolName: string;
+  readonly result: string;
+}): void {
+  const parsed = parseToolResultPayload(input.result);
+  if (!parsed) return;
+
+  let domainDeniedRecorded = false;
+  const policyViolation = extractPolicyViolation(parsed);
+  if (policyViolation) {
+    const reason: CompiledJobPolicyFailureReason =
+      policyViolation.code === "network_access_denied"
+        ? "network_access_denied"
+        : "policy_violation";
+    recordCompiledJobPolicyFailure(input.context, input.logger, input.metrics, {
+      reason,
+      toolName: input.toolName,
+      violationCode: policyViolation.code,
+      message: policyViolation.message,
+      host: policyViolation.host,
+    });
+    if (policyViolation.code === "network_access_denied") {
+      domainDeniedRecorded = true;
+      recordCompiledJobDomainDenied(input.context, input.logger, input.metrics, {
+        reason: "network_access_denied",
+        toolName: input.toolName,
+        message: policyViolation.message,
+        host: policyViolation.host,
+      });
+    }
+  }
+
+  if (domainDeniedRecorded) return;
+  const domainDenied = extractDomainDenied(parsed);
+  if (!domainDenied) return;
+
+  recordCompiledJobDomainDenied(input.context, input.logger, input.metrics, {
+    reason: "tool_domain_blocked",
+    toolName: input.toolName,
+    message: domainDenied.message,
+    host: domainDenied.host,
+  });
 }
 
 function recordCompiledJobBlockedRun(
@@ -276,6 +356,182 @@ function recordCompiledJobBlockedRun(
     missingToolNames: input.missingToolNames,
     dependency: input.dependency,
   });
+}
+
+function recordCompiledJobPolicyFailure(
+  context: TaskExecutionContext,
+  logger: Logger,
+  metrics: MetricsProvider,
+  input: {
+    readonly reason: CompiledJobPolicyFailureReason;
+    readonly toolName: string;
+    readonly violationCode: string;
+    readonly message: string;
+    readonly host?: string;
+  },
+): void {
+  const compiledJob = context.compiledJob;
+  if (!compiledJob) return;
+
+  metrics.counter(METRIC_NAMES.COMPILED_JOB_POLICY_FAILURE, 1, {
+    reason: input.reason,
+    violation_code: input.violationCode,
+    job_type: compiledJob.jobType,
+    tool_name: input.toolName,
+    compiler_version: compiledJob.audit.compilerVersion,
+    policy_version: compiledJob.audit.policyVersion,
+  });
+
+  logger.warn("Compiled job policy failure observed", {
+    reason: input.reason,
+    violationCode: input.violationCode,
+    message: input.message,
+    host: input.host,
+    toolName: input.toolName,
+    taskPda: context.taskPda.toBase58(),
+    jobType: compiledJob.jobType,
+    compilerVersion: compiledJob.audit.compilerVersion,
+    policyVersion: compiledJob.audit.policyVersion,
+    compiledPlanHash: compiledJob.audit.compiledPlanHash,
+  });
+}
+
+function recordCompiledJobDomainDenied(
+  context: TaskExecutionContext,
+  logger: Logger,
+  metrics: MetricsProvider,
+  input: {
+    readonly reason: CompiledJobDomainDeniedReason;
+    readonly toolName: string;
+    readonly message: string;
+    readonly host?: string;
+  },
+): void {
+  const compiledJob = context.compiledJob;
+  if (!compiledJob) return;
+
+  metrics.counter(METRIC_NAMES.COMPILED_JOB_DOMAIN_DENIED, 1, {
+    reason: input.reason,
+    job_type: compiledJob.jobType,
+    tool_name: input.toolName,
+    compiler_version: compiledJob.audit.compilerVersion,
+    policy_version: compiledJob.audit.policyVersion,
+  });
+
+  logger.warn("Compiled job domain denied", {
+    reason: input.reason,
+    message: input.message,
+    host: input.host,
+    toolName: input.toolName,
+    taskPda: context.taskPda.toBase58(),
+    jobType: compiledJob.jobType,
+    compilerVersion: compiledJob.audit.compilerVersion,
+    policyVersion: compiledJob.audit.policyVersion,
+    compiledPlanHash: compiledJob.audit.compiledPlanHash,
+  });
+}
+
+function parseToolResultPayload(
+  result: string,
+): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(result) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractPolicyViolation(parsed: Record<string, unknown>): {
+  readonly code: string;
+  readonly message: string;
+  readonly host?: string;
+} | null {
+  const violation = asRecord(parsed.violation);
+  const code = asString(violation?.code);
+  const message =
+    asString(violation?.message) ??
+    asString(parsed.error) ??
+    "Compiled job policy violation";
+  if (!code) return null;
+
+  const metadata = asRecord(violation?.metadata);
+  return {
+    code,
+    message,
+    host: asString(metadata?.host) ?? extractHostFromDomainDeniedMessage(message),
+  };
+}
+
+function extractDomainDenied(parsed: Record<string, unknown>): {
+  readonly message: string;
+  readonly host?: string;
+} | null {
+  const structuredError = asRecord(parsed.error);
+  const structuredCode = asString(structuredError?.code);
+  const structuredMessage =
+    asString(structuredError?.message) ?? asString(parsed.error);
+  if (
+    structuredCode &&
+    (structuredCode.endsWith(".domain_blocked") ||
+      structuredCode.endsWith(".url_blocked") ||
+      structuredCode.endsWith(".health_url_blocked"))
+  ) {
+    return {
+      message: structuredMessage ?? "Compiled job domain denied",
+    };
+  }
+
+  const message = asString(parsed.error);
+  if (!message || !isDomainDeniedMessage(message)) return null;
+
+  return {
+    message,
+    host: extractHostFromDomainDeniedMessage(message),
+  };
+}
+
+function isDomainDeniedMessage(message: string): boolean {
+  return (
+    /Domain not in allowed list:/i.test(message) ||
+    /Domain is blocked:/i.test(message) ||
+    /Private\/loopback address blocked:/i.test(message) ||
+    /SSRF target blocked:/i.test(message) ||
+    /outside the allowed host set/i.test(message)
+  );
+}
+
+function extractHostFromDomainDeniedMessage(
+  message: string,
+): string | undefined {
+  const quotedHost = message.match(/host "([^"]+)"/i);
+  if (quotedHost?.[1]) return quotedHost[1];
+
+  const allowListHost = message.match(/Domain not in allowed list:\s*([^\s]+)/i);
+  if (allowListHost?.[1]) return allowListHost[1];
+
+  const blockedHost = message.match(
+    /(?:Domain is blocked:|SSRF target blocked:|Private\/loopback address blocked:)\s*([^\s]+)/i,
+  );
+  if (blockedHost?.[1]) return blockedHost[1];
+
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
 export function buildCompiledJobTaskPromptEnvelope(
