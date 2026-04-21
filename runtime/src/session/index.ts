@@ -4,7 +4,7 @@
  * @module
  */
 
-export { Session, type SessionOpts } from "./session.js";
+export { Session, type SessionOpts, type SessionRunTurnOptions } from "./session.js";
 export type {
   AbortReason,
   ActiveTurn,

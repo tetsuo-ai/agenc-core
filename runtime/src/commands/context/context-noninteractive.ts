@@ -1,9 +1,8 @@
 // @ts-nocheck
 import { feature } from 'bun:bundle'
-import { microcompactMessages } from '../../services/compact/microCompact.js'
+import { microcompactMessages } from '../../llm/compact/micro-compact.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { Tools, ToolUseContext } from '../../Tool.js'
-import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../../types/message.js'
 import {
   analyzeContextUsage,
@@ -26,7 +25,10 @@ type CollectContextDataInput = {
   options: {
     mainLoopModel: string
     tools: Tools
-    agentDefinitions: AgentDefinitionsResult
+    agentDefinitions: {
+      activeAgents: unknown[]
+      allowedAgentTypes?: string[]
+    }
     customSystemPrompt?: string
     appendSystemPrompt?: string
   }

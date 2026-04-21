@@ -71,6 +71,11 @@ interface MkSessionOpts {
   readonly preToolUseHooks?: ReadonlyArray<PreToolUseHook>;
   readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
   readonly permissionModeRegistry?: PermissionModeRegistry;
+  readonly mcpManager?: {
+    resolveMcpToolInfo?: (
+      toolName: string,
+    ) => { readonly serverName: string; readonly toolName: string } | undefined;
+  };
   /**
    * When true, expose `session.denialTracking` mirroring the real
    * Session class so the T11 W4 wire-up picks up a shared reference.
@@ -91,6 +96,9 @@ function mkSession(opts: MkSessionOpts): Session {
   };
   if (opts.permissionModeRegistry) {
     servicesRecord["permissionModeRegistry"] = opts.permissionModeRegistry;
+  }
+  if (opts.mcpManager) {
+    servicesRecord["mcpManager"] = opts.mcpManager;
   }
   const baseSession: Record<string, unknown> = {
     conversationId: "conv-1",
@@ -247,6 +255,50 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(sawResultContent).toBe("original");
     // state.messages[0].content should be the rewritten content
     expect(state.messages[0]!.content).toBe("rewritten");
+  });
+
+  test("live path binds router MCP resolution to the session, not the namespace heuristic", async () => {
+    const observedPayloadKinds: string[] = [];
+    const tool: Tool = {
+      name: "github.listIssues",
+      description: "mcp-backed tool",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "ok" }),
+    };
+
+    const preHook: PreToolUseHook = async ({ invocation }) => {
+      observedPayloadKinds.push(invocation.payload.kind);
+      return { kind: "continue" };
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      preToolUseHooks: [preHook],
+      mcpManager: {
+        resolveMcpToolInfo: (toolName: string) =>
+          toolName === "github.listIssues"
+            ? { serverName: "github", toolName: "listIssues" }
+            : undefined,
+      },
+    });
+
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "mcp-1",
+          name: "github.listIssues",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(observedPayloadKinds).toEqual(["mcp"]);
+    expect(state.messages[0]!.content).toBe("ok");
   });
 
   test("AGENC_MAX_TOOL_USE_CONCURRENCY=2 limits parallel dispatch", async () => {

@@ -1,4 +1,9 @@
 // @ts-nocheck
+/**
+ * Compatibility/UI-only provider for legacy React MCP controls. This
+ * component is not part of the live runtime session bootstrap path and
+ * must not regain ownership of MCP startup/shutdown semantics.
+ */
 import { c as _c } from "react-compiler-runtime";
 import React, { createContext, type ReactNode, useContext, useMemo } from 'react';
 import type { Command } from '../../commands.js';

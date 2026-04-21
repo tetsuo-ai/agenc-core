@@ -12,10 +12,11 @@ import { markPostCompaction } from 'src/bootstrap/state.js'
 import {
   getInvokedSkillsForAgent,
   getOriginalCwd,
+  getSessionId,
 } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import type { Tool, ToolUseContext } from '../../Tool.js'
+import type { Tool } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import {
@@ -81,6 +82,11 @@ import {
   getTranscriptPath,
   reAppendSessionMetadata,
 } from '../../utils/sessionStorage.js'
+import {
+  getSessionDir,
+  readIndexSnapshot,
+} from '../../session/session-store.js'
+import type { CompactedItem, ResponseItem } from '../../session/rollout-item.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -95,6 +101,7 @@ import {
   extractDiscoveredToolNames,
   isToolSearchEnabled,
 } from '../../utils/toolSearch.js'
+import type { CompactRuntimeContext } from './context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -397,6 +404,10 @@ export interface CompactionResult {
   compactionUsage?: ReturnType<typeof getTokenUsage>
 }
 
+type CompactRolloutSource =
+  Pick<CompactionResult, 'summaryMessages' | 'attachments' | 'hookResults'> &
+  Partial<CompactionResult>
+
 /**
  * Diagnosis context passed from autoCompactIfNeeded into compactConversation.
  * Lets the tengu_compact event disambiguate same-chain loops (H2) from
@@ -423,6 +434,145 @@ export function buildPostCompactMessages(result: CompactionResult): Message[] {
     ...result.attachments,
     ...result.hookResults,
   ]
+}
+
+function blockTextForRollout(block: Record<string, unknown>): string | undefined {
+  if (typeof block.text === 'string') return block.text
+  if (typeof block.content === 'string') return block.content
+  if (typeof block.thinking === 'string') return block.thinking
+  if (typeof block.data === 'string') return block.data
+  return undefined
+}
+
+function rolloutContentFrom(value: unknown): ResponseItem['content'] {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) {
+    try {
+      return JSON.stringify(value ?? '')
+    } catch {
+      return ''
+    }
+  }
+  return value.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return {
+        type: 'text',
+        text: String(entry ?? ''),
+      }
+    }
+    const block = entry as Record<string, unknown>
+    const out: { readonly type: string; readonly text?: string; readonly [k: string]: unknown } = {
+      type: typeof block.type === 'string' ? block.type : 'unknown',
+    }
+    const text = blockTextForRollout(block)
+    if (text !== undefined) {
+      ;(out as Record<string, unknown>).text = text
+    }
+    for (const key of ['id', 'name', 'tool_use_id', 'toolUseId'] as const) {
+      const value = block[key]
+      if (typeof value === 'string' && value.length > 0) {
+        ;(out as Record<string, unknown>)[key] = value
+      }
+    }
+    return out
+  })
+}
+
+function responseItemFromMessage(message: Message): ResponseItem | null {
+  if (!message || typeof message !== 'object') return null
+
+  const record = message as Record<string, unknown>
+  const directRole = record.role
+  const directContent = record.content
+  if (
+    (directRole === 'system' ||
+      directRole === 'user' ||
+      directRole === 'assistant' ||
+      directRole === 'tool') &&
+    directContent !== undefined
+  ) {
+    return {
+      role: directRole as ResponseItem['role'],
+      content: rolloutContentFrom(directContent),
+      ...(typeof record.toolCallId === 'string'
+        ? { toolCallId: record.toolCallId }
+        : {}),
+      ...(typeof record.toolName === 'string'
+        ? { toolName: record.toolName }
+        : {}),
+      ...(typeof record.phase === 'string' ? { phase: record.phase } : {}),
+    }
+  }
+
+  const legacyRole = record.type
+  const legacyMessage =
+    record.message && typeof record.message === 'object'
+      ? (record.message as Record<string, unknown>)
+      : null
+  if (
+    (legacyRole === 'system' ||
+      legacyRole === 'user' ||
+      legacyRole === 'assistant' ||
+      legacyRole === 'tool') &&
+    legacyMessage !== null
+  ) {
+    return {
+      role: legacyRole as ResponseItem['role'],
+      content: rolloutContentFrom(
+        legacyMessage.content ?? legacyMessage.text ?? '',
+      ),
+      ...(typeof record.toolCallId === 'string'
+        ? { toolCallId: record.toolCallId }
+        : {}),
+      ...(typeof record.toolName === 'string'
+        ? { toolName: record.toolName }
+        : {}),
+      ...(typeof record.phase === 'string' ? { phase: record.phase } : {}),
+    }
+  }
+
+  return null
+}
+
+function extractCompactionSummaryText(summaryMessages: readonly Message[]): string {
+  for (const message of summaryMessages) {
+    const responseItem = responseItemFromMessage(message)
+    if (!responseItem) continue
+    if (typeof responseItem.content === 'string') {
+      if (responseItem.content.length > 0) return responseItem.content
+      continue
+    }
+    const text = responseItem.content
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join('')
+      .trim()
+    if (text.length > 0) return text
+  }
+  return '(no summary available)'
+}
+
+export function buildCompactedRolloutItem(
+  result: CompactRolloutSource,
+): CompactedItem {
+  const replacementMessages = [
+    ...(result.boundaryMarker ? [result.boundaryMarker] : []),
+    ...result.summaryMessages,
+    ...(result.messagesToKeep ?? []),
+    ...result.attachments,
+    ...result.hookResults,
+  ]
+  return {
+    message: extractCompactionSummaryText(result.summaryMessages),
+    replacementHistory: replacementMessages
+      .map(responseItemFromMessage)
+      .filter((item): item is ResponseItem => item !== null),
+    ...(result.preCompactTokenCount !== undefined
+      ? { preCompactTokens: result.preCompactTokenCount }
+      : {}),
+    ...(result.postCompactTokenCount !== undefined
+      ? { postCompactTokens: result.postCompactTokenCount }
+      : {}),
+  }
 }
 
 /**
@@ -515,6 +665,130 @@ export interface CompactDroppedToolResult {
   readonly bytes: number
 }
 
+export interface CompactToolResultIndex {
+  readonly toolResultBytesByTurn: ReadonlyMap<string, number>
+  readonly toolCallTurnIds: ReadonlyMap<string, string>
+}
+
+function messageHasToolResultBlocks(message: Message): boolean {
+  return (
+    message?.type === 'user' &&
+    Array.isArray(message.message?.content) &&
+    message.message.content.some(
+      (block: { type?: string }) => block?.type === 'tool_result',
+    )
+  )
+}
+
+function buildMessageTurnLookup(
+  messages: Message[],
+  toolResultBytesByTurn: ReadonlyMap<string, number>,
+): Map<Message, string> {
+  const lookup = new Map<Message, string>()
+  const turnIds = Array.from(toolResultBytesByTurn.keys())
+  if (turnIds.length === 0) return lookup
+
+  let turnIndex = 0
+  for (const group of groupMessagesByApiRound(messages)) {
+    if (!group.some(messageHasToolResultBlocks)) continue
+    const turnId = turnIds[turnIndex++]
+    if (!turnId) break
+    for (const message of group) {
+      lookup.set(message, turnId)
+    }
+  }
+  return lookup
+}
+
+function blockToolCallId(block: any): string | undefined {
+  const id = block?.tool_use_id ?? block?.toolUseId
+  return typeof id === 'string' && id.length > 0 ? id : undefined
+}
+
+function resolveTurnIdForMessage(
+  message: Message,
+  opts: {
+    toolCallTurnIds?: ReadonlyMap<string, string>
+    getTurnIdForMessage?: (message: Message) => string | undefined
+    messageTurnLookup?: ReadonlyMap<Message, string>
+  },
+): string {
+  const explicitTurnId = opts.getTurnIdForMessage?.(message)
+  if (explicitTurnId) return explicitTurnId
+
+  if (message.type === 'user' && Array.isArray(message.message?.content)) {
+    let turnIdFromToolCalls: string | undefined
+    for (const block of message.message.content) {
+      if (!block || block.type !== 'tool_result') continue
+      const toolCallId = blockToolCallId(block)
+      if (!toolCallId) continue
+      const mappedTurnId = opts.toolCallTurnIds?.get(toolCallId)
+      if (!mappedTurnId) continue
+      if (!turnIdFromToolCalls) {
+        turnIdFromToolCalls = mappedTurnId
+        continue
+      }
+      if (turnIdFromToolCalls !== mappedTurnId) {
+        return 'unknown'
+      }
+    }
+    if (turnIdFromToolCalls) return turnIdFromToolCalls
+  }
+
+  return opts.messageTurnLookup?.get(message) ?? 'unknown'
+}
+
+export function loadCompactToolResultIndex(
+  context: CompactRuntimeContext,
+): CompactToolResultIndex | undefined {
+  const liveRolloutStore =
+    (context as any)?.rolloutStore ?? (context as any)?.session?.rolloutStore
+  if (liveRolloutStore) {
+    if (typeof liveRolloutStore.getCompactionIndexSnapshot === 'function') {
+      return liveRolloutStore.getCompactionIndexSnapshot()
+    }
+    if (
+      typeof liveRolloutStore.getToolResultBytesIndexSnapshot === 'function'
+    ) {
+      return {
+        toolResultBytesByTurn: liveRolloutStore.getToolResultBytesIndexSnapshot(),
+        toolCallTurnIds:
+          typeof liveRolloutStore.getToolCallTurnIdSnapshot === 'function'
+            ? liveRolloutStore.getToolCallTurnIdSnapshot()
+            : new Map(),
+      }
+    }
+  }
+
+  const sessionId = (context as any)?.agentId ?? getSessionId()
+  const cwd =
+    (context as any)?.cwd ??
+    (context as any)?.options?.cwd ??
+    getOriginalCwd()
+  if (!sessionId || !cwd) return undefined
+
+  try {
+    const snapshot = readIndexSnapshot(
+      `${getSessionDir(cwd, sessionId)}/index.json`,
+    )
+    if (!snapshot) return undefined
+    return {
+      toolResultBytesByTurn: new Map(
+        Object.entries(snapshot.toolResultBytesByTurn ?? {}).filter(
+          ([, bytes]) => typeof bytes === 'number' && bytes > 0,
+        ) as Array<[string, number]>,
+      ),
+      toolCallTurnIds: new Map(
+        Object.entries(snapshot.toolCallTurnIds ?? {}).filter(
+          ([, turnId]) => typeof turnId === 'string' && turnId.length > 0,
+        ) as Array<[string, string]>,
+      ),
+    }
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * I-88 consumer: walk `messages`, compute per-`tool_result` byte size
  * (UTF-8 byte length of string content, or the length of the
@@ -526,9 +800,10 @@ export interface CompactDroppedToolResult {
  * which breaks API validation in downstream summarizer calls.
  *
  * `toolResultBytesByTurn` is optional. When supplied callers can
- * short-circuit scanning for turns whose aggregate bytes are below
- * the threshold; this helper does not require it — per-result
- * measurement is authoritative.
+ * short-circuit whole API rounds whose keyed aggregate bytes are
+ * below the threshold; this helper does not require it — per-result
+ * measurement remains authoritative for the candidate rounds that
+ * still need scanning.
  *
  * Returned `dropped` entries are the caller's responsibility to
  * surface (analytics, progress events, logs).
@@ -537,6 +812,7 @@ export function filterLargeToolResultsForCompact(
   messages: Message[],
   opts: {
     toolResultBytesByTurn?: ReadonlyMap<string, number>
+    toolCallTurnIds?: ReadonlyMap<string, string>
     thresholdBytes?: number
     /**
      * Best-effort turnId resolver for a given message. The compact
@@ -553,6 +829,10 @@ export function filterLargeToolResultsForCompact(
   if (threshold <= 0) {
     return { messages, dropped: [] }
   }
+  const messageTurnLookup =
+    opts.toolResultBytesByTurn !== undefined
+      ? buildMessageTurnLookup(messages, opts.toolResultBytesByTurn)
+      : undefined
 
   const dropped: CompactDroppedToolResult[] = []
   let changed = false
@@ -562,9 +842,20 @@ export function filterLargeToolResultsForCompact(
     const content = message.message?.content
     if (!Array.isArray(content)) return message
 
-    // Per-message turnId best-effort. Real messages do not carry a
-    // turnId tag; callers may resolve one. Unknown → 'unknown'.
-    const turnId = opts.getTurnIdForMessage?.(message) ?? 'unknown'
+    // Per-message turnId best-effort. The I-88 index is authoritative
+    // when available; fall back to a caller resolver if one exists.
+    const turnId = resolveTurnIdForMessage(message, {
+      getTurnIdForMessage: opts.getTurnIdForMessage,
+      toolCallTurnIds: opts.toolCallTurnIds,
+      messageTurnLookup,
+    })
+    if (
+      turnId !== 'unknown' &&
+      opts.toolResultBytesByTurn !== undefined &&
+      (opts.toolResultBytesByTurn.get(turnId) ?? threshold) < threshold
+    ) {
+      return message
+    }
 
     let messageChanged = false
     const newContent = content.map((block: any) => {
@@ -572,9 +863,7 @@ export function filterLargeToolResultsForCompact(
       const bytes = measureToolResultBytes(block)
       if (bytes < threshold) return block
 
-      const toolCallId = String(
-        block.tool_use_id ?? block.toolUseId ?? 'unknown',
-      )
+      const toolCallId = blockToolCallId(block) ?? 'unknown'
       dropped.push({ turnId, toolCallId, bytes })
       messageChanged = true
       return {
@@ -638,7 +927,7 @@ function measureToolResultBytes(block: any): number {
 
 export async function compactConversation(
   messages: Message[],
-  context: ToolUseContext,
+  context: CompactRuntimeContext,
   cacheSafeParams: CacheSafeParams,
   suppressFollowUpQuestions: boolean,
   customInstructions?: string,
@@ -694,22 +983,17 @@ export async function compactConversation(
     })
 
     // I-88 compact-prompt half: drop oversize tool_results before they
-    // hit the summarizer. The byte index is owned by the session-store
-    // half (session-store.ts) and reached via the rolloutStore facade
-    // when the caller supplies one on context/session; per-result
-    // measurement is the authoritative filter and runs regardless.
-    const rolloutStoreForI88 =
-      (context as any)?.rolloutStore ??
-      (context as any)?.session?.rolloutStore ??
-      undefined
-    const toolResultBytesByTurn: ReadonlyMap<string, number> | undefined =
-      typeof rolloutStoreForI88?.getToolResultBytesIndexSnapshot === 'function'
-        ? rolloutStoreForI88.getToolResultBytesIndexSnapshot()
-        : undefined
+    // hit the summarizer. Prefer the live rollout-store index when the
+    // caller provides one; otherwise fall back to the persisted
+    // session-store snapshot for the current session/agent.
+    const promptBuildStartedAt = performance.now()
+    const compactionIndex = loadCompactToolResultIndex(context)
     const i88Filter = filterLargeToolResultsForCompact(messages, {
-      toolResultBytesByTurn,
+      toolResultBytesByTurn: compactionIndex?.toolResultBytesByTurn,
+      toolCallTurnIds: compactionIndex?.toolCallTurnIds,
       thresholdBytes: COMPACT_TOOL_RESULT_DROP_BYTES,
     })
+    const compactionPromptBuildMs = performance.now() - promptBuildStartedAt
     if (i88Filter.dropped.length > 0) {
       for (const entry of i88Filter.dropped) {
         logEvent('warning:compact_tool_result_dropped', {
@@ -728,6 +1012,17 @@ export async function compactConversation(
           bytes: entry.bytes,
         })
       }
+    }
+    if (compactionPromptBuildMs > 5_000) {
+      logEvent('warning:compact_prompt_build_slow', {
+        compactionPromptBuildMs,
+        droppedToolResults: i88Filter.dropped.length,
+      })
+      context.onCompactProgress?.({
+        type: 'warning',
+        warning: 'compact_prompt_build_slow',
+        durationMs: compactionPromptBuildMs,
+      })
     }
     let messagesToSummarize = i88Filter.messages
     let retryCacheSafeParams = cacheSafeParams
@@ -801,12 +1096,25 @@ export async function compactConversation(
       throw new Error(summary)
     }
 
+    const summaryTokenCount = roughTokenCountEstimation(summary)
+    try {
+      // I-18: reject a no-shrink summary before any success-side
+      // compaction mutations run. The invariant is about the summary
+      // itself, not the later attachment rehydration work.
+      assertCompactionShrank(preCompactTokenCount, summaryTokenCount)
+    } catch (error) {
+      logEvent('tengu_compact_failed', {
+        reason:
+          'shrink_assertion_failed' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        preCompactTokenCount,
+        summaryTokenCount,
+        promptCacheSharingEnabled,
+      })
+      throw error
+    }
+
     // Store the current file state before clearing
     const preCompactReadFileState = cacheToObject(context.readFileState)
-
-    // Clear the cache
-    context.readFileState.clear()
-    context.loadedNestedMemoryPaths?.clear()
 
     // Intentionally NOT resetting sentSkillNames: re-injecting the full
     // skill_listing (~4K tokens) post-compact is pure cache_creation with
@@ -863,22 +1171,13 @@ export async function compactConversation(
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
-      context.options.mcpClients,
+      Array.from(context.options.mcpClients),
       context.options.tools,
       context.options.mainLoopModel,
       [],
     )) {
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
-
-    context.onCompactProgress?.({
-      type: 'hooks_start',
-      hookType: 'session_start',
-    })
-    // Execute SessionStart hooks after successful compaction
-    const hookMessages = await processSessionStartHooks('compact', {
-      model: context.options.mainLoopModel,
-    })
 
     // Create the compact boundary marker and summary messages before the
     // event so we can compute the true resulting-context size.
@@ -917,10 +1216,50 @@ export async function compactConversation(
       summaryResponse,
     ])
 
-    // Message-payload estimate of the resulting context. The next iteration's
-    // shouldAutoCompact will see this PLUS ~20-40K for system prompt + tools +
-    // userContext (via API usage.input_tokens). So `willRetriggerNextTurn: true`
-    // is a strong signal; `false` may still retrigger when this is close to threshold.
+    // Extract compaction API usage metrics
+    const compactionUsage = getTokenUsage(summaryResponse)
+
+    const querySourceForEvent =
+      recompactionInfo?.querySource ?? context.options.querySource ?? 'unknown'
+
+    // Clear caches only after the shrink assertion has passed. If the
+    // compaction is rejected, the pre-compact state stays intact for the
+    // retry / fallback path.
+    context.readFileState.clear()
+    context.loadedNestedMemoryPaths?.clear()
+
+    // Reset cache read baseline so the post-compact drop isn't flagged as a break
+    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+      notifyCompaction(
+        context.options.querySource ?? 'compact',
+        context.agentId,
+      )
+    }
+    markPostCompaction()
+
+    // Re-append session metadata (custom title, tag) so it stays within
+    // the 16KB tail window that readLiteMetadata reads for --resume display.
+    // Without this, enough post-compaction messages push the metadata entry
+    // out of the window, causing --resume to show the auto-generated title
+    // instead of the user-set session name.
+    reAppendSessionMetadata()
+
+    // Write a reduced transcript segment for the pre-compaction messages
+    // (assistant mode only). Fire-and-forget — errors are logged internally.
+    if (feature('KAIROS')) {
+      void sessionTranscriptModule?.writeSessionTranscriptSegment(messages)
+    }
+
+    context.onCompactProgress?.({
+      type: 'hooks_start',
+      hookType: 'session_start',
+    })
+    // Execute SessionStart hooks only after the compaction has been
+    // accepted. A rejected I-18 summary must not trigger post-compact
+    // startup work.
+    const hookMessages = await processSessionStartHooks('compact', {
+      model: context.options.mainLoopModel,
+    })
     const truePostCompactTokenCount = roughTokenCountEstimationForMessages([
       boundaryMarker,
       ...summaryMessages,
@@ -928,14 +1267,10 @@ export async function compactConversation(
       ...hookMessages,
     ])
 
-    // Extract compaction API usage metrics
-    const compactionUsage = getTokenUsage(summaryResponse)
-
-    const querySourceForEvent =
-      recompactionInfo?.querySource ?? context.options.querySource ?? 'unknown'
-
     logEvent('tengu_compact', {
       preCompactTokenCount,
+      summaryTokenCount,
+      compactionPromptBuildMs,
       // Kept for continuity — semantically the compact API call's total usage
       postCompactTokenCount: compactionCallTotalTokens,
       truePostCompactTokenCount,
@@ -981,28 +1316,6 @@ export async function compactConversation(
       })(),
     })
 
-    // Reset cache read baseline so the post-compact drop isn't flagged as a break
-    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-      notifyCompaction(
-        context.options.querySource ?? 'compact',
-        context.agentId,
-      )
-    }
-    markPostCompaction()
-
-    // Re-append session metadata (custom title, tag) so it stays within
-    // the 16KB tail window that readLiteMetadata reads for --resume display.
-    // Without this, enough post-compaction messages push the metadata entry
-    // out of the window, causing --resume to show the auto-generated title
-    // instead of the user-set session name.
-    reAppendSessionMetadata()
-
-    // Write a reduced transcript segment for the pre-compaction messages
-    // (assistant mode only). Fire-and-forget — errors are logged internally.
-    if (feature('KAIROS')) {
-      void sessionTranscriptModule?.writeSessionTranscriptSegment(messages)
-    }
-
     context.onCompactProgress?.({
       type: 'hooks_start',
       hookType: 'post_compact',
@@ -1021,17 +1334,6 @@ export async function compactConversation(
     ]
       .filter(Boolean)
       .join('\n')
-
-    // I-18 (docs/plan/invariants.md): compaction shrink assertion.
-    // Delegates to `assertCompactionShrank` so the check is reusable
-    // by prepare-context/auto-compact and independently testable. On
-    // failure the helper throws `CompactionShrinkRatioError`, which
-    // auto-compact.ts catches and uses to bump the
-    // MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3 circuit breaker so
-    // subsequent turns skip auto-compact and fall through to
-    // alternative recovery (reactive-compact / collapse-drain / PTL
-    // blocking limit).
-    assertCompactionShrank(preCompactTokenCount, truePostCompactTokenCount)
 
     return {
       boundaryMarker,
@@ -1070,7 +1372,7 @@ export async function compactConversation(
 export async function partialCompactConversation(
   allMessages: Message[],
   pivotIndex: number,
-  context: ToolUseContext,
+  context: CompactRuntimeContext,
   cacheSafeParams: CacheSafeParams,
   userFeedback?: string,
   direction: PartialCompactDirection = 'from',
@@ -1268,7 +1570,7 @@ export async function partialCompactConversation(
       postCompactFileAttachments.push(createAttachmentMessage(att))
     }
     for (const att of getMcpInstructionsDeltaAttachment(
-      context.options.mcpClients,
+      Array.from(context.options.mcpClients),
       context.options.tools,
       context.options.mainLoopModel,
       messagesToKeep,
@@ -1409,7 +1711,7 @@ export async function partialCompactConversation(
 
 function addErrorNotificationIfNeeded(
   error: unknown,
-  context: Pick<ToolUseContext, 'addNotification'>,
+  context: Pick<CompactRuntimeContext, 'addNotification'>,
 ) {
   if (
     !hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT) &&
@@ -1445,8 +1747,8 @@ async function streamCompactSummary({
 }: {
   messages: Message[]
   summaryRequest: UserMessage
-  appState: Awaited<ReturnType<ToolUseContext['getAppState']>>
-  context: ToolUseContext
+  appState: Awaited<ReturnType<CompactRuntimeContext['getAppState']>>
+  context: CompactRuntimeContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
 }): Promise<AssistantMessage> {
@@ -1614,7 +1916,8 @@ async function streamCompactSummary({
           },
           model: context.options.mainLoopModel,
           toolChoice: undefined,
-          isNonInteractiveSession: context.options.isNonInteractiveSession,
+          isNonInteractiveSession:
+            context.options.isNonInteractiveSession ?? false,
           hasAppendSystemPrompt: !!context.options.appendSystemPrompt,
           maxOutputTokensOverride: Math.min(
             COMPACT_MAX_OUTPUT_TOKENS,
@@ -1716,7 +2019,7 @@ async function streamCompactSummary({
  */
 export async function createPostCompactFileAttachments(
   readFileState: Record<string, { content: string; timestamp: number }>,
-  toolUseContext: ToolUseContext,
+  toolUseContext: CompactRuntimeContext,
   maxFiles: number,
   preservedMessages: Message[] = [],
 ): Promise<AttachmentMessage[]> {
@@ -1842,7 +2145,7 @@ export function createSkillAttachmentIfNeeded(
  * normally only injected on tool-use turns via getAttachmentMessages).
  */
 export async function createPlanModeAttachmentIfNeeded(
-  context: ToolUseContext,
+  context: CompactRuntimeContext,
 ): Promise<AttachmentMessage | null> {
   const appState = context.getAppState()
   if (appState.toolPermissionContext.mode !== 'plan') {
@@ -1868,7 +2171,7 @@ export async function createPlanModeAttachmentIfNeeded(
  * haven't been retrieved yet.
  */
 export async function createAsyncAgentAttachmentsIfNeeded(
-  context: ToolUseContext,
+  context: CompactRuntimeContext,
 ): Promise<AttachmentMessage[]> {
   const appState = context.getAppState()
   const asyncAgents = Object.values(appState.tasks).filter(

@@ -8,20 +8,25 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AsyncQueue } from "../utils/async-queue.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ROLLOUT_SCHEMA_VERSION } from "./event-log.js";
+import { EventLog } from "./event-log.js";
 import {
   DEFAULT_SESSION_ROOT_MARKERS,
   findProjectRootSync,
   getProjectDir,
   I4_FSYNC_RETRY_MS,
   readIndexSnapshot,
+  SchemaMismatchError,
   SessionLock,
   SessionLockedError,
   SessionStore,
   slugifyCwd,
   truncateCorruptTail,
 } from "./session-store.js";
+import { RolloutStore } from "./rollout-store.js";
+import { Session } from "./session.js";
 
 describe("session-store", () => {
   let home = "";
@@ -62,6 +67,98 @@ describe("session-store", () => {
     expect(content).toContain(`"rolloutSchemaVersion":${ROLLOUT_SCHEMA_VERSION}`);
     expect(content).toContain(`"sessionId":"sess-a"`);
     store.close();
+  });
+
+  test("open rejects rollout header schema newer than the runtime", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-schema-newer",
+      sessionId: "sess-schema-newer",
+      agencVersion: "0.2.0",
+    });
+    writeFileSync(
+      store.rolloutPath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: {
+          sessionId: "sess-schema-newer",
+          timestamp: new Date().toISOString(),
+          cwd: "/home/test-schema-newer",
+          originator: "agenc-cli",
+          agencVersion: "0.2.0",
+          rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION + 1,
+        },
+        eventVersion: 1,
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    expect(() =>
+      store.open({
+        sessionId: "sess-schema-newer",
+        timestamp: new Date().toISOString(),
+        cwd: "/home/test-schema-newer",
+        originator: "agenc-cli",
+        agencVersion: "0.2.0",
+      }),
+    ).toThrowError(SchemaMismatchError);
+    expect(() =>
+      store.open({
+        sessionId: "sess-schema-newer",
+        timestamp: new Date().toISOString(),
+        cwd: "/home/test-schema-newer",
+        originator: "agenc-cli",
+        agencVersion: "0.2.0",
+      }),
+    ).toThrowError(/please use \/fork to migrate or upgrade/i);
+  });
+
+  test("open accepts an older rollout schema header without rewriting it", () => {
+    const store = new SessionStore({
+      cwd: "/home/test-schema-older",
+      sessionId: "sess-schema-older",
+      agencVersion: "0.2.0",
+    });
+    writeFileSync(
+      store.rolloutPath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: {
+          sessionId: "sess-schema-older",
+          timestamp: new Date().toISOString(),
+          cwd: "/home/test-schema-older",
+          originator: "agenc-cli",
+          agencVersion: "0.1.0",
+          rolloutSchemaVersion: 0,
+        },
+        eventVersion: 0,
+      })}\n`,
+      { mode: 0o600 },
+    );
+
+    store.open({
+      sessionId: "sess-schema-older",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-schema-older",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    store.append({
+      id: "legacy-mixed-row",
+      seq: 1,
+      msg: { type: "warning", payload: { cause: "compat", message: "mixed history" } },
+    });
+    store.close();
+
+    const [headerLine, appendedLine] = readFileSync(store.rolloutPath, "utf8")
+      .trim()
+      .split("\n");
+    const header = JSON.parse(headerLine!);
+    const appended = JSON.parse(appendedLine!);
+
+    expect(header.payload.rolloutSchemaVersion).toBe(0);
+    expect(header.eventVersion).toBe(0);
+    expect(appended.type).toBe("event_msg");
+    expect(appended.eventVersion).toBe(1);
   });
 
   test("I-23 SessionLock rejects second acquire from different PID", () => {
@@ -118,6 +215,100 @@ describe("session-store", () => {
     );
     expect(store.getToolResultBytes("turn-1")).toBe(12000);
     store.close();
+  });
+
+  test("Session.emit forwards real tool completion bytes into the rollout index", () => {
+    const rolloutStore = new RolloutStore({
+      cwd: "/home/test-session-emit",
+      sessionId: "sess-emit",
+      agencVersion: "0.2.0",
+      autoStartScheduler: false,
+    });
+    rolloutStore.open({
+      sessionId: "sess-emit",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-session-emit",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    const session = {
+      eventLog: new EventLog(),
+      rolloutStore,
+      txEvent: new AsyncQueue<any>(),
+      nextInternalSubId: (() => {
+        let n = 0;
+        return () => `sub-${++n}`;
+      })(),
+    } as unknown as Session;
+
+    Session.prototype.emit.call(
+      session,
+      {
+        id: "tool-1",
+        msg: {
+          type: "tool_call_completed",
+          payload: { callId: "call-1", result: "tool output", isError: false },
+        },
+      },
+      {
+        turnId: "turn-emit",
+        toolResultBytes: Buffer.byteLength("tool output", "utf8"),
+      },
+    );
+
+    expect(rolloutStore.getToolResultBytes("turn-emit")).toBe(
+      Buffer.byteLength("tool output", "utf8"),
+    );
+    rolloutStore.close();
+  });
+
+  test("Session.emit derives tool completion bytes + active turn id when append opts are omitted", () => {
+    const rolloutStore = new RolloutStore({
+      cwd: "/home/test-session-derived",
+      sessionId: "sess-derived",
+      agencVersion: "0.2.0",
+      autoStartScheduler: false,
+    });
+    rolloutStore.open({
+      sessionId: "sess-derived",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-session-derived",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    const session = {
+      eventLog: new EventLog(),
+      rolloutStore,
+      txEvent: new AsyncQueue<any>(),
+      activeTurn: {
+        unsafePeek: () => ({
+          turnId: "turn-derived",
+          startedAtMs: 123,
+          abortController: new AbortController(),
+        }),
+      },
+      nextInternalSubId: (() => {
+        let n = 0;
+        return () => `sub-${++n}`;
+      })(),
+    } as unknown as Session;
+
+    Session.prototype.emit.call(session, {
+      id: "tool-2",
+      msg: {
+        type: "tool_call_completed",
+        payload: { callId: "call-2", result: { ok: true }, isError: false },
+      },
+    });
+
+    const snapshot = rolloutStore.getCompactionIndexSnapshot();
+    expect(snapshot.toolResultBytesByTurn.get("turn-derived")).toBe(
+      Buffer.byteLength(JSON.stringify({ ok: true }), "utf8"),
+    );
+    expect(snapshot.toolCallTurnIds.get("call-2")).toBe("turn-derived");
+    rolloutStore.close();
   });
 
   test("UUID dedup: repeated event.id without seq is skipped", () => {
@@ -179,6 +370,54 @@ describe("session-store", () => {
     expect(snapshot!.schemaVersion).toBe(ROLLOUT_SCHEMA_VERSION);
     expect(Object.keys(snapshot!.offsetsBySeq)).toContain("1");
     expect(Object.keys(snapshot!.offsetsBySeq)).toContain("2");
+  });
+
+  test("resume hydrates the compaction index snapshot from disk", () => {
+    const first = new SessionStore({
+      cwd: "/home/test-idx-resume",
+      sessionId: "sess-resume",
+      agencVersion: "0.2.0",
+    });
+    first.open({
+      sessionId: "sess-resume",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-idx-resume",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    first.append(
+      {
+        id: "tool-complete",
+        seq: 2,
+        msg: {
+          type: "tool_call_completed",
+          payload: { callId: "call-resume", result: "payload", isError: false },
+        },
+      },
+      { turnId: "turn-resume", toolResultBytes: Buffer.byteLength("payload", "utf8") },
+    );
+    first.close();
+
+    const resumed = new SessionStore({
+      cwd: "/home/test-idx-resume",
+      sessionId: "sess-resume",
+      agencVersion: "0.2.0",
+      resume: true,
+    });
+    resumed.open({
+      sessionId: "sess-resume",
+      timestamp: new Date().toISOString(),
+      cwd: "/home/test-idx-resume",
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+
+    const snapshot = resumed.getCompactionIndexSnapshot();
+    expect(snapshot.toolResultBytesByTurn.get("turn-resume")).toBe(
+      Buffer.byteLength("payload", "utf8"),
+    );
+    expect(snapshot.toolCallTurnIds.get("call-resume")).toBe("turn-resume");
+    resumed.close();
   });
 
   test("reAppendSessionMetadata writes session_meta line again after compact", () => {

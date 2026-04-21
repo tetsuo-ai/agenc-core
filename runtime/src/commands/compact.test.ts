@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import compactCommand, {
   formatCompactOutcome,
   runCompact,
@@ -6,17 +6,17 @@ import compactCommand, {
 import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "./types.js";
 
-interface StubSessionOpts {
-  activeTurn?: unknown;
-  abortTerminal?: ReturnType<typeof vi.fn>;
-}
+const mocks = vi.hoisted(() => ({
+  runSessionManualCompact: vi.fn(),
+  path: new URL("../session/manual-compact.js", import.meta.url).pathname,
+}));
 
-function stubSession(opts: StubSessionOpts = {}): Session {
-  const abortTerminal = opts.abortTerminal ?? vi.fn();
-  return {
-    activeTurn: { unsafePeek: () => opts.activeTurn ?? null },
-    abortTerminal,
-  } as unknown as Session;
+vi.mock(mocks.path, () => ({
+  runSessionManualCompact: mocks.runSessionManualCompact,
+}));
+
+function stubSession(): Session {
+  return {} as Session;
 }
 
 function mkctx(session: Session, argsRaw = ""): SlashCommandContext {
@@ -24,69 +24,64 @@ function mkctx(session: Session, argsRaw = ""): SlashCommandContext {
 }
 
 describe("compactCommand", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("is userInvocable and immediate", () => {
     expect(compactCommand.userInvocable).toBe(true);
     expect(compactCommand.immediate).toBe(true);
     expect(compactCommand.name).toBe("compact");
   });
 
-  it("blocks when a turn is currently active (mid-stream guard)", async () => {
-    const abortTerminal = vi.fn();
-    const session = stubSession({
-      activeTurn: { turnId: "t1" },
-      abortTerminal,
+  it("delegates runCompact to the session-owned path", async () => {
+    const session = stubSession();
+    mocks.runSessionManualCompact.mockResolvedValueOnce({
+      kind: "ran",
+      text: "Compacted",
+      instructions: "keep latest",
     });
-    const res = await compactCommand.execute(mkctx(session, ""));
-    expect(res.kind).toBe("error");
-    if (res.kind === "error") {
-      expect(res.message).toMatch(/turn is currently in flight/);
-    }
-    // The mid-stream guard must NOT abort the current turn — unlike
-    // /model and /provider, compaction cannot be staged safely.
-    expect(abortTerminal).not.toHaveBeenCalled();
-  });
 
-  it("runCompact returns 'blocked' outcome when a turn is active", async () => {
-    const session = stubSession({ activeTurn: { turnId: "t1" } });
-    const outcome = await runCompact(session, "please shorten");
-    expect(outcome.kind).toBe("blocked");
-    if (outcome.kind === "blocked") {
-      expect(outcome.reason).toMatch(/turn is currently in flight/);
-    }
-  });
+    const outcome = await runCompact(session, "keep latest");
 
-  it("runs when no turn is active", async () => {
-    const session = stubSession({ activeTurn: null });
-    const outcome = await runCompact(session, "");
-    // T4 gap 1: the cleanup import is now static and wired end-to-end,
-    // so the outcome MUST be "ran" on the happy path.
-    expect(outcome.kind).toBe("ran");
-  });
-
-  it("returns a compact result when no turn is active", async () => {
-    const session = stubSession({ activeTurn: null });
-    const res = await compactCommand.execute(mkctx(session, ""));
-    expect(res.kind).toBe("compact");
-    if (res.kind === "compact") {
-      expect(res.text.length).toBeGreaterThan(0);
-    }
-  });
-
-  it("echoes custom instructions in the output message when provided", async () => {
-    const session = stubSession({ activeTurn: null });
-    const res = await compactCommand.execute(
-      mkctx(session, "focus on the build output"),
+    expect(mocks.runSessionManualCompact).toHaveBeenCalledWith(
+      session,
+      "keep latest",
     );
-    expect(res.kind).toBe("compact");
-    if (res.kind === "compact") {
-      expect(res.text).toMatch(/focus on the build output/);
-    }
+    expect(outcome).toEqual({
+      kind: "ran",
+      text: "Compacted",
+      instructions: "keep latest",
+    });
   });
 
-  it("empty args is handled gracefully", async () => {
-    const session = stubSession({ activeTurn: null });
-    const res = await compactCommand.execute(mkctx(session, ""));
-    expect(res.kind).toBe("compact");
+  it("renders blocked results as slash-command errors", async () => {
+    mocks.runSessionManualCompact.mockResolvedValueOnce({
+      kind: "blocked",
+      reason: "busy",
+    });
+
+    const result = await compactCommand.execute(mkctx(stubSession(), ""));
+
+    expect(result).toEqual({
+      kind: "error",
+      message: "Cannot compact right now: busy.",
+    });
+  });
+
+  it("renders ran results as slash-command compact responses", async () => {
+    mocks.runSessionManualCompact.mockResolvedValueOnce({
+      kind: "ran",
+      text: "Compacted\nsummary",
+      instructions: "",
+    });
+
+    const result = await compactCommand.execute(mkctx(stubSession(), ""));
+
+    expect(result).toEqual({
+      kind: "compact",
+      text: "Compacted\nsummary",
+    });
   });
 
   it("formatCompactOutcome renders each kind", () => {
@@ -94,22 +89,14 @@ describe("compactCommand", () => {
       formatCompactOutcome({ kind: "blocked", reason: "busy" }),
     ).toMatch(/Cannot compact/);
     expect(
-      formatCompactOutcome({ kind: "ran", instructions: "" }),
-    ).toMatch(/Compaction complete/);
-    expect(
-      formatCompactOutcome({ kind: "ran", instructions: "tighten" }),
-    ).toMatch(/tighten/);
+      formatCompactOutcome({
+        kind: "ran",
+        text: "Compaction complete.",
+        instructions: "",
+      }),
+    ).toBe("Compaction complete.");
     expect(
       formatCompactOutcome({ kind: "error", cause: "boom" }),
     ).toMatch(/Compaction failed: boom/);
-  });
-
-  it("does not mention branded references in output strings", async () => {
-    const session = stubSession({ activeTurn: null });
-    const res = await compactCommand.execute(mkctx(session, ""));
-    const text = res.kind === "compact" ? res.text : "";
-    expect(text.toLowerCase()).not.toContain("claude");
-    expect(text.toLowerCase()).not.toContain("anthropic");
-    expect(text.toLowerCase()).not.toContain("openclaude");
   });
 });

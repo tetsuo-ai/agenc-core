@@ -68,12 +68,18 @@ describe("post-sample-recovery integration", () => {
   test("I-22: pendingBudgetDecision=stop → transition=token_budget_continuation + reset flag", async () => {
     const log = new EventLog();
     const session = mkSession(log);
+    const nudgeMessage =
+      "Stopped at 40% of token target (400 / 1,000). Keep working — do not summarize.";
     const state = mkState({
       pendingBudgetDecision: {
         kind: "stop",
-        reason: "token_budget_exceeded by 500 (mid-stream)",
+        reason: nudgeMessage,
       },
       hasAttemptedReactiveCompact: true,
+      maxOutputTokensRecoveryCount: 2,
+      maxOutputTokensOverride: 12_000,
+      pendingToolUseSummary: Promise.resolve(null),
+      stopHookActive: true,
     });
     const warnings: string[] = [];
     log.subscribe((e) => {
@@ -84,12 +90,17 @@ describe("post-sample-recovery integration", () => {
     });
     await postSampleRecovery(state, mkCtx(), session);
     expect(state.transition?.reason).toBe("token_budget_continuation");
-    // Critical subtlety: token-budget-continuation path resets the flag.
     expect(state.hasAttemptedReactiveCompact).toBe(false);
+    expect(state.maxOutputTokensRecoveryCount).toBe(0);
+    expect(state.maxOutputTokensOverride).toBeUndefined();
+    expect(state.pendingToolUseSummary).toBeUndefined();
+    expect(state.stopHookActive).toBeUndefined();
     expect(state.pendingBudgetDecision).toBeUndefined();
     expect(warnings).toContain("token_budget_continuation");
-    // continuation nudge message injected.
-    expect(state.messages[state.messages.length - 1]!.role).toBe("user");
+    expect(state.messages[state.messages.length - 1]).toEqual({
+      role: "user",
+      content: nudgeMessage,
+    });
   });
 
   test("max-output-tokens first attempt: escalate sets override + transition", async () => {

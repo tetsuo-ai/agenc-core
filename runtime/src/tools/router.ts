@@ -33,6 +33,14 @@
 
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
+import { emitWarning as emitWarningEvent } from "../session/event-log.js";
+import type { Session } from "../session/session.js";
+import type { TurnContext } from "../session/turn-context.js";
+import type {
+  CanUseToolFn,
+  ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
+import type { PermissionModeRegistry } from "../permissions/mode.js";
 import type { Tool } from "./types.js";
 import {
   parseToolName,
@@ -40,7 +48,28 @@ import {
   type ToolInvocation,
   type ToolName,
   type ToolPayload,
+  type SharedTurnDiffTracker,
 } from "./context.js";
+import {
+  type ApprovalResolver,
+  type ApprovalPolicy,
+  type PermissionRequestHook,
+  type SandboxMode,
+  type ApprovalCtx,
+  orchestrateToolCall,
+  ApprovalRejectedError,
+} from "./orchestrator.js";
+import {
+  executeToolDispatch,
+  parseToolArgsWithBigInt,
+  type ToolProgressCallback,
+} from "./execution.js";
+import type {
+  PermissionDecisionHook,
+  PostToolUseFailureHook,
+  PostToolUseHook,
+  PreToolUseHook,
+} from "./tool-hooks.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -79,6 +108,31 @@ interface SessionLike {
   readonly services?: {
     readonly mcpManager?: McpManagerLike;
   };
+}
+
+export interface LiveToolDispatchOptions {
+  readonly session: Session;
+  readonly turn: TurnContext;
+  readonly tracker: SharedTurnDiffTracker;
+  readonly signal?: AbortSignal;
+  readonly source?: ToolCallSource;
+  readonly approvalPolicy: ApprovalPolicy;
+  readonly sandboxMode: SandboxMode;
+  readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
+  readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
+  readonly approvalResolver?: ApprovalResolver;
+  readonly preHooks?: ReadonlyArray<PreToolUseHook>;
+  readonly postHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly failureHooks?: ReadonlyArray<PostToolUseFailureHook>;
+  readonly canUseTool?: CanUseToolFn;
+  readonly permissionContext?: ToolEvaluatorContext | null;
+  readonly modeChangeRegistry?: PermissionModeRegistry;
+  readonly onProgress?: ToolProgressCallback;
+  readonly onHookError?: (
+    phase: "pre" | "post" | "failure",
+    err: unknown,
+    idx: number,
+  ) => void;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -332,6 +386,107 @@ export class ToolRouter {
     return this.dispatchToolCall(invocation, args);
   }
 
+  async dispatchModelToolCall(
+    toolCall: LLMToolCall,
+    opts: LiveToolDispatchOptions,
+  ): Promise<ToolDispatchResult> {
+    const routed = toolCallFromLLMToolCall(toolCall, { session: opts.session });
+    emitWarningEvent(
+      opts.session.eventLog,
+      toolCall.id,
+      "tool_routing_classified",
+      JSON.stringify({
+        toolName: toolCall.name,
+        supportsParallel: this.toolSupportsParallel(routed),
+        hasSpec: this.findSpec(toolCall.name) !== undefined,
+      }),
+    );
+
+    const spec = this.findSpec(toolCall.name);
+    if (!spec) {
+      return {
+        content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
+        isError: true,
+      };
+    }
+
+    const invocation: ToolInvocation = {
+      session: opts.session,
+      turn: opts.turn,
+      tracker: opts.tracker,
+      callId: toolCall.id,
+      toolName: parseToolName(toolCall.name),
+      payload: routed.payload,
+      source: opts.source ?? "direct",
+    };
+    const approvalCtx: ApprovalCtx = {
+      invocation,
+      callId: toolCall.id,
+      toolName: toolCall.name,
+      turnId: opts.turn.subId,
+    };
+    const rawArgs = rawPayloadArguments(routed.payload);
+    const parsedArgs = parseToolArgsWithBigInt(rawArgs) ?? {};
+
+    const toolAbortController = new AbortController();
+    const forwardAbort = (): void => {
+      if (toolAbortController.signal.aborted) return;
+      try {
+        toolAbortController.abort(
+          (opts.signal as AbortSignal & { reason?: unknown } | undefined)?.reason,
+        );
+      } catch {
+        // already aborted
+      }
+    };
+    if (opts.signal?.aborted) {
+      forwardAbort();
+    } else if (opts.signal) {
+      opts.signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+
+    try {
+      return await orchestrateToolCall({
+        tool: spec.tool,
+        approvalCtx,
+        approvalPolicy: opts.approvalPolicy,
+        sandboxMode: opts.sandboxMode,
+        payload: routed.payload,
+        approvalArgs: parsedArgs,
+        ...(opts.permissionHooks !== undefined
+          ? { permissionHooks: opts.permissionHooks }
+          : {}),
+        ...(opts.permissionDecisionHooks !== undefined
+          ? { permissionDecisionHooks: opts.permissionDecisionHooks }
+          : {}),
+        ...(opts.approvalResolver !== undefined
+          ? { approvalResolver: opts.approvalResolver }
+          : {}),
+        onNoApprovalResolver: (ctx) => {
+          emitWarningEvent(
+            opts.session.eventLog,
+            toolCall.id,
+            "no_approval_resolver",
+            `tool ${toolCall.name} needs approval but no resolver is registered`,
+          );
+          void ctx;
+        },
+        dispatch: async () =>
+          executeToolDispatch(rawDispatchOptions(rawArgs, {
+            ...opts,
+            tool: spec.tool,
+            invocation,
+            abortController: toolAbortController,
+            subId: toolCall.id,
+          })),
+      });
+    } catch (err) {
+      return toolDispatchErrorResult(err);
+    } finally {
+      opts.signal?.removeEventListener("abort", forwardAbort);
+    }
+  }
+
   /**
    * Port of codex `ToolRouter::create_diff_consumer` (router.rs:135).
    * Returns a consumer the tool execution flow can call to record
@@ -348,6 +503,70 @@ export class ToolRouter {
       typeof toolName === "string" ? toolName : nameDisplay(toolName),
     );
   }
+}
+
+function rawPayloadArguments(payload: ToolPayload): string {
+  switch (payload.kind) {
+    case "function":
+      return payload.arguments;
+    case "custom":
+      return payload.input;
+    case "tool_search":
+      return JSON.stringify(payload.arguments);
+    case "local_shell":
+      return JSON.stringify(payload.params);
+    case "mcp":
+      return payload.rawArguments;
+  }
+}
+
+function rawDispatchOptions(
+  rawArgs: string,
+  opts: LiveToolDispatchOptions & {
+    readonly tool: Tool;
+    readonly invocation: ToolInvocation;
+    readonly abortController: AbortController;
+    readonly subId: string;
+  },
+) {
+  return {
+    rawArgs,
+    signal: opts.abortController.signal,
+    currentTurnId: opts.turn.subId,
+    eventLog: opts.session.eventLog,
+    subId: opts.subId,
+    tool: opts.tool,
+    invocation: opts.invocation,
+    ...(opts.preHooks !== undefined ? { preHooks: opts.preHooks } : {}),
+    ...(opts.postHooks !== undefined ? { postHooks: opts.postHooks } : {}),
+    ...(opts.failureHooks !== undefined ? { failureHooks: opts.failureHooks } : {}),
+    ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+    ...(opts.canUseTool !== undefined ? { canUseTool: opts.canUseTool } : {}),
+    ...(opts.permissionContext !== null &&
+    opts.permissionContext !== undefined
+      ? { permissionContext: opts.permissionContext }
+      : {}),
+    ...(opts.modeChangeRegistry !== undefined
+      ? { modeChangeRegistry: opts.modeChangeRegistry }
+      : {}),
+    abortController: opts.abortController,
+    ...(opts.onHookError !== undefined ? { onHookError: opts.onHookError } : {}),
+  };
+}
+
+function toolDispatchErrorResult(err: unknown): ToolDispatchResult {
+  if (err instanceof ApprovalRejectedError) {
+    return {
+      content: JSON.stringify({ error: err.message }),
+      isError: true,
+    };
+  }
+  return {
+    content: JSON.stringify({
+      error: err instanceof Error ? err.message : String(err),
+    }),
+    isError: true,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────

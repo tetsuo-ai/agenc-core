@@ -1,27 +1,20 @@
 /**
  * Token budget tracker — I-22.
  *
- * Hand-port of openclaude `query.ts:1346, 1375` (`budgetTracker` +
- * `token_budget_continuation` transition) extended with the AgenC
- * mid-stream check mandated by I-22.
- *
- * Scope:
- *   - openclaude checks only at turn boundaries; AgenC adds a
- *     per-N-token sampling check during streaming.
- *   - Default N = 1000 emitted tokens between checks (matches I-22
- *     rule text). Override via `AGENC_TOKEN_BUDGET_CHECK_INTERVAL`.
- *   - The tracker is carried on Session so it survives continue-site
- *     recoveries across phase iterations.
- *
- * T8 (recovery ladder) consumes `BudgetExceededDecision` from state
- * and routes to the `token_budget_continuation` phase. For T5 we
- * expose the tracker + sampling hook; the recovery wiring lands in
- * T8.
+ * Ports openclaude `query/tokenBudget.ts` semantics into the live
+ * request path while keeping AgenC's mid-stream sampling as a thin
+ * estimation layer only. The continuation / diminishing-returns
+ * decision itself is boundary-only and uses provider-reported output
+ * tokens for the current iteration.
  *
  * @module
  */
 
+import { getBudgetContinuationMessage } from "../utils/tokenBudget.js";
+
 export const DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL = 1_000;
+const COMPLETION_THRESHOLD = 0.9;
+const DIMINISHING_THRESHOLD = 500;
 
 export function resolveTokenBudgetCheckInterval(): number {
   const raw = process.env.AGENC_TOKEN_BUDGET_CHECK_INTERVAL;
@@ -31,115 +24,175 @@ export function resolveTokenBudgetCheckInterval(): number {
   return n;
 }
 
-export type BudgetDecision =
-  | { readonly kind: "within_budget"; readonly remaining: number }
-  | { readonly kind: "exceeded"; readonly overshoot: number };
+export type TokenBudgetDecision =
+  | {
+      readonly action: "continue";
+      readonly nudgeMessage: string;
+      readonly continuationCount: number;
+      readonly pct: number;
+      readonly turnTokens: number;
+      readonly budget: number;
+    }
+  | {
+      readonly action: "stop";
+      readonly completionEvent: {
+        readonly continuationCount: number;
+        readonly pct: number;
+        readonly turnTokens: number;
+        readonly budget: number;
+        readonly diminishingReturns: boolean;
+        readonly durationMs: number;
+      } | null;
+    };
 
-/**
- * Running token-budget tracker. Mirrors openclaude's shape (see
- * `query/tokenBudget.ts::createBudgetTracker`) — an accumulator with a
- * total budget plus per-turn output tally and a sampling gate.
- *
- * The tracker uses monotonic counters only; no wall-clock arithmetic.
- */
+export interface MidStreamBudgetSample {
+  readonly thresholdReached: boolean;
+  readonly estimatedTurnTokens: number;
+  readonly budget: number | null;
+}
+
 export class BudgetTracker {
   private readonly totalBudget: number | null;
-  private totalEmitted = 0;
-  private lastCheckedEmitted = 0;
   private readonly checkInterval: number;
+  private confirmedOutputTokens = 0;
+  private estimatedInFlightTokens = 0;
+  private lastCheckedEstimatedTurnTokens = 0;
+  continuationCount = 0;
+  lastDeltaTokens = 0;
+  lastGlobalTurnTokens = 0;
+  startedAt = Date.now();
 
-  /**
-   * @param totalBudget — max total tokens across the whole turn
-   *   (null = unbounded). openclaude computes from env + config;
-   *   T10 wires the real resolver.
-   * @param checkInterval — emit-token threshold between checks.
-   */
   constructor(totalBudget: number | null, checkInterval?: number) {
     this.totalBudget = totalBudget;
     this.checkInterval = checkInterval ?? resolveTokenBudgetCheckInterval();
   }
 
-  /**
-   * Total tokens emitted in this turn so far.
-   */
   get emitted(): number {
-    return this.totalEmitted;
+    return this.confirmedOutputTokens + this.estimatedInFlightTokens;
   }
 
-  /**
-   * Remaining budget (null when unbounded).
-   */
   get remaining(): number | null {
     if (this.totalBudget === null) return null;
-    return Math.max(0, this.totalBudget - this.totalEmitted);
+    return Math.max(0, this.totalBudget - this.emitted);
   }
 
-  /**
-   * Record N emitted tokens from this iteration's stream. Safe to call
-   * every chunk; cheap arithmetic only.
-   */
-  addEmitted(n: number): void {
-    if (n <= 0) return;
-    this.totalEmitted += n;
+  get confirmedTokens(): number {
+    return this.confirmedOutputTokens;
   }
 
-  /**
-   * I-22: mid-stream check. Returns `exceeded` only when
-   *   (a) budget is set AND
-   *   (b) at least `checkInterval` tokens have elapsed since the last
-   *       check AND
-   *   (c) cumulative tokens exceed the budget.
-   *
-   * The sampling gate avoids per-chunk allocation churn on a fast
-   * provider stream — matches the I-22 rule text "after every N
-   * (default 1000) output tokens, check remaining".
-   */
-  sampleMidStream(): BudgetDecision {
-    if (this.totalBudget === null) {
-      return { kind: "within_budget", remaining: Number.POSITIVE_INFINITY };
+  addEmitted(
+    n: number,
+    source: "confirmed" | "estimate" = "confirmed",
+  ): void {
+    if (!Number.isFinite(n) || n <= 0) return;
+    if (source === "estimate") {
+      this.estimatedInFlightTokens += n;
+      return;
     }
-    const elapsedSinceLastCheck = this.totalEmitted - this.lastCheckedEmitted;
+    this.confirmedOutputTokens += n;
+    this.estimatedInFlightTokens = 0;
+    this.lastCheckedEstimatedTurnTokens = this.confirmedOutputTokens;
+  }
+
+  sampleMidStream(): MidStreamBudgetSample {
+    const estimatedTurnTokens = this.confirmedOutputTokens + this.estimatedInFlightTokens;
+    const elapsedSinceLastCheck =
+      estimatedTurnTokens - this.lastCheckedEstimatedTurnTokens;
     if (elapsedSinceLastCheck < this.checkInterval) {
-      return { kind: "within_budget", remaining: this.totalBudget - this.totalEmitted };
+      return {
+        thresholdReached: false,
+        estimatedTurnTokens,
+        budget: this.totalBudget,
+      };
     }
-    this.lastCheckedEmitted = this.totalEmitted;
-    if (this.totalEmitted > this.totalBudget) {
-      return { kind: "exceeded", overshoot: this.totalEmitted - this.totalBudget };
-    }
-    return { kind: "within_budget", remaining: this.totalBudget - this.totalEmitted };
+    this.lastCheckedEstimatedTurnTokens = estimatedTurnTokens;
+    return {
+      thresholdReached:
+        this.totalBudget !== null &&
+        estimatedTurnTokens >= this.totalBudget * COMPLETION_THRESHOLD,
+      estimatedTurnTokens,
+      budget: this.totalBudget,
+    };
   }
 
-  /**
-   * Boundary check (turn start / end). No sampling gate — always
-   * compares cumulative tokens vs budget. Openclaude's classic
-   * `checkTokenBudget` maps to this.
-   */
-  checkBoundary(): BudgetDecision {
-    if (this.totalBudget === null) {
-      return { kind: "within_budget", remaining: Number.POSITIVE_INFINITY };
-    }
-    if (this.totalEmitted > this.totalBudget) {
-      return { kind: "exceeded", overshoot: this.totalEmitted - this.totalBudget };
-    }
-    return { kind: "within_budget", remaining: this.totalBudget - this.totalEmitted };
+  resolveBoundaryTokens(currentIterationOutputTokens: number): number {
+    const bounded =
+      Number.isFinite(currentIterationOutputTokens) && currentIterationOutputTokens > 0
+        ? currentIterationOutputTokens
+        : 0;
+    this.estimatedInFlightTokens = 0;
+    this.lastCheckedEstimatedTurnTokens = this.confirmedOutputTokens;
+    return this.confirmedOutputTokens + bounded;
   }
 
-  /**
-   * Reset the sampling gate (e.g. after a continuation nudge injects
-   * a follow-up turn that counts against a fresh window). The
-   * cumulative emitted counter is preserved.
-   */
+  checkBoundary(globalTurnTokens: number): TokenBudgetDecision {
+    if (this.totalBudget === null || this.totalBudget <= 0) {
+      return { action: "stop", completionEvent: null };
+    }
+
+    const turnTokens = Math.max(0, globalTurnTokens);
+    const pct = Math.round((turnTokens / this.totalBudget) * 100);
+    const deltaSinceLastCheck = turnTokens - this.lastGlobalTurnTokens;
+
+    const isDiminishing =
+      this.continuationCount >= 3 &&
+      deltaSinceLastCheck < DIMINISHING_THRESHOLD &&
+      this.lastDeltaTokens < DIMINISHING_THRESHOLD;
+
+    if (!isDiminishing && turnTokens < this.totalBudget * COMPLETION_THRESHOLD) {
+      this.continuationCount += 1;
+      this.lastDeltaTokens = deltaSinceLastCheck;
+      this.lastGlobalTurnTokens = turnTokens;
+      return {
+        action: "continue",
+        nudgeMessage: getBudgetContinuationMessage(
+          pct,
+          turnTokens,
+          this.totalBudget,
+        ),
+        continuationCount: this.continuationCount,
+        pct,
+        turnTokens,
+        budget: this.totalBudget,
+      };
+    }
+
+    if (isDiminishing || this.continuationCount > 0) {
+      return {
+        action: "stop",
+        completionEvent: {
+          continuationCount: this.continuationCount,
+          pct,
+          turnTokens,
+          budget: this.totalBudget,
+          diminishingReturns: isDiminishing,
+          durationMs: Date.now() - this.startedAt,
+        },
+      };
+    }
+
+    return { action: "stop", completionEvent: null };
+  }
+
   resetSamplingGate(): void {
-    this.lastCheckedEmitted = this.totalEmitted;
+    this.estimatedInFlightTokens = 0;
+    this.lastCheckedEstimatedTurnTokens = this.confirmedOutputTokens;
+  }
+
+  resetForTurn(): void {
+    this.confirmedOutputTokens = 0;
+    this.estimatedInFlightTokens = 0;
+    this.lastCheckedEstimatedTurnTokens = 0;
+    this.continuationCount = 0;
+    this.lastDeltaTokens = 0;
+    this.lastGlobalTurnTokens = 0;
+    this.startedAt = Date.now();
   }
 }
 
-/**
- * Factory — creates a tracker with the configured budget. Returns
- * null to signal "budgeting disabled" so callers can cheaply opt out
- * (e.g. a feature-flag off path) without a branch at every call site.
- */
-export function createBudgetTracker(totalBudget: number | null): BudgetTracker | null {
+export function createBudgetTracker(
+  totalBudget: number | null = null,
+): BudgetTracker | null {
   if (totalBudget === null) return null;
   if (!Number.isFinite(totalBudget) || totalBudget <= 0) return null;
   return new BudgetTracker(totalBudget);

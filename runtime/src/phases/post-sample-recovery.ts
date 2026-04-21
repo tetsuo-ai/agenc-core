@@ -50,9 +50,6 @@ import { tombstoneOrphans } from "../recovery/tombstone.js";
  * new `state.transition` and loops; on exhaustion the caller
  * terminates the turn.
  */
-const TOKEN_BUDGET_CONTINUATION_PROMPT =
-  "You are over the per-turn token budget. Continue the task but end the current step and hand off at a logical boundary.";
-
 export async function postSampleRecovery(
   state: TurnState,
   ctx: TurnContext,
@@ -65,21 +62,26 @@ export async function postSampleRecovery(
   // state, route to token_budget_continuation BEFORE walking the
   // trigger ladder. Mid-stream overshoot is its own recovery branch.
   if (state.pendingBudgetDecision?.kind === "stop") {
+    const continuationMessage = state.pendingBudgetDecision.reason;
     emitWarning(
       session.eventLog,
       session.nextInternalSubId(),
       "token_budget_continuation",
-      state.pendingBudgetDecision.reason,
+      continuationMessage,
     );
     state.messages.push({
       role: "user",
-      content: TOKEN_BUDGET_CONTINUATION_PROMPT,
+      content: continuationMessage,
     });
     state.transition = { reason: "token_budget_continuation" };
-    // Reset hasAttemptedReactiveCompact on this branch (openclaude
-    // query.ts:1369 — token-budget continuation clears; stop-hook-blocking
-    // preserves).
+    // Match openclaude's continuation branch as closely as the current
+    // phase split allows: clear recovery-specific one-shot state before
+    // re-entering PrepareContext with the injected continuation prompt.
     state.hasAttemptedReactiveCompact = false;
+    state.maxOutputTokensRecoveryCount = 0;
+    state.maxOutputTokensOverride = undefined;
+    state.pendingToolUseSummary = undefined;
+    state.stopHookActive = undefined;
     state.pendingBudgetDecision = undefined;
     state.recoveryReentryCount += 1;
     return state;

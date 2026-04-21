@@ -43,6 +43,7 @@ import {
   runPostToolUseFailureHooks,
   runPostToolUseHooks,
   runPreToolUseHooks,
+  runWithAutoFixRetry,
   type HookTimingRecord,
   type PostToolUseFailureHook,
   type PostToolUseHook,
@@ -718,6 +719,14 @@ export interface RunToolUseOptions {
   ) => boolean;
   /** Optional abort controller invoked on a stricter-mode transition. */
   readonly abortController?: AbortController;
+  /**
+   * When true, execution-time failures (tool throw / timeout / abort)
+   * are rethrown after failure hooks run instead of being converted to
+   * a `<tool_use_error>` output. The routed live path uses this so the
+   * orchestrator owns retry + sandbox escalation; compatibility callers
+   * keep the historical wrapped-error behavior.
+   */
+  readonly throwOnExecutionError?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1126,6 +1135,9 @@ export async function runToolUse(
       );
     }
     cleanupModeSub();
+    if (opts.throwOnExecutionError) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
     return errorOutput({
       invocation,
       content: `<tool_use_error>${message}</tool_use_error>`,
@@ -1187,6 +1199,58 @@ export async function runToolUse(
     isError: finalDispatch.isError === true,
     durationMs: performance.now() - startedAt,
   });
+}
+
+export interface ExecuteToolDispatchOptions extends RunToolUseOptions {
+  readonly rawArgs: string;
+}
+
+export async function executeToolDispatch(
+  opts: ExecuteToolDispatchOptions,
+): Promise<ToolDispatchResult> {
+  const baseArgs = parseToolArgsWithBigInt(opts.rawArgs);
+  const runSingle = async (rawArgs: string): Promise<ToolDispatchResult> => {
+    const output = await runToolUse(rawArgs, {
+      ...opts,
+      postHooks: [],
+      throwOnExecutionError: true,
+    });
+    return { content: output.content, isError: output.isError };
+  };
+
+  const initialResult = await runSingle(opts.rawArgs);
+  const postHooks = opts.postHooks ?? [];
+  if (postHooks.length === 0 || baseArgs === null) {
+    return initialResult;
+  }
+
+  let useInitialResult = true;
+  try {
+    return await runWithAutoFixRetry({
+      invocation: opts.invocation,
+      tool: opts.tool,
+      initialArgs: baseArgs,
+      dispatch: async (retryArgs) => {
+        if (useInitialResult) {
+          useInitialResult = false;
+          return initialResult;
+        }
+        return runSingle(JSON.stringify(retryArgs));
+      },
+      postHooks,
+      onError: (err, idx) => opts.onHookError?.("post", err, idx),
+    });
+  } catch (err) {
+    if (opts.eventLog) {
+      emitWarningEvent(
+        opts.eventLog,
+        opts.subId ?? opts.invocation.callId,
+        "post_tool_hook_retry_failed",
+        `auto-fix retry threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return initialResult;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

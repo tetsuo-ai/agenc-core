@@ -8,8 +8,6 @@
  */
 
 import type { Tool, ToolUseContext } from '../../Tool.js'
-import type { BuiltInAgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
-import { runAgent } from '../../tools/AgentTool/runAgent.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import {
   FileReadTool,
@@ -26,6 +24,7 @@ import {
   createUserMessage,
   hasToolCallsInLastAssistantTurn,
 } from '../../utils/messages.js'
+import { runRuntimeSubagent } from '../../utils/runtimeSubagent.js'
 import { sequential } from '../../utils/sequential.js'
 import { buildMagicDocsUpdatePrompt } from './prompts.js'
 
@@ -95,29 +94,13 @@ export function registerMagicDoc(filePath: string): void {
 }
 
 /**
- * Create Magic Docs agent definition
- */
-function getMagicDocsAgent(): BuiltInAgentDefinition {
-  return {
-    agentType: 'magic-docs',
-    whenToUse: 'Update Magic Docs',
-    tools: [FILE_EDIT_TOOL_NAME], // Only allow Edit
-    model: 'sonnet',
-    source: 'built-in',
-    baseDir: 'built-in',
-    getSystemPrompt: () => '', // Will use override systemPrompt
-  }
-}
-
-/**
  * Update a single Magic Doc
  */
 async function updateMagicDoc(
   docInfo: MagicDocInfo,
   context: REPLHookContext,
 ): Promise<void> {
-  const { messages, systemPrompt, userContext, systemContext, toolUseContext } =
-    context
+  const { messages, toolUseContext } = context
 
   // Clone the FileStateCache to isolate Magic Docs operations. Delete this
   // doc's entry so FileReadTool's dedup doesn't return a file_unchanged
@@ -169,46 +152,24 @@ async function updateMagicDoc(
     detected.instructions,
   )
 
-  // Create a custom canUseTool that only allows Edit for magic doc files
-  const canUseTool = async (tool: Tool, input: unknown) => {
-    if (
-      tool.name === FILE_EDIT_TOOL_NAME &&
-      typeof input === 'object' &&
-      input !== null &&
-      'file_path' in input
-    ) {
+  const result = await runRuntimeSubagent({
+    initialMessages: [...messages, createUserMessage({ content: userPrompt })],
+    taskPrompt: userPrompt,
+    toolAllowlist: [FILE_EDIT_TOOL_NAME],
+    legacyTools: clonedToolUseContext.options.tools,
+    dispatchGuard(toolName, input) {
+      if (toolName !== 'system.editFile') {
+        return `only system.editFile is allowed for ${docInfo.path}`
+      }
       const filePath = input.file_path
       if (typeof filePath === 'string' && filePath === docInfo.path) {
-        return { behavior: 'allow' as const, updatedInput: input }
+        return undefined
       }
-    }
-    return {
-      behavior: 'deny' as const,
-      message: `only ${FILE_EDIT_TOOL_NAME} is allowed for ${docInfo.path}`,
-      decisionReason: {
-        type: 'other' as const,
-        reason: `only ${FILE_EDIT_TOOL_NAME} is allowed`,
-      },
-    }
-  }
-
-  // Run Magic Docs update using runAgent with forked context
-  for await (const _message of runAgent({
-    agentDefinition: getMagicDocsAgent(),
-    promptMessages: [createUserMessage({ content: userPrompt })],
-    toolUseContext: clonedToolUseContext,
-    canUseTool,
-    isAsync: true,
-    forkContextMessages: messages,
-    querySource: 'magic_docs',
-    override: {
-      systemPrompt,
-      userContext,
-      systemContext,
+      return `only ${docInfo.path} may be edited`
     },
-    availableTools: clonedToolUseContext.options.tools,
-  })) {
-    // Just consume - let it run to completion
+  })
+  if (result.error) {
+    throw result.error
   }
 }
 

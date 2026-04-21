@@ -3,6 +3,7 @@ import { EventLog, type Event } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { buildInitialTurnState } from "../session/turn-state.js";
+import { BudgetTracker } from "../llm/token-budget.js";
 import type {
   LLMMessage,
   LLMProvider,
@@ -68,7 +69,10 @@ function mkRequest(
   };
 }
 
-function mkSession(provider: LLMProvider): {
+function mkSession(
+  provider: LLMProvider,
+  budgetTracker: BudgetTracker | null = null,
+): {
   session: Session;
   events: Event[];
 } {
@@ -80,7 +84,7 @@ function mkSession(provider: LLMProvider): {
     conversationId: "conv-stream",
     eventLog,
     services: { provider },
-    budgetTracker: null,
+    budgetTracker,
     nextInternalSubId: () => `sub-${++subId}`,
     emit: (event: Event) => {
       eventLog.emit(event);
@@ -216,5 +220,70 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(rawAssistantMessage?.content).toBe(
       "Before\n<proposed_plan>\nhidden\n</proposed_plan>\nAfter",
     );
+  });
+});
+
+describe("streamModel — token budget boundary semantics", () => {
+  test("stores the continuation prompt when boundary truth stays below the completion threshold", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const budgetTracker = new BudgetTracker(1_000, 100);
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({
+        content: "x".repeat(4_000),
+        done: false,
+      });
+      return {
+        content: "concise final answer",
+        toolCalls: [],
+        usage: { promptTokens: 20, completionTokens: 400, totalTokens: 420 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider, budgetTracker);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+      undefined,
+    );
+
+    expect(state.pendingBudgetDecision?.kind).toBe("stop");
+    expect(state.pendingBudgetDecision?.reason).toContain(
+      "Stopped at 40% of token target",
+    );
+  });
+
+  test("clears pending budget continuation when provider truth reaches the stop path", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const budgetTracker = new BudgetTracker(1_000, 100);
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({
+        content: "x".repeat(4_000),
+        done: false,
+      });
+      return {
+        content: "long enough",
+        toolCalls: [],
+        usage: { promptTokens: 20, completionTokens: 950, totalTokens: 970 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider, budgetTracker);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+      undefined,
+    );
+
+    expect(state.pendingBudgetDecision).toBeUndefined();
   });
 });

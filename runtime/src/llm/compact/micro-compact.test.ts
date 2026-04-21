@@ -42,6 +42,15 @@ function userWithToolResult(toolId: string, output: string): Message {
   })
 }
 
+function localToolMessage(size: number, toolName: string): Message {
+  return {
+    role: 'tool',
+    content: 'x'.repeat(size),
+    toolCallId: `tool-${toolName}-${size}`,
+    toolName,
+  } as Message
+}
+
 describe('microCompact MCP tool compaction', () => {
   // We can't easily unit-test the private isCompactableTool directly,
   // but we can test the full time-based microcompact path which exercises
@@ -123,5 +132,43 @@ describe('microCompact MCP tool compaction', () => {
     const result = await microcompactMessages(messages)
     expect(result).toBeDefined()
     expect(result.messages.length).toBe(messages.length)
+  })
+
+  test('microcompactMessages clears older role-based tool results on the live path', async () => {
+    const { microcompactMessages } = await import('./micro-compact.js')
+    const toolUseContext = {
+      modelInfo: { slug: 'claude-3-5-sonnet-20241022' },
+    } as any
+
+    const messages: Message[] = [
+      { role: 'user', content: 'seed' } as Message,
+      localToolMessage(200, 'A'),
+      { role: 'assistant', content: 'ack' } as Message,
+      localToolMessage(200, 'B'),
+      { role: 'assistant', content: 'ack' } as Message,
+      localToolMessage(200, 'C'),
+      { role: 'assistant', content: 'ack' } as Message,
+      localToolMessage(200, 'D'),
+      { role: 'assistant', content: 'ack' } as Message,
+      localToolMessage(200, 'E'),
+      { role: 'assistant', content: 'ack' } as Message,
+      localToolMessage(200, 'F'),
+      { role: 'assistant', content: 'ack' } as Message,
+      localToolMessage(200, 'G'),
+    ]
+
+    const result = await microcompactMessages(
+      messages,
+      toolUseContext,
+      'repl_main_thread',
+    )
+    const toolMessages = result.messages.filter((message) => message.role === 'tool')
+
+    expect(toolMessages).toHaveLength(7)
+    expect(toolMessages[0]?.content).toContain('[Old tool result content cleared]')
+    expect(toolMessages[1]?.content).toContain('[Old tool result content cleared]')
+    for (const toolMessage of toolMessages.slice(2)) {
+      expect(toolMessage?.content).toBe('x'.repeat(200))
+    }
   })
 })

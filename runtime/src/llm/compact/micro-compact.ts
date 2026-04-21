@@ -1,7 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { QuerySource } from '../../constants/querySource.js'
-import type { ToolUseContext } from '../../Tool.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
@@ -28,6 +27,7 @@ import {
   getTimeBasedMCConfig,
   type TimeBasedMCConfig,
 } from './time-based-mc-config.js'
+import type { CompactRuntimeContext } from './context.js'
 
 // Inline from utils/toolResultStorage.ts — importing that file pulls in
 // sessionStorage → utils/messages → services/api/errors, completing a
@@ -55,7 +55,7 @@ function isCompactableTool(name: string): boolean {
   return COMPACTABLE_TOOLS.has(name) || name.startsWith(MCP_TOOL_PREFIX)
 }
 
-// --- Cached microcompact state (gated by feature('CACHED_MICROCOMPACT')) ---
+// --- Cached microcompact state (shared by nested + role-based paths) ---
 
 // Lazy-initialized cached MC module and state to avoid importing in external builds.
 // The imports and state live inside feature() checks for dead code elimination.
@@ -171,6 +171,12 @@ export function estimateMessageTokens(messages: Message[]): number {
   let totalTokens = 0
 
   for (const message of messages) {
+    if (message && typeof message === 'object' && message.role === 'tool') {
+      totalTokens += roughTokenCountEstimation(
+        localMessageContentText(message.content),
+      )
+      continue
+    }
     if (message.type !== 'user' && message.type !== 'assistant') {
       continue
     }
@@ -256,9 +262,106 @@ function isMainThreadSource(querySource: QuerySource | undefined): boolean {
   return !querySource || querySource.startsWith('repl_main_thread')
 }
 
+function hasOpenClaudeMessageShape(messages: Message[]): boolean {
+  return messages.some(message => Boolean(message && typeof message === 'object' && 'message' in message))
+}
+
+function isRoleBasedToolMessage(message: Message): boolean {
+  return Boolean(message && typeof message === 'object' && message.role === 'tool')
+}
+
+function localMessageContentText(content: Message['content']): string {
+  if (typeof content === 'string') {
+    return content
+  }
+  return content
+    .filter((block: { type: string }) => block.type === 'text')
+    .map((block: { text: string }) => block.text)
+    .join('')
+}
+
+async function localMicrocompactPath(
+  messages: Message[],
+  toolUseContext: CompactRuntimeContext | undefined,
+  querySource: QuerySource | undefined,
+): Promise<MicrocompactResult> {
+  const mod = await getCachedMCModule()
+  const model =
+    (toolUseContext as { modelInfo?: { slug?: string } } | undefined)?.modelInfo
+      ?.slug ?? toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
+  if (
+    !mod.isCachedMicrocompactEnabled() ||
+    !mod.isModelSupportedForCacheEditing(model) ||
+    !isMainThreadSource(querySource)
+  ) {
+    return { messages }
+  }
+
+  const config = mod.getCachedMCConfig()
+  if (!config.enabled) {
+    return { messages }
+  }
+
+  const toolMessages = messages
+    .map((message, index) => ({ message, index }))
+    .filter(entry => isRoleBasedToolMessage(entry.message))
+
+  if (toolMessages.length <= config.triggerThreshold) {
+    return { messages }
+  }
+
+  const keepRecent = Math.max(1, config.keepRecent)
+  const deleteCount = Math.max(0, toolMessages.length - keepRecent)
+  const toDelete = toolMessages.slice(0, deleteCount)
+  if (toDelete.length === 0) {
+    return { messages }
+  }
+
+  const next = messages.slice()
+  let tokensSaved = 0
+  for (const { message, index } of toDelete) {
+    if (message.content === TIME_BASED_MC_CLEARED_MESSAGE) {
+      continue
+    }
+    const originalText = localMessageContentText(message.content)
+    const originalTokens = roughTokenCountEstimation(originalText)
+    const clearedTokens = roughTokenCountEstimation(TIME_BASED_MC_CLEARED_MESSAGE)
+    next[index] = {
+      ...message,
+      content: TIME_BASED_MC_CLEARED_MESSAGE,
+    }
+    tokensSaved += Math.max(0, originalTokens - clearedTokens)
+  }
+
+  if (tokensSaved === 0) {
+    return { messages }
+  }
+
+  logEvent('tengu_cached_microcompact', {
+    toolsDeleted: toDelete.length,
+    deletedToolIds: toDelete
+      .map(entry => entry.message.toolCallId ?? `tool-${entry.index}`)
+      .join(',') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    activeToolCount: toolMessages.length - toDelete.length,
+    triggerType:
+      'auto' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    threshold: config.triggerThreshold,
+    keepRecent: config.keepRecent,
+  })
+
+  suppressCompactWarning()
+  resetMicrocompactState()
+
+  if (feature('PROMPT_CACHE_BREAK_DETECTION') && querySource) {
+    notifyCacheDeletion(querySource)
+  }
+
+  return { messages: next }
+}
+
 export async function microcompactMessages(
   messages: Message[],
-  toolUseContext?: ToolUseContext,
+  toolUseContext?: CompactRuntimeContext,
   querySource?: QuerySource,
 ): Promise<MicrocompactResult> {
   // Clear suppression flag at start of new microcompact attempt
@@ -275,26 +378,28 @@ export async function microcompactMessages(
     return timeBasedResult
   }
 
+  if (!hasOpenClaudeMessageShape(messages)) {
+    return await localMicrocompactPath(messages, toolUseContext, querySource)
+  }
+
   // Only run cached MC for the main thread to prevent forked agents
   // (session_memory, prompt_suggestion, etc.) from registering their
   // tool_results in the global cachedMCState, which would cause the main
   // thread to try deleting tools that don't exist in its own conversation.
-  if (feature('CACHED_MICROCOMPACT')) {
-    const mod = await getCachedMCModule()
-    const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
-    if (
-      mod.isCachedMicrocompactEnabled() &&
-      mod.isModelSupportedForCacheEditing(model) &&
-      isMainThreadSource(querySource)
-    ) {
-      return await cachedMicrocompactPath(messages, querySource)
-    }
+  const mod = await getCachedMCModule()
+  const model =
+    (toolUseContext as { modelInfo?: { slug?: string } } | undefined)?.modelInfo
+      ?.slug ?? toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
+  if (
+    mod.isCachedMicrocompactEnabled() &&
+    mod.isModelSupportedForCacheEditing(model) &&
+    isMainThreadSource(querySource)
+  ) {
+    return await cachedMicrocompactPath(messages, querySource)
   }
 
-  // Legacy microcompact path removed — tengu_cache_plum_violet is always true.
-  // For contexts where cached microcompact is not available (external builds,
-  // non-ant users, unsupported models, sub-agents), no compaction happens here;
-  // autocompact handles context pressure instead.
+  // Nested openclaude-shaped histories keep the original cached-MC flow.
+  // The local phase-machine path hits the role-based branch above.
   return { messages }
 }
 

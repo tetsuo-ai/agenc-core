@@ -13,27 +13,14 @@
  * list at stream end and hands them to the executor here; T7 rewires
  * the mid-stream `addTool()` path.
  *
- * T7 gap #109 — this phase is also the integration site for the four
- * previously-dead port modules:
+ * Live ownership is the single tool stack:
  *
- *   - `tools/router.ts` → `ToolRouter` + `routerFromRegistry` classify
- *     each incoming tool call and emit a `tool_routing_classified`
- *     telemetry warning so downstream observability sees the routing
- *     decision.
- *   - `tools/orchestrator.ts` → `classifyToolApproval` +
- *     `attemptWithRetry` wrap `runToolUse` with an approval-policy
- *     classification pass and one bounded retry on known-retriable
- *     failures.
- *   - `tools/orchestration.ts` → `resolveMaxToolUseConcurrency()`
- *     applies the env-capped `AGENC_MAX_TOOL_USE_CONCURRENCY`
- *     (default 10) to the per-turn batch by limiting how many tools
- *     are queued concurrently into the streaming executor.
- *   - `tools/tool-hooks.ts` → `ToolHookRegistry` + pre/post hook
- *     runners fire before/after every `runToolUse` dispatch. The
- *     registry pulls from `session.services.hooks` when it exposes
- *     `preToolUseHooks` / `postToolUseHooks`, otherwise it stays empty.
- *     Auto-fix retry via post-hook `{kind:"retry"}` is honored through
- *     the existing dispatch path.
+ *   `execute-tools` → `streaming-executor` → `router` →
+ *   `orchestrator` → `execution` → `tool.execute`
+ *
+ * This phase now only validates the batch, wires the executor with the
+ * session/turn policy seams, queues tool calls, and records completed
+ * tool results back into turn state.
  *
  * Invariants touched:
  *   I-8  (every error site emits a typed event) — tool errors emit
@@ -48,18 +35,8 @@ import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { validateToolCallsForExecution } from "../llm/stream-parser.js";
 import { StreamingToolExecutor } from "../tools/streaming-executor.js";
 import { ToolCallRuntime } from "../tools/concurrency.js";
-import type { Tool } from "../tools/types.js";
-import { runToolUse, parseToolArgsWithBigInt } from "../tools/execution.js";
-import { parseToolName } from "../tools/context.js";
-import { routerFromRegistry, toolCallFromLLMToolCall } from "../tools/router.js";
+import { routerFromRegistry } from "../tools/router.js";
 import {
-  attemptWithRetry,
-  classifyToolApproval,
-  defaultToolRetryPolicy,
-  isApprovalAccepted,
-  isSandboxDeniedError,
-  requestApproval,
-  type ApprovalCtx,
   type ApprovalPolicy as OrchestratorApprovalPolicy,
   type ApprovalResolver,
   type PermissionRequestHook,
@@ -67,7 +44,6 @@ import {
 } from "../tools/orchestrator.js";
 import { resolveMaxToolUseConcurrency } from "../tools/orchestration.js";
 import {
-  runWithAutoFixRetry,
   ToolHookRegistry,
   type PermissionDecisionHook,
   type PostToolUseFailureHook,
@@ -75,10 +51,7 @@ import {
   type PreToolUseHook,
 } from "../tools/tool-hooks.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
-import {
-  emitError as emitErrorEvent,
-  emitWarning as emitWarningEvent,
-} from "../session/event-log.js";
+import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState, UserMessage } from "../session/turn-state.js";
@@ -112,6 +85,14 @@ function toolResultUserRecord(
     toolCallId: callId,
     toolName,
     content: result.content,
+  };
+}
+
+function createNoopTracker() {
+  return {
+    appendFileDiff: () => {},
+    snapshot: () => [],
+    clear: () => {},
   };
 }
 
@@ -288,323 +269,46 @@ export async function executeTools(
           },
         });
       },
-      // T7: route dispatch through `runToolUse` so I-9 timeout +
-      // I-15 cap + I-79 BigInt reviver are applied to every tool.
-      //
-      // Pipeline order (T7 gap #109):
-      //   1. Router classifies (telemetry only; returns spec).
-      //   2. Orchestrator approval classification runs (logged on
-      //      forbidden/needs_approval when no modal is wired).
-      //   3. Pre-hooks fire — may mutate args, deny, or short-circuit
-      //      with a synthesized result.
-      //   4. `runToolUse` executes under `attemptWithRetry` so a
-      //      transient failure gets one bounded retry.
-      //   5. Post-hooks fire — may rewrite the result; retry decisions
-      //      are logged but not re-dispatched inside the executor (the
-      //      auto-fix loop belongs in a future sub-agent wrapper; the
-      //      wire here honors `rewrite` which is the common path).
-      runToolUseFn: async (
-        toolCall: LLMToolCall,
-        childSignal: AbortSignal,
-      ): Promise<ToolDispatchResult> => {
-        const tool = session.services.registry.tools.find(
-          (t) => t.name === toolCall.name,
-        ) as Tool | undefined;
-        if (!tool) {
-          return {
-            content: JSON.stringify({ error: `unknown tool: ${toolCall.name}` }),
-            isError: true,
-          };
-        }
-        const parsed = parseToolArgsWithBigInt(toolCall.arguments ?? "");
-        if (parsed === null) {
-          return {
-            content: JSON.stringify({
-              error: `invalid JSON arguments for tool ${toolCall.name}`,
-            }),
-            isError: true,
-          };
-        }
-
-        // Step 1: Router classification → telemetry warning.
-        const routed = toolCallFromLLMToolCall(toolCall);
-        const routerSpec = router.findSpec(toolCall.name);
-        emitWarningEvent(
-          session.eventLog,
-          toolCall.id,
-          "tool_routing_classified",
-          JSON.stringify({
-            toolName: toolCall.name,
-            supportsParallel: router.toolSupportsParallel(routed),
-            hasSpec: routerSpec !== undefined,
-          }),
-        );
-
-        // Build the canonical invocation envelope once — it's reused
-        // by the classifier (payload-variant routing), approval ctx,
-        // and runToolUse.
-        const invocation = {
+      liveToolDispatch: {
+        router,
+        options: {
           session,
           turn: ctx,
-          tracker: {
-            appendFileDiff: () => {},
-            snapshot: () => [],
-            clear: () => {},
-          },
-          callId: toolCall.id,
-          toolName: parseToolName(toolCall.name),
-          payload: {
-            kind: "function" as const,
-            arguments: toolCall.arguments ?? "",
-          },
-          source: "direct" as const,
-        };
-
-        // Step 2: Orchestrator approval classification. Now routed by
-        // ToolPayload.kind — function/custom share the legacy logic,
-        // mcp consults server-side trust, local_shell routes through
-        // the fs-policy matrix, tool_search is always read-only.
-        const approval = classifyToolApproval(tool, {
+          tracker: createNoopTracker(),
           approvalPolicy: orchestratorPolicy.approvalPolicy,
           sandboxMode: orchestratorPolicy.sandboxMode,
-          payload: invocation.payload,
-        });
-        if (approval.kind === "forbidden") {
-          return {
-            content: JSON.stringify({
-              error: `tool ${toolCall.name} forbidden: ${approval.reason}`,
-            }),
-            isError: true,
-          };
-        }
-        if (approval.kind === "needs_approval") {
-          const approvalCtx: ApprovalCtx = {
-            invocation,
-            callId: toolCall.id,
-            toolName: toolCall.name,
-            turnId: ctx.subId,
-            ...(approval.reason !== undefined ? { retryReason: approval.reason } : {}),
-          };
-          const result = await requestApproval({
-            ctx: approvalCtx,
-            ...(orchestratorPolicy.permissionHooks !== undefined
-              ? { hooks: orchestratorPolicy.permissionHooks }
-              : {}),
-            ...(permissionDecisionHooks.length > 0
-              ? { permissionDecisionHooks, args: parsed }
-              : {}),
-            ...(orchestratorPolicy.approvalResolver !== undefined
-              ? { resolver: orchestratorPolicy.approvalResolver }
-              : {}),
-            onNoResolver: () => {
-              emitWarningEvent(
-                session.eventLog,
-                toolCall.id,
-                "no_approval_resolver",
-                `tool ${toolCall.name} needs approval but no resolver is registered`,
-              );
-            },
-          });
-          if (!isApprovalAccepted(result.decision)) {
-            return {
-              content: JSON.stringify({
-                error:
-                  result.source === "default_deny"
-                    ? `tool ${toolCall.name} denied: no_approval_resolver`
-                    : `tool ${toolCall.name} denied by approval: ${result.decision}`,
-              }),
-              isError: true,
-            };
-          }
-        }
-
-        // T11 W4: per-call AbortController paired with the child signal
-        // so the permission evaluator can abort the in-flight tool when
-        // the permission mode flips mid-execution (I-3). The outer
-        // `childSignal` abort is forwarded so upstream cancellation still
-        // bails the tool through the same signal path.
-        const toolAbortController = new AbortController();
-        const forwardChildAbort = (): void => {
-          if (toolAbortController.signal.aborted) return;
-          try {
-            toolAbortController.abort(
-              (childSignal as AbortSignal & { reason?: unknown }).reason,
-            );
-          } catch {
-            // already aborted
-          }
-        };
-        if (childSignal.aborted) {
-          forwardChildAbort();
-        } else {
-          childSignal.addEventListener("abort", forwardChildAbort, {
-            once: true,
-          });
-        }
-
-        // Step 3: Single-tool dispatch through `runToolUse`. The per-call
-        // hook boundary (pre / post / failure / schema validation /
-        // timeout / size cap / BigInt reviver / progress) now lives
-        // INSIDE `runToolUse` so every entry path — direct, code_mode,
-        // js_repl, repl — shares the exact same hook invocation order.
-        const dispatchOnce = async (
-          rawArgsOverride?: string,
-        ): Promise<ToolDispatchResult> => {
-          const output = await runToolUse(rawArgsOverride ?? toolCall.arguments ?? "", {
-            signal: toolAbortController.signal,
-            currentTurnId: ctx.subId,
-            tool,
-            invocation,
-            eventLog: session.eventLog,
-            subId: toolCall.id,
-            preHooks,
-            postHooks: [], // post hooks are handled by runWithAutoFixRetry
-            failureHooks,
-            // T11 W4 — permission evaluator wire-up. Fires BEFORE the
-            // tool's `execute()` so rule/mode/classifier decisions can
-            // short-circuit. Back-compat: when the session has no
-            // `permissionModeRegistry` (legacy test fixtures), the
-            // evaluator path is skipped entirely.
-            ...(permissionContext !== null
-              ? {
-                  canUseTool: hasPermissionsToUseTool,
-                  permissionContext,
-                  modeChangeRegistry: permissionModeRegistry,
-                  abortController: toolAbortController,
-                }
-              : {}),
-            onHookError: (phase, err, idx) => {
-              emitWarningEvent(
-                session.eventLog,
-                toolCall.id,
-                `${phase}_tool_hook_threw`,
-                `${phase} hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            },
-          });
-          return { content: output.content, isError: output.isError };
-        };
-
-        // Step 4: Orchestrator retry wrap for transient + sandbox-denied
-        // classes. Auto-fix retry (post-hook `retry`) is handled by
-        // `runWithAutoFixRetry` below — it dispatches through the same
-        // `runToolUse` surface so pre-hooks + failure hooks still fire
-        // on every attempt.
-        let dispatchResult: ToolDispatchResult;
-        try {
-          dispatchResult = await attemptWithRetry({
-            dispatch: dispatchOnce,
-            onFailure: defaultToolRetryPolicy,
-            maxAttempts: 2,
-          });
-        } catch (err) {
-          if (isSandboxDeniedError(err)) {
-            // Two-pass sandbox escalation — request approval and retry
-            // once with sandbox off. Codex orchestrator.rs:236-373.
-            const escalationCtx: ApprovalCtx = {
-              invocation,
-              callId: toolCall.id,
-              toolName: toolCall.name,
-              turnId: ctx.subId,
-              retryReason:
-                err.message || "command failed; retry without sandbox?",
-            };
-            const escalation = await requestApproval({
-              ctx: escalationCtx,
-              ...(orchestratorPolicy.permissionHooks !== undefined
-                ? { hooks: orchestratorPolicy.permissionHooks }
-                : {}),
-              ...(permissionDecisionHooks.length > 0
-                ? { permissionDecisionHooks, args: parsed }
-                : {}),
-              ...(orchestratorPolicy.approvalResolver !== undefined
-                ? { resolver: orchestratorPolicy.approvalResolver }
-                : {}),
-              onNoResolver: () => {
-                emitWarningEvent(
-                  session.eventLog,
-                  toolCall.id,
-                  "no_approval_resolver",
-                  `sandbox escalation for ${toolCall.name} needs approval but no resolver is registered`,
-                );
+          ...(orchestratorPolicy.permissionHooks !== undefined
+            ? { permissionHooks: orchestratorPolicy.permissionHooks }
+            : {}),
+          ...(orchestratorPolicy.approvalResolver !== undefined
+            ? { approvalResolver: orchestratorPolicy.approvalResolver }
+            : {}),
+          ...(preHooks.length > 0 ? { preHooks } : {}),
+          ...(postHooks.length > 0 ? { postHooks } : {}),
+          ...(failureHooks.length > 0 ? { failureHooks } : {}),
+          ...(permissionDecisionHooks.length > 0
+            ? { permissionDecisionHooks }
+            : {}),
+          ...(permissionContext !== null
+            ? {
+                canUseTool: hasPermissionsToUseTool,
+                permissionContext,
+                modeChangeRegistry: permissionModeRegistry,
+              }
+            : {}),
+          onHookError: (phase, err, idx) => {
+            session.emit({
+              id: session.nextInternalSubId(),
+              msg: {
+                type: "warning",
+                payload: {
+                  cause: `${phase}_tool_hook_threw`,
+                  message: `${phase} hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
+                },
               },
             });
-            if (!isApprovalAccepted(escalation.decision)) {
-              return {
-                content: JSON.stringify({
-                  error:
-                    escalation.source === "default_deny"
-                      ? `sandbox escalation denied: no_approval_resolver`
-                      : `sandbox escalation denied: ${escalation.decision}`,
-                }),
-                isError: true,
-              };
-            }
-            try {
-              dispatchResult = await dispatchOnce();
-            } catch (retryErr) {
-              const message =
-                retryErr instanceof Error ? retryErr.message : String(retryErr);
-              return {
-                content: JSON.stringify({ error: message }),
-                isError: true,
-              };
-            }
-          } else {
-            const message = err instanceof Error ? err.message : String(err);
-            return {
-              content: JSON.stringify({ error: message }),
-              isError: true,
-            };
-          }
-        }
-
-        // Step 5: Post-hook pipeline with real auto-fix retry. `rewrite`
-        // decisions replace the result; `retry` decisions trigger
-        // `runWithAutoFixRetry` which bounded-dispatches again through
-        // `runToolUse` so pre-hooks + schema validation + failure hooks
-        // continue to fire on every attempt.
-        if (postHooks.length === 0) {
-          return dispatchResult;
-        }
-        try {
-          const finalResult = await runWithAutoFixRetry({
-            invocation,
-            tool,
-            initialArgs: parsed,
-            dispatch: async (retryArgs) => {
-              // The first dispatch has already happened above — runWithAutoFixRetry
-              // always redispatches before running hooks. To avoid a
-              // wasted first call, seed the loop by running the
-              // post-hooks against `dispatchResult` via a one-shot
-              // dispatch function that returns the cached result
-              // on the first call, then re-dispatches with hook-supplied
-              // args on subsequent attempts.
-              if (retryArgs === parsed) {
-                return dispatchResult;
-              }
-              return dispatchOnce(JSON.stringify(retryArgs));
-            },
-            postHooks,
-            onError: (err, idx) => {
-              emitWarningEvent(
-                session.eventLog,
-                toolCall.id,
-                "post_tool_hook_threw",
-                `post hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            },
-          });
-          return finalResult;
-        } catch (err) {
-          emitWarningEvent(
-            session.eventLog,
-            toolCall.id,
-            "post_tool_hook_retry_failed",
-            `auto-fix retry threw: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          return dispatchResult;
-        }
+          },
+        },
       },
     });
     state.streamingToolExecutor = executor;
@@ -624,6 +328,7 @@ export async function executeTools(
   const drainCompletedIntoState = async (): Promise<void> => {
     for (const completed of executor!.getCompletedResults()) {
       const { toolCall, result } = completed;
+      const toolResultBytes = Buffer.byteLength(result.content, "utf8");
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
@@ -634,6 +339,9 @@ export async function executeTools(
             isError: result.isError === true,
           },
         },
+      }, {
+        turnId: ctx.subId,
+        toolResultBytes,
       });
       state.toolResults.push(
         toolResultUserRecord(toolCall.id, toolCall.name, result),
@@ -701,6 +409,7 @@ export async function executeTools(
 
   for await (const { toolCall, result } of executor.getRemainingResults()) {
     if (signal?.aborted) break;
+    const toolResultBytes = Buffer.byteLength(result.content, "utf8");
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -709,9 +418,12 @@ export async function executeTools(
           callId: toolCall.id,
           result: result.content,
           isError: result.isError === true,
+          },
         },
-      },
-    });
+      }, {
+        turnId: ctx.subId,
+        toolResultBytes,
+      });
     state.toolResults.push(
       toolResultUserRecord(toolCall.id, toolCall.name, result),
     );

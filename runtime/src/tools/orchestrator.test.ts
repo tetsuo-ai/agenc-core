@@ -174,7 +174,11 @@ describe("defaultExecApprovalRequirement (codex sandboxing.rs:185-221)", () => {
 
 describe("defaultToolRetryPolicy classifier", () => {
   test("sandbox-denied → escalate_sandbox", () => {
-    const err = new SandboxDeniedError("blocked", "stderr");
+    const err = new SandboxDeniedError("blocked", {
+      denial: "filesystem",
+      target: "/tmp/block",
+      policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+    });
     expect(defaultToolRetryPolicy(err).kind).toBe("escalate_sandbox");
   });
 
@@ -229,7 +233,11 @@ describe("defaultToolRetryPolicy classifier", () => {
     await expect(
       attemptWithRetry({
         dispatch: async () => {
-          throw new SandboxDeniedError("sandbox blocked");
+          throw new SandboxDeniedError("sandbox blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
         },
         onFailure: defaultToolRetryPolicy,
         maxAttempts: 3,
@@ -478,7 +486,11 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
       dispatch: async (sandbox) => {
         calls.push(sandbox);
         if (calls.length === 1) {
-          throw new SandboxDeniedError("fs blocked");
+          throw new SandboxDeniedError("fs blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
         }
         return "ok";
       },
@@ -499,7 +511,11 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
         approvalPolicy: "never",
         sandboxMode: "workspace_write",
         dispatch: async () => {
-          throw new SandboxDeniedError("fs blocked");
+          throw new SandboxDeniedError("fs blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
         },
         approvalResolver: resolver,
       }),

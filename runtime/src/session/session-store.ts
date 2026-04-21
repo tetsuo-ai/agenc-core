@@ -89,6 +89,8 @@ export interface IndexSnapshot {
   readonly fileSize: number;
   readonly rolloutPath: string;
   readonly toolResultBytesByTurn: Record<string, number>;
+  /** Latest observed turn id for each completed tool call id. */
+  readonly toolCallTurnIds?: Record<string, string>;
   /** Fast-seek byte offset per event seq. Keys are numeric seq values
    *  serialized as strings (JSON key constraint). */
   readonly offsetsBySeq: Record<string, number>;
@@ -467,6 +469,11 @@ export interface AppendOptions {
   readonly turnId?: string;
 }
 
+export interface CompactionIndexSnapshot {
+  readonly toolResultBytesByTurn: ReadonlyMap<string, number>;
+  readonly toolCallTurnIds: ReadonlyMap<string, string>;
+}
+
 /**
  * Callback surface for the SessionStore to report degraded-mode +
  * diagnostic events upward. The session layer wires this to the
@@ -492,6 +499,8 @@ export class SessionStore {
   private readonly lock: SessionLock;
   /** I-88 per-turn tool-result-bytes index. */
   private readonly toolResultBytesByTurn = new Map<string, number>();
+  /** I-88 — resolve compacted tool_result blocks back to their source turns. */
+  private readonly toolCallTurnIds = new Map<string, string>();
   /** I-88 (+ fast-seek) — byte offset in the rollout file where each
    *  seq'd event starts. Written to index.json on close. */
   private readonly offsetsBySeq = new Map<EventSeq, number>();
@@ -581,6 +590,32 @@ export class SessionStore {
           });
         }
         this.fileSize = statSync(this.rolloutPath).size;
+        const snapshot = readIndexSnapshot(this.indexPath);
+        if (snapshot && snapshot.rolloutPath === this.rolloutPath) {
+          this.toolResultBytesByTurn.clear();
+          for (const [turnId, bytes] of Object.entries(
+            snapshot.toolResultBytesByTurn ?? {},
+          )) {
+            if (typeof bytes === "number" && bytes > 0) {
+              this.toolResultBytesByTurn.set(turnId, bytes);
+            }
+          }
+          this.toolCallTurnIds.clear();
+          for (const [toolCallId, turnId] of Object.entries(
+            snapshot.toolCallTurnIds ?? {},
+          )) {
+            if (typeof turnId === "string" && turnId.length > 0) {
+              this.toolCallTurnIds.set(toolCallId, turnId);
+            }
+          }
+          this.offsetsBySeq.clear();
+          for (const [seq, offset] of Object.entries(snapshot.offsetsBySeq ?? {})) {
+            const parsedSeq = Number(seq);
+            if (Number.isFinite(parsedSeq) && typeof offset === "number") {
+              this.offsetsBySeq.set(parsedSeq, offset);
+            }
+          }
+        }
       } else {
         // Fresh file — write session_meta.
         const sessionMeta: SessionMetaLine = {
@@ -685,10 +720,26 @@ export class SessionStore {
     }
     if (event.seq !== undefined) this.lastSeqWritten = event.seq;
 
-    // I-88 per-turn tool-result-bytes index update.
-    if (opts.turnId && opts.toolResultBytes && opts.toolResultBytes > 0) {
-      const prev = this.toolResultBytesByTurn.get(opts.turnId) ?? 0;
-      this.toolResultBytesByTurn.set(opts.turnId, prev + opts.toolResultBytes);
+    // I-88 per-turn tool-result index update.
+    const toolCompletion =
+      event.msg.type === "tool_call_completed" ? event.msg.payload : undefined;
+    const turnId = opts.turnId;
+    const toolResultBytes =
+      opts.toolResultBytes ??
+      (toolCompletion
+        ? measureToolResultBytesFromPayload(toolCompletion.result)
+        : 0);
+    if (turnId && toolResultBytes > 0) {
+      const prev = this.toolResultBytesByTurn.get(turnId) ?? 0;
+      this.toolResultBytesByTurn.set(turnId, prev + toolResultBytes);
+    }
+    if (
+      turnId &&
+      toolCompletion &&
+      typeof toolCompletion.callId === "string" &&
+      toolCompletion.callId.length > 0
+    ) {
+      this.toolCallTurnIds.set(toolCompletion.callId, turnId);
     }
 
     const item: RolloutItem = { type: "event_msg", payload: event };
@@ -1033,6 +1084,17 @@ export class SessionStore {
     return new Map(this.toolResultBytesByTurn);
   }
 
+  getToolCallTurnIdSnapshot(): ReadonlyMap<string, string> {
+    return new Map(this.toolCallTurnIds);
+  }
+
+  getCompactionIndexSnapshot(): CompactionIndexSnapshot {
+    return {
+      toolResultBytesByTurn: this.getToolResultBytesIndexSnapshot(),
+      toolCallTurnIds: this.getToolCallTurnIdSnapshot(),
+    };
+  }
+
   get isDegraded(): boolean {
     return this.degraded.isDegraded;
   }
@@ -1089,6 +1151,7 @@ export class SessionStore {
       fileSize: this.fileSize,
       rolloutPath: this.rolloutPath,
       toolResultBytesByTurn: Object.fromEntries(this.toolResultBytesByTurn),
+      toolCallTurnIds: Object.fromEntries(this.toolCallTurnIds),
       offsetsBySeq: Object.fromEntries(
         Array.from(this.offsetsBySeq.entries()).map(([k, v]) => [String(k), v]),
       ),
@@ -1172,5 +1235,16 @@ export class SessionStoreFlushScheduler {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+}
+
+function measureToolResultBytesFromPayload(payload: unknown): number {
+  if (typeof payload === "string") {
+    return Buffer.byteLength(payload, "utf8");
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(payload ?? ""), "utf8");
+  } catch {
+    return 0;
   }
 }

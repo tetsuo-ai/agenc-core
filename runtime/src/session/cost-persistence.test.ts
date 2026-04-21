@@ -17,6 +17,8 @@ import {
   type CostTotalsFile,
   type SessionCostRecord,
 } from "./cost.js";
+import { EventLog } from "./event-log.js";
+import { SidecarManager } from "./sidecar.js";
 
 function makeProjectDir(): string {
   return mkdtempSync(join(tmpdir(), "agenc-cost-persistence-"));
@@ -330,6 +332,64 @@ describe("CostSidecar.stop (lifecycle)", () => {
     const sidecar = new CostSidecar({});
     await sidecar.stop(); // must not throw
     expect(sidecar.isDegraded()).toBe(false);
+  });
+
+  test("SidecarManager stop flushes the final snapshot and drops post-stop events", async () => {
+    const projectDir = makeProjectDir();
+    const sidecar = new CostSidecar({ projectDir, sessionId: "sess-managed" });
+    await sidecar.loadFromDisk();
+
+    const log = new EventLog();
+    const manager = new SidecarManager();
+    manager.register(sidecar);
+    await manager.start(log);
+
+    log.emit({
+      id: "1",
+      seq: 1,
+      msg: {
+        type: "turn_context",
+        payload: {
+          cwd: "/",
+          approvalPolicy: "never",
+          sandboxPolicy: "read_only",
+          model: "gpt-4o",
+        },
+      },
+    });
+    log.emit({
+      id: "2",
+      seq: 2,
+      msg: {
+        type: "token_count",
+        payload: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      },
+    });
+    log.emit({
+      id: "3",
+      seq: 3,
+      msg: { type: "turn_complete", payload: { turnId: "t1" } },
+    });
+
+    await manager.stop();
+
+    log.emit({
+      id: "4",
+      seq: 4,
+      msg: {
+        type: "token_count",
+        payload: { promptTokens: 99, completionTokens: 1, totalTokens: 100 },
+      },
+    });
+
+    const parsed = JSON.parse(
+      readFileSync(join(projectDir, COST_TOTALS_FILENAME), "utf8"),
+    ) as CostTotalsFile;
+    expect(parsed.sessions).toHaveLength(1);
+    expect(parsed.sessions[0]!.sessionId).toBe("sess-managed");
+    expect(parsed.sessions[0]!.usage.inputTokens).toBe(10);
+    expect(parsed.sessions[0]!.usage.outputTokens).toBe(5);
+    expect(parsed.sessions[0]!.usage.totalTokens).toBe(15);
   });
 });
 

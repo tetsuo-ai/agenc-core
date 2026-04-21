@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { EventLog } from "../session/event-log.js";
+import {
+  IncrementalTracker,
+  registerIncrementalTracker,
+} from "../llm/grok/incremental.js";
 import type { Session } from "../session/session.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 import type { LLMMessage } from "../llm/types.js";
@@ -128,6 +132,53 @@ describe("reactive-compact (I-40 throw guard)", () => {
     expect(state.transition?.reason).toBe("reactive_compact_retry");
     expect(state.messagesForQuery).toEqual(compacted);
     expect(state.hasAttemptedReactiveCompact).toBe(true);
+  });
+
+  test("success path clears registered response ids synchronously", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState();
+    state.messagesForQuery = [
+      { role: "user", content: "a" },
+      { role: "assistant", content: "b" },
+      { role: "user", content: "c" },
+      { role: "assistant", content: "d" },
+      { role: "user", content: "e" },
+      { role: "assistant", content: "f" },
+    ];
+
+    const tracker = new IncrementalTracker();
+    tracker.recordRequest(
+      { model: "grok-test", parallelToolCalls: false },
+      [],
+    );
+    tracker.recordResponse({
+      previousResponseId: "resp-reactive",
+      itemsAdded: [],
+      recordedAtMs: Date.now(),
+    });
+    const unregister = registerIncrementalTracker(tracker);
+    try {
+      expect(tracker.previousResponseId()).toBe("resp-reactive");
+
+      const driver: ReactiveCompactDriver = {
+        ...DEFAULT_REACTIVE_COMPACT_DRIVER,
+        isReactiveCompactEnabled: () => true,
+        async tryReactiveCompact() {
+          return { compactedMessages: [{ role: "user", content: "[summary]" }] };
+        },
+      };
+      const out = await runReactiveCompact({
+        session,
+        state,
+        lastMessage,
+        driver,
+      });
+      expect(out.kind).toBe("compacted");
+      expect(tracker.previousResponseId()).toBeUndefined();
+    } finally {
+      unregister();
+    }
   });
 
   test("resetHasAttemptedReactiveCompact helper", () => {

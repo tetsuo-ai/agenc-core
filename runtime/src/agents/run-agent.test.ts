@@ -8,6 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
 import { AgentRegistry } from "./registry.js";
 import {
@@ -20,54 +21,173 @@ import {
 import { _resetNicknamePoolForTesting } from "./role.js";
 import type { InterAgentCommunication } from "./mailbox.js";
 import type {
-  LLMChatOptions,
   LLMMessage,
   LLMProvider,
   LLMResponse,
+  StreamProgressCallback,
 } from "../llm/types.js";
+import { Session, type Event, type SessionOpts, type SessionServices } from "../session/session.js";
+import type {
+  Config,
+  ManagedFeatures,
+  ModelInfo,
+  SessionConfiguration,
+} from "../session/turn-context.js";
+import type { ToolRegistry } from "../tool-registry.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-type StubSession = {
-  readonly conversationId: string;
-  readonly childInboxes: Map<string, unknown>;
-  readonly eventLog: { emit: (event: unknown) => unknown };
-  nextInternalSubId: () => string;
-  readonly abortController: AbortController;
-  readonly services: Record<string, unknown>;
-};
-
-function makeStubSession(
-  services: Record<string, unknown> = {},
-): StubSession {
-  const emitted: unknown[] = [];
+function mkFeatures(): ManagedFeatures {
   return {
-    conversationId: "conv-parent",
-    childInboxes: new Map(),
-    eventLog: {
-      emit: (event: unknown) => {
-        emitted.push(event);
-        return event;
-      },
-    },
-    nextInternalSubId: () => `sub-${emitted.length}`,
-    abortController: new AbortController(),
-    services,
+    appsEnabledForAuth: () => false,
+    useLegacyLandlock: () => false,
   };
 }
 
-function makeProviderResponse(
-  content: string,
-  toolCalls: LLMResponse["toolCalls"] = [],
-): LLMResponse {
+function mkConfig(): Config {
   return {
-    content,
-    toolCalls,
-    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
     model: "stub-model",
-    finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
+    cwd: "/tmp",
+    features: mkFeatures(),
+    multiAgentV2: {
+      usageHintEnabled: false,
+      usageHintText: "",
+      hideSpawnAgentMetadata: false,
+    },
+    permissions: {
+      allowLoginShell: false,
+      shellEnvironmentPolicy: {
+        allowedEnvVars: [],
+        blockedEnvVars: [],
+      },
+      windowsSandboxPrivateDesktop: false,
+    },
+    ghostSnapshot: { enabled: false },
+    agentRoles: [],
+  };
+}
+
+function mkModelInfo(): ModelInfo {
+  return {
+    slug: "stub-model",
+    effectiveContextWindowPercent: 100,
+    contextWindow: 1024,
+    supportedReasoningLevels: [],
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  };
+}
+
+function mkSessionConfiguration(
+  overrides?: Partial<SessionConfiguration>,
+): SessionConfiguration {
+  const base: SessionConfiguration = {
+    cwd: "/tmp",
+    approvalPolicy: { value: "never" },
+    sandboxPolicy: { value: "read_only" },
+    fileSystemSandboxPolicy: {
+      allowWrite: [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+    },
+    windowsSandboxLevel: "none",
+    collaborationMode: { model: "stub-model" },
+    dynamicTools: [],
+    sessionSource: "cli_main",
+  };
+  return {
+    ...base,
+    ...overrides,
+    collaborationMode: {
+      ...base.collaborationMode,
+      ...(overrides?.collaborationMode ?? {}),
+    },
+  };
+}
+
+function mkRegistry(): ToolRegistry {
+  return {
+    tools: [],
+    toLLMTools: () => [],
+    dispatch: async () => ({ content: "", isError: false }),
+  };
+}
+
+function makeStubSession(
+  services: Partial<SessionServices> = {},
+): Session {
+  const state = {
+    sessionConfiguration: mkSessionConfiguration({
+      provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
+    }),
+    history: [],
+  };
+  const session = new Session({
+    conversationId: "conv-parent",
+    initialState: state as unknown as SessionOpts["initialState"],
+    features: mkFeatures(),
+    services: {
+      mcpConnectionManager: {
+        setApprovalPolicy: () => {},
+        setSandboxPolicy: () => {},
+        requiredStartupFailures: async () => [],
+      },
+      mcpStartupCancellationToken: {
+        cancel: () => {},
+        isCancelled: () => false,
+      },
+      provider: makeProvider([]),
+      registry: mkRegistry(),
+      hooks: {
+        executeStop: async () => ({}),
+      },
+      ...services,
+    } as unknown as SessionServices,
+    jsRepl: { id: "repl-test" },
+    config: mkConfig(),
+    modelInfo: mkModelInfo(),
+    eventQueue: new AsyncQueue<Event>(),
+  });
+  return session;
+}
+
+function makeProvider(
+  responses: Array<Partial<LLMResponse>>,
+): LLMProvider {
+  const queue = [...responses];
+  return {
+    name: "stub",
+    chat: vi.fn(async () => ({
+      content: "",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "stub-model",
+      finishReason: "stop",
+      ...(queue.shift() ?? {}),
+    })),
+    chatStream: vi.fn(
+      async (
+        _messages: LLMMessage[],
+        _onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => ({
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "stub-model",
+        finishReason: "stop",
+        ...(queue.shift() ?? {}),
+      }),
+    ),
+    healthCheck: vi.fn().mockResolvedValue(true),
   };
 }
 
@@ -88,7 +208,7 @@ async function collectRun(
   }
 }
 
-async function spawnLive(session: StubSession) {
+async function spawnLive(session: Session) {
   const registry = new AgentRegistry();
   const control = new AgentControl({
     session: session as unknown as ConstructorParameters<
@@ -115,15 +235,7 @@ afterEach(() => {
 
 describe("runAgent", () => {
   it("drives a single provider turn and forwards the assistant text via upInbox", async () => {
-    const chat = vi
-      .fn<LLMProvider["chat"]>()
-      .mockResolvedValue(makeProviderResponse("hello world"));
-    const provider: LLMProvider = {
-      name: "stub",
-      chat,
-      chatStream: vi.fn(),
-      healthCheck: vi.fn().mockResolvedValue(true),
-    };
+    const provider = makeProvider([{ content: "hello world" }]);
     const session = makeStubSession({ provider });
     const { live } = await spawnLive(session);
 
@@ -147,11 +259,10 @@ describe("runAgent", () => {
       }),
     );
 
-    expect(chat).toHaveBeenCalledTimes(1);
-    const [passedMessages, passedOptions] = chat.mock.calls[0]! as [
-      LLMMessage[],
-      LLMChatOptions | undefined,
-    ];
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    const [passedMessages, _onChunk, passedOptions] = (
+      provider.chatStream as ReturnType<typeof vi.fn>
+    ).mock.calls[0]! as [LLMMessage[], StreamProgressCallback, { signal?: AbortSignal }];
     expect(passedMessages).toHaveLength(2);
     expect(passedMessages[0]!.role).toBe("system");
     expect(passedOptions?.signal).toBeDefined();
@@ -173,12 +284,7 @@ describe("runAgent", () => {
   });
 
   it("marks completed on success", async () => {
-    const provider: LLMProvider = {
-      name: "stub",
-      chat: vi.fn().mockResolvedValue(makeProviderResponse("ok")),
-      chatStream: vi.fn(),
-      healthCheck: vi.fn().mockResolvedValue(true),
-    };
+    const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ provider });
     const { live } = await spawnLive(session);
 
@@ -197,11 +303,60 @@ describe("runAgent", () => {
     }
   });
 
+  it("runs child turns through the session turn loop and counts tool calls", async () => {
+    const provider = makeProvider([
+      {
+        content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+      },
+      { content: "tool work complete" },
+    ]);
+    const session = makeStubSession({
+      provider,
+      registry: {
+        tools: [
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute: async () => ({ content: JSON.stringify({ ok: true }) }),
+          },
+        ],
+        toLLMTools: () => [
+          {
+            type: "function",
+            function: {
+              name: "system.echo",
+              description: "echo",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        dispatch: async () => ({ content: JSON.stringify({ ok: true }) }),
+      } satisfies ToolRegistry,
+    });
+    const { live } = await spawnLive(session);
+
+    const { result } = await collectRun(
+      runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "go" }],
+        taskPrompt: "go",
+      }),
+    );
+
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect(result.finalMessage).toBe("tool work complete");
+    expect(result.toolCallCount).toBe(1);
+  });
+
   it("marks errored when the provider rejects", async () => {
     const provider: LLMProvider = {
       name: "stub",
-      chat: vi.fn().mockRejectedValue(new Error("provider_boom")),
-      chatStream: vi.fn(),
+      chat: vi.fn(),
+      chatStream: vi.fn().mockRejectedValue(new Error("provider_boom")),
       healthCheck: vi.fn().mockResolvedValue(true),
     };
     const session = makeStubSession({ provider });
@@ -226,8 +381,8 @@ describe("runAgent", () => {
 
   it("marks interrupted on signal.abort", async () => {
     let chatReject: ((err: Error) => void) | undefined;
-    const chat = vi.fn<LLMProvider["chat"]>().mockImplementation(
-      (_messages, options) =>
+    const chatStream = vi.fn<LLMProvider["chatStream"]>().mockImplementation(
+      (_messages, _onChunk, options) =>
         new Promise<LLMResponse>((_resolve, reject) => {
           chatReject = reject;
           options?.signal?.addEventListener("abort", () => {
@@ -237,8 +392,8 @@ describe("runAgent", () => {
     );
     const provider: LLMProvider = {
       name: "stub",
-      chat,
-      chatStream: vi.fn(),
+      chat: vi.fn(),
+      chatStream,
       healthCheck: vi.fn().mockResolvedValue(true),
     };
     const session = makeStubSession({ provider });
@@ -266,7 +421,7 @@ describe("runAgent", () => {
       }
     })();
 
-    // Wait a macrotask so runAgent has a chance to hit `provider.chat`.
+    // Wait a macrotask so runAgent has a chance to hit `provider.chatStream`.
     await new Promise((r) => setTimeout(r, 0));
     expect(chatReject).toBeDefined();
     live.abortController.abort("user_interrupt");

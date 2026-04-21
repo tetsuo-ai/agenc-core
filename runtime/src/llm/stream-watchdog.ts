@@ -66,6 +66,7 @@ export function isStreamWatchdogEnabled(): boolean {
  * check for this exact value.
  */
 export const STREAM_IDLE_ABORT_REASON = "stream_idle";
+export const STREAM_IDLE_WARNING_REASON = "stream_idle_warning";
 
 export interface StreamWatchdogHandle {
   /** Reset the idle timer on observed activity (per-chunk kick). */
@@ -89,6 +90,9 @@ export interface InstallStreamWatchdogOptions {
   /** Callback fired exactly once when the timer expires, before the
    *  `abortController.abort(...)` call. Emit I-8 `stream_error` here. */
   readonly onFired?: (info: { elapsedMs: number; reason: string }) => void;
+  /** Callback fired once per idle window at half the timeout. Use for
+   *  non-fatal diagnostics or typed warnings before the hard abort. */
+  readonly onWarning?: (info: { elapsedMs: number; reason: string }) => void;
   /** Force-enable or force-disable irrespective of env. */
   readonly enabled?: boolean;
 }
@@ -125,12 +129,42 @@ export function installStreamWatchdog(
 
   const startedAtMs = monotonicMs();
   let lastKickMs = startedAtMs;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let warningTimer: ReturnType<typeof setTimeout> | null = null;
+  let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
   let firedAtValue: number | null = null;
   let stopped = false;
+  const warningMs = timeoutMs / 2;
+
+  const clearTimers = () => {
+    if (warningTimer) {
+      clearTimeout(warningTimer);
+      warningTimer = null;
+    }
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = null;
+    }
+  };
+
+  const withUnref = (timer: ReturnType<typeof setTimeout> | null): void => {
+    if (timer && typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+  };
+
+  const warn = () => {
+    if (stopped || firedAtValue !== null) return;
+    warningTimer = null;
+    const warnedAtMs = monotonicMs();
+    options.onWarning?.({
+      elapsedMs: warnedAtMs - lastKickMs,
+      reason: STREAM_IDLE_WARNING_REASON,
+    });
+  };
 
   const fire = () => {
     if (stopped || firedAtValue !== null) return;
+    timeoutTimer = null;
     firedAtValue = monotonicMs();
     const elapsedMs = firedAtValue - lastKickMs;
     try {
@@ -142,12 +176,12 @@ export function installStreamWatchdog(
 
   const schedule = () => {
     if (stopped || firedAtValue !== null) return;
-    timer = setTimeout(fire, timeoutMs);
+    warningTimer = setTimeout(warn, warningMs);
+    timeoutTimer = setTimeout(fire, timeoutMs);
     // Don't keep the event loop alive solely on the watchdog — the
     // owning stream promise is what holds the process open.
-    if (timer && typeof (timer as { unref?: () => void }).unref === "function") {
-      (timer as { unref: () => void }).unref();
-    }
+    withUnref(warningTimer);
+    withUnref(timeoutTimer);
   };
 
   schedule();
@@ -156,16 +190,13 @@ export function installStreamWatchdog(
     kick() {
       if (stopped || firedAtValue !== null) return;
       lastKickMs = monotonicMs();
-      if (timer) clearTimeout(timer);
+      clearTimers();
       schedule();
     },
     stop() {
       if (stopped) return;
       stopped = true;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      clearTimers();
     },
     get firedAt() {
       return firedAtValue;

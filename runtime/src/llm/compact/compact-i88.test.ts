@@ -1,9 +1,14 @@
-import { describe, expect, test } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import {
   COMPACT_TOOL_RESULT_DROP_BYTES,
   filterLargeToolResultsForCompact,
+  loadCompactToolResultIndex,
 } from './compact.ts'
+import { SessionStore } from '../../session/session-store.js'
 
 /**
  * I-88 compact-prompt half: verify `filterLargeToolResultsForCompact`
@@ -34,6 +39,21 @@ function userWithToolResult(
 }
 
 describe('I-88 filterLargeToolResultsForCompact', () => {
+  let home = ''
+  let origAgencHome = ''
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agenc-compact-i88-'))
+    origAgencHome = process.env.AGENC_HOME ?? ''
+    process.env.AGENC_HOME = home
+  })
+
+  afterEach(() => {
+    if (origAgencHome) process.env.AGENC_HOME = origAgencHome
+    else delete process.env.AGENC_HOME
+    if (home) rmSync(home, { recursive: true, force: true })
+  })
+
   test('exports the 50KB threshold constant', () => {
     expect(COMPACT_TOOL_RESULT_DROP_BYTES).toBe(50 * 1024)
   })
@@ -93,6 +113,89 @@ describe('I-88 filterLargeToolResultsForCompact', () => {
     expect(result.dropped).toHaveLength(1)
     expect(result.dropped[0]!.turnId).toBe('turn-42')
     expect(result.dropped[0]!.toolCallId).toBe('call-big')
+  })
+
+  test('uses the per-turn index as a fast path for turns below threshold', () => {
+    const huge = 'x'.repeat(COMPACT_TOOL_RESULT_DROP_BYTES * 2)
+    const messages = [
+      {
+        type: 'assistant',
+        message: { id: 'a-1', content: [{ type: 'text', text: 'turn-1' }] },
+      },
+      userWithToolResult('call-fast-path', huge),
+      {
+        type: 'assistant',
+        message: { id: 'a-2', content: [{ type: 'text', text: 'turn-2' }] },
+      },
+      userWithToolResult('call-filter-me', huge),
+    ]
+
+    const result = filterLargeToolResultsForCompact(messages as never[], {
+      toolResultBytesByTurn: new Map([
+        ['turn-1', COMPACT_TOOL_RESULT_DROP_BYTES - 1],
+        ['turn-2', COMPACT_TOOL_RESULT_DROP_BYTES + 1],
+      ]),
+      toolCallTurnIds: new Map([
+        ['call-fast-path', 'turn-1'],
+        ['call-filter-me', 'turn-2'],
+      ]),
+    })
+
+    // The first turn is trusted from the index and skipped wholesale,
+    // even though the tool_result payload is large.
+    expect(result.messages[1]).toBe(messages[1])
+    // The second turn is over the threshold, so the real per-result
+    // scan still drops the oversized payload.
+    expect(result.messages[3]).not.toBe(messages[3])
+    expect(result.dropped).toHaveLength(1)
+    expect(result.dropped[0]!.toolCallId).toBe('call-filter-me')
+  })
+
+  test('loads the persisted compaction index snapshot when no rolloutStore is injected', () => {
+    const store = new SessionStore({
+      cwd: '/home/test-compact-i88',
+      sessionId: 'agent-compact-i88',
+      agencVersion: '0.2.0',
+    })
+    store.open({
+      sessionId: 'agent-compact-i88',
+      timestamp: new Date().toISOString(),
+      cwd: '/home/test-compact-i88',
+      originator: 'agenc-cli',
+      agencVersion: '0.2.0',
+    })
+    store.append(
+      {
+        id: 'tool-complete',
+        seq: 2,
+        msg: {
+          type: 'tool_call_completed',
+          payload: {
+            callId: 'call-from-snapshot',
+            result: 'x'.repeat(COMPACT_TOOL_RESULT_DROP_BYTES + 64),
+            isError: false,
+          },
+        },
+      },
+      {
+        turnId: 'turn-from-snapshot',
+        toolResultBytes: COMPACT_TOOL_RESULT_DROP_BYTES + 64,
+      },
+    )
+    store.close()
+
+    const compactionIndex = loadCompactToolResultIndex({
+      agentId: 'agent-compact-i88',
+      cwd: '/home/test-compact-i88',
+    } as never)
+
+    expect(compactionIndex).toBeDefined()
+    expect(
+      compactionIndex!.toolResultBytesByTurn.get('turn-from-snapshot'),
+    ).toBe(COMPACT_TOOL_RESULT_DROP_BYTES + 64)
+    expect(compactionIndex!.toolCallTurnIds.get('call-from-snapshot')).toBe(
+      'turn-from-snapshot',
+    )
   })
 
   test('measures structured (array) tool_result content by text bytes', () => {

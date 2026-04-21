@@ -14,7 +14,6 @@ import { randomUUID } from 'crypto'
 import type { PromptCommand } from '../commands.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
-import { query } from '../query.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -22,7 +21,6 @@ import {
 import { accumulateUsage, updateUsage } from '../services/api/claude.js'
 import { EMPTY_USAGE, type NonNullableUsage } from '../services/api/logging.js'
 import type { ToolUseContext } from '../Tool.js'
-import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import type { AgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
 import { createChildAbortController } from './abortController.js'
@@ -42,6 +40,7 @@ import {
   type ContentReplacementState,
   cloneContentReplacementState,
 } from './toolResultStorage.js'
+import { runRuntimeSubagent } from './runtimeSubagent.js'
 import { createAgentId } from './uuid.js'
 
 /**
@@ -180,7 +179,9 @@ export type PreparedForkedContext = {
   /** Modified getAppState with allowed tools */
   modifiedGetAppState: ToolUseContext['getAppState']
   /** The general-purpose agent to use */
-  baseAgent: AgentDefinition
+  baseAgent: {
+    agentType: string
+  }
   /** Initial prompt messages */
   promptMessages: Message[]
 }
@@ -541,61 +542,53 @@ export async function runForkedAgent({
         : null
   }
 
-  // Run the query loop with isolated context (cache-safe params preserved)
+  // Run the child turn on the codex runtime path instead of legacy query().
   try {
-    for await (const message of query({
-      messages: initialMessages,
-      systemPrompt,
-      userContext,
-      systemContext,
+    const result = await runRuntimeSubagent({
+      initialMessages,
+      taskPrompt:
+        typeof promptMessages.at(-1)?.message?.content === 'string'
+          ? promptMessages.at(-1)!.message.content
+          : forkLabel,
+      toolAllowlist: isolatedToolUseContext.options.tools?.map(
+        (tool: { name?: string }) => String(tool?.name ?? ''),
+      ),
+      legacyTools: isolatedToolUseContext.options.tools,
       canUseTool,
-      toolUseContext: isolatedToolUseContext,
-      querySource,
-      maxOutputTokensOverride: maxOutputTokens,
-      maxTurns,
-      skipCacheWrite,
-    })) {
-      // Extract real usage from message_delta stream events (final usage per API call)
-      if (message.type === 'stream_event') {
+      ...(overrides?.abortController
+        ? { externalSignal: overrides.abortController.signal }
+        : {}),
+      onMessage(message) {
+        logForDebugging(
+          `Forked agent [${forkLabel}] received message: type=${message.type}`,
+        )
+        outputMessages.push(message)
+        onMessage?.(message)
+
         if (
-          'event' in message &&
-          message.event?.type === 'message_delta' &&
-          message.event.usage
+          agentId &&
+          (message.type === 'assistant' ||
+            message.type === 'user' ||
+            message.type === 'progress')
         ) {
-          const turnUsage = updateUsage({ ...EMPTY_USAGE }, message.event.usage)
-          totalUsage = accumulateUsage(totalUsage, turnUsage)
-        }
-        continue
-      }
-      if (message.type === 'stream_request_start') {
-        continue
-      }
-
-      logForDebugging(
-        `Forked agent [${forkLabel}] received message: type=${message.type}`,
-      )
-
-      outputMessages.push(message as Message)
-      onMessage?.(message as Message)
-
-      // Record transcript for recordable message types (same pattern as runAgent.ts)
-      const msg = message as Message
-      if (
-        agentId &&
-        (msg.type === 'assistant' ||
-          msg.type === 'user' ||
-          msg.type === 'progress')
-      ) {
-        await recordSidechainTranscript([msg], agentId, lastRecordedUuid).catch(
-          err =>
+          void recordSidechainTranscript(
+            [message],
+            agentId,
+            lastRecordedUuid,
+          ).catch(err =>
             logForDebugging(
               `Forked agent [${forkLabel}] failed to record transcript: ${err}`,
             ),
-        )
-        if (msg.type !== 'progress') {
-          lastRecordedUuid = msg.uuid
+          )
+          if (message.type !== 'progress') {
+            lastRecordedUuid = message.uuid
+          }
         }
-      }
+      },
+    })
+
+    if (result.error) {
+      throw result.error
     }
   } finally {
     // Release cloned file state cache memory (same pattern as runAgent.ts)

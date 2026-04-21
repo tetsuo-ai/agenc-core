@@ -2,7 +2,6 @@ import { feature } from 'bun:bundle'
 import { markPostCompaction } from 'src/bootstrap/state.js'
 import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
-import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
@@ -22,6 +21,7 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
+import type { CompactRuntimeContext } from './context.js'
 import { runPostCompactCleanup } from './post-compact-cleanup.js'
 import { trySessionMemoryCompaction } from './session-memory-compact.js'
 
@@ -250,7 +250,7 @@ export async function shouldAutoCompact(
 
 export async function autoCompactIfNeeded(
   messages: Message[],
-  toolUseContext: ToolUseContext,
+  toolUseContext: CompactRuntimeContext,
   cacheSafeParams: CacheSafeParams,
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,

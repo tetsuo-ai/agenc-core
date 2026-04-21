@@ -6,8 +6,9 @@
  *
  *   1. **Append history** — ensure all iteration outputs (assistant
  *      message, tool results, attachments) are in `state.messages`.
- *      Await any pending tool-use summary promise so the next
- *      iteration observes a stable history.
+ *      Await any pending tool-use summary promise so the UI sees the
+ *      final text before the next iteration, without re-inserting
+ *      renderer-only summaries into model-visible history.
  *
  *   2. **Compaction boundary** — if this iteration ran auto-compact
  *      successfully (tracking.compacted && turnCounter === 0), emit a
@@ -41,6 +42,21 @@ import { evaluateStopHooks } from "./stop-hooks.js";
  */
 export const MAX_STOP_HOOK_BLOCKS = 3;
 
+function toolUseSummaryText(summary: unknown): string | null {
+  if (summary === null || summary === undefined || typeof summary !== "object") {
+    return null;
+  }
+  const record = summary as Record<string, unknown>;
+  const text =
+    typeof record.summary === "string"
+      ? record.summary.trim()
+      : typeof record.content === "string"
+        ? record.content.trim()
+        : "";
+  if (text.length === 0) return null;
+  return text;
+}
+
 export async function commit(
   state: TurnState,
   ctx: TurnContext,
@@ -48,16 +64,25 @@ export async function commit(
   signal?: AbortSignal,
 ): Promise<TurnState> {
   // ── 1. Append history — await any pending tool-use summary promise
-  //      so state.messages is stable before the next iteration runs
-  //      prepareContext and reads messagesForQuery off of it.
+  //      so the UI sees the final summary before the next iteration.
   if (state.pendingToolUseSummary) {
     try {
       const summary = await state.pendingToolUseSummary;
-      if (summary) {
-        // T7 wires: push the summary into state.messages as a
-        // user-meta message. For T5 the summary type is a placeholder
-        // structure; the adapter will land alongside the real
-        // StreamingToolExecutor in T7.
+      const summaryText = toolUseSummaryText(summary);
+      if (summaryText) {
+        // Tool-use summaries are UI affordances only. Re-inserting them
+        // into `state.messages` makes the next model turn treat renderer
+        // commentary as conversation history, which diverges from the
+        // retained compact/replay contract.
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "agent_message",
+            payload: {
+              message: summaryText,
+            },
+          },
+        });
       }
     } catch {
       /* summary failures non-fatal; executor emits stream_error */

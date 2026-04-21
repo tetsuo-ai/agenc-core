@@ -46,9 +46,28 @@
  */
 
 import type { LLMMessage } from "../llm/types.js";
+import type { QuerySource } from "../constants/querySource.js";
+import { calculateTokenWarningState, isAutoCompactEnabled } from "../llm/compact/auto-compact.js";
+import {
+  buildCompactedRolloutItem,
+  buildPostCompactMessages,
+} from "../llm/compact/compact.js";
+import {
+  buildCompactCacheSafeParams,
+  createSessionBackedCompactContext,
+} from "../llm/compact/runtime-context.js";
+import { PROMPT_TOO_LONG_ERROR_MESSAGE } from "../recovery/api-errors.js";
 import type { Session } from "../session/session.js";
 import type { Config, TurnContext } from "../session/turn-context.js";
-import type { TurnState } from "../session/turn-state.js";
+import type {
+  AssistantMessage,
+  Terminal,
+  TurnState,
+} from "../session/turn-state.js";
+import {
+  finalContextTokensFromLastResponse,
+  tokenCountWithEstimation,
+} from "../utils/tokens.js";
 
 /**
  * Dynamic loader for the compact/ subsystem. Each compact stage is
@@ -376,12 +395,111 @@ interface SnipCompactModule {
   };
 }
 
+export interface PrepareContextTerminalState {
+  readonly terminal: Terminal;
+  readonly assistantMessage: AssistantMessage;
+}
+
+const PREPARE_CONTEXT_TERMINAL = Symbol("prepare_context_terminal");
+
+type TurnStateWithPrepareContextTerminal = TurnState & {
+  [PREPARE_CONTEXT_TERMINAL]?: PrepareContextTerminalState;
+};
+
+interface PrepareContextRuntimeOptions {
+  readonly querySource?: QuerySource;
+  readonly taskBudget?: { readonly total: number };
+  readonly reactiveCompact?: {
+    readonly isReactiveCompactEnabled?: () => boolean;
+  };
+  readonly contextCollapse?: {
+    readonly isContextCollapseEnabled?: () => boolean;
+    readonly isEnabled?: () => boolean;
+  };
+}
+
+function clearPrepareContextTerminal(state: TurnState): void {
+  delete (state as TurnStateWithPrepareContextTerminal)[PREPARE_CONTEXT_TERMINAL];
+}
+
+function setPrepareContextTerminal(
+  state: TurnState,
+  message: string,
+): void {
+  (state as TurnStateWithPrepareContextTerminal)[PREPARE_CONTEXT_TERMINAL] = {
+    terminal: { reason: "blocking_limit" },
+    assistantMessage: {
+      uuid: crypto.randomUUID(),
+      role: "assistant",
+      text: message,
+      toolCalls: [],
+      apiError: "prompt_too_long",
+    },
+  };
+}
+
+export function getPrepareContextTerminal(
+  state: TurnState,
+): PrepareContextTerminalState | undefined {
+  return (state as TurnStateWithPrepareContextTerminal)[PREPARE_CONTEXT_TERMINAL];
+}
+
+function resolvePrepareContextRuntimeOptions(
+  ctx: TurnContext,
+  session: Session,
+): Required<Pick<PrepareContextRuntimeOptions, "querySource">> &
+  Omit<PrepareContextRuntimeOptions, "querySource"> {
+  const fromCtx = ctx as TurnContext & PrepareContextRuntimeOptions;
+  const fromSession = session as Session & {
+    services?: PrepareContextRuntimeOptions;
+  };
+  return {
+    querySource:
+      fromCtx.querySource ??
+      fromSession.services?.querySource ??
+      "repl_main_thread",
+    taskBudget: fromCtx.taskBudget ?? fromSession.services?.taskBudget,
+    reactiveCompact:
+      fromCtx.reactiveCompact ?? fromSession.services?.reactiveCompact,
+    contextCollapse:
+      fromCtx.contextCollapse ?? fromSession.services?.contextCollapse,
+  };
+}
+
+function isContextCollapseEnabledForPrepareContext(
+  runtimeOptions: ReturnType<typeof resolvePrepareContextRuntimeOptions>,
+): boolean {
+  const collapse = runtimeOptions.contextCollapse;
+  if (!collapse) return false;
+  if (typeof collapse.isContextCollapseEnabled === "function") {
+    return collapse.isContextCollapseEnabled();
+  }
+  if (typeof collapse.isEnabled === "function") {
+    return collapse.isEnabled();
+  }
+  return false;
+}
+
+function isReactiveCompactEnabledForPrepareContext(
+  runtimeOptions: ReturnType<typeof resolvePrepareContextRuntimeOptions>,
+): boolean {
+  const reactiveCompact = runtimeOptions.reactiveCompact;
+  if (!reactiveCompact) return false;
+  if (typeof reactiveCompact.isReactiveCompactEnabled === "function") {
+    return reactiveCompact.isReactiveCompactEnabled();
+  }
+  return false;
+}
+
 export async function prepareContext(
   state: TurnState,
   ctx: TurnContext,
   session: Session,
   _signal?: AbortSignal,
 ): Promise<TurnState> {
+  clearPrepareContextTerminal(state);
+  const runtimeOptions = resolvePrepareContextRuntimeOptions(ctx, session);
+
   // Stage 1: compact-boundary projection (openclaude query.ts:369).
   let messagesForQuery = getMessagesAfterCompactBoundary(state.messages);
 
@@ -471,6 +589,13 @@ export async function prepareContext(
   }
 
   // Stage 4: microCompact.
+  const runtimeQuerySource = runtimeOptions.querySource ?? "repl_main_thread";
+  const compactRuntimeContext = createSessionBackedCompactContext(session, {
+    querySource: runtimeQuerySource,
+    turnContext: ctx,
+    cwd: ctx.cwd,
+    isNonInteractiveSession: false,
+  });
   const microMod = await safeCompactImport<MicroCompactModule>(
     "micro_compact",
     () => import("../llm/compact/micro-compact.js"),
@@ -480,8 +605,8 @@ export async function prepareContext(
     try {
       const result = await microMod.microcompactMessages(
         messagesForQuery,
-        ctx,
-        "repl_main_thread",
+        compactRuntimeContext,
+        runtimeQuerySource,
       );
       messagesForQuery = result.messages;
     } catch (error) {
@@ -519,31 +644,47 @@ export async function prepareContext(
     () => import("../llm/compact/auto-compact.js"),
     session,
   );
+  let compactedThisIteration = false;
   if (autoMod?.autoCompactIfNeeded) {
     try {
+      const cacheSafeParams = await buildCompactCacheSafeParams(
+        compactRuntimeContext,
+        messagesForQuery,
+      );
       const result = await autoMod.autoCompactIfNeeded(
         messagesForQuery,
-        ctx,
+        compactRuntimeContext,
+        cacheSafeParams,
+        runtimeQuerySource,
         state.autoCompactTracking,
         snipTokensFreed,
-        "repl_main_thread",
       );
       if (result.wasCompacted && result.compactionResult) {
+        compactedThisIteration = true;
+        const compactResult =
+          result.compactionResult as Parameters<typeof buildPostCompactMessages>[0];
+        session.rolloutStore?.appendRollout(
+          {
+            type: "compacted",
+            payload: buildCompactedRolloutItem(compactResult),
+          },
+          { durable: true },
+        );
+        if (runtimeOptions.taskBudget) {
+          const preCompactContext =
+            finalContextTokensFromLastResponse(messagesForQuery);
+          state.taskBudgetRemaining = Math.max(
+            0,
+            (state.taskBudgetRemaining ?? runtimeOptions.taskBudget.total) -
+              preCompactContext,
+          );
+        }
         // The post-compact messages replace messagesForQuery; the
         // boundary marker plus summary + attachments are authored by
-        // compact.ts::buildPostCompactMessages. T6 wires the real
-        // rollout-side recording; here we splice into messagesForQuery
-        // directly so this iteration's stream sees the compacted view.
-        const compactResult = result.compactionResult as {
-          summaryMessages: LLMMessage[];
-          attachments: LLMMessage[];
-          hookResults: LLMMessage[];
-        };
-        messagesForQuery = [
-          ...(compactResult.summaryMessages ?? []),
-          ...(compactResult.attachments ?? []),
-          ...(compactResult.hookResults ?? []),
-        ];
+        // compact.ts::buildPostCompactMessages. Persist the matching
+        // `compacted` rollout item immediately, then splice the compacted
+        // view into this iteration so the stream sees the same boundary.
+        messagesForQuery = buildPostCompactMessages(compactResult);
         // Stamp auto-compact tracking so the commit phase emits the
         // boundary marker (runtime/src/phases/commit.ts).
         state.autoCompactTracking = {
@@ -552,12 +693,13 @@ export async function prepareContext(
           turnCounter: 0,
           consecutiveFailures: 0,
         };
-      } else if (
-        result.consecutiveFailures !== undefined &&
-        state.autoCompactTracking
-      ) {
+      } else if (result.consecutiveFailures !== undefined) {
         state.autoCompactTracking = {
-          ...state.autoCompactTracking,
+          ...(state.autoCompactTracking ?? {
+            compacted: false,
+            turnId: "",
+            turnCounter: 0,
+          }),
           consecutiveFailures: result.consecutiveFailures,
         };
       }
@@ -578,10 +720,50 @@ export async function prepareContext(
     }
   }
 
-  // Stage 7: blocking-limit preempt (openclaude query.ts:596-651).
-  // T8 recovery ladder handles the real routing; this is a placeholder
-  // slot that will check `calculateTokenWarningState` once its
-  // dependencies (token counter, model registry) are wired.
+  // Stage 7: blocking-limit preempt (openclaude query.ts:596-679).
+  // The phase port cannot yield directly, so it stores the typed local
+  // terminal + synthetic assistant error message on TurnState for the
+  // caller to consume before sampling.
+  let collapseOwnsIt = false;
+  if (isContextCollapseEnabledForPrepareContext(runtimeOptions)) {
+    collapseOwnsIt = isAutoCompactEnabled();
+  }
+  const reactiveCompactEnabled =
+    isReactiveCompactEnabledForPrepareContext(runtimeOptions);
+  if (
+    !compactedThisIteration &&
+    runtimeOptions.querySource !== "compact" &&
+    runtimeOptions.querySource !== "session_memory" &&
+    !(reactiveCompactEnabled && isAutoCompactEnabled()) &&
+    !collapseOwnsIt
+  ) {
+    const { isAtBlockingLimit } = calculateTokenWarningState(
+      tokenCountWithEstimation(messagesForQuery) - snipTokensFreed,
+      ctx.modelInfo.slug,
+    );
+    if (isAtBlockingLimit) {
+      setPrepareContextTerminal(state, PROMPT_TOO_LONG_ERROR_MESSAGE);
+    }
+  }
+
+  if (
+    state.autoCompactTracking?.consecutiveFailures !== undefined &&
+    state.autoCompactTracking.consecutiveFailures >= 3 &&
+    isAutoCompactEnabled()
+  ) {
+    const tokenUsage =
+      tokenCountWithEstimation(messagesForQuery) - snipTokensFreed;
+    const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
+      tokenUsage,
+      ctx.modelInfo.slug,
+    );
+    if (isAboveAutoCompactThreshold) {
+      setPrepareContextTerminal(
+        state,
+        "The conversation has exceeded the context limit and automatic compaction has failed. Press esc twice to go up a few messages and try again, or start a new session with /new.",
+      );
+    }
+  }
 
   state.messagesForQuery = messagesForQuery;
   return state;

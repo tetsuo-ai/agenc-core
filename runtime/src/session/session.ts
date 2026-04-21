@@ -37,6 +37,7 @@ import { AsyncLock } from "../utils/async-lock.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import { monotonicMs } from "../utils/monotonic.js";
+import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "../tool-registry.js";
@@ -47,6 +48,7 @@ import {
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
+import { startMcpManagerForSession } from "./mcp-startup.js";
 import {
   EventLog,
   isDurableEvent,
@@ -55,7 +57,12 @@ import {
   type SessionConfiguredEvent,
 } from "./event-log.js";
 import type { RolloutStore } from "./rollout-store.js";
-import type {
+import type { AppendOptions } from "./session-store.js";
+import {
+  buildPerTurnConfig,
+  newDefaultTurnWithSubId as buildDefaultTurnWithSubId,
+  newTurnWithSubId as buildTurnWithSubId,
+  type Config,
   AuthManager,
   Environment,
   JsReplHandle,
@@ -65,7 +72,10 @@ import type {
   SessionConfiguration,
   SessionTelemetry,
   SkillLoadOutcome,
+  type TurnContext,
 } from "./turn-context.js";
+import type { PhaseEvent } from "../phases/events.js";
+import type { RunTurnOptions, Terminal } from "./run-turn.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Placeholder types for forward-dep subsystems.
@@ -214,6 +224,17 @@ export interface ModelsManager {
 export interface McpManager {
   effectiveServers(config: unknown, auth: unknown): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
+  /**
+   * Live runtime readiness seam used by the delegate/subagent path.
+   * Optional so compatibility shims remain structurally valid, but the
+   * canonical bootstrap path should expose the real manager's
+   * connectivity state here.
+   */
+  isConnected?(name: string): boolean;
+  resolveMcpToolInfo?(
+    toolName: string,
+  ): { readonly serverName: string; readonly toolName: string } | undefined;
+  getServerForTool?(namespacedName: string): string | undefined;
 }
 
 export interface McpServerInfo {
@@ -414,6 +435,10 @@ export interface SessionOpts {
   readonly features: ManagedFeatures;
   readonly services: SessionServices;
   readonly jsRepl: JsReplHandle;
+  /** Session-level config snapshot used for per-turn TurnContext builders. */
+  readonly config?: Config;
+  /** Session-level model metadata used for per-turn TurnContext builders. */
+  readonly modelInfo?: ModelInfo;
   /** Existing event-stream consumer (T6 wires sidecars on top). */
   readonly eventQueue?: AsyncQueue<Event>;
   /** Initial AgentStatus (default: idle). */
@@ -474,6 +499,12 @@ export class Session {
 
   /** codex: `js_repl: Arc<JsReplHandle>`. */
   readonly jsRepl: JsReplHandle;
+
+  /** Session-root config snapshot used to build per-turn frozen configs. */
+  readonly config: Config;
+
+  /** Session-root model metadata used by the turn-context builder. */
+  readonly modelInfo: ModelInfo;
 
   /** codex: `next_internal_sub_id: AtomicU64` — monotonic sub-id counter. */
   private nextInternalSubIdValue: number;
@@ -589,6 +620,17 @@ export class Session {
         ? { ...opts.services, permissionModeRegistry: resolvedRegistry }
         : opts.services;
     this.jsRepl = opts.jsRepl;
+    this.config =
+      opts.config ??
+      deriveMinimalSessionConfig(
+        opts.initialState.sessionConfiguration,
+        opts.features,
+      );
+    this.modelInfo =
+      opts.modelInfo ??
+      deriveMinimalModelInfo(
+        opts.initialState.sessionConfiguration.collaborationMode?.model ?? "",
+      );
     this.nextInternalSubIdValue = 0;
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
     this.budgetTracker = opts.budgetTracker ?? null;
@@ -609,6 +651,161 @@ export class Session {
     pendingSwitch: PendingProviderSwitch | null,
   ): void {
     this.pendingProviderSwitch = pendingSwitch;
+  }
+
+  /**
+   * Live view of the mutable session configuration. Per-turn callers must
+   * still freeze their own snapshot via the TurnContext builder.
+   */
+  get sessionConfiguration(): SessionConfiguration {
+    return this.state.unsafePeek().sessionConfiguration;
+  }
+
+  /**
+   * Session-scoped provider accessor for the canonical turn builder path.
+   * Throws when a loose-cast test fixture omitted the provider and then
+   * attempted to use the live turn owner path.
+   */
+  get provider(): LLMProvider {
+    const provider = (this.services as Partial<SessionServices>).provider;
+    if (!provider) {
+      throw new Error(
+        "Session provider is required to build or run a live turn",
+      );
+    }
+    return provider;
+  }
+
+  get authManager(): AuthManager | undefined {
+    return (this.services as Partial<SessionServices>).authManager;
+  }
+
+  get environment(): Environment | undefined {
+    return (this.services as Partial<SessionServices>).environment;
+  }
+
+  get network(): NetworkProxy | undefined {
+    return (this.services as Partial<SessionServices>).networkProxy;
+  }
+
+  get permissionModeRegistry(): PermissionModeRegistry {
+    return this.services.permissionModeRegistry;
+  }
+
+  buildPerTurnConfig(overrides?: Partial<Config>): Readonly<Config> {
+    return buildPerTurnConfig(this, overrides);
+  }
+
+  newDefaultTurnWithSubId(subId: string): TurnContext {
+    return buildDefaultTurnWithSubId(this, subId);
+  }
+
+  newDefaultTurn(): TurnContext {
+    return this.newDefaultTurnWithSubId(this.nextInternalSubId());
+  }
+
+  newTurnWithSubId(
+    subId: string,
+    configOverrides?: Partial<Config>,
+  ): TurnContext {
+    return buildTurnWithSubId(this, subId, configOverrides);
+  }
+
+  async consumePendingProviderSwitch(): Promise<void> {
+    const pending = this.pendingProviderSwitch;
+    if (!pending) return;
+
+    const peeked = this.state.unsafePeek() as {
+      sessionConfiguration?: {
+        provider?: { slug?: string };
+        collaborationMode?: { model?: string };
+      };
+    };
+    const beforeModel =
+      peeked.sessionConfiguration?.collaborationMode?.model ?? "unknown";
+    const beforeProvider =
+      peeked.sessionConfiguration?.provider?.slug ?? "unknown";
+
+    let resolvedModel = pending.model;
+    if (pending.profile) {
+      const configStore = (this.services as Partial<SessionServices>).configStore;
+      if (configStore && typeof configStore.current === "function") {
+        try {
+          const { resolveProfile } = await import("../config/profiles.js");
+          const overlaid = resolveProfile(configStore.current(), pending.profile);
+          if (overlaid.model && overlaid.model.length > 0) {
+            resolvedModel = overlaid.model;
+          }
+        } catch {
+          // The staging site already validated the profile; keep the marker's
+          // raw model when the overlay lookup is unavailable here.
+        }
+      }
+    }
+
+    await this.state.with((state) => {
+      const cfg = (state as {
+        sessionConfiguration?: {
+          collaborationMode?: { model?: string };
+        };
+      }).sessionConfiguration;
+      if (!cfg) return;
+      cfg.collaborationMode = {
+        ...(cfg.collaborationMode ?? {}),
+        model: resolvedModel,
+      };
+    });
+
+    this.setPendingProviderSwitch(null);
+
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "provider_switch_applied",
+          message: `provider ${beforeProvider} → ${pending.provider}; model ${beforeModel} → ${resolvedModel}${
+            pending.profile ? `; profile ${pending.profile}` : ""
+          }`,
+        },
+      },
+    });
+  }
+
+  async *runTurn(
+    userMessage: string,
+    opts: SessionRunTurnOptions = {},
+  ): AsyncGenerator<PhaseEvent, Terminal> {
+    if (
+      opts.ctx !== undefined &&
+      (opts.subId !== undefined || opts.configOverrides !== undefined)
+    ) {
+      throw new Error(
+        "Session.runTurn accepts either ctx or subId/configOverrides, not both",
+      );
+    }
+    const ctx =
+      opts.ctx ??
+      (opts.configOverrides !== undefined
+        ? this.newTurnWithSubId(
+            opts.subId ?? this.nextInternalSubId(),
+            opts.configOverrides,
+          )
+        : this.newDefaultTurnWithSubId(
+            opts.subId ?? this.nextInternalSubId(),
+          ));
+    const { ctx: _ctx, subId: _subId, configOverrides: _configOverrides, ...runOpts } =
+      opts;
+    void _ctx;
+    void _subId;
+    void _configOverrides;
+    const { runTurnKernel } = await import("./run-turn.js");
+    const iter = runTurnKernel(this, ctx, userMessage, runOpts);
+    while (true) {
+      const next = await iter.next();
+      if (next.done) return next.value;
+      yield next.value;
+    }
   }
 
   /**
@@ -634,13 +831,27 @@ export class Session {
    * I-8: every error site MUST funnel through this or the dedicated
    * `emitError` helper (event-log.ts).
    */
-  emit(event: Event): void {
+  emit(event: Event, appendOpts: AppendOptions = {}): void {
     // I-27: assign seq synchronously + fan to subscribers.
     const stamped = this.eventLog.emit(event);
+    const derivedTurnId =
+      appendOpts.turnId ??
+      (stamped.msg.type === "tool_call_completed"
+        ? this.activeTurn.unsafePeek()?.turnId
+        : undefined);
+    const derivedToolResultBytes =
+      appendOpts.toolResultBytes ??
+      (stamped.msg.type === "tool_call_completed"
+        ? measureToolResultBytes(stamped.msg.payload.result)
+        : undefined);
     // T6: persist if store is wired. isDurableEvent triggers I-4 fsync.
     if (this.rolloutStore) {
       this.rolloutStore.append(stamped, {
-        durable: isDurableEvent(stamped),
+        durable: isDurableEvent(stamped) || appendOpts.durable === true,
+        ...(derivedTurnId !== undefined ? { turnId: derivedTurnId } : {}),
+        ...(derivedToolResultBytes !== undefined
+          ? { toolResultBytes: derivedToolResultBytes }
+          : {}),
       });
     }
     // Legacy consumer path.
@@ -652,6 +863,31 @@ export class Session {
    */
   sendEvent(subId: string, msg: EventMsg): void {
     this.emit({ id: subId, msg });
+  }
+
+  /**
+   * Session-owned MCP startup contract for the live runtime path.
+   * Callers may construct the concrete manager, but attach/start
+   * ordering lives here so bootstrap/CLI do not each invent their own
+   * sequencing.
+   */
+  async startMcpManager(
+    manager: MCPManager,
+    opts: MCPManagerStartOpts = {},
+  ): Promise<void> {
+    await startMcpManagerForSession(manager, this, opts);
+  }
+
+  /**
+   * Codex parity seam for the empty-input fast-path in `run_turn`.
+   *
+   * Today the active-turn pending-input queue is not ported yet, so the
+   * live check covers the mailbox-backed idle/peer traffic that can wake
+   * the next turn. This is the only state `run-turn.ts` needs to decide
+   * whether an empty submission is a no-op or should continue.
+   */
+  hasPendingInput(): boolean {
+    return this.mailbox.hasPending();
   }
 
   /**
@@ -834,4 +1070,60 @@ export class Session {
     this.agentStatus.next({ status: "shutdown" });
     this.agentStatus.complete();
   }
+}
+
+function measureToolResultBytes(payload: unknown): number {
+  if (typeof payload === "string") {
+    return Buffer.byteLength(payload, "utf8");
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(payload ?? ""), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+export interface SessionRunTurnOptions extends RunTurnOptions {
+  readonly ctx?: TurnContext;
+  readonly subId?: string;
+  readonly configOverrides?: Partial<Config>;
+}
+
+function deriveMinimalSessionConfig(
+  sessionConfiguration: SessionConfiguration,
+  features: ManagedFeatures,
+): Config {
+  const model = sessionConfiguration.collaborationMode?.model ?? "unknown-model";
+  const cwd = sessionConfiguration.cwd ?? process.cwd();
+  return {
+    model,
+    cwd,
+    features,
+    multiAgentV2: {
+      usageHintEnabled: false,
+      usageHintText: "",
+      hideSpawnAgentMetadata: false,
+    },
+    permissions: {
+      allowLoginShell: false,
+      shellEnvironmentPolicy: {
+        allowedEnvVars: [],
+        blockedEnvVars: [],
+      },
+      windowsSandboxPrivateDesktop: false,
+    },
+    ghostSnapshot: { enabled: false },
+    agentRoles: [],
+  };
+}
+
+function deriveMinimalModelInfo(slug: string): ModelInfo {
+  return {
+    slug: slug || "unknown-model",
+    effectiveContextWindowPercent: 1,
+    supportedReasoningLevels: [],
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  };
 }

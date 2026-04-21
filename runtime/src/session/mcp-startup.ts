@@ -1,36 +1,82 @@
 /**
- * MCP manager attachment seam.
- *
- * The CLI entry point (`bin/agenc.ts`) does not yet construct an
- * `MCPManager` directly — the T9 MCP wiring for the CLI is still
- * deferred to `services.mcpManager` being a live instance. The
- * observer helpers in `observer-wiring.ts` build a ready-to-install
- * `MCPCallObserver`, but until this helper runs the observer is
- * unreferenced and `mcp_tool_call_begin` / `mcp_tool_call_end`
- * events silently drop for any future MCP plumbing.
+ * MCP manager startup helpers owned by the session boundary.
  *
  * `attachMcpManagerToSession` is the single canonical attach site so
- * every owner (CLI, daemon, tests) wires the observer the same way.
- * Call this BEFORE `manager.start()`; the bridge factory bakes the
- * observer into every per-tool `execute()` closure at creation time,
- * so attaching after `start()` only covers bridges created afterwards.
+ * every session owner (CLI, daemon, tests) wires the observer the same
+ * way. Call this BEFORE `manager.start()`; the bridge factory bakes the
+ * observer into every per-tool `execute()` closure at creation time, so
+ * attaching after `start()` only covers bridges created afterwards.
+ *
+ * `startMcpManagerForSession` is the live contract used by bootstrap:
+ * the caller may still construct the concrete `MCPManager`, but the
+ * session boundary owns the attach/start ordering for the running
+ * session.
  *
  * This module also ships `getMcpConfigFromEnv()`, a minimal escape
- * hatch that lets ops inject MCP servers via the
- * `AGENC_MCP_SERVERS` env var until the full `~/.agenc/config.toml`
- * plumbing lands (T10). The env var must be a JSON array of
- * `MCPServerConfig` objects.
+ * hatch that lets ops inject MCP servers via the `AGENC_MCP_SERVERS`
+ * env var until the full `~/.agenc/config.toml` plumbing lands (T10).
+ * The env var must be a JSON array of `MCPServerConfig` objects.
  *
  * @module
  */
 
-import type { MCPManager } from "../mcp-client/manager.js";
+import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
+import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
 import type { Session } from "./session.js";
-import {
-  createMCPCallObserverForSlot,
-  type SessionSlot,
-} from "./observer-wiring.js";
+import type { SessionServices } from "./session.js";
+import { createMCPCallObserverForSession } from "./observer-wiring.js";
+
+/**
+ * Construct the real runtime `MCPManager` for a session boundary.
+ * Bootstrap/CLI own env/config discovery, but the concrete manager
+ * type comes from the session MCP startup module so the live lifecycle
+ * stays anchored at the runtime boundary instead of legacy service/UI
+ * surfaces.
+ */
+export function createSessionMcpManager(
+  configs: ReadonlyArray<MCPServerConfig>,
+): MCPManager {
+  return new LiveMCPManager([...configs]);
+}
+
+/**
+ * Minimal env-backed manager construction for the local runtime path.
+ * This preserves the current `AGENC_MCP_SERVERS` escape hatch while
+ * making the session bootstrap layer the owner of manager creation.
+ */
+export function createSessionMcpManagerFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): MCPManager {
+  return createSessionMcpManager(getMcpConfigFromEnv(env));
+}
+
+/**
+ * Session-facing MCP service surface. This is intentionally not the
+ * old React/service MCP owner; it is a thin facade over the real live
+ * manager so routing/provenance callers and subagent readiness checks
+ * all observe the same runtime-owned connection state.
+ */
+export function createSessionMcpService(
+  manager: MCPManager,
+): SessionServices["mcpManager"] {
+  return {
+    effectiveServers: async () => new Map(),
+    toolPluginProvenance: async () => null,
+    isConnected:
+      typeof manager.isConnected === "function"
+        ? manager.isConnected.bind(manager)
+        : undefined,
+    resolveMcpToolInfo:
+      typeof manager.resolveMcpToolInfo === "function"
+        ? manager.resolveMcpToolInfo.bind(manager)
+        : undefined,
+    getServerForTool:
+      typeof manager.getServerForTool === "function"
+        ? manager.getServerForTool.bind(manager)
+        : undefined,
+  };
+}
 
 /**
  * Attach a session's MCP call observer to an `MCPManager`. Must run
@@ -44,12 +90,8 @@ import {
 export function attachMcpManagerToSession(
   manager: MCPManager,
   session: Session,
-  sessionSlot: SessionSlot,
 ): void {
-  if (sessionSlot.current === null) {
-    sessionSlot.current = session;
-  }
-  const observer = createMCPCallObserverForSlot(sessionSlot);
+  const observer = createMCPCallObserverForSession(session);
   try {
     manager.setCallObserver(observer);
   } catch (err) {
@@ -68,6 +110,19 @@ export function attachMcpManagerToSession(
     });
     throw err;
   }
+}
+
+/**
+ * Canonical live startup ordering for a session-owned MCP manager.
+ * Attaches the observer first, then starts the manager.
+ */
+export async function startMcpManagerForSession(
+  manager: MCPManager,
+  session: Session,
+  opts: MCPManagerStartOpts = {},
+): Promise<void> {
+  attachMcpManagerToSession(manager, session);
+  await manager.start(opts);
 }
 
 /**

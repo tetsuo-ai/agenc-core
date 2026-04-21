@@ -1,4 +1,10 @@
 // @ts-nocheck
+/**
+ * Compatibility/UI-only MCP connection state for the legacy React app
+ * surface. This hook does not own the live runtime session MCP
+ * lifecycle; bootstrap/session startup in `src/session/mcp-startup.ts`
+ * owns the real manager used by the local runtime and subagent path.
+ */
 import { feature } from 'bun:bundle'
 import { basename } from 'path'
 import { useCallback, useEffect, useRef } from 'react'

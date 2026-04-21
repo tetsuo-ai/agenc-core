@@ -20,14 +20,9 @@ import {
   TASK_NOTIFICATION_TAG,
   TOOL_USE_ID_TAG,
 } from '../constants/xml.js'
-import { type QueryParams, query } from '../query.js'
 import { roughTokenCountEstimation } from '../services/tokenEstimation.js'
 import type { SetAppState } from '../Task.js'
 import { createTaskStateBase } from '../Task.js'
-import type {
-  AgentDefinition,
-  CustomAgentDefinition,
-} from '../tools/AgentTool/loadAgentsDir.js'
 import { asAgentId } from '../types/ids.js'
 import type { Message } from '../types/message.js'
 import { createAbortController } from '../utils/abortController.js'
@@ -50,7 +45,15 @@ import {
   initTaskOutputAsSymlink,
 } from '../utils/task/diskOutput.js'
 import { registerTask, updateTaskState } from '../utils/task/framework.js'
+import { runRuntimeSubagent } from '../utils/runtimeSubagent.js'
 import type { LocalAgentTaskState } from './LocalAgentTask/LocalAgentTask.js'
+
+type MainSessionAgentDefinition = {
+  agentType: string
+  whenToUse: string
+  source: string
+  getSystemPrompt: () => string
+}
 
 // Main session tasks use LocalAgentTaskState with agentType='main-session'
 export type LocalMainSessionTaskState = LocalAgentTaskState & {
@@ -60,7 +63,7 @@ export type LocalMainSessionTaskState = LocalAgentTaskState & {
 /**
  * Default agent definition for main session tasks when no agent is specified.
  */
-const DEFAULT_MAIN_SESSION_AGENT: CustomAgentDefinition = {
+const DEFAULT_MAIN_SESSION_AGENT: MainSessionAgentDefinition = {
   agentType: 'main-session',
   whenToUse: 'Main session query',
   source: 'userSettings',
@@ -94,7 +97,7 @@ function generateMainSessionTaskId(): string {
 export function registerMainSessionTask(
   description: string,
   setAppState: SetAppState,
-  mainThreadAgentDefinition?: AgentDefinition,
+  mainThreadAgentDefinition?: MainSessionAgentDefinition,
   existingAbortController?: AbortController,
 ): { taskId: string; abortSignal: AbortSignal } {
   const taskId = generateMainSessionTaskId()
@@ -332,8 +335,9 @@ type ToolActivity = {
 /**
  * Start a fresh background session with the given messages.
  *
- * Spawns an independent query() call with the current messages and registers it
- * as a background task. The caller's foreground query continues running normally.
+ * Spawns an independent codex-runtime child turn with the current messages and
+ * registers it as a background task. The caller's foreground turn continues
+ * running normally.
  */
 export function startBackgroundSession({
   messages,
@@ -343,10 +347,10 @@ export function startBackgroundSession({
   agentDefinition,
 }: {
   messages: Message[]
-  queryParams: Omit<QueryParams, 'messages'>
+  queryParams: unknown
   description: string
   setAppState: SetAppState
-  agentDefinition?: AgentDefinition
+  agentDefinition?: MainSessionAgentDefinition
 }): string {
   const { taskId, abortSignal } = registerMainSessionTask(
     description,
@@ -374,98 +378,121 @@ export function startBackgroundSession({
 
   void runWithAgentContext(agentContext, async () => {
     try {
+      const runtimeQueryParams =
+        queryParams &&
+        typeof queryParams === 'object' &&
+        !Array.isArray(queryParams)
+          ? (queryParams as {
+              systemPrompt?: string | readonly string[]
+              userContext?: Record<string, string>
+              systemContext?: Record<string, string>
+              canUseTool?: unknown
+              toolUseContext?: { options?: { tools?: unknown[] } }
+            })
+          : null
       const bgMessages: Message[] = [...messages]
       const recentActivities: ToolActivity[] = []
       let toolCount = 0
       let tokenCount = 0
       let lastRecordedUuid: UUID | null = messages.at(-1)?.uuid ?? null
 
-      for await (const event of query({
-        messages: bgMessages,
-        ...queryParams,
-      })) {
-        if (abortSignal.aborted) {
-          // Aborted mid-stream — completeMainSessionTask won't be reached.
-          // chat:killAgents path already marked notified + emitted; stopTask path did not.
-          let alreadyNotified = false
-          updateTaskState(taskId, setAppState, task => {
-            alreadyNotified = task.notified === true
-            return alreadyNotified ? task : { ...task, notified: true }
-          })
-          if (!alreadyNotified) {
-            emitTaskTerminatedSdk(taskId, 'stopped', {
-              summary: description,
-            })
+      const result = await runRuntimeSubagent({
+        initialMessages: bgMessages,
+        taskPrompt: description,
+        ...(runtimeQueryParams?.systemPrompt
+          ? { systemPrompt: runtimeQueryParams.systemPrompt }
+          : {}),
+        ...(runtimeQueryParams?.userContext
+          ? { userContext: runtimeQueryParams.userContext }
+          : {}),
+        ...(runtimeQueryParams?.systemContext
+          ? { systemContext: runtimeQueryParams.systemContext }
+          : {}),
+        ...(runtimeQueryParams?.canUseTool
+          ? { canUseTool: runtimeQueryParams.canUseTool as never }
+          : {}),
+        ...(runtimeQueryParams?.toolUseContext?.options?.tools
+          ? { legacyTools: runtimeQueryParams.toolUseContext.options.tools }
+          : {}),
+        externalSignal: abortSignal,
+        childConversationId: taskId,
+        onMessage(event) {
+          if (abortSignal.aborted) {
+            return
           }
-          return
-        }
 
-        if (
-          event.type !== 'user' &&
-          event.type !== 'assistant' &&
-          event.type !== 'system'
-        ) {
-          continue
-        }
+          bgMessages.push(event)
+          void recordSidechainTranscript([event], taskId, lastRecordedUuid).catch(
+            err => logForDebugging(`bg-session transcript write failed: ${err}`),
+          )
+          lastRecordedUuid = event.uuid
 
-        bgMessages.push(event)
-
-        // Per-message write (matches runAgent.ts pattern) — gives live
-        // TaskOutput progress and keeps the transcript file current even if
-        // /clear re-links the symlink mid-run.
-        void recordSidechainTranscript([event], taskId, lastRecordedUuid).catch(
-          err => logForDebugging(`bg-session transcript write failed: ${err}`),
-        )
-        lastRecordedUuid = event.uuid
-
-        if (event.type === 'assistant') {
-          for (const block of event.message.content) {
-            if (block.type === 'text') {
-              tokenCount += roughTokenCountEstimation(block.text)
-            } else if (block.type === 'tool_use') {
-              toolCount++
-              const activity: ToolActivity = {
-                toolName: block.name,
-                input: block.input as Record<string, unknown>,
-              }
-              recentActivities.push(activity)
-              if (recentActivities.length > MAX_RECENT_ACTIVITIES) {
-                recentActivities.shift()
+          if (event.type === 'assistant') {
+            for (const block of event.message.content) {
+              if (block.type === 'text') {
+                tokenCount += roughTokenCountEstimation(block.text)
+              } else if (block.type === 'tool_use') {
+                toolCount++
+                const activity: ToolActivity = {
+                  toolName: block.name,
+                  input: block.input as Record<string, unknown>,
+                }
+                recentActivities.push(activity)
+                if (recentActivities.length > MAX_RECENT_ACTIVITIES) {
+                  recentActivities.shift()
+                }
               }
             }
           }
-        }
 
-        setAppState(prev => {
-          const task = prev.tasks[taskId]
-          if (!task || task.type !== 'local_agent') return prev
-          const prevProgress = task.progress
-          if (
-            prevProgress?.tokenCount === tokenCount &&
-            prevProgress.toolUseCount === toolCount &&
-            task.messages === bgMessages
-          ) {
-            return prev
-          }
-          return {
-            ...prev,
-            tasks: {
-              ...prev.tasks,
-              [taskId]: {
-                ...task,
-                progress: {
-                  tokenCount,
-                  toolUseCount: toolCount,
-                  recentActivities:
-                    prevProgress?.toolUseCount === toolCount
-                      ? prevProgress.recentActivities
-                      : [...recentActivities],
+          setAppState(prev => {
+            const task = prev.tasks[taskId]
+            if (!task || task.type !== 'local_agent') return prev
+            const prevProgress = task.progress
+            if (
+              prevProgress?.tokenCount === tokenCount &&
+              prevProgress.toolUseCount === toolCount &&
+              task.messages === bgMessages
+            ) {
+              return prev
+            }
+            return {
+              ...prev,
+              tasks: {
+                ...prev.tasks,
+                [taskId]: {
+                  ...task,
+                  progress: {
+                    tokenCount,
+                    toolUseCount: toolCount,
+                    recentActivities:
+                      prevProgress?.toolUseCount === toolCount
+                        ? prevProgress.recentActivities
+                        : [...recentActivities],
+                  },
+                  messages: bgMessages,
                 },
-                messages: bgMessages,
               },
-            },
-          }
+            }
+          })
+        },
+      })
+      if (result.error) {
+        throw result.error
+      }
+
+      if (abortSignal.aborted) {
+        let alreadyNotified = false
+        updateTaskState(taskId, setAppState, task => {
+          alreadyNotified = task.notified === true
+          return alreadyNotified ? task : { ...task, notified: true }
         })
+        if (!alreadyNotified) {
+          emitTaskTerminatedSdk(taskId, 'stopped', {
+            summary: description,
+          })
+        }
+        return
       }
 
       completeMainSessionTask(taskId, true, setAppState)

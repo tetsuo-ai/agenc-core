@@ -22,9 +22,10 @@ import type {
   LLMChatOptions,
   LLMMessage,
   LLMProvider,
-  LLMResponse,
 } from "../llm/types.js";
-import type { Session } from "../session/session.js";
+import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
+import { safeStringify } from "../tools/types.js";
+import { Session as ChildSession, type Session } from "../session/session.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentRoleConfig } from "./role.js";
 import type { WorktreeHandle } from "./worktree.js";
@@ -225,6 +226,147 @@ function buildChatOptions(
   return opts as LLMChatOptions;
 }
 
+function buildFilteredRegistry(
+  base: ToolRegistry,
+  allowlist?: ReadonlyArray<string>,
+): ToolRegistry {
+  if (!allowlist || allowlist.length === 0) {
+    return base;
+  }
+
+  const allowed = new Set(allowlist);
+  const tools = base.tools.filter((tool) => allowed.has(tool.name));
+
+  return {
+    tools,
+    toLLMTools() {
+      return tools.map((tool) => ({
+        type: "function" as const,
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      }));
+    },
+    async dispatch(toolCall): Promise<ToolDispatchResult> {
+      if (!allowed.has(toolCall.name)) {
+        return {
+          content: safeStringify({
+            error: `tool not allowed for subagent: ${toolCall.name}`,
+          }),
+          isError: true,
+        };
+      }
+      return base.dispatch(toolCall);
+    },
+  };
+}
+
+function cloneSessionConfiguration(
+  parent: Session,
+  worktree?: WorktreeHandle,
+): Session["sessionConfiguration"] {
+  const base = parent.sessionConfiguration;
+  const cwd = worktree?.path ?? base.cwd;
+  return {
+    ...base,
+    cwd,
+    ...(base.originalConfigDoNotUse
+      ? {
+          originalConfigDoNotUse: {
+            ...base.originalConfigDoNotUse,
+            cwd,
+            model: base.collaborationMode.model,
+            modelReasoningEffort: base.collaborationMode.reasoningEffort,
+            modelReasoningSummary: base.modelReasoningSummary,
+            serviceTier: base.serviceTier,
+            personality: base.personality,
+            approvalsReviewer: base.approvalsReviewer,
+          },
+        }
+      : {}),
+  };
+}
+
+function buildChildConfig(
+  parent: Session,
+  sessionConfiguration: Session["sessionConfiguration"],
+): Session["config"] {
+  return {
+    ...parent.config,
+    cwd: sessionConfiguration.cwd,
+    model: sessionConfiguration.collaborationMode.model,
+    modelReasoningEffort:
+      sessionConfiguration.collaborationMode.reasoningEffort,
+    modelReasoningSummary: sessionConfiguration.modelReasoningSummary,
+    serviceTier: sessionConfiguration.serviceTier,
+    personality: sessionConfiguration.personality,
+    approvalsReviewer: sessionConfiguration.approvalsReviewer,
+  };
+}
+
+function buildChildModelInfo(
+  parent: Session,
+  sessionConfiguration: Session["sessionConfiguration"],
+): Session["modelInfo"] {
+  return {
+    ...parent.modelInfo,
+    slug: sessionConfiguration.collaborationMode.model,
+  };
+}
+
+function splitInitialMessages(
+  initialMessages: ReadonlyArray<LLMMessage>,
+  fallbackUserMessage: string,
+): { history: LLMMessage[]; userMessage: string } {
+  if (initialMessages.length === 0) {
+    return { history: [], userMessage: fallbackUserMessage };
+  }
+
+  const history = initialMessages.slice(0, -1).map((message) => ({ ...message }));
+  const last = initialMessages[initialMessages.length - 1];
+  if (last?.role === "user" && typeof last.content === "string") {
+    return { history, userMessage: last.content };
+  }
+
+  return {
+    history: initialMessages.map((message) => ({ ...message })),
+    userMessage: fallbackUserMessage,
+  };
+}
+
+function buildChildSession(
+  params: RunAgentParams,
+  provider: LLMProvider,
+): ChildSession {
+  const sessionConfiguration = cloneSessionConfiguration(
+    params.parent,
+    params.worktree,
+  );
+  const registry = buildFilteredRegistry(
+    params.parent.services.registry,
+    params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
+  );
+
+  return new ChildSession({
+    conversationId: params.live.agentId,
+    initialState: {
+      sessionConfiguration,
+      history: [],
+    },
+    features: params.parent.features,
+    services: {
+      ...params.parent.services,
+      provider,
+      registry,
+    },
+    jsRepl: params.parent.jsRepl,
+    config: buildChildConfig(params.parent, sessionConfiguration),
+    modelInfo: buildChildModelInfo(params.parent, sessionConfiguration),
+  });
+}
+
 /**
  * Run the subagent to completion. Yields progress events to the
  * caller + returns the final RunAgentResult. Caller (delegate.ts)
@@ -359,9 +501,8 @@ export async function* runAgent(
       params.timeoutMs,
     );
 
-    // Log the tool-allowlist intent. Deeper subagent tool integration
-    // (actually filtering + executing child tool calls) lands with
-    // the T-future subagent tool loop — this stays a no-op for now.
+    // The filtered child ToolRegistry enforces the allowlist, but we
+    // still emit the warning so operators can see the delegated scope.
     const allowlist =
       params.toolAllowlist ?? live.role.config.allowlist ?? undefined;
     if (allowlist && allowlist.length > 0) {
@@ -369,37 +510,69 @@ export async function* runAgent(
         parent.eventLog,
         parent.nextInternalSubId(),
         "subagent_tool_allowlist",
-        `subagent ${live.agentPath} allowlist intent: ${allowlist.join(",")} (tool execution deferred to T-future)`,
+        `subagent ${live.agentPath} allowlist: ${allowlist.join(",")}`,
       );
     }
 
-    let response: LLMResponse;
+    const childSession = buildChildSession(params, provider);
+    const { history, userMessage } = splitInitialMessages(
+      params.initialMessages,
+      params.taskPrompt,
+    );
+
+    let assistantText = "";
+    let toolCallCount = 0;
+    let stopReason:
+      | "completed"
+      | "max_turns"
+      | "cancelled"
+      | "error"
+      | "empty_response" = "completed";
+    let terminalError: unknown;
     try {
-      response = await provider.chat(
-        params.initialMessages.map((m) => ({ ...m })),
-        chatOptions,
-      );
+      const iter = childSession.runTurn(userMessage, {
+        history,
+        signal: chatOptions.signal,
+      });
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const step = await iter.next();
+        if (step.done) {
+          terminalError = step.value?.error;
+          break;
+        }
+        const event = step.value;
+        if (event.type === "assistant_text") {
+          assistantText = event.content;
+          yield {
+            kind: "message",
+            message: {
+              role: "assistant",
+              content: event.content,
+            },
+          };
+          continue;
+        }
+
+        if (event.type === "tool_call") {
+          toolCallCount += 1;
+          yield {
+            kind: "tool_call",
+            callId: event.toolCall.id,
+            toolName: event.toolCall.name,
+          };
+          continue;
+        }
+
+        if (event.type === "turn_complete") {
+          assistantText = event.content;
+          stopReason = event.stopReason;
+        }
+      }
     } finally {
       if (roleTimeoutHandle !== null) clearTimeout(roleTimeoutHandle);
       merged.signal.removeEventListener("abort", forwardMergedAbort);
-    }
-
-    const assistantText = response.content ?? "";
-    const toolCalls = response.toolCalls ?? [];
-
-    // Emit an assistant-message progress event so the caller's stream
-    // reflects the completed turn (mirrors openclaude's per-message
-    // fan-out on the subagent iterator).
-    yield {
-      kind: "message",
-      message: {
-        role: "assistant",
-        content: assistantText,
-        ...(toolCalls.length > 0 ? { toolCalls: [...toolCalls] } : {}),
-      },
-    };
-    for (const call of toolCalls) {
-      yield { kind: "tool_call", callId: call.id, toolName: call.name };
+      await childSession.shutdown();
     }
 
     // If the caller aborted during the provider call, surface that
@@ -427,6 +600,24 @@ export async function* runAgent(
       };
     }
 
+    if (stopReason === "error") {
+      const message =
+        terminalError instanceof Error
+          ? terminalError.message
+          : typeof terminalError === "string"
+            ? terminalError
+            : assistantText || "subagent turn failed";
+      live.status.markErrored(turnId, message);
+      yield { kind: "run_error", error: message };
+      return {
+        threadId: live.agentId,
+        durationMs: Date.now() - startedAt,
+        outcome: "errored",
+        error:
+          terminalError instanceof Error ? terminalError : new Error(message),
+      };
+    }
+
     // Forward the assistant text back to the parent via upInbox so
     // the parent's mailbox sees the completion (I-5: direction=up).
     try {
@@ -439,7 +630,7 @@ export async function* runAgent(
         metadata: {
           kind: "subagent_complete",
           turnId,
-          toolCallCount: toolCalls.length,
+          toolCallCount,
         },
       });
     } catch (err) {
@@ -457,7 +648,7 @@ export async function* runAgent(
     yield {
       kind: "run_complete",
       ...(assistantText !== undefined ? { finalMessage: assistantText } : {}),
-      toolCallCount: toolCalls.length,
+      toolCallCount,
     };
 
     return {
@@ -465,7 +656,7 @@ export async function* runAgent(
       durationMs: Date.now() - startedAt,
       outcome: "completed",
       finalMessage: assistantText,
-      toolCallCount: toolCalls.length,
+      toolCallCount,
     };
   } catch (err) {
     // Signal-abort-driven failures can surface as thrown errors from

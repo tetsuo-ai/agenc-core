@@ -1,6 +1,8 @@
 import { defineConfig } from 'vitest/config';
 import { resolve } from 'path';
 
+const benchmarkLaneEnabled = process.env.AGENC_RUNTIME_BENCHMARKS === '1';
+
 export default defineConfig({
   resolve: {
     alias: [
@@ -24,9 +26,9 @@ export default defineConfig({
       'dist',
       'tests/integration.test.ts',
       'tests/eval-replay.integration.test.ts',
-      'tests/benchmark-runner.integration.test.ts',
+      ...(benchmarkLaneEnabled ? [] : ['tests/benchmark-runner.integration.test.ts']),
     ],
-    testTimeout: 30000,
+    testTimeout: benchmarkLaneEnabled ? 120000 : 30000,
     deps: {
       interopDefault: true,
     },

@@ -14,7 +14,7 @@
  *   - `isPlanMode` returns true when `permissionContext.mode === "plan"`.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
@@ -150,6 +150,12 @@ function buildSession(
       cancel: () => {},
       isCancelled: () => false,
     },
+    provider: mkProvider(),
+    registry: {
+      tools: [],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "", isError: false }),
+    },
     ...(overrides.services ?? {}),
   } as unknown as SessionServices;
   const opts: SessionOpts = {
@@ -161,6 +167,8 @@ function buildSession(
     features: mkFeatures(),
     services,
     jsRepl: { id: "repl-test" },
+    config: mkConfig(),
+    modelInfo: mkModelInfo(),
     eventQueue: new AsyncQueue<Event>(),
   };
   return new Session(opts);
@@ -279,6 +287,33 @@ describe("Session.abortTerminal", () => {
   });
 });
 
+describe("Session MCP ownership seams", () => {
+  it("startMcpManager delegates attach/start ordering through the session boundary", async () => {
+    const session = buildSession();
+    const setCallObserver = vi.fn();
+    const start = vi.fn().mockResolvedValue(undefined);
+    const manager = {
+      setCallObserver,
+      start,
+    } as unknown as Parameters<Session["startMcpManager"]>[0];
+
+    await session.startMcpManager(manager);
+
+    expect(setCallObserver).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+    expect(setCallObserver.mock.invocationCallOrder[0]).toBeLessThan(
+      start.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("hasPendingInput reflects queued mailbox traffic", () => {
+    const session = buildSession();
+    expect(session.hasPendingInput()).toBe(false);
+    session.enqueueIdleInput({ role: "user", content: "queued" });
+    expect(session.hasPendingInput()).toBe(true);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // TurnContext.permissionMode snapshot (I-30)
 // ─────────────────────────────────────────────────────────────────────
@@ -327,6 +362,19 @@ describe("TurnContext.permissionMode (I-30 snapshot)", () => {
     };
     const ctx = newDefaultTurnWithSubId(sessionLike, "sub-7");
     expect(ctx.permissionMode).toBe("acceptEdits");
+  });
+
+  it("Session.newDefaultTurnWithSubId uses the session-owned builder path", () => {
+    const registry = new PermissionModeRegistry(
+      ctxWithPermissionMode("acceptEdits"),
+    );
+    const session = buildSession({
+      services: { permissionModeRegistry: registry },
+    });
+    const ctx = session.newDefaultTurnWithSubId("sub-owned");
+    expect(ctx.subId).toBe("sub-owned");
+    expect(ctx.permissionMode).toBe("acceptEdits");
+    expect(ctx.config.model).toBe("test-model");
   });
 
   it("I-30: mutating the registry after buildTurnContext does not mutate the snapshot", async () => {

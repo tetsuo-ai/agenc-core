@@ -24,6 +24,7 @@
     "build": "tsup --config tsup.config.ts && node scripts/write-build-version.mjs && npm run check:package-entrypoints",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tui.json",
     "check:package-entrypoints": "node scripts/check-package-entrypoints.mjs",
+    "check:runtime-ownership": "node scripts/check-runtime-ownership.mjs",
     "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
     "test": "vitest run",
     "validate:required": "npm run typecheck && npm run test",

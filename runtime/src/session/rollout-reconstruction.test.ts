@@ -4,7 +4,10 @@ import {
   reconstructFromRollout,
 } from "./rollout-reconstruction.js";
 import { DEFAULT_MAX_TOOL_RESULT_BYTES } from "../tools/execution.js";
-import type { RolloutItem } from "./rollout-item.js";
+import {
+  parseRolloutLine,
+  type RolloutItem,
+} from "./rollout-item.js";
 import type { IndexSnapshot } from "./session-store.js";
 
 describe("rollout-reconstruction", () => {
@@ -55,6 +58,63 @@ describe("rollout-reconstruction", () => {
     const r = reconstructFromRollout(items);
     expect(r.history[0]?.content).toBe("boundary");
     expect(r.history[1]?.content).toBe("new");
+  });
+
+  test("replays the full persisted compacted replacement history, including boundary and preserved tail", () => {
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "discard me" } },
+      {
+        type: "compacted",
+        payload: {
+          message: "summary",
+          replacementHistory: [
+            { role: "system", content: "boundary" },
+            { role: "assistant", content: "summary text" },
+            { role: "user", content: "kept tail" },
+          ],
+        },
+      },
+      { type: "response_item", payload: { role: "assistant", content: "after compact" } },
+    ];
+
+    const r = reconstructFromRollout(items);
+    expect(r.history).toEqual([
+      { role: "system", content: "boundary" },
+      { role: "assistant", content: "summary text" },
+      { role: "user", content: "kept tail" },
+      { role: "assistant", content: "after compact" },
+    ]);
+  });
+
+  test("newest surviving replacementHistory wins and only the suffix replays", () => {
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "discard me" } },
+      {
+        type: "compacted",
+        payload: {
+          message: "old summary",
+          replacementHistory: [{ role: "user", content: "old baseline" }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "discard after old compact" },
+      },
+      {
+        type: "compacted",
+        payload: {
+          message: "new summary",
+          replacementHistory: [{ role: "user", content: "new baseline" }],
+        },
+      },
+      { type: "response_item", payload: { role: "assistant", content: "kept tail" } },
+    ];
+
+    const r = reconstructFromRollout(items);
+    expect(r.history).toEqual([
+      { role: "user", content: "new baseline" },
+      { role: "assistant", content: "kept tail" },
+    ]);
   });
 
   test("I-48 orphan TurnStarted synthesizes process_killed abort", () => {
@@ -261,6 +321,34 @@ describe("rollout-reconstruction", () => {
     expect(texts[texts.length - 1]).toBe("summary blob");
     // Reference context cleared per codex legacy-compaction branch.
     expect(r.referenceContextItem).toBeUndefined();
+  });
+
+  test("parseRolloutLine normalizes legacy task_* event aliases before replay", () => {
+    const started = parseRolloutLine(
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          id: "legacy-start",
+          msg: { type: "task_started", payload: { turnId: "turn-1" } },
+        },
+      }),
+    );
+    const completed = parseRolloutLine(
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          id: "legacy-complete",
+          msg: { type: "task_complete", payload: { turnId: "turn-1" } },
+        },
+      }),
+    );
+
+    expect(started?.type).toBe("event_msg");
+    expect(completed?.type).toBe("event_msg");
+    if (started?.type === "event_msg" && completed?.type === "event_msg") {
+      expect(started.payload.msg.type).toBe("turn_started");
+      expect(completed.payload.msg.type).toBe("turn_complete");
+    }
   });
 
   test("replay truncation caps oversized response_item text", () => {

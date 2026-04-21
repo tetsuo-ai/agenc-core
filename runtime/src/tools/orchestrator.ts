@@ -56,6 +56,9 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision as PermissionsReviewDecision,
 } from "../permissions/review-decision.js";
+import { SandboxDeniedError } from "../permissions/sandbox.js";
+
+export { SandboxDeniedError };
 
 // ─────────────────────────────────────────────────────────────────────
 // Policy + mode enums — re-exported from `permissions/` so this file
@@ -124,21 +127,6 @@ export interface ApprovalCtx {
 // ─────────────────────────────────────────────────────────────────────
 // Sandbox-denied error (ports codex `SandboxErr::Denied`).
 // ─────────────────────────────────────────────────────────────────────
-
-/**
- * Thrown by a tool's inner dispatch when the active sandbox refuses
- * the operation. The orchestrator lifecycle intercepts this, requests
- * approval, and retries with sandbox disabled.
- */
-export class SandboxDeniedError extends Error {
-  readonly kind = "sandbox_denied" as const;
-  readonly output?: string;
-  constructor(message: string, output?: string) {
-    super(message);
-    this.name = "SandboxDeniedError";
-    this.output = output;
-  }
-}
 
 /** Classifier used by the retry policy. */
 export function isSandboxDeniedError(err: unknown): err is SandboxDeniedError {
@@ -542,15 +530,19 @@ export interface OrchestrateToolCallOpts<T> {
   readonly approvalCtx: ApprovalCtx;
   readonly approvalPolicy: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
+  readonly payload?: ToolPayload;
+  readonly mcpServerTrusted?: (server: string) => boolean;
   /** Per-tool overrides (denylist/allowlist). */
   readonly toolAllowlist?: ReadonlySet<string>;
   readonly toolDenylist?: ReadonlySet<string>;
+  readonly approvalArgs?: Record<string, unknown>;
   /** Attempt executor — receives the selected sandbox mode. The caller
    *  may gate the actual FS/network constraints internally. Should
    *  throw `SandboxDeniedError` on sandbox denial. */
   readonly dispatch: (sandbox: SandboxMode) => Promise<T>;
   /** Approval pipeline plumbing. */
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
+  readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   readonly approvalResolver?: ApprovalResolver;
   /** Emitted when approval falls through to default-deny. */
   readonly onNoApprovalResolver?: (ctx: ApprovalCtx) => void;
@@ -596,6 +588,10 @@ export async function orchestrateToolCall<T>(
   const toolOverride = classifyToolApproval(opts.tool, {
     approvalPolicy: opts.approvalPolicy,
     sandboxMode: opts.sandboxMode,
+    ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
+    ...(opts.mcpServerTrusted !== undefined
+      ? { mcpServerTrusted: opts.mcpServerTrusted }
+      : {}),
     ...(opts.toolAllowlist !== undefined ? { toolAllowlist: opts.toolAllowlist } : {}),
     ...(opts.toolDenylist !== undefined ? { toolDenylist: opts.toolDenylist } : {}),
   });
@@ -631,6 +627,10 @@ export async function orchestrateToolCall<T>(
     const approval = await requestApproval({
       ctx: approvalCtx,
       ...(opts.permissionHooks !== undefined ? { hooks: opts.permissionHooks } : {}),
+      ...(opts.permissionDecisionHooks !== undefined
+        ? { permissionDecisionHooks: opts.permissionDecisionHooks }
+        : {}),
+      ...(opts.approvalArgs !== undefined ? { args: opts.approvalArgs } : {}),
       ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
       ...(opts.onNoApprovalResolver !== undefined
         ? { onNoResolver: opts.onNoApprovalResolver }
@@ -674,6 +674,10 @@ export async function orchestrateToolCall<T>(
       const approval = await requestApproval({
         ctx: escalationCtx,
         ...(opts.permissionHooks !== undefined ? { hooks: opts.permissionHooks } : {}),
+        ...(opts.permissionDecisionHooks !== undefined
+          ? { permissionDecisionHooks: opts.permissionDecisionHooks }
+          : {}),
+        ...(opts.approvalArgs !== undefined ? { args: opts.approvalArgs } : {}),
         ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
         ...(opts.onNoApprovalResolver !== undefined
           ? { onNoResolver: opts.onNoApprovalResolver }

@@ -28,47 +28,25 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
-import { createProvider, type ProviderName } from "../llm/provider.js";
 import {
   routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
-import type { LLMProvider, LLMToolCall } from "../llm/types.js";
+import type { LLMToolCall } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { Session } from "../session/session.js";
-import type {
-  SessionServices,
-  SessionState,
-} from "../session/session.js";
-import { PermissionModeRegistry } from "../permissions/mode.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import type { Event } from "../session/event-log.js";
-import {
-  buildTurnContext,
-  type Config,
-  type ModelInfo,
-  type SessionConfiguration,
-} from "../session/turn-context.js";
+import type { TurnContext } from "../session/turn-context.js";
 import { runTurn } from "../session/run-turn.js";
 import type { Terminal } from "../session/turn-state.js";
-import { buildToolRegistry } from "../tool-registry.js";
-import { RolloutStore } from "../session/rollout-store.js";
 import {
   SchemaMismatchError,
   SessionLockedError,
   getProjectDir,
-  readIndexSnapshot,
 } from "../session/session-store.js";
-import { SidecarManager } from "../session/sidecar.js";
-import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
-import { ErrorLogSidecar } from "../session/error-log.js";
-import { CostSidecar } from "../session/cost.js";
-import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import {
   createBashExecObserverForSlot,
-  createMCPCallObserverForSlot,
   type SessionSlot,
 } from "../session/observer-wiring.js";
 import { buildDelegateTool } from "./delegate-tool.js";
@@ -84,11 +62,9 @@ import {
   resolveAgencHome as resolveAgencHomeFromEnv,
   resolveApiKey as resolveApiKeyFromEnv,
   resolveWorkspace as resolveWorkspaceFromEnv,
-  resolveModelDisambiguated,
-  AmbiguousModelError,
-  UnknownModelError,
   type AgenCConfig,
 } from "../config/index.js";
+import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
 import {
   loadTieredInstructions,
   assembleTieredInstructions,
@@ -96,12 +72,8 @@ import {
 import {
   loadMemoryPrompt,
   scanMemoryDir,
-  registerAutoSaveSidecar,
   selectRelevantMemoriesForTurn,
   injectAttachmentsIntoPrompt,
-  type ExtractMemoriesFn,
-  type MemoryCandidate,
-  type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
 import {
   assembleSystemPrompt,
@@ -110,28 +82,16 @@ import {
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
 
-const DEFAULT_MODEL = "grok-4-fast";
-
-/**
- * Provider → known model slugs. I-60 disambiguation walks this catalog
- * when the user passes a bare model slug (no "provider:model" prefix).
- *
- * T13 replaces this with the real provider-factory catalog; today only
- * the Grok models are reachable through GrokProvider. Keep the shape
- * stable so swapping in the factory is a drop-in change.
- */
-export const PROVIDER_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> =
-  Object.freeze({
-    grok: Object.freeze([
-      "grok-4-fast",
-      "grok-4",
-      "grok-3",
-      "grok-2",
-      "grok-2-mini",
-      "grok-beta",
-      "grok-code-fast-1",
-    ]) as readonly string[],
-  });
+export {
+  bootstrapLocalRuntimeSession,
+  buildExtractMemoriesViaSubagent,
+  EXTRACT_MEMORIES_TIMEOUT_MS,
+  PROVIDER_MODEL_CATALOG,
+  parseExtractedMemoryCandidates,
+  resolveModelOrExit,
+  sessionConfigurationFromAgenCConfig,
+  TurnStateAccumulator,
+} from "./bootstrap.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
@@ -442,496 +402,6 @@ function renderEvent(event: PhaseEvent): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Session + TurnContext bootstrap (minimum-viable T5 scaffolding).
-// Later tranches replace these with their real subsystems:
-//   T6  — RolloutRecorder / event-log sidecars / hooks registry
-//   T7  — ToolRegistry extensions + StreamingToolExecutor
-//   T9  — McpConnectionManager, AgentControl, AgentIdentityManager
-//   T10 — real SessionConfiguration (config.json + precedence)
-//   T11 — permissions / sandbox / approval
-//   T13 — provider factory + multi-provider registry
-// ─────────────────────────────────────────────────────────────────────
-
-function buildPlaceholderServices(
-  provider: LLMProvider,
-  registry: ReturnType<typeof buildToolRegistry>,
-): SessionServices {
-  const noopAsync = async () => {
-    /* placeholder */
-  };
-  return {
-    mcpConnectionManager: {
-      setApprovalPolicy: () => {},
-      setSandboxPolicy: () => {},
-      requiredStartupFailures: async () => [],
-    },
-    mcpStartupCancellationToken: {
-      cancel: () => {},
-      isCancelled: () => false,
-    },
-    unifiedExecManager: { maxTimeoutMs: 0 },
-    analyticsEventsClient: { emit: noopAsync },
-    hooks: {
-      startupWarnings: () => [],
-      executePreCompact: noopAsync,
-      executePostCompact: noopAsync,
-      executeStop: noopAsync,
-      executeStopFailure: noopAsync,
-    },
-    rollout: undefined,
-    userShell: {
-      path: process.env.SHELL ?? "/bin/sh",
-      deriveExecArgs: (input: string) => ["-c", input],
-    },
-    agentIdentityManager: { ensureRegistered: noopAsync },
-    shellSnapshotTx: {
-      value: null,
-      isClosed: false,
-      next: () => {},
-      subscribe: () => () => {},
-      changes: async function* () {
-        // empty
-      },
-      complete: () => {},
-    } as unknown as SessionServices["shellSnapshotTx"],
-    showRawAgentReasoning: false,
-    execPolicy: { current: () => null },
-    authManager: { mode: "bearer_key" },
-    sessionTelemetry: {},
-    modelsManager: {
-      getModelInfo: async (slug: string) => ({
-        slug,
-        effectiveContextWindowPercent: 1,
-        supportedReasoningLevels: [],
-        defaultReasoningSummary: "auto",
-        truncationPolicy: "off",
-        usedFallbackModelMetadata: false,
-      }),
-      tryListModels: () => undefined,
-      listModels: async () => [],
-    },
-    toolApprovals: {
-      hasApproval: () => false,
-      approve: () => {},
-    },
-    guardianRejections: new Map(),
-    skillsManager: {
-      skillsForConfig: async () => ({ invokedSkills: [] }),
-    },
-    pluginsManager: {
-      pluginsForConfig: async () => ({ effectiveSkillRoots: () => null }),
-    },
-    mcpManager: {
-      effectiveServers: async () => new Map(),
-      toolPluginProvenance: async () => null,
-    },
-    skillsWatcher: { start: () => {} },
-    agentControl: {
-      maxThreads: 0,
-      spawnAgent: async () => null,
-      shutdownAgentTree: noopAsync,
-    },
-    networkApproval: { enabled: () => false },
-    threadStore: {
-      threadName: async () => undefined,
-      setThreadName: noopAsync,
-    },
-    modelClient: { setWindowGeneration: () => {} },
-    codeModeService: { enabled: () => false },
-    provider,
-    registry,
-    // T11 W3-A: placeholder permission-mode registry. The real bootstrap
-    // path (ConfigStore → initialize-permission-context → registry) lands
-    // once the permissions wiring integrates with the CLI entry point.
-    permissionModeRegistry: new PermissionModeRegistry(
-      createEmptyToolPermissionContext(),
-    ),
-  };
-}
-
-function buildMinimalConfig(cwd: string, model: string): Config {
-  return {
-    model,
-    cwd,
-    features: {
-      appsEnabledForAuth: () => false,
-      useLegacyLandlock: () => false,
-    },
-    multiAgentV2: {
-      usageHintEnabled: false,
-      usageHintText: "",
-      hideSpawnAgentMetadata: false,
-    },
-    permissions: {
-      allowLoginShell: false,
-      shellEnvironmentPolicy: {
-        allowedEnvVars: [],
-        blockedEnvVars: [],
-      },
-      windowsSandboxPrivateDesktop: false,
-    },
-    ghostSnapshot: { enabled: false },
-    agentRoles: [],
-  };
-}
-
-function buildMinimalModelInfo(slug: string): ModelInfo {
-  return {
-    slug,
-    effectiveContextWindowPercent: 1,
-    supportedReasoningLevels: [],
-    defaultReasoningSummary: "auto",
-    truncationPolicy: "off",
-    usedFallbackModelMetadata: false,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// T10 Group I — config ↔ session-configuration bridge
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Map the AgenCConfig `approval_policy` enum (dash-separated, codex
- * convention) onto the session `ApprovalPolicy` enum (underscore-
- * separated, codex port convention). Absent field → `on_request`.
- */
-function mapApprovalPolicy(
-  raw: AgenCConfig["approval_policy"] | undefined,
-): SessionConfiguration["approvalPolicy"]["value"] {
-  switch (raw) {
-    case "never":
-      return "never";
-    case "on-failure":
-      return "on_failure";
-    case "on-request":
-      return "on_request";
-    case "untrusted":
-      return "untrusted";
-    default:
-      return "on_request";
-  }
-}
-
-/**
- * Map the AgenCConfig `sandbox_mode` enum (dash-separated) onto the
- * session `SandboxPolicy` enum (underscore-separated). Absent field →
- * `workspace_write`.
- */
-function mapSandboxPolicy(
-  raw: AgenCConfig["sandbox_mode"] | undefined,
-): SessionConfiguration["sandboxPolicy"]["value"] {
-  switch (raw) {
-    case "read-only":
-      return "read_only";
-    case "danger-full-access":
-      return "danger_full_access";
-    case "workspace-write":
-      return "workspace_write";
-    default:
-      return "workspace_write";
-  }
-}
-
-/**
- * Build a fresh SessionConfiguration from a loaded AgenCConfig + the
- * resolved workspace + model. Used at init time and (future) between
- * turns on config reload so session state mirrors the config snapshot.
- *
- * Propagates the following codex-rooted AgenCConfig fields into the
- * session configuration so a reload carries them forward:
- *   - `personality`           → `personality`
- *   - `reasoning_summary`     → `modelReasoningSummary`
- *   - `compact_prompt`        → `compactPrompt`
- */
-export function sessionConfigurationFromAgenCConfig(params: {
-  readonly config: AgenCConfig;
-  readonly workspaceRoot: string;
-  readonly model: string;
-}): SessionConfiguration {
-  const approval = mapApprovalPolicy(params.config.approval_policy);
-  const sandbox = mapSandboxPolicy(params.config.sandbox_mode);
-  const base: SessionConfiguration = {
-    cwd: params.workspaceRoot,
-    approvalPolicy: { value: approval },
-    sandboxPolicy: { value: sandbox },
-    fileSystemSandboxPolicy: {
-      allowWrite: sandbox === "workspace_write" ? [params.workspaceRoot] : [],
-      denyWrite: [],
-      allowRead: [],
-      denyRead: [],
-    },
-    networkSandboxPolicy: {
-      allowlist: [],
-      denylist: [],
-      allowManagedDomainsOnly: false,
-    },
-    windowsSandboxLevel: "none",
-    collaborationMode: { model: params.model },
-    dynamicTools: [],
-    sessionSource: "cli_main",
-  };
-  // Propagate the shared codex-rooted fields when present on the
-  // loaded config. Undefined values stay off so callers can distinguish
-  // "operator set a default" from "operator set X explicitly".
-  return {
-    ...base,
-    ...(params.config.personality !== undefined
-      ? { personality: params.config.personality }
-      : {}),
-    ...(params.config.reasoning_summary !== undefined
-      ? { modelReasoningSummary: params.config.reasoning_summary }
-      : {}),
-    ...(params.config.compact_prompt !== undefined
-      ? { compactPrompt: params.config.compact_prompt }
-      : {}),
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// T10 Group I — I-60 hard-fail disambiguation
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Resolve the configured model slug against the provider catalog and
- * hard-fail at init when the slug is ambiguous or unknown. Returns the
- * canonical `{provider, model}` pair on success. Matches the I-60 CLI
- * contract: print a clear, actionable error, then exit 1.
- */
-export function resolveModelOrExit(
-  slug: string,
-  catalog: Readonly<Record<string, readonly string[]>> = PROVIDER_MODEL_CATALOG,
-  exit: (code: number) => never = ((code: number) => {
-    process.exit(code);
-  }) as (code: number) => never,
-  errSink: (line: string) => void = (line) => process.stderr.write(line),
-): { provider: string; model: string } {
-  try {
-    return resolveModelDisambiguated(slug, catalog);
-  } catch (err) {
-    if (err instanceof AmbiguousModelError) {
-      const candidates = err.candidates
-        .map((c) => `${c.provider}:${c.model}`)
-        .join(", ");
-      errSink(
-        `agenc: ambiguous model '${slug}' — matches ${err.candidates.length} providers. ` +
-          `Use 'provider:model' form. Candidates: ${candidates}\n`,
-      );
-      exit(1);
-    }
-    if (err instanceof UnknownModelError) {
-      // UnknownModelError already composes the canonical message with
-      // the provider list + "Use provider:model form" guidance (see
-      // `UnknownModelError.providers`). Keep the `agenc: ` CLI prefix
-      // + trailing newline here; everything else comes from the error.
-      errSink(`agenc: ${err.message}\n`);
-      exit(1);
-    }
-    throw err;
-  }
-  // Unreachable — exit above terminates the process.
-  throw new Error("resolveModelOrExit: unreachable");
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// T10 Group I — T9 delegate adapter for memory extraction
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Default timeout applied to the extraction subagent. The extractor is
- * a best-effort summarizer; if the child hangs we drop the attempt and
- * let the next turn retry once more growth accrues.
- */
-export const EXTRACT_MEMORIES_TIMEOUT_MS = 30_000;
-
-/**
- * Inline prompt handed to the extraction subagent. Kept as a template
- * literal (not a prompt file) so changes stay auditable in this file
- * and so the surface remains obvious during runtime triage.
- */
-function buildExtractPrompt(transcript: string): string {
-  return [
-    "You are extracting durable memories from the current session. Input: the last N assistant+user messages. Output: JSON array of candidates with shape:",
-    "[ { \"name\": \"<slug>\", \"description\": \"<one-line>\", \"type\": \"user\"|\"feedback\"|\"project\"|\"reference\", \"body\": \"<the memory content>\" } ]",
-    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references. Output ONLY valid JSON, no prose.",
-    "",
-    "--- TRANSCRIPT ---",
-    transcript,
-  ].join("\n");
-}
-
-/**
- * Allowed values for the extractor's memory `type` frontmatter field.
- * Mirrors the MEMORY_TYPES set from the memory subsystem but kept local
- * so the bridge doesn't pull in extra module surface.
- */
-const EXTRACT_MEMORY_TYPES: ReadonlySet<string> = new Set([
-  "user",
-  "feedback",
-  "project",
-  "reference",
-]);
-
-/**
- * Parse a subagent's final message as a JSON array of memory candidates
- * and convert each valid entry into a `MemoryCandidate` rooted under
- * `memoryDir`. Malformed entries are skipped; a fully malformed JSON
- * response throws so the caller can emit the parse-failure warning.
- */
-export function parseExtractedMemoryCandidates(
-  raw: string,
-  memoryDir: string,
-): readonly MemoryCandidate[] {
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error("extractor response was not a JSON array");
-  }
-  const out: MemoryCandidate[] = [];
-  for (const item of parsed) {
-    if (item === null || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const name = typeof rec.name === "string" ? rec.name.trim() : "";
-    const description =
-      typeof rec.description === "string" ? rec.description.trim() : "";
-    const type =
-      typeof rec.type === "string" && EXTRACT_MEMORY_TYPES.has(rec.type)
-        ? (rec.type as "user" | "feedback" | "project" | "reference")
-        : undefined;
-    const body = typeof rec.body === "string" ? rec.body : "";
-    if (name === "" || type === undefined || body.length === 0) continue;
-    // Slugify the name for the filename; strip unsafe chars so the
-    // path join below stays confined to memoryDir.
-    const slug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (slug.length === 0) continue;
-    out.push({
-      filePath: join(memoryDir, `${slug}.md`),
-      frontmatter: {
-        name,
-        description,
-        type,
-        extra: {},
-      },
-      body,
-    });
-  }
-  return out;
-}
-
-/**
- * Build an `ExtractMemoriesFn` that spawns an `explorer`-role subagent
- * via `delegate()` to parse a transcript into memory candidates. The
- * child is asked for a strict JSON array; the final message is parsed
- * and validated against the `MemoryCandidate` shape.
- *
- * Failure policy:
- *   - `session()` returns null → return [] (startup / post-shutdown).
- *   - JSON parse failure       → emit warning `memory_extract_parse_failed`, return [].
- *   - subagent error / timeout → emit warning `memory_extract_failed`, return [].
- *
- * Timeout: `EXTRACT_MEMORIES_TIMEOUT_MS` (30s). The timeout is a guard
- * against a hung child; the promise race ensures the sidecar's
- * fire-and-forget invocation doesn't keep a handle around forever.
- */
-export function buildExtractMemoriesViaSubagent(params: {
-  readonly session: () => Session | null;
-  readonly memoryDir: string;
-  readonly delegateFn?: typeof import("../agents/delegate.js").delegate;
-  readonly timeoutMs?: number;
-}): ExtractMemoriesFn {
-  return async (
-    transcript: string,
-  ): Promise<readonly MemoryCandidate[]> => {
-    const s = params.session();
-    if (s === null) return [];
-    const timeoutMs = params.timeoutMs ?? EXTRACT_MEMORIES_TIMEOUT_MS;
-
-    const emitWarning = (cause: string, message: string): void => {
-      try {
-        s.emit({
-          id: s.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: { cause, message },
-          },
-        });
-      } catch {
-        /* best effort — warning emission must not mask the caller. */
-      }
-    };
-
-    let rawFinal: string;
-    try {
-      // Lazy-import to avoid pulling the delegate graph in when the
-      // CLI short-circuits (slash commands, init_aborted, etc.).
-      const delegateFn =
-        params.delegateFn ??
-        (await import("../agents/delegate.js")).delegate;
-      const { control, registry } = (
-        await import("./delegate-tool.js")
-      ).ensureAgentControl(s);
-
-      const deadline = new Promise<never>((_, reject) => {
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                `memory_extract_timeout: extraction did not finish within ${timeoutMs}ms`,
-              ),
-            ),
-          timeoutMs,
-        ).unref?.();
-      });
-
-      const dispatch = delegateFn({
-        parent: s,
-        parentPath: "/root",
-        control,
-        registry,
-        taskPrompt: buildExtractPrompt(transcript),
-        role: "explorer",
-      });
-
-      const outcome = await Promise.race([dispatch, deadline]);
-      if (outcome.kind !== "sync_completed") {
-        emitWarning(
-          "memory_extract_failed",
-          outcome.kind === "rejected"
-            ? `delegate rejected: ${outcome.reason}`
-            : `unexpected delegate outcome: ${outcome.kind}`,
-        );
-        return [];
-      }
-      rawFinal = outcome.result.finalMessage ?? "";
-      if (rawFinal.trim().length === 0) {
-        emitWarning(
-          "memory_extract_parse_failed",
-          "extractor returned an empty final message",
-        );
-        return [];
-      }
-    } catch (err) {
-      emitWarning(
-        "memory_extract_failed",
-        err instanceof Error ? err.message : String(err),
-      );
-      return [];
-    }
-
-    try {
-      return parseExtractedMemoryCandidates(rawFinal, params.memoryDir);
-    } catch (err) {
-      emitWarning(
-        "memory_extract_parse_failed",
-        err instanceof Error ? err.message : String(err),
-      );
-      return [];
-    }
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // T10 Group I — runSingleTurn seam (R1: multi-turn future-proofing)
 // ─────────────────────────────────────────────────────────────────────
 
@@ -942,7 +412,7 @@ export function buildExtractMemoriesViaSubagent(params: {
  */
 export interface RunSingleTurnOpts {
   readonly session: Session;
-  readonly ctx: ReturnType<typeof buildTurnContext>;
+  readonly ctx: TurnContext;
   readonly input: string;
   /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
   readonly configStore: ConfigStore;
@@ -1013,113 +483,6 @@ export async function* runSingleTurn(
     const step = await iter.next();
     if (step.done) return step.value;
     yield step.value;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// T10 A+ Fix-α — TurnStateAccumulator
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Subscribes to the session's EventLog and maintains the cumulative
- * token + tool counters the memory auto-save sidecar needs to evaluate
- * `shouldExtract()`.
- *
- * Semantics line up with `shouldExtract` (auto-save.ts):
- *   - `tokensConsumed`: cumulative sum of every `token_count.totalTokens`
- *     emitted since session start (each `token_count` event carries
- *     per-stream usage, not cumulative, per stream-model.ts:281).
- *   - `toolCallsIssued`: cumulative count of `tool_call_completed`
- *     events since session start.
- *   - `lastTurnHadNoTools`: latched per turn — set to `true` when the
- *     last completed turn emitted zero `tool_call_started` events,
- *     `false` otherwise. Updated on `turn_complete`. Between turns
- *     `currentTurnHadTools` is reset by `turn_started`.
- *
- * Tracking tool calls via `tool_call_completed` matches the task
- * contract; tracking "this turn had tools" via `tool_call_started`
- * correctly flags turns that started a tool but never finished one
- * (abort mid-tool), so the natural-break branch of `shouldExtract`
- * doesn't fire mid-tool-use.
- */
-export class TurnStateAccumulator {
-  private tokensConsumed = 0;
-  private toolCallsIssued = 0;
-  private currentTurnHadTools = false;
-  private lastTurnHadNoTools = false;
-  private unsubscribe: (() => void) | null = null;
-
-  /** Attach to an EventLog. Idempotent — re-subscribing is a no-op. */
-  subscribe(log: { subscribe: (fn: (e: Event) => void) => () => void }): void {
-    if (this.unsubscribe !== null) return;
-    this.unsubscribe = log.subscribe((event) => this.onEvent(event));
-  }
-
-  /** Detach from the EventLog. Safe to call multiple times. */
-  detach(): void {
-    if (this.unsubscribe !== null) {
-      this.unsubscribe();
-      this.unsubscribe = null;
-    }
-  }
-
-  /** Observe one event. Exposed for direct calls in tests. */
-  onEvent(event: Event): void {
-    switch (event.msg.type) {
-      case "turn_started": {
-        // Reset the per-turn tool flag; counters stay cumulative.
-        this.currentTurnHadTools = false;
-        return;
-      }
-      case "tool_call_started": {
-        this.currentTurnHadTools = true;
-        return;
-      }
-      case "tool_call_completed": {
-        this.toolCallsIssued += 1;
-        this.currentTurnHadTools = true;
-        return;
-      }
-      case "token_count": {
-        // `token_count.totalTokens` is per-stream usage, not cumulative
-        // (stream-model.ts:281). Sum them across the session.
-        const delta = event.msg.payload.totalTokens ?? 0;
-        if (delta > 0) this.tokensConsumed += delta;
-        return;
-      }
-      case "turn_complete": {
-        this.lastTurnHadNoTools = !this.currentTurnHadTools;
-        return;
-      }
-      default:
-        return;
-    }
-  }
-
-  /**
-   * Read-through view of the accumulator. Returns a snapshot object
-   * with the three fields the memory auto-save sidecar consumes. Safe
-   * to call at any time (values are primitives; no copy semantics
-   * required).
-   */
-  snapshot(): {
-    readonly tokensConsumed: number;
-    readonly toolCallsIssued: number;
-    readonly lastTurnHadNoTools: boolean;
-  } {
-    return {
-      tokensConsumed: this.tokensConsumed,
-      toolCallsIssued: this.toolCallsIssued,
-      lastTurnHadNoTools: this.lastTurnHadNoTools,
-    };
-  }
-
-  /** Reset counters to zero. Intended for tests + session recycling. */
-  reset(): void {
-    this.tokensConsumed = 0;
-    this.toolCallsIssued = 0;
-    this.currentTurnHadTools = false;
-    this.lastTurnHadNoTools = false;
   }
 }
 
@@ -1195,363 +558,59 @@ export async function oneShotCLI(
         : await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
-    // Step 3b: boot ConfigStore (loads ~/.agenc/config.toml + env
-    // overrides) so every downstream consumer reads the same snapshot.
-    const agencHome = resolveAgencHomeFromEnv(process.env);
-    const configStore = new ConfigStore({
-      home: agencHome,
-      env: process.env,
-    });
-    await configStore.reload();
-    throwIfAborted("ConfigStore.reload");
-
-    const workspaceRoot =
-      resolveWorkspaceFromEnv(process.env) ?? processCwd();
-    const rawModel = configStore.current().model ?? DEFAULT_MODEL;
-
-    // I-60 hard-fail: ambiguous / unknown model slug must exit at init
-    // with a clear `provider:model` recommendation instead of letting
-    // the provider silently pick one arm.
-    const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
-
-    // Step 4: build tool registry. T6 gap #119 — the bash tool
-    // lifecycle observer needs the Session to emit events through,
-    // but Session is built further down. Allocate a late-bound slot
-    // that the bash tool / MCP manager observers close over; we fill
-    // it right after Session construction so every subsequent spawn
-    // or MCP call lands `exec_command_*` / `mcp_tool_call_*` in the
-    // event log.
+    // Step 3b: shared local-runtime bootstrap contract. Both the
+    // one-shot CLI and TUI entry adapters construct their Session
+    // through this helper so the entry surface owns less runtime
+    // setup directly.
     const sessionSlot: SessionSlot = { current: null };
-    // T9: holds the full `Session` reference for the delegate tool.
-    // `sessionSlot` only carries the narrow ObserverSessionSink shape
-    // the bash/MCP observers need; AgentControl wants the real Session.
     const delegateSessionHolder: { current: Session | null } = {
       current: null,
     };
     const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
-    const mcpCallObserver = createMCPCallObserverForSlot(sessionSlot);
-    // T9: register the subagent-spawn dispatcher as a built-in tool.
-    // Session is late-bound so the delegate call picks up the real
-    // Session once it's constructed a few steps down.
     const delegateTool = buildDelegateTool({
       getSession: () => delegateSessionHolder.current,
     });
-    const registry = buildToolRegistry({
+    const {
+      agencHome,
+      configStore,
       workspaceRoot,
-      bashExecObserver,
-      extraTools: [delegateTool],
-    });
-    throwIfAborted("buildToolRegistry");
-
-    // Step 5: construct provider via the factory so T13's multi-
-    // provider work hooks in cleanly and the I-60 disambiguation
-    // result (`resolvedProvider`) actually drives routing. Today the
-    // factory only wires Grok; other providers throw
-    // `ProviderNotImplementedError` until T13 lands the adapters.
-    const provider: LLMProvider = createProvider(resolvedProvider as ProviderName, {
+      resolvedProvider,
+      registry,
+      session,
+      ctx,
+      memoryDir,
+      memoryMdPath,
+      shutdown,
+    } = await bootstrapLocalRuntimeSession({
       apiKey,
-      model,
-      tools: registry.toLLMTools(),
+      env: process.env,
+      cwd: processCwd(),
+      toolRegistryOptions: {
+        bashExecObserver,
+        extraTools: [delegateTool],
+      },
     });
-    throwIfAborted("createProvider");
+    throwIfAborted("bootstrapLocalRuntimeSession");
 
-    const conversationId = `conv-${Date.now().toString(36)}`;
-    const config = buildMinimalConfig(workspaceRoot, model);
-    const modelInfo = buildMinimalModelInfo(model);
-    const services = buildPlaceholderServices(provider, registry);
-
-    // T10 Group I: derive SessionConfiguration from the typed
-    // AgenCConfig snapshot so approval/sandbox/cwd match what the
-    // operator set in ~/.agenc/config.toml (with env overrides).
-    const initialState: SessionState = {
-      sessionConfiguration: sessionConfigurationFromAgenCConfig({
-        config: configStore.current(),
-        workspaceRoot,
-        model,
-      }),
-      history: [],
-    };
-
-    // Step 6: construct Session. Push its shutdown into the reverse-
-    // cleanup stack so abort during subsequent init steps unwinds it.
-    const session = new Session({
-      conversationId,
-      initialState,
-      features: config.features,
-      services,
-      jsRepl: { id: `repl-${conversationId}` },
-    });
-    cleanup.push("session.shutdown", () => session.shutdown());
     throwIfAborted("Session");
 
-    // T6 gap #119: now that the Session exists, fill the observer
-    // slot so bash spawns and MCP tool calls emit their `*_begin` /
-    // `*_end` EventMsg variants through `session.emit(...)`. Any
-    // future `new MCPManager(...)` site owned by the CLI MUST call
-    // `manager.setCallObserver(mcpCallObserver)` BEFORE `start()`
-    // so the observer is baked into every bridge at creation time.
+    // Now that the Session exists, fill the bash observer slot so
+    // `exec_command_begin` / `exec_command_end` events land on the
+    // session event log. MCP attach/start is owned by the session
+    // boundary inside `bootstrapLocalRuntimeSession(...)`.
     sessionSlot.current = session;
     // T9: give the delegate tool its real Session reference.
     delegateSessionHolder.current = session;
-    // Exported for the future MCPManager wiring site (no MCPManager
-    // is constructed in this entrypoint yet — the placeholder
-    // services.mcpManager is a stub until T9 lands).
-    void mcpCallObserver;
-    // Future MCPManager attach site. When the CLI gains a first-class
-    // MCPManager (T9), uncomment the block below — `getMcpConfigFromEnv`
-    // lets ops seed servers via `AGENC_MCP_SERVERS` today, and
-    // `attachMcpManagerToSession` MUST run BEFORE `manager.start()` so
-    // `mcp_tool_call_begin` / `mcp_tool_call_end` are captured from the
-    // very first bridge. Leaving it commented keeps the ordering doc
-    // and the call surface discoverable without dragging the full
-    // MCPManager wiring in today.
-    //
-    // import { MCPManager } from "../mcp-client/manager.js";
-    // import {
-    //   attachMcpManagerToSession,
-    //   getMcpConfigFromEnv,
-    // } from "../session/mcp-startup.js";
-    // const mcpManager = new MCPManager(getMcpConfigFromEnv());
-    // attachMcpManagerToSession(mcpManager, session, sessionSlot);
-    // await mcpManager.start();
 
     let sessionRef: Session | null = session;
-    // Stable container the memory sidecar closes over — unlike
-    // `sessionRef` (a let binding in this function), this holder
-    // survives reassignment and test introspection.
-    const sessionRefForMemory: { current: Session | null } = {
-      current: session,
-    };
     installSignalHandlers(() => sessionRef, configReloadLatch);
-
-    // Step 7a: mount RolloutStore (T6 — I-4 fsync + I-23 flock +
-    // I-49 schema version). On SessionLockedError, bail fast with
-    // the holder PID (another AgenC process owns the session).
-    // On SchemaMismatchError, bail with the migration message.
-    // Resolve project-root markers from config so the store slugs
-    // from the nearest `.git` (or other marker) ancestor. Two checkouts
-    // nested under the same repo now map to the same projects/<slug>/
-    // directory. Undefined → store uses its own defaults.
-    const sessionProjectRootMarkers = configStore.current().project_root_markers;
-    let rolloutStore: RolloutStore | null = null;
-    try {
-      rolloutStore = new RolloutStore({
-        cwd: workspaceRoot,
-        sessionId: conversationId,
-        agencVersion: "0.2.0",
-        ...(sessionProjectRootMarkers !== undefined
-          ? { projectRootMarkers: sessionProjectRootMarkers }
-          : {}),
-      });
-      rolloutStore.open({
-        sessionId: conversationId,
-        timestamp: new Date().toISOString(),
-        cwd: workspaceRoot,
-        originator: "agenc-cli",
-        agencVersion: "0.2.0",
-        model,
-        modelProvider: resolvedProvider,
-      });
-      session.mountRolloutStore(rolloutStore);
-      cleanup.push("rollout-store.close", () => rolloutStore?.close());
-    } catch (err) {
-      if (err instanceof SessionLockedError) {
-        process.stderr.write(`agenc: ${err.message}\n`);
-        return 1;
-      }
-      if (err instanceof SchemaMismatchError) {
-        process.stderr.write(`agenc: ${err.message}\n`);
-        return 1;
-      }
-      throw err;
-    }
-    throwIfAborted("RolloutStore");
-
-    // Step 7b: I-48 orphan-TurnStarted + I-25 snapshot-seq check.
-    // On resume, scan the rollout for unmatched TurnStarted events
-    // and emit synthetic TurnAborted{reason:'process_killed'} markers;
-    // also validate the index.json snapshot against the rollout
-    // and emit warning:'snapshot_behind_rollout' if stale.
-    try {
-      const existingItems = rolloutStore.readAll();
-      if (existingItems.length > 0) {
-        // I-25: feed the snapshot into reconstruction so it can
-        // report snapshot_behind_rollout.
-        const indexSnapshot = readIndexSnapshot(
-          join(
-            getProjectDir(workspaceRoot, sessionProjectRootMarkers),
-            "sessions",
-            conversationId,
-            "index.json",
-          ),
-        );
-        const reconstruction = reconstructFromRollout(existingItems, {
-          ...(indexSnapshot ? { indexSnapshot } : {}),
-        });
-        if (reconstruction.synthesizedEvents.length > 0) {
-          for (const synth of reconstruction.synthesizedEvents) {
-            if (synth.type === "event_msg") {
-              session.emit(synth.payload);
-            } else {
-              rolloutStore.appendRollout(synth);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      // Orphan-recovery failures are best-effort. Surface as warning
-      // but keep going; resume still works with partial metadata.
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "orphan_recovery_failed",
-            message: err instanceof Error ? err.message : String(err),
-          },
-        },
-      });
-    }
-
-    // Step 7c: mount sidecars (T6 §C).
-    const projectDir = getProjectDir(workspaceRoot, sessionProjectRootMarkers);
-    const sidecarManager = new SidecarManager({
-      onDiagnostic: (d) => {
-        // Route sidecar diagnostics through the event log so they
-        // land in the rollout alongside other errors.
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: d.level,
-            payload: { cause: d.cause, message: d.message },
-          },
-        } as Parameters<typeof session.emit>[0]);
-      },
-    });
-    const fileHistory = new FileHistory({
-      projectDir,
-      onDiagnostic: (d) => sidecarManager.recordDiagnostic({
-        sidecar: "file-history",
-        level: "warning",
-        cause: d.cause,
-        message: d.message,
-        at: Date.now(),
-      }),
-    });
-    sidecarManager.register(new FileHistorySidecar({ fileHistory }));
-    sidecarManager.register(
-      new ErrorLogSidecar({
-        projectDir,
-        sessionId: conversationId,
-      }),
-    );
-    const costSidecar = new CostSidecar({
-      budgetTracker: session.budgetTracker,
-      projectDir,
-      sessionId: conversationId,
-      onDiagnostic: (d) =>
-        sidecarManager.recordDiagnostic({
-          sidecar: "cost",
-          level: d.level,
-          cause: d.cause,
-          message: d.message,
-          at: Date.now(),
-        }),
-    });
-    // Load lifetime totals before the sidecar observes any events so
-    // `/status` and lifetime accessors reflect prior sessions
-    // immediately on resume. Cost totals survive session boundaries,
-    // scoped per project.
-    await costSidecar.loadFromDisk();
-    sidecarManager.register(costSidecar);
-
-    // T10 Group I: memory auto-save sidecar. Turn-complete events feed
-    // a threshold check; if tripped, the extractor (T9 delegate when
-    // reachable; stub otherwise) produces MemoryCandidates that get
-    // written through the I-29 write-lock.
-    const memoryDir = join(agencHome, "memory");
-    const memoryMdPath = join(memoryDir, "MEMORY.md");
-    const extractMemoriesFn = buildExtractMemoriesViaSubagent({
-      session: () => sessionRefForMemory.current,
-      memoryDir,
-    });
-    // T10 A+ Fix-α: real per-turn telemetry. The accumulator
-    // subscribes to the session EventLog BEFORE the sidecar so
-    // `tool_call_completed`, `token_count`, `turn_started`, and
-    // `turn_complete` events update the cumulative counters that back
-    // `shouldExtract`. Without this, `getTurnState` returned zeros and
-    // the auto-save predicate could never fire in production.
-    const turnStateAccumulator = new TurnStateAccumulator();
-    turnStateAccumulator.subscribe(session.eventLog);
-    cleanup.push("turn-state-accumulator.detach", () =>
-      turnStateAccumulator.detach(),
-    );
-    const getTurnState = (): MemoryTurnState | null =>
-      turnStateAccumulator.snapshot();
-    const memoryAutoSaveSidecar = registerAutoSaveSidecar({
-      session: { memoryDir, memoryMdPath },
-      extractor: extractMemoriesFn,
-      getTurnState,
-      // I-8: route `memory_write_contention` warnings (from
-      // FsLockTimeoutError / FsLockUnavailableError inside
-      // writeMemoryFile / upsertIndexEntry) through the typed event
-      // bus instead of stderr.
-      emitWarning: (message: string) => {
-        const active = sessionRefForMemory.current;
-        if (active === null) return;
-        active.emit({
-          id: active.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: {
-              cause: "memory_write_contention",
-              message,
-            },
-          },
-        });
-      },
-    });
-    sidecarManager.register(memoryAutoSaveSidecar);
-
-    await sidecarManager.start(session.eventLog);
-    cleanup.push("sidecar-manager.stop", () => sidecarManager.stop());
-
-    // Step 8: build TurnContext.
-    const subId = session.nextInternalSubId();
-    const ctx = buildTurnContext({
-      conversationId,
-      subId,
-      config,
-      modelInfo,
-      provider,
-      sessionConfiguration: initialState.sessionConfiguration,
-    });
-    throwIfAborted("buildTurnContext");
-
-    // Emit a session_meta event to stamp the session_configured record.
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "session_configured",
-        payload: {
-          sessionId: conversationId,
-          model,
-          modelProviderId: resolvedProvider,
-          cwd: workspaceRoot,
-          historyLogId: 0,
-          historyEntryCount: 0,
-          initialMessages: [],
-          rolloutPath: rolloutStore.rolloutPath,
-        },
-      },
-    });
 
     // Init complete — tear down init-phase signal handlers (Session
     // now owns its own) and drop the cleanup stack since the session
     // finally-block below takes over.
     uninstallInitSignals();
-    // Drain the stack without running finalisers; session.shutdown()
-    // below handles the Session cleanup.
+    // Drain the stack without running finalisers; the finally-block
+    // below hands off to the session lifecycle helper.
     await cleanup.unwind(() => {
       /* swallow — we're handing off to session's own lifecycle */
     });
@@ -1596,12 +655,9 @@ export async function oneShotCLI(
         return result.exitCode;
       } finally {
         sessionRef = null;
-        // Flush sidecars (incl. CostSidecar cross-session persistence)
-        // before closing the event log via session.shutdown().
-        await sidecarManager.stop().catch(() => {
-          /* best effort */
-        });
-        await session.shutdown().catch(() => {
+        sessionSlot.current = null;
+        delegateSessionHolder.current = null;
+        await shutdown().catch(() => {
           /* best effort */
         });
       }
@@ -1657,11 +713,9 @@ export async function oneShotCLI(
         }
       } finally {
         sessionRef = null;
-        sessionRefForMemory.current = null;
-        await sidecarManager.stop().catch(() => {
-          /* best effort */
-        });
-        await session.shutdown().catch(() => {
+        sessionSlot.current = null;
+        delegateSessionHolder.current = null;
+        await shutdown().catch(() => {
           /* best effort */
         });
       }
@@ -1727,13 +781,9 @@ export async function oneShotCLI(
       }
     } finally {
       sessionRef = null;
-      sessionRefForMemory.current = null;
-      // Flush sidecars (incl. CostSidecar cross-session persistence)
-      // before closing the event log via session.shutdown().
-      await sidecarManager.stop().catch(() => {
-        /* best effort */
-      });
-      await session.shutdown().catch(() => {
+      sessionSlot.current = null;
+      delegateSessionHolder.current = null;
+      await shutdown().catch(() => {
         /* best effort */
       });
     }
@@ -1751,6 +801,15 @@ export async function oneShotCLI(
         );
       });
       return 130;
+    }
+    if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
+      process.stderr.write(`agenc: ${error.message}\n`);
+      await cleanup.unwind((name, err) => {
+        process.stderr.write(
+          `agenc: cleanup[${name}] failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
+      return 1;
     }
     // Other init errors: still run cleanup, then re-throw so the
     // top-level catch surfaces the message.
@@ -1812,67 +871,45 @@ async function loadBootTUI(): Promise<
  * (see TODO inside the composer reducer).
  */
 export async function bootTUIEntry(args: BootTUIArgs): Promise<number> {
-  // Init the minimal session bag the TUI needs (api key + config).
-  // `oneShotCLI` owns full session construction; the TUI path will be
-  // fleshed out across Waves 6+ to share that pipeline. For now we
-  // return a non-zero exit code if bootstrap fails so scripts can
-  // distinguish TUI boot failure from normal exit.
-  const apiKey = resolveApiKey();
-  const agencHome = resolveAgencHomeFromEnv(process.env);
-  const configStore = new ConfigStore({
-    home: agencHome,
-    env: process.env,
-  });
-  await configStore.reload();
-  const rawModel = configStore.current().model ?? DEFAULT_MODEL;
-  const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
-  const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
-  const registry = buildToolRegistry({ workspaceRoot });
-  const provider: LLMProvider = createProvider(
-    resolvedProvider as ProviderName,
-    {
-      apiKey,
-      model,
-      tools: registry.toLLMTools(),
-    },
-  );
-  const conversationId = `conv-${Date.now().toString(36)}`;
-  const config = buildMinimalConfig(workspaceRoot, model);
-  const services = buildPlaceholderServices(provider, registry);
-  const initialState: SessionState = {
-    sessionConfiguration: sessionConfigurationFromAgenCConfig({
-      config: configStore.current(),
-      workspaceRoot,
-      model,
-    }),
-    history: [],
-  };
-  const session = new Session({
-    conversationId,
-    initialState,
-    features: config.features,
-    services,
-    jsRepl: { id: `repl-${conversationId}` },
-  });
-
-  const boot = await loadBootTUI();
-  const handle = await boot({
-    session,
-    configStore,
-    model,
-    ...(args.initialPrompt !== undefined
-      ? { initialPrompt: args.initialPrompt }
-      : {}),
-  });
-  activeInkUnmount = handle.unmount;
   try {
-    await handle.waitUntilExit();
-    return 0;
-  } finally {
-    activeInkUnmount = null;
-    await session.shutdown().catch(() => {
-      /* best effort */
+    validateAgencHome();
+    const apiKey = resolveApiKey();
+    const {
+      configStore,
+      model,
+      session,
+      shutdown,
+    } = await bootstrapLocalRuntimeSession({
+      apiKey,
+      env: process.env,
+      cwd: processCwd(),
     });
+
+    const boot = await loadBootTUI();
+    const handle = await boot({
+      session,
+      configStore,
+      model,
+      ...(args.initialPrompt !== undefined
+        ? { initialPrompt: args.initialPrompt }
+        : {}),
+    });
+    activeInkUnmount = handle.unmount;
+    try {
+      await handle.waitUntilExit();
+      return 0;
+    } finally {
+      activeInkUnmount = null;
+      await shutdown().catch(() => {
+        /* best effort */
+      });
+    }
+  } catch (error) {
+    if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
+      process.stderr.write(`agenc: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
   }
 }
 

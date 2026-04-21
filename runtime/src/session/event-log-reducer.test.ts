@@ -156,4 +156,77 @@ describe("event-log-reducer (I-26 + I-27)", () => {
     expect(state.history).toHaveLength(2);
     expect(state.history[0]?.content).toBe("u1");
   });
+
+  test("persisted plan-mode events are replay-tolerated but do not mutate history", () => {
+    const { state, report } = reduceAll([
+      {
+        type: "response_item",
+        payload: { role: "user", content: "prompt" },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "p1",
+          seq: 1,
+          msg: {
+            type: "plan_started",
+            payload: {
+              turnId: "turn-1",
+              planItemId: "turn-1-plan",
+              title: "Plan",
+              timestamp: 1,
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "p2",
+          seq: 2,
+          msg: {
+            type: "plan_delta",
+            payload: {
+              turnId: "turn-1",
+              planItemId: "turn-1-plan",
+              delta: "1. Explore",
+              timestamp: 2,
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "p3",
+          seq: 3,
+          msg: {
+            type: "plan_item_completed",
+            payload: {
+              turnId: "turn-1",
+              planItemId: "turn-1-plan",
+              finalText: "1. Explore",
+              timestamp: 3,
+            },
+          },
+        },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "p4",
+          seq: 4,
+          msg: {
+            type: "plan_exited",
+            payload: { turnId: "turn-1", timestamp: 4 },
+          },
+        },
+      },
+    ]);
+
+    expect(state.history).toEqual([{ role: "user", content: "prompt" }]);
+    expect(state.lastSeq).toBe(4);
+    expect(report.unknownVariantCount).toBe(0);
+    expect(report.seqGapCount).toBe(0);
+  });
 });

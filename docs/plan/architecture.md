@@ -1,6 +1,15 @@
 # AgenC Architecture
 
-High-level module map + dependency graph for the hybrid build.
+High-level module map + dependency graph for the codex-runtime replacement
+target.
+
+The destination architecture is unambiguous:
+
+- live session and turn ownership comes from the AgenC TypeScript port of the
+  codex runtime
+- selected openclaude loop, compaction, transport, and subagent behaviors are
+  retained inside that runtime
+- no permanent hybrid runtime owner remains after cutover
 
 ## Related docs
 
@@ -138,9 +147,10 @@ graph TB
 | Openclaude | `constants/prompts.ts` + `utils/claudemd.ts` + `utils/projectInstructions.ts` | 2,471 | `runtime/src/prompts/` |
 | Openclaude | `memdir/` + `memoryScan.ts` + `memoryTypes.ts` | ~900 | `runtime/src/prompts/memory/` |
 | Openclaude | `utils/permissions/` + `hooks/toolPermission/` + `utils/sandbox/` | ~3,500 | `runtime/src/permissions/` |
-| Openclaude | `utils/worktree.ts` + `tools/AgentTool/*` | ~3,000 | `runtime/src/agents/` |
+| Openclaude | `utils/worktree.ts` + `tools/AgentTool/*` | ~3,000 | `runtime/src/agents/{delegate,run-agent,worktree,fork-context}.ts` |
 | Codex | `core/src/session/` | 3,082 (session.rs+turn.rs) | `runtime/src/session/` (hand-port) |
 | Codex | `core/src/tools/parallel.rs` | 194 | `runtime/src/tools/concurrency.ts` (hand-port) |
+| Codex | `core/src/agent/{control,registry,role,status}.rs` | ~2,019 | `runtime/src/agents/{control,registry,role,status}.ts` (hand-port) |
 | Codex | `core/src/agent/mailbox.rs` | 161 | `runtime/src/agents/mailbox.ts` (hand-port) |
 | Codex | `protocol/src/protocol.rs` (event enums only) | ~500 effective | `runtime/src/session/event-log.ts` (hand-port) |
 | AgenC (keep) | `runtime/src/llm/grok/` | 8,144 | — verbatim |
@@ -167,6 +177,7 @@ Surfaces). No backward deps.
 1. `Recovery` is invoked only from `phases/post-sample-recovery.ts`. It never mutates `SessionState` — it returns a new `TurnState` with a `transition` marker.
 2. `Transport` exposes a uniform `Transport` interface; selection is env-driven in `transport/index.ts`. No runtime probing.
 3. `Agents` subagents run with isolated `Session` instances, not shared mutable state with the parent.
+4. `agents/control.ts` plus child `session/*` own subagent lifecycle. `agents/delegate.ts` is an adapter over the legacy AgentTool surface, not a runtime owner.
 
 ### Surfaces invariants
 
@@ -202,7 +213,7 @@ agenc-core/runtime/src/
     continuation-nudge.ts        # openclaude: phase 4 (1400-1463)
     execute-tools.ts             # openclaude: phase 5 (1471-1590)
     commit.ts                    # openclaude: phase 6 (1643-1836)
-    stop-hooks.ts                # hybrid: openclaude stop-gate + codex stop hook events
+    stop-hooks.ts                # openclaude stop-gate behavior + codex event/session wiring
   recovery/
     tombstone.ts                 # openclaude-port
     terminal-tool-result.ts      # openclaude-port
@@ -236,16 +247,17 @@ agenc-core/runtime/src/
     fallback-ladder.ts           # openclaude-port: transportUtils factory + ladder
     capability-probe.ts          # planned: per-transport feature bitmap
   agents/
-    thread.ts                    # openclaude+codex hybrid: AgentThread
+    thread.ts                    # AgenC child-session wrapper over codex control + openclaude message streaming
     worktree.ts                  # openclaude-port: worktree.ts
-    delegate.ts                  # openclaude-port: AgentTool.tsx spawn logic
+    delegate.ts                  # legacy AgentTool adapter only; no child-session ownership
+    run-agent.ts                 # openclaude-port behavior invoked inside codex-owned child session lifecycle
     fork-context.ts              # openclaude-port: forkSubagent.ts
     mailbox.ts                   # codex-port: mailbox.rs
     control.ts                   # codex-port: control.rs
     registry.ts                  # codex-port: registry.rs
     role.ts                      # codex-port: role.rs + built-in default/explorer/awaiter
     status.ts                    # codex-port: status.rs
-    resume.ts                    # openclaude+codex: resume vs restart pragmatism
+    resume.ts                    # codex lifecycle with retained openclaude worktree pragmatism
   permissions/
     evaluator.ts                 # openclaude-port: hasPermissionsToUseTool
     context.ts                   # openclaude-port: PermissionContext

@@ -32,6 +32,7 @@ import { emitWarning } from "../session/event-log.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";
+import { runPostCompactCleanup } from "../llm/compact/post-compact-cleanup.js";
 import { isMediaTooLargeMessage, isPromptTooLongMessage } from "./api-errors.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -211,6 +212,9 @@ export async function runReactiveCompact(
   // Success path — rewire the state and signal the run-turn loop.
   const preCompactCount = opts.state.messagesForQuery.length;
   const postCompactCount = result.compactedMessages.length;
+  // I-2: clear provider response ids before exposing the compacted
+  // state back to the recovery ladder / phase machine.
+  runPostCompactCleanup();
   opts.state.messagesForQuery = [...result.compactedMessages];
   opts.state.hasAttemptedReactiveCompact = true;
   opts.state.transition = { reason: "reactive_compact_retry" };

@@ -1,4 +1,10 @@
 // @ts-nocheck
+/**
+ * Legacy compatibility surface. The live codex-runtime subagent path is
+ * `src/agents/run-agent.ts` plus session-owned MCP startup in
+ * `src/session/mcp-startup.ts`; this file must not regain ownership of
+ * runtime MCP lifecycle semantics.
+ */
 import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
@@ -13,7 +19,6 @@ import {
 import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import { query } from '../../query.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
@@ -33,12 +38,6 @@ import type { AgentId } from '../../types/ids.js'
 import type {
   AssistantMessage,
   Message,
-  ProgressMessage,
-  RequestStartEvent,
-  StreamEvent,
-  SystemCompactBoundaryMessage,
-  TombstoneMessage,
-  ToolUseSummaryMessage,
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
@@ -67,6 +66,7 @@ import {
   setAgentTranscriptSubdir,
   writeAgentMetadata,
 } from '../../utils/sessionStorage.js'
+import { streamRuntimeSubagent } from '../../utils/runtimeSubagent.js'
 import {
   isRestrictedToPluginOnly,
   isSourceAdminTrusted,
@@ -220,34 +220,6 @@ async function initializeAgentMcpServers(
   }
 }
 
-type QueryMessage =
-  | StreamEvent
-  | RequestStartEvent
-  | Message
-  | ToolUseSummaryMessage
-  | TombstoneMessage
-
-/**
- * Type guard to check if a message from query() is a recordable Message type.
- * Matches the types we want to record: assistant, user, progress, or system compact_boundary.
- */
-function isRecordableMessage(
-  msg: QueryMessage,
-): msg is
-  | AssistantMessage
-  | UserMessage
-  | ProgressMessage
-  | SystemCompactBoundaryMessage {
-  return (
-    msg.type === 'assistant' ||
-    msg.type === 'user' ||
-    msg.type === 'progress' ||
-    (msg.type === 'system' &&
-      'subtype' in msg &&
-      msg.subtype === 'compact_boundary')
-  )
-}
-
 export async function* runAgent({
   agentDefinition,
   promptMessages,
@@ -325,10 +297,7 @@ export async function* runAgent({
   /** Optional subdirectory under subagents/ to group this agent's transcript
    * with related ones (e.g. workflows/<runId> for workflow subagents). */
   transcriptSubdir?: string
-  /** Optional callback fired on every message yielded by query() — including
-   * stream_event deltas that runAgent otherwise drops. Use to detect liveness
-   * during long single-block streams (e.g. thinking) where no assistant
-   * message is yielded for >60s. */
+  /** Optional callback fired when the runtime helper produces a new message. */
   onQueryProgress?: () => void
   /** Agent name (team member name) for routing resolution */
   agentName?: string
@@ -760,64 +729,46 @@ export async function* runAgent({
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
 
   try {
-    for await (const message of query({
-      messages: initialMessages,
+    const iter = streamRuntimeSubagent({
+      initialMessages,
+      taskPrompt:
+        typeof promptMessages.at(-1)?.message?.content === 'string'
+          ? promptMessages.at(-1)!.message.content
+          : description ?? agentDefinition.agentType,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
       systemContext: resolvedSystemContext,
+      toolAllowlist: allTools.map(tool => tool.name),
+      legacyTools: allTools,
       canUseTool,
-      toolUseContext: agentToolUseContext,
-      querySource,
-      maxTurns: maxTurns ?? agentDefinition.maxTurns,
-    })) {
-      onQueryProgress?.()
-      // Forward subagent API request starts to parent's metrics display
-      // so TTFT/OTPS update during subagent execution.
-      if (
-        message.type === 'stream_event' &&
-        message.event.type === 'message_start' &&
-        message.ttftMs != null
-      ) {
-        toolUseContext.pushApiMetricsEntry?.(message.ttftMs)
-        continue
+      externalSignal: agentAbortController.signal,
+      childConversationId: agentId,
+      onMessage() {
+        onQueryProgress?.()
+      },
+    })
+
+    while (true) {
+      const step = await iter.next()
+      if (step.done) {
+        if (step.value.error) {
+          throw step.value.error
+        }
+        break
       }
 
-      // Yield attachment messages (e.g., structured_output) without recording them
-      if (message.type === 'attachment') {
-        // Handle max turns reached signal from query.ts
-        if (message.attachment.type === 'max_turns_reached') {
-          logForDebugging(
-            `[Agent
-: $
-{
-  agentDefinition.agentType
-}
-] Reached max turns limit ($
-{
-  message.attachment.maxTurns
-}
-)`,
-          )
-          break
-        }
-        yield message
-        continue
+      const message = step.value
+      await recordSidechainTranscript(
+        [message],
+        agentId,
+        lastRecordedUuid,
+      ).catch(err =>
+        logForDebugging(`Failed to record sidechain transcript: ${err}`),
+      )
+      if (message.type !== 'progress') {
+        lastRecordedUuid = message.uuid
       }
-
-      if (isRecordableMessage(message)) {
-        // Record only the new message with correct parent (O(1) per message)
-        await recordSidechainTranscript(
-          [message],
-          agentId,
-          lastRecordedUuid,
-        ).catch(err =>
-          logForDebugging(`Failed to record sidechain transcript: ${err}`),
-        )
-        if (message.type !== 'progress') {
-          lastRecordedUuid = message.uuid
-        }
-        yield message
-      }
+      yield message
     }
 
     if (agentAbortController.signal.aborted) {

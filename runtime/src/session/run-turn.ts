@@ -54,7 +54,11 @@ import { continuationNudge } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
-import { prepareContext } from "../phases/prepare-context.js";
+import {
+  getPrepareContextTerminal,
+  prepareContext,
+} from "../phases/prepare-context.js";
+import { buildCompactedRolloutItem } from "../llm/compact/compact.js";
 import {
   streamModel,
   StreamModelError,
@@ -120,6 +124,19 @@ function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
     completionTokens: acc.completionTokens + (next.completionTokens ?? 0),
     totalTokens: acc.totalTokens + (next.totalTokens ?? 0),
   };
+}
+
+function terminalToStopReason(
+  reason: Terminal["reason"],
+): Extract<PhaseEvent, { type: "turn_complete" }>["stopReason"] {
+  switch (reason) {
+    case "completed":
+    case "max_turns":
+    case "cancelled":
+      return reason;
+    default:
+      return "error";
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -248,7 +265,31 @@ async function runAutoCompact(
     );
 
     if (result.wasCompacted && state) {
-      const cr = result.compactionResult;
+      const cr = result.compactionResult as
+        | {
+            boundaryMarker?: unknown;
+            summaryMessages?: LLMMessage[];
+            attachments?: LLMMessage[];
+            hookResults?: LLMMessage[];
+            messagesToKeep?: unknown[];
+            preCompactTokenCount?: number;
+            postCompactTokenCount?: number;
+          }
+        | undefined;
+      if (cr) {
+        session.rolloutStore?.appendRollout(
+          {
+            type: "compacted",
+            payload: buildCompactedRolloutItem({
+              ...cr,
+              summaryMessages: cr.summaryMessages ?? [],
+              attachments: cr.attachments ?? [],
+              hookResults: cr.hookResults ?? [],
+            }),
+          },
+          { durable: true },
+        );
+      }
       if (cr && (cr.summaryMessages || cr.attachments || cr.hookResults)) {
         const compacted: LLMMessage[] = [
           ...(cr.summaryMessages ?? []),
@@ -486,6 +527,7 @@ export interface SamplingRequestResult {
   readonly lastAgentMessage?: string;
   readonly assistantText: string;
   readonly usage: LLMUsage;
+  readonly terminal?: Terminal;
 }
 
 /**
@@ -514,6 +556,36 @@ async function tryRunSamplingRequest(
 ): Promise<SamplingRequestResult> {
   // Phase 1: prepare context.
   await prepareContext(state, ctx, session, signal);
+  const prepareTerminal = getPrepareContextTerminal(state);
+  if (prepareTerminal) {
+    const assistantText = prepareTerminal.assistantMessage.text ?? "";
+    if (assistantText.length > 0) {
+      state.assistantMessages = [prepareTerminal.assistantMessage];
+      state.messages.push({
+        role: "assistant",
+        content: assistantText,
+      });
+      events.push({ type: "assistant_text", content: assistantText });
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "agent_message",
+          payload: { message: assistantText },
+        },
+      });
+    }
+    return {
+      needsFollowUp: false,
+      lastAgentMessage: assistantText,
+      assistantText,
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      },
+      terminal: prepareTerminal.terminal,
+    };
+  }
   const request = buildSamplingRequestContract(state, session, ctx);
 
   // Plan-mode stream state (T11). When the turn's collaboration mode is
@@ -826,157 +898,9 @@ export function getLastAssistantMessageFromTurn(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// I-13 consumer: apply a staged provider/model/profile switch.
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * I-13 consumer — apply any `session.pendingProviderSwitch` staged by
- * `/model`, `/provider`, `/config profile <name>`, or the recovery
- * model-fallback path. The staging side of I-13 (turn-abort + marker)
- * lives in those commands and in `recovery/model-fallback.ts`; this
- * function is the matching "apply on the next turn" half.
- *
- * Called at the top of `runTurn` so the switch takes effect on the
- * turn that follows the one that staged it. The existing
- * `session.pendingProviderSwitch` check inside the inner sampling-
- * request loop stays as a safety net for mid-turn stages that slip
- * through without calling `abortTerminal` (e.g. recovery-side
- * fallbacks that rely on `state.transition` to exit the loop).
- *
- * Behavior:
- *   - Updates `sessionConfiguration.collaborationMode.model` in place
- *     on the session state (I-30 allows between-turn mutations; the
- *     per-turn snapshot is captured at `buildTurnContext` time, so this
- *     write is visible to the NEXT `buildTurnContext` call).
- *   - When a `profile` slot is set and `session.services.configStore`
- *     is available, delegates the overlay computation to
- *     `resolveProfile(...)`. Today the profile's `model` / `provider`
- *     values are already staged on the same marker by
- *     `commands/config.ts::handleProfileSubcommand` — this function
- *     just ensures the session config reflects them.
- *   - Leaves the active `provider` field on the session unchanged. The
- *     T13 provider factory/registry is what eventually swaps the live
- *     `LLMProvider` instance; for now we only record the target model
- *     so the next turn's snapshot picks up the intended slug.
- *   - Clears the marker via `setPendingProviderSwitch(null)` after
- *     applying so the `pendingProviderSwitch` check in the inner loop
- *     does not re-terminate the fresh turn.
- *   - Emits a `warning` event (cause `provider_switch_applied`)
- *     instead of adding a new EventMsg variant — the warning carries
- *     the structured `before → after` payload in its `message` field.
- */
-async function consumePendingProviderSwitch(session: Session): Promise<void> {
-  const pending = session.pendingProviderSwitch;
-  if (!pending) return;
-
-  // Best-effort read of the current model/provider so the emitted
-  // warning can report a before/after. `state.unsafePeek()` is safe
-  // here — we only read, the actual mutation goes through `state.with`.
-  const peeked = session.state.unsafePeek?.() as
-    | {
-        sessionConfiguration?: {
-          provider?: { slug?: string };
-          collaborationMode?: { model?: string };
-        };
-      }
-    | undefined;
-  const beforeModel =
-    peeked?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
-  const beforeProvider =
-    peeked?.sessionConfiguration?.provider?.slug ?? "unknown";
-
-  // Resolve profile overlay if the marker carried a profile name and
-  // the configStore is wired. When the store is missing the profile
-  // slot is still honored for model/provider because the staging site
-  // already wrote those fields into the marker from the profile's
-  // declared overrides.
-  // TODO T13: thread provider-factory so cross-provider switches can
-  // actually swap `session.services.provider` here instead of only
-  // updating the collaboration-mode model slug.
-  let resolvedModel = pending.model;
-  if (pending.profile) {
-    const configStore = (session.services as unknown as {
-      configStore?: {
-        current(): unknown;
-      };
-    }).configStore;
-    if (configStore && typeof configStore.current === "function") {
-      try {
-        const { resolveProfile } = await import("../config/profiles.js");
-        const snapshot = configStore.current() as Parameters<
-          typeof resolveProfile
-        >[0];
-        const overlaid = resolveProfile(snapshot, pending.profile);
-        if (overlaid.model && overlaid.model.length > 0) {
-          resolvedModel = overlaid.model;
-        }
-      } catch {
-        // Fall through with the marker's raw model value — resolveProfile
-        // only throws on unknown profile names, which the staging site
-        // already validated. Any unexpected failure here should not
-        // block the switch.
-      }
-    }
-  }
-
-  // Apply to session state. `session.state.with` may be absent on test
-  // fixtures that mock the state with a bare `unsafePeek`; fall back to
-  // in-place mutation of the peeked value in that case.
-  const applyMutation = (
-    state: { sessionConfiguration?: unknown } | undefined,
-  ): void => {
-    if (!state || typeof state !== "object") return;
-    const cfg = state.sessionConfiguration as
-      | { collaborationMode?: { model?: string } }
-      | undefined;
-    if (!cfg) return;
-    const currentMode = cfg.collaborationMode;
-    if (currentMode) {
-      (cfg as { collaborationMode: { model: string } }).collaborationMode = {
-        ...currentMode,
-        model: resolvedModel || currentMode.model || "",
-      };
-    }
-  };
-
-  const stateLock = session.state as unknown as {
-    with?: (fn: (s: unknown) => unknown) => Promise<unknown>;
-    unsafePeek?: () => unknown;
-  };
-  if (typeof stateLock.with === "function") {
-    await stateLock.with((s) => {
-      applyMutation(s as { sessionConfiguration?: unknown });
-    });
-  } else if (typeof stateLock.unsafePeek === "function") {
-    applyMutation(stateLock.unsafePeek() as { sessionConfiguration?: unknown });
-  }
-
-  // Clear the marker so the inner-loop safety net does not re-trigger.
-  session.setPendingProviderSwitch(null);
-
-  // Record the applied switch as a warning with a structured cause.
-  // Using `warning` (existing EventMsg variant) keeps this change
-  // scoped to run-turn.ts without extending the event catalog.
-  try {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "provider_switch_applied",
-          message: `provider ${beforeProvider} → ${pending.provider}; model ${beforeModel} → ${resolvedModel}${
-            pending.profile ? `; profile ${pending.profile}` : ""
-          }`,
-        },
-      },
-    });
-  } catch {
-    // Best-effort telemetry only.
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Top-level runTurn — codex `run_turn` (turn.rs:130-665).
+// Top-level runTurn kernel — codex `run_turn` (turn.rs:130-665).
+// Session owns the live entrypoint; the exported free function below is
+// a compatibility adapter that delegates back into Session.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -989,7 +913,7 @@ async function consumePendingProviderSwitch(session: Session): Promise<void> {
  * so bin/agenc.ts renders without a rewrite. Returns the terminal
  * reason as the generator return value.
  */
-export async function* runTurn(
+export async function* runTurnKernel(
   session: Session,
   ctx: TurnContext,
   userMessage: string,
@@ -1061,23 +985,23 @@ export async function* runTurn(
   // existing `pendingProviderSwitch` check inside the inner sampling
   // loop stays as a safety net — the clear here prevents it from
   // re-terminating this fresh turn.
-  await consumePendingProviderSwitch(session);
+  const sessionOwner = session as Session & {
+    consumePendingProviderSwitch?: () => Promise<void>;
+  };
+  if (typeof sessionOwner.consumePendingProviderSwitch === "function") {
+    await sessionOwner.consumePendingProviderSwitch();
+  }
 
-  // Codex: "if input.is_empty() && !sess.has_pending_input().await { return None }"
-  if (userMessage.trim().length === 0) {
-    emitTurnStarted();
-    emitTurnComplete("");
-    const terminal: Terminal = { reason: "completed" };
-    yield {
-      type: "turn_complete",
-      content: "",
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      stopReason: "empty_response",
-    };
-    return terminal;
+  // Codex: `if input.is_empty() && !sess.has_pending_input().await { return None }`
+  // Empty/no-pending-input is a no-op turn, not a synthetic completed
+  // turn. Callers that want to force work must enqueue pending input or
+  // pass a non-empty user message.
+  if (userMessage.trim().length === 0 && !session.hasPendingInput()) {
+    return { reason: "completed" };
   }
 
   emitTurnStarted();
+  session.budgetTracker?.resetForTurn();
 
   // T6 gap #119: emit the seed user message exactly once per runTurn
   // invocation. Continuation turns (needsFollowUp=true) stay inside the
@@ -1204,6 +1128,19 @@ export async function* runTurn(
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
       usage = cumulativeUsage(usage, result.usage);
+      if (result.terminal) {
+        if (result.assistantText.length > 0) {
+          lastContent = result.assistantText;
+        }
+        emitTurnComplete(lastContent);
+        yield {
+          type: "turn_complete",
+          content: lastContent,
+          usage,
+          stopReason: terminalToStopReason(result.terminal.reason),
+        };
+        return result.terminal;
+      }
     } catch (error) {
       await drainInFlight(state, ctx, session);
       for (const ev of pending) yield ev;
@@ -1325,6 +1262,34 @@ export async function* runTurn(
     // returns (above). No-op dummy accumulation removed.
     // loop back for another sampling request
   }
+}
+
+export function runTurn(
+  session: Session,
+  ctx: TurnContext,
+  userMessage: string,
+  opts: RunTurnOptions = {},
+): AsyncGenerator<PhaseEvent, Terminal> {
+  const sessionOwner = session as Session & {
+    runTurn?: (
+      userMessage: string,
+      opts?: {
+        ctx?: TurnContext;
+        systemPrompt?: string;
+        history?: readonly LLMMessage[];
+        signal?: AbortSignal;
+      },
+    ) => AsyncGenerator<PhaseEvent, Terminal>;
+  };
+  if (typeof sessionOwner.runTurn === "function") {
+    return sessionOwner.runTurn(userMessage, {
+      ctx,
+      systemPrompt: opts.systemPrompt,
+      history: opts.history,
+      signal: opts.signal,
+    });
+  }
+  return runTurnKernel(session, ctx, userMessage, opts);
 }
 
 export type { Continue, Terminal };

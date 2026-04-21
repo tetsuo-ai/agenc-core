@@ -156,12 +156,13 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
     expect(end!.payload.exitCode).toBe(0);
   });
 
-  it("slot variant: events dropped while slot.current is null, wired once filled", async () => {
+  it("slot variant drops pre-session events with no backfill, then emits in call order once filled", async () => {
     const slot: SessionSlot = { current: null };
     const observer = createMCPCallObserverForSlot(slot);
     const bashObs = createBashExecObserverForSlot(slot);
 
-    // Drop-while-null: no session, silent.
+    // Drop-while-null: no session, silent, and nothing is queued for
+    // later replay once the slot is populated.
     observer.onBegin?.({
       callId: "c1",
       server: "s",
@@ -179,6 +180,7 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
     bashObs.onBegin?.({ callId: "b1", command: "true", cwd: "/tmp" });
 
     const { session, msgs } = stubSession();
+    expect(msgs()).toHaveLength(0);
     slot.current = session;
 
     observer.onBegin?.({
@@ -189,10 +191,22 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
     });
     bashObs.onEnd?.({ callId: "b2", exitCode: 0, durationMs: 2 });
 
-    expect(msgs().map((m) => m.type)).toEqual([
+    const emitted = msgs();
+    expect(emitted.map((m) => m.type)).toEqual([
       "mcp_tool_call_begin",
       "exec_command_end",
     ]);
+
+    const mcpBegin = emitted[0];
+    const bashEnd = emitted[1];
+    if (mcpBegin?.type !== "mcp_tool_call_begin") {
+      throw new Error("bad mcp begin");
+    }
+    if (bashEnd?.type !== "exec_command_end") {
+      throw new Error("bad bash end");
+    }
+    expect(mcpBegin.payload.callId).toBe("c2");
+    expect(bashEnd.payload.callId).toBe("b2");
   });
 
   // Sanity check that the tool-bridge tests already rely on: observer

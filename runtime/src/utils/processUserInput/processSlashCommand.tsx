@@ -14,9 +14,6 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, type A
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js';
 import { buildPostCompactMessages } from '../../services/compact/compact.js';
 import { resetMicrocompactState } from '../../services/compact/microCompact.js';
-import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js';
-import { runAgent } from '../../tools/AgentTool/runAgent.js';
-import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js';
 import type { CommandResultDisplay } from '../../types/command.js';
 import { createAbortController } from '../abortController.js';
 import { getAgentContext } from '../agentContext.js';
@@ -44,6 +41,7 @@ import { recordSkillUsage } from '../suggestions/skillUsageTracking.js';
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js';
 import { buildPluginCommandTelemetryFields } from '../telemetry/pluginTelemetry.js';
 import { getAssistantMessageContentLength } from '../tokens.js';
+import { runRuntimeSubagent } from '../runtimeSubagent.js';
 import { createAgentId } from '../uuid.js';
 import { getWorkload } from '../workloadContext.js';
 import type { ProcessUserInputBaseResult, ProcessUserInputContext } from './processUserInput.js';
@@ -76,17 +74,10 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
   });
   const {
     skillContent,
-    modifiedGetAppState,
     baseAgent,
     promptMessages
   } = await prepareForkedCommandContext(command, args, context);
-
-  // Merge skill's effort into the agent definition so runAgent applies it
-  const agentDefinition = command.effort !== undefined ? {
-    ...baseAgent,
-    effort: command.effort
-  } : baseAgent;
-  logForDebugging(`Executing forked slash command /${command.name} with agent ${agentDefinition.agentType}`);
+  logForDebugging(`Executing forked slash command /${command.name} with codex runtime helper (${baseAgent.agentType})`);
 
   // Assistant mode: fire-and-forget. Launch subagent in background, return
   // immediately, re-enqueue the result as an isMeta prompt when done.
@@ -145,28 +136,17 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
         if (!s.mcp.clients.some(c => c.type === 'pending')) break;
         await sleep(MCP_SETTLE_POLL_MS);
       }
-      const freshTools = context.options.refreshTools?.() ?? context.options.tools;
-      const agentMessages: Message[] = [];
-      for await (const message of runAgent({
-        agentDefinition,
-        promptMessages,
-        toolUseContext: {
-          ...context,
-          getAppState: modifiedGetAppState,
-          abortController: bgAbortController
-        },
+      const result = await runRuntimeSubagent({
+        initialMessages: promptMessages,
+        taskPrompt: skillContent,
+        toolAllowlist: command.allowedTools,
+        legacyTools: context.options.tools,
         canUseTool,
-        isAsync: true,
-        querySource: 'agent:custom',
-        model: command.model as ModelAlias | undefined,
-        availableTools: freshTools,
-        override: {
-          agentId
-        }
-      })) {
-        agentMessages.push(message);
-      }
-      const resultText = extractResultText(agentMessages, 'Command completed');
+        externalSignal: bgAbortController.signal,
+        childConversationId: agentId
+      });
+      const resultText =
+        result.finalMessage || extractResultText(result.messages, 'Command completed');
       logForDebugging(`Background forked command /${commandName} completed (agent ${agentId})`);
       enqueueResult(`<scheduled-task-result command="/${commandName}">\n${resultText}\n</scheduled-task-result>`);
     })().catch(err => {
@@ -183,91 +163,30 @@ async function executeForkedSlashCommand(command: CommandBase & PromptCommand, a
     };
   }
 
-  // Collect messages from the forked agent
   const agentMessages: Message[] = [];
-
-  // Build progress messages for the agent progress UI
-  const progressMessages: ProgressMessage<AgentProgress>[] = [];
-  const parentToolUseID = `forked-command-${command.name}`;
-  let toolUseCounter = 0;
-
-  // Helper to create a progress message from an agent message
-  const createProgressMessage = (message: AssistantMessage | NormalizedUserMessage): ProgressMessage<AgentProgress> => {
-    toolUseCounter++;
-    return {
-      type: 'progress',
-      data: {
-        message,
-        type: 'agent_progress',
-        prompt: skillContent,
-        agentId
-      },
-      parentToolUseID,
-      toolUseID: `${parentToolUseID}-${toolUseCounter}`,
-      timestamp: new Date().toISOString(),
-      uuid: randomUUID()
-    };
-  };
-
-  // Helper to update progress display using agent progress UI
-  const updateProgress = (): void => {
-    setToolJSX({
-      jsx: renderToolUseProgressMessage(progressMessages, {
-        tools: context.options.tools,
-        verbose: false
-      }),
-      shouldHidePromptInput: false,
-      shouldContinueAnimation: true,
-      showSpinner: true
-    });
-  };
-
-  // Show initial "Initializing…" state
-  updateProgress();
-
-  // Run the sub-agent
   try {
-    for await (const message of runAgent({
-      agentDefinition,
-      promptMessages,
-      toolUseContext: {
-        ...context,
-        getAppState: modifiedGetAppState
-      },
+    const result = await runRuntimeSubagent({
+      initialMessages: promptMessages,
+      taskPrompt: skillContent,
+      toolAllowlist: command.allowedTools,
+      legacyTools: context.options.tools,
       canUseTool,
-      isAsync: false,
-      querySource: 'agent:custom',
-      model: command.model as ModelAlias | undefined,
-      availableTools: context.options.tools
-    })) {
-      agentMessages.push(message);
-      const normalizedNew = normalizeMessages([message]);
-
-      // Add progress message for assistant messages (which contain tool uses)
-      if (message.type === 'assistant') {
-        // Increment token count in spinner for assistant messages
-        const contentLength = getAssistantMessageContentLength(message);
-        if (contentLength > 0) {
-          context.setResponseLength(len => len + contentLength);
-        }
-        const normalizedMsg = normalizedNew[0];
-        if (normalizedMsg && normalizedMsg.type === 'assistant') {
-          progressMessages.push(createProgressMessage(message));
-          updateProgress();
+      externalSignal: context.abortController.signal,
+      childConversationId: agentId,
+      onMessage(message) {
+        agentMessages.push(message);
+        if (message.type === 'assistant') {
+          const contentLength = getAssistantMessageContentLength(message);
+          if (contentLength > 0) {
+            context.setResponseLength(len => len + contentLength);
+          }
         }
       }
-
-      // Add progress message for user messages (which contain tool results)
-      if (message.type === 'user') {
-        const normalizedMsg = normalizedNew[0];
-        if (normalizedMsg && normalizedMsg.type === 'user') {
-          progressMessages.push(createProgressMessage(normalizedMsg));
-          updateProgress();
-        }
-      }
+    });
+    if (result.error) {
+      throw result.error;
     }
   } finally {
-    // Clear the progress display
     setToolJSX(null);
   }
   let resultText = extractResultText(agentMessages, 'Command completed');

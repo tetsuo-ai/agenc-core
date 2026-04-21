@@ -15,9 +15,10 @@
  *        expiry the watchdog aborts the underlying fetch via the
  *        scoped AbortController.
  *   I-22 (token budget mid-stream) — per-chunk
- *        `budgetTracker.addEmitted + sampleMidStream` so mid-stream
- *        overshoot aborts at the next sampling window (default
- *        every 1000 emitted tokens).
+ *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
+ *        keeps a coarse estimate during streaming, but the actual
+ *        continuation decision is deferred to the boundary check using
+ *        provider-reported completion tokens.
  *   I-77 (UI-spoof sanitization) — inline hidden tags stripped via
  *        the stream-parser before history injection.
  *
@@ -323,8 +324,6 @@ export async function streamModel(
     },
   });
 
-  let budgetExceededMidStream = false;
-  let budgetExceededMessage = "";
   const display: AssistantDisplayState = {
     parser: new AssistantVisibleTextStreamParser(planMode),
     visibleText: "",
@@ -336,15 +335,13 @@ export async function streamModel(
     // I-11: any chunk resets the idle timer.
     watchdog.kick();
 
-    // I-22: per-chunk token accounting + sampling gate.
+    // I-22: per-chunk token accounting + sampling gate. The sampling
+    // result is estimation-only; the continuation decision stays on
+    // the boundary path so the final state uses provider-reported
+    // completion tokens.
     if (session.budgetTracker) {
-      session.budgetTracker.addEmitted(estimateChunkTokens(chunk));
-      const sample = session.budgetTracker.sampleMidStream();
-      if (sample.kind === "exceeded" && !budgetExceededMidStream) {
-        budgetExceededMidStream = true;
-        budgetExceededMessage = `token_budget_exceeded by ${sample.overshoot} (mid-stream)`;
-        scoped.abort("token_budget_exceeded");
-      }
+      session.budgetTracker.addEmitted(estimateChunkTokens(chunk), "estimate");
+      session.budgetTracker.sampleMidStream();
     }
 
     // Incremental assistant_message_delta emission for renderers. The
@@ -373,15 +370,6 @@ export async function streamModel(
     if (scoped.signal.aborted && watchdog.firedAt !== null) {
       throw new StreamModelError(
         new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
-      );
-    }
-    if (budgetExceededMidStream) {
-      state.pendingBudgetDecision = {
-        kind: "stop",
-        reason: budgetExceededMessage,
-      };
-      throw new StreamModelError(
-        new Error(budgetExceededMessage),
       );
     }
     throw new StreamModelError(error);
@@ -423,10 +411,36 @@ export async function streamModel(
     };
   }
 
+  state.messages.push(llmMessageFromResponse(response));
+
+  // I-22: boundary check uses provider-reported completion tokens.
+  // OpenClaude decides continuation from the finalized turn output,
+  // not from an overshoot heuristic; the mid-stream sampler above is
+  // only there to keep the local invariant's estimation path alive.
+  if (session.budgetTracker) {
+    const turnTokens = session.budgetTracker.resolveBoundaryTokens(
+      response.usage?.completionTokens ?? 0,
+    );
+    const decision = session.budgetTracker.checkBoundary(turnTokens);
+    if (decision.action === "continue") {
+      // Local adaptation: `TurnState.pendingBudgetDecision` is still the
+      // legacy `kind/reason` union, so carry the upstream continuation
+      // prompt in `reason` for post-sample-recovery to inject.
+      state.pendingBudgetDecision = {
+        kind: "stop",
+        reason: decision.nudgeMessage,
+      };
+    } else {
+      state.pendingBudgetDecision = undefined;
+    }
+  }
+
   // T6 gap #119: emit a `token_count` event with the provider-reported
   // LLMUsage so durable rollouts capture per-stream token accounting.
-  // `LLMUsage` is always present on `LLMResponse`; emitting even when
-  // all fields are zero gives reducers a consistent signal.
+  // This stays AFTER the budget boundary check so any subscribed
+  // CostSidecar updates do not feed the current iteration's
+  // completion tokens back into the tracker before boundary truth is
+  // resolved.
   if (response.usage) {
     session.emit({
       id: session.nextInternalSubId(),
@@ -439,42 +453,6 @@ export async function streamModel(
         },
       },
     });
-  }
-
-  state.messages.push(llmMessageFromResponse(response));
-
-  // I-22: boundary check in case the provider tallied usage only on
-  // the final response (chat() path) or the sampling gate missed the
-  // exact overshoot window.
-  if (session.budgetTracker && !budgetExceededMidStream) {
-    const completion = response.usage?.completionTokens ?? 0;
-    // Deduct the per-chunk estimates we already added, then add the
-    // true completion count to realign before the boundary check.
-    // The sampling estimate is approximate; the boundary uses the
-    // provider-reported truth.
-    const boundary = session.budgetTracker.checkBoundary();
-    if (boundary.kind === "exceeded") {
-      state.pendingBudgetDecision = {
-        kind: "stop",
-        reason: `token_budget_exceeded by ${boundary.overshoot} (boundary)`,
-      };
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "token_budget_exceeded",
-            message: `token budget exceeded by ${boundary.overshoot} — commit will route to token_budget_continuation`,
-          },
-        },
-      });
-    } else {
-      state.pendingBudgetDecision = {
-        kind: "continue",
-        remaining: boundary.remaining,
-      };
-    }
-    void completion;
   }
 
   if (response.error) {

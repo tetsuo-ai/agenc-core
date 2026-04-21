@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { EventLog, type Event } from "./event-log.js";
+import { AsyncQueue } from "../utils/async-queue.js";
 import {
   isRetryableStreamError,
   maybeRunPreviousModelInlineCompact,
@@ -17,8 +17,19 @@ import {
   setAutoCompactImplForTests,
   type AutoCompactImpl,
 } from "./run-turn.js";
-import type { Session } from "./session.js";
-import type { TurnContext } from "./turn-context.js";
+import {
+  Session,
+  type Event,
+  type SessionOpts,
+  type SessionServices,
+} from "./session.js";
+import type {
+  Config,
+  ManagedFeatures,
+  ModelInfo,
+  SessionConfiguration,
+  TurnContext,
+} from "./turn-context.js";
 import {
   LLMAuthenticationError,
   LLMContextWindowExceededError,
@@ -32,6 +43,8 @@ import type {
 } from "../llm/types.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
+import { BudgetTracker } from "../llm/token-budget.js";
+import * as autoCompactModule from "../llm/compact/auto-compact.js";
 
 function mkCtx(): TurnContext {
   return {
@@ -74,6 +87,81 @@ function mkCtx(): TurnContext {
       wait: async () => {},
     },
   } as unknown as TurnContext;
+}
+
+function mkFeatures(): ManagedFeatures {
+  return {
+    appsEnabledForAuth: () => false,
+    useLegacyLandlock: () => false,
+  };
+}
+
+function mkConfig(): Config {
+  return {
+    model: "test-model",
+    cwd: "/tmp",
+    features: mkFeatures(),
+    multiAgentV2: {
+      usageHintEnabled: false,
+      usageHintText: "",
+      hideSpawnAgentMetadata: false,
+    },
+    permissions: {
+      allowLoginShell: false,
+      shellEnvironmentPolicy: {
+        allowedEnvVars: [],
+        blockedEnvVars: [],
+      },
+      windowsSandboxPrivateDesktop: false,
+    },
+    ghostSnapshot: { enabled: false },
+    agentRoles: [],
+  };
+}
+
+function mkModelInfo(): ModelInfo {
+  return {
+    slug: "test-model",
+    effectiveContextWindowPercent: 100,
+    contextWindow: 1024,
+    supportedReasoningLevels: [],
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  };
+}
+
+function mkSessionConfiguration(
+  overrides?: Partial<SessionConfiguration>,
+): SessionConfiguration {
+  const base: SessionConfiguration = {
+    cwd: "/tmp",
+    approvalPolicy: { value: "never" },
+    sandboxPolicy: { value: "read_only" },
+    fileSystemSandboxPolicy: {
+      allowWrite: [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+    },
+    windowsSandboxLevel: "none",
+    collaborationMode: { model: "test-model" },
+    dynamicTools: [],
+    sessionSource: "cli_main",
+  };
+  return {
+    ...base,
+    ...overrides,
+    collaborationMode: {
+      ...base.collaborationMode,
+      ...(overrides?.collaborationMode ?? {}),
+    },
+  };
 }
 
 function mkProvider(response: Partial<LLMResponse>): LLMProvider {
@@ -139,65 +227,52 @@ function mkSession(opts: {
   };
 } {
   const events: Event[] = [];
-  const eventLog = new EventLog();
-  let subIdCounter = 0;
-  const emitted: Event[] = [];
-  eventLog.subscribe((e) => {
-    events.push(e);
-  });
-  // Live state object — `state.with(fn)` hands this reference to the
-  // callback so the test can observe in-place mutations after runTurn
-  // consumes the staged switch.
   const state: {
-    sessionConfiguration: {
-      provider?: { slug?: string };
-      collaborationMode?: { model?: string };
-      [key: string]: unknown;
-    };
+    sessionConfiguration: SessionConfiguration;
+    history: unknown[];
     totalTokenUsage: number;
   } = {
-    sessionConfiguration: opts.sessionConfiguration ?? {
-      provider: { slug: "stub-provider" },
+    sessionConfiguration: mkSessionConfiguration({
+      provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
       collaborationMode: { model: "stub-model" },
-    },
+      ...(opts.sessionConfiguration as Partial<SessionConfiguration> | undefined),
+    }),
+    history: [],
     totalTokenUsage: 0,
   };
-  const services: Record<string, unknown> = {
+  const services: SessionServices = {
+    mcpConnectionManager: {
+      setApprovalPolicy: () => {},
+      setSandboxPolicy: () => {},
+      requiredStartupFailures: async () => [],
+    },
+    mcpStartupCancellationToken: {
+      cancel: () => {},
+      isCancelled: () => false,
+    },
     provider: opts.provider,
     registry: opts.registry,
     hooks: {
       executeStop: async () => ({}),
     },
-  };
-  if (opts.configStore) services.configStore = opts.configStore;
-  const session = {
+    ...(opts.configStore ? { configStore: opts.configStore } : {}),
+  } as unknown as SessionServices;
+  const session = new Session({
     conversationId: "conv-test",
-    eventLog,
     services,
-    state: {
-      unsafePeek: () => state,
-      with: async (fn: (s: unknown) => unknown) => {
-        await fn(state);
-      },
-    },
-    abortController: new AbortController(),
-    pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
-    setPendingProviderSwitch(next: typeof opts.pendingProviderSwitch | null) {
-      (this as { pendingProviderSwitch: unknown }).pendingProviderSwitch =
-        next;
-    },
-    abortTerminal(reason: string) {
-      (this as { abortController: AbortController }).abortController.abort(
-        reason,
-      );
-    },
-    budgetTracker: null,
-    nextInternalSubId: () => `sub-${++subIdCounter}`,
-    emit: (event: Event) => {
-      emitted.push(event);
-      eventLog.emit(event);
-    },
-  } as unknown as Session;
+    initialState: state as unknown as SessionOpts["initialState"],
+    features: mkFeatures(),
+    jsRepl: { id: "repl-test" },
+    config: mkConfig(),
+    modelInfo: mkModelInfo(),
+    eventQueue: new AsyncQueue<Event>(),
+  });
+  session.eventLog.subscribe((event) => {
+    events.push(event);
+  });
+  if (opts.pendingProviderSwitch !== undefined) {
+    session.setPendingProviderSwitch(opts.pendingProviderSwitch);
+  }
   return { session, events, getState: () => state };
 }
 
@@ -211,6 +286,20 @@ async function drain(
 }
 
 describe("runTurn — T6 gap #119 lifecycle emits", () => {
+  test("compat adapter still delegates through the session-owned turn path", async () => {
+    const ctx = mkCtx();
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "compat" }),
+      registry: mkRegistry(),
+    });
+
+    await drain(runTurn(session, ctx, "compat hello"));
+
+    expect(events.some((event) => event.msg.type === "turn_complete")).toBe(
+      true,
+    );
+  });
+
   test("emits turn_started + turn_context + user_message at top of runTurn", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession({
@@ -218,7 +307,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       registry: mkRegistry(),
     });
 
-    await drain(runTurn(session, ctx, "hello world"));
+    await drain(session.runTurn("hello world", { ctx }));
 
     const startedTypes = events.map((e) => e.msg.type);
     expect(startedTypes).toContain("turn_started");
@@ -253,7 +342,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       registry: mkRegistry(),
     });
 
-    await drain(runTurn(session, ctx, "hello"));
+    await drain(session.runTurn("hello", { ctx }));
 
     const turnComplete = events.filter((e) => e.msg.type === "turn_complete");
     expect(turnComplete.length).toBeGreaterThanOrEqual(1);
@@ -275,7 +364,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       registry: mkRegistry(),
     });
 
-    await drain(runTurn(session, ctx, "tokens please"));
+    await drain(session.runTurn("tokens please", { ctx }));
 
     const tokenCounts = events.filter((e) => e.msg.type === "token_count");
     expect(tokenCounts.length).toBeGreaterThanOrEqual(1);
@@ -287,18 +376,120 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
-  test("empty userMessage still emits turn_started + turn_complete", async () => {
+  test("empty userMessage with no pending input is a no-op", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession({
       provider: mkProvider({}),
       registry: mkRegistry(),
     });
 
-    await drain(runTurn(session, ctx, ""));
+    await drain(session.runTurn("", { ctx }));
+
+    expect(events).toEqual([]);
+  });
+
+  test("empty userMessage still runs when pending input is queued", async () => {
+    const ctx = mkCtx();
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "pending input reply" }),
+      registry: mkRegistry(),
+    });
+    session.enqueueIdleInput({ role: "user", content: "queued" });
+
+    await drain(session.runTurn("", { ctx }));
 
     const types = events.map((e) => e.msg.type);
     expect(types).toContain("turn_started");
     expect(types).toContain("turn_complete");
+  });
+
+  test("prepare-context blocking_limit terminates before the provider call", async () => {
+    const originalDisableAutoCompact = process.env.DISABLE_AUTO_COMPACT;
+    const originalBlockingLimitOverride =
+      process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
+    process.env.DISABLE_AUTO_COMPACT = "1";
+    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = "50";
+    const warningSpy = vi
+      .spyOn(autoCompactModule, "calculateTokenWarningState")
+      .mockReturnValue({
+        percentLeft: 0,
+        isAboveWarningThreshold: true,
+        isAboveErrorThreshold: true,
+        isAboveAutoCompactThreshold: false,
+        isAtBlockingLimit: true,
+      });
+    const chatStream = vi.fn(async (): Promise<LLMResponse> => ({
+      content: "should never happen",
+      toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "test-model",
+      finishReason: "stop",
+    }));
+    const ctx = mkCtx();
+    const provider = {
+      ...mkProvider({}),
+      chatStream,
+    } satisfies LLMProvider;
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    try {
+      const gen = session.runTurn("x".repeat(400), { ctx });
+      let terminal: Awaited<ReturnType<typeof gen.next>>["value"] | undefined;
+      while (true) {
+        const next = await gen.next();
+        if (next.done) {
+          terminal = next.value;
+          break;
+        }
+      }
+
+      expect(chatStream).not.toHaveBeenCalled();
+      expect(terminal.reason).toBe("blocking_limit");
+      const agentMessage = events.find((e) => e.msg.type === "agent_message");
+      expect(agentMessage).toBeDefined();
+      if (agentMessage?.msg.type === "agent_message") {
+        expect(agentMessage.msg.payload.message.length).toBeGreaterThan(0);
+      }
+    } finally {
+      if (originalDisableAutoCompact === undefined) {
+        delete process.env.DISABLE_AUTO_COMPACT;
+      } else {
+        process.env.DISABLE_AUTO_COMPACT = originalDisableAutoCompact;
+      }
+      if (originalBlockingLimitOverride === undefined) {
+        delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
+      } else {
+        process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE =
+          originalBlockingLimitOverride;
+      }
+      warningSpy.mockRestore();
+    }
+  });
+});
+
+describe("runTurn — token budget tracker reset", () => {
+  test("resets the session budget tracker at the start of a fresh turn", async () => {
+    const ctx = mkCtx();
+    const tracker = new BudgetTracker(1_000);
+    tracker.addEmitted(250, "estimate");
+    tracker.checkBoundary(400);
+
+    const { session } = mkSession({
+      provider: mkProvider({
+        content: "ok",
+        usage: { promptTokens: 10, completionTokens: 950, totalTokens: 960 },
+      }),
+      registry: mkRegistry(),
+    });
+    (session as unknown as { budgetTracker: BudgetTracker }).budgetTracker = tracker;
+
+    await drain(session.runTurn("fresh turn", { ctx }));
+
+    expect(tracker.emitted).toBe(0);
+    expect(tracker.continuationCount).toBe(0);
   });
 });
 
@@ -395,7 +586,7 @@ describe("runTurn — D1 real provider usage in SamplingRequestResult", () => {
     });
 
     let finalUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
-    for await (const ev of runTurn(session, ctx, "hi")) {
+    for await (const ev of session.runTurn("hi", { ctx })) {
       if ((ev as { type: string }).type === "turn_complete") {
         finalUsage = (ev as unknown as {
           usage: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -494,7 +685,7 @@ describe("runTurn — live sampling request contract", () => {
       } as unknown as ToolRegistry,
     });
 
-    await drain(runTurn(session, ctx, "hello"));
+    await drain(session.runTurn("hello", { ctx }));
 
     expect(seenMessages[0]).toEqual({
       role: "system",
@@ -523,7 +714,7 @@ describe("runTurn — live sampling request contract", () => {
     });
 
     const yielded: Array<{ type: string; content?: string }> = [];
-    for await (const ev of runTurn(session, ctx, "hello")) {
+    for await (const ev of session.runTurn("hello", { ctx })) {
       yielded.push(ev as { type: string; content?: string });
     }
 
@@ -612,7 +803,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       },
     });
 
-    await drain(runTurn(session, ctx, "hello"));
+    await drain(session.runTurn("hello", { ctx }));
 
     const applied = getState().sessionConfiguration;
     expect(applied.collaborationMode?.model).toBe("grok-4");
@@ -631,7 +822,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     expect(session.pendingProviderSwitch).not.toBeNull();
 
-    await drain(runTurn(session, ctx, "hello"));
+    await drain(session.runTurn("hello", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
   });
@@ -666,7 +857,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     // Turn N+1: fresh runTurn call. The consumer at the top reads the
     // marker, applies it, and clears it. The new turn proceeds with
     // the updated model.
-    await drain(runTurn(session, ctx, "second message"));
+    await drain(session.runTurn("second message", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
@@ -707,7 +898,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       },
     });
 
-    await drain(runTurn(session, ctx, "apply profile"));
+    await drain(session.runTurn("apply profile", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
@@ -736,7 +927,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       // configStore intentionally omitted
     });
 
-    await drain(runTurn(session, ctx, "apply profile"));
+    await drain(session.runTurn("apply profile", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
@@ -781,7 +972,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     };
     setAutoCompactImplForTests(fakeImpl);
 
-    await drain(runTurn(session, ctx, "hello"));
+    await drain(session.runTurn("hello", { ctx }));
 
     // The dispatcher should have been reached at least once from the
     // pre-sampling compact path. Exact call count is implementation-
@@ -813,7 +1004,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     const impl = vi.fn<AutoCompactImpl>(async () => ({ wasCompacted: false }));
     setAutoCompactImplForTests(impl);
 
-    await drain(runTurn(session, ctx, "hi"));
+    await drain(session.runTurn("hi", { ctx }));
 
     // prepare-context Stage 6 may still invoke autoCompactIfNeeded from
     // inside the phase loop, but the pre-sampling dispatcher path that
@@ -833,6 +1024,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
       .autoCompactTokenLimit = 10;
+    const appendRollout = vi.fn();
 
     const { session } = mkSession({
       provider: mkProvider({ content: "ok" }),
@@ -887,12 +1079,29 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       provider,
       registry: mkRegistry(),
     });
+    session2.rolloutStore = {
+      append: vi.fn(),
+      appendRollout,
+      store: {
+        reAppendSessionMetadata: vi.fn(),
+      },
+    } as unknown as Session["rolloutStore"];
     (session2 as unknown as { state: unknown }).state = {
       unsafePeek: () => ({ totalTokenUsage: 999 }),
       with: async (fn: (s: unknown) => unknown) => fn({ totalTokenUsage: 999 }),
     };
 
-    await drain(runTurn(session2, ctx, "first user input"));
+    await drain(session2.runTurn("first user input", { ctx }));
+
+    expect(appendRollout).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "compacted",
+        payload: expect.objectContaining({
+          message: "<agenc-compact-boundary>POST-COMPACT SUMMARY",
+        }),
+      }),
+      { durable: true },
+    );
 
     // prepareContext uses getMessagesAfterCompactBoundary: the
     // `<agenc-compact-boundary>` prefix marks the boundary and the
@@ -928,7 +1137,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
     // Must NOT throw out of runTurn — errors are swallowed into a
     // warning event.
-    await drain(runTurn(session, ctx, "hello"));
+    await drain(session.runTurn("hello", { ctx }));
 
     const warnings = events.filter(
       (e) =>

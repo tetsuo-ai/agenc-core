@@ -20,6 +20,7 @@ import {
   SessionStore,
   SessionStoreFlushScheduler,
   type AppendOptions,
+  type CompactionIndexSnapshot,
   type SessionStoreOpts,
 } from "./session-store.js";
 
@@ -81,6 +82,14 @@ export class RolloutStore {
   /** I-88 — snapshot the full index (used by compaction). */
   getToolResultBytesIndexSnapshot(): ReadonlyMap<string, number> {
     return this.store.getToolResultBytesIndexSnapshot();
+  }
+
+  getToolCallTurnIdSnapshot(): ReadonlyMap<string, string> {
+    return this.store.getToolCallTurnIdSnapshot();
+  }
+
+  getCompactionIndexSnapshot(): CompactionIndexSnapshot {
+    return this.store.getCompactionIndexSnapshot();
   }
 
   /** Force an immediate flush (durable=true). */

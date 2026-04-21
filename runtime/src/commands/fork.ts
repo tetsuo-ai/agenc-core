@@ -1,13 +1,14 @@
 /**
  * `/fork` — fork the current session as a new sibling thread.
  *
- * The real fork path routes through T9's `spawnForkedThread` /
- * `delegate()` on `AgentControl`. W1 lands this stub so the command is
- * discoverable and dispatch-safe; the actual fork wiring lives in W3.
+ * Uses the same per-session AgentControl cache as `system.agent.delegate`
+ * so the slash command and tool path converge on one local control plane.
  *
  * @module
  */
 
+import { randomUUID } from "node:crypto";
+import { ensureAgentControl } from "../bin/delegate-tool.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -15,40 +16,26 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 
-/** Attempt the fork; returns a stub result when the T9 API is absent. */
 export async function runFork(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
-  const agentControl = ctx.session.services?.agentControl as unknown as
-    | {
-        spawnForkedThread?: (opts: unknown) => Promise<unknown>;
-      }
-    | undefined;
-
-  if (!agentControl || typeof agentControl.spawnForkedThread !== "function") {
-    return {
-      kind: "text",
-      text:
-        "fork requires T9 spawnForkedThread which is pending integration. " +
-        "See W3 for the fork-reconstruction tranche.",
-    };
-  }
-
-  // If a real spawnForkedThread exists, invoke it best-effort. Surfaces
-  // its identifier when available.
-  const result = (await agentControl.spawnForkedThread({
-    source: ctx.session.conversationId,
-  })) as { threadId?: string } | undefined;
-  const threadId = result?.threadId ?? "unknown";
+  const { control } = ensureAgentControl(ctx.session);
+  const live = await control.spawnForkedThread(
+    "/root",
+    { kind: "full_history" },
+    {
+      forkParentSpawnCallId: `slash-fork-${ctx.session.conversationId}-${randomUUID()}`,
+    },
+  );
   return {
     kind: "text",
-    text: `Forked session ${ctx.session.conversationId} → ${threadId}`,
+    text: `Forked session ${ctx.session.conversationId} → ${live.agentId}`,
   };
 }
 
 export const forkCommand: SlashCommand = {
   name: "fork",
-  description: "Fork the current session (W3 wires real reconstruction)",
+  description: "Fork the current session as a child thread",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runFork(ctx)),
 };

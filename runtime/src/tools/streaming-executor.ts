@@ -36,6 +36,7 @@ import type {
   ToolCallRuntime,
 } from "./concurrency.js";
 import { classify, EXCLUSIVE } from "./concurrency.js";
+import type { LiveToolDispatchOptions, ToolRouter } from "./router.js";
 import type { ToolUseBlock } from "../session/turn-state.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -106,6 +107,11 @@ export interface StreamingToolExecutorOptions {
     toolCall: LLMToolCall,
     signal: AbortSignal,
   ) => Promise<ToolDispatchResult>;
+  /** Live runtime cutover path: executor owns router/orchestrator/execution dispatch. */
+  readonly liveToolDispatch?: {
+    readonly router: ToolRouter;
+    readonly options: Omit<LiveToolDispatchOptions, "signal" | "onProgress">;
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -123,6 +129,10 @@ export class StreamingToolExecutor {
     toolCall: LLMToolCall,
     signal: AbortSignal,
   ) => Promise<ToolDispatchResult>;
+  private readonly liveToolDispatch?: {
+    readonly router: ToolRouter;
+    readonly options: Omit<LiveToolDispatchOptions, "signal" | "onProgress">;
+  };
   private readonly tools: TrackedTool[] = [];
   private closed = false;
   /** I-41 abort re-entrance guard. Second `discard()` while already
@@ -141,6 +151,7 @@ export class StreamingToolExecutor {
     this.bashToolName = opts.bashToolName ?? "system.bash";
     this.runtime = opts.runtime;
     this.runToolUseFn = opts.runToolUseFn;
+    this.liveToolDispatch = opts.liveToolDispatch;
     this.siblingAbortController = new AbortController();
     if (opts.abortSignal) {
       if (opts.abortSignal.aborted) {
@@ -388,6 +399,17 @@ export class StreamingToolExecutor {
 
     try {
       const dispatch = async (): Promise<ToolDispatchResult> => {
+        if (this.liveToolDispatch) {
+          return await this.liveToolDispatch.router.dispatchModelToolCall(
+            tool.toolCall,
+            {
+              ...this.liveToolDispatch.options,
+              signal: childAbort.signal,
+              onProgress: (event) =>
+                this.emitProgress(tool.toolCall.id, event.chunk),
+            },
+          );
+        }
         if (this.runToolUseFn) {
           return await this.runToolUseFn(tool.toolCall, childAbort.signal);
         }

@@ -29,27 +29,66 @@ describe("ReservedErrorBuffer (I-43)", () => {
 });
 
 describe("SidecarManager", () => {
-  test("registered sidecars receive events", async () => {
+  test("uses live-only subscriptions and registration-order startup", async () => {
     const log = new EventLog();
-    const received: string[] = [];
-    const s: Sidecar = {
-      name: "test",
-      onEvent(e) {
-        received.push(e.msg.type);
-      },
-    };
-    const mgr = new SidecarManager();
-    mgr.register(s);
-    await mgr.start(log);
+    const firstSeen: string[] = [];
+    const secondSeen: string[] = [];
+    const order: string[] = [];
+
     log.emit({
-      id: "1",
+      id: "before-start",
       msg: { type: "warning", payload: { cause: "x", message: "y" } },
     });
+
+    const first: Sidecar = {
+      name: "first",
+      start() {
+        order.push("start:first");
+        log.emit({
+          id: "during-first-start",
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        });
+      },
+      onEvent(event) {
+        firstSeen.push(event.id);
+        order.push(`event:first:${event.id}`);
+      },
+    };
+    const second: Sidecar = {
+      name: "second",
+      start() {
+        order.push("start:second");
+        log.emit({
+          id: "during-second-start",
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        });
+      },
+      onEvent(event) {
+        secondSeen.push(event.id);
+        order.push(`event:second:${event.id}`);
+      },
+    };
+
+    const mgr = new SidecarManager();
+    mgr.register(first);
+    mgr.register(second);
+    await mgr.start(log);
+
     log.emit({
-      id: "2",
-      msg: { type: "error", payload: { cause: "x", message: "y" } },
+      id: "after-start",
+      msg: { type: "warning", payload: { cause: "x", message: "y" } },
     });
-    expect(received).toEqual(["warning", "error"]);
+
+    expect(firstSeen).toEqual(["during-second-start", "after-start"]);
+    expect(secondSeen).toEqual(["after-start"]);
+    expect(order).toEqual([
+      "start:first",
+      "start:second",
+      "event:first:during-second-start",
+      "event:first:after-start",
+      "event:second:after-start",
+    ]);
+
     await mgr.stop();
   });
 
@@ -82,5 +121,60 @@ describe("SidecarManager", () => {
     expect(received).toEqual(["1"]);
     expect(diagnostics).toContain("throwing");
     await mgr.stop();
+  });
+
+  test("unsubscribes a sidecar before running its stop hook", async () => {
+    const log = new EventLog();
+    const firstSeen: string[] = [];
+    const secondSeen: string[] = [];
+    const order: string[] = [];
+
+    const first: Sidecar = {
+      name: "first",
+      onEvent(event) {
+        firstSeen.push(event.id);
+      },
+      stop() {
+        order.push("stop:first");
+        log.emit({
+          id: "during-first-stop",
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        });
+      },
+    };
+    const second: Sidecar = {
+      name: "second",
+      onEvent(event) {
+        secondSeen.push(event.id);
+        order.push(`event:second:${event.id}`);
+      },
+      stop() {
+        order.push("stop:second");
+        log.emit({
+          id: "during-second-stop",
+          msg: { type: "warning", payload: { cause: "x", message: "y" } },
+        });
+      },
+    };
+
+    const mgr = new SidecarManager();
+    mgr.register(first);
+    mgr.register(second);
+    await mgr.start(log);
+
+    log.emit({
+      id: "steady-state",
+      msg: { type: "warning", payload: { cause: "x", message: "y" } },
+    });
+    await mgr.stop();
+
+    expect(firstSeen).toEqual(["steady-state"]);
+    expect(secondSeen).toEqual(["steady-state", "during-first-stop"]);
+    expect(order).toEqual([
+      "event:second:steady-state",
+      "stop:first",
+      "event:second:during-first-stop",
+      "stop:second",
+    ]);
   });
 });

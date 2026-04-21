@@ -130,19 +130,31 @@ export async function delegate(
     ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
   });
 
-  // Wrap in an AgentThread.
-  const thread = new AgentThreadClass({
-    live,
-    initialMessages: fork.messages,
-    forkMode,
-    ...(worktree !== undefined ? { worktree } : {}),
-    parentSessionId: opts.parent.conversationId,
-    taskPrompt: opts.taskPrompt,
-  });
+  const buildThread = (
+    wiring: ConstructorParameters<typeof AgentThreadClass>[1] = {},
+  ): AgentThread =>
+    new AgentThreadClass(
+      {
+        live,
+        initialMessages: fork.messages,
+        forkMode,
+        ...(worktree !== undefined ? { worktree } : {}),
+        parentSessionId: opts.parent.conversationId,
+        taskPrompt: opts.taskPrompt,
+      },
+      {
+        parent: opts.parent,
+        control: opts.control,
+        registry: opts.registry,
+        parentPath: live.agentPath,
+        ...wiring,
+      },
+    );
 
   if (runInBackground || live.role.config.background) {
     // Async mode — fire-and-forget; caller sees the AgentThread handle.
-    void (async () => {
+    let thread!: AgentThread;
+    const joinPromise = (async () => {
       try {
         const iter = runAgent({
           live,
@@ -154,13 +166,13 @@ export async function delegate(
             ? { toolAllowlist: opts.toolAllowlist }
             : {}),
         });
-        let lastResult: RunAgentResult | undefined;
-        for await (const event of iter) {
-          void event;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const step = await iter.next();
+          if (step.done) {
+            return step.value;
+          }
         }
-        // Generator returns RunAgentResult; access via .return
-        // isn't ergonomic in for-await; capture via plain iteration.
-        void lastResult;
       } finally {
         await teardown({
           thread,
@@ -171,8 +183,11 @@ export async function delegate(
         });
       }
     })();
+    thread = buildThread({ joinPromise });
     return { kind: "async_launched", thread };
   }
+
+  const thread = buildThread();
 
   // Sync mode — await completion.
   const iter = runAgent({

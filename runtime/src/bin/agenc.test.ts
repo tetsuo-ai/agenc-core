@@ -31,6 +31,7 @@ import {
   __resetActiveInkUnmountForTest,
   __setActiveInkUnmountForTest,
   buildExtractMemoriesViaSubagent,
+  bootTUIEntry,
   installInitSignalHandlers,
   installSignalHandlers,
   main,
@@ -64,6 +65,7 @@ import {
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
+import { getCurrentRuntimeSession } from "../utils/currentRuntimeSession.js";
 
 function stubSession() {
   return {
@@ -1727,6 +1729,76 @@ describe("memory_write_contention routing (I-8)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("main() full-IIFE smoke", () => {
+  it("bootTUIEntry reuses bootstrap-owned session bring-up and teardown", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+
+    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    const unmount = vi.fn();
+    const bootTUISpy = vi.fn().mockResolvedValue({
+      unmount,
+      waitUntilExit,
+    });
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: bootTUISpy,
+    }));
+
+    try {
+      const code = await bootTUIEntry({ initialPrompt: "queue this" });
+      expect(code).toBe(0);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(startMcpSpy).toHaveBeenCalledTimes(1);
+      expect(bootTUISpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session: expect.any(Object),
+          configStore: expect.any(Object),
+          model: "grok-4-fast",
+          initialPrompt: "queue this",
+        }),
+      );
+      expect(waitUntilExit).toHaveBeenCalledTimes(1);
+      expect(getCurrentRuntimeSession()).toBeNull();
+    } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("runs the full main() path with stubbed provider + runTurn and exits 0", async () => {
     // Covers: argv resolution → HOME validation → ConfigStore boot →
     //          model resolve → provider construction → Session +
