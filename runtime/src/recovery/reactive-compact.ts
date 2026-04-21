@@ -1,7 +1,7 @@
 /**
  * Reactive compaction — the second-level PTL recovery step.
  *
- * Hand-port of openclaude's `services/compact/reactiveCompact.js`
+ * Hand-port of openclaude's reactive compact caller surface
  * caller surface (the module itself is feature-gated behind
  * `REACTIVE_COMPACT`; T8 ships the caller contract). When collapse-
  * drain can't release enough context (or isn't enabled), reactive-
@@ -158,8 +158,9 @@ export interface RunReactiveCompactOpts {
  * Run the reactive-compact step. I-40: wraps `tryReactiveCompact`
  * in try/catch; on throw emits `warning:'reactive_compact_threw'`,
  * increments the compaction circuit-breaker counter on state, and
- * returns `threw`. On success, mutates `state.messagesForQuery` +
- * sets transition = 'reactive_compact_retry'.
+ * returns `threw`. On success, mutates `state.messages` /
+ * `state.messagesForQuery` + sets transition =
+ * 'reactive_compact_retry'.
  */
 export async function runReactiveCompact(
   opts: RunReactiveCompactOpts,
@@ -215,7 +216,9 @@ export async function runReactiveCompact(
   // I-2: clear provider response ids before exposing the compacted
   // state back to the recovery ladder / phase machine.
   runPostCompactCleanup();
-  opts.state.messagesForQuery = [...result.compactedMessages];
+  const compactedMessages = [...result.compactedMessages];
+  opts.state.messages = compactedMessages;
+  opts.state.messagesForQuery = [...compactedMessages];
   opts.state.hasAttemptedReactiveCompact = true;
   opts.state.transition = { reason: "reactive_compact_retry" };
 

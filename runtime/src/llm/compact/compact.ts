@@ -101,7 +101,7 @@ import {
   extractDiscoveredToolNames,
   isToolSearchEnabled,
 } from '../../utils/toolSearch.js'
-import type { CompactRuntimeContext } from './context.js'
+import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -2291,9 +2291,7 @@ function shouldExcludeFromPostCompactRestore(
     // If we can't get plan file path, continue with other checks
   }
 
-  // Exclude all types of claude.md files
-  // TODO: Refactor to use isMemoryFilePath() from claudemd.ts for consistency
-  // and to also match child directory memory files (.claude/rules/*.md, etc.)
+  // Exclude all types of claude.md files.
   try {
     const normalizedMemoryPaths = new Set(
       MEMORY_TYPE_VALUES.filter(type => type !== 'Project').map(type =>

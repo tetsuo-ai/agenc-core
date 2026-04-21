@@ -2355,16 +2355,11 @@ export function normalizeMessagesForAPI(
   // inject [id:] tags when the tool isn't available (confuses the model
   // and wastes tokens on every non-meta user message for every ant).
   if (feature('HISTORY_SNIP') && process.env.NODE_ENV !== 'test') {
-    const { isSnipRuntimeEnabled } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
-    if (isSnipRuntimeEnabled()) {
-      for (let i = 0; i < sanitized.length; i++) {
-        if (sanitized[i]!.type === 'user') {
-          sanitized[i] = appendMessageTagToUserMessage(
-            sanitized[i] as UserMessage,
-          )
-        }
+    for (let i = 0; i < sanitized.length; i++) {
+      if (sanitized[i]!.type === 'user') {
+        sanitized[i] = appendMessageTagToUserMessage(
+          sanitized[i] as UserMessage,
+        )
       }
     }
   }
@@ -2425,21 +2420,14 @@ export function mergeUserMessages(a: UserMessage, b: UserMessage): UserMessage {
     // affects downstream callers (e.g., VCR fixture hashing in SDK harness
     // tests), so this must only fire when snip is actually enabled — not
     // for all ants.
-    const { isSnipRuntimeEnabled } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
-    if (isSnipRuntimeEnabled()) {
-      return {
-        ...a,
-        isMeta: a.isMeta && b.isMeta ? (true as const) : undefined,
-        uuid: a.isMeta ? b.uuid : a.uuid,
-        message: {
-          ...a.message,
-          content: hoistToolResults(
-            joinTextAtSeam(lastContent, currentContent),
-          ),
-        },
-      }
+    return {
+      ...a,
+      isMeta: a.isMeta && b.isMeta ? (true as const) : undefined,
+      uuid: a.isMeta ? b.uuid : a.uuid,
+      message: {
+        ...a.message,
+        content: hoistToolResults(joinTextAtSeam(lastContent, currentContent)),
+      },
     }
   }
   return {
@@ -4152,17 +4140,6 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'context_efficiency': {
-      if (feature('HISTORY_SNIP')) {
-        const { SNIP_NUDGE_TEXT } =
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          require('../services/compact/snipCompact.js') as typeof import('../services/compact/snipCompact.js')
-        return wrapMessagesInSystemReminder([
-          createUserMessage({
-            content: SNIP_NUDGE_TEXT,
-            isMeta: true,
-          }),
-        ])
-      }
       return []
     }
     case 'date_change': {
@@ -4651,13 +4628,6 @@ export function getMessagesAfterCompactBoundary<
 >(messages: T[], options?: { includeSnipped?: boolean }): T[] {
   const boundaryIndex = findLastCompactBoundaryIndex(messages)
   const sliced = boundaryIndex === -1 ? messages : messages.slice(boundaryIndex)
-  if (!options?.includeSnipped && feature('HISTORY_SNIP')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { projectSnippedView } =
-      require('../services/compact/snipProjection.js') as typeof import('../services/compact/snipProjection.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
-    return projectSnippedView(sliced as Message[]) as T[]
-  }
   return sliced
 }
 

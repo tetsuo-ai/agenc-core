@@ -25,66 +25,22 @@ export type CachedMCState = {
   pinnedEdits: PinnedCacheEdits[];
 };
 
-const DEFAULT_TRIGGER_THRESHOLD = 6;
-const DEFAULT_KEEP_RECENT = 5;
-const DEFAULT_SUPPORTED_MODELS = ["claude", "sonnet", "opus"];
-
-function readPositiveInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return parsed;
-}
-
-function readTruthy(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  return !/^(?:0|false|off|no)$/i.test(raw);
-}
-
 export function isCachedMicrocompactEnabled(): boolean {
-  return !readTruthy("AGENC_DISABLE_CACHED_MICROCOMPACT", false);
+  return false;
 }
 
-export function isModelSupportedForCacheEditing(model: string): boolean {
-  if (!model) return false;
-  const rawList = process.env.AGENC_CACHED_MICROCOMPACT_SUPPORTED_MODELS;
-  if (!rawList) return true;
-  const supportedModels = rawList
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return supportedModels.length === 0
-    ? true
-    : supportedModels.some((pattern) => model.includes(pattern));
+export function isModelSupportedForCacheEditing(_model: string): boolean {
+  return false;
 }
 
-export function getCachedMCConfig(): CachedMCConfig {
-  return {
-    triggerThreshold: readPositiveInt(
-      "AGENC_CACHED_MICROCOMPACT_TRIGGER_THRESHOLD",
-      DEFAULT_TRIGGER_THRESHOLD,
-    ),
-    keepRecent: readPositiveInt(
-      "AGENC_CACHED_MICROCOMPACT_KEEP_RECENT",
-      DEFAULT_KEEP_RECENT,
-    ),
-    enabled: isCachedMicrocompactEnabled(),
-    supportedModels: process.env.AGENC_CACHED_MICROCOMPACT_SUPPORTED_MODELS
-      ? process.env.AGENC_CACHED_MICROCOMPACT_SUPPORTED_MODELS.split(",")
-          .map((part) => part.trim())
-          .filter(Boolean)
-      : DEFAULT_SUPPORTED_MODELS,
-    systemPromptSuggestSummaries: true,
-  };
+export function getCachedMCConfig(): CachedMCConfig | null {
+  return null;
 }
 
 export function createCachedMCState(): CachedMCState {
-  const config = getCachedMCConfig();
   return {
-    triggerThreshold: config.triggerThreshold,
-    keepRecent: config.keepRecent,
+    triggerThreshold: 0,
+    keepRecent: 0,
     registeredTools: new Set<string>(),
     toolOrder: [],
     deletedRefs: new Set<string>(),
@@ -118,26 +74,13 @@ export function registerToolMessage(
 ): void {}
 
 export function getToolResultsToDelete(state: CachedMCState): string[] {
-  const activeIds = state.toolOrder.filter((id) => !state.deletedRefs.has(id));
-  if (activeIds.length <= state.triggerThreshold) {
-    return [];
-  }
-  const deleteCount = Math.max(0, activeIds.length - state.keepRecent);
-  return activeIds.slice(0, deleteCount);
+  void state;
+  return [];
 }
 
 export function createCacheEditsBlock(
-  state: CachedMCState,
-  toolsToDelete: string[],
-): CacheEditsBlock {
-  for (const toolId of toolsToDelete) {
-    state.deletedRefs.add(toolId);
-  }
-  return {
-    type: "cache_edits",
-    edits: toolsToDelete.map((toolId) => ({
-      type: "delete",
-      cache_reference: toolId,
-    })),
-  };
+  _state: CachedMCState,
+  _toolsToDelete: string[],
+): CacheEditsBlock | null {
+  return null;
 }

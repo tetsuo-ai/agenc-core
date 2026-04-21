@@ -55,7 +55,7 @@ import {
 import {
   buildCompactCacheSafeParams,
   createSessionBackedCompactContext,
-} from "../llm/compact/runtime-context.js";
+} from "../session/compact-runtime-context.js";
 import { PROMPT_TOO_LONG_ERROR_MESSAGE } from "../recovery/api-errors.js";
 import type { Session } from "../session/session.js";
 import type { Config, TurnContext } from "../session/turn-context.js";
@@ -135,7 +135,7 @@ async function safeCompactImport<T = unknown>(
  * attachment kind. Returns the slice from the message AFTER the
  * boundary onward (or the full history when no boundary exists).
  *
- * Openclaude reference: `services/compact/grouping.ts` +
+ * Openclaude reference: `llm/compact/grouping.ts` +
  * `utils/messages.ts::getMessagesAfterCompactBoundary`.
  */
 const COMPACT_BOUNDARY_PREFIX = "<agenc-compact-boundary>";

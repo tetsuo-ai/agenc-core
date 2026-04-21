@@ -110,10 +110,14 @@ describe("reactive-compact (I-40 throw guard)", () => {
     expect(state.autoCompactTracking?.consecutiveFailures).toBe(1);
   });
 
-  test("success: mutates messagesForQuery + sets transition", async () => {
+  test("success: commits compacted history for the retry path + sets transition", async () => {
     const log = new EventLog();
     const session = mkSession(log);
     const state = mkState();
+    state.messages = [
+      { role: "user", content: "before-a" },
+      { role: "assistant", content: "before-b" },
+    ];
     const compacted = [{ role: "user" as const, content: "[summary]" }];
     const driver: ReactiveCompactDriver = {
       ...DEFAULT_REACTIVE_COMPACT_DRIVER,
@@ -130,6 +134,7 @@ describe("reactive-compact (I-40 throw guard)", () => {
     });
     expect(out.kind).toBe("compacted");
     expect(state.transition?.reason).toBe("reactive_compact_retry");
+    expect(state.messages).toEqual(compacted);
     expect(state.messagesForQuery).toEqual(compacted);
     expect(state.hasAttemptedReactiveCompact).toBe(true);
   });

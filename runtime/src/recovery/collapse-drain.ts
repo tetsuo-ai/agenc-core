@@ -77,9 +77,10 @@ export interface CollapseDrainOutcome {
  * shows we already drained this recovery pass (openclaude
  * `query.ts:1123` one-shot guard).
  *
- * On success: mutates `state.messagesForQuery` with the drained view,
- * sets `state.transition = { reason: 'collapse_drain_retry' }` so
- * the run-turn loop re-enters PrepareContext.
+ * On success: mutates `state.messages` / `state.messagesForQuery`
+ * with the drained view, sets `state.transition = { reason:
+ * 'collapse_drain_retry' }` so the run-turn loop re-enters
+ * PrepareContext.
  */
 export async function runCollapseDrain(
   state: TurnState,
@@ -98,7 +99,9 @@ export async function runCollapseDrain(
     state,
   });
   if (result.committed > 0) {
-    state.messagesForQuery = [...result.messages];
+    const drainedMessages = [...result.messages];
+    state.messages = drainedMessages;
+    state.messagesForQuery = [...drainedMessages];
     state.transition = { reason: "collapse_drain_retry" };
     return { kind: "drained", committed: result.committed };
   }

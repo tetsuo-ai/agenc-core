@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   runManualCompact: vi.fn(),
-  path: new URL("../../llm/compact/manual-compact.js", import.meta.url).pathname,
+  path: new URL("../../session/manual-compact.js", import.meta.url).pathname,
 }));
 
 vi.mock(mocks.path, () => ({
@@ -16,7 +16,7 @@ describe("legacy compact command adapter", () => {
     vi.clearAllMocks();
   });
 
-  it("delegates to llm/compact/manual-compact", async () => {
+  it("delegates to session/manual-compact", async () => {
     const context = {
       abortController: new AbortController(),
       messages: [{ role: "user", content: "hello" }],

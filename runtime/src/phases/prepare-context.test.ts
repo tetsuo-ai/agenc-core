@@ -322,6 +322,27 @@ describe("prepareContext Stage 2 wiring", () => {
 });
 
 describe("prepareContext Stage 3/4 wiring", () => {
+  test("retry handoff rebuilds from committed recovery history, not stale messagesForQuery", async () => {
+    const events: Event[] = [];
+    const session = mkSession(events);
+    const recoveredMessages: LLMMessage[] = [
+      mkUserMsg("[collapsed]"),
+      mkAssistantMsg("tail"),
+    ];
+    const staleMessagesForQuery: LLMMessage[] = [
+      mkUserMsg("stale-a"),
+      mkAssistantMsg("stale-b"),
+      mkUserMsg("stale-c"),
+    ];
+    const state = mkState(recoveredMessages);
+    state.messagesForQuery = staleMessagesForQuery;
+    state.transition = { reason: "reactive_compact_retry" };
+
+    await prepareContext(state, mkCtx(), session);
+
+    expect(state.messagesForQuery).toEqual(recoveredMessages);
+  });
+
   test("snip clears oversized tool results on the live path", async () => {
     const events: Event[] = [];
     const session = mkSession(events);

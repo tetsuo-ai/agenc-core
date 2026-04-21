@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => ({
       import.meta.url,
     ).pathname,
     runtimeContext: new URL(
-      "../llm/compact/runtime-context.js",
+      "./compact-runtime-context.js",
       import.meta.url,
     ).pathname,
     promptCacheBreakDetection: new URL(

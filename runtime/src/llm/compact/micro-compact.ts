@@ -27,7 +27,7 @@ import {
   getTimeBasedMCConfig,
   type TimeBasedMCConfig,
 } from './time-based-mc-config.js'
-import type { CompactRuntimeContext } from './context.js'
+import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
 
 // Inline from utils/toolResultStorage.ts — importing that file pulls in
 // sessionStorage → utils/messages → services/api/errors, completing a
@@ -298,7 +298,7 @@ async function localMicrocompactPath(
   }
 
   const config = mod.getCachedMCConfig()
-  if (!config.enabled) {
+  if (!config?.enabled) {
     return { messages }
   }
 
@@ -373,6 +373,9 @@ async function cachedMicrocompactPath(
   const mod = await getCachedMCModule()
   const state = ensureCachedMCState()
   const config = mod.getCachedMCConfig()
+  if (!config?.enabled) {
+    return { messages }
+  }
 
   const compactableToolIds = new Set(collectCompactableToolIds(messages))
   // Second pass: register tool results grouped by user message

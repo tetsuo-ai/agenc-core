@@ -5,8 +5,8 @@ import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { Box, Text } from '../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
-import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../services/compact/autoCompact.js';
-import { useCompactWarningSuppression } from '../services/compact/compactWarningHook.js';
+import { calculateTokenWarningState, getEffectiveContextWindowSize, isAutoCompactEnabled } from '../llm/compact/auto-compact.js';
+import { useCompactWarningSuppression } from '../llm/compact/compact-warning-hook.js';
 import { getUpgradeMessage } from '../utils/model/contextWindowUpgradeCheck.js';
 type Props = {
   tokenUsage: number;

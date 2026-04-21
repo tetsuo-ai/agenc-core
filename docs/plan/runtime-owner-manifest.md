@@ -99,46 +99,11 @@ These are the legacy owners or owner families the plan forbids from
 growing back into the live runtime boundary:
 
 - `runtime/src/query.ts`
-- `runtime/src/services/compact/compact.ts`
-- `runtime/src/services/compact/autoCompact.ts`
-- `runtime/src/services/compact/reactiveCompact.ts`
-- `runtime/src/services/compact/microCompact.ts`
-- `runtime/src/services/compact/cachedMicrocompact.ts`
-- `runtime/src/services/compact/apiMicrocompact.ts`
-- `runtime/src/services/compact/postCompactCleanup.ts`
-- `runtime/src/services/compact/sessionMemoryCompact.ts`
-- `runtime/src/services/compact/snipCompact.ts`
-- `runtime/src/services/compact/snipProjection.ts`
-- `runtime/src/services/compact/grouping.ts`
-- `runtime/src/services/compact/prompt.ts`
-- `runtime/src/services/compact/compactWarningHook.ts`
-- `runtime/src/services/compact/compactWarningState.ts`
-- `runtime/src/services/compact/cachedMCConfig.ts`
-- `runtime/src/services/compact/timeBasedMCConfig.ts`
 - `runtime/src/services/tools/StreamingToolExecutor.ts`
 - `runtime/src/services/tools/toolExecution.ts`
 - `runtime/src/services/tools/toolHooks.ts`
 - `runtime/src/services/tools/toolOrchestration.ts`
 - `runtime/src/tools/AgentTool/**`
-
-The helper files `grouping.ts`, `compactWarningHook.ts`, and
-`compactWarningState.ts` are still listed here because the plan treats
-them as legacy-family files whose imports must stay tightly constrained
-even if they survive as helpers.
-
-## Allowed Non-Runtime Consumers
-
-Only the following non-runtime consumers are approved for the helper
-surfaces that remain under `runtime/src/services/compact/*`:
-
-- `runtime/src/components/TokenWarning.tsx`
-  Approved consumer of `runtime/src/services/compact/compactWarningHook.ts`
-- `runtime/src/commands/compact/compact.ts`
-  Approved consumer of
-  `runtime/src/services/compact/compactWarningState.ts`
-
-No current non-runtime consumer is approved for
-`runtime/src/services/compact/grouping.ts`.
 
 ## Ownership Rules
 
@@ -332,8 +297,7 @@ JSON together.
       "path": "runtime/src/utils/processUserInput/processSlashCommand.tsx",
       "status": "near_boundary_review_only",
       "expectedHeuristics": [
-        "imports_tool_use_context",
-        "imports_legacy_compact_service"
+        "imports_tool_use_context"
       ]
     },
     {
@@ -358,86 +322,6 @@ JSON together.
       "path": "runtime/src/query.ts",
       "category": "legacy_query_owner",
       "finalDisposition": "remove as a live runtime owner"
-    },
-    {
-      "path": "runtime/src/services/compact/compact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "move retained behavior under runtime/src/llm/compact and delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/autoCompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "behavior parity reference only; delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/reactiveCompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "behavior parity reference only; delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/microCompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "behavior parity reference only; delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/cachedMicrocompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "behavior parity reference only; delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/apiMicrocompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "delete"
-    },
-    {
-      "path": "runtime/src/services/compact/postCompactCleanup.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "move retained behavior under runtime/src/llm/compact and delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/sessionMemoryCompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "delete"
-    },
-    {
-      "path": "runtime/src/services/compact/snipCompact.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "move retained behavior under runtime/src/llm/compact and delete as owner"
-    },
-    {
-      "path": "runtime/src/services/compact/snipProjection.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "delete"
-    },
-    {
-      "path": "runtime/src/services/compact/grouping.ts",
-      "category": "legacy_compact_helper",
-      "finalDisposition": "keep only as a tightly-scoped helper"
-    },
-    {
-      "path": "runtime/src/services/compact/prompt.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "delete"
-    },
-    {
-      "path": "runtime/src/services/compact/compactWarningHook.ts",
-      "category": "legacy_compact_helper",
-      "finalDisposition": "keep only as a tightly-scoped helper"
-    },
-    {
-      "path": "runtime/src/services/compact/compactWarningState.ts",
-      "category": "legacy_compact_helper",
-      "finalDisposition": "keep only as a tightly-scoped helper"
-    },
-    {
-      "path": "runtime/src/services/compact/cachedMCConfig.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "delete"
-    },
-    {
-      "path": "runtime/src/services/compact/timeBasedMCConfig.ts",
-      "category": "legacy_compact_owner",
-      "finalDisposition": "delete"
     },
     {
       "path": "runtime/src/services/tools/StreamingToolExecutor.ts",
@@ -465,31 +349,10 @@ JSON together.
       "finalDisposition": "replace with runtime/src/agents/* ownership and delete old owner path"
     }
   ],
-  "allowedNonRuntimeConsumers": [
-    {
-      "target": "runtime/src/services/compact/compactWarningHook.ts",
-      "allowedImporters": [
-        "runtime/src/components/TokenWarning.tsx"
-      ],
-      "reason": "warning UI hook surface"
-    },
-    {
-      "target": "runtime/src/services/compact/compactWarningState.ts",
-      "allowedImporters": [
-        "runtime/src/commands/compact/compact.ts"
-      ],
-      "reason": "manual compact command support state"
-    },
-    {
-      "target": "runtime/src/services/compact/grouping.ts",
-      "allowedImporters": [],
-      "reason": "no non-runtime consumer is approved in-tree today"
-    }
-  ],
+  "allowedNonRuntimeConsumers": [],
   "ownershipRules": [
     "All live turns must converge on the same session bootstrap and turn kernel.",
     "Static checks reject new direct live-entrypoint imports from legacy owners, but they do not prove that the runtime is fully cut over.",
-    "Helper files under runtime/src/services/compact are allowed only for the exact importer paths declared here.",
     "Context fabrication must stay manifest-listed until the owning tranche removes it."
   ],
   "staticVsSmokeCheckLimits": [
@@ -527,29 +390,7 @@ JSON together.
       }
     ],
     "directImportExceptions": [],
-    "helperImportPolicies": [
-      {
-        "target": "runtime/src/services/compact/grouping.ts",
-        "allowedImporters": [
-          "runtime/src/llm/compact/compact.ts",
-          "runtime/src/services/compact/compact.ts"
-        ]
-      },
-      {
-        "target": "runtime/src/services/compact/compactWarningHook.ts",
-        "allowedImporters": [
-          "runtime/src/components/TokenWarning.tsx"
-        ]
-      },
-      {
-        "target": "runtime/src/services/compact/compactWarningState.ts",
-        "allowedImporters": [
-          "runtime/src/commands/compact/compact.ts",
-          "runtime/src/services/compact/compactWarningHook.ts",
-          "runtime/src/services/compact/microCompact.ts"
-        ]
-      }
-    ],
+    "helperImportPolicies": [],
     "allowlistedFabricationSeams": [
       "runtime/src/utils/forkedAgent.ts",
       "runtime/src/services/MagicDocs/magicDocs.ts",

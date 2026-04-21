@@ -1,15 +1,79 @@
-import { getSystemPrompt } from "../../constants/prompts.js";
-import { getSystemContext, getUserContext } from "../../context.js";
-import { createEmptyToolPermissionContext } from "../../permissions/types.js";
-import type { Session } from "../../session/session.js";
-import type { TurnContext } from "../../session/turn-context.js";
-import type { Message } from "../../types/message.js";
-import type { CacheSafeParams } from "../../utils/forkedAgent.js";
+import { getSystemPrompt } from "../constants/prompts.js";
+import { getSystemContext, getUserContext } from "../context.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import type { Message } from "../types/message.js";
+import type { CacheSafeParams } from "../utils/forkedAgent.js";
 import {
   buildEffectiveSystemPrompt,
   type SystemPrompt,
-} from "../../utils/systemPrompt.js";
-import type { CompactRuntimeAppState, CompactRuntimeContext } from "./context.js";
+} from "../utils/systemPrompt.js";
+import type { Session } from "./session.js";
+import type { TurnContext } from "./turn-context.js";
+
+import type { Tool } from "../Tool.js";
+import type { AgentId } from "../types/ids.js";
+import type { EffortValue } from "../utils/effort.js";
+
+export interface CompactRuntimeAppState {
+  toolPermissionContext: {
+    additionalWorkingDirectories: ReadonlyMap<string, unknown>;
+    mode?: string;
+  };
+  agentDefinitions: {
+    activeAgents: unknown[];
+  };
+  tasks: Record<string, unknown>;
+  effortValue?: EffortValue;
+}
+
+export interface CompactRuntimeOptions {
+  tools: Tool[];
+  mainLoopModel: string;
+  mcpClients: readonly unknown[];
+  customSystemPrompt?: string;
+  appendSystemPrompt?: string;
+  verbose?: boolean;
+  querySource?: string;
+  agentDefinitions: {
+    activeAgents: unknown[];
+  };
+  isNonInteractiveSession?: boolean;
+  cwd?: string;
+}
+
+export interface CompactRuntimeContext {
+  abortController: AbortController;
+  agentId?: AgentId;
+  options: CompactRuntimeOptions;
+  getAppState: () => CompactRuntimeAppState;
+  readFileState: Map<string, unknown>;
+  loadedNestedMemoryPaths?: Set<string>;
+  setStreamMode?: (mode: "requesting" | "responding" | null) => void;
+  setResponseLength?: (updater: (length: number) => number) => void;
+  onCompactProgress?: (event: unknown) => void;
+  setSDKStatus?: (status: "compacting" | null) => void;
+  addNotification?: (notification: unknown) => void;
+  queryTracking?: {
+    chainId?: string;
+    depth?: number;
+  };
+  rolloutStore?: {
+    getCompactionIndexSnapshot?: () => unknown;
+    getToolResultBytesIndexSnapshot?: () => ReadonlyMap<string, number>;
+    getToolCallTurnIdSnapshot?: () => ReadonlyMap<string, string>;
+    store?: {
+      reAppendSessionMetadata?: () => void;
+    };
+  };
+  session?: {
+    rolloutStore?: CompactRuntimeContext["rolloutStore"];
+  };
+  cwd?: string;
+}
+
+export type ManualCompactContext = CompactRuntimeContext & {
+  messages: Message[];
+};
 
 type SessionConfigurationSnapshot = {
   cwd?: string;
@@ -55,8 +119,11 @@ function buildAppState(
 ): CompactRuntimeAppState {
   const registry =
     session.permissionModeRegistry ??
-    (session.services as { permissionModeRegistry?: { current?: () => ReturnType<typeof createEmptyToolPermissionContext> } })
-      .permissionModeRegistry;
+    (session.services as {
+      permissionModeRegistry?: {
+        current?: () => ReturnType<typeof createEmptyToolPermissionContext>;
+      };
+    }).permissionModeRegistry;
   const toolPermissionContext =
     registry?.current?.() ?? createEmptyToolPermissionContext();
   return {

@@ -4,8 +4,8 @@ import { performance } from "node:perf_hooks";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildPostCompactMessages } from "../../../src/services/compact/compact.js";
-import { calculateMessagesToKeepIndex } from "../../../src/services/compact/sessionMemoryCompact.js";
+import { buildPostCompactMessages } from "../../../src/llm/compact/compact.js";
+import { calculateMessagesToKeepIndex } from "../../../src/llm/compact/session-memory-compact.js";
 import { freshDenialTracking } from "../../../src/permissions/denial-tracking.js";
 import {
   attachContextDefaults,

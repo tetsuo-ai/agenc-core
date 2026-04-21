@@ -96,7 +96,7 @@ export interface Terminal {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * openclaude `AutoCompactTrackingState` (services/compact/compact.ts).
+ * openclaude `AutoCompactTrackingState` from the compaction pipeline.
  * Real import lands when `src/llm/compact/**` is lifted from tsconfig
  * exclude (T5b/T6). Structural shape documented here; runtime matches
  * codex/openclaude schema.

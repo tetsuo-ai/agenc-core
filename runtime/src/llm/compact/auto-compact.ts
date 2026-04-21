@@ -21,7 +21,7 @@ import {
   ERROR_MESSAGE_USER_ABORT,
   type RecompactionInfo,
 } from './compact.js'
-import type { CompactRuntimeContext } from './context.js'
+import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
 import { runPostCompactCleanup } from './post-compact-cleanup.js'
 import { trySessionMemoryCompaction } from './session-memory-compact.js'
 

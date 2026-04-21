@@ -10,11 +10,40 @@ import {
   calculateTokenWarningState,
   isAutoCompactEnabled,
   type AutoCompactTrackingState,
-} from './services/compact/autoCompact.js'
-import { buildPostCompactMessages } from './services/compact/compact.js'
+} from './llm/compact/auto-compact.js'
+import {
+  buildPostCompactMessages,
+  compactConversation,
+} from './llm/compact/compact.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const reactiveCompact = feature('REACTIVE_COMPACT')
-  ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
+  ? {
+      isReactiveCompactEnabled: () => true,
+      isWithheldPromptTooLong: isPromptTooLongMessage,
+      isWithheldMediaSizeError: () => false,
+      tryReactiveCompact: async ({
+        hasAttempted,
+        querySource,
+        aborted,
+        messages,
+        cacheSafeParams,
+      }) => {
+        if (hasAttempted || aborted) {
+          return null
+        }
+        if (querySource === 'compact' || querySource === 'session_memory') {
+          return null
+        }
+        return compactConversation(
+          messages,
+          cacheSafeParams.toolUseContext,
+          cacheSafeParams,
+          true,
+          undefined,
+          true,
+        )
+      },
+    }
   : null
 const contextCollapse = feature('CONTEXT_COLLAPSE')
   ? (require('./services/contextCollapse/index.js') as typeof import('./services/contextCollapse/index.js'))
@@ -112,7 +141,11 @@ import { count } from './utils/array.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
-  ? (require('./services/compact/snipCompact.js') as typeof import('./services/compact/snipCompact.js'))
+  ? {
+      snipCompactIfNeeded(messages) {
+        return { messages, tokensFreed: 0 }
+      },
+    }
   : null
 const taskSummaryModule = feature('BG_SESSIONS')
   ? (require('./utils/taskSummary.js') as typeof import('./utils/taskSummary.js'))

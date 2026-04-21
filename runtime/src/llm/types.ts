@@ -49,8 +49,8 @@ export interface LLMMessage {
      * When `true`, this message is preserved across compaction
      * boundaries. Compaction extracts anchor-marked messages from
      * the segment being summarized and retains them alongside the
-     * kept tail — matches upstream's `messagesToKeep` pattern at
-     * `services/compact/compact.ts`. Reserved for messages the
+     * kept tail — matches upstream's `messagesToKeep` compaction pattern.
+     * Reserved for messages the
      * runtime depends on for trigger anchoring (e.g. injected
      * reminders whose re-emission gates scan for prior-injection
      * headers in history). Use sparingly; anchor messages that
