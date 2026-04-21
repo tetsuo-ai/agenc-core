@@ -189,6 +189,7 @@ export {
   type TaskExecutionContext,
   type CompiledJob,
   type CompiledJobAuditRecord,
+  type CompiledJobChatTaskHandlerOptions,
   type CompiledJobChatExecutionPolicy,
   type CompiledJobEnforcement,
   type CompiledJobExecutionRuntime,

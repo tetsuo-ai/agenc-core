@@ -185,6 +185,7 @@ export {
   type RawOnChainTaskClaim,
   type CompiledJob,
   type CompiledJobAuditRecord,
+  type CompiledJobChatTaskHandlerOptions,
   type CompiledJobChatExecutionPolicy,
   type CompiledJobEnforcement,
   type CompiledJobExecutionRuntime,
@@ -230,7 +231,11 @@ export {
 export {
   // TaskOperations class
   TaskOperations,
+  createCompiledJobChatTaskHandler,
   createCompiledJobPolicyEngine,
+  buildCompiledJobTaskMessage,
+  buildCompiledJobTaskMessageContent,
+  buildCompiledJobTaskPromptEnvelope,
   resolveCompiledJobEnforcement,
   createCompiledJobExecutionRuntime,
   type TaskOpsConfig,

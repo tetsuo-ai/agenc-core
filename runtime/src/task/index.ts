@@ -7,6 +7,7 @@ export * from "./pda.js";
 export * from "./types.js";
 export * from "./filters.js";
 export * from "./compiled-job.js";
+export * from "./compiled-job-chat-handler.js";
 export * from "./compiled-job-enforcement.js";
 export * from "./compiled-job-runtime.js";
 export * from "./operations.js";
