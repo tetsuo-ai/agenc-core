@@ -1,15 +1,18 @@
 import type { ChatExecuteParams } from "../llm/chat-executor-types.js";
 import type { LLMTool, ToolHandler } from "../llm/types.js";
+import type { Tool } from "../tools/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { silentLogger, type Logger } from "../utils/logger.js";
 import {
   createCompiledJobPolicyEngine,
   type CompiledJobEnforcement,
+  type CompiledJobSideEffectPolicy,
 } from "./compiled-job-enforcement.js";
 
 export interface CompiledJobScopedTooling {
   readonly allowedToolNames: readonly string[];
   readonly missingToolNames: readonly string[];
+  readonly blockedToolNames: readonly string[];
   readonly llmTools: readonly LLMTool[];
   readonly toolHandler: ToolHandler;
 }
@@ -22,6 +25,37 @@ export interface CompiledJobExecutionRuntime {
   ): CompiledJobScopedTooling;
   applyChatExecuteParams(params: ChatExecuteParams): ChatExecuteParams;
 }
+
+const L0_BLOCKED_TOOL_PREFIXES = [
+  "agenc.",
+  "desktop.",
+  "social.",
+  "verification.",
+  "wallet.",
+  "x.",
+] as const;
+
+const L0_BLOCKED_SYSTEM_TOOLS = new Set([
+  "system.appendFile",
+  "system.browserSessionResume",
+  "system.bash",
+  "system.delete",
+  "system.editFile",
+  "system.evaluateJs",
+  "system.mkdir",
+  "system.move",
+  "system.processStart",
+  "system.processStop",
+  "system.remoteJobCancel",
+  "system.remoteJobResume",
+  "system.remoteJobStart",
+  "system.sandboxExec",
+  "system.sandboxStart",
+  "system.sandboxStop",
+  "system.serverStart",
+  "system.serverStop",
+  "system.writeFile",
+]);
 
 export function createCompiledJobExecutionRuntime(
   enforcement: CompiledJobEnforcement,
@@ -37,11 +71,17 @@ export function createCompiledJobExecutionRuntime(
         policyEngine: createCompiledJobPolicyEngine(enforcement, logger),
       });
       const missingToolNames: string[] = [];
+      const blockedToolNames: string[] = [];
+      const baseToolNames = resolveAdvertisedRuntimeToolNames(enforcement);
 
-      for (const toolName of enforcement.allowedRuntimeTools) {
+      for (const toolName of baseToolNames.allowedToolNames) {
         const tool = registry.get(toolName);
         if (!tool) {
           missingToolNames.push(toolName);
+          continue;
+        }
+        if (shouldBlockRegisteredTool(tool, enforcement.sideEffectPolicy)) {
+          blockedToolNames.push(tool.name);
           continue;
         }
         scopedRegistry.register(tool);
@@ -51,6 +91,10 @@ export function createCompiledJobExecutionRuntime(
       return {
         allowedToolNames,
         missingToolNames,
+        blockedToolNames: uniqueToolNames([
+          ...baseToolNames.blockedToolNames,
+          ...blockedToolNames,
+        ]),
         llmTools: scopedRegistry.toLLMTools(),
         toolHandler: scopedRegistry.createToolHandler(),
       };
@@ -123,9 +167,17 @@ function mergeToolRouting(
   base: ChatExecuteParams["toolRouting"],
   enforcement: CompiledJobEnforcement,
 ): ChatExecuteParams["toolRouting"] {
-  const allowed = enforcement.chat.toolRouting?.advertisedToolNames?.length
-    ? [...enforcement.chat.toolRouting.advertisedToolNames]
-    : [...enforcement.allowedRuntimeTools];
+  const safeToolNames = resolveAdvertisedRuntimeToolNames(enforcement)
+    .allowedToolNames;
+  const allowed =
+    enforcement.chat.toolRouting?.advertisedToolNames?.length &&
+    enforcement.chat.toolRouting.advertisedToolNames.length > 0
+      ? uniqueToolNames(
+          enforcement.chat.toolRouting.advertisedToolNames.filter((toolName) =>
+            safeToolNames.includes(toolName),
+          ),
+        )
+      : [...safeToolNames];
   const allowedSet = new Set(allowed);
   const filterAllowed = (names: readonly string[] | undefined): string[] =>
     uniqueToolNames(
@@ -191,4 +243,66 @@ function mergeBooleanGate(
 
 function uniqueToolNames(input: readonly string[]): string[] {
   return [...new Set(input)];
+}
+
+function resolveAdvertisedRuntimeToolNames(
+  enforcement: CompiledJobEnforcement,
+): {
+  readonly allowedToolNames: readonly string[];
+  readonly blockedToolNames: readonly string[];
+} {
+  const allowedToolNames: string[] = [];
+  const blockedToolNames: string[] = [];
+
+  for (const toolName of enforcement.allowedRuntimeTools) {
+    if (shouldBlockToolName(toolName, enforcement.sideEffectPolicy)) {
+      blockedToolNames.push(toolName);
+      continue;
+    }
+    allowedToolNames.push(toolName);
+  }
+
+  return {
+    allowedToolNames: uniqueToolNames(allowedToolNames),
+    blockedToolNames: uniqueToolNames(blockedToolNames),
+  };
+}
+
+function shouldBlockRegisteredTool(
+  tool: Tool,
+  sideEffectPolicy: CompiledJobSideEffectPolicy,
+): boolean {
+  if (!isStrictL0SideEffectPolicy(sideEffectPolicy)) {
+    return false;
+  }
+  if (sideEffectPolicy.allowedMutatingRuntimeTools.includes(tool.name)) {
+    return false;
+  }
+  return tool.metadata?.mutating === true;
+}
+
+function shouldBlockToolName(
+  toolName: string,
+  sideEffectPolicy: CompiledJobSideEffectPolicy,
+): boolean {
+  if (!isStrictL0SideEffectPolicy(sideEffectPolicy)) {
+    return false;
+  }
+  if (sideEffectPolicy.allowedMutatingRuntimeTools.includes(toolName)) {
+    return false;
+  }
+  if (L0_BLOCKED_SYSTEM_TOOLS.has(toolName)) {
+    return true;
+  }
+  return L0_BLOCKED_TOOL_PREFIXES.some((prefix) => toolName.startsWith(prefix));
+}
+
+function isStrictL0SideEffectPolicy(
+  sideEffectPolicy: CompiledJobSideEffectPolicy,
+): boolean {
+  return (
+    sideEffectPolicy.riskTier === "L0" &&
+    sideEffectPolicy.approvalRequired !== true &&
+    sideEffectPolicy.humanReviewGate === "none"
+  );
 }

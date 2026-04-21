@@ -63,7 +63,10 @@ function createCompiledJob(overrides: Partial<CompiledJob> = {}): CompiledJob {
   };
 }
 
-function createTool(name: string): Tool {
+function createTool(
+  name: string,
+  input: Partial<Pick<Tool, "metadata" | "execute">> = {},
+): Tool {
   return {
     name,
     description: `${name} test tool`,
@@ -72,7 +75,11 @@ function createTool(name: string): Tool {
       properties: {},
       additionalProperties: true,
     },
+    metadata: input.metadata,
     async execute(args: Record<string, unknown>) {
+      if (input.execute) {
+        return input.execute(args);
+      }
       return { content: JSON.stringify({ ok: true, name, args }) };
     },
   };
@@ -90,6 +97,7 @@ describe("compiled job execution runtime", () => {
 
     expect(scoped.allowedToolNames).toEqual(["system.httpGet"]);
     expect(scoped.missingToolNames).toEqual(["system.pdfExtractText"]);
+    expect(scoped.blockedToolNames).toEqual([]);
     expect(scoped.llmTools.map((tool) => tool.function.name)).toEqual([
       "system.httpGet",
     ]);
@@ -160,5 +168,122 @@ describe("compiled job execution runtime", () => {
     expect(params.requiredToolEvidence?.executionEnvelope).toEqual(
       enforcement.executionEnvelope,
     );
+  });
+
+  it("blocks external side-effect tools from L0 execution even if they leak into the runtime allowlist", () => {
+    const baseEnforcement = resolveCompiledJobEnforcement(createCompiledJob());
+    const enforcement = {
+      ...baseEnforcement,
+      allowedRuntimeTools: [
+        ...baseEnforcement.allowedRuntimeTools,
+        "x.post",
+        "agenc.purchaseSkill",
+        "system.writeFile",
+      ],
+    };
+    const runtime = createCompiledJobExecutionRuntime(enforcement);
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    registry.register(
+      createTool("x.post", {
+        metadata: { mutating: true },
+      }),
+    );
+    registry.register(
+      createTool("agenc.purchaseSkill", {
+        metadata: { mutating: true },
+      }),
+    );
+    registry.register(
+      createTool("system.writeFile", {
+        metadata: { mutating: true },
+      }),
+    );
+
+    const scoped = runtime.buildScopedTooling(registry);
+
+    expect(scoped.allowedToolNames).toEqual([
+      "system.httpGet",
+      "system.pdfExtractText",
+    ]);
+    expect(scoped.blockedToolNames).toEqual([
+      "x.post",
+      "agenc.purchaseSkill",
+      "system.writeFile",
+    ]);
+
+    const params = runtime.applyChatExecuteParams({
+      message: { role: "user", content: "research" },
+      history: [],
+      promptEnvelope: {
+        kind: "prompt_envelope_v1",
+        baseSystemPrompt: "You are a careful task worker.",
+        systemSections: [],
+        userSections: [],
+      },
+      sessionId: "task:test",
+      toolRouting: {
+        advertisedToolNames: enforcement.allowedRuntimeTools,
+        routedToolNames: enforcement.allowedRuntimeTools,
+        expandedToolNames: enforcement.allowedRuntimeTools,
+        expandOnMiss: false,
+        persistDiscovery: false,
+      },
+    });
+
+    expect(params.toolRouting).toEqual({
+      advertisedToolNames: ["system.httpGet", "system.pdfExtractText"],
+      routedToolNames: ["system.httpGet", "system.pdfExtractText"],
+      expandedToolNames: ["system.httpGet", "system.pdfExtractText"],
+      expandOnMiss: false,
+      persistDiscovery: false,
+    });
+  });
+
+  it("keeps explicit local workspace mutations available for workspace_only jobs", () => {
+    const enforcement = resolveCompiledJobEnforcement(
+      createCompiledJob({
+        jobType: "spreadsheet_cleanup_classification",
+        policy: {
+          ...createCompiledJob().policy,
+          allowedTools: ["normalize_table", "classify_rows", "generate_csv"],
+          writeScope: "workspace_only",
+          networkPolicy: "off",
+          allowedDomains: [],
+          allowedDataSources: ["provided spreadsheet only"],
+          maxToolCalls: 30,
+          maxFetches: 0,
+        },
+        audit: {
+          ...createCompiledJob().audit,
+          templateId: "spreadsheet_cleanup_classification",
+        },
+      }),
+      {
+        workspaceRoot: "/tmp/agenc-job",
+      },
+    );
+    const runtime = createCompiledJobExecutionRuntime(enforcement);
+    const registry = new ToolRegistry();
+    for (const toolName of enforcement.allowedRuntimeTools) {
+      registry.register(
+        createTool(toolName, {
+          metadata:
+            toolName === "system.writeFile" ||
+            toolName === "system.appendFile" ||
+            toolName === "system.editFile" ||
+            toolName === "system.mkdir"
+              ? { mutating: true }
+              : undefined,
+        }),
+      );
+    }
+
+    const scoped = runtime.buildScopedTooling(registry);
+
+    expect(scoped.missingToolNames).toEqual([]);
+    expect(scoped.blockedToolNames).toEqual([]);
+    expect(scoped.allowedToolNames).toEqual(enforcement.allowedRuntimeTools);
   });
 });

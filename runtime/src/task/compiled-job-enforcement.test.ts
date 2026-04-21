@@ -80,6 +80,12 @@ describe("compiled job enforcement", () => {
       skills: false,
       memory: false,
     });
+    expect(enforcement.sideEffectPolicy).toEqual({
+      riskTier: "L0",
+      approvalRequired: false,
+      humanReviewGate: "none",
+      allowedMutatingRuntimeTools: [],
+    });
     expect(enforcement.chat.maxToolRounds).toBe(40);
     expect(enforcement.chat.toolBudgetPerRequest).toBe(40);
     expect(enforcement.chat.requestTimeoutMs).toBe(600_000);
@@ -164,6 +170,12 @@ describe("compiled job enforcement", () => {
       "/tmp/agenc-job",
     ]);
     expect(enforcement.runtimePolicy.networkAccess).toBeUndefined();
+    expect(enforcement.sideEffectPolicy.allowedMutatingRuntimeTools).toEqual([
+      "system.writeFile",
+      "system.appendFile",
+      "system.editFile",
+      "system.mkdir",
+    ]);
   });
 
   it("creates a policy engine that enforces domain and tool restrictions", () => {

@@ -60,6 +60,11 @@ export function createCompiledJobChatTaskHandler(
       options.toolRegistry,
       logger,
     );
+    if (scopedTooling.blockedToolNames.length > 0) {
+      throw new Error(
+        `Compiled job runtime blocked side-effect tools for ${compiledJob.policy.riskTier} execution: ${scopedTooling.blockedToolNames.join(", ")}`,
+      );
+    }
     if (scopedTooling.missingToolNames.length > 0) {
       throw new Error(
         `Compiled job runtime is missing required tools: ${scopedTooling.missingToolNames.join(", ")}`,

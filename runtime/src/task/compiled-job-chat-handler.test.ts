@@ -274,6 +274,53 @@ describe("compiled job chat task handler", () => {
     expect(provider.chatStream).not.toHaveBeenCalled();
   });
 
+  it("fails closed when L0 runtime detects blocked side-effect tools", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({
+      providers: [provider],
+      allowedTools: ["system.httpGet", "system.pdfExtractText", "x.post"],
+    });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    registry.register(createTool("x.post"));
+
+    const baseContext = createContext();
+    const compiledJobEnforcement = {
+      ...baseContext.compiledJobEnforcement!,
+      allowedRuntimeTools: [
+        ...baseContext.compiledJobEnforcement!.allowedRuntimeTools,
+        "x.post",
+      ],
+    };
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+    });
+
+    await expect(
+      handler({
+        ...baseContext,
+        compiledJobEnforcement,
+        compiledJobRuntime: createCompiledJobExecutionRuntime(
+          compiledJobEnforcement,
+        ),
+      }),
+    ).rejects.toThrow(
+      "Compiled job runtime blocked side-effect tools for L0 execution: x.post",
+    );
+    expect(provider.chat).not.toHaveBeenCalled();
+    expect(provider.chatStream).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported compiled job types for the first launch runner", async () => {
     const provider = createMockProvider([
       {

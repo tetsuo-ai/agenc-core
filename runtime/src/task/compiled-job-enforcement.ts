@@ -57,6 +57,14 @@ export interface CompiledJobEnforcement {
   readonly runtimePolicy: RuntimePolicyConfig;
   readonly chat: CompiledJobChatExecutionPolicy;
   readonly scope: PolicyEvaluationScope;
+  readonly sideEffectPolicy: CompiledJobSideEffectPolicy;
+}
+
+export interface CompiledJobSideEffectPolicy {
+  readonly riskTier: CompiledJob["policy"]["riskTier"];
+  readonly approvalRequired: boolean;
+  readonly humanReviewGate: CompiledJob["policy"]["humanReviewGate"];
+  readonly allowedMutatingRuntimeTools: readonly string[];
 }
 
 export function resolveCompiledJobEnforcement(
@@ -118,6 +126,12 @@ export function resolveCompiledJobEnforcement(
       ? options.workspaceRoot
       : undefined,
   });
+  const sideEffectPolicy: CompiledJobSideEffectPolicy = {
+    riskTier: compiledJob.policy.riskTier,
+    approvalRequired: compiledJob.policy.approvalRequired,
+    humanReviewGate: compiledJob.policy.humanReviewGate,
+    allowedMutatingRuntimeTools: resolveAllowedMutatingRuntimeTools(compiledJob),
+  };
 
   return {
     allowedRuntimeTools,
@@ -125,6 +139,7 @@ export function resolveCompiledJobEnforcement(
     executionEnvelope,
     runtimePolicy,
     scope,
+    sideEffectPolicy,
     chat: {
       contextInjection: {
         skills: false,
@@ -232,6 +247,26 @@ function resolveRuntimeToolNames(compiledJob: CompiledJob): readonly string[] {
   if (compiledJob.policy.networkPolicy !== "allowlist_only") {
     for (const runtimeTool of NETWORK_RUNTIME_TOOLS) {
       toolNames.delete(runtimeTool);
+    }
+  }
+
+  return [...toolNames];
+}
+
+function resolveAllowedMutatingRuntimeTools(
+  compiledJob: CompiledJob,
+): readonly string[] {
+  const toolNames = new Set<string>();
+
+  if (compiledJob.policy.writeScope === "workspace_only") {
+    for (const runtimeTool of WORKSPACE_WRITE_RUNTIME_TOOLS) {
+      toolNames.add(runtimeTool);
+    }
+  }
+
+  if (compiledJob.policy.allowedTools.includes("run_approved_checks")) {
+    for (const runtimeTool of APPROVED_CHECK_RUNTIME_TOOLS) {
+      toolNames.add(runtimeTool);
     }
   }
 
