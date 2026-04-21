@@ -194,4 +194,25 @@ describe("App", () => {
     expect(snapshots[snapshots.length - 1]).toBe(0);
     unmount();
   });
+
+  test("initialPrompt auto-submits once on mount", async () => {
+    const submit = vi.fn(async () => undefined);
+    const session = {
+      ...createFakeSession("default"),
+      submit,
+    };
+
+    const { unmount } = await mount(
+      <App
+        session={session}
+        configStore={FAKE_CONFIG_STORE}
+        initialPrompt="build a game"
+      />,
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith("build a game");
+    unmount();
+  });
 });

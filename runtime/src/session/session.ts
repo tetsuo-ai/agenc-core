@@ -39,6 +39,11 @@ import { BehaviorSubject } from "../utils/behavior-subject.js";
 import { monotonicMs } from "../utils/monotonic.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import type { LLMProvider } from "../llm/types.js";
+import {
+  createProvider,
+  isFactoryProvider,
+  type ProviderName,
+} from "../llm/provider.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
@@ -49,6 +54,7 @@ import {
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
 import { startMcpManagerForSession } from "./mcp-startup.js";
+import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
   EventLog,
   isDurableEvent,
@@ -554,6 +560,13 @@ export class Session {
    */
   pendingProviderSwitch: PendingProviderSwitch | null = null;
 
+  /**
+   * T11 W3: active worktree binding for the slash-command adapters.
+   * Stores the entered handle plus the caller's pre-enter cwd so
+   * `/exit-worktree` can restore the session directory on success.
+   */
+  pendingWorktreeState: PendingWorktreeState | null = null;
+
   /** I-22: token-budget tracker (null = budgeting disabled). Set at
    *  session construction by SessionOpts.budgetTracker; updated per
    *  emitted token by stream-model phase. */
@@ -686,6 +699,12 @@ export class Session {
     this.pendingProviderSwitch = pendingSwitch;
   }
 
+  setPendingWorktreeState(
+    pendingWorktreeState: PendingWorktreeState | null,
+  ): void {
+    this.pendingWorktreeState = pendingWorktreeState;
+  }
+
   /**
    * Live view of the mutable session configuration. Per-turn callers must
    * still freeze their own snapshot via the TurnContext builder.
@@ -760,6 +779,7 @@ export class Session {
       peeked.sessionConfiguration?.provider?.slug ?? "unknown";
 
     let resolvedModel = pending.model;
+    let resolvedProvider = pending.provider;
     if (pending.profile) {
       const configStore = (this.services as Partial<SessionServices>).configStore;
       if (configStore && typeof configStore.current === "function") {
@@ -769,6 +789,12 @@ export class Session {
           if (overlaid.model && overlaid.model.length > 0) {
             resolvedModel = overlaid.model;
           }
+          if (
+            typeof overlaid.model_provider === "string" &&
+            overlaid.model_provider.length > 0
+          ) {
+            resolvedProvider = overlaid.model_provider;
+          }
         } catch {
           // The staging site already validated the profile; keep the marker's
           // raw model when the overlay lookup is unavailable here.
@@ -776,18 +802,39 @@ export class Session {
       }
     }
 
+    const nextModelInfo = await deriveNextModelInfo(
+      this.services.modelsManager,
+      resolvedModel,
+    );
+    const nextProviderInstance = await maybeRebuildProviderForSwitch(
+      this,
+      resolvedProvider,
+      resolvedModel,
+    );
+
     await this.state.with((state) => {
       const cfg = (state as {
         sessionConfiguration?: {
+          provider?: { slug?: string };
           collaborationMode?: { model?: string };
         };
       }).sessionConfiguration;
       if (!cfg) return;
+      cfg.provider = { slug: resolvedProvider } as SessionConfiguration["provider"];
       cfg.collaborationMode = {
         ...(cfg.collaborationMode ?? {}),
         model: resolvedModel,
       };
     });
+
+    (this as { modelInfo: ModelInfo }).modelInfo = nextModelInfo;
+    (this as { config: Config }).config = {
+      ...this.config,
+      model: resolvedModel,
+    };
+    if (nextProviderInstance !== null) {
+      (this.services as { provider: LLMProvider }).provider = nextProviderInstance;
+    }
 
     this.setPendingProviderSwitch(null);
 
@@ -797,7 +844,7 @@ export class Session {
         type: "warning",
         payload: {
           cause: "provider_switch_applied",
-          message: `provider ${beforeProvider} → ${pending.provider}; model ${beforeModel} → ${resolvedModel}${
+          message: `provider ${beforeProvider} → ${resolvedProvider}; model ${beforeModel} → ${resolvedModel}${
             pending.profile ? `; profile ${pending.profile}` : ""
           }`,
         },
@@ -816,6 +863,9 @@ export class Session {
       throw new Error(
         "Session.runTurn accepts either ctx or subId/configOverrides, not both",
       );
+    }
+    if (opts.ctx === undefined && this.pendingProviderSwitch !== null) {
+      await this.consumePendingProviderSwitch();
     }
     const ctx =
       opts.ctx ??
@@ -1209,4 +1259,59 @@ function deriveMinimalModelInfo(slug: string): ModelInfo {
     truncationPolicy: "off",
     usedFallbackModelMetadata: false,
   };
+}
+
+function normalizeProviderName(raw: string): ProviderName | null {
+  switch (raw.trim().toLowerCase()) {
+    case "xai":
+    case "grok":
+      return "grok";
+    case "openai":
+    case "anthropic":
+    case "ollama":
+    case "lmstudio":
+    case "openrouter":
+    case "groq":
+    case "deepseek":
+    case "gemini":
+      return raw.trim().toLowerCase() as ProviderName;
+    default:
+      return null;
+  }
+}
+
+async function deriveNextModelInfo(
+  modelsManager: ModelsManager | undefined,
+  model: string,
+): Promise<ModelInfo> {
+  if (!modelsManager || typeof modelsManager.getModelInfo !== "function") {
+    return deriveMinimalModelInfo(model);
+  }
+  try {
+    return await modelsManager.getModelInfo(model);
+  } catch {
+    return deriveMinimalModelInfo(model);
+  }
+}
+
+async function maybeRebuildProviderForSwitch(
+  session: Session,
+  providerName: string,
+  model: string,
+): Promise<LLMProvider | null> {
+  if (!isFactoryProvider(session.services.provider)) {
+    return null;
+  }
+  const normalized = normalizeProviderName(providerName);
+  if (normalized === null) {
+    return null;
+  }
+  try {
+    return createProvider(normalized, {
+      model,
+      tools: session.services.registry.toLLMTools(),
+    });
+  } catch {
+    return null;
+  }
 }

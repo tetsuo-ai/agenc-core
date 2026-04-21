@@ -788,9 +788,8 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
 // ─────────────────────────────────────────────────────────────────────
 
 describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
-  test("pendingProviderSwitch is consumed at turn start and session.config.model updates", async () => {
-    const ctx = mkCtx();
-    const { session, getState } = mkSession({
+  test("pendingProviderSwitch is consumed before default turn construction so turn_context sees the new model", async () => {
+    const { session, events, getState } = mkSession({
       provider: mkProvider({ content: "hi" }),
       registry: mkRegistry(),
       pendingProviderSwitch: {
@@ -803,10 +802,17 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       },
     });
 
-    await drain(session.runTurn("hello", { ctx }));
+    await drain(session.runTurn("hello"));
 
     const applied = getState().sessionConfiguration;
     expect(applied.collaborationMode?.model).toBe("grok-4");
+    expect(applied.provider?.slug).toBe("xai");
+    const turnContext = events.find((event) => event.msg.type === "turn_context");
+    expect(turnContext).toBeDefined();
+    if (turnContext?.msg.type === "turn_context") {
+      expect(turnContext.msg.payload.model).toBe("grok-4");
+      expect(turnContext.msg.payload.collaborationMode?.model).toBe("grok-4");
+    }
   });
 
   test("pendingProviderSwitch is cleared after consumption", async () => {

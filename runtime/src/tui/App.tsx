@@ -32,7 +32,13 @@
  * deprecated alias for legacy imports.
  */
 
-import React, { useContext, useMemo, type ReactNode } from "react";
+import React, {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 
 import Box from "./ink/components/Box.js";
 import StdinContext from "./ink/components/StdinContext.js";
@@ -94,6 +100,8 @@ export interface AppProps {
   readonly bindings?: Record<BindingContext, BindingMap>;
   /** Model label shown in the cockpit banner. */
   readonly model?: string;
+  /** Optional boot-time prompt forwarded from the CLI TTY router. */
+  readonly initialPrompt?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -144,8 +152,10 @@ function toHandlerRequest(
 
 function TUIRoot({
   model,
+  initialPrompt,
 }: {
   readonly model?: string;
+  readonly initialPrompt?: string;
 }): React.ReactElement {
   const { mode, session, pendingRequests } = useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
@@ -158,6 +168,7 @@ function TUIRoot({
   const { events, isStreaming, submit } = useQuery(
     session as unknown as QuerySessionLike,
   );
+  const initialPromptSubmittedRef = useRef(false);
   const overlay = useOverlayStack();
 
   // Derive transcript messages from phase events on every render. The
@@ -251,6 +262,17 @@ function TUIRoot({
     }
   };
 
+  useEffect(() => {
+    if (initialPromptSubmittedRef.current) return;
+    if (typeof initialPrompt !== "string" || initialPrompt.length === 0) {
+      return;
+    }
+    initialPromptSubmittedRef.current = true;
+    void submit(initialPrompt).catch(() => {
+      // Submit failures already surface through session-side logging.
+    });
+  }, [initialPrompt, submit]);
+
   return (
     <Box flexDirection="column">
       {/* cockpit region (top) */}
@@ -330,12 +352,13 @@ export const App: React.FC<AppProps> = ({
   configStore,
   bindings,
   model,
+  initialPrompt,
 }) => {
   return (
     <AgenCAppStateProvider session={session} configStore={configStore}>
       <KeybindingsFromStdin {...(bindings ? { bindings } : {})}>
         <OverlayProvider>
-          <TUIRoot model={model} />
+          <TUIRoot model={model} initialPrompt={initialPrompt} />
         </OverlayProvider>
       </KeybindingsFromStdin>
     </AgenCAppStateProvider>
@@ -350,17 +373,8 @@ export default App;
 export { TUIRoot };
 
 /**
- * TODO(T12b/T13): the evaluator must push onto
- * `useAgenCAppState().permissionQueueOps` when a permission request is
- * created. Today the queue starts empty and stays empty; once the
- * evaluator bridge lands, a PendingPermissionRequest with a live
- * `resolveOnce: InteractiveResolver` will appear here and
- * InteractiveHandler will drive it through the modal.
- *
- * TODO(T12b/T13): plan events currently arrive through the EventMsg
- * channel (`{type:'plan_started', payload:{...}}`) on the runtime side,
- * not the PhaseEvent channel that useQuery subscribes to. Either surface
- * plan events through useQuery's channel, or expose a second
- * subscription for PlanProgress — this stub filter is a bridge, not a
- * long-term shape.
+ * The remaining evaluator-side work is limited to attaching a live
+ * `resolveOnce: InteractiveResolver` to queued requests. The TUI now
+ * exposes its queue ops on the session object and already consumes
+ * `plan_*` entries from `session.eventLog` via `useQuery`.
  */

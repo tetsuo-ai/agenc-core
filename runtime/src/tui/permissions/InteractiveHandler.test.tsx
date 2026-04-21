@@ -3,26 +3,21 @@
  *
  * Exercises:
  *   - I-44 stale-turn drop (immediate deny + warning, no modal mount)
- *   - Classifier grace race: fast-allow → bypass, unavailable → modal,
- *     timeout → modal
+ *   - Non-stale requests fall through to the modal
  *   - Modal wiring: 'allow' path claims the resolver payload
  *   - Unmount → abort claim
  *   - `resolveWithGrace` pure helper
  *
- * The classifier module is mocked per test via `vi.mock` so we can steer
- * its behavior deterministically without touching the real stub's
- * session-level warning sink.
+ * The TUI is no longer a second permission authority; the evaluator
+ * classifies requests before they ever enter the queue.
  */
 
 import { PassThrough } from "node:stream";
 import React, { type ReactNode } from "react";
 import {
-  afterEach,
-  beforeEach,
   describe,
   expect,
   test,
-  vi,
 } from "vitest";
 
 import { createRoot } from "../ink/root.js";
@@ -44,25 +39,6 @@ import {
   type ResolverPayload,
   type SessionLike,
 } from "./InteractiveHandler.js";
-
-// ─────────────────────────────────────────────────────────────────────
-// Classifier mock. `vi.mock` hoists the factory above the import, so the
-// `classifyYoloAction` symbol imported by InteractiveHandler is the mock
-// regardless of when the handler module first loads.
-// ─────────────────────────────────────────────────────────────────────
-
-vi.mock("../../permissions/classifier.js", () => ({
-  classifyYoloAction: vi.fn(),
-}));
-
-// Re-import the mocked symbol after the `vi.mock` factory registers.
-import { classifyYoloAction } from "../../permissions/classifier.js";
-
-type MockedClassify = ReturnType<typeof vi.fn>;
-
-function mockedClassifier(): MockedClassify {
-  return classifyYoloAction as unknown as MockedClassify;
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Resolver double — matches InteractiveResolver's narrow contract.
@@ -255,21 +231,7 @@ function makeKeyEvent(opts: {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("InteractiveHandler", () => {
-  beforeEach(() => {
-    vi.useRealTimers();
-    mockedClassifier().mockReset();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   test("stale turnId: immediately resolves with deny + emits stale warning, no modal mount", async () => {
-    // Classifier must not be invoked on the stale path.
-    mockedClassifier().mockImplementation(() => {
-      throw new Error("classifier must not be called on stale path");
-    });
-
     const { resolver, payloads } = createResolver();
     const session = createSession({ currentTurnId: "turn-NEW" });
     const overlay = createOverlayContext();
@@ -291,96 +253,18 @@ describe("InteractiveHandler", () => {
     expect(overlay.pushed).toHaveLength(0);
   });
 
-  test("current turnId: proceeds to grace race", async () => {
-    mockedClassifier().mockResolvedValue({
-      shouldBlock: false,
-      reason: "ok",
-      unavailable: false,
-      model: "mocked",
-      usage: null,
-      durationMs: 1,
-      stage: "fast",
-    });
-
+  test("current turnId: falls through to the modal path", async () => {
     const { resolver, payloads } = createResolver();
-    const session = createSession({ currentTurnId: "turn-1" });
-    const request = makeRequest(resolver, { turnId: "turn-1" });
-
-    const outcome = await resolveWithGrace(request, session);
-
-    expect(outcome).toEqual({
-      bypassedModal: true,
-      reason: "classifier_auto_approved",
-    });
-    expect(payloads[0]).toMatchObject({
-      behavior: "allow",
-      source: "classifier_auto_approved",
-    });
-  });
-
-  test("grace window: classifier returns allow <200ms → auto-approve", async () => {
-    // Classifier resolves nearly-instantly; the race must pick its
-    // result before the 200 ms grace timer fires.
-    mockedClassifier().mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 5));
-      return {
-        shouldBlock: false,
-        reason: "allowlist",
-        unavailable: false,
-        model: "mocked",
-        usage: null,
-        durationMs: 5,
-        stage: "fast",
-      };
-    });
-
-    const { resolver, payloads } = createResolver();
-    const session = createSession({ currentTurnId: "turn-1" });
-    const request = makeRequest(resolver, { turnId: "turn-1" });
-
-    const outcome = await resolveWithGrace(request, session);
-
-    expect(outcome.bypassedModal).toBe(true);
-    if (outcome.bypassedModal) {
-      expect(outcome.reason).toBe("classifier_auto_approved");
-    }
-    expect(payloads[0]).toMatchObject({
-      behavior: "allow",
-      source: "classifier_auto_approved",
-    });
-    expect(session.emitted.some((e) => e.kind === "warning:classifier_auto_approved"))
-      .toBe(true);
-  });
-
-  test("grace window: classifier returns unavailable → modal shows (T11 stub behavior)", async () => {
-    mockedClassifier().mockResolvedValue({
-      shouldBlock: false,
-      reason: "classifier_stubbed_t13",
-      unavailable: true,
-      model: "stub",
-      usage: null,
-      durationMs: 0,
-      stage: "fast",
-    });
-
-    const { resolver, payloads, isClaimed } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
     const request = makeRequest(resolver, { turnId: "turn-1" });
 
     const outcome = await resolveWithGrace(request, session);
 
     expect(outcome).toEqual({ bypassedModal: false });
-    expect(isClaimed()).toBe(false);
     expect(payloads).toHaveLength(0);
   });
 
-  test("grace window: timeout at 200ms → modal shows", async () => {
-    // Classifier never resolves within the grace window. Use a short
-    // grace for the test so we don't actually block for 200ms.
-    mockedClassifier().mockImplementation(
-      () => new Promise(() => undefined),
-    );
-
+  test("grace override does not change non-stale modal behavior", async () => {
     const { resolver, isClaimed } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
     const request = makeRequest(resolver, { turnId: "turn-1" });
@@ -392,18 +276,6 @@ describe("InteractiveHandler", () => {
   });
 
   test("modal resolution via 'allow' claims ReviewDecision payload", async () => {
-    // Force the classifier to return unavailable so the handler mounts
-    // the modal.
-    mockedClassifier().mockResolvedValue({
-      shouldBlock: false,
-      reason: "classifier_stubbed_t13",
-      unavailable: true,
-      model: "stub",
-      usage: null,
-      durationMs: 0,
-      stage: "fast",
-    });
-
     const { resolver, payloads } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
     const emitter = new EventEmitter();
@@ -465,17 +337,7 @@ describe("InteractiveHandler", () => {
     unmount();
   });
 
-  test("auto-approved request is removed from the app-state queue so the next request can advance", async () => {
-    mockedClassifier().mockResolvedValue({
-      shouldBlock: false,
-      reason: "allowlist",
-      unavailable: false,
-      model: "mocked",
-      usage: null,
-      durationMs: 1,
-      stage: "fast",
-    });
-
+  test("resolved request is removed from the app-state queue so the next request can advance", async () => {
     const { resolver, payloads } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
     const queueLengths: number[] = [];
@@ -520,20 +382,12 @@ describe("InteractiveHandler", () => {
 
     await new Promise((r) => setTimeout(r, 40));
 
-    expect(payloads).toHaveLength(1);
-    expect(payloads[0]).toMatchObject({ behavior: "allow" });
-    expect(queueLengths[queueLengths.length - 1]).toBe(0);
+    expect(payloads).toHaveLength(0);
+    expect(queueLengths[queueLengths.length - 1]).toBe(1);
     unmount();
   });
 
   test("unmount before resolution → auto-abort claim", async () => {
-    // Classifier never resolves, so the handler hangs before the modal
-    // mounts. Unmounting the handler must claim 'abort' to unstick the
-    // evaluator's awaiter.
-    mockedClassifier().mockImplementation(
-      () => new Promise(() => undefined),
-    );
-
     const { resolver, payloads } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
     const overlay = createOverlayContext();
@@ -561,27 +415,14 @@ describe("InteractiveHandler", () => {
     });
   });
 
-  test("resolveWithGrace: returns bypassedModal:true when classifier allows", async () => {
-    mockedClassifier().mockResolvedValue({
-      shouldBlock: false,
-      reason: "allowlist",
-      unavailable: false,
-      model: "mocked",
-      usage: null,
-      durationMs: 1,
-      stage: "fast",
-    });
-
+  test("resolveWithGrace: returns bypassedModal:false for current turn", async () => {
     const { resolver, payloads } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
     const request = makeRequest(resolver, { turnId: "turn-1" });
 
     const outcome = await resolveWithGrace(request, session, { graceMs: 200 });
 
-    expect(outcome).toEqual({
-      bypassedModal: true,
-      reason: "classifier_auto_approved",
-    });
-    expect(payloads[0]).toMatchObject({ behavior: "allow" });
+    expect(outcome).toEqual({ bypassedModal: false });
+    expect(payloads).toHaveLength(0);
   });
 });

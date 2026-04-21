@@ -24,6 +24,7 @@ import {
   type SessionOpts,
   type SessionServices,
 } from "./session.js";
+import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
   buildTurnContext,
   newDefaultTurnWithSubId,
@@ -243,6 +244,28 @@ describe("Session.setPendingProviderSwitch", () => {
       profile: "coding",
     });
     expect(session.pendingProviderSwitch?.profile).toBe("coding");
+  });
+});
+
+describe("Session.setPendingWorktreeState", () => {
+  it("stores and clears the active worktree binding", () => {
+    const session = buildSession();
+    const pending: PendingWorktreeState = {
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+      originalCwd: "/repo",
+    };
+
+    session.setPendingWorktreeState(pending);
+    expect(session.pendingWorktreeState).toEqual(pending);
+
+    session.setPendingWorktreeState(null);
+    expect(session.pendingWorktreeState).toBeNull();
   });
 });
 

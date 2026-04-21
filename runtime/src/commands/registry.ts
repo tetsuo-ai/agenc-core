@@ -45,6 +45,9 @@ import providerCommand from "./provider.js";
 import compactCommand from "./compact.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
+import { setCwd } from "../utils/Shell.js";
+import type { ExitWorktreeAction } from "./exit-worktree.js";
+import type { PendingWorktreeState } from "../session/pending-worktree.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`. The registry
@@ -136,37 +139,117 @@ export class CommandRegistry implements CommandRegistryInterface {
   }
 }
 
+function formatEnterWorktree(
+  state: PendingWorktreeState,
+): string {
+  const action = state.handle.created ? "Entered" : "Resumed";
+  const lines = [
+    `${action} worktree at ${state.handle.path}`,
+    `Branch: ${state.handle.branch}`,
+  ];
+  if (state.baseCommit !== null) {
+    lines.push(`Base commit: ${state.baseCommit}`);
+  }
+  return lines.join("\n");
+}
+
+function formatExitWorktree(
+  message: string,
+  originalCwd: string,
+): string {
+  return `${message}\nRestored cwd: ${originalCwd}`;
+}
+
+function parseEnterWorktreeArgs(argsRaw: string): { slug: string } | { error: string } {
+  const parts = argsRaw.split(/\s+/).filter((part) => part.length > 0);
+  if (parts.length !== 1) {
+    return { error: "Usage: /enter-worktree <slug>" };
+  }
+  return { slug: parts[0]! };
+}
+
+function parseExitWorktreeArgs(
+  argsRaw: string,
+):
+  | { action: ExitWorktreeAction; discardChanges: boolean }
+  | { error: string } {
+  const parts = argsRaw.split(/\s+/).filter((part) => part.length > 0);
+  let action: ExitWorktreeAction = "keep";
+  let actionExplicit = false;
+  let discardChanges = false;
+
+  for (const part of parts) {
+    if (part === "keep" || part === "remove") {
+      if (actionExplicit) {
+        return {
+          error:
+            "Usage: /exit-worktree [keep|remove] [--discard-changes]",
+        };
+      }
+      action = part;
+      actionExplicit = true;
+      continue;
+    }
+    if (part === "--discard-changes") {
+      discardChanges = true;
+      continue;
+    }
+    return {
+      error: "Usage: /exit-worktree [keep|remove] [--discard-changes]",
+    };
+  }
+
+  if (action === "keep" && discardChanges) {
+    return {
+      error:
+        "--discard-changes is only valid with /exit-worktree remove",
+    };
+  }
+
+  return { action, discardChanges };
+}
+
+function switchCwd(path: string): void {
+  process.chdir(path);
+  setCwd(path);
+}
+
 /**
  * Adapter for `/enter-worktree`.
- *
- * The existing `enterWorktree` returns `EnterWorktreeOutcome`, which the
- * dispatcher does not know how to render. Wave 3 replaces this with a
- * real adapter that threads the resulting handle through
- * `PendingWorktreeState`. For W1-F we expose a placeholder that:
- *   - parses a single `<slug>` argument
- *   - calls `enterWorktree({ session, slug })`
- *   - returns the outcome as pretty JSON text
- *
- * TODO(T11-W3): replace with a real adapter that updates session cwd
- * and pending-worktree state.
  */
 const enterWorktreeCommand: SlashCommand = {
   name: "enter-worktree",
   description: "Enter (or resume) an isolated git worktree for agent work",
   execute: async (ctx) => {
-    const slug = ctx.argsRaw.split(/\s+/)[0] ?? "";
-    if (!slug) {
+    const parsed = parseEnterWorktreeArgs(ctx.argsRaw);
+    if ("error" in parsed) {
       return {
         kind: "error",
-        message: "Usage: /enter-worktree <slug>",
+        message: parsed.error,
+      };
+    }
+    if (ctx.session.pendingWorktreeState !== null) {
+      return {
+        kind: "error",
+        message: `Already inside worktree ${ctx.session.pendingWorktreeState.handle.path}; exit it first`,
       };
     }
     try {
       const outcome = await enterWorktree({
         session: ctx.session,
-        slug,
+        slug: parsed.slug,
       });
-      return { kind: "text", text: JSON.stringify(outcome, null, 2) };
+      if (outcome.kind === "rejected") {
+        return { kind: "error", message: outcome.reason };
+      }
+      const state: PendingWorktreeState = {
+        handle: outcome.handle,
+        baseCommit: outcome.baseCommit,
+        originalCwd: ctx.cwd,
+      };
+      switchCwd(outcome.handle.path);
+      ctx.session.setPendingWorktreeState(state);
+      return { kind: "text", text: formatEnterWorktree(state) };
     } catch (err) {
       return {
         kind: "error",
@@ -177,25 +260,49 @@ const enterWorktreeCommand: SlashCommand = {
 };
 
 /**
- * Adapter for `/exit-worktree`. Placeholder — see enterWorktreeCommand
- * TODO above. W3 will rewrite this to consume the session's pending
- * worktree handle instead of requiring the handle inline.
+ * Adapter for `/exit-worktree`.
  */
 const exitWorktreeCommand: SlashCommand = {
   name: "exit-worktree",
   description: "Exit (keep or remove) the active agent worktree",
-  execute: async (_ctx) => {
-    // Until W3 threads the pending worktree state through
-    // SlashCommandContext, the dispatcher cannot invoke the real
-    // `exitWorktree(handle, baseCommit)` signature safely. We surface
-    // the limitation rather than pretend to run.
-    // TODO(T11-W3): supply handle + baseCommit from the session.
-    void exitWorktree; // keep the symbol referenced for W3 wiring.
-    return {
-      kind: "error",
-      message:
-        "/exit-worktree requires the W3 session-bound adapter; run from the CLI for now",
-    };
+  execute: async (ctx) => {
+    const parsed = parseExitWorktreeArgs(ctx.argsRaw);
+    if ("error" in parsed) {
+      return {
+        kind: "error",
+        message: parsed.error,
+      };
+    }
+    const pending = ctx.session.pendingWorktreeState;
+    if (pending === null) {
+      return {
+        kind: "error",
+        message: "No active worktree is bound to this session",
+      };
+    }
+    try {
+      const outcome = await exitWorktree({
+        session: ctx.session,
+        handle: pending.handle,
+        baseCommit: pending.baseCommit,
+        action: parsed.action,
+        ...(parsed.discardChanges ? { discardChanges: true } : {}),
+      });
+      if (outcome.kind === "refused") {
+        return { kind: "error", message: outcome.reason };
+      }
+      switchCwd(pending.originalCwd);
+      ctx.session.setPendingWorktreeState(null);
+      return {
+        kind: "text",
+        text: formatExitWorktree(outcome.message, pending.originalCwd),
+      };
+    } catch (err) {
+      return {
+        kind: "error",
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
   },
 };
 

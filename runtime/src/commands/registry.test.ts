@@ -1,7 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./enter-worktree.js", () => ({
+  enterWorktree: vi.fn(),
+}));
+
+vi.mock("./exit-worktree.js", () => ({
+  exitWorktree: vi.fn(),
+}));
+
+vi.mock("../utils/Shell.js", () => ({
+  setCwd: vi.fn(),
+}));
+
 import { CommandRegistry, buildDefaultRegistry } from "./registry.js";
+import { enterWorktree } from "./enter-worktree.js";
+import { exitWorktree } from "./exit-worktree.js";
+import { setCwd } from "../utils/Shell.js";
 import type { SlashCommand, SlashCommandResult } from "./types.js";
+import type { PendingWorktreeState } from "../session/pending-worktree.js";
+
+const mockEnterWorktree = vi.mocked(enterWorktree);
+const mockExitWorktree = vi.mocked(exitWorktree);
+const mockSetCwd = vi.mocked(setCwd);
 
 function mkCmd(
   name: string,
@@ -168,6 +188,17 @@ describe("CommandRegistry — fromCommands()", () => {
 });
 
 describe("buildDefaultRegistry()", () => {
+  let chdirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    chdirSpy = vi.spyOn(process, "chdir").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    chdirSpy.mockRestore();
+  });
+
   it("includes help and status", () => {
     const reg = buildDefaultRegistry();
     expect(reg.has("help")).toBe(true);
@@ -185,5 +216,230 @@ describe("buildDefaultRegistry()", () => {
     const names = reg.list().map((c) => c.name);
     const sorted = [...names].sort((a, b) => a.localeCompare(b));
     expect(names).toEqual(sorted);
+  });
+
+  it("enters a worktree, switches cwd, and stores pending state", async () => {
+    mockEnterWorktree.mockResolvedValueOnce({
+      kind: "entered",
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+    });
+    const reg = buildDefaultRegistry();
+    const command = reg.find("enter-worktree");
+    const session = {
+      pendingWorktreeState: null,
+      setPendingWorktreeState(next: PendingWorktreeState | null) {
+        this.pendingWorktreeState = next;
+      },
+    };
+
+    const res = await command!.execute({
+      session: session as never,
+      argsRaw: "feat",
+      cwd: "/repo",
+      home: "/home/test",
+    });
+
+    expect(res).toEqual({
+      kind: "text",
+      text: [
+        "Entered worktree at /repo/.agenc-worktrees/feat",
+        "Branch: worktree-feat",
+        "Base commit: abc123",
+      ].join("\n"),
+    });
+    expect(chdirSpy).toHaveBeenCalledWith("/repo/.agenc-worktrees/feat");
+    expect(mockSetCwd).toHaveBeenCalledWith("/repo/.agenc-worktrees/feat");
+    expect(session.pendingWorktreeState).toEqual({
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+      originalCwd: "/repo",
+    });
+  });
+
+  it("refuses /enter-worktree when a session worktree is already active", async () => {
+    const reg = buildDefaultRegistry();
+    const command = reg.find("enter-worktree");
+    const session = {
+      pendingWorktreeState: {
+        handle: {
+          path: "/repo/.agenc-worktrees/existing",
+          branch: "worktree-existing",
+          gitRoot: "/repo",
+          created: false,
+        },
+        baseCommit: "base",
+        originalCwd: "/repo",
+      },
+      setPendingWorktreeState(_next: PendingWorktreeState | null) {},
+    };
+
+    const res = await command!.execute({
+      session: session as never,
+      argsRaw: "feat",
+      cwd: "/repo",
+      home: "/home/test",
+    });
+
+    expect(res.kind).toBe("error");
+    expect(mockEnterWorktree).not.toHaveBeenCalled();
+  });
+
+  it("exits the active worktree, restores cwd, and clears pending state", async () => {
+    mockExitWorktree.mockResolvedValueOnce({
+      kind: "kept",
+      path: "/repo/.agenc-worktrees/feat",
+      branch: "worktree-feat",
+      changedFiles: false,
+      hasCommits: false,
+      message:
+        "worktree preserved at /repo/.agenc-worktrees/feat (branch=worktree-feat)",
+    });
+    const reg = buildDefaultRegistry();
+    const command = reg.find("exit-worktree");
+    const session = {
+      pendingWorktreeState: {
+        handle: {
+          path: "/repo/.agenc-worktrees/feat",
+          branch: "worktree-feat",
+          gitRoot: "/repo",
+          created: true,
+        },
+        baseCommit: "abc123",
+        originalCwd: "/repo",
+      } satisfies PendingWorktreeState,
+      setPendingWorktreeState(next: PendingWorktreeState | null) {
+        this.pendingWorktreeState = next;
+      },
+    };
+
+    const res = await command!.execute({
+      session: session as never,
+      argsRaw: "",
+      cwd: "/repo/.agenc-worktrees/feat",
+      home: "/home/test",
+    });
+
+    expect(mockExitWorktree).toHaveBeenCalledWith({
+      session,
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+      action: "keep",
+    });
+    expect(res).toEqual({
+      kind: "text",
+      text: [
+        "worktree preserved at /repo/.agenc-worktrees/feat (branch=worktree-feat)",
+        "Restored cwd: /repo",
+      ].join("\n"),
+    });
+    expect(chdirSpy).toHaveBeenLastCalledWith("/repo");
+    expect(mockSetCwd).toHaveBeenLastCalledWith("/repo");
+    expect(session.pendingWorktreeState).toBeNull();
+  });
+
+  it("passes remove + discard through to /exit-worktree", async () => {
+    mockExitWorktree.mockResolvedValueOnce({
+      kind: "removed",
+      path: "/repo/.agenc-worktrees/feat",
+      branch: "worktree-feat",
+      discardedFiles: true,
+      discardedCommits: true,
+      message:
+        "worktree removed at /repo/.agenc-worktrees/feat (branch=worktree-feat)",
+    });
+    const reg = buildDefaultRegistry();
+    const command = reg.find("exit-worktree");
+    const session = {
+      pendingWorktreeState: {
+        handle: {
+          path: "/repo/.agenc-worktrees/feat",
+          branch: "worktree-feat",
+          gitRoot: "/repo",
+          created: true,
+        },
+        baseCommit: "abc123",
+        originalCwd: "/repo",
+      } satisfies PendingWorktreeState,
+      setPendingWorktreeState(next: PendingWorktreeState | null) {
+        this.pendingWorktreeState = next;
+      },
+    };
+
+    await command!.execute({
+      session: session as never,
+      argsRaw: "remove --discard-changes",
+      cwd: "/repo/.agenc-worktrees/feat",
+      home: "/home/test",
+    });
+
+    expect(mockExitWorktree).toHaveBeenCalledWith({
+      session,
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+      action: "remove",
+      discardChanges: true,
+    });
+  });
+
+  it("preserves pending worktree state when /exit-worktree refuses", async () => {
+    mockExitWorktree.mockResolvedValueOnce({
+      kind: "refused",
+      reason: "worktree has uncommitted files",
+      errorCode: 2,
+    });
+    const reg = buildDefaultRegistry();
+    const command = reg.find("exit-worktree");
+    const pending = {
+      handle: {
+        path: "/repo/.agenc-worktrees/feat",
+        branch: "worktree-feat",
+        gitRoot: "/repo",
+        created: true,
+      },
+      baseCommit: "abc123",
+      originalCwd: "/repo",
+    } satisfies PendingWorktreeState;
+    const session = {
+      pendingWorktreeState: pending,
+      setPendingWorktreeState(next: PendingWorktreeState | null) {
+        this.pendingWorktreeState = next;
+      },
+    };
+
+    const res = await command!.execute({
+      session: session as never,
+      argsRaw: "remove",
+      cwd: "/repo/.agenc-worktrees/feat",
+      home: "/home/test",
+    });
+
+    expect(res).toEqual({
+      kind: "error",
+      message: "worktree has uncommitted files",
+    });
+    expect(session.pendingWorktreeState).toBe(pending);
+    expect(chdirSpy).not.toHaveBeenCalled();
+    expect(mockSetCwd).not.toHaveBeenCalled();
   });
 });

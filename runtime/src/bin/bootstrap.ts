@@ -295,6 +295,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
   readonly config: AgenCConfig;
   readonly workspaceRoot: string;
   readonly model: string;
+  readonly provider?: string;
 }): SessionConfiguration {
   const approval = mapApprovalPolicy(params.config.approval_policy);
   const sandbox = mapSandboxPolicy(params.config.sandbox_mode);
@@ -314,6 +315,13 @@ export function sessionConfigurationFromAgenCConfig(params: {
       allowManagedDomainsOnly: false,
     },
     windowsSandboxLevel: "none",
+    ...(params.provider
+      ? {
+        provider: {
+          slug: params.provider,
+        } as SessionConfiguration["provider"],
+      }
+      : {}),
     collaborationMode: { model: params.model },
     dynamicTools: [],
     sessionSource: "cli_main",
@@ -647,6 +655,7 @@ export async function bootstrapLocalRuntimeSession(
       config: configStore.current(),
       workspaceRoot,
       model,
+      provider: resolvedProvider,
     }),
     history: [],
     ...(options.conversationId !== undefined

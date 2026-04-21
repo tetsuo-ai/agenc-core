@@ -78,7 +78,11 @@ export async function delegate(
   let worktree: WorktreeHandle | undefined;
   let baseCommit: string | null = null;
   if (isolation === "worktree" && opts.worktreeSlug) {
-    const gitRoot = findGitRoot(process.cwd());
+    const workspaceRoot =
+      opts.parent.sessionConfiguration.cwd ||
+      opts.parent.config.cwd ||
+      process.cwd();
+    const gitRoot = findGitRoot(workspaceRoot);
     if (!gitRoot) {
       return {
         kind: "rejected",

@@ -20,9 +20,14 @@
  * @module
  */
 
+import { resolveApiKey } from "../config/env.js";
 import { GrokProvider } from "./grok/index.js";
 import type { GrokProviderConfig } from "./grok/index.js";
 import type { LLMProvider, LLMTool } from "./types.js";
+import { OpenAIProvider } from "./providers/openai/index.js";
+import type { OpenAIProviderConfig } from "./providers/openai/index.js";
+import { AnthropicProvider } from "./providers/anthropic/index.js";
+import type { AnthropicProviderConfig } from "./providers/anthropic/index.js";
 
 /**
  * Canonical provider name set. Additions land in T13; Grok is the
@@ -53,6 +58,26 @@ export interface ProviderFactoryOptions {
   readonly timeoutMs?: number;
   /** Optional per-provider extra config (escape hatch). */
   readonly extra?: Record<string, unknown>;
+}
+
+export const FACTORY_PROVIDER_MARKER = Symbol.for("agenc.factoryProvider");
+
+type FactoryMarkedProvider = LLMProvider & {
+  [FACTORY_PROVIDER_MARKER]?: true;
+};
+
+export function isFactoryProvider(provider: LLMProvider): boolean {
+  return (provider as FactoryMarkedProvider)[FACTORY_PROVIDER_MARKER] === true;
+}
+
+function markFactoryProvider<T extends LLMProvider>(provider: T): T {
+  Object.defineProperty(provider, FACTORY_PROVIDER_MARKER, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return provider;
 }
 
 /**
@@ -86,7 +111,8 @@ export function createProvider(
 ): LLMProvider {
   switch (name) {
     case "grok": {
-      if (!opts.apiKey) {
+      const apiKey = opts.apiKey ?? resolveApiKey(process.env);
+      if (!apiKey) {
         throw new Error(
           "grok provider requires apiKey — set XAI_API_KEY in the environment",
         );
@@ -97,16 +123,56 @@ export function createProvider(
         );
       }
       const cfg: GrokProviderConfig = {
-        apiKey: opts.apiKey,
+        apiKey,
         model: opts.model,
         tools: opts.tools ? [...opts.tools] : undefined,
         ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
-      return new GrokProvider(cfg);
+      return markFactoryProvider(new GrokProvider(cfg));
     }
-    case "openai":
-    case "anthropic":
+    case "openai": {
+      const cfg: OpenAIProviderConfig = {
+        apiKey: opts.apiKey ?? process.env.OPENAI_API_KEY,
+        model: opts.model ?? process.env.OPENAI_MODEL ?? "",
+        tools: opts.tools ? [...opts.tools] : undefined,
+        baseURL: opts.baseURL ?? process.env.OPENAI_BASE_URL,
+        ...(process.env.OPENAI_ORGANIZATION
+          ? { organization: process.env.OPENAI_ORGANIZATION }
+          : {}),
+        ...(process.env.OPENAI_PROJECT
+          ? { project: process.env.OPENAI_PROJECT }
+          : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      };
+      if (!cfg.model) {
+        throw new Error(
+          "openai provider requires model — set OPENAI_MODEL or pass model in factory options",
+        );
+      }
+      return markFactoryProvider(new OpenAIProvider(cfg));
+    }
+    case "anthropic": {
+      const apiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) {
+        throw new Error(
+          "anthropic provider requires apiKey — set ANTHROPIC_API_KEY or pass apiKey in the provider config",
+        );
+      }
+      if (!opts.model) {
+        throw new Error(
+          "anthropic provider requires model — set ANTHROPIC_MODEL or pass model in factory options",
+        );
+      }
+      const cfg: AnthropicProviderConfig = {
+        apiKey,
+        model: opts.model,
+        tools: opts.tools ? [...opts.tools] : undefined,
+        ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      };
+      return markFactoryProvider(new AnthropicProvider(cfg));
+    }
     case "ollama":
     case "lmstudio":
     case "openrouter":

@@ -7,21 +7,25 @@
  *   - `isAutoModeAllowlistedTool` — safe-tool allowlist consulted by the
  *     evaluator before it invokes the classifier. Tools on this list are
  *     auto-allowed in auto mode with `{fastPath: "allowlist"}`.
- *   - `classifyYoloAction` — async 2-stage classifier. T11 ships a STUB
- *     that always returns `{ shouldBlock: false, unavailable: true }` so
- *     the live gate is effectively closed. T13 wires the real xAI /
- *     Anthropic Haiku call here.
+ *   - `classifyYoloAction` — async classifier surface. T13 now ships a
+ *     narrow runtime-backed implementation for Bash actions and falls back
+ *     to manual approval for tools without a live local classifier path.
  *   - `formatActionForClassifier` — deterministic one-line summary of the
  *     action for the classifier prompt (also used in analytics).
  *   - `isAutoModeGateEnabled` — circuit breaker. Default off; overridable
  *     via `__setAutoModeGateResolverForTesting` (tests + T13 integration).
  *
- * The stub emits a once-per-session warning so operators can tell that
- * auto-mode is not actually wired yet.
+ * Unsupported tools emit a once-per-session warning so operators can tell
+ * which requests are still falling back to manual approval.
  *
  * @module
  */
 
+import {
+  matchedDangerousLabel,
+  shouldUseSandbox,
+  type BashPermissionInput,
+} from "./bash.js";
 import type { ToolPermissionContext } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -174,11 +178,11 @@ export interface ClassifyYoloActionOpts {
 }
 
 // ---------------------------------------------------------------------------
-// Once-per-session stub warning
+// Once-per-session partial-runtime warning
 // ---------------------------------------------------------------------------
 
 /**
- * Pluggable warning sink so the daemon can route classifier-stubbed
+ * Pluggable warning sink so the daemon can route classifier fallback
  * warnings into its real observability surface (trace events, UI
  * banner, etc.). Default: `console.warn`. Tests replace this with a
  * capture function and reset via `__resetClassifierStubSessionForTesting`.
@@ -190,7 +194,7 @@ export type ClassifierWarningSink = (event: {
 }) => void;
 
 let warningSink: ClassifierWarningSink = (event) => {
-  // Intentional: stub runtime behavior relies on a single warning.
+  // Intentional: partial-runtime behavior relies on a single warning.
   // eslint-disable-next-line no-console
   console.warn(`[permissions.classifier] ${event.cause}: ${event.message}`);
 };
@@ -206,7 +210,7 @@ export function __setClassifierWarningSinkForTesting(
 }
 
 /**
- * Session-level sentinel so the stub warning fires exactly once per
+ * Session-level sentinel so the partial-runtime warning fires exactly once per
  * process regardless of how many times `classifyYoloAction` is called.
  * Tests call `__resetClassifierStubSessionForTesting` to reset.
  */
@@ -217,59 +221,124 @@ export function __resetClassifierStubSessionForTesting(): void {
 }
 
 // ---------------------------------------------------------------------------
-// classifyYoloAction — stub
+// classifyYoloAction — narrow runtime-backed path
 // ---------------------------------------------------------------------------
 
 /**
- * STUB implementation. Always returns `unavailable: true` with a stable
- * reason that points at T13. The evaluator treats an unavailable
- * classifier as fail-closed-or-open depending on the gate. Because
- * `isAutoModeGateEnabled()` is false by default, the fail-closed branch
- * is never taken in production; the evaluator falls back to normal ask.
+ * Runtime-backed implementation:
  *
- * T13 is expected to replace this function with a real xAI/Haiku call
- * that honors `opts.signal` and returns a structured result.
+ *   - Bash commands that the local sandbox heuristics already classify as
+ *     safe are auto-allowed.
+ *   - Bash commands matching the hard-dangerous list are auto-blocked.
+ *   - Everything else falls back to manual approval via
+ *     `{ shouldBlock: true, unavailable: true }`.
+ *
+ * This reduces the stub surface without dragging provider-bound side-query
+ * wiring into the new permissions modules yet.
  */
 export async function classifyYoloAction(
   opts: ClassifyYoloActionOpts,
 ): Promise<YoloClassifierResult> {
   const started = Date.now();
+  const finish = (
+    result: Omit<YoloClassifierResult, "durationMs" | "model" | "stage" | "usage"> & {
+      readonly model?: string;
+      readonly stage?: "fast" | "thinking";
+      readonly usage?: LLMUsage | null;
+    },
+  ): YoloClassifierResult =>
+    Object.freeze({
+      model: "runtime-heuristic",
+      stage: "fast" as const,
+      usage: null,
+      durationMs: Date.now() - started,
+      ...result,
+    });
+
+  // Honor an already-aborted signal — callers expect cancellation to be
+  // respected inside the classifier as well.
+  if (opts.signal?.aborted) {
+    return finish({
+      shouldBlock: true,
+      reason: "runtime_classifier_aborted",
+      unavailable: true,
+    });
+  }
+
+  const bashResult = classifyRuntimeBashAction(opts.action);
+  if (bashResult !== null) {
+    return finish(bashResult);
+  }
 
   if (!stubWarningFired) {
     stubWarningFired = true;
     warningSink({
-      cause: "auto_mode_classifier_stubbed",
+      cause: "auto_mode_classifier_partial_runtime",
       message:
-        "Auto-mode classifier is stubbed (T11). Real classifier call lands in T13; treating requests as unavailable.",
+        "Auto-mode classifier only has the runtime-backed Bash path; other tools fall back to manual approval.",
       toolName: opts.action.toolName,
     });
   }
 
-  // Honor an already-aborted signal — callers expect cancellation to be
-  // respected even inside the stub.
-  if (opts.signal?.aborted) {
-    const durationMs = Date.now() - started;
-    return Object.freeze({
+  return finish({
+    shouldBlock: true,
+    reason: `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
+    unavailable: true,
+  });
+}
+
+function classifyRuntimeBashAction(
+  action: ClassifyYoloActionOpts["action"],
+):
+  | {
+      readonly shouldBlock: boolean;
+      readonly reason: string;
+      readonly unavailable?: boolean;
+    }
+  | null {
+  if (action.toolName !== "Bash") return null;
+  if (!isBashPermissionInput(action.input)) {
+    return {
       shouldBlock: true,
-      reason: "classifier_stubbed_t13_aborted",
+      reason: "runtime_classifier_manual_approval_required:Bash",
       unavailable: true,
-      model: "stub",
-      usage: null,
-      durationMs,
-      stage: "fast" as const,
-    });
+    };
   }
 
-  const durationMs = Date.now() - started;
-  return Object.freeze({
-    shouldBlock: false,
-    reason: "classifier_stubbed_t13",
+  const command = action.input.command.trim();
+  if (command.length === 0) {
+    return {
+      shouldBlock: true,
+      reason: "runtime_classifier_manual_approval_required:Bash",
+      unavailable: true,
+    };
+  }
+
+  const dangerLabel = matchedDangerousLabel(command);
+  if (dangerLabel !== null) {
+    return {
+      shouldBlock: true,
+      reason: `bash_dangerous:${dangerLabel}`,
+    };
+  }
+
+  if (shouldUseSandbox(action.input)) {
+    return {
+      shouldBlock: false,
+      reason: "bash_sandbox_safe",
+    };
+  }
+
+  return {
+    shouldBlock: true,
+    reason: "runtime_classifier_manual_approval_required:Bash",
     unavailable: true,
-    model: "stub",
-    usage: null,
-    durationMs,
-    stage: "fast" as const,
-  });
+  };
+}
+
+function isBashPermissionInput(input: unknown): input is BashPermissionInput {
+  if (!input || typeof input !== "object") return false;
+  return typeof (input as { command?: unknown }).command === "string";
 }
 
 // ---------------------------------------------------------------------------

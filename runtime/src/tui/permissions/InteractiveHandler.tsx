@@ -1,7 +1,7 @@
 /**
  * Wave 5-A: InteractiveHandler — orchestrates a single pending permission
- * request through the 200 ms classifier grace window, the I-44 stale-turn
- * drop, and finally the {@link ApprovalOverlay} modal.
+ * request through the I-44 stale-turn drop and finally the
+ * {@link ApprovalOverlay} modal.
  *
  * Lifecycle (mount effect):
  *
@@ -10,30 +10,13 @@
  *      via `session.emit?.(...)` when available, then call
  *      `request.resolveOnce.claim({behavior: 'deny', source: 'stale_pending_dropped'})`.
  *
- *   2. 200 ms classifier grace race. We call `classifyYoloAction` and
- *      race it against a 200 ms timer. If the classifier returns a
- *      deterministic allow within the window
- *      (`shouldBlock === false && !unavailable`), we auto-approve,
- *      emit `warning:classifier_auto_approved`, and resolve with
- *      `{behavior: 'allow'}`. Otherwise — timeout, unavailable, or
- *      block — we fall through to the modal.
- *
- *      Note: T11's stub classifier returns `{shouldBlock:false, unavailable:true}`
- *      instantly, which means the current behavior is "always show the
- *      modal". T13 will replace the stub with a real xAI call and the
- *      auto-approve path will start firing.
- *
- *      Classifier errors are caught and treated as `unavailable: true`
- *      so a thrown classifier can never silently auto-approve a
- *      dangerous action; the modal always takes over on error.
- *
- *   3. Modal mount. We push an {@link ApprovalOverlay} onto the overlay
+ *   2. Modal mount. We push an {@link ApprovalOverlay} onto the overlay
  *      stack, wiring `onResolve` to:
  *        - pop the overlay,
  *        - persist the session rule if `allow-session` + `addRule`,
  *        - call `request.resolveOnce.claim(decision)`.
  *
- *   4. Unmount cleanup. If the handler unmounts with an unresolved
+ *   3. Unmount cleanup. If the handler unmounts with an unresolved
  *      request (operator closed the UI abruptly), we claim `abort`
  *      so the evaluator's awaiter doesn't deadlock.
  *
@@ -50,14 +33,6 @@ import {
   type ApprovalDecision,
 } from "./ApprovalOverlay.js";
 import { useOptionalAgenCAppState } from "../state/AppState.js";
-import {
-  classifyYoloAction,
-  type YoloClassifierResult,
-} from "../../permissions/classifier.js";
-import {
-  createEmptyToolPermissionContext,
-  type ToolPermissionContext,
-} from "../../permissions/types.js";
 
 // ───────────────────────────────────────────────────────────────────────
 // Public types
@@ -77,11 +52,6 @@ export interface SessionLike {
   readonly cwd?: string;
   readonly emit?: (event: { readonly kind: string; [k: string]: unknown }) => void;
   readonly addPermissionRule?: (rule: unknown) => void;
-  /**
-   * Optional permission-context getter used when invoking the classifier.
-   * Defaults to a minimal stand-in when absent.
-   */
-  readonly getToolPermissionContext?: () => ToolPermissionContext;
 }
 
 /**
@@ -150,70 +120,6 @@ export interface InteractiveHandlerProps {
 
 const DEFAULT_GRACE_MS = 200;
 
-/**
- * Minimal permission context used when the session doesn't provide one.
- * The stub classifier ignores it entirely; real classifiers (T13) must
- * receive the live context from the session.
- */
-function defaultToolPermissionContext(): ToolPermissionContext {
-  return createEmptyToolPermissionContext();
-}
-
-/**
- * Async helper: races the grace timer against the classifier call.
- * Returns `"timeout"` when the timer wins, otherwise the classifier
- * result. Any thrown error is normalized into an `unavailable: true`
- * record so a classifier crash can never silently auto-approve.
- */
-function raceClassifierAgainstGrace(
-  request: InteractivePermissionRequest,
-  session: SessionLike,
-  graceMs: number,
-): Promise<YoloClassifierResult | "timeout"> {
-  const signal = session.abortController?.signal;
-
-  // Build a classifier promise that never rejects. Errors (including
-  // synchronous throws from a test mock) become a sentinel
-  // `unavailable: true` so the orchestrator falls through to the modal.
-  const classifierPromise: Promise<YoloClassifierResult> = (async () => {
-    try {
-      return await classifyYoloAction({
-        messages: [],
-        action: {
-          toolName: request.toolName,
-          input: request.toolInput,
-        },
-        tools: [],
-        permissionContext: session.getToolPermissionContext
-          ? session.getToolPermissionContext()
-          : defaultToolPermissionContext(),
-        signal,
-      });
-    } catch {
-      return {
-        shouldBlock: true,
-        reason: "classifier_error",
-        unavailable: true,
-        model: "error",
-        usage: null,
-        durationMs: 0,
-        stage: "fast" as const,
-      };
-    }
-  })();
-
-  // Unref the timer so it doesn't keep an event loop alive in tests
-  // using real timers.
-  const timeoutPromise: Promise<"timeout"> = new Promise((resolve) => {
-    const handle = setTimeout(() => resolve("timeout"), graceMs);
-    if (typeof (handle as unknown as { unref?: () => void }).unref === "function") {
-      (handle as unknown as { unref: () => void }).unref();
-    }
-  });
-
-  return Promise.race([classifierPromise, timeoutPromise]);
-}
-
 // ───────────────────────────────────────────────────────────────────────
 // resolveWithGrace — exported for tests
 // ───────────────────────────────────────────────────────────────────────
@@ -223,21 +129,17 @@ export type ResolveWithGraceOutcome =
   | { readonly bypassedModal: false };
 
 /**
- * Pure variant of the handler's pre-modal phase. Exercises the I-44
- * check and the 200 ms classifier race without touching React or the
- * overlay stack. If the classifier auto-approves inside the grace
- * window, the request is resolved here; otherwise the caller should
- * mount the modal.
+ * Pure variant of the handler's pre-modal phase. Exercises only the I-44
+ * stale-turn drop. Pending permission requests are already evaluator-owned;
+ * the TUI never reclassifies them.
  *
  * Never mounts UI. Never throws.
  */
 export async function resolveWithGrace(
   request: InteractivePermissionRequest,
   session: SessionLike,
-  opts?: { readonly graceMs?: number },
+  _opts?: { readonly graceMs?: number },
 ): Promise<ResolveWithGraceOutcome> {
-  const graceMs = opts?.graceMs ?? DEFAULT_GRACE_MS;
-
   // ── I-44 stale-turn drop ────────────────────────────────────────────
   const currentTurnId = session.activeTurn?.unsafePeek()?.turnId;
   if (
@@ -259,30 +161,6 @@ export async function resolveWithGrace(
     }
     return { bypassedModal: true, reason: "stale_pending_dropped" };
   }
-
-  // ── 200 ms classifier grace race ────────────────────────────────────
-  const raced = await raceClassifierAgainstGrace(request, session, graceMs);
-
-  if (raced === "timeout") {
-    return { bypassedModal: false };
-  }
-
-  if (!raced.shouldBlock && raced.unavailable !== true) {
-    if (request.resolveOnce.claim({
-      behavior: "allow",
-      source: "classifier_auto_approved",
-    })) {
-      session.emit?.({
-        kind: "warning:classifier_auto_approved",
-        requestId: request.requestId,
-        toolName: request.toolName,
-        model: raced.model,
-      });
-    }
-    return { bypassedModal: true, reason: "classifier_auto_approved" };
-  }
-
-  // shouldBlock / unavailable → ask the user.
   return { bypassedModal: false };
 }
 

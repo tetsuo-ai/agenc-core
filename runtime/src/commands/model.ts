@@ -28,6 +28,11 @@
  */
 
 import type { Session } from "../session/session.js";
+import { resolveProviderModelCapabilities } from "../llm/capabilities.js";
+import {
+  analyzeSessionHistoryRequirements,
+  validateHistoryCompatibility,
+} from "../llm/shape-request.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -44,6 +49,7 @@ import {
 export interface HistoryCompatResult {
   readonly compatible: boolean;
   readonly reason?: string;
+  readonly missingCapabilities?: readonly string[];
 }
 
 /**
@@ -61,10 +67,35 @@ export interface HistoryCompatResult {
  */
 // TODO T13: wire real provider capability registry
 export function checkModelHistoryCompat(
-  _session: Session,
-  _targetModel: string,
+  session: Session,
+  targetModel: string,
+  opts?: { readonly targetProvider?: string },
 ): HistoryCompatResult {
-  return { compatible: true };
+  const rawState = session.state.unsafePeek() as {
+    sessionConfiguration?: {
+      provider?: { slug?: string };
+    };
+    history?: unknown[];
+  };
+  const targetProvider =
+    opts?.targetProvider ??
+    rawState?.sessionConfiguration?.provider?.slug ??
+    "unknown";
+  const caps = resolveProviderModelCapabilities({
+    provider: targetProvider,
+    model: targetModel,
+  });
+  const compat = validateHistoryCompatibility(
+    caps,
+    analyzeSessionHistoryRequirements(rawState),
+  );
+  return compat.compatible
+    ? { compatible: true }
+    : {
+      compatible: false,
+      reason: compat.reason,
+      missingCapabilities: compat.missingCapabilities,
+    };
 }
 
 /**
@@ -120,6 +151,20 @@ export async function applyModelSwitch(
       `Model switch staged: ${currentModel} → ${targetModel}. ` +
       `Current turn aborted; the switch takes effect on the next turn.`
     );
+  }
+
+  if (
+    typeof (
+      session as Session & {
+        consumePendingProviderSwitch?: () => Promise<void>;
+      }
+    ).consumePendingProviderSwitch === "function"
+  ) {
+    await (
+      session as Session & {
+        consumePendingProviderSwitch: () => Promise<void>;
+      }
+    ).consumePendingProviderSwitch();
   }
 
   return `Model switched to "${targetModel}" (was "${currentModel}").`;

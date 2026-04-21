@@ -3,7 +3,7 @@ import type { Command } from '../../commands.js'
 
 const provider = {
   type: 'local-jsx',
-  name: 'provider',
+  name: 'provider-profile',
   description: 'Manage API provider profiles',
   load: () => import('./provider.js'),
 } satisfies Command

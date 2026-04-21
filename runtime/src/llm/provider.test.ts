@@ -9,8 +9,11 @@
 
 import { describe, expect, test } from "vitest";
 import { GrokProvider } from "./grok/index.js";
+import { OpenAIProvider } from "./providers/openai/index.js";
+import { AnthropicProvider } from "./providers/anthropic/index.js";
 import {
   createProvider,
+  isFactoryProvider,
   ProviderNotImplementedError,
   resolveProviderNameFromEnv,
 } from "./provider.js";
@@ -22,12 +25,55 @@ describe("createProvider", () => {
       model: "grok-4-fast",
     });
     expect(provider).toBeInstanceOf(GrokProvider);
+    expect(isFactoryProvider(provider)).toBe(true);
+  });
+
+  test("routes 'openai' to OpenAIProvider", () => {
+    const prev = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-test";
+    try {
+      const provider = createProvider("openai", {
+        model: "gpt-5.4",
+      });
+      expect(provider).toBeInstanceOf(OpenAIProvider);
+      expect(isFactoryProvider(provider)).toBe(true);
+    } finally {
+      if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
+      else delete process.env.OPENAI_API_KEY;
+    }
+  });
+
+  test("routes 'anthropic' to AnthropicProvider", () => {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "anthropic-test";
+    try {
+      const provider = createProvider("anthropic", {
+        model: "claude-sonnet-4.5",
+      });
+      expect(provider).toBeInstanceOf(AnthropicProvider);
+      expect(isFactoryProvider(provider)).toBe(true);
+    } finally {
+      if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
+      else delete process.env.ANTHROPIC_API_KEY;
+    }
   });
 
   test("'grok' without apiKey throws explanatory error", () => {
-    expect(() =>
-      createProvider("grok", { model: "grok-4-fast" }),
-    ).toThrow(/XAI_API_KEY|apiKey/i);
+    const prevXai = process.env.XAI_API_KEY;
+    const prevGrok = process.env.GROK_API_KEY;
+    const prevAgenc = process.env.AGENC_XAI_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROK_API_KEY;
+    delete process.env.AGENC_XAI_API_KEY;
+    try {
+      expect(() =>
+        createProvider("grok", { model: "grok-4-fast" }),
+      ).toThrow(/XAI_API_KEY|apiKey/i);
+    } finally {
+      if (prevXai !== undefined) process.env.XAI_API_KEY = prevXai;
+      if (prevGrok !== undefined) process.env.GROK_API_KEY = prevGrok;
+      if (prevAgenc !== undefined) process.env.AGENC_XAI_API_KEY = prevAgenc;
+    }
   });
 
   test("'grok' without model throws explanatory error", () => {
@@ -37,8 +83,6 @@ describe("createProvider", () => {
   });
 
   test.each([
-    "openai",
-    "anthropic",
     "ollama",
     "lmstudio",
     "openrouter",

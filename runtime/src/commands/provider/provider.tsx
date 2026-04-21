@@ -1664,7 +1664,7 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     trimmedArgs === '-h'
   ) {
     onDone(
-      'Run /provider to add, edit, delete, or activate provider profiles. The active provider controls base URL, model, and API key.',
+      'Run /provider-profile to add, edit, delete, or activate provider profiles. The active provider controls base URL, model, and API key.',
       { display: 'system' },
     )
     return

@@ -436,18 +436,10 @@ describe("hasPermissionsToUseTool — step 4 auto mode activates classifier", ()
     try {
       const tool = makeTool({ name: "SomeUnknownTool" });
       const { context } = buildHarness({ mode: "auto" });
-      // Classifier stub returns unavailable:true, shouldBlock:false →
-      // not blocked path. The evaluator treats that as the "allow"
-      // path's fallthrough. Since stub has shouldBlock=false, we end
-      // up on the success branch.
       const result = await hasPermissionsToUseTool(tool, {}, context);
-      // stub returns shouldBlock=false → classifier allow
-      expect(result.behavior).toBe("allow");
-      if (result.behavior === "allow") {
-        expect(result.decisionReason).toMatchObject({
-          type: "classifier",
-          classifier: "auto-mode",
-        });
+      expect(result.behavior).toBe("ask");
+      if (result.behavior === "ask") {
+        expect(result.message).toContain("Permission required");
       }
     } finally {
       restoreGate();
@@ -520,6 +512,29 @@ describe("hasPermissionsToUseTool — step 5 fast paths", () => {
       restoreGate();
     }
   });
+
+  it("classifier auto-allows sandbox-safe Bash commands", async () => {
+    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+    try {
+      const tool = makeTool({ name: "Bash" });
+      const { context } = buildHarness({ mode: "auto" });
+      const result = await hasPermissionsToUseTool(
+        tool,
+        { command: "ls src" },
+        context,
+      );
+      expect(result.behavior).toBe("allow");
+      if (result.behavior === "allow") {
+        expect(result.decisionReason).toMatchObject({
+          type: "classifier",
+          classifier: "auto-mode",
+          reason: "bash_sandbox_safe",
+        });
+      }
+    } finally {
+      restoreGate();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -537,16 +552,13 @@ describe("hasPermissionsToUseTool — denial limits", () => {
     __setClassifierWarningSinkForTesting(() => {});
   });
 
-  it("stub returns unavailable → gate-open lets the caller fall back to ask", async () => {
+  it("classifier fallback returns ask for unsupported tools when the gate is open", async () => {
     const restoreGate = __setAutoModeGateResolverForTesting(() => true);
     try {
-      // Using a non-allowlisted, non-Edit tool. Stub classifier returns
-      // unavailable:true, shouldBlock:false → evaluator hits the
-      // "classifier allowed" branch and returns allow.
       const tool = makeTool({ name: "NotAllowlisted" });
       const { context } = buildHarness({ mode: "auto" });
       const result = await hasPermissionsToUseTool(tool, {}, context);
-      expect(result.behavior).toBe("allow");
+      expect(result.behavior).toBe("ask");
     } finally {
       restoreGate();
     }

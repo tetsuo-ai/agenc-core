@@ -253,6 +253,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         configStore={options.configStore}
         model={options.model}
         bindings={options.bindings}
+        initialPrompt={options.initialPrompt}
       />,
       { stdin, stdout, stderr, patchConsole: true, exitOnCtrlC: false },
     );

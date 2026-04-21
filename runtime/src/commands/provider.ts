@@ -62,7 +62,9 @@ export async function applyProviderSwitch(
   // I-57: the stub checks compatibility against the currently-selected
   // model because the model is what carries capability requirements.
   // T13 will expand this to a provider × model pairing check.
-  const compat = checkModelHistoryCompat(session, currentModel);
+  const compat = checkModelHistoryCompat(session, currentModel, {
+    targetProvider,
+  });
   if (!compat.compatible) {
     return `Provider switch to "${targetProvider}" blocked: ${
       compat.reason ?? "history incompatible with target provider"
@@ -84,6 +86,20 @@ export async function applyProviderSwitch(
       `Provider switch staged: ${currentProvider} → ${targetProvider}. ` +
       `Current turn aborted; the switch takes effect on the next turn.`
     );
+  }
+
+  if (
+    typeof (
+      session as Session & {
+        consumePendingProviderSwitch?: () => Promise<void>;
+      }
+    ).consumePendingProviderSwitch === "function"
+  ) {
+    await (
+      session as Session & {
+        consumePendingProviderSwitch: () => Promise<void>;
+      }
+    ).consumePendingProviderSwitch();
   }
 
   return `Provider switched to "${targetProvider}" (was "${currentProvider}").`;

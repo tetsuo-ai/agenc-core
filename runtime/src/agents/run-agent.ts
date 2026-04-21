@@ -26,6 +26,7 @@ import type {
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import { safeStringify } from "../tools/types.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentRoleConfig } from "./role.js";
 import type { WorktreeHandle } from "./worktree.js";
@@ -360,6 +361,9 @@ function buildChildSession(
       ...params.parent.services,
       provider,
       registry,
+      permissionModeRegistry: new PermissionModeRegistry(
+        params.parent.permissionModeRegistry.current(),
+      ),
     },
     jsRepl: params.parent.jsRepl,
     config: buildChildConfig(params.parent, sessionConfiguration),

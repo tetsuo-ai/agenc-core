@@ -9,6 +9,8 @@ import type { SlashCommandContext } from "./types.js";
 interface StubSessionOpts {
   provider?: string;
   model?: string;
+  reasoningEffort?: string;
+  history?: unknown[];
   activeTurn?: unknown;
   abortTerminal?: ReturnType<typeof vi.fn>;
   pendingProviderSwitch?: unknown;
@@ -17,7 +19,12 @@ interface StubSessionOpts {
 function stubSession(opts: StubSessionOpts = {}): Session {
   const sessionConfiguration = {
     provider: { slug: opts.provider ?? "xai" },
-    collaborationMode: { model: opts.model ?? "grok-4" },
+    collaborationMode: {
+      model: opts.model ?? "grok-4",
+      ...(opts.reasoningEffort !== undefined
+        ? { reasoningEffort: opts.reasoningEffort }
+        : {}),
+    },
   };
   const abortTerminal = opts.abortTerminal ?? vi.fn();
   const s: {
@@ -27,7 +34,12 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     pendingProviderSwitch: unknown;
     setPendingProviderSwitch(next: unknown): void;
   } = {
-    state: { unsafePeek: () => ({ sessionConfiguration }) },
+    state: {
+      unsafePeek: () => ({
+        sessionConfiguration,
+        history: opts.history ?? [],
+      }),
+    },
     activeTurn: { unsafePeek: () => opts.activeTurn ?? null },
     abortTerminal,
     pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
@@ -53,6 +65,28 @@ describe("providerCommand", () => {
     const session = stubSession();
     const compat = checkModelHistoryCompat(session, "grok-4");
     expect(compat.compatible).toBe(true);
+  });
+
+  it("blocks provider switches that would strand image-bearing history", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+      history: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "look at this" },
+            { type: "image_url", image_url: { url: "file:///tmp/example.png" } },
+          ],
+        },
+      ],
+    });
+    const summary = await applyProviderSwitch(session, "ollama");
+    expect(summary).toMatch(/blocked/);
+    expect(summary).toMatch(/image history/);
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown }).pendingProviderSwitch,
+    ).toBeNull();
   });
 
   it("returns a usage error when args are empty", async () => {

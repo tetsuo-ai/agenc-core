@@ -36,27 +36,51 @@ describe("isAutoModeAllowlistedTool", () => {
   });
 });
 
-describe("classifyYoloAction stub", () => {
+describe("classifyYoloAction", () => {
   beforeEach(() => {
     __resetClassifierStubSessionForTesting();
   });
 
-  it("returns unavailable:true with a reason citing T13", async () => {
+  it("falls back to manual approval for unsupported tools", async () => {
     const result = await classifyYoloAction({
       messages: [],
-      action: { toolName: "Bash", input: { command: "ls" } },
+      action: { toolName: "SomeUnknownTool", input: { value: true } },
       tools: [],
       permissionContext: createEmptyToolPermissionContext(),
     });
     expect(result.unavailable).toBe(true);
-    expect(result.shouldBlock).toBe(false);
-    expect(result.reason).toContain("t13");
-    expect(result.model).toBe("stub");
+    expect(result.shouldBlock).toBe(true);
+    expect(result.reason).toContain("runtime_classifier_manual_approval_required");
+    expect(result.model).toBe("runtime-heuristic");
     expect(result.stage).toBe("fast");
     expect(result.usage).toBeNull();
   });
 
-  it("emits the stubbed warning exactly once per session", async () => {
+  it("allows sandbox-safe Bash commands", async () => {
+    const result = await classifyYoloAction({
+      messages: [],
+      action: { toolName: "Bash", input: { command: "ls src" } },
+      tools: [],
+      permissionContext: createEmptyToolPermissionContext(),
+    });
+    expect(result.shouldBlock).toBe(false);
+    expect(result.unavailable).toBeUndefined();
+    expect(result.reason).toBe("bash_sandbox_safe");
+  });
+
+  it("blocks dangerous Bash commands", async () => {
+    const result = await classifyYoloAction({
+      messages: [],
+      action: { toolName: "Bash", input: { command: "sudo rm -rf /" } },
+      tools: [],
+      permissionContext: createEmptyToolPermissionContext(),
+    });
+    expect(result.shouldBlock).toBe(true);
+    expect(result.unavailable).toBeUndefined();
+    expect(result.reason).toContain("bash_dangerous:");
+  });
+
+  it("emits the partial-runtime warning exactly once per session", async () => {
     const captured: Array<{ cause: string; message: string }> = [];
     const restore = __setClassifierWarningSinkForTesting((event) => {
       captured.push({ cause: event.cause, message: event.message });
@@ -64,18 +88,18 @@ describe("classifyYoloAction stub", () => {
     try {
       await classifyYoloAction({
         messages: [],
-        action: { toolName: "Bash", input: {} },
+        action: { toolName: "SomeUnknownTool", input: {} },
         tools: [],
         permissionContext: createEmptyToolPermissionContext(),
       });
       await classifyYoloAction({
         messages: [],
-        action: { toolName: "Bash", input: {} },
+        action: { toolName: "AnotherTool", input: {} },
         tools: [],
         permissionContext: createEmptyToolPermissionContext(),
       });
       expect(captured.length).toBe(1);
-      expect(captured[0]?.cause).toBe("auto_mode_classifier_stubbed");
+      expect(captured[0]?.cause).toBe("auto_mode_classifier_partial_runtime");
     } finally {
       restore();
     }

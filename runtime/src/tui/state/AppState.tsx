@@ -189,12 +189,25 @@ export function AgenCAppStateProvider({
     });
   }
 
-  // If the session carried its own queue ops in, honor it by mirroring
-  // pushes through our React-backed ops. Wave 2 doesn't see this code
-  // path in practice (no session passes ops in yet); the branch is
-  // future-proofing for T12b/T13.
-  const sessionOps = session.permissionQueueOps;
-  const exposedOps = sessionOps ?? opsRef.current;
+  const exposedOps = opsRef.current;
+
+  useEffect(() => {
+    // The live evaluator/runtime bridge needs a session-level handle it
+    // can push into without importing React. Publish the provider-owned
+    // ops onto the session for the lifetime of this mount so every
+    // external push lands back in the React queue the TUI renders.
+    const sessionWithQueueOps = session as SessionLike & {
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    const previous = sessionWithQueueOps.permissionQueueOps;
+    sessionWithQueueOps.permissionQueueOps = exposedOps;
+    return () => {
+      if (sessionWithQueueOps.permissionQueueOps === exposedOps) {
+        sessionWithQueueOps.permissionQueueOps = previous;
+      }
+    };
+  }, [session, exposedOps]);
+
   const pendingRequests = useMemo<readonly PendingPermissionRequest[]>(
     () => (permissionQueue.length > 0 ? [permissionQueue[0]!] : []),
     [permissionQueue],

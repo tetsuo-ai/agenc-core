@@ -1191,6 +1191,7 @@ export function buildPerTurnConfig(
   const cloned = cloneConfigForSnapshot(sourceConfig);
   const mutableCloned = cloned as Mutable<Config>;
   mutableCloned.features = sourceConfig.features;
+  mutableCloned.model = session.sessionConfiguration.collaborationMode.model;
   mutableCloned.cwd = session.sessionConfiguration.cwd;
   mutableCloned.modelReasoningEffort =
     session.sessionConfiguration.collaborationMode.reasoningEffort;

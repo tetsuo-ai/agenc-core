@@ -11,6 +11,7 @@ import {
   type ConfigStoreLike,
   type SessionLike,
 } from "./AppState.js";
+import type { PermissionQueueOps } from "../../permissions/context.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -125,6 +126,39 @@ describe("AgenCAppStateProvider", () => {
     expect(rawSnapshots).toContain(2);
     expect(activeSnapshots).toContain(1);
     expect(activeIds).toContain("req-1");
+    unmount();
+  });
+
+  test("publishes the live React-backed permissionQueueOps onto the session", async () => {
+    const session = createFakeSession() as SessionLike & {
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    const snapshots: number[] = [];
+
+    function Consumer(): null {
+      const { permissionQueue } = useAgenCAppState();
+      snapshots.push(permissionQueue.length);
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    expect(session.permissionQueueOps).toBeDefined();
+    session.permissionQueueOps?.push({
+      requestId: "req-bridge",
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+      turnId: "turn-1",
+      message: "bridge",
+      submittedAt: Date.now(),
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(snapshots).toContain(1);
     unmount();
   });
 });

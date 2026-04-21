@@ -126,6 +126,30 @@ describe("bootTUI stdin-loss wiring (I-19)", () => {
     unmount();
     exitSpy.mockRestore();
   });
+
+  test("initialPrompt submits one turn after boot", async () => {
+    const { stdout, stdin } = createStreams();
+    const session = makeSession({
+      submit: vi.fn(async () => undefined),
+    });
+
+    const handle = await bootTUI({
+      session,
+      configStore: configStore(),
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      initialPrompt: "queue this",
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(session.submit).toHaveBeenCalledTimes(1);
+    expect(session.submit).toHaveBeenCalledWith("queue this");
+
+    handle.unmount();
+    instances.delete(stdout as unknown as NodeJS.WriteStream);
+    stdin.end();
+    stdout.end();
+  });
 });
 
 describe("handleStdinLoss — flush barrier (I-19 step 2)", () => {
