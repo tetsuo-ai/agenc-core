@@ -1,3 +1,8 @@
+import {
+  isAbsolute,
+  relative as relativePath,
+  resolve as resolvePath,
+} from "node:path";
 import type {
   MarketplaceJobSpecJsonObject,
 } from "../marketplace/job-spec-store.js";
@@ -34,6 +39,12 @@ export type CompiledJobAllowedTool =
   | "read_workspace"
   | "run_approved_checks"
   | "summarize";
+
+export interface CompiledJobExecutionContext {
+  readonly workspaceRoot?: string;
+  readonly inputArtifacts?: readonly string[];
+  readonly targetArtifacts?: readonly string[];
+}
 
 export interface CompiledJobPolicy {
   readonly riskTier: CompiledJobRiskTier;
@@ -74,6 +85,7 @@ export interface CompiledJob {
   readonly untrustedInputs: MarketplaceJobSpecJsonObject;
   readonly policy: CompiledJobPolicy;
   readonly audit: CompiledJobAuditRecord;
+  readonly executionContext?: CompiledJobExecutionContext;
   readonly source: {
     readonly taskPda: string;
     readonly taskJobSpecPda: string;
@@ -82,6 +94,19 @@ export interface CompiledJob {
     readonly payloadHash: string;
   };
 }
+
+export const L0_LAUNCH_COMPILED_JOB_TYPES = [
+  "web_research_brief",
+  "lead_list_building",
+  "product_comparison_report",
+  "spreadsheet_cleanup_classification",
+  "transcript_to_deliverables",
+] as const;
+
+const WORKSPACE_CONTEXT_REQUIRED_JOB_TYPES = new Set<string>([
+  "spreadsheet_cleanup_classification",
+  "transcript_to_deliverables",
+]);
 
 interface CompiledJobTemplateDefinition {
   readonly compilerVersion: string;
@@ -283,6 +308,10 @@ function compileBoundedTaskTemplateRequest(
       "Stay within the bounded task template and output format.",
     ],
     untrustedInputs: inputs,
+    executionContext: readExecutionContext(
+      custom.executionContext,
+      "jobSpec.custom.executionContext",
+    ),
     definition,
     deliverables: jobSpec.payload.deliverables,
     successCriteria: jobSpec.payload.acceptanceCriteria,
@@ -328,6 +357,10 @@ function compileApprovedTemplateJob(
             "Run only the approved workflow for this template.",
           ],
     untrustedInputs,
+    executionContext: readExecutionContext(
+      custom.executionContext,
+      "jobSpec.custom.executionContext",
+    ),
     definition,
     deliverables: jobSpec.payload.deliverables,
     successCriteria: jobSpec.payload.acceptanceCriteria,
@@ -345,6 +378,7 @@ function buildCompiledJob(
     outputFormat: string;
     trustedInstructions: readonly string[];
     untrustedInputs: MarketplaceJobSpecJsonObject;
+    executionContext?: CompiledJobExecutionContext;
     definition: CompiledJobTemplateDefinition;
     deliverables: readonly string[];
     successCriteria: readonly string[];
@@ -399,6 +433,7 @@ function buildCompiledJob(
       templateId: input.templateId,
       templateVersion: input.templateVersion,
     },
+    ...(input.executionContext ? { executionContext: input.executionContext } : {}),
     source: {
       taskPda: jobSpec.taskPda,
       taskJobSpecPda: jobSpec.taskJobSpecPda,
@@ -407,6 +442,16 @@ function buildCompiledJob(
       payloadHash: jobSpec.integrity.payloadHash,
     },
   };
+}
+
+export function compiledJobRequiresWorkspaceContext(
+  compiledJob: Pick<CompiledJob, "jobType" | "policy">,
+): boolean {
+  return (
+    compiledJob.policy.writeScope === "workspace_only" ||
+    compiledJob.policy.allowedTools.includes("read_workspace") ||
+    WORKSPACE_CONTEXT_REQUIRED_JOB_TYPES.has(compiledJob.jobType)
+  );
 }
 
 function getCompiledJobDefinition(
@@ -516,6 +561,59 @@ function requireObject(
   return record;
 }
 
+function readExecutionContext(
+  value: unknown,
+  field: string,
+): CompiledJobExecutionContext | undefined {
+  const record = asObject(value, field);
+  if (!record) return undefined;
+
+  const workspaceRoot = normalizeOptionalAbsolutePath(
+    record.workspaceRoot,
+    `${field}.workspaceRoot`,
+  );
+  const inputArtifacts = readAbsolutePathArray(
+    record.inputArtifacts,
+    `${field}.inputArtifacts`,
+  );
+  const targetArtifacts = readAbsolutePathArray(
+    record.targetArtifacts,
+    `${field}.targetArtifacts`,
+  );
+
+  if (
+    workspaceRoot === undefined &&
+    (inputArtifacts.length > 0 || targetArtifacts.length > 0)
+  ) {
+    throw new Error(
+      `${field}.workspaceRoot must be provided when inputArtifacts or targetArtifacts are set`,
+    );
+  }
+
+  if (workspaceRoot) {
+    assertPathsWithinRoot(inputArtifacts, workspaceRoot, `${field}.inputArtifacts`);
+    assertPathsWithinRoot(
+      targetArtifacts,
+      workspaceRoot,
+      `${field}.targetArtifacts`,
+    );
+  }
+
+  if (
+    workspaceRoot === undefined &&
+    inputArtifacts.length === 0 &&
+    targetArtifacts.length === 0
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(workspaceRoot ? { workspaceRoot } : {}),
+    ...(inputArtifacts.length > 0 ? { inputArtifacts } : {}),
+    ...(targetArtifacts.length > 0 ? { targetArtifacts } : {}),
+  };
+}
+
 function asObject(
   value: unknown,
   _field: string,
@@ -535,4 +633,54 @@ function normalizeNonEmptyString(value: unknown, field: string): string {
 
 function uniqueStrings(values: readonly string[]): readonly string[] {
   return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
+}
+
+function normalizeOptionalAbsolutePath(
+  value: unknown,
+  field: string,
+): string | undefined {
+  const path = readString(value);
+  if (!path) return undefined;
+  if (!isAbsolute(path)) {
+    throw new Error(`${field} must be an absolute path`);
+  }
+  return resolvePath(path);
+}
+
+function readAbsolutePathArray(value: unknown, field: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} must be an array of absolute paths`);
+  }
+  return value.map((entry, index) =>
+    normalizeRequiredAbsolutePath(entry, `${field}[${index}]`)
+  );
+}
+
+function normalizeRequiredAbsolutePath(value: unknown, field: string): string {
+  const path = readString(value);
+  if (!path) {
+    throw new Error(`${field} must be a non-empty absolute path`);
+  }
+  if (!isAbsolute(path)) {
+    throw new Error(`${field} must be an absolute path`);
+  }
+  return resolvePath(path);
+}
+
+function assertPathsWithinRoot(
+  paths: readonly string[],
+  root: string,
+  field: string,
+): void {
+  const normalizedRoot = resolvePath(root);
+  for (const candidate of paths) {
+    const relative = relativePath(normalizedRoot, resolvePath(candidate));
+    if (
+      relative !== "" &&
+      (relative.startsWith("..") || relative.startsWith("../"))
+    ) {
+      throw new Error(`${field} must stay within ${normalizedRoot}`);
+    }
+  }
 }

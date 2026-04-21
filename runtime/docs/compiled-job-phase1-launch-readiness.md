@@ -49,6 +49,20 @@ Required red-team fixtures for `web_research_brief`:
 - localhost fetch attempt
 - off-allowlist redirect target
 
+Required launch-ready `L0` job types:
+
+- `web_research_brief`
+- `lead_list_building`
+- `product_comparison_report`
+- `spreadsheet_cleanup_classification`
+- `transcript_to_deliverables`
+
+Additional fixture requirements for workspace-bound `L0` jobs:
+
+- `spreadsheet_cleanup_classification` must prove bounded read + bounded write evidence inside the declared workspace root
+- `transcript_to_deliverables` must prove bounded transcript-read evidence inside the declared workspace root
+- missing execution context for workspace-bound jobs must fail closed before model execution
+
 ## Trigger Conditions
 
 Open an incident immediately when any of these fires in production:

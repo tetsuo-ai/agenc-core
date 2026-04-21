@@ -178,6 +178,83 @@ describe("compiled job enforcement", () => {
     ]);
   });
 
+  it("keeps network-based L0 jobs free of accidental workspace tooling", () => {
+    const compiledJob = createCompiledJob({
+      jobType: "product_comparison_report",
+      policy: {
+        ...createCompiledJob().policy,
+        allowedTools: [
+          "fetch_url",
+          "extract_text",
+          "normalize_table",
+          "summarize",
+          "generate_markdown",
+        ],
+        allowedDataSources: ["vendor sites", "approved review sources"],
+      },
+      audit: {
+        ...createCompiledJob().audit,
+        templateId: "product_comparison_report",
+      },
+    });
+
+    const enforcement = resolveCompiledJobEnforcement(compiledJob);
+
+    expect(enforcement.allowedRuntimeTools).toEqual([
+      "system.httpGet",
+      "system.pdfExtractText",
+    ]);
+    expect(enforcement.executionEnvelope.allowedReadRoots).toBeUndefined();
+    expect(enforcement.executionEnvelope.workspaceRoot).toBeUndefined();
+  });
+
+  it("uses execution context embedded in the compiled job when present", () => {
+    const compiledJob = createCompiledJob({
+      jobType: "transcript_to_deliverables",
+      policy: {
+        ...createCompiledJob().policy,
+        allowedTools: [
+          "parse_transcript",
+          "extract_action_items",
+          "draft_followup",
+          "generate_markdown",
+        ],
+        allowedDomains: [],
+        allowedDataSources: ["provided transcript only"],
+        writeScope: "none",
+        networkPolicy: "off",
+        maxToolCalls: 30,
+        maxFetches: 0,
+      },
+      executionContext: {
+        workspaceRoot: "/tmp/agenc-job",
+        inputArtifacts: ["/tmp/agenc-job/transcript.md"],
+      },
+      audit: {
+        ...createCompiledJob().audit,
+        templateId: "transcript_to_deliverables",
+      },
+    });
+
+    const enforcement = resolveCompiledJobEnforcement(compiledJob);
+
+    expect(enforcement.allowedRuntimeTools).toEqual([
+      "system.readFile",
+      "system.listDir",
+      "system.stat",
+      "system.glob",
+      "system.grep",
+      "system.repoInventory",
+    ]);
+    expect(enforcement.executionEnvelope.workspaceRoot).toBe("/tmp/agenc-job");
+    expect(enforcement.executionEnvelope.allowedReadRoots).toEqual([
+      "/tmp/agenc-job",
+    ]);
+    expect(enforcement.executionEnvelope.inputArtifacts).toEqual([
+      "/tmp/agenc-job/transcript.md",
+    ]);
+  });
+
   it("creates a policy engine that enforces domain and tool restrictions", () => {
     const compiledJob = createCompiledJob();
     const enforcement = resolveCompiledJobEnforcement(compiledJob);

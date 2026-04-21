@@ -28,6 +28,12 @@ describe("compiled job Phase 1 launch-readiness docs", () => {
     expect(content).toContain("compiled_job.domain_denied_spike");
     expect(content).toContain("archive");
     expect(content).toContain("compiledPlanHash");
+    expect(content).toContain("`web_research_brief`");
+    expect(content).toContain("`lead_list_building`");
+    expect(content).toContain("`product_comparison_report`");
+    expect(content).toContain("`spreadsheet_cleanup_classification`");
+    expect(content).toContain("`transcript_to_deliverables`");
+    expect(content).toContain("missing execution context for workspace-bound jobs must fail closed");
   });
 
   it("is linked from the repo and deployment indexes", async () => {

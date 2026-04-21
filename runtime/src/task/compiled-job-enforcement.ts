@@ -71,6 +71,12 @@ export function resolveCompiledJobEnforcement(
   compiledJob: CompiledJob,
   options: ResolveCompiledJobEnforcementOptions = {},
 ): CompiledJobEnforcement {
+  const workspaceRoot =
+    options.workspaceRoot ?? compiledJob.executionContext?.workspaceRoot;
+  const inputArtifacts =
+    options.inputArtifacts ?? compiledJob.executionContext?.inputArtifacts;
+  const targetArtifacts =
+    options.targetArtifacts ?? compiledJob.executionContext?.targetArtifacts;
   const allowedRuntimeTools = resolveRuntimeToolNames(compiledJob);
   const allowedHosts = resolveAllowedHosts(compiledJob.policy.allowedDomains);
   const runtimeWindowMs = Math.max(
@@ -78,11 +84,13 @@ export function resolveCompiledJobEnforcement(
     compiledJob.policy.maxRuntimeMinutes * 60_000,
   );
   const allowWorkspaceRead =
-    options.workspaceRoot !== undefined &&
+    workspaceRoot !== undefined &&
     (compiledJob.policy.writeScope === "workspace_only" ||
-      compiledJob.policy.allowedTools.some(requiresWorkspaceRead));
+      compiledJob.policy.allowedTools.some((tool) =>
+        requiresWorkspaceRead(compiledJob, tool)
+      ));
   const allowWorkspaceWrite =
-    options.workspaceRoot !== undefined &&
+    workspaceRoot !== undefined &&
     compiledJob.policy.writeScope === "workspace_only";
   const effectClass: ExecutionEffectClass =
     compiledJob.policy.writeScope === "workspace_only"
@@ -94,16 +102,16 @@ export function resolveCompiledJobEnforcement(
       : "grounded_read";
   const executionEnvelope =
     createExecutionEnvelope({
-      workspaceRoot: options.workspaceRoot,
+      workspaceRoot,
       allowedReadRoots: allowWorkspaceRead
-        ? [options.workspaceRoot]
+        ? [workspaceRoot]
         : undefined,
       allowedWriteRoots: allowWorkspaceWrite
-        ? [options.workspaceRoot]
+        ? [workspaceRoot]
         : undefined,
       allowedTools: allowedRuntimeTools,
-      inputArtifacts: options.inputArtifacts,
-      targetArtifacts: options.targetArtifacts,
+      inputArtifacts,
+      targetArtifacts,
       effectClass,
       verificationMode,
       completionContract: undefined,
@@ -123,7 +131,7 @@ export function resolveCompiledJobEnforcement(
     allowedHosts,
     runtimeWindowMs,
     allowWorkspaceWriteRoot: allowWorkspaceWrite
-      ? options.workspaceRoot
+      ? workspaceRoot
       : undefined,
   });
   const sideEffectPolicy: CompiledJobSideEffectPolicy = {
@@ -233,7 +241,7 @@ function buildRuntimePolicy(params: {
 function resolveRuntimeToolNames(compiledJob: CompiledJob): readonly string[] {
   const toolNames = new Set<string>();
   for (const tool of compiledJob.policy.allowedTools) {
-    for (const runtimeTool of mapRuntimeTools(tool)) {
+    for (const runtimeTool of mapRuntimeTools(compiledJob, tool)) {
       toolNames.add(runtimeTool);
     }
   }
@@ -274,6 +282,7 @@ function resolveAllowedMutatingRuntimeTools(
 }
 
 function mapRuntimeTools(
+  compiledJob: CompiledJob,
   tool: CompiledJobAllowedTool,
 ): readonly string[] {
   switch (tool) {
@@ -282,10 +291,20 @@ function mapRuntimeTools(
     case "extract_text":
       return [...NETWORK_RUNTIME_TOOLS, ...LOCAL_EXTRACT_RUNTIME_TOOLS];
     case "classify_rows":
+      return compiledJob.jobType === "spreadsheet_cleanup_classification"
+        ? WORKSPACE_READ_RUNTIME_TOOLS
+        : [];
+    case "normalize_table":
+      return compiledJob.jobType === "spreadsheet_cleanup_classification"
+        ? WORKSPACE_READ_RUNTIME_TOOLS
+        : [];
+    case "parse_transcript":
+      return compiledJob.jobType === "transcript_to_deliverables"
+        ? WORKSPACE_READ_RUNTIME_TOOLS
+        : [];
     case "collect_rows":
     case "dedupe_rows":
-    case "normalize_table":
-    case "parse_transcript":
+      return [];
     case "read_workspace":
       return WORKSPACE_READ_RUNTIME_TOOLS;
     case "run_approved_checks":
@@ -298,13 +317,17 @@ function mapRuntimeTools(
   }
 }
 
-function requiresWorkspaceRead(tool: CompiledJobAllowedTool): boolean {
+function requiresWorkspaceRead(
+  compiledJob: CompiledJob,
+  tool: CompiledJobAllowedTool,
+): boolean {
   switch (tool) {
     case "classify_rows":
-    case "collect_rows":
-    case "dedupe_rows":
+      return compiledJob.jobType === "spreadsheet_cleanup_classification";
     case "normalize_table":
+      return compiledJob.jobType === "spreadsheet_cleanup_classification";
     case "parse_transcript":
+      return compiledJob.jobType === "transcript_to_deliverables";
     case "read_workspace":
     case "run_approved_checks":
       return true;

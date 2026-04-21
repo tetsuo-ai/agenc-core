@@ -12,6 +12,10 @@ import { silentLogger, type Logger } from "../utils/logger.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { METRIC_NAMES, NoopMetrics } from "./metrics.js";
 import {
+  compiledJobRequiresWorkspaceContext,
+  L0_LAUNCH_COMPILED_JOB_TYPES,
+} from "./compiled-job.js";
+import {
   evaluateCompiledJobLaunchAccess,
   resolveCompiledJobLaunchControls,
   type CompiledJobLaunchControls,
@@ -42,7 +46,7 @@ import type {
   TaskHandler,
 } from "./types.js";
 
-const DEFAULT_SUPPORTED_JOB_TYPES = ["web_research_brief"] as const;
+const DEFAULT_SUPPORTED_JOB_TYPES = L0_LAUNCH_COMPILED_JOB_TYPES;
 const RESULT_DATA_BYTES = 64;
 const DEFAULT_TASK_CHANNEL = "marketplace-task";
 const DEFAULT_SENDER_ID = "compiled-job-runtime";
@@ -58,6 +62,7 @@ type CompiledJobBlockReason =
   | CompiledJobExecutionDenyReason
   | CompiledJobDependencyDenyReason
   | "runtime_missing_required_tools"
+  | "runtime_missing_workspace_context"
   | "runtime_side_effect_tools_blocked";
 
 type CompiledJobPolicyFailureReason =
@@ -181,6 +186,20 @@ export function createCompiledJobChatTaskHandler(
     const executionLease = executionDecision.lease;
 
     try {
+      const executionEnvelope = compiledJobRuntime.enforcement.executionEnvelope;
+      if (
+        compiledJobRequiresWorkspaceContext(compiledJob) &&
+        !executionEnvelope.workspaceRoot
+      ) {
+        const message =
+          `Compiled job runtime is missing workspace execution context for ${compiledJob.jobType}`;
+        recordCompiledJobBlockedRun(context, logger, metrics, {
+          reason: "runtime_missing_workspace_context",
+          message,
+        });
+        throw new Error(message);
+      }
+
       const scopedTooling = compiledJobRuntime.buildScopedTooling(
         options.toolRegistry,
         logger,
@@ -538,6 +557,7 @@ export function buildCompiledJobTaskPromptEnvelope(
   context: TaskExecutionContext,
 ): PromptEnvelopeInput {
   const { compiledJob } = requireCompiledJobContext(context);
+  const executionContext = compiledJob.executionContext;
 
   return {
     baseSystemPrompt: DEFAULT_SYSTEM_PROMPT,
@@ -560,6 +580,32 @@ export function buildCompiledJobTaskPromptEnvelope(
           `Policy version: ${compiledJob.audit.policyVersion}`,
         ].join("\n"),
       },
+      ...(executionContext
+        ? [
+            {
+              source: "compiled_job_execution_context",
+              content: [
+                ...(executionContext.workspaceRoot
+                  ? [`Workspace root: ${executionContext.workspaceRoot}`]
+                  : []),
+                ...(executionContext.inputArtifacts?.length
+                  ? [
+                      `Input artifacts: ${formatBulletList(
+                        executionContext.inputArtifacts,
+                      )}`,
+                    ]
+                  : []),
+                ...(executionContext.targetArtifacts?.length
+                  ? [
+                      `Target artifacts: ${formatBulletList(
+                        executionContext.targetArtifacts,
+                      )}`,
+                    ]
+                  : []),
+              ].join("\n"),
+            },
+          ]
+        : []),
     ],
     userSections: [
       {
