@@ -53,6 +53,7 @@ describe("compiled job execution governor", () => {
     expect(first.allowed).toBe(true);
     expect(second).toEqual({
       allowed: false,
+      reason: "execution_global_concurrency_limit",
       message: "Compiled marketplace job concurrency limit reached (1/1 active)",
     });
 
@@ -84,6 +85,7 @@ describe("compiled job execution governor", () => {
 
     expect(blocked).toEqual({
       allowed: false,
+      reason: "execution_job_type_rate_limit",
       message:
         'Compiled job type "web_research_brief" rate limit exceeded (2/2 per 60000ms)',
     });

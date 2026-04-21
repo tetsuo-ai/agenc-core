@@ -34,6 +34,7 @@ export const METRIC_NAMES = {
   CLAIMS_EXPIRED: "agenc.task.claims_expired.count",
   CLAIM_RETRIES: "agenc.task.claim_retries.count",
   SUBMIT_RETRIES: "agenc.task.submit_retries.count",
+  COMPILED_JOB_BLOCKED: "agenc.task.compiled_job.blocked.count",
 } as const;
 
 // ============================================================================

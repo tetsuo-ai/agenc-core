@@ -22,7 +22,8 @@ import {
   createCompiledJobChatTaskHandler,
 } from "./compiled-job-chat-handler.js";
 import { resolveCompiledJobEnforcement } from "./compiled-job-enforcement.js";
-import type { TaskExecutionContext } from "./types.js";
+import { METRIC_NAMES } from "./metrics.js";
+import type { MetricsProvider, TaskExecutionContext } from "./types.js";
 import { createTask } from "./test-utils.js";
 
 function createCompiledJob(overrides: Partial<CompiledJob> = {}): CompiledJob {
@@ -83,9 +84,10 @@ function createCompiledJob(overrides: Partial<CompiledJob> = {}): CompiledJob {
 
 function createContext(
   compiledJob: CompiledJob = createCompiledJob(),
+  overrides: Partial<TaskExecutionContext> = {},
 ): TaskExecutionContext {
   const compiledJobEnforcement = resolveCompiledJobEnforcement(compiledJob);
-  return {
+  const baseContext: TaskExecutionContext = {
     task: createTask(),
     taskPda: Keypair.generate().publicKey,
     claimPda: Keypair.generate().publicKey,
@@ -98,6 +100,10 @@ function createContext(
     compiledJobRuntime: createCompiledJobExecutionRuntime(
       compiledJobEnforcement,
     ),
+  };
+  return {
+    ...baseContext,
+    ...overrides,
   };
 }
 
@@ -155,6 +161,31 @@ function createMockProvider(
 
 function decodeFixedBytes(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes).replace(/\u0000+$/, "");
+}
+
+function createRecordingMetricsProvider(): {
+  readonly provider: MetricsProvider;
+  readonly counterCalls: Array<{
+    readonly name: string;
+    readonly value?: number;
+    readonly labels?: Record<string, string>;
+  }>;
+} {
+  const counterCalls: Array<{
+    readonly name: string;
+    readonly value?: number;
+    readonly labels?: Record<string, string>;
+  }> = [];
+  return {
+    provider: {
+      counter(name, value, labels) {
+        counterCalls.push({ name, value, labels });
+      },
+      histogram() {},
+      gauge() {},
+    },
+    counterCalls,
+  };
 }
 
 describe("compiled job chat task handler", () => {
@@ -386,6 +417,64 @@ describe("compiled job chat task handler", () => {
     expect(provider.chatStream).not.toHaveBeenCalled();
   });
 
+  it("records telemetry when launch controls block a compiled job", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+      launchControls: {
+        paused: true,
+      },
+    });
+
+    const context = createContext(undefined, {
+      metrics: metrics.provider,
+    });
+
+    await expect(handler(context)).rejects.toThrow(
+      "Compiled marketplace job execution is paused by runtime launch controls",
+    );
+
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_BLOCKED,
+      value: 1,
+      labels: {
+        reason: "launch_paused",
+        job_type: "web_research_brief",
+        risk_tier: "L0",
+        template_id: "web_research_brief",
+        compiler_version: "agenc.web.bounded-task-template.v1",
+        policy_version: "agenc.runtime.compiled-job-policy.v1",
+      },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job execution blocked",
+      expect.objectContaining({
+        reason: "launch_paused",
+        message:
+          "Compiled marketplace job execution is paused by runtime launch controls",
+        taskPda: context.taskPda.toBase58(),
+        compiledPlanHash: "a".repeat(64),
+      }),
+    );
+  });
+
   it("honors per-job launch allowlists from env", async () => {
     const provider = createMockProvider([
       {
@@ -516,5 +605,125 @@ describe("compiled job chat task handler", () => {
       proofHash: expect.any(Uint8Array),
       resultData: expect.any(Uint8Array),
     });
+  });
+
+  it("records telemetry when execution governor blocks a run", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({ providers: [provider] });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+      executionGovernor: {
+        acquire: () => ({
+          allowed: false,
+          reason: "execution_global_concurrency_limit",
+          message:
+            "Compiled marketplace job concurrency limit reached (1/1 active)",
+        }),
+      },
+    });
+    const context = createContext(undefined, {
+      metrics: metrics.provider,
+    });
+
+    await expect(handler(context)).rejects.toThrow(
+      "Compiled marketplace job concurrency limit reached (1/1 active)",
+    );
+
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_BLOCKED,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "execution_global_concurrency_limit",
+        job_type: "web_research_brief",
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job execution blocked",
+      expect.objectContaining({
+        reason: "execution_global_concurrency_limit",
+      }),
+    );
+  });
+
+  it("records telemetry when L0 runtime blocks side-effect tools", async () => {
+    const provider = createMockProvider([
+      {
+        content: "unused",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "mock-model",
+        finishReason: "stop",
+      },
+    ]);
+    const executor = new ChatExecutor({
+      providers: [provider],
+      allowedTools: ["system.httpGet", "system.pdfExtractText", "x.post"],
+    });
+    const registry = new ToolRegistry();
+    registry.register(createTool("system.httpGet"));
+    registry.register(createTool("system.pdfExtractText"));
+    registry.register(createTool("x.post"));
+    const metrics = createRecordingMetricsProvider();
+    const warn = vi.fn();
+
+    const baseContext = createContext(undefined, {
+      metrics: metrics.provider,
+    });
+    const compiledJobEnforcement = {
+      ...baseContext.compiledJobEnforcement!,
+      allowedRuntimeTools: [
+        ...baseContext.compiledJobEnforcement!.allowedRuntimeTools,
+        "x.post",
+      ],
+    };
+    const handler = createCompiledJobChatTaskHandler({
+      chatExecutor: executor,
+      toolRegistry: registry,
+      logger: { ...silentLogger, warn },
+    });
+
+    await expect(
+      handler({
+        ...baseContext,
+        compiledJobEnforcement,
+        compiledJobRuntime: createCompiledJobExecutionRuntime(
+          compiledJobEnforcement,
+        ),
+      }),
+    ).rejects.toThrow(
+      "Compiled job runtime blocked side-effect tools for L0 execution: x.post",
+    );
+
+    expect(metrics.counterCalls).toContainEqual({
+      name: METRIC_NAMES.COMPILED_JOB_BLOCKED,
+      value: 1,
+      labels: expect.objectContaining({
+        reason: "runtime_side_effect_tools_blocked",
+        risk_tier: "L0",
+      }),
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Compiled job execution blocked",
+      expect.objectContaining({
+        reason: "runtime_side_effect_tools_blocked",
+        blockedToolNames: ["x.post"],
+      }),
+    );
   });
 });

@@ -1282,6 +1282,7 @@ export class TaskExecutor {
       agentId: new Uint8Array(this.agentId),
       agentPda: this.agentPda,
       logger: this.logger,
+      metrics: this.metricsProvider,
       signal,
       ...(compiledJob ? { compiledJob } : {}),
       ...(compiledJobEnforcement ? { compiledJobEnforcement } : {}),

@@ -275,6 +275,9 @@ describe("METRIC_NAMES", () => {
     expect(METRIC_NAMES.CLAIMS_EXPIRED).toBe("agenc.task.claims_expired.count");
     expect(METRIC_NAMES.CLAIM_RETRIES).toBe("agenc.task.claim_retries.count");
     expect(METRIC_NAMES.SUBMIT_RETRIES).toBe("agenc.task.submit_retries.count");
+    expect(METRIC_NAMES.COMPILED_JOB_BLOCKED).toBe(
+      "agenc.task.compiled_job.blocked.count",
+    );
   });
 });
 

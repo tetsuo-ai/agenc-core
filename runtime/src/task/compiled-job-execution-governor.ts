@@ -23,8 +23,15 @@ export interface CompiledJobExecutionLease {
   release(): void;
 }
 
+export type CompiledJobExecutionDenyReason =
+  | "execution_global_concurrency_limit"
+  | "execution_job_type_concurrency_limit"
+  | "execution_global_rate_limit"
+  | "execution_job_type_rate_limit";
+
 export interface CompiledJobExecutionDecision {
   readonly allowed: boolean;
+  readonly reason?: CompiledJobExecutionDenyReason;
   readonly message?: string;
   readonly lease?: CompiledJobExecutionLease;
 }
@@ -112,6 +119,7 @@ export function createCompiledJobExecutionGovernor(
       ) {
         return {
           allowed: false,
+          reason: "execution_global_concurrency_limit",
           message:
             `Compiled marketplace job concurrency limit reached ` +
             `(${activeGlobal}/${maxConcurrentRuns} active)`,
@@ -127,6 +135,7 @@ export function createCompiledJobExecutionGovernor(
       ) {
         return {
           allowed: false,
+          reason: "execution_job_type_concurrency_limit",
           message:
             `Compiled job type "${jobType}" concurrency limit reached ` +
             `(${activeForJobType}/${perJobConcurrentLimit} active)`,
@@ -145,6 +154,7 @@ export function createCompiledJobExecutionGovernor(
       ) {
         return {
           allowed: false,
+          reason: "execution_global_rate_limit",
           message:
             `Compiled marketplace job rate limit exceeded ` +
             `(${globalRate}/${globalRateLimit.limit} per ${globalRateLimit.windowMs}ms)`,
@@ -161,6 +171,7 @@ export function createCompiledJobExecutionGovernor(
       ) {
         return {
           allowed: false,
+          reason: "execution_job_type_rate_limit",
           message:
             `Compiled job type "${jobType}" rate limit exceeded ` +
             `(${perJobRate}/${perJobRateLimit.limit} per ${perJobRateLimit.windowMs}ms)`,

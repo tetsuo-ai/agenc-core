@@ -902,6 +902,8 @@ export interface TaskExecutionContext {
   agentPda: PublicKey;
   /** Logger instance */
   logger: Logger;
+  /** Optional metrics provider for execution-time runtime handlers. */
+  metrics?: MetricsProvider;
   /** Abort signal for cancellation support */
   signal: AbortSignal;
   /** Versioned compiled execution plan for marketplace-backed tasks, when available. */

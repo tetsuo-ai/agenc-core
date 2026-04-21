@@ -49,6 +49,7 @@ describe("compiled job launch controls", () => {
 
     expect(decision).toEqual({
       allowed: false,
+      reason: "launch_execution_disabled",
       message:
         "Compiled marketplace job execution is disabled by runtime launch controls",
     });
@@ -67,6 +68,7 @@ describe("compiled job launch controls", () => {
 
     expect(decision).toEqual({
       allowed: false,
+      reason: "launch_job_type_not_enabled",
       message:
         'Compiled job type "web_research_brief" is not enabled in runtime launch controls',
     });

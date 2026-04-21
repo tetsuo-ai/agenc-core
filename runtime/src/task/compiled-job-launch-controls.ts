@@ -5,6 +5,13 @@ export interface CompiledJobLaunchControls {
   readonly disabledJobTypes: readonly string[];
 }
 
+export type CompiledJobLaunchDenyReason =
+  | "unsupported_job_type"
+  | "launch_execution_disabled"
+  | "launch_paused"
+  | "launch_job_type_not_enabled"
+  | "launch_job_type_disabled";
+
 export interface ResolveCompiledJobLaunchControlsOptions {
   readonly base?: Partial<CompiledJobLaunchControls>;
   readonly env?: NodeJS.ProcessEnv;
@@ -12,6 +19,7 @@ export interface ResolveCompiledJobLaunchControlsOptions {
 
 export interface CompiledJobLaunchDecision {
   readonly allowed: boolean;
+  readonly reason?: CompiledJobLaunchDenyReason;
   readonly message?: string;
 }
 
@@ -44,12 +52,14 @@ export function evaluateCompiledJobLaunchAccess(input: {
   if (!input.supportedJobTypes.includes(input.jobType)) {
     return {
       allowed: false,
+      reason: "unsupported_job_type",
       message: `Compiled job type "${input.jobType}" is not enabled for this task handler`,
     };
   }
   if (!input.controls.executionEnabled) {
     return {
       allowed: false,
+      reason: "launch_execution_disabled",
       message:
         "Compiled marketplace job execution is disabled by runtime launch controls",
     };
@@ -57,6 +67,7 @@ export function evaluateCompiledJobLaunchAccess(input: {
   if (input.controls.paused) {
     return {
       allowed: false,
+      reason: "launch_paused",
       message:
         "Compiled marketplace job execution is paused by runtime launch controls",
     };
@@ -67,12 +78,14 @@ export function evaluateCompiledJobLaunchAccess(input: {
   ) {
     return {
       allowed: false,
+      reason: "launch_job_type_not_enabled",
       message: `Compiled job type "${input.jobType}" is not enabled in runtime launch controls`,
     };
   }
   if (input.controls.disabledJobTypes.includes(input.jobType)) {
     return {
       allowed: false,
+      reason: "launch_job_type_disabled",
       message: `Compiled job type "${input.jobType}" is disabled by runtime launch controls`,
     };
   }
