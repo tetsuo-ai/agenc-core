@@ -107,6 +107,21 @@ describe("exitWorktree", () => {
     if (res.kind === "refused") expect(res.errorCode).toBe(3);
   });
 
+  it("remove refuses when change probes throw", async () => {
+    mockHasChanges.mockRejectedValueOnce(new Error("git status failed"));
+    const res = await exitWorktree({
+      session: stubSession(),
+      handle: HANDLE,
+      baseCommit: "abc",
+      action: "remove",
+    });
+    expect(res.kind).toBe("refused");
+    if (res.kind === "refused") {
+      expect(res.errorCode).toBe(3);
+    }
+    expect(mockRemove).not.toHaveBeenCalled();
+  });
+
   it("remove surfaces remove-call errors via emitError", async () => {
     mockHasChanges.mockResolvedValueOnce({ hasCommits: false, isDirty: false });
     mockRemove.mockRejectedValueOnce(new Error("git remove failed"));

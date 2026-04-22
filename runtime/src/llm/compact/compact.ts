@@ -8,12 +8,6 @@ const sessionTranscriptModule = feature('KAIROS')
   : null
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
-import { markPostCompaction } from 'src/bootstrap/state.js'
-import {
-  getInvokedSkillsForAgent,
-  getOriginalCwd,
-  getSessionId,
-} from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool } from '../../Tool.js'
@@ -78,10 +72,6 @@ import {
   sendSessionActivitySignal,
 } from '../../utils/sessionActivity.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
-import {
-  getTranscriptPath,
-  reAppendSessionMetadata,
-} from '../../utils/sessionStorage.js'
 import {
   getSessionDir,
   readIndexSnapshot,
@@ -394,6 +384,7 @@ export const ERROR_MESSAGE_INCOMPLETE_RESPONSE =
 export interface CompactionResult {
   boundaryMarker: SystemMessage
   summaryMessages: UserMessage[]
+  referenceContextMessages?: Message[]
   attachments: AttachmentMessage[]
   hookResults: HookResultMessage[]
   messagesToKeep?: Message[]
@@ -405,8 +396,15 @@ export interface CompactionResult {
 }
 
 type CompactRolloutSource =
-  Pick<CompactionResult, 'summaryMessages' | 'attachments' | 'hookResults'> &
+  Pick<
+    CompactionResult,
+    'summaryMessages' | 'referenceContextMessages' | 'attachments' | 'hookResults'
+  > &
   Partial<CompactionResult>
+
+export type InitialContextInjection =
+  | 'before_last_user_message'
+  | 'do_not_inject'
 
 /**
  * Diagnosis context passed from autoCompactIfNeeded into compactConversation.
@@ -424,16 +422,127 @@ export type RecompactionInfo = {
 /**
  * Build the base post-compact messages array from a CompactionResult.
  * This ensures consistent ordering across all compaction paths.
- * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults
+ * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults.
+ * Mid-turn compaction can additionally inject a serialized reference-
+ * context message immediately before the last real user message
+ * (or, if none survives, before the summary), matching codex's
+ * `BeforeLastUserMessage` behavior.
  */
 export function buildPostCompactMessages(result: CompactionResult): Message[] {
+  return insertInitialContextBeforeLastRealUserOrSummary(
+    [
+      result.boundaryMarker,
+      ...result.summaryMessages,
+      ...(result.messagesToKeep ?? []),
+      ...result.attachments,
+      ...result.hookResults,
+    ],
+    result.referenceContextMessages,
+  )
+}
+
+function messageText(message: Message): string {
+  const responseItem = responseItemFromMessage(message)
+  if (!responseItem) return ''
+  if (typeof responseItem.content === 'string') {
+    return responseItem.content
+  }
+  return responseItem.content
+    .map((block) => (typeof block.text === 'string' ? block.text : ''))
+    .join('')
+}
+
+function isReferenceContextInjectionMessage(message: Message): boolean {
+  const responseItem = responseItemFromMessage(message)
+  if (responseItem?.role !== 'user') return false
+  const text = messageText(message).trim()
+  return (
+    text.startsWith('<environment_context>') &&
+    text.includes('<reference_context_item>') &&
+    text.endsWith('</environment_context>')
+  )
+}
+
+function isCompactSummaryMessage(message: Message): boolean {
+  const record = message as Record<string, unknown>
+  return record.type === 'user' && record.isCompactSummary === true
+}
+
+function isRealUserMessage(message: Message): boolean {
+  const responseItem = responseItemFromMessage(message)
+  return (
+    responseItem?.role === 'user' &&
+    !isCompactSummaryMessage(message) &&
+    !isReferenceContextInjectionMessage(message)
+  )
+}
+
+function xmlEscape(text: string): string {
+  return text
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+export function createReferenceContextMessages(
+  referenceContextItem?: CompactRuntimeContext['referenceContextItem'],
+): Message[] {
+  if (!referenceContextItem) return []
+  const serialized = (() => {
+    try {
+      return JSON.stringify(referenceContextItem, null, 2)
+    } catch {
+      return String(referenceContextItem)
+    }
+  })()
   return [
-    result.boundaryMarker,
-    ...result.summaryMessages,
-    ...(result.messagesToKeep ?? []),
-    ...result.attachments,
-    ...result.hookResults,
+    {
+      role: 'user',
+      content: `<environment_context>\n<reference_context_item>${xmlEscape(
+        serialized,
+      )}</reference_context_item>\n</environment_context>`,
+      isMeta: true,
+      runtimeOnly: {
+        mergeBoundary: 'user_context',
+      },
+    } as Message,
   ]
+}
+
+export function insertInitialContextBeforeLastRealUserOrSummary(
+  compactedHistory: readonly Message[],
+  initialContextMessages?: readonly Message[],
+): Message[] {
+  if (!initialContextMessages || initialContextMessages.length === 0) {
+    return [...compactedHistory]
+  }
+
+  const refreshed = [...compactedHistory]
+  let lastUserOrSummaryIndex: number | undefined
+  let lastRealUserIndex: number | undefined
+  for (let i = refreshed.length - 1; i >= 0; i -= 1) {
+    const message = refreshed[i]
+    const responseItem = responseItemFromMessage(message)
+    if (responseItem?.role !== 'user') continue
+    if (lastUserOrSummaryIndex === undefined) {
+      lastUserOrSummaryIndex = i
+    }
+    if (isRealUserMessage(message)) {
+      lastRealUserIndex = i
+      break
+    }
+  }
+
+  const insertionIndex = lastRealUserIndex ?? lastUserOrSummaryIndex
+  if (insertionIndex === undefined) {
+    refreshed.push(...initialContextMessages)
+    return refreshed
+  }
+
+  refreshed.splice(insertionIndex, 0, ...initialContextMessages)
+  return refreshed
 }
 
 function blockTextForRollout(block: Record<string, unknown>): string | undefined {
@@ -554,13 +663,16 @@ function extractCompactionSummaryText(summaryMessages: readonly Message[]): stri
 export function buildCompactedRolloutItem(
   result: CompactRolloutSource,
 ): CompactedItem {
-  const replacementMessages = [
-    ...(result.boundaryMarker ? [result.boundaryMarker] : []),
-    ...result.summaryMessages,
-    ...(result.messagesToKeep ?? []),
-    ...result.attachments,
-    ...result.hookResults,
-  ]
+  const replacementMessages = insertInitialContextBeforeLastRealUserOrSummary(
+    [
+      ...(result.boundaryMarker ? [result.boundaryMarker] : []),
+      ...result.summaryMessages,
+      ...(result.messagesToKeep ?? []),
+      ...result.attachments,
+      ...result.hookResults,
+    ],
+    result.referenceContextMessages,
+  )
   return {
     message: extractCompactionSummaryText(result.summaryMessages),
     replacementHistory: replacementMessages
@@ -667,6 +779,18 @@ export interface CompactDroppedToolResult {
 
 export interface CompactToolResultIndex {
   readonly toolResultBytesByTurn: ReadonlyMap<string, number>
+  // `tokenEstimateByTurn` is OPTIONAL and treated as an advisory hint,
+  // not a contract guarantee. Invariants.md I-88 originally called
+  // `tokenEstimate` authoritative, but execute-tools (T7) only stamps
+  // `{turnId, toolResultBytes}` on event-log appends (see
+  // session/session-store.ts:1045-1055 append signature), so in
+  // practice the session-store derives token counts via bytes/4 when
+  // the index is consulted. To avoid a false invariant, this field is
+  // optional here: when absent, consumers fall back to bytes/4 via
+  // tokenCountWithEstimation. Updating T7's execute-tools.ts to thread
+  // an authoritative tokenEstimate through every tool_call_completed
+  // append is a future tightening (outside T4 scope).
+  readonly tokenEstimateByTurn?: ReadonlyMap<string, number>
   readonly toolCallTurnIds: ReadonlyMap<string, string>
 }
 
@@ -752,6 +876,10 @@ export function loadCompactToolResultIndex(
     ) {
       return {
         toolResultBytesByTurn: liveRolloutStore.getToolResultBytesIndexSnapshot(),
+        tokenEstimateByTurn:
+          typeof liveRolloutStore.getTokenEstimateIndexSnapshot === 'function'
+            ? liveRolloutStore.getTokenEstimateIndexSnapshot()
+            : undefined,
         toolCallTurnIds:
           typeof liveRolloutStore.getToolCallTurnIdSnapshot === 'function'
             ? liveRolloutStore.getToolCallTurnIdSnapshot()
@@ -760,11 +888,17 @@ export function loadCompactToolResultIndex(
     }
   }
 
-  const sessionId = (context as any)?.agentId ?? getSessionId()
+  // T5: on-disk fallback when the caller did not inject a live
+  // rolloutStore. Prior to T5 this read session id/cwd from
+  // `bootstrap/state` stub proxies (getSessionId/getOriginalCwd),
+  // which resolved to proxy objects and yielded garbage paths.
+  // The T5 owner surface carries the trusted values on the
+  // CompactRuntimeContext itself (agentId + cwd), and the on-disk
+  // snapshot is read via the T5-owned `getSessionDir` +
+  // `readIndexSnapshot` pair on SessionStore (I-88).
+  const sessionId = (context as any)?.agentId
   const cwd =
-    (context as any)?.cwd ??
-    (context as any)?.options?.cwd ??
-    getOriginalCwd()
+    (context as any)?.cwd ?? (context as any)?.options?.cwd
   if (!sessionId || !cwd) return undefined
 
   try {
@@ -778,10 +912,15 @@ export function loadCompactToolResultIndex(
           ([, bytes]) => typeof bytes === 'number' && bytes > 0,
         ) as Array<[string, number]>,
       ),
+      tokenEstimateByTurn: new Map(
+        Object.entries(snapshot.tokenEstimateByTurn ?? {}).filter(
+          ([, tokens]) => typeof tokens === 'number' && tokens > 0,
+        ) as Array<[string, number]>,
+      ),
       toolCallTurnIds: new Map(
-        Object.entries(snapshot.toolCallTurnIds ?? {}).filter(
-          ([, turnId]) => typeof turnId === 'string' && turnId.length > 0,
-        ) as Array<[string, string]>,
+        Object.entries(snapshot.toolCallTurnIds ?? {}) as Array<
+          [string, string]
+        >,
       ),
     }
   } catch {
@@ -933,6 +1072,7 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  initialContextInjection: InitialContextInjection = 'do_not_inject',
 ): Promise<CompactionResult> {
   try {
     if (messages.length === 0) {
@@ -1196,7 +1336,15 @@ export async function compactConversation(
       ].sort()
     }
 
-    const transcriptPath = getTranscriptPath()
+    // T5: quote the authoritative rollout path from the SessionStore via
+    // CompactRuntimeContext, not the legacy `<sessionId>.jsonl` derived
+    // from bootstrap state. The summary content is user-visible (the
+    // model reads the rollout path post-compact to recover exact
+    // pre-compaction detail), so we keep the stamp but route it through
+    // the T5 owner surface.
+    const transcriptPath =
+      context.rolloutStore?.rolloutPath ??
+      context.rolloutStore?.store?.rolloutPath
     const summaryMessages: UserMessage[] = [
       createUserMessage({
         content: getCompactUserSummaryMessage(
@@ -1208,6 +1356,10 @@ export async function compactConversation(
         isVisibleInTranscriptOnly: true,
       }),
     ]
+    const referenceContextMessages =
+      initialContextInjection === 'before_last_user_message'
+        ? createReferenceContextMessages(context.referenceContextItem)
+        : []
 
     // Previously "postCompactTokenCount" — renamed because this is the
     // compact API call's total usage (input_tokens ≈ preCompactTokenCount),
@@ -1235,14 +1387,21 @@ export async function compactConversation(
         context.agentId,
       )
     }
-    markPostCompaction()
+    // T5: legacy `markPostCompaction()` resolved to a no-op stub proxy;
+    // the equivalent post-compaction state in T5 (I-2 `previous_response_id`
+    // clear + runtime-owner cleanup) is handled inside
+    // `runPostCompactCleanup` by the callers of compactConversation.
 
     // Re-append session metadata (custom title, tag) so it stays within
     // the 16KB tail window that readLiteMetadata reads for --resume display.
     // Without this, enough post-compaction messages push the metadata entry
     // out of the window, causing --resume to show the auto-generated title
     // instead of the user-set session name.
-    reAppendSessionMetadata()
+    //
+    // T5: route through the SessionStore owner (docs/plan/feature-matrix.md:39,
+    // runtime-owner-manifest.md:239-244) via CompactRuntimeContext — same
+    // seam used by phases/commit.ts and session/manual-compact.ts.
+    context.rolloutStore?.store?.reAppendSessionMetadata?.()
 
     // Write a reduced transcript segment for the pre-compaction messages
     // (assistant mode only). Fire-and-forget — errors are logged internally.
@@ -1338,6 +1497,9 @@ export async function compactConversation(
     return {
       boundaryMarker,
       summaryMessages,
+      ...(referenceContextMessages.length > 0
+        ? { referenceContextMessages }
+        : {}),
       attachments: postCompactFileAttachments,
       hookResults: hookMessages,
       userDisplayMessage: combinedUserDisplayMessage || undefined,
@@ -1631,7 +1793,12 @@ export async function partialCompactConversation(
       ].sort()
     }
 
-    const transcriptPath = getTranscriptPath()
+    // T5: same reasoning as the main compact path — the transcript-path
+    // stamp is user-visible (model uses it to recover pre-compact detail)
+    // so we keep it and route through the T5 rollout surface.
+    const transcriptPath =
+      context.rolloutStore?.rolloutPath ??
+      context.rolloutStore?.store?.rolloutPath
     const summaryMessages: UserMessage[] = [
       createUserMessage({
         content: getCompactUserSummaryMessage(summary, false, transcriptPath),
@@ -1654,11 +1821,18 @@ export async function partialCompactConversation(
         context.agentId,
       )
     }
-    markPostCompaction()
+    // T5: legacy `markPostCompaction()` resolved to a no-op stub proxy;
+    // the equivalent post-compaction state in T5 (I-2 `previous_response_id`
+    // clear + runtime-owner cleanup) is handled inside
+    // `runPostCompactCleanup` by the callers of compactConversation.
 
     // Re-append session metadata (custom title, tag) so it stays within
     // the 16KB tail window that readLiteMetadata reads for --resume display.
-    reAppendSessionMetadata()
+    //
+    // T5: route through the SessionStore owner (docs/plan/feature-matrix.md:39,
+    // runtime-owner-manifest.md:239-244) via CompactRuntimeContext — same
+    // seam used by phases/commit.ts and session/manual-compact.ts.
+    context.rolloutStore?.store?.reAppendSessionMetadata?.()
 
     if (feature('KAIROS')) {
       void sessionTranscriptModule?.writeSessionTranscriptSegment(
@@ -2031,6 +2205,7 @@ export async function createPostCompactFileAttachments(
         !shouldExcludeFromPostCompactRestore(
           file.filename,
           toolUseContext.agentId,
+          toolUseContext.cwd ?? toolUseContext.options?.cwd,
         ) && !preservedReadPaths.has(expandPath(file.filename)),
     )
     .sort((a, b) => b.timestamp - a.timestamp)
@@ -2097,9 +2272,14 @@ export function createPlanAttachmentIfNeeded(
  * without leaking skills from other agent contexts.
  */
 export function createSkillAttachmentIfNeeded(
-  agentId?: string,
+  _agentId?: string,
 ): AttachmentMessage | null {
-  const invokedSkills = getInvokedSkillsForAgent(agentId)
+  // T5: the legacy `getInvokedSkillsForAgent` resolved to a no-op stub
+  // proxy (runtime/src/bootstrap/state.ts). There is no T5 owner for
+  // the invoked-skills registry yet; when one lands it should be
+  // threaded through CompactRuntimeContext. Until then, the attachment
+  // is always empty and the function short-circuits to null.
+  const invokedSkills: ReadonlyMap<string, never> = new Map()
 
   if (invokedSkills.size === 0) {
     return null
@@ -2279,6 +2459,7 @@ function truncateToTokens(content: string, maxTokens: number): string {
 function shouldExcludeFromPostCompactRestore(
   filename: string,
   agentId?: AgentId,
+  cwd?: string,
 ): boolean {
   const normalizedFilename = expandPath(filename)
   // Exclude plan files
@@ -2298,7 +2479,13 @@ function shouldExcludeFromPostCompactRestore(
         expandPath(getMemoryPath(type)),
       ),
     )
-    for (const path of getProjectInstructionFilePaths(getOriginalCwd())) {
+    // T5: prefer the runtime-supplied cwd (CompactRuntimeContext) over the
+    // legacy `bootstrap/state.getOriginalCwd()` stub-proxy, which returns a
+    // proxy object that silently passes as a string and yields garbage
+    // project-instruction paths. Callers (createPostCompactFileAttachments)
+    // must thread their context's cwd through.
+    const resolvedCwd = cwd ?? process.cwd()
+    for (const path of getProjectInstructionFilePaths(resolvedCwd)) {
       normalizedMemoryPaths.add(expandPath(path))
     }
 

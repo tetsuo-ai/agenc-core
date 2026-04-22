@@ -5,7 +5,6 @@ import {
 } from "../llm/compact/compact.js";
 import { feature } from "bun:bundle";
 import chalk from "chalk";
-import { markPostCompaction } from "src/bootstrap/state.js";
 import { getUserContext } from "../context.js";
 import { getShortcutDisplay } from "../keybindings/shortcutFormat.js";
 import { notifyCompaction } from "../services/api/promptCacheBreakDetection.js";
@@ -157,7 +156,11 @@ export async function runManualCompact(
             context.agentId,
           );
         }
-        markPostCompaction();
+        // T5: legacy `markPostCompaction()` resolved to a no-op stub proxy
+        // from bootstrap/state.ts (Proxy catch-all). The equivalent
+        // post-compaction state in T5 (I-2 `previous_response_id` clear +
+        // runtime-owner cleanup) is handled synchronously above by
+        // runPostCompactCleanup — see invariants.md I-2.
         suppressCompactWarning();
 
         return {
@@ -171,6 +174,21 @@ export async function runManualCompact(
     const microcompactResult = await microcompactMessages(messages, context);
     const messagesForCompact = microcompactResult.messages;
 
+    // INTENTIONAL: manual `/compact` calls `compactConversation` directly
+    // and does NOT route through `autoCompactIfNeeded`. The user has
+    // explicitly requested compaction; the auto-compact threshold gate
+    // and consecutive-failure circuit breaker (auto-compact.ts:263-290)
+    // are both inappropriate for a user-invoked action:
+    //   - Threshold gate would silently no-op when tokens are below the
+    //     auto-compact limit even though the user asked to compact now.
+    //   - Circuit breaker targets retry storms from auto-compact loops;
+    //     a user-invoked manual attempt should proceed on its own merits.
+    // openclaude's `/compact` command does the same (commands/compact.ts
+    // calls compactConversation directly) and this routing maps to
+    // feature-matrix.md:196 (T4-owned manual compact). The I-18 shrink
+    // assertion and I-2 previous_response_id clear still run because
+    // `compactConversation` enforces the former internally and
+    // `runPostCompactCleanup` (below) enforces the latter.
     const result = await compactConversation(
       messagesForCompact,
       context,

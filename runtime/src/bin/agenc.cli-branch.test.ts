@@ -86,6 +86,33 @@ describe("routeCLI (T12 Wave 5-B)", () => {
     expect(oneShotCLI).not.toHaveBeenCalled();
   });
 
+  it("startup config flags are stripped before the TUI initialPrompt is built", async () => {
+    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const exit = await routeCLI({
+      argv: [
+        NODE,
+        SCRIPT,
+        "--provider",
+        "openai",
+        "--model=gpt-5",
+        "--profile",
+        "fast",
+        "build",
+        "a",
+        "game",
+      ],
+      isTTY: true,
+      isStdoutTTY: true,
+      bootTUI,
+      oneShotCLI,
+      resumeTUI,
+    });
+    expect(exit).toBe(0);
+    expect(bootTUI).toHaveBeenCalledWith({ initialPrompt: "build a game" });
+    expect(oneShotCLI).not.toHaveBeenCalled();
+    expect(resumeTUI).not.toHaveBeenCalled();
+  });
+
   it("--no-tui flag forces oneShotCLI even in an interactive TTY", async () => {
     const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
     const exit = await routeCLI({
@@ -181,7 +208,7 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
     expect(extractFlagValue(["hello"], "--resume")).toBeNull();
   });
 
-  it("stripRoutingFlags removes --no-tui + --resume <value>", () => {
+  it("stripRoutingFlags removes routing and startup config flags", () => {
     expect(
       stripRoutingFlags(["--no-tui", "hello", "world"]),
     ).toStrictEqual(["hello", "world"]);
@@ -191,6 +218,16 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
     expect(stripRoutingFlags(["--resume=abc", "world"])).toStrictEqual([
       "world",
     ]);
+    expect(
+      stripRoutingFlags([
+        "--provider",
+        "openai",
+        "--model=gpt-5",
+        "--profile",
+        "fast",
+        "hello",
+      ]),
+    ).toStrictEqual(["hello"]);
     expect(stripRoutingFlags(["hello"])).toStrictEqual(["hello"]);
   });
 });

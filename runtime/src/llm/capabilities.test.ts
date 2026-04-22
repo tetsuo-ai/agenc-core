@@ -21,6 +21,12 @@ describe("resolveProviderModelCapabilities", () => {
     expect(caps).toMatchObject({
       provider: "grok",
       model: "grok-4.20-multi-agent-latest",
+      supportsPromptCaching: true,
+      supportsContextEdits: false,
+      supportsImageInput: true,
+      supportsAudioInput: false,
+      supportsAudioOutput: false,
+      supportsExtendedThinking: false,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
@@ -46,8 +52,14 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "openai",
+      supportsPromptCaching: true,
+      supportsContextEdits: false,
+      supportsImageInput: true,
+      supportsAudioInput: false,
+      supportsAudioOutput: false,
+      supportsExtendedThinking: true,
       acceptsImageHistory: true,
-      acceptsAudioHistory: true,
+      acceptsAudioHistory: false,
       acceptsThinkingHistory: true,
       acceptsReasoningEffort: true,
     });
@@ -59,10 +71,29 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "openai",
+      supportsPromptCaching: true,
+      supportsImageInput: true,
+      supportsAudioInput: false,
+      supportsAudioOutput: false,
+      supportsExtendedThinking: false,
       acceptsImageHistory: true,
-      acceptsAudioHistory: true,
+      acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
       acceptsReasoningEffort: false,
+    });
+  });
+
+  it("distinguishes provider-level OpenAI audio support from history replay support", () => {
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "openai",
+        model: "gpt-audio",
+      }),
+    ).toMatchObject({
+      provider: "openai",
+      supportsAudioInput: true,
+      supportsAudioOutput: true,
+      acceptsAudioHistory: false,
     });
   });
 
@@ -115,6 +146,12 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "anthropic",
+      supportsPromptCaching: true,
+      supportsContextEdits: true,
+      supportsImageInput: true,
+      supportsAudioInput: false,
+      supportsAudioOutput: false,
+      supportsExtendedThinking: true,
       acceptsImageHistory: true,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: true,
@@ -130,6 +167,7 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "deepseek",
+      supportsExtendedThinking: true,
       acceptsImageHistory: false,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: true,
@@ -143,8 +181,14 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "gemini",
+      supportsPromptCaching: false,
+      supportsContextEdits: false,
+      supportsImageInput: true,
+      supportsAudioInput: true,
+      supportsAudioOutput: true,
+      supportsExtendedThinking: true,
       acceptsImageHistory: true,
-      acceptsAudioHistory: true,
+      acceptsAudioHistory: false,
       acceptsThinkingHistory: true,
       acceptsReasoningEffort: false,
     });
@@ -156,8 +200,10 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "gemini",
+      supportsAudioInput: true,
+      supportsAudioOutput: true,
       acceptsImageHistory: true,
-      acceptsAudioHistory: true,
+      acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
       acceptsReasoningEffort: false,
     });
@@ -202,6 +248,12 @@ describe("resolveProviderModelCapabilities", () => {
     ).toMatchObject({
       provider: "unknown-provider",
       model: "some-model",
+      supportsPromptCaching: false,
+      supportsContextEdits: false,
+      supportsImageInput: false,
+      supportsAudioInput: false,
+      supportsAudioOutput: false,
+      supportsExtendedThinking: false,
       acceptsImageHistory: false,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: false,

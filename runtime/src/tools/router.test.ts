@@ -62,6 +62,50 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
+  test("findSpec rejects MCP-serverId entry for plain (no-namespace) lookup (codex router.rs:111-121)", () => {
+    // A spec registered with `serverId` (MCP umbrella) must not
+    // resolve when the request has no namespace. This prevents a
+    // function named `"a.b"` from accidentally resolving to a
+    // namespace `"a"` tool `"b"` (codex parity).
+    const mcpTool: Tool = {
+      name: "db.query",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "ok" }),
+    };
+    const router = new ToolRouter([
+      { tool: mcpTool, supportsParallelToolCalls: false, serverId: "db" },
+    ]);
+    // A plain (no-namespace) lookup of a name that happens to collide
+    // must NOT return the MCP entry — since `serverId` is set.
+    // Here we look up the literal stored key "db.query" which parses
+    // into {namespace: "db", name: "query"}, so it goes through the
+    // namespaced branch instead and matches via serverId.
+    expect(router.findSpec("db.query")?.tool).toBe(mcpTool);
+    // But a bare "db.query" request with explicit namespace:undefined
+    // — represented by the ToolName shape — must not match.
+    expect(router.findSpec({ name: "db.query" })).toBeUndefined();
+  });
+
+  test("findSpec namespaced lookup matches via serverId (codex router.rs:122-131)", () => {
+    const mcpTool: Tool = {
+      name: "query", // stored under the bare inner name
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "ok" }),
+    };
+    const router = new ToolRouter([
+      { tool: mcpTool, supportsParallelToolCalls: false, serverId: "db" },
+    ]);
+    expect(
+      router.findSpec({ namespace: "db", name: "query" })?.tool,
+    ).toBe(mcpTool);
+    // Namespace mismatch → undefined.
+    expect(
+      router.findSpec({ namespace: "other", name: "query" }),
+    ).toBeUndefined();
+  });
+
   test("toolSupportsParallel true for parallel-safe function tool", () => {
     const router = new ToolRouter([
       { tool: readTool, supportsParallelToolCalls: true },
@@ -86,6 +130,72 @@ describe("ToolRouter", () => {
         payload: { kind: "function", arguments: "" },
       }),
     ).toBe(false);
+  });
+
+  test("toolSupportsParallel false for namespaced tool name even when base spec is parallel (codex router_tests.rs:195-217)", () => {
+    // Codex parity test: a function spec (`shell`) that advertises
+    // `supports_parallel_tool_calls = true` must still return `false`
+    // when invoked under a namespaced name
+    // (`mcp__server__shell`). Checked BEFORE spec lookup so the
+    // underlying flag can never leak `true`.
+    const parallelShell: Tool = {
+      name: "shell",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "ok" }),
+    };
+    const router = new ToolRouter([
+      { tool: parallelShell, supportsParallelToolCalls: true },
+    ]);
+    // Baseline: the unnamespaced call is parallel.
+    expect(
+      router.toolSupportsParallel({
+        toolName: { name: "shell" },
+        callId: "call-parallel-tool",
+        payload: { kind: "function", arguments: "{}" },
+      }),
+    ).toBe(true);
+    // The namespaced form must short-circuit to false.
+    expect(
+      router.toolSupportsParallel({
+        toolName: { namespace: "mcp__server__", name: "shell" },
+        callId: "call-namespaced-tool",
+        payload: { kind: "function", arguments: "{}" },
+      }),
+    ).toBe(false);
+  });
+
+  test("toolSupportsParallel hard-false for non-Function/Freeform spec variants (codex router.rs:150-158)", () => {
+    // Codex `ToolSpec::Namespace | ToolSpec::ToolSearch |
+    // ToolSpec::LocalShell | ToolSpec::ImageGeneration |
+    // ToolSpec::WebSearch` are hard-coded non-parallel regardless of
+    // the `supports_parallel_tool_calls` flag.
+    const shellLike = (name: string): Tool => ({
+      name,
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "ok" }),
+    });
+    const router = new ToolRouter([
+      { tool: shellLike("tool_search"), supportsParallelToolCalls: true },
+      { tool: shellLike("local_shell"), supportsParallelToolCalls: true },
+      { tool: shellLike("image_generation"), supportsParallelToolCalls: true },
+      { tool: shellLike("web_search"), supportsParallelToolCalls: true },
+    ]);
+    for (const name of [
+      "tool_search",
+      "local_shell",
+      "image_generation",
+      "web_search",
+    ]) {
+      expect(
+        router.toolSupportsParallel({
+          toolName: { name },
+          callId: `call-${name}`,
+          payload: { kind: "function", arguments: "{}" },
+        }),
+      ).toBe(false);
+    }
   });
 
   test("MCP tools use parallelMcpServerNames allowlist", () => {

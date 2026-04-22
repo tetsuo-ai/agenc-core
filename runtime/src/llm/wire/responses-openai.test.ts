@@ -136,6 +136,109 @@ describe("buildOpenAIResponsesRequest", () => {
     ]);
   });
 
+  test("preserves inline input_audio parts in responses input messages", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-audio",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Transcribe this" },
+            {
+              type: "input_audio",
+              input_audio: {
+                data: "UklGRiQAAABXQVZFZm10",
+                format: "wav",
+              },
+            },
+          ] as unknown as Array<Record<string, unknown>>,
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [
+          { type: "input_text", text: "Transcribe this" },
+          {
+            type: "input_audio",
+            input_audio: {
+              data: "UklGRiQAAABXQVZFZm10",
+              format: "wav",
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("replays persisted data-url audio history as input_audio parts", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-audio",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              audio_url: {
+                url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10",
+              },
+            },
+          ] as unknown as Array<Record<string, unknown>>,
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_audio",
+            input_audio: {
+              data: "UklGRiQAAABXQVZFZm10",
+              format: "wav",
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("fails closed to a text placeholder when persisted audio references cannot be replayed", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-audio",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              audio_url: {
+                url: "file:///tmp/example.wav",
+              },
+            },
+          ] as unknown as Array<Record<string, unknown>>,
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "[audio]" }],
+      },
+    ]);
+  });
+
   test("forwards prompt_cache_key when the runtime shapes one for the session", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",

@@ -35,6 +35,10 @@ import { builtInCommandNames } from '../commands.js'
 import { COMMAND_NAME_TAG, TICK_TAG } from '../constants/xml.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import * as sessionIngress from '../services/api/sessionIngress.js'
+import {
+  resolveTransportMode,
+  type TransportMode,
+} from '../transport/fallback-ladder.js'
 import { REPL_TOOL_NAME } from '../tools/REPLTool/constants.js'
 import {
   type AgentId,
@@ -521,11 +525,26 @@ export function setInternalEventReader(
 }
 
 /**
+ * Set the remote ingress URL on the current Project.
+ * Startup/bootstrap uses this to enable remote transcript persistence.
+ */
+export function setRemoteIngressUrl(url: string): void {
+  getProject().setRemoteIngressUrl(url)
+}
+
+/**
  * Set the remote ingress URL on the current Project for testing.
  * This simulates what hydrateRemoteSession does in production.
  */
 export function setRemoteIngressUrlForTesting(url: string): void {
-  getProject().setRemoteIngressUrl(url)
+  setRemoteIngressUrl(url)
+}
+
+export function shouldHydrateViaInternalEvents(
+  transportMode: TransportMode | undefined,
+  hasInternalEventReader: boolean,
+): boolean {
+  return transportMode === 'sse' && hasInternalEventReader
 }
 
 const REMOTE_FLUSH_INTERVAL_MS = 10
@@ -1305,6 +1324,8 @@ class Project {
       return
     }
 
+    const transportMode = resolveTransportMode()
+
     // CCR v2 path: write as internal worker event
     if (this.internalEventWriter) {
       try {
@@ -1321,6 +1342,12 @@ class Project {
         logForDebugging('Failed to write transcript as internal event')
       }
       return
+    }
+
+    if (transportMode === 'sse') {
+      logForDebugging(
+        'CCR v2 transport selected but no internal event writer is registered; falling back to session-ingress persistence',
+      )
     }
 
     // v1 Session Ingress path
@@ -1592,6 +1619,22 @@ export async function hydrateRemoteSession(
   switchSession(asSessionId(sessionId))
 
   const project = getProject()
+  const transportMode = resolveTransportMode()
+  const hasInternalEventReader = project.getInternalEventReader() !== null
+
+  if (shouldHydrateViaInternalEvents(transportMode, hasInternalEventReader)) {
+    try {
+      return await hydrateFromCCRv2InternalEvents(sessionId)
+    } finally {
+      project.setRemoteIngressUrl(ingressUrl)
+    }
+  }
+
+  if (transportMode === 'sse') {
+    logForDebugging(
+      'CCR v2 transport selected but no internal event reader is registered; falling back to session-ingress hydration',
+    )
+  }
 
   try {
     const remoteLogs =

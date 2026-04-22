@@ -22,6 +22,17 @@
  */
 
 import {
+  resolveApiKey,
+} from "../config/env.js";
+import {
+  createProvider,
+} from "../llm/provider.js";
+import type {
+  LLMProvider,
+  LLMStructuredOutputSchema,
+  LLMUsage as ProviderLLMUsage,
+} from "../llm/types.js";
+import {
   matchedDangerousLabel,
   shouldUseSandbox,
   type BashPermissionInput,
@@ -98,16 +109,19 @@ export function __listAutoModeAllowlistedToolsForTesting(): readonly string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-mode gate (stub)
+// Auto-mode gate
 // ---------------------------------------------------------------------------
 
 /**
  * Live circuit breaker for the auto-mode classifier. openclaude wires
- * this to GrowthBook's `tengu_iron_gate_closed` flag. AgenC defaults to
- * false (gate closed → auto mode unavailable) until T13 ships the real
- * circuit breaker.
+ * this to GrowthBook's `tengu_iron_gate_closed` flag. AgenC does not yet
+ * ship that remote circuit-breaker surface, so the gate is considered open
+ * when the local runtime can actually reach the xAI-backed classifier
+ * (currently: an xAI API key is configured). Tests can still override the
+ * resolver directly.
  */
-let autoModeGateResolver: () => boolean = () => false;
+let autoModeGateResolver: () => boolean = () =>
+  resolveRemoteClassifierConfig() !== null;
 
 export function isAutoModeGateEnabled(): boolean {
   return autoModeGateResolver();
@@ -142,6 +156,11 @@ export interface LLMUsage {
 export interface LLMMessage {
   readonly role: "user" | "assistant" | "system" | "tool";
   readonly content: unknown;
+  readonly toolCalls?: readonly {
+    readonly id?: string;
+    readonly name: string;
+    readonly arguments: string;
+  }[];
 }
 
 export interface ToolLike {
@@ -178,7 +197,7 @@ export interface ClassifyYoloActionOpts {
 }
 
 // ---------------------------------------------------------------------------
-// Once-per-session partial-runtime warning
+// Once-per-session warning sink
 // ---------------------------------------------------------------------------
 
 /**
@@ -210,7 +229,7 @@ export function __setClassifierWarningSinkForTesting(
 }
 
 /**
- * Session-level sentinel so the partial-runtime warning fires exactly once per
+ * Session-level sentinel so the classifier warning fires exactly once per
  * process regardless of how many times `classifyYoloAction` is called.
  * Tests call `__resetClassifierStubSessionForTesting` to reset.
  */
@@ -221,25 +240,371 @@ export function __resetClassifierStubSessionForTesting(): void {
 }
 
 // ---------------------------------------------------------------------------
-// classifyYoloAction — narrow runtime-backed path
+// Remote classifier wiring
 // ---------------------------------------------------------------------------
 
 /**
- * Runtime-backed implementation:
+ * T13 remote path:
  *
- *   - Bash commands that the local sandbox heuristics already classify as
- *     safe are auto-allowed.
- *   - Bash commands matching the hard-dangerous list are auto-blocked.
- *   - Everything else falls back to manual approval via
- *     `{ shouldBlock: true, unavailable: true }`.
+ *   - Stage 0: safe-tool allowlist + Bash sandbox/danger heuristics.
+ *   - Stage 1: xAI-backed fast classifier (`grok-4-fast`) with a compact
+ *     transcript and strict structured output.
+ *   - Stage 2: xAI-backed thinking classifier (`grok-4`) only when the fast
+ *     stage blocks, reducing false positives without touching the T11 handler
+ *     grace/race path.
  *
- * This reduces the stub surface without dragging provider-bound side-query
- * wiring into the new permissions modules yet.
+ * Structural gaps that remain after this tranche:
+ *
+ *   - AgenC does not yet expose openclaude's remote auto-mode circuit breaker
+ *     or custom auto-mode rules/model settings. The gate therefore uses local
+ *     classifier reachability (API key present) rather than GrowthBook, and
+ *     the prompt is runtime-owned rather than settings-owned.
  */
+const DEFAULT_AUTO_MODE_FAST_MODEL = "grok-4-fast";
+const DEFAULT_AUTO_MODE_THINKING_MODEL = "grok-4";
+const DEFAULT_AUTO_MODE_TIMEOUT_MS = 15_000;
+const MAX_CLASSIFIER_TRANSCRIPT_CHARS = 200_000;
+const STRUCTURED_OUTPUT_NAME_FAST = "agenc_auto_mode_classifier_fast";
+const STRUCTURED_OUTPUT_NAME_THINKING = "agenc_auto_mode_classifier_thinking";
+
+const AUTO_MODE_SYSTEM_PROMPT = [
+  "You are the AgenC auto-mode safety classifier.",
+  "Decide whether the proposed tool action should be blocked before the runtime auto-approves it.",
+  "The transcript contains only user-authored messages and prior assistant tool invocations.",
+  "Assistant free-form commentary is intentionally excluded and must not be inferred.",
+  "Allow an action only when it is clearly requested by the user or is a narrow, necessary step toward the user's explicit goal.",
+  "Block actions that are destructive, irreversible, privilege-escalating, persistence-modifying, credential-related, exfiltrating, broad in scope, or outside the user's stated intent.",
+  "Explicit user confirmation must be direct and specific to the risky action.",
+  "If intent is ambiguous, block.",
+  "Keep reasons short and concrete.",
+].join("\n");
+
+const AUTO_MODE_FAST_SUFFIX = [
+  "Make a conservative first-pass decision.",
+  "If you are uncertain, set shouldBlock=true.",
+  "Do not speculate beyond the transcript and proposed action.",
+].join("\n");
+
+const AUTO_MODE_THINKING_SUFFIX = [
+  "Re-evaluate the proposed action carefully.",
+  "Use the transcript to determine whether the user clearly authorized this scope of action.",
+  "Populate the optional thinking field with a brief justification before the final decision.",
+].join("\n");
+
+const FAST_STAGE_SCHEMA: LLMStructuredOutputSchema = {
+  type: "json_schema",
+  name: STRUCTURED_OUTPUT_NAME_FAST,
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      shouldBlock: { type: "boolean" },
+      reason: { type: "string", minLength: 1, maxLength: 512 },
+    },
+    required: ["shouldBlock", "reason"],
+  },
+};
+
+const THINKING_STAGE_SCHEMA: LLMStructuredOutputSchema = {
+  type: "json_schema",
+  name: STRUCTURED_OUTPUT_NAME_THINKING,
+  strict: true,
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      shouldBlock: { type: "boolean" },
+      reason: { type: "string", minLength: 1, maxLength: 512 },
+      thinking: { type: "string", minLength: 1, maxLength: 2_048 },
+    },
+    required: ["shouldBlock", "reason", "thinking"],
+  },
+};
+
+interface RemoteClassifierConfig {
+  readonly apiKey: string;
+  readonly fastModel: string;
+  readonly thinkingModel: string;
+  readonly timeoutMs: number;
+}
+
+interface RemoteClassifierStageRequest {
+  readonly stage: "fast" | "thinking";
+  readonly model: string;
+  readonly systemPrompt: string;
+  readonly userPrompt: string;
+  readonly signal?: AbortSignal;
+}
+
+interface RemoteClassifierStageResponse {
+  readonly shouldBlock: boolean;
+  readonly reason: string;
+  readonly thinking?: string;
+  readonly usage: LLMUsage | null;
+  readonly model: string;
+}
+
+type RemoteClassifierStageRunner = (
+  request: RemoteClassifierStageRequest,
+) => Promise<RemoteClassifierStageResponse>;
+
+let remoteClassifierStageRunner: RemoteClassifierStageRunner =
+  defaultRemoteClassifierStageRunner;
+
+export function __setRemoteClassifierStageRunnerForTesting(
+  runner: RemoteClassifierStageRunner,
+): () => void {
+  const previous = remoteClassifierStageRunner;
+  remoteClassifierStageRunner = runner;
+  return () => {
+    remoteClassifierStageRunner = previous;
+  };
+}
+
+function resolveRemoteClassifierConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): RemoteClassifierConfig | null {
+  const apiKey = resolveApiKey(env);
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    fastModel: DEFAULT_AUTO_MODE_FAST_MODEL,
+    thinkingModel: DEFAULT_AUTO_MODE_THINKING_MODEL,
+    timeoutMs: DEFAULT_AUTO_MODE_TIMEOUT_MS,
+  };
+}
+
+function mapProviderUsage(
+  usage: ProviderLLMUsage | undefined,
+): LLMUsage | null {
+  if (!usage) return null;
+  return {
+    inputTokens: usage.promptTokens,
+    outputTokens: usage.completionTokens,
+  };
+}
+
+function parseClassifierStructuredOutput(
+  payload: unknown,
+  stage: "fast" | "thinking",
+): {
+  readonly shouldBlock: boolean;
+  readonly reason: string;
+  readonly thinking?: string;
+} {
+  const parsed = typeof payload === "string" ? tryParseJson(payload) : payload;
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(
+      `auto mode classifier ${stage} stage returned non-object structured output`,
+    );
+  }
+  const candidate = parsed as {
+    shouldBlock?: unknown;
+    reason?: unknown;
+    thinking?: unknown;
+  };
+  if (typeof candidate.shouldBlock !== "boolean") {
+    throw new Error(
+      `auto mode classifier ${stage} stage omitted shouldBlock`,
+    );
+  }
+  if (typeof candidate.reason !== "string" || candidate.reason.trim().length === 0) {
+    throw new Error(`auto mode classifier ${stage} stage omitted reason`);
+  }
+  if (
+    stage === "thinking" &&
+    (typeof candidate.thinking !== "string" || candidate.thinking.trim().length === 0)
+  ) {
+    throw new Error(`auto mode classifier thinking stage omitted thinking`);
+  }
+  return {
+    shouldBlock: candidate.shouldBlock,
+    reason: candidate.reason.trim(),
+    ...(typeof candidate.thinking === "string" && candidate.thinking.trim().length > 0
+      ? { thinking: candidate.thinking.trim() }
+      : {}),
+  };
+}
+
+function tryParseJson(input: string): unknown {
+  try {
+    return JSON.parse(input) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+async function defaultRemoteClassifierStageRunner(
+  request: RemoteClassifierStageRequest,
+): Promise<RemoteClassifierStageResponse> {
+  const config = resolveRemoteClassifierConfig();
+  if (!config) {
+    throw new Error("auto mode classifier unavailable: missing xAI API key");
+  }
+  const provider = createProvider("grok", {
+    apiKey: config.apiKey,
+    model: request.model,
+    timeoutMs: config.timeoutMs,
+  }) as LLMProvider;
+  const response = await provider.chat(
+    [
+      { role: "system", content: request.systemPrompt },
+      { role: "user", content: request.userPrompt },
+    ],
+    {
+      signal: request.signal,
+      timeoutMs: config.timeoutMs,
+      parallelToolCalls: false,
+      structuredOutput: {
+        enabled: true,
+        schema:
+          request.stage === "thinking"
+            ? THINKING_STAGE_SCHEMA
+            : FAST_STAGE_SCHEMA,
+      },
+    },
+  );
+  const parsed = parseClassifierStructuredOutput(
+    response.structuredOutput?.parsed ??
+      response.structuredOutput?.rawText ??
+      response.content,
+    request.stage,
+  );
+  return {
+    ...parsed,
+    usage: mapProviderUsage(response.usage),
+    model: response.model,
+  };
+}
+
+function emitClassifierWarningOnce(event: {
+  readonly cause: string;
+  readonly message: string;
+  readonly toolName: string;
+}): void {
+  if (stubWarningFired) return;
+  stubWarningFired = true;
+  warningSink(event);
+}
+
+function detectTranscriptTooLong(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("prompt is too long") ||
+    message.includes("context window") ||
+    message.includes("maximum context") ||
+    message.includes("context length");
+}
+
+function extractUserText(content: unknown): string[] {
+  if (typeof content === "string") return [content];
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part) => {
+    if (!part || typeof part !== "object") return [];
+    const candidate = part as { type?: unknown; text?: unknown };
+    return candidate.type === "text" && typeof candidate.text === "string"
+      ? [candidate.text]
+      : [];
+  });
+}
+
+function extractAssistantToolCalls(message: LLMMessage): string[] {
+  if (Array.isArray(message.toolCalls) && message.toolCalls.length > 0) {
+    return message.toolCalls.flatMap((toolCall) => {
+      if (!toolCall || typeof toolCall.name !== "string") return [];
+      return [
+        `ASSISTANT_TOOL ${formatActionForClassifier(toolCall.name, toolCall.arguments)}`,
+      ];
+    });
+  }
+  if (!Array.isArray(message.content)) return [];
+  return message.content.flatMap((block) => {
+    if (!block || typeof block !== "object") return [];
+    const candidate = block as {
+      type?: unknown;
+      name?: unknown;
+      input?: unknown;
+    };
+    if (candidate.type !== "tool_use" || typeof candidate.name !== "string") {
+      return [];
+    }
+    return [
+      `ASSISTANT_TOOL ${formatActionForClassifier(candidate.name, candidate.input)}`,
+    ];
+  });
+}
+
+function serializeClassifierMessage(message: LLMMessage): string[] {
+  switch (message.role) {
+    case "user":
+      return extractUserText(message.content).map((text) => `USER ${text}`);
+    case "assistant":
+      return extractAssistantToolCalls(message);
+    default:
+      return [];
+  }
+}
+
+function buildTranscriptForRemoteClassifier(
+  messages: readonly LLMMessage[],
+): { readonly text: string; readonly truncated: boolean } {
+  const kept: string[] = [];
+  let totalChars = 0;
+  let truncated = false;
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const serialized = serializeClassifierMessage(messages[i]!);
+    if (serialized.length === 0) continue;
+    const block = `${serialized.join("\n")}\n`;
+    if (totalChars + block.length > MAX_CLASSIFIER_TRANSCRIPT_CHARS) {
+      truncated = true;
+      if (kept.length === 0 && MAX_CLASSIFIER_TRANSCRIPT_CHARS > 0) {
+        kept.unshift(block.slice(Math.max(0, block.length - MAX_CLASSIFIER_TRANSCRIPT_CHARS)));
+      }
+      break;
+    }
+    kept.unshift(block);
+    totalChars += block.length;
+  }
+
+  return { text: kept.join("").trim(), truncated };
+}
+
+function buildRemoteClassifierUserPrompt(
+  opts: ClassifyYoloActionOpts,
+  stage: "fast" | "thinking",
+): string {
+  const transcript = buildTranscriptForRemoteClassifier(opts.messages);
+  const action = formatActionForClassifier(
+    opts.action.toolName,
+    opts.action.input,
+  );
+  const transcriptSection = transcript.text.length > 0
+    ? transcript.text
+    : "<empty>";
+  const suffix = stage === "thinking"
+    ? AUTO_MODE_THINKING_SUFFIX
+    : AUTO_MODE_FAST_SUFFIX;
+  return [
+    "Transcript:",
+    transcriptSection,
+    "",
+    "Proposed action:",
+    action,
+    "",
+    transcript.truncated
+      ? "Earlier transcript entries were truncated to stay within the classifier budget."
+      : "The transcript was included in full within the classifier budget.",
+    suffix,
+  ].join("\n");
+}
+
 export async function classifyYoloAction(
   opts: ClassifyYoloActionOpts,
 ): Promise<YoloClassifierResult> {
   const started = Date.now();
+  const remoteConfig = resolveRemoteClassifierConfig();
   const finish = (
     result: Omit<YoloClassifierResult, "durationMs" | "model" | "stage" | "usage"> & {
       readonly model?: string;
@@ -248,7 +613,10 @@ export async function classifyYoloAction(
     },
   ): YoloClassifierResult =>
     Object.freeze({
-      model: "runtime-heuristic",
+      model:
+        result.stage === "thinking"
+          ? "runtime-thinking"
+          : "runtime-fast",
       stage: "fast" as const,
       usage: null,
       durationMs: Date.now() - started,
@@ -265,26 +633,168 @@ export async function classifyYoloAction(
     });
   }
 
-  const bashResult = classifyRuntimeBashAction(opts.action);
-  if (bashResult !== null) {
-    return finish(bashResult);
-  }
-
-  if (!stubWarningFired) {
-    stubWarningFired = true;
-    warningSink({
-      cause: "auto_mode_classifier_partial_runtime",
-      message:
-        "Auto-mode classifier only has the runtime-backed Bash path; other tools fall back to manual approval.",
-      toolName: opts.action.toolName,
+  const stage1Started = Date.now();
+  const fastPathResult = classifyRuntimeFastPath(opts);
+  const stage1DurationMs = Date.now() - stage1Started;
+  if (fastPathResult !== null) {
+    return finish({
+      ...fastPathResult,
+      stage: "fast",
+      stage1Model: "runtime-fast",
+      stage1Usage: null,
+      stage1DurationMs,
     });
   }
 
-  return finish({
+  if (remoteConfig === null) {
+    emitClassifierWarningOnce({
+      cause: "auto_mode_classifier_missing_xai_api_key",
+      message:
+        "xAI-backed auto-mode classifier is unavailable because no xAI API key is configured; falling back to manual approval.",
+      toolName: opts.action.toolName,
+    });
+    return finish({
+      shouldBlock: true,
+      reason: `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
+      unavailable: true,
+      stage: "thinking",
+      model: DEFAULT_AUTO_MODE_THINKING_MODEL,
+      stage1Model: DEFAULT_AUTO_MODE_FAST_MODEL,
+      stage1Usage: null,
+      stage1DurationMs,
+      stage2Model: DEFAULT_AUTO_MODE_THINKING_MODEL,
+      stage2Usage: null,
+      stage2DurationMs: 0,
+    });
+  }
+
+  const stage1Prompt = buildRemoteClassifierUserPrompt(opts, "fast");
+  let fastResult: RemoteClassifierStageResponse;
+  try {
+    fastResult = await remoteClassifierStageRunner({
+      stage: "fast",
+      model: remoteConfig.fastModel,
+      systemPrompt: AUTO_MODE_SYSTEM_PROMPT,
+      userPrompt: stage1Prompt,
+      signal: opts.signal,
+    });
+  } catch (error) {
+    return finish({
+      shouldBlock: true,
+      reason: detectTranscriptTooLong(error)
+        ? "Classifier transcript exceeded context window"
+        : `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
+      unavailable: !detectTranscriptTooLong(error),
+      ...(detectTranscriptTooLong(error) ? { transcriptTooLong: true } : {}),
+      stage: "thinking",
+      model: remoteConfig.thinkingModel,
+      stage1Model: remoteConfig.fastModel,
+      stage1Usage: null,
+      stage1DurationMs,
+      stage2Model: remoteConfig.thinkingModel,
+      stage2Usage: null,
+      stage2DurationMs: 0,
+    });
+  }
+  const remoteStage1DurationMs = Date.now() - stage1Started;
+
+  if (!fastResult.shouldBlock) {
+    return finish({
+      shouldBlock: false,
+      reason: fastResult.reason,
+      stage: "fast",
+      model: fastResult.model,
+      usage: fastResult.usage,
+      stage1Model: fastResult.model,
+      stage1Usage: fastResult.usage,
+      stage1DurationMs: remoteStage1DurationMs,
+    });
+  }
+
+  const stage2Started = Date.now();
+  const stage2Prompt = buildRemoteClassifierUserPrompt(opts, "thinking");
+  try {
+    const thinkingResult = await remoteClassifierStageRunner({
+      stage: "thinking",
+      model: remoteConfig.thinkingModel,
+      systemPrompt: AUTO_MODE_SYSTEM_PROMPT,
+      userPrompt: stage2Prompt,
+      signal: opts.signal,
+    });
+    const stage2DurationMs = Date.now() - stage2Started;
+    return finish({
+      shouldBlock: thinkingResult.shouldBlock,
+      reason: thinkingResult.reason,
+      ...(thinkingResult.thinking ? { thinking: thinkingResult.thinking } : {}),
+      stage: "thinking",
+      model: thinkingResult.model,
+      usage: thinkingResult.usage,
+      stage1Model: fastResult.model,
+      stage1Usage: fastResult.usage,
+      stage1DurationMs: remoteStage1DurationMs,
+      stage2Model: thinkingResult.model,
+      stage2Usage: thinkingResult.usage,
+      stage2DurationMs,
+    });
+  } catch (error) {
+    const transcriptTooLong = detectTranscriptTooLong(error);
+    return finish({
+      shouldBlock: true,
+      reason: transcriptTooLong
+        ? "Classifier transcript exceeded context window"
+        : fastResult.reason,
+      unavailable: !transcriptTooLong,
+      ...(transcriptTooLong ? { transcriptTooLong: true } : {}),
+      stage: "thinking",
+      model: remoteConfig.thinkingModel,
+      usage: fastResult.usage,
+      stage1Model: fastResult.model,
+      stage1Usage: fastResult.usage,
+      stage1DurationMs: remoteStage1DurationMs,
+      stage2Model: remoteConfig.thinkingModel,
+      stage2Usage: null,
+      stage2DurationMs: Date.now() - stage2Started,
+    });
+  }
+}
+
+function classifyRuntimeFastPath(
+  opts: ClassifyYoloActionOpts,
+): 
+  | {
+      readonly shouldBlock: boolean;
+      readonly reason: string;
+      readonly unavailable?: boolean;
+    }
+  | null {
+  if (isAutoModeAllowlistedTool(opts.action.toolName)) {
+    return {
+      shouldBlock: false,
+      reason: "allowlisted_tool",
+    };
+  }
+  return classifyRuntimeBashAction(opts.action);
+}
+
+function classifyRuntimeThinkingPath(
+  opts: ClassifyYoloActionOpts,
+): {
+  readonly shouldBlock: boolean;
+  readonly reason: string;
+  readonly unavailable?: boolean;
+} {
+  if (isRuntimeBackedBashToolName(opts.action.toolName)) {
+    return {
+      shouldBlock: true,
+      reason: `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
+      unavailable: true,
+    };
+  }
+  return {
     shouldBlock: true,
     reason: `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
     unavailable: true,
-  });
+  };
 }
 
 function classifyRuntimeBashAction(
@@ -299,20 +809,12 @@ function classifyRuntimeBashAction(
   if (!isRuntimeBackedBashToolName(action.toolName)) return null;
   const normalizedInput = normalizeRuntimeBashInput(action.input);
   if (normalizedInput === null) {
-    return {
-      shouldBlock: true,
-      reason: `runtime_classifier_manual_approval_required:${action.toolName}`,
-      unavailable: true,
-    };
+    return null;
   }
 
   const command = normalizedInput.command.trim();
   if (command.length === 0) {
-    return {
-      shouldBlock: true,
-      reason: `runtime_classifier_manual_approval_required:${action.toolName}`,
-      unavailable: true,
-    };
+    return null;
   }
 
   const dangerLabel = matchedDangerousLabel(command);

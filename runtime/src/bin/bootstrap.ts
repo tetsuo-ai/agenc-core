@@ -1,6 +1,12 @@
+import { randomUUID } from "node:crypto";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { createProvider, type ProviderName } from "../llm/provider.js";
+import {
+  createProvider,
+  normalizeProviderName,
+  type ProviderName,
+} from "../llm/provider.js";
 import type { LLMProvider } from "../llm/types.js";
 import { MCPManager } from "../mcp-client/manager.js";
 import {
@@ -36,6 +42,7 @@ import {
 } from "../session/session-store.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
+import { recordInitialHistoryOnResume } from "../session/agent-task-lifecycle.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
@@ -43,6 +50,10 @@ import { CostSidecar } from "../session/cost.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
 import type { Event, EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
+import type {
+  ContextCollapseCommitEntry,
+  ContextCollapseSnapshotEntry,
+} from "../types/logs.js";
 import { AgentControl } from "../agents/control.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
@@ -54,8 +65,22 @@ import {
   setCurrentRuntimeSession,
 } from "../utils/currentRuntimeSession.js";
 import {
+  getClaudeConfigHomeDir,
+  resolveClaudeConfigHomeDir,
+} from "../utils/envUtils.js";
+import {
+  loadTranscriptFile,
+} from "../utils/sessionStorage.js";
+import { resolveTransportMode } from "../transport/fallback-ladder.js";
+import { toInfraSessionId } from "../bridge/sessionIdCompat.js";
+import { restoreFromEntries } from "../services/contextCollapse/persist.js";
+import {
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
+  resolveProfile,
+  resolveProfileName,
+  resolveProvider,
+  resolveProviderApiKey,
   resolveModelDisambiguated,
   resolveWorkspace as resolveWorkspaceFromEnv,
   AmbiguousModelError,
@@ -63,6 +88,7 @@ import {
   type AgenCConfig,
 } from "../config/index.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
+import { extractFlagValue } from "./route.js";
 
 export const DEFAULT_MODEL = "grok-4-fast";
 
@@ -77,7 +103,402 @@ export const PROVIDER_MODEL_CATALOG: Readonly<Record<string, readonly string[]>>
       "grok-beta",
       "grok-code-fast-1",
     ]) as readonly string[],
+    openai: Object.freeze(["gpt-5", "o3"]) as readonly string[],
+    anthropic: Object.freeze(["claude-opus-4-7"]) as readonly string[],
+    ollama: Object.freeze(["llama3.3"]) as readonly string[],
+    deepseek: Object.freeze(["deepseek-reasoner"]) as readonly string[],
+    gemini: Object.freeze(["gemini-2.5-pro"]) as readonly string[],
   });
+
+const DEFAULT_PROVIDER: ProviderName = "grok";
+
+const DEFAULT_MODEL_BY_PROVIDER: Readonly<Record<ProviderName, string>> =
+  Object.freeze({
+    grok: "grok-4-fast",
+    openai: "gpt-5",
+    anthropic: "claude-opus-4-7",
+    ollama: "llama3.3",
+    lmstudio: "gpt-4o-mini",
+    openrouter: "openai/gpt-5",
+    groq: "llama-3.3-70b-versatile",
+    deepseek: "deepseek-reasoner",
+    gemini: "gemini-2.5-pro",
+  });
+
+export interface StartupCliFlags {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly profile?: string;
+}
+
+export interface StartupSelection {
+  readonly config: AgenCConfig;
+  readonly profileName?: string;
+  readonly provider: ProviderName;
+  readonly model: string;
+  readonly apiKey?: string;
+}
+
+type StartupInternalEvent = {
+  readonly payload: Record<string, unknown>;
+  readonly agent_id?: string;
+};
+
+type StartupInternalEventPage = {
+  readonly data?: ReadonlyArray<{
+    readonly payload?: Record<string, unknown> | null;
+    readonly agent_id?: string;
+  }>;
+  readonly next_cursor?: string;
+};
+
+async function loadPersistedContextCollapseState(params: {
+  readonly configHomes: readonly string[];
+  readonly workspaceRoot: string;
+  readonly conversationId: string;
+  readonly projectRootMarkers?: readonly string[];
+}): Promise<{
+  readonly contextCollapseCommits: ContextCollapseCommitEntry[];
+  readonly contextCollapseSnapshot?: ContextCollapseSnapshotEntry;
+} | null> {
+  const candidates = new Set<string>([
+    join(
+      getProjectDir(params.workspaceRoot, params.projectRootMarkers),
+      `${params.conversationId}.jsonl`,
+    ),
+  ]);
+
+  for (const configHome of params.configHomes) {
+    try {
+      const projectRoots = await readdir(join(configHome, "projects"), {
+        withFileTypes: true,
+      });
+      for (const entry of projectRoots) {
+        if (!entry.isDirectory()) continue;
+        candidates.add(
+          join(
+            configHome,
+            "projects",
+            entry.name,
+            `${params.conversationId}.jsonl`,
+          ),
+        );
+      }
+    } catch {
+      // No projects directory yet for this config-home candidate.
+    }
+  }
+
+  let firstTranscript: Awaited<ReturnType<typeof loadTranscriptFile>> | null =
+    null;
+  for (const transcriptPath of candidates) {
+    try {
+      const transcript = await loadTranscriptFile(transcriptPath);
+      if (
+        (transcript.contextCollapseCommits?.length ?? 0) > 0 ||
+        transcript.contextCollapseSnapshot !== undefined
+      ) {
+        return transcript;
+      }
+      firstTranscript ??= transcript;
+    } catch {
+      // Best-effort candidate probing. Caller emits a warning only if no
+      // candidate with valid transcript data can be restored.
+    }
+  }
+
+  return firstTranscript;
+}
+
+export function readStartupCliFlags(
+  argv: readonly string[],
+): StartupCliFlags {
+  const userArgv = argv.slice(2);
+  const provider = extractFlagValue(userArgv, "--provider") ?? undefined;
+  const model = extractFlagValue(userArgv, "--model") ?? undefined;
+  const profile = extractFlagValue(userArgv, "--profile") ?? undefined;
+  return Object.freeze({
+    ...(provider ? { provider } : {}),
+    ...(model ? { model } : {}),
+    ...(profile ? { profile } : {}),
+  });
+}
+
+function defaultModelForProvider(provider: ProviderName): string {
+  return DEFAULT_MODEL_BY_PROVIDER[provider] ?? DEFAULT_MODEL;
+}
+
+function configuredModelForProvider(
+  config: AgenCConfig,
+  provider: ProviderName,
+): string | undefined {
+  const model = config.model?.trim();
+  if (!model) return undefined;
+  if (provider === DEFAULT_PROVIDER) return model;
+  return model === DEFAULT_MODEL ? undefined : model;
+}
+
+function resolveProviderNameOrThrow(raw: string): ProviderName {
+  const normalized = normalizeProviderName(raw);
+  if (normalized === null) {
+    throw new Error(
+      `unknown provider '${raw}'. Expected one of: ${Object.keys(DEFAULT_MODEL_BY_PROVIDER).join(", ")}`,
+    );
+  }
+  return normalized;
+}
+
+export function resolveStartupSelection(params: {
+  readonly config: AgenCConfig;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly argv?: readonly string[];
+}): StartupSelection {
+  const env = params.env ?? process.env;
+  const cli = readStartupCliFlags(params.argv ?? process.argv);
+  const profileName = cli.profile ?? resolveProfileName(env);
+  const configWithProfile =
+    profileName !== undefined ? resolveProfile(params.config, profileName) : params.config;
+
+  const providerOverride = cli.provider ?? resolveProvider(env);
+  const modelOverride = cli.model ?? undefined;
+
+  if (typeof modelOverride === "string" && modelOverride.includes(":")) {
+    const resolved = resolveModelOrExit(modelOverride);
+    return {
+      config: configWithProfile,
+      ...(profileName !== undefined ? { profileName } : {}),
+      provider: resolved.provider as ProviderName,
+      model: resolved.model,
+      ...(resolveProviderApiKey(resolved.provider, env)
+        ? { apiKey: resolveProviderApiKey(resolved.provider, env) }
+        : {}),
+    };
+  }
+
+  if (providerOverride) {
+    const provider = resolveProviderNameOrThrow(providerOverride);
+    const model =
+      modelOverride ??
+      configuredModelForProvider(configWithProfile, provider) ??
+      defaultModelForProvider(provider);
+    return {
+      config: configWithProfile,
+      ...(profileName !== undefined ? { profileName } : {}),
+      provider,
+      model,
+      ...(resolveProviderApiKey(provider, env)
+        ? { apiKey: resolveProviderApiKey(provider, env) }
+        : {}),
+    };
+  }
+
+  const configProvider = configWithProfile.model_provider;
+  if (configProvider && configProvider.length > 0) {
+    const provider = resolveProviderNameOrThrow(configProvider);
+    const model =
+      modelOverride ??
+      configuredModelForProvider(configWithProfile, provider) ??
+      defaultModelForProvider(provider);
+    return {
+      config: configWithProfile,
+      ...(profileName !== undefined ? { profileName } : {}),
+      provider,
+      model,
+      ...(resolveProviderApiKey(provider, env)
+        ? { apiKey: resolveProviderApiKey(provider, env) }
+        : {}),
+    };
+  }
+
+  if (modelOverride ?? configWithProfile.model) {
+    const resolved = resolveModelOrExit(modelOverride ?? configWithProfile.model ?? DEFAULT_MODEL);
+    return {
+      config: configWithProfile,
+      ...(profileName !== undefined ? { profileName } : {}),
+      provider: resolved.provider as ProviderName,
+      model: resolved.model,
+      ...(resolveProviderApiKey(resolved.provider, env)
+        ? { apiKey: resolveProviderApiKey(resolved.provider, env) }
+        : {}),
+    };
+  }
+
+  return {
+    config: configWithProfile,
+    ...(profileName !== undefined ? { profileName } : {}),
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    ...(resolveProviderApiKey(DEFAULT_PROVIDER, env)
+      ? { apiKey: resolveProviderApiKey(DEFAULT_PROVIDER, env) }
+      : {}),
+  };
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function buildSessionIngressLogUrl(baseUrl: string, sessionId: string): string {
+  return `${trimTrailingSlash(baseUrl)}/v1/session_ingress/session/${sessionId}`;
+}
+
+function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
+  return `${trimTrailingSlash(baseUrl)}/v1/code/sessions/${toInfraSessionId(sessionId)}`;
+}
+
+function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
+  const raw = env.CLAUDE_CODE_WORKER_EPOCH;
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || !Number.isSafeInteger(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+async function fetchStartupInternalEvents(params: {
+  readonly sessionBaseUrl: string;
+  readonly headers: Record<string, string>;
+  readonly subagents?: boolean;
+}): Promise<StartupInternalEvent[] | null> {
+  const allEvents: StartupInternalEvent[] = [];
+  let cursor: string | undefined;
+
+  while (true) {
+    const url = new URL(
+      `${params.sessionBaseUrl}/worker/internal-events`,
+    );
+    if (params.subagents) {
+      url.searchParams.set("subagents", "true");
+    }
+    if (cursor) {
+      url.searchParams.set("cursor", cursor);
+    }
+
+    const response = await fetch(url, {
+      headers: params.headers,
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const page = (await response.json()) as StartupInternalEventPage;
+    for (const event of page.data ?? []) {
+      if (event.payload) {
+        allEvents.push({
+          payload: event.payload,
+          ...(event.agent_id ? { agent_id: event.agent_id } : {}),
+        });
+      }
+    }
+
+    if (!page.next_cursor) {
+      return allEvents;
+    }
+    cursor = page.next_cursor;
+  }
+}
+
+async function writeStartupInternalEvent(params: {
+  readonly sessionBaseUrl: string;
+  readonly headers: Record<string, string>;
+  readonly workerEpoch: number;
+  readonly eventType: string;
+  readonly payload: Record<string, unknown>;
+  readonly options?: { readonly isCompaction?: boolean; readonly agentId?: string };
+}): Promise<void> {
+  const response = await fetch(`${params.sessionBaseUrl}/worker/internal-events`, {
+    method: "POST",
+    headers: {
+      ...params.headers,
+      "Content-Type": "application/json",
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      worker_epoch: params.workerEpoch,
+      events: [
+        {
+          payload: {
+            type: params.eventType,
+            ...params.payload,
+            uuid:
+              typeof params.payload.uuid === "string"
+                ? params.payload.uuid
+                : randomUUID(),
+          },
+          ...(params.options?.isCompaction ? { is_compaction: true } : {}),
+          ...(params.options?.agentId ? { agent_id: params.options.agentId } : {}),
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`startup internal event POST failed: ${response.status}`);
+  }
+}
+
+async function registerStartupSessionIngress(params: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly conversationId: string;
+}): Promise<void> {
+  const baseUrl = params.env.SESSION_INGRESS_URL?.trim();
+  if (!baseUrl) {
+    return;
+  }
+
+  const [
+    sessionIngressAuthMod,
+    sessionStorageMod,
+  ] = await Promise.all([
+    import("../utils/sessionIngressAuth.js"),
+    import("../utils/sessionStorage.js"),
+  ]);
+  const authHeaders = sessionIngressAuthMod.getSessionIngressAuthHeaders();
+
+  sessionStorageMod.setRemoteIngressUrl(
+    buildSessionIngressLogUrl(baseUrl, params.conversationId),
+  );
+
+  if (resolveTransportMode(params.env) !== "sse") {
+    return;
+  }
+
+  if (Object.keys(authHeaders).length === 0) {
+    return;
+  }
+
+  const sessionBaseUrl = buildCodeSessionBaseUrl(baseUrl, params.conversationId);
+  sessionStorageMod.setInternalEventReader(
+    () =>
+      fetchStartupInternalEvents({
+        sessionBaseUrl,
+        headers: authHeaders,
+      }),
+    () =>
+      fetchStartupInternalEvents({
+        sessionBaseUrl,
+        headers: authHeaders,
+        subagents: true,
+      }),
+  );
+
+  const workerEpoch = parseWorkerEpoch(params.env);
+  if (workerEpoch === null) {
+    return;
+  }
+
+  sessionStorageMod.setInternalEventWriter((eventType, payload, options) =>
+    writeStartupInternalEvent({
+      sessionBaseUrl,
+      headers: authHeaders,
+      workerEpoch,
+      eventType,
+      payload,
+      options,
+    }),
+  );
+}
 
 const TRANSCRIPT_BOOT_EVENT_TYPES = new Set<string>([
   "turn_started",
@@ -139,7 +560,47 @@ function transcriptMessagesFrom(
   );
 }
 
-function buildPlaceholderServices(
+/**
+ * Build the `SessionServices` container for a live local-runtime session.
+ *
+ * This is NOT a placeholder in the sense of "fake container that should be
+ * swapped in test": it is the canonical live-session wiring. However, several
+ * subsystem slots are still structural stubs until their owning tranche lands.
+ * Every stub is labelled below with the tranche owner per
+ * `docs/plan/feature-matrix.md` and `docs/plan/runtime-owner-manifest.md`.
+ *
+ * Real wiring today:
+ *  - `provider` / `registry` / `configStore` / `permissionModeRegistry` — live
+ *  - `toolApprovals` / `networkApproval` — live (permissions T11)
+ *  - `mcpManager` — live facade over the real `MCPManager` (T9)
+ *  - `agentControl` — rebound post-construction by `bindSessionAgentControl`
+ *    (bootstrap caller wires the real `AgentControl` + `AgentRegistry` pair
+ *    directly below this function's call site)
+ *
+ * Deferred structural stubs (each documented inline with its tranche owner):
+ *  - `mcpConnectionManager` (T9 — codex `McpConnectionManager`)
+ *  - `mcpStartupCancellationToken` (T9)
+ *  - `unifiedExecManager` (T7 — codex `UnifiedExecProcessManager`)
+ *  - `analyticsEventsClient` (T-future — telemetry)
+ *  - `hooks` (T4 compact hooks, T7 stop hooks, T10 lifecycle hooks)
+ *  - `rollout` (T5 — `RolloutRecorder`; session attaches a live
+ *    `RolloutStore` separately via `session.mountRolloutStore(...)`)
+ *  - `userShell` (T7)
+ *  - `agentIdentityManager` (T9)
+ *  - `shellSnapshotTx` (T9)
+ *  - `execPolicy` (T11)
+ *  - `authManager` (T13 — multi-provider auth)
+ *  - `sessionTelemetry` (T6)
+ *  - `modelsManager` (T13)
+ *  - `skillsManager` / `pluginsManager` / `skillsWatcher` (T10)
+ *  - `threadStore` (T6)
+ *  - `modelClient` (T13)
+ *  - `codeModeService` (T-future)
+ *
+ * Every deferred stub here must stay structurally valid (no field reads
+ * throw) until its tranche replaces it with the real implementation.
+ */
+function buildDeferredServices(
   provider: LLMProvider,
   registry: ReturnType<typeof buildToolRegistry>,
   mcpManager: SessionServices["mcpManager"],
@@ -149,20 +610,36 @@ function buildPlaceholderServices(
   networkApproval: RuntimeNetworkApprovalService,
 ): SessionServices {
   const noopAsync = async () => {
-    /* placeholder */
+    /* deferred structural stub — replaced when the owning tranche lands */
   };
   return {
+    /** T9: real `McpConnectionManager` (codex-rs mcp_connection_manager). */
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
       requiredStartupFailures: async () => [],
     },
+    /** T9: startup cancellation token for MCP server-list refresh races. */
     mcpStartupCancellationToken: {
       cancel: () => {},
       isCancelled: () => false,
     },
+    /** T7: `UnifiedExecProcessManager` with real background-terminal timeout. */
     unifiedExecManager: { maxTimeoutMs: 0 },
+    /** T-future: analytics/telemetry client. */
     analyticsEventsClient: { emit: noopAsync },
+    /**
+     * Hooks registry. Codex `Hooks` covers three distinct lifecycle surfaces:
+     *   - pre/post compact hooks — T4 (`llm/compact/`)
+     *   - stop / stop-failure hooks — T7 (`phases/stop-hooks.ts`, read via
+     *     `hooks.stopHooks` / `hooks.stopFailureHooks` handler arrays)
+     *   - session-start hooks — T10 (prompts/memory startup wiring)
+     *
+     * The `stopHooks` / `stopFailureHooks` keys read by `phases/stop-hooks.ts`
+     * are intentionally omitted here so the phase's `hooks?.stopHooks ?? []`
+     * fallback returns an empty list. When a consumer wires configured stop
+     * handlers, they will replace this slot with the real shape.
+     */
     hooks: {
       startupWarnings: () => [],
       executePreCompact: noopAsync,
@@ -170,12 +647,21 @@ function buildPlaceholderServices(
       executeStop: noopAsync,
       executeStopFailure: noopAsync,
     },
+    /**
+     * T5: `RolloutRecorder`. AgenC mounts a live `RolloutStore` post-
+     * construction via `session.mountRolloutStore(...)`; this slot stays
+     * undefined until a dedicated recorder lands that matches codex's
+     * `Mutex<rollout_recorder>` shape.
+     */
     rollout: undefined,
+    /** T7: `UserShell` (deriveExecArgs for shell tool). */
     userShell: {
       path: process.env.SHELL ?? "/bin/sh",
       deriveExecArgs: (input: string) => ["-c", input],
     },
+    /** T9: `AgentIdentityManager` (subagent identity registration). */
     agentIdentityManager: { ensureRegistered: noopAsync },
+    /** T9: `ShellSnapshotTx` (BehaviorSubject broadcasting shell env snapshots). */
     shellSnapshotTx: {
       value: null,
       isClosed: false,
@@ -187,13 +673,25 @@ function buildPlaceholderServices(
       complete: () => {},
     } as unknown as SessionServices["shellSnapshotTx"],
     showRawAgentReasoning: false,
+    /** T11: `ExecPolicyManager` (exec-policy DSL evaluator). */
     execPolicy: { current: () => null },
+    /** T13: `AuthManager` (multi-provider OAuth refresh + bearer). */
     authManager: { mode: "bearer_key" },
+    /** T6: `SessionTelemetry` (per-turn timing + retry classification). */
     sessionTelemetry: {},
+    /**
+     * T13: `ModelsManager` (per-model capability registry + online refresh).
+     *
+     * Until T13 lands, this stub returns a safe structural default. The
+     * `effectiveContextWindowPercent: 100` value intentionally matches codex's
+     * "no reduction" meaning (codex default is 95; we use 100 as the fallback
+     * for a model we know nothing about, which keeps `modelContextWindow` from
+     * shrinking the live context to 1% of the real window).
+     */
     modelsManager: {
       getModelInfo: async (slug: string) => ({
         slug,
-        effectiveContextWindowPercent: 1,
+        effectiveContextWindowPercent: 100,
         supportedReasoningLevels: [],
         defaultReasoningSummary: "auto",
         truncationPolicy: "off",
@@ -202,6 +700,7 @@ function buildPlaceholderServices(
       tryListModels: () => undefined,
       listModels: async () => [],
     },
+    /** T11 live: per-session approval cache backed by `RuntimeApprovalStore`. */
     toolApprovals: {
       hasApproval: (key: string) => toolApprovals.get(key) !== undefined,
       approve: (key: string) => {
@@ -217,19 +716,33 @@ function buildPlaceholderServices(
         }),
     },
     guardianRejections: new Map(),
+    /** T10: `SkillsManager` (real skills discovery + load outcome). */
     skillsManager: {
       skillsForConfig: async () => ({ invokedSkills: [] }),
     },
+    /** T10: `PluginsManager` (plugin-kit integration). */
     pluginsManager: {
       pluginsForConfig: async () => ({ effectiveSkillRoots: () => null }),
     },
+    /** T9 live facade — `createSessionMcpService(...)` wraps the real `MCPManager`. */
     mcpManager,
+    /** T10: `SkillsWatcher` (skills fs watcher). */
     skillsWatcher: { start: () => {} },
+    /**
+     * T9 live: the real `AgentControl` + `AgentRegistry` pair is bound into
+     * this slot by `bindSessionAgentControl(session, ...)` in the caller,
+     * immediately after `new Session(...)`. This deferred stub is therefore
+     * only live during the short window between Session construction and
+     * the binding call. See `session.ts::SessionServices.agentControl` for
+     * the single-bind-site invariant that keeps this slot effectively
+     * immutable after bootstrap.
+     */
     agentControl: {
       maxThreads: 0,
       spawnAgent: async () => null,
       shutdownAgentTree: noopAsync,
     },
+    /** T11 live: network-approval service backed by `RuntimeNetworkApprovalService`. */
     networkApproval: {
       enabled: () => true,
       clearSessionHosts: () => {
@@ -244,11 +757,14 @@ function buildPlaceholderServices(
           opts as Parameters<typeof networkApproval.requestDeferredApproval>[0],
         ),
     },
+    /** T6: `LocalThreadStore` (thread-name persistence). */
     threadStore: {
       threadName: async () => undefined,
       setThreadName: noopAsync,
     },
+    /** T13: `ModelClient` (two-level Session + Turn client per `client.rs`). */
     modelClient: { setWindowGeneration: () => {} },
+    /** T-future: `CodeModeService` (codex JS-REPL tool surface). */
     codeModeService: { enabled: () => false },
     provider,
     registry,
@@ -257,19 +773,37 @@ function buildPlaceholderServices(
   };
 }
 
-function buildMinimalConfig(cwd: string, model: string): Config {
+/**
+ * Structural `Config` shape for the live local-runtime session. Most fields
+ * are still deferred to later tranches that own the corresponding subsystems
+ * (see per-field comments). Used as the `Session.config` snapshot source.
+ */
+function buildDeferredConfig(cwd: string, model: string): Config {
   return {
     model,
     cwd,
+    /**
+     * T10: real feature-flag source. Today both flags are hard-false so the
+     * session does not accidentally believe it is running in a ChatGPT-auth
+     * or legacy-Landlock context before feature-flag wiring lands.
+     */
     features: {
       appsEnabledForAuth: () => false,
       useLegacyLandlock: () => false,
     },
+    /** T9: `multiAgentV2` hints (subagent usage hints + metadata visibility). */
     multiAgentV2: {
       usageHintEnabled: false,
       usageHintText: "",
       hideSpawnAgentMetadata: false,
     },
+    /**
+     * T11 deferred: `permissions.allowLoginShell`, `shellEnvironmentPolicy`,
+     * and `windowsSandboxPrivateDesktop` are sandbox/exec-policy knobs. The
+     * real values come from the config/profile loader (T10) + sandbox policy
+     * resolver (T11). Conservative defaults here keep the shell tool from
+     * picking up login-shell semantics before explicit config arrives.
+     */
     permissions: {
       allowLoginShell: false,
       shellEnvironmentPolicy: {
@@ -278,15 +812,30 @@ function buildMinimalConfig(cwd: string, model: string): Config {
       },
       windowsSandboxPrivateDesktop: false,
     },
+    /** T-future: ghost-snapshot state machine (codex workspace restore). */
     ghostSnapshot: { enabled: false },
+    /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
     agentRoles: [],
   };
 }
 
-function buildMinimalModelInfo(slug: string): ModelInfo {
+/**
+ * Structural `ModelInfo` fallback for the live local-runtime session. Used
+ * as `Session.modelInfo` when the T13 `ModelsManager` is not available to
+ * return real per-model metadata.
+ *
+ * `effectiveContextWindowPercent: 100` matches codex's "no reduction"
+ * meaning. Codex's backend default is 95; we use 100 here because we have
+ * no authoritative per-model metadata to justify any reduction, and using
+ * the previous `1` value meant the live context window was silently
+ * truncated to 1% of the real window by `modelContextWindow()`.
+ * `supportedReasoningLevels: []` silently disables reasoning-level routing
+ * until T13 wires the real per-model capability registry.
+ */
+function buildDeferredModelInfo(slug: string): ModelInfo {
   return {
     slug,
-    effectiveContextWindowPercent: 1,
+    effectiveContextWindowPercent: 100,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",
@@ -623,8 +1172,9 @@ export class TurnStateAccumulator {
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
-  readonly apiKey: string;
+  readonly apiKey?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly argv?: readonly string[];
   readonly cwd?: string;
   readonly conversationId?: string;
   readonly toolRegistryOptions?: Omit<BuildToolRegistryOptions, "workspaceRoot">;
@@ -656,12 +1206,23 @@ export async function bootstrapLocalRuntimeSession(
   options: BootstrapLocalRuntimeSessionOptions,
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
+  const argv = options.argv ?? process.argv;
   const agencHome = resolveAgencHomeFromEnv(env);
+  const transcriptConfigHome = resolveClaudeConfigHomeDir({
+    configDirEnv: env.CLAUDE_CONFIG_DIR,
+    homeDir: env.HOME,
+  });
+  const legacyProcessConfigHome = getClaudeConfigHomeDir();
   const configStore = new ConfigStore({
     home: agencHome,
     env,
   });
   await configStore.reload();
+  const startup = resolveStartupSelection({
+    config: configStore.current(),
+    env,
+    argv,
+  });
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
@@ -685,8 +1246,8 @@ export async function bootstrapLocalRuntimeSession(
   );
   const toolApprovals = new RuntimeApprovalStore<unknown>();
   const networkApproval = new RuntimeNetworkApprovalService();
-  const rawModel = configStore.current().model ?? DEFAULT_MODEL;
-  const { provider: resolvedProvider, model } = resolveModelOrExit(rawModel);
+  const resolvedProvider = startup.provider;
+  const model = startup.model;
   const mcpManager = createSessionMcpManagerFromEnv(env);
 
   const registry = buildToolRegistry({
@@ -696,19 +1257,19 @@ export async function bootstrapLocalRuntimeSession(
   const provider: LLMProvider = createProvider(
     resolvedProvider as ProviderName,
     {
-      apiKey: options.apiKey,
+      apiKey: options.apiKey ?? startup.apiKey,
       model,
       tools: registry.toLLMTools(),
     },
   );
   const conversationId =
     options.conversationId ?? `conv-${Date.now().toString(36)}`;
-  const config = buildMinimalConfig(workspaceRoot, model);
-  const modelInfo = buildMinimalModelInfo(model);
+  const config = buildDeferredConfig(workspaceRoot, model);
+  const modelInfo = buildDeferredModelInfo(model);
   let initialState: SessionState = {
     sessionConfiguration: {
       ...sessionConfigurationFromAgenCConfig({
-        config: configStore.current(),
+        config: startup.config,
         workspaceRoot,
         model,
         provider: resolvedProvider,
@@ -728,7 +1289,7 @@ export async function bootstrapLocalRuntimeSession(
     conversationId,
     initialState,
     features: config.features,
-    services: buildPlaceholderServices(
+    services: buildDeferredServices(
       provider,
       registry,
       createSessionMcpService(mcpManager),
@@ -750,9 +1311,13 @@ export async function bootstrapLocalRuntimeSession(
     control: agentControl,
     registry: agentRegistry,
   });
-  await session.startMcpManager(mcpManager);
+  // Intentionally defer `session.startMcpManager(mcpManager)` — per codex
+  // `codex-rs/core/src/session/session.rs:717-748, 766`, SessionConfigured
+  // must be emitted BEFORE the MCP connection manager is constructed
+  // ("Dispatch the SessionConfiguredEvent first and then report any
+  // errors"). The call is moved below, after the session_configured emit.
 
-  const sessionProjectRootMarkers = configStore.current().project_root_markers;
+  const sessionProjectRootMarkers = startup.config.project_root_markers;
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
@@ -780,6 +1345,53 @@ export async function bootstrapLocalRuntimeSession(
 
   try {
     setCurrentRuntimeSession(session);
+    await registerStartupSessionIngress({
+      env,
+      conversationId,
+    });
+
+    // Context-collapse runtime state is process-global. Clear it on every
+    // bootstrap, then restore persisted commit/snapshot metadata for
+    // explicit resume sessions before the first live query can run.
+    restoreFromEntries([], undefined);
+    if (options.conversationId !== undefined) {
+      try {
+        const transcriptLog = await loadPersistedContextCollapseState({
+          configHomes: Array.from(
+            new Set([transcriptConfigHome, legacyProcessConfigHome]),
+          ),
+          workspaceRoot,
+          conversationId,
+          projectRootMarkers: sessionProjectRootMarkers,
+        });
+        if (transcriptLog !== null) {
+          restoreFromEntries(
+            transcriptLog.contextCollapseCommits ?? [],
+            transcriptLog.contextCollapseSnapshot,
+          );
+        }
+      } catch (err) {
+        if (
+          !(
+            err &&
+            typeof err === "object" &&
+            "code" in err &&
+            err.code === "ENOENT"
+          )
+        ) {
+          session.emit({
+            id: session.nextInternalSubId(),
+            msg: {
+              type: "warning",
+              payload: {
+                cause: "context_collapse_restore_failed",
+                message: err instanceof Error ? err.message : String(err),
+              },
+            },
+          });
+        }
+      }
+    }
 
     const rolloutStore = new RolloutStore({
       cwd: workspaceRoot,
@@ -841,6 +1453,20 @@ export async function bootstrapLocalRuntimeSession(
             }
           }
         }
+        // Port of codex `Session::record_initial_history` resume
+        // branch (session/mod.rs:1150-1236): restore persisted agent
+        // task, emit a model-change warning when the rollout's last
+        // turn ran on a different model, and seed token-usage from
+        // the last persisted token_count event so resume UIs show
+        // cumulative usage immediately. This runs unconditionally
+        // on resume — each sub-step is a no-op when its input is
+        // absent.
+        await recordInitialHistoryOnResume(session, existingItems, {
+          ...(reconstruction.previousTurnSettings?.model !== undefined
+            ? { previousModel: reconstruction.previousTurnSettings.model }
+            : {}),
+          currentModel: model,
+        });
       }
     } catch (err) {
       session.emit({
@@ -935,8 +1561,6 @@ export async function bootstrapLocalRuntimeSession(
       }),
     );
 
-    await sidecarManager.start(session.eventLog);
-
     const ctx = buildTurnContext({
       conversationId,
       subId: session.nextInternalSubId(),
@@ -962,6 +1586,17 @@ export async function bootstrapLocalRuntimeSession(
         },
       },
     });
+
+    // Start sidecars AFTER session_configured so they cannot emit earlier
+    // events. Mirrors codex `session.rs:750-751`: "Start the watcher after
+    // SessionConfigured so it cannot emit earlier events."
+    await sidecarManager.start(session.eventLog);
+
+    // Start the MCP connection manager AFTER session_configured has been
+    // emitted + persisted to rollout. Mirrors codex ordering at
+    // `codex-rs/core/src/session/session.rs:717-748, 766` where the
+    // SessionConfiguredEvent is dispatched before McpConnectionManager::new.
+    await session.startMcpManager(mcpManager);
 
     return {
       agencHome,

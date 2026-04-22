@@ -90,6 +90,7 @@ type ProviderRuntimeExtra = Partial<
   readonly fetchImpl?: typeof fetch;
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
+  readonly contextManagement?: Record<string, unknown>;
   readonly contextWindowTokens?: number;
   readonly parallelToolCalls?: boolean;
   readonly visionModel?: string;
@@ -124,6 +125,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "fetchImpl",
   "anthropicVersion",
   "betaHeaders",
+  "contextManagement",
   "contextWindowTokens",
   "parallelToolCalls",
   "visionModel",
@@ -416,6 +418,9 @@ function readRuntimeExtra(
     ...(readStringArray(extra, "betaHeaders")
       ? { betaHeaders: readStringArray(extra, "betaHeaders") }
       : {}),
+    ...(readRecord(extra, "contextManagement")
+      ? { contextManagement: readRecord(extra, "contextManagement") }
+      : {}),
     ...(readNumber(extra, "contextWindowTokens") !== undefined
       ? { contextWindowTokens: readNumber(extra, "contextWindowTokens") }
       : {}),
@@ -492,7 +497,7 @@ function buildCommonConfig(
 function buildOpenAICompatibleProvider(
   provider: Extract<
     ProviderName,
-    "openai" | "lmstudio" | "openrouter" | "groq" | "deepseek" | "gemini"
+    "lmstudio" | "openrouter" | "groq" | "deepseek"
   >,
   opts: ProviderFactoryOptions,
   input: {
@@ -557,16 +562,8 @@ function buildOpenAICompatibleProvider(
     ...(oauthConfig ? { oauth: oauthConfig } : {}),
     ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
     ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
-    ...(extra.organization
-      ? { organization: extra.organization }
-      : provider === "openai" && process.env.OPENAI_ORGANIZATION
-      ? { organization: process.env.OPENAI_ORGANIZATION }
-      : {}),
-    ...(extra.project
-      ? { project: extra.project }
-      : provider === "openai" && process.env.OPENAI_PROJECT
-      ? { project: process.env.OPENAI_PROJECT }
-      : {}),
+    ...(extra.organization ? { organization: extra.organization } : {}),
+    ...(extra.project ? { project: extra.project } : {}),
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   };
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
@@ -657,18 +654,71 @@ export function createProvider(
         },
       });
     }
-    case "openai":
-      return buildOpenAICompatibleProvider("openai", opts, {
-        defaultBaseURL: "https://api.openai.com/v1",
-        envBaseURL: process.env.OPENAI_BASE_URL,
-        envModel: process.env.OPENAI_MODEL,
-        envModelLabel: "OPENAI_MODEL",
-        defaultModel: DOCUMENTED_PROVIDER_DEFAULT_MODELS.openai,
-        envApiKey: process.env.OPENAI_API_KEY,
-        apiKeyMode: "required",
+    case "openai": {
+      const model = requireModel(
+        "openai",
+        opts.model,
+        process.env.OPENAI_MODEL,
+        "OPENAI_MODEL",
+        DOCUMENTED_PROVIDER_DEFAULT_MODELS.openai,
+      );
+      const oauthConfig =
+        extra.authMode === "oauth" &&
+        extra.oauth &&
+        typeof extra.oauth.accessToken === "string" &&
+        extra.oauth.accessToken.trim().length > 0
+          ? (extra.oauth as unknown as OpenAIProviderConfig["oauth"])
+          : undefined;
+      const apiKey = oauthConfig
+        ? firstNonEmpty(opts.apiKey, process.env.OPENAI_API_KEY)
+        : requireApiKey(
+          "openai",
+          opts.apiKey,
+          "OPENAI_API_KEY",
+          process.env.OPENAI_API_KEY,
+        );
+      const cfg: OpenAIProviderConfig = {
+        ...buildCommonConfig(extra),
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        model,
+        providerName: "openai",
         apiKeyEnvLabel: "OPENAI_API_KEY",
-        useResponsesApi: true,
+        tools: opts.tools ? [...opts.tools] : undefined,
+        baseURL:
+          normalizeBaseURL(opts.baseURL) ??
+          normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
+          "https://api.openai.com/v1",
+        useResponsesApi: extra.useResponsesApi ?? true,
+        ...(extra.store !== undefined ? { store: extra.store } : {}),
+        ...(extra.authMode ? { authMode: extra.authMode } : {}),
+        ...(oauthConfig ? { oauth: oauthConfig } : {}),
+        ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
+        ...(extra.organization
+          ? { organization: extra.organization }
+          : process.env.OPENAI_ORGANIZATION
+          ? { organization: process.env.OPENAI_ORGANIZATION }
+          : {}),
+        ...(extra.project
+          ? { project: extra.project }
+          : process.env.OPENAI_PROJECT
+          ? { project: process.env.OPENAI_PROJECT }
+          : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      };
+      return markFactoryProvider(new OpenAIProvider(cfg), {
+        provider: "openai",
+        options: {
+          ...(apiKey !== undefined ? { apiKey } : {}),
+          baseURL: cfg.baseURL,
+          model,
+          ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
+            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
+            : {}),
+        },
       });
+    }
     case "anthropic": {
       const apiKey = requireApiKey(
         "anthropic",
@@ -699,6 +749,9 @@ export function createProvider(
           ? { anthropicVersion: extra.anthropicVersion }
           : {}),
         ...(extra.betaHeaders ? { betaHeaders: extra.betaHeaders } : {}),
+        ...(extra.contextManagement
+          ? { contextManagement: extra.contextManagement }
+          : {}),
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
       };
@@ -799,19 +852,51 @@ export function createProvider(
         apiKeyEnvLabel: "DEEPSEEK_API_KEY",
         useResponsesApi: false,
       });
-    case "gemini":
-      return buildOpenAICompatibleProvider("gemini", opts, {
-        defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-        envBaseURL: process.env.GEMINI_BASE_URL,
-        envModel: process.env.GEMINI_MODEL,
-        envModelLabel: "GEMINI_MODEL",
-        envApiKey: process.env.GEMINI_API_KEY,
-        defaultModel: DOCUMENTED_PROVIDER_DEFAULT_MODELS.gemini,
-        apiKeyMode: "required",
+    case "gemini": {
+      const apiKey = requireApiKey(
+        "gemini",
+        opts.apiKey,
+        "GEMINI_API_KEY",
+        process.env.GEMINI_API_KEY,
+      );
+      const model = requireModel(
+        "gemini",
+        opts.model,
+        process.env.GEMINI_MODEL,
+        "GEMINI_MODEL",
+        DOCUMENTED_PROVIDER_DEFAULT_MODELS.gemini,
+      );
+      const cfg: OpenAIProviderConfig = {
+        ...buildCommonConfig(extra),
+        apiKey,
+        model,
+        providerName: "gemini",
         apiKeyEnvLabel: "GEMINI_API_KEY",
+        tools: opts.tools ? [...opts.tools] : undefined,
+        baseURL:
+          normalizeBaseURL(opts.baseURL) ??
+          normalizeBaseURL(process.env.GEMINI_BASE_URL) ??
+          "https://generativelanguage.googleapis.com/v1beta",
         useResponsesApi: false,
-        providerCtor: GeminiProvider,
+        authStrategy: "google_api_key",
+        ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
+        ...(extra.project ? { project: extra.project } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      };
+      return markFactoryProvider(new GeminiProvider(cfg), {
+        provider: "gemini",
+        options: {
+          apiKey,
+          baseURL: cfg.baseURL,
+          model,
+          ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
+            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
+            : {}),
+        },
       });
+    }
     default: {
       const _exhaustive: never = name;
       void _exhaustive;

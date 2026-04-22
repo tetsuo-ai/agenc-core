@@ -7,6 +7,117 @@
 import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
 
+export interface TlsValidationDetails {
+  readonly code: string;
+  readonly message: string;
+  readonly issuer?: string;
+  readonly subject?: string;
+  readonly validFrom?: string;
+  readonly validTo?: string;
+}
+
+const TLS_VALIDATION_ERROR_CODES = new Set([
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "CERT_SIGNATURE_FAILURE",
+  "CERT_NOT_YET_VALID",
+  "CERT_HAS_EXPIRED",
+  "CERT_REVOKED",
+  "CERT_REJECTED",
+  "CERT_UNTRUSTED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "HOSTNAME_MISMATCH",
+]);
+
+const TLS_VALIDATION_MESSAGE_RE =
+  /\b(?:unable to verify (?:the )?(?:first certificate|leaf signature)|unable to get local issuer certificate|certificate has expired|certificate is not yet valid|certificate revoked|self[- ]signed certificate|hostname\/ip does not match certificate(?:'s)? altnames|tls certificate|ssl certificate)\b/i;
+
+function normalizeMetadataString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+}
+
+function readTlsMetadata(
+  source: Record<string, unknown>,
+): Omit<TlsValidationDetails, "code" | "message"> {
+  const certificate =
+    source.cert && typeof source.cert === "object"
+      ? (source.cert as Record<string, unknown>)
+      : source.certificate && typeof source.certificate === "object"
+        ? (source.certificate as Record<string, unknown>)
+        : undefined;
+  return {
+    issuer:
+      normalizeMetadataString(source.issuer) ??
+      normalizeMetadataString(certificate?.issuer),
+    subject:
+      normalizeMetadataString(source.subject) ??
+      normalizeMetadataString(certificate?.subject),
+    validFrom:
+      normalizeMetadataString(source.valid_from) ??
+      normalizeMetadataString(source.validFrom) ??
+      normalizeMetadataString(certificate?.valid_from) ??
+      normalizeMetadataString(certificate?.validFrom),
+    validTo:
+      normalizeMetadataString(source.valid_to) ??
+      normalizeMetadataString(source.validTo) ??
+      normalizeMetadataString(certificate?.valid_to) ??
+      normalizeMetadataString(certificate?.validTo),
+  };
+}
+
+function formatTlsDetails(details: TlsValidationDetails): string {
+  const metadata = [
+    details.issuer ? `issuer=${details.issuer}` : undefined,
+    details.subject ? `subject=${details.subject}` : undefined,
+    details.validFrom ? `valid_from=${details.validFrom}` : undefined,
+    details.validTo ? `valid_to=${details.validTo}` : undefined,
+  ].filter((value): value is string => value !== undefined);
+  return metadata.length > 0 ? ` (${metadata.join(", ")})` : "";
+}
+
+export function extractTlsValidationDetails(
+  error: unknown,
+): TlsValidationDetails | null {
+  if (!error || typeof error !== "object") return null;
+
+  let current: unknown = error;
+  let depth = 0;
+  while (current && depth < 6) {
+    if (typeof current === "object" && current !== null) {
+      const record = current as Record<string, unknown>;
+      const code = normalizeMetadataString(record.code);
+      const message =
+        normalizeMetadataString(record.message) ?? String(current);
+      if (
+        (code && TLS_VALIDATION_ERROR_CODES.has(code)) ||
+        TLS_VALIDATION_MESSAGE_RE.test(message)
+      ) {
+        return {
+          code: code ?? "TLS_VALIDATION_FAILED",
+          message,
+          ...readTlsMetadata(record),
+        };
+      }
+      current = record.cause;
+      depth += 1;
+      continue;
+    }
+    break;
+  }
+
+  return null;
+}
+
 /**
  * Error thrown when an LLM provider returns an error response.
  */
@@ -147,6 +258,71 @@ export class LLMAuthenticationError extends RuntimeError {
 }
 
 /**
+ * Error thrown when TLS certificate validation fails before any authenticated
+ * provider response is received.
+ */
+export class LLMCertificateError extends RuntimeError {
+  public readonly providerName: string;
+  public readonly tlsCode: string;
+  public readonly causeCode = "tls_validation_failed";
+  public readonly issuer?: string;
+  public readonly subject?: string;
+  public readonly validFrom?: string;
+  public readonly validTo?: string;
+
+  constructor(providerName: string, details: TlsValidationDetails) {
+    super(
+      `${providerName} TLS certificate validation failed (${details.code}): ${details.message}${formatTlsDetails(details)}`,
+      RuntimeErrorCodes.LLM_PROVIDER_ERROR,
+    );
+    this.name = "LLMCertificateError";
+    this.providerName = providerName;
+    this.tlsCode = details.code;
+    this.issuer = details.issuer;
+    this.subject = details.subject;
+    this.validFrom = details.validFrom;
+    this.validTo = details.validTo;
+  }
+}
+
+/**
+ * Error thrown when a provider endpoint returns HTML instead of the expected
+ * JSON or SSE envelope, typically due to a captive portal or proxy intercept.
+ */
+export class LLMCaptivePortalError extends RuntimeError {
+  public readonly providerName: string;
+  public readonly causeCode = "captive_portal_or_proxy_intercept";
+  public readonly contentType?: string;
+  public readonly statusCode?: number;
+  public readonly url?: string;
+
+  constructor(
+    providerName: string,
+    options: {
+      contentType?: string;
+      statusCode?: number;
+      url?: string;
+      expected: "json" | "sse";
+    },
+  ) {
+    const expectedLabel = options.expected === "sse" ? "SSE" : "JSON";
+    const contentType = options.contentType
+      ? ` Content-Type=${options.contentType}.`
+      : "";
+    const location = options.url ? ` URL=${options.url}.` : "";
+    super(
+      `${providerName} returned HTML where ${expectedLabel} was expected.${contentType}${location} Network requires authentication or proxy is misconfigured.`,
+      RuntimeErrorCodes.LLM_PROVIDER_ERROR,
+    );
+    this.name = "LLMCaptivePortalError";
+    this.providerName = providerName;
+    this.contentType = options.contentType;
+    this.statusCode = options.statusCode;
+    this.url = options.url;
+  }
+}
+
+/**
  * Error thrown when an LLM provider returns a 5xx response.
  */
 export class LLMServerError extends RuntimeError {
@@ -243,6 +419,8 @@ export function mapLLMError(
     err instanceof LLMRateLimitError ||
     err instanceof LLMTimeoutError ||
     err instanceof LLMAuthenticationError ||
+    err instanceof LLMCertificateError ||
+    err instanceof LLMCaptivePortalError ||
     err instanceof LLMServerError
   ) {
     return err;
@@ -256,6 +434,11 @@ export function mapLLMError(
       : Number.parseInt(String(rawStatus ?? ""), 10);
   const status = Number.isFinite(parsedStatus) ? parsedStatus : undefined;
   const message = e?.message ?? String(err);
+  const tlsDetails = extractTlsValidationDetails(err);
+
+  if (tlsDetails) {
+    return new LLMCertificateError(providerName, tlsDetails);
+  }
 
   if (e?.name === "AbortError" || e?.code === "ABORT_ERR") {
     return new LLMTimeoutError(providerName, timeoutMs);
@@ -307,6 +490,12 @@ export function classifyLLMFailure(error: unknown): LLMFailureClass {
   if (error instanceof LLMRateLimitError) return "rate_limited";
   if (error instanceof LLMTimeoutError) return "timeout";
   if (error instanceof LLMToolCallError) return "tool_error";
+  if (
+    error instanceof LLMCertificateError ||
+    error instanceof LLMCaptivePortalError
+  ) {
+    return "provider_error";
+  }
   // Phase I: context-window overflow classifies as a provider error
   // for the fallback cooldown path, but callers above the fallback
   // layer (chat-executor-tool-loop.ts) branch on the concrete type

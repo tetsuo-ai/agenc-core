@@ -625,10 +625,42 @@ export async function prepareContext(
     }
   }
 
-  // Stage 5: context-collapse projection (T7+ wires the real collapse
-  // store). Collapses are feature-gated in openclaude; for AgenC the
-  // feature flag is unset by default in T5, so the call is a no-op
-  // until the T7 context-collapse port lands.
+  // Stage 5: context-collapse projection. When the runtime service has
+  // a staged snapshot for this session, project that collapsed view
+  // before auto-compact so recovery-owned collapse can win without
+  // forcing a full summary. Missing/disabled services fail closed.
+  const contextCollapse =
+    runtimeOptions.contextCollapse as
+      | {
+          readonly maybeCollapseContext?: (
+            messages: ReadonlyArray<LLMMessage>,
+            ctx?: { readonly session?: Session | null },
+          ) => ReadonlyArray<LLMMessage>;
+          readonly isContextCollapseEnabled?: () => boolean;
+          readonly isEnabled?: () => boolean;
+        }
+      | undefined;
+  if (isContextCollapseEnabledForPrepareContext(runtimeOptions)) {
+    const project = contextCollapse?.maybeCollapseContext;
+    if (typeof project === "function") {
+      try {
+        messagesForQuery = [...project(messagesForQuery, { session })];
+      } catch (error) {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: {
+              cause: "context_collapse_projection_failed",
+              message: `context-collapse projection failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            },
+          },
+        });
+      }
+    }
+  }
 
   // Stage 6: autoCompactIfNeeded. Live caller-chain endpoint for
   // I-18 (docs/plan/invariants.md:592-619): when the token threshold
@@ -639,11 +671,29 @@ export async function prepareContext(
   // returned tracking state, and we thread that forward onto
   // `state.autoCompactTracking` below so the circuit breaker honours
   // `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3`.
-  const autoMod = await safeCompactImport<AutoCompactModule>(
-    "auto_compact",
-    () => import("../llm/compact/auto-compact.js"),
-    session,
-  );
+  //
+  // Double-compact gate: `run-turn.ts::runPreSamplingCompact` is the
+  // canonical pre-turn compact dispatcher per codex (turn.rs:712-735)
+  // and runs BEFORE the phase loop. If it already compacted this turn,
+  // it stamps `state.autoCompactTracking` with compacted=true and
+  // turnCounter=0 (see run-turn.ts:334-339). commit.ts bumps
+  // turnCounter to 1 on the FIRST iteration's commit, so the freshly-
+  // compacted signal (compacted=true, turnCounter===0) uniquely marks
+  // "the pre-sampling site already ran this turn and commit hasn't
+  // consumed the boundary yet." Skip Stage-6 in that case to preserve
+  // the one-compact-per-turn contract. Stage-6 still fires on
+  // continuation iterations (turnCounter > 0) when history has grown
+  // past the threshold.
+  const preSamplingAlreadyCompacted =
+    state.autoCompactTracking?.compacted === true &&
+    state.autoCompactTracking.turnCounter === 0;
+  const autoMod = preSamplingAlreadyCompacted
+    ? null
+    : await safeCompactImport<AutoCompactModule>(
+        "auto_compact",
+        () => import("../llm/compact/auto-compact.js"),
+        session,
+      );
   let compactedThisIteration = false;
   if (autoMod?.autoCompactIfNeeded) {
     try {
@@ -684,7 +734,18 @@ export async function prepareContext(
         // compact.ts::buildPostCompactMessages. Persist the matching
         // `compacted` rollout item immediately, then splice the compacted
         // view into this iteration so the stream sees the same boundary.
-        messagesForQuery = buildPostCompactMessages(compactResult);
+        const compactedMessages = buildPostCompactMessages(compactResult);
+        messagesForQuery = compactedMessages;
+        // Also write state.messages so the NEXT prepareContext iteration's
+        // Stage-1 `getMessagesAfterCompactBoundary(state.messages)` sees the
+        // boundary that we just produced. Without this, openclaude's
+        // query.ts invariant that the compacted view survives across
+        // loop iterations (see openclaude/src/query.ts:541-620) is
+        // violated in AgenC because `state.messages` is the long-lived
+        // full history and Stage 1 re-derives `messagesForQuery` from it
+        // each iteration. Mirrors the pre-sampling compact write-back in
+        // run-turn.ts:runAutoCompact (state.messages = compacted).
+        state.messages = [...compactedMessages];
         // Stamp auto-compact tracking so the commit phase emits the
         // boundary marker (runtime/src/phases/commit.ts).
         state.autoCompactTracking = {

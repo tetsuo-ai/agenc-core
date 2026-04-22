@@ -4,6 +4,8 @@ import {
   buildTerminalToolResult,
   findOrphanToolCalls,
   synthesizeTerminalResults,
+  terminalToolCauseFromAbortReason,
+  terminalToolCauseFromError,
 } from "./terminal-tool-result.js";
 
 describe("terminal-tool-result", () => {
@@ -36,6 +38,17 @@ describe("terminal-tool-result", () => {
       cause: "provider_switched",
     });
     expect(out.content).toContain("provider switched");
+  });
+
+  test("maps abort reasons and timeout errors to terminal causes", () => {
+    expect(terminalToolCauseFromAbortReason("mode_changed")).toBe(
+      "mode_changed",
+    );
+    expect(
+      terminalToolCauseFromError(
+        new Error("tool stub exceeded 50ms timeout"),
+      ),
+    ).toBe("timeout");
   });
 
   test("findOrphanToolCalls falls back to toolUseBlocks and dedupes resolved ids", () => {

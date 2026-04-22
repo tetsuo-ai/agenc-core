@@ -56,6 +56,7 @@ import {
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import type { QuerySource } from "../constants/querySource.js";
 import {
   freshDenialTracking,
   type DenialTrackingState,
@@ -65,6 +66,10 @@ import type {
   ApprovalResolver,
   PermissionRequestHook,
 } from "../tools/orchestrator.js";
+import {
+  contextCollapseService,
+  type ContextCollapseRuntimeService,
+} from "../services/contextCollapse/index.js";
 import { startMcpManagerForSession } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
@@ -135,6 +140,21 @@ export interface SessionState {
   };
   /** Resume/fork baseline turn context from rollout reconstruction. */
   referenceContextItem?: TurnContextItem;
+  /**
+   * Seeded from the last persisted `token_count` event on resume/fork
+   * (codex `last_token_info_from_rollout` at session/mod.rs:1257). UIs
+   * that need to display cumulative token usage immediately on resume
+   * read this instead of waiting for the first new completion. The
+   * live per-turn accounting path continues to update it via the
+   * usual budget/token-count emit sites.
+   */
+  initialTokenUsage?: {
+    readonly promptTokens?: number;
+    readonly completionTokens?: number;
+    readonly totalTokens?: number;
+    readonly cachedInputTokens?: number;
+    readonly reasoningOutputTokens?: number;
+  };
   /** Pending session-start hook source (codex line 841). T10 wires. */
   pendingSessionStartSource?: SessionStartSource;
 }
@@ -407,7 +427,18 @@ export interface SessionServices {
   readonly pluginsManager: PluginsManager;
   readonly mcpManager: McpManager;
   readonly skillsWatcher: SkillsWatcher;
-  readonly agentControl: AgentControl;
+  /**
+   * T9 live: the real `AgentControl` + `AgentRegistry` pair is bound once by
+   * `bindSessionAgentControl(session, ...)` in `bin/delegate-tool.ts`
+   * immediately after `new Session(...)` returns, and before the first tool
+   * call that would reach the delegate path. This field is intentionally
+   * non-`readonly` so that single-bind write is a typed assignment instead
+   * of a cast-through-`unknown`; all other consumers treat it as immutable.
+   *
+   * @internal Invariant: written exactly once during bootstrap via
+   * `bindSessionAgentControl`, never mutated afterwards.
+   */
+  agentControl: AgentControl;
   readonly networkProxy?: NetworkProxy;
   readonly networkApproval: NetworkApprovalService;
   readonly stateDb?: StateDbContext;
@@ -418,6 +449,8 @@ export interface SessionServices {
   // T-future: AgenC-specific additions
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
+  readonly querySource?: QuerySource;
+  readonly contextCollapse?: ContextCollapseRuntimeService;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
   /**
@@ -766,10 +799,13 @@ export class Session {
           : {}),
       },
     } as SessionConfiguration;
-    this.services =
-      rawRegistry === undefined
-        ? { ...opts.services, permissionModeRegistry: resolvedRegistry }
-        : opts.services;
+    this.services = {
+      ...opts.services,
+      permissionModeRegistry: resolvedRegistry,
+      querySource: opts.services.querySource ?? "repl_main_thread",
+      contextCollapse:
+        opts.services.contextCollapse ?? contextCollapseService,
+    };
     this.jsRepl = opts.jsRepl;
     this.config =
       opts.config ??
@@ -1496,10 +1532,22 @@ function deriveMinimalSessionConfig(
   };
 }
 
+/**
+ * Structural `ModelInfo` fallback used when test fixtures construct a
+ * Session without wiring a real `ModelsManager`. Mirrors
+ * `bootstrap.ts::buildDeferredModelInfo`: T13's `ModelsManager` is the real
+ * owner of per-model metadata.
+ *
+ * `effectiveContextWindowPercent: 100` matches codex's "no reduction"
+ * meaning (codex backend default is 95; 100 here is the safe fallback when
+ * no authoritative per-model metadata is available). The previous `1`
+ * value silently truncated the live context window to 1% via
+ * `modelContextWindow()` and broke compaction/budgeting math.
+ */
 function deriveMinimalModelInfo(slug: string): ModelInfo {
   return {
     slug: slug || "unknown-model",
-    effectiveContextWindowPercent: 1,
+    effectiveContextWindowPercent: 100,
     supportedReasoningLevels: [],
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",

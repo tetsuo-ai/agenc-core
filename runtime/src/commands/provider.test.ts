@@ -207,7 +207,7 @@ describe("providerCommand", () => {
     }
   });
 
-  it("allows audio-bearing history when switching to gemini", async () => {
+  it("blocks audio-bearing history when switching to gemini until replay serialization supports it", async () => {
     const previous = process.env.GEMINI_API_KEY;
     process.env.GEMINI_API_KEY = "gemini-test";
     try {
@@ -218,6 +218,41 @@ describe("providerCommand", () => {
           {
             role: "user",
             content: [{ type: "input_audio", audio_url: { url: "file:///tmp/example.wav" } }],
+          },
+        ],
+      });
+      const summary = await applyProviderSwitch(session, "gemini");
+      expect(summary).toMatch(/blocked/);
+      expect(summary).toMatch(/audio history/);
+      expect(
+        (session as unknown as {
+          pendingProviderSwitch: { provider: string; model: string } | null;
+        }).pendingProviderSwitch,
+      ).toBeNull();
+    } finally {
+      if (previous === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = previous;
+    }
+  });
+
+  it("allows switching to gemini when persisted audio history is replayable as inline data", async () => {
+    const previous = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "gemini-test";
+    try {
+      const session = stubSession({
+        provider: "openai",
+        model: "gpt-audio",
+        history: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_audio",
+                audio_url: {
+                  url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10",
+                },
+              },
+            ],
           },
         ],
       });

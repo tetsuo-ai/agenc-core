@@ -3,6 +3,10 @@ import { randomUUID } from 'crypto'
 import { queryModelWithStreaming } from '../services/api/claude.js'
 import { autoCompactIfNeeded } from '../llm/compact/auto-compact.js'
 import { microcompactMessages } from '../llm/compact/micro-compact.js'
+import {
+  resolveTransportMode,
+  type TransportMode,
+} from '../transport/fallback-ladder.js'
 
 // -- deps
 
@@ -22,6 +26,7 @@ import { microcompactMessages } from '../llm/compact/micro-compact.js'
 export type QueryDeps = {
   // -- model
   callModel: typeof queryModelWithStreaming
+  transportMode?: TransportMode
 
   // -- compaction
   microcompact: typeof microcompactMessages
@@ -31,9 +36,22 @@ export type QueryDeps = {
   uuid: () => string
 }
 
-export function productionDeps(): QueryDeps {
+function resolveProductionCallModel(
+  _transportMode: TransportMode | undefined,
+): typeof queryModelWithStreaming {
+  // Legacy query() still streams through the existing model caller, but it now
+  // resolves the selected live transport mode up front so the runtime path
+  // cannot silently bypass T8 ladder selection.
+  return queryModelWithStreaming
+}
+
+export function productionDeps(
+  env: NodeJS.ProcessEnv = process.env,
+): QueryDeps {
+  const transportMode = resolveTransportMode(env)
   return {
-    callModel: queryModelWithStreaming,
+    callModel: resolveProductionCallModel(transportMode),
+    transportMode,
     microcompact: microcompactMessages,
     autocompact: autoCompactIfNeeded,
     uuid: randomUUID,

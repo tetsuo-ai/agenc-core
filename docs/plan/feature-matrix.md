@@ -70,7 +70,7 @@ T11 = permissions, T12 = TUI.
 | toolOrchestration (batch partition + run concurrently/serially) | oc | `toolOrchestration.ts` | 188 | take 1:1 | T6 | `tools/orchestration.ts` |
 | toolExecution (Zod validation, hooks, classifyToolError) | oc | `toolExecution.ts` | 1,777 | take 1:1 | T6 | `tools/execution.ts` |
 | toolHooks (pre/post, auto-fix retry) | oc | `toolHooks.ts` | 716 | take 1:1 | T6 | `tools/hooks.ts` |
-| ConcurrencyClass enum (Exclusive, SharedRead, SharedServer, BackgroundTerminal) | codex | `tools/parallel.rs:28-140` | 194 | port | T6 | `tools/concurrency.ts` |
+| ConcurrencyClass enum (Exclusive, SharedRead, SharedServer, BackgroundTerminal) | agenc | — (AgenC-original atop codex RwLock primitive) | 194 | new | T6 | `tools/concurrency.ts` |
 | Router (dispatch + parallel flag check) | codex | `tools/router.rs` | 306 | port | T6 | `tools/router.ts` |
 | Orchestrator (approval → sandbox → retry) | codex | `tools/orchestrator.rs` | 447 | port | T6 | `tools/orchestrator.ts` |
 | ToolPayload + ToolOutput trait | codex | `tools/context.rs` | 584 | port | T6 | `tools/context.ts` |
@@ -356,6 +356,55 @@ owners.
 | AsyncRwLock (translation helper) | new | — | — | build | T6 | `utils/async-rwlock.ts` |
 | BehaviorSubject-like (translation helper) | new (or rxjs dep) | — | — | build | T4b | `utils/behavior-subject.ts` |
 | AsyncQueue (translation helper) | new | — | — | build | T4b | `utils/async-queue.ts` |
+
+## Live `SessionServices` deferrals (T5 wiring)
+
+The bootstrap-side `buildDeferredServices` /
+`buildDeferredConfig` / `buildDeferredModelInfo` helpers in
+`runtime/src/bin/bootstrap.ts` (formerly `buildPlaceholderServices` /
+`buildMinimalConfig` / `buildMinimalModelInfo`) carry the structural
+shape of codex `SessionServices` for the live local-runtime path. Each
+slot is either wired live today or is a structural stub waiting for the
+owning tranche to land. This table records the live-vs-deferred split so
+T5 reviewers do not have to re-derive it from the source.
+
+| `SessionServices` slot | Status | Owner |
+|---|---|---|
+| `provider` / `registry` / `permissionModeRegistry` / `configStore` | live | T5/T11 |
+| `toolApprovals` / `networkApproval` | live | T11 |
+| `mcpManager` (live facade over `MCPManager`) | live | T9 |
+| `agentControl` (rebound by `bindSessionAgentControl`) | live | T9 |
+| `mcpConnectionManager` | deferred | T9 |
+| `mcpStartupCancellationToken` | deferred | T9 |
+| `unifiedExecManager` | deferred | T7 |
+| `userShell` | deferred | T7 |
+| `execPolicy` | deferred | T11 |
+| `hooks` (pre/post compact + stop + lifecycle) | deferred | T4 / T7 / T10 |
+| `rollout` (codex `RolloutRecorder`) | deferred (separate `RolloutStore` is mounted live) | T5 |
+| `agentIdentityManager` / `shellSnapshotTx` | deferred | T9 |
+| `analyticsEventsClient` / `codeModeService` | deferred | T-future |
+| `authManager` / `modelClient` / `modelsManager` | deferred | T13 |
+| `sessionTelemetry` / `threadStore` | deferred | T6 |
+| `skillsManager` / `pluginsManager` / `skillsWatcher` | deferred | T10 |
+
+Live-session `Config` / `ModelInfo` deferrals (built by
+`buildDeferredConfig` / `buildDeferredModelInfo`):
+
+| Field | Status | Owner |
+|---|---|---|
+| `Config.features` (`appsEnabledForAuth`, `useLegacyLandlock`) | deferred (hard-false defaults) | T10 |
+| `Config.multiAgentV2` (subagent usage hints) | deferred | T9 |
+| `Config.permissions.allowLoginShell` / `shellEnvironmentPolicy` / `windowsSandboxPrivateDesktop` | deferred (conservative defaults) | T10 / T11 |
+| `Config.ghostSnapshot` | deferred | T-future |
+| `Config.agentRoles` | deferred | T9 |
+| `ModelInfo.effectiveContextWindowPercent` | deferred fallback = `100` (codex backend default is `95`; was `1` and silently truncated context) | T13 |
+| `ModelInfo.supportedReasoningLevels` | deferred fallback = `[]` (silently disables reasoning-level routing) | T13 |
+| `ModelInfo.truncationPolicy` | deferred fallback = `"off"` | T13 |
+
+`Session` constructor's own `deriveMinimalSessionConfig` /
+`deriveMinimalModelInfo` helpers in `runtime/src/session/session.ts`
+mirror the same fallback shape and the same per-field deferrals — they
+exist for test fixtures that construct `Session` without bootstrap.
 
 ## Locked / untouched subsystems
 

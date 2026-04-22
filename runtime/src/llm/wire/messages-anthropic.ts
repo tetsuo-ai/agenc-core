@@ -14,7 +14,6 @@ import type {
 import {
   coerceUsage,
   collectRequestMetrics,
-  messageTextContent,
   normalizeFinishReason,
   normalizeToolCalls,
   parseAnthropicToolChoice,
@@ -32,16 +31,76 @@ export interface AnthropicMessagesRequestOptions {
   readonly tools: readonly LLMTool[];
   readonly options?: LLMChatOptions;
   readonly maxTokens?: number;
+  readonly contextManagement?: Record<string, unknown>;
+}
+
+function hasEphemeralCacheControl(message: LLMMessage): boolean {
+  return (message as { cacheControl?: unknown }).cacheControl === "ephemeral";
+}
+
+function withEphemeralCacheControl(
+  blocks: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  if (blocks.length === 0) {
+    return [
+      {
+        type: "text",
+        text: "",
+        cache_control: { type: "ephemeral" },
+      },
+    ];
+  }
+  return blocks.map((block, index) =>
+    index === blocks.length - 1
+      ? {
+        ...block,
+        cache_control: { type: "ephemeral" },
+      }
+      : block,
+  );
+}
+
+function normalizeAnthropicMessageContent(
+  message: LLMMessage,
+): string | Array<Record<string, unknown>> {
+  const anthropicContent = toAnthropicMessageContent(message.content);
+  if (!hasEphemeralCacheControl(message)) {
+    return anthropicContent;
+  }
+  if (typeof anthropicContent === "string") {
+    return withEphemeralCacheControl([
+      {
+        type: "text",
+        text: anthropicContent,
+      },
+    ]);
+  }
+  return withEphemeralCacheControl(anthropicContent);
 }
 
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
-  const system = messages
-    .filter((message) => message.role === "system")
-    .map((message) => messageTextContent(message.content))
-    .join("\n\n");
+  const systemMessages = messages.filter((message) => message.role === "system");
+  const systemBlocks = systemMessages.flatMap((message) => {
+    const normalized = normalizeAnthropicMessageContent(message);
+    if (typeof normalized === "string") {
+      return normalized.length > 0
+        ? [{
+          type: "text",
+          text: normalized,
+        }]
+        : [];
+    }
+    return normalized.filter((block) => block.type === "text");
+  });
+  const system =
+    systemBlocks.length === 0
+      ? ""
+      : systemMessages.some((message) => hasEphemeralCacheControl(message))
+      ? systemBlocks
+      : systemBlocks.map((block) => String(block.text ?? "")).join("\n\n");
 
   const body: Record<string, unknown> = {
     model: input.model,
@@ -49,7 +108,7 @@ export function buildAnthropicMessagesRequest(
       .filter((message) => message.role !== "system")
       .map((message) => {
         if (message.role === "assistant" && message.toolCalls?.length) {
-          const anthropicContent = toAnthropicMessageContent(message.content);
+          const anthropicContent = normalizeAnthropicMessageContent(message);
           const assistantContent =
             typeof anthropicContent === "string"
               ? anthropicContent.length > 0
@@ -59,32 +118,43 @@ export function buildAnthropicMessagesRequest(
                 }]
                 : []
               : anthropicContent;
+          const toolUseBlocks = message.toolCalls.map((toolCall) => ({
+            type: "tool_use",
+            id: toolCall.id,
+            name: toolCall.name,
+            input: JSON.parse(toolCall.arguments || "{}"),
+          }));
+          const content =
+            hasEphemeralCacheControl(message)
+              ? withEphemeralCacheControl([
+                ...assistantContent,
+                ...toolUseBlocks,
+              ])
+              : [
+                ...assistantContent,
+                ...toolUseBlocks,
+              ];
           return {
             role: "assistant",
-            content: [
-              ...assistantContent,
-              ...message.toolCalls.map((toolCall) => ({
-                type: "tool_use",
-                id: toolCall.id,
-                name: toolCall.name,
-                input: JSON.parse(toolCall.arguments || "{}"),
-              })),
-            ],
+            content,
           };
         }
         if (message.role === "tool") {
+          const toolResultBlock = {
+            type: "tool_result",
+            tool_use_id: message.toolCallId,
+            content: toAnthropicToolResultContent(message.content),
+          };
           return {
             role: "user",
-            content: [{
-              type: "tool_result",
-              tool_use_id: message.toolCallId,
-              content: toAnthropicToolResultContent(message.content),
-            }],
+            content: hasEphemeralCacheControl(message)
+              ? withEphemeralCacheControl([toolResultBlock])
+              : [toolResultBlock],
           };
         }
         return {
           role: message.role,
-          content: toAnthropicMessageContent(message.content),
+          content: normalizeAnthropicMessageContent(message),
         };
       }),
     max_tokens: input.maxTokens ?? 4096,
@@ -105,6 +175,9 @@ export function buildAnthropicMessagesRequest(
           ? 4096
           : 2048,
     };
+  }
+  if (input.contextManagement) {
+    body.context_management = input.contextManagement;
   }
   return body;
 }

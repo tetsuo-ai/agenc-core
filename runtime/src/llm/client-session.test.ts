@@ -3,6 +3,7 @@ import {
   ProviderHttpClientSession,
   ProviderHttpError,
 } from "./client-session.js";
+import { LLMCaptivePortalError, LLMCertificateError } from "./errors.js";
 
 function streamFromChunks(
   chunks: Array<string | Uint8Array>,
@@ -129,6 +130,87 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  test("retries TLS validation failures once with a fresh handshake even when transport retries are disabled", async () => {
+    const tlsError = Object.assign(
+      new Error("Hostname/IP does not match certificate's altnames"),
+      {
+        code: "ERR_TLS_CERT_ALTNAME_INVALID",
+        issuer: "Corp Proxy CA",
+        subject: "api.openai.com",
+        valid_to: "2026-05-01T00:00:00Z",
+      },
+    );
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(tlsError)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 0,
+        retryTransport: false,
+      },
+      fetchImpl,
+    });
+
+    const pending = session.requestJson<{ ok: boolean }>({
+      body: { ping: "pong" },
+    });
+    await vi.runOnlyPendingTimersAsync();
+    const response = await pending;
+
+    expect(response.data.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test("surfaces exhausted TLS validation failures as LLMCertificateError", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(
+        Object.assign(new Error("certificate has expired"), {
+          code: "CERT_HAS_EXPIRED",
+          issuer: "Corp Proxy CA",
+          subject: "api.openai.com",
+          valid_from: "2026-01-01T00:00:00Z",
+          valid_to: "2026-04-01T00:00:00Z",
+        }),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 0,
+        retryTransport: false,
+      },
+      fetchImpl,
+    });
+
+    const pending = expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject<Partial<LLMCertificateError>>({
+      name: LLMCertificateError.name,
+      providerName: "openai",
+      tlsCode: "CERT_HAS_EXPIRED",
+      issuer: "Corp Proxy CA",
+      subject: "api.openai.com",
+      validFrom: "2026-01-01T00:00:00Z",
+      validTo: "2026-04-01T00:00:00Z",
+    });
+    await vi.runOnlyPendingTimersAsync();
+    await pending;
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   test("does not retry 429 unless the retry budget enables it", async () => {
     const session = new ProviderHttpClientSession({
       providerName: "openai",
@@ -239,6 +321,37 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  test("classifies HTML JSON responses as captive portal / proxy intercept failures", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("<html><title>Login</title></html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 3,
+        retryTransport: true,
+      },
+      fetchImpl,
+    });
+
+    await expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject<Partial<LLMCaptivePortalError>>({
+      name: LLMCaptivePortalError.name,
+      providerName: "openai",
+      causeCode: "captive_portal_or_proxy_intercept",
+      contentType: "text/html; charset=utf-8",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("requestStream exposes chunked responses with auth and explicit api routing", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(streamFromChunks(["part-1", "part-2"]), {
@@ -306,6 +419,33 @@ describe("ProviderHttpClientSession", () => {
     const assertion = expect(consume).rejects.toThrow("openai stream idle for 50ms");
     await vi.advanceTimersByTimeAsync(50);
     await assertion;
+  });
+
+  test("requestStream rejects HTML responses before stream parsing begins", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(streamFromChunks(["<html>login</html>"]), {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+    });
+
+    await expect(
+      session.requestStream({
+        body: { stream: true },
+      }),
+    ).rejects.toMatchObject<Partial<LLMCaptivePortalError>>({
+      name: LLMCaptivePortalError.name,
+      providerName: "openai",
+      causeCode: "captive_portal_or_proxy_intercept",
+      contentType: "text/html; charset=utf-8",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   test("requestStream retries read-side transport failures within the stream budget", async () => {

@@ -59,6 +59,70 @@ const CAUSE_TEXT: Readonly<Record<TerminalToolCause, string>> = Object.freeze({
   process_killed: "process killed",
 });
 
+export function terminalToolCauseFromAbortReason(
+  reason: unknown,
+): TerminalToolCause | null {
+  const value =
+    typeof reason === "string"
+      ? reason
+      : reason instanceof Error
+        ? reason.message
+        : null;
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized === "timeout" ||
+    normalized.startsWith("tool timeout:") ||
+    (normalized.includes("exceeded") && normalized.includes("timeout"))
+  ) {
+    return "timeout";
+  }
+  if (
+    normalized === "mode_changed" ||
+    normalized.includes("permission mode changed") ||
+    normalized.includes("mode changed")
+  ) {
+    return "mode_changed";
+  }
+  if (
+    normalized === "user_interrupt" ||
+    normalized === "parent_interrupt" ||
+    normalized === "signal_received" ||
+    normalized === "stdin_lost" ||
+    normalized === "interrupt" ||
+    normalized.includes("user interrupted")
+  ) {
+    return "user_interrupted";
+  }
+  if (normalized === "auth_failed") return "auth_failed";
+  if (normalized === "provider_switched") return "provider_switched";
+  if (normalized === "process_killed") return "process_killed";
+  if (normalized === "connection_lost") return "connection_lost";
+  if (normalized === "aborted") return "aborted";
+  return null;
+}
+
+export function terminalToolCauseFromError(
+  error: unknown,
+  fallbackReason?: unknown,
+): TerminalToolCause | null {
+  const taggedReason =
+    error &&
+    typeof error === "object" &&
+    "reason" in error &&
+    typeof (error as { reason?: unknown }).reason === "string"
+      ? terminalToolCauseFromAbortReason((error as { reason?: unknown }).reason)
+      : null;
+  if (taggedReason) return taggedReason;
+  if (error instanceof Error) {
+    if (error.name === "ToolTimeoutError") return "timeout";
+    const fromMessage = terminalToolCauseFromAbortReason(error.message);
+    if (fromMessage) return fromMessage;
+  }
+  return terminalToolCauseFromAbortReason(fallbackReason);
+}
+
 export function buildTerminalToolResult(opts: {
   readonly toolCall: LLMToolCall;
   readonly cause: TerminalToolCause;

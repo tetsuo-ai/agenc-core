@@ -29,6 +29,7 @@ import {
   type PermissionRule,
 } from "./types.js";
 import { applyPermissionRulesToPermissionContext } from "./rules.js";
+import { __setAutoModeGateResolverForTesting } from "./mode.js";
 
 function mkTmp(): string {
   return mkdtempSync(join(tmpdir(), "agenc-perm-settings-"));
@@ -612,6 +613,25 @@ describe("initialPermissionModeFromCLI", () => {
     });
     expect(r.mode).toBe("default");
   });
+
+  test("auto mode falls back when disabled by settings", () => {
+    const r = initialPermissionModeFromCLI({
+      permissionModeCli: "auto",
+      isAutoModeAvailable: false,
+    });
+    expect(r.mode).toBe("default");
+    expect(r.notification).toMatch(/Auto mode was disabled/);
+  });
+
+  test("auto mode falls back when the live gate is closed", () => {
+    const r = initialPermissionModeFromCLI({
+      permissionModeCli: "auto",
+      isAutoModeAvailable: true,
+      isAutoModeGateEnabled: false,
+    });
+    expect(r.mode).toBe("default");
+    expect(r.notification).toMatch(/gate is closed/);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -679,6 +699,38 @@ describe("initializeToolPermissionContext", () => {
       permissionMode: "plan",
     });
     expect(toolPermissionContext.mode).toBe("plan");
+  });
+
+  test("sets isAutoModeAvailable when settings do not disable auto mode", async () => {
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+    });
+    expect(toolPermissionContext.isAutoModeAvailable).toBe(true);
+  });
+
+  test("reads disableAutoMode from settings into the context", async () => {
+    mkdirSync(join(home, ".agenc"), { recursive: true });
+    writeFileSync(
+      join(home, ".agenc", "settings.json"),
+      JSON.stringify({ permissions: { disableAutoMode: "disable" } }),
+    );
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+    });
+    expect(toolPermissionContext.isAutoModeAvailable).toBe(false);
+  });
+
+  test("does not start in auto mode when the live gate is closed", async () => {
+    const restore = __setAutoModeGateResolverForTesting(() => false);
+    try {
+      const { toolPermissionContext } = await initializeToolPermissionContext({
+        env: { home, cwd, managedSettingsPath: join(home, "no-policy.json") },
+        permissionMode: "auto",
+      });
+      expect(toolPermissionContext.mode).toBe("default");
+    } finally {
+      restore();
+    }
   });
 
   test("sets isBypassPermissionsModeAvailable when dangerous skip granted", async () => {

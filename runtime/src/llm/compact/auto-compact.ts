@@ -1,6 +1,4 @@
 import { feature } from 'bun:bundle'
-import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config.js'
@@ -17,8 +15,10 @@ import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.j
 import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
 import {
   type CompactionResult,
+  createReferenceContextMessages,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
+  type InitialContextInjection,
   type RecompactionInfo,
 } from './compact.js'
 import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
@@ -35,7 +35,7 @@ export function getEffectiveContextWindowSize(model: string): number {
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
-  let contextWindow = getContextWindowForModel(model, getSdkBetas())
+  let contextWindow = getContextWindowForModel(model, undefined)
 
   const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   if (autoCompactWindow) {
@@ -114,7 +114,7 @@ export function calculateTokenWarningState(
   // display, so users see remaining context relative to the model's full capacity.
   // The threshold (which subtracts buffer) should only affect when we warn/compact,
   // not what percentage we display.
-  const rawContextWindow = getContextWindowForModel(model, getSdkBetas())
+  const rawContextWindow = getContextWindowForModel(model, undefined)
   const percentLeft = Math.max(
     0,
     Math.round(((rawContextWindow - tokenUsage) / rawContextWindow) * 100),
@@ -255,10 +255,12 @@ export async function autoCompactIfNeeded(
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
+  initialContextInjection: InitialContextInjection = 'do_not_inject',
 ): Promise<{
   wasCompacted: boolean
   compactionResult?: CompactionResult
   consecutiveFailures?: number
+  warning?: { cause: string; message: string }
 }> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
@@ -312,10 +314,23 @@ export async function autoCompactIfNeeded(
     if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
       notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
     }
-    markPostCompaction()
+    // T5: legacy `markPostCompaction()` resolved to a no-op stub proxy
+    // from bootstrap/state.ts (catch-all Proxy). The equivalent post-
+    // compaction state in T5 (I-2 `previous_response_id` clear plus
+    // runtime-owner cleanup) is handled synchronously above by
+    // runPostCompactCleanup — see invariants.md I-2.
     return {
       wasCompacted: true,
-      compactionResult: sessionMemoryResult,
+      compactionResult: {
+        ...sessionMemoryResult,
+        ...(initialContextInjection === 'before_last_user_message'
+          ? {
+              referenceContextMessages: createReferenceContextMessages(
+                toolUseContext.referenceContextItem,
+              ),
+            }
+          : {}),
+      },
     }
   }
 
@@ -328,6 +343,7 @@ export async function autoCompactIfNeeded(
       undefined, // No custom instructions for autocompact
       true, // isAutoCompact
       recompactionInfo,
+      initialContextInjection,
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
@@ -345,6 +361,14 @@ export async function autoCompactIfNeeded(
     if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
       logError(error)
     }
+    const warningMessage = `auto compact failed (${querySource ?? 'unknown'}): ${
+      error instanceof Error ? error.message : String(error)
+    }`
+    const warning = {
+      cause: 'auto_compact_failed',
+      message: warningMessage,
+    } as const
+    toolUseContext.emitWarning?.(warning)
     // Increment consecutive failure count for circuit breaker.
     // The caller threads this through autoCompactTracking so the
     // next query loop iteration can skip futile retry attempts.
@@ -356,6 +380,10 @@ export async function autoCompactIfNeeded(
         { level: 'warn' },
       )
     }
-    return { wasCompacted: false, consecutiveFailures: nextFailures }
+    return {
+      wasCompacted: false,
+      consecutiveFailures: nextFailures,
+      warning,
+    }
   }
 }

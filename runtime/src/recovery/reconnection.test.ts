@@ -1,12 +1,13 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import {
   computeBackoffMs,
   detectSuspend,
+  RECONNECT_GIVE_UP_MS,
   RECONNECT_INITIAL_MS,
-  RECONNECT_MAX_ATTEMPTS,
   RECONNECT_MAX_MS,
+  RECONNECT_SLEEP_DETECTION_THRESHOLD_MS,
   reconnectWithBackoff,
 } from "./reconnection.js";
 
@@ -72,6 +73,43 @@ describe("reconnectWithBackoff", () => {
     expect(out.kind).toBe("exhausted");
   });
 
+  test("stops retrying when the recovery-cap hook rejects another re-entry", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const gate = vi.fn().mockResolvedValue(false);
+
+    const out = await reconnectWithBackoff({
+      session,
+      attempt: async () => {
+        throw new Error("stream_idle");
+      },
+      isTransient: () => true,
+      onTransientRetry: gate,
+    });
+
+    expect(out.kind).toBe("exhausted");
+    expect(gate).toHaveBeenCalledTimes(1);
+  });
+
+  test("exhausts once the reconnect give-up budget elapses", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const out = await reconnectWithBackoff({
+      session,
+      now: () => 0,
+      giveUpMs: 0,
+      attempt: async () => {
+        throw new Error("stream_idle");
+      },
+      isTransient: () => true,
+    });
+
+    expect(out.kind).toBe("exhausted");
+    if (out.kind === "exhausted") {
+      expect(out.attempts).toBe(1);
+    }
+  });
+
   test("non-transient error bubbles immediately", async () => {
     const log = new EventLog();
     const session = mkSession(log);
@@ -100,8 +138,40 @@ describe("reconnectWithBackoff", () => {
     expect(out.kind).toBe("aborted");
   });
 
-  test("max attempts default matches RECONNECT_MAX_ATTEMPTS", () => {
-    expect(RECONNECT_MAX_ATTEMPTS).toBe(5);
+  test("resets the reconnect budget after a long suspend gap", async () => {
+    vi.useFakeTimers();
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const log = new EventLog();
+    const session = mkSession(log);
+    let now = 0;
+    let calls = 0;
+
+    const promise = reconnectWithBackoff({
+      session,
+      now: () => now,
+      giveUpMs: 1_500,
+      sleepDetectionThresholdMs: 60_000,
+      attempt: async () => {
+        calls += 1;
+        if (calls < 3) {
+          throw new Error("stream_idle");
+        }
+        return "recovered";
+      },
+      isTransient: () => true,
+    });
+
+    await Promise.resolve();
+    now = 1_000;
+    await vi.advanceTimersByTimeAsync(1_000);
+    now = 120_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const out = await promise;
+    expect(out.kind).toBe("ok");
+    expect(calls).toBe(3);
+    randomSpy.mockRestore();
+    vi.useRealTimers();
   });
 });
 
@@ -111,9 +181,18 @@ describe("detectSuspend", () => {
     const d = detectSuspend(now - 10_000);
     expect(d.suspended).toBe(false);
   });
-  test("gap > 60s → suspended", () => {
+  test("gap > sleep threshold → suspended", () => {
     const now = performance.now();
-    const d = detectSuspend(now - 120_000);
+    const d = detectSuspend(
+      now - (RECONNECT_SLEEP_DETECTION_THRESHOLD_MS + 1_000),
+    );
     expect(d.suspended).toBe(true);
+  });
+
+  test("defaults match the transport reconnection contract", () => {
+    expect(RECONNECT_INITIAL_MS).toBe(1_000);
+    expect(RECONNECT_MAX_MS).toBe(30_000);
+    expect(RECONNECT_GIVE_UP_MS).toBe(600_000);
+    expect(RECONNECT_SLEEP_DETECTION_THRESHOLD_MS).toBe(60_000);
   });
 });

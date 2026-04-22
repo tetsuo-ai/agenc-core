@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   __resetClassifierStubSessionForTesting,
   __setAutoModeGateResolverForTesting,
+  __setRemoteClassifierStageRunnerForTesting,
   __setClassifierWarningSinkForTesting,
 } from "./classifier.js";
 import {
@@ -46,6 +47,7 @@ type HarnessOverrides = {
   askRules?: readonly { toolName: string; ruleContent?: string }[];
   denialTracking?: DenialTrackingState;
   executionSurface?: "cli" | "headless";
+  history?: readonly unknown[];
 };
 
 function buildHarness(overrides: HarnessOverrides = {}): {
@@ -99,7 +101,11 @@ function buildHarness(overrides: HarnessOverrides = {}): {
     getAppState(): AppStateSnapshot {
       return state;
     },
-    session: {} as unknown as Session,
+    session: {
+      state: {
+        unsafePeek: () => ({ history: overrides.history ?? [] }),
+      },
+    } as unknown as Session,
     onDecision(decision, phase) {
       decisions.push({ decision, phase });
     },
@@ -442,6 +448,54 @@ describe("hasPermissionsToUseTool — step 4 auto mode activates classifier", ()
         expect(result.message).toContain("Permission required");
       }
     } finally {
+      restoreGate();
+    }
+  });
+
+  it("passes session history into the classifier transcript", async () => {
+    const prompts: string[] = [];
+    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+    const restoreRunner = __setRemoteClassifierStageRunnerForTesting(
+      async (request) => {
+        prompts.push(request.userPrompt);
+        return {
+          shouldBlock: false,
+          reason: "remote_allow",
+          usage: null,
+          model: request.model,
+        };
+      },
+    );
+    try {
+      const tool = makeTool({ name: "Edit" });
+      const { context } = buildHarness({
+        mode: "auto",
+        history: [
+          { role: "user", content: "Update the permissions classifier only." },
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              {
+                id: "call_1",
+                name: "FileRead",
+                arguments: "{\"path\":\"runtime/src/permissions/classifier.ts\"}",
+              },
+            ],
+          },
+        ],
+      });
+      const result = await hasPermissionsToUseTool(
+        tool,
+        { path: "runtime/src/permissions/classifier.ts" },
+        context,
+      );
+      expect(result.behavior).toBe("allow");
+      expect(prompts[0]).toContain("USER Update the permissions classifier only.");
+      expect(prompts[0]).toContain("ASSISTANT_TOOL FileRead(");
+      expect(prompts[0]).toContain("Edit(");
+    } finally {
+      restoreRunner();
       restoreGate();
     }
   });

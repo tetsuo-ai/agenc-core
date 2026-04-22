@@ -1,7 +1,12 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+
+vi.mock('axios', () => ({
+  default: {},
+  AxiosError: class AxiosError extends Error {},
+}))
 
 import {
   COMPACT_TOOL_RESULT_DROP_BYTES,
@@ -193,6 +198,11 @@ describe('I-88 filterLargeToolResultsForCompact', () => {
     expect(
       compactionIndex!.toolResultBytesByTurn.get('turn-from-snapshot'),
     ).toBe(COMPACT_TOOL_RESULT_DROP_BYTES + 64)
+    expect(
+      compactionIndex!.tokenEstimateByTurn?.get('turn-from-snapshot'),
+    ).toBe(
+      Math.ceil((COMPACT_TOOL_RESULT_DROP_BYTES + 64) / 4),
+    )
     expect(compactionIndex!.toolCallTurnIds.get('call-from-snapshot')).toBe(
       'turn-from-snapshot',
     )

@@ -49,7 +49,7 @@ import {
   type PostToolUseFailureHook,
   type PostToolUseHook,
   type PreToolUseHook,
-} from "../tools/tool-hooks.js";
+} from "../tools/hooks.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
@@ -105,6 +105,31 @@ function toolCallStartedEvent(call: LLMToolCall) {
       args: call.arguments,
     },
   };
+}
+
+function emitMalformedToolCallFailures(
+  session: Session,
+  failures: ReadonlyArray<{ readonly cause: string }>,
+): void {
+  for (const failure of failures) {
+    emitErrorEvent(session.eventLog, session.nextInternalSubId(), {
+      cause: "malformed_tool_call",
+      message: `provider returned malformed tool_use (${failure.cause})`,
+      streamError: true,
+      provider: session.services.provider.name,
+    });
+  }
+}
+
+export function validateToolCallsForDispatch(
+  raw: ReadonlyArray<unknown>,
+  session: Session,
+) {
+  const batch = validateToolCallsForExecution(raw);
+  if (batch.failures.length > 0) {
+    emitMalformedToolCallFailures(session, batch.failures);
+  }
+  return batch;
 }
 
 /**
@@ -358,17 +383,7 @@ export async function executeTools(
   // blocks (missing id/name/non-string arguments) emit stream_error
   // and are removed from the batch so dispatch only sees valid calls.
   const assistantToolCalls = assistant?.toolCalls ?? [];
-  const batch = validateToolCallsForExecution(assistantToolCalls);
-  if (batch.failures.length > 0) {
-    for (const failure of batch.failures) {
-      emitErrorEvent(session.eventLog, session.nextInternalSubId(), {
-        cause: "malformed_tool_call",
-        message: `provider returned malformed tool_use (${failure.cause})`,
-        streamError: true,
-        provider: session.services.provider.name,
-      });
-    }
-  }
+  const batch = validateToolCallsForDispatch(assistantToolCalls, session);
   const validCallIds = new Set(batch.valid.map((c) => c.id));
   const filteredToolCalls = assistantToolCalls.filter((c) =>
     validCallIds.has(c.id),
@@ -401,12 +416,10 @@ export async function executeTools(
   for (const call of filteredToolCalls) {
     const block = toolBlocksById.get(call.id);
     if (!block) continue;
-    if (signal?.aborted) break;
 
     // Env-cap gate: if queued-not-yielded already equals the cap, wait
     // for at least one to complete before pushing the next.
     while (queuedNotYieldedCount() >= envCap) {
-      if (signal?.aborted) break;
       // Drain whatever is already completed; if none yet, await the
       // next one via the executor's async generator.
       await drainCompletedToolResults(state, ctx, session, executor);
@@ -423,7 +436,6 @@ export async function executeTools(
   executor.close();
 
   for await (const { toolCall, result } of executor.getRemainingResults()) {
-    if (signal?.aborted) break;
     recordCompletedToolCall(state, ctx, session, toolCall, result);
   }
 

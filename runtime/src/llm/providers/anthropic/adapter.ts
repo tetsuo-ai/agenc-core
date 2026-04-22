@@ -31,6 +31,7 @@ import {
 } from "../../wire/messages-anthropic.js";
 import type { AnthropicProviderConfig } from "./types.js";
 import { parseSSEFrames } from "../../../transport/sse-post.js";
+import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../../constants/betas.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
@@ -102,6 +103,10 @@ export class AnthropicProvider implements LLMProvider {
       prefix: "",
     });
     authHeaders["x-api-key"] = authHeaders["x-api-key"].trimStart();
+    const betaHeaders = new Set(config.betaHeaders ?? []);
+    if (config.contextManagement) {
+      betaHeaders.add(CONTEXT_MANAGEMENT_BETA_HEADER);
+    }
     this.client = new ProviderHttpClient({
       providerName: this.name,
       baseURL: config.baseURL ?? DEFAULT_BASE_URL,
@@ -109,8 +114,8 @@ export class AnthropicProvider implements LLMProvider {
         ...(config.defaultHeaders ?? {}),
         "anthropic-version":
           config.anthropicVersion ?? DEFAULT_ANTHROPIC_VERSION,
-        ...(config.betaHeaders && config.betaHeaders.length > 0
-          ? { "anthropic-beta": config.betaHeaders.join(",") }
+        ...(betaHeaders.size > 0
+          ? { "anthropic-beta": [...betaHeaders].join(",") }
           : {}),
       },
       authHeaders,
@@ -135,6 +140,7 @@ export class AnthropicProvider implements LLMProvider {
         tools: this.config.tools ?? [],
         options,
         maxTokens: this.config.maxTokens,
+        contextManagement: this.config.contextManagement,
       });
       const response = await session.requestJson<Record<string, unknown>>({
         api: "messages",
@@ -169,6 +175,7 @@ export class AnthropicProvider implements LLMProvider {
       tools: this.config.tools ?? [],
       options,
       maxTokens: this.config.maxTokens,
+      contextManagement: this.config.contextManagement,
     };
     const request = {
       ...buildAnthropicMessagesRequest(requestOptions),

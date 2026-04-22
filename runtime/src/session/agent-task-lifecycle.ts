@@ -21,6 +21,7 @@
 
 import type { Session } from "./session.js";
 import type { RolloutItem } from "./rollout-item.js";
+import type { TokenCountEvent } from "./event-log.js";
 
 export type { RolloutItem, SessionStateUpdate } from "./rollout-item.js";
 
@@ -215,6 +216,97 @@ export async function restorePersistedAgentTask(
     }
   } else {
     await clearAgentTask(session);
+  }
+}
+
+/**
+ * Codex `Session::last_token_info_from_rollout`
+ * (session/mod.rs:1257-1262). Walks rollout items in reverse and
+ * returns the most recent `token_count` event payload. Returns
+ * `undefined` if no token_count event was ever persisted.
+ *
+ * AgenC stores token usage in the `TokenCountEvent` payload; codex
+ * uses `TokenUsageInfo` directly. The field set is equivalent.
+ */
+export function lastTokenInfoFromRollout(
+  rolloutItems: ReadonlyArray<RolloutItem>,
+): TokenCountEvent | undefined {
+  for (let i = rolloutItems.length - 1; i >= 0; i -= 1) {
+    const item = rolloutItems[i];
+    if (!item || item.type !== "event_msg") continue;
+    const inner = item.payload.msg;
+    if ((inner as { type?: string }).type !== "token_count") continue;
+    const payload = (inner as { payload?: TokenCountEvent }).payload;
+    if (payload !== undefined) return payload;
+  }
+  return undefined;
+}
+
+/**
+ * Port of codex `Session::record_initial_history` resume branch
+ * (session/mod.rs:1150-1236 — the `InitialHistory::Resumed` arm).
+ *
+ * Three resume-time behaviors are wired here so the AgenC bootstrap
+ * has a single entrypoint for them:
+ *
+ *   1. **Agent-task restore.** Delegates to `restorePersistedAgentTask`
+ *      so the cached task matches the post-replay session identity.
+ *   2. **Model-change warning.** Codex emits
+ *      `EventMsg::Warning(WarningEvent { ... })` (session/mod.rs:1186-1195)
+ *      when the rollout's last `turn_context.model` differs from the
+ *      session's active model. The warning wording mirrors codex's
+ *      English sentence; "Codex" is swapped for "AgenC".
+ *   3. **Token-info seed.** Sets `initialTokenUsage` on session state
+ *      from the last persisted `token_count` event so UIs display
+ *      cumulative usage immediately after resume.
+ *
+ * Callers (bootstrap.ts resume branch) pass the rollout items read
+ * from the JSONL file plus the already-computed `previousTurnSettings`
+ * from `reconstructFromRollout` so we do not re-walk the rollout
+ * needlessly. `currentModel` is the model the session is booting with
+ * (the model actually going to run the next turn). When these differ
+ * a warning is emitted via `session.emit`.
+ */
+export async function recordInitialHistoryOnResume(
+  session: Session,
+  rolloutItems: ReadonlyArray<RolloutItem>,
+  opts: {
+    readonly previousModel?: string;
+    readonly currentModel: string;
+  },
+): Promise<void> {
+  // 1. Agent-task restore. Preserves codex line 1173 ordering
+  // (task restore before any state mutations tied to the new model).
+  await restorePersistedAgentTask(session, rolloutItems);
+
+  // 2. Model-change warning. Matches codex's sentence at
+  // session/mod.rs:1189-1191 with "Codex" → "AgenC".
+  if (
+    opts.previousModel !== undefined &&
+    opts.previousModel !== opts.currentModel
+  ) {
+    const prev = opts.previousModel;
+    const curr = opts.currentModel;
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "resumed_with_different_model",
+          message: `This session was recorded with model \`${prev}\` but is resuming with \`${curr}\`. Consider switching back to \`${prev}\` as it may affect AgenC performance.`,
+        },
+      },
+    });
+  }
+
+  // 3. Seed token_info so downstream UIs see persisted usage
+  // (codex session/mod.rs:1200-1203).
+  const info = lastTokenInfoFromRollout(rolloutItems);
+  if (info !== undefined) {
+    await session.state.with((s) => {
+      (s as unknown as { initialTokenUsage?: TokenCountEvent }).initialTokenUsage =
+        info;
+    });
   }
 }
 

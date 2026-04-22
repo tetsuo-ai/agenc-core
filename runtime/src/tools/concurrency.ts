@@ -1,6 +1,13 @@
 /**
  * AgenC-original concurrency contract for tool execution.
  *
+ * Provenance note: `ConcurrencyClass` is AgenC-original — codex has
+ * no equivalent enum. Earlier docs (feature-matrix.md:73,
+ * architecture.md:228 + architecture.md:387-390) mistakenly framed
+ * this as a "port of codex `parallel.rs:28-140`"; in fact codex only
+ * exposes the boolean `supports_parallel_tool_calls` flag referenced
+ * below, and AgenC extends it here. W4 is correcting the docs.
+ *
  * Codex `core/src/tools/parallel.rs` inspired the boolean
  * `supports_parallel_tool_calls` flag, but AgenC expands that single
  * boolean into a 4-class `ConcurrencyClass` enum + a per-serverId

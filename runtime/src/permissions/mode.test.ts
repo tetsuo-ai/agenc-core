@@ -21,6 +21,33 @@ import {
 } from "./mode.js";
 import type { PermissionMode, ToolPermissionContext } from "./types.js";
 
+const AUTO_MODE_ENV_KEYS = [
+  "XAI_API_KEY",
+  "GROK_API_KEY",
+  "AGENC_XAI_API_KEY",
+] as const;
+
+function withAutoModeEnv<T>(body: () => T): T {
+  const previous = Object.fromEntries(
+    AUTO_MODE_ENV_KEYS.map((key) => [key, process.env[key]]),
+  ) as Record<(typeof AUTO_MODE_ENV_KEYS)[number], string | undefined>;
+  for (const key of AUTO_MODE_ENV_KEYS) {
+    delete process.env[key];
+  }
+  try {
+    return body();
+  } finally {
+    for (const key of AUTO_MODE_ENV_KEYS) {
+      const value = previous[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 function withGateEnabled<T>(enabled: boolean, body: () => T): T {
   const restore = __setAutoModeGateResolverForTesting(() => enabled);
   try {
@@ -81,14 +108,18 @@ describe("mode constants", () => {
   });
 });
 
-describe("auto-mode gate (T13 stub)", () => {
-  it("isAutoModeGateEnabled returns false until T13 ships", () => {
-    expect(isAutoModeGateEnabled()).toBe(false);
+describe("auto-mode gate", () => {
+  it("isAutoModeGateEnabled returns false when xAI is not configured", () => {
+    withAutoModeEnv(() => {
+      expect(isAutoModeGateEnabled()).toBe(false);
+    });
   });
 
   it("canCycleToAuto requires both the cached flag and the live gate", () => {
     const available = baseCtx({ isAutoModeAvailable: true });
-    expect(canCycleToAuto(available)).toBe(false); // gate off
+    withAutoModeEnv(() => {
+      expect(canCycleToAuto(available)).toBe(false); // gate off
+    });
     withGateEnabled(true, () => {
       expect(canCycleToAuto(available)).toBe(true);
       expect(canCycleToAuto(baseCtx({ isAutoModeAvailable: false }))).toBe(
@@ -169,6 +200,23 @@ describe("transitionPermissionMode — plan enter/exit", () => {
     expect(exited.hasExitedPlanModeInSession).toBe(true);
   });
 
+  it("clears plan-scoped auto-mode state on exit back to a non-auto mode", () => {
+    const inPlan = baseCtx({
+      mode: "plan",
+      prePlanMode: "default",
+      autoModeActive: true,
+      alwaysAllowRules: { userSettings: ["Read(src/**)"] },
+      strippedDangerousRules: { userSettings: ["Bash(*)"] },
+    });
+    const exited = transitionPermissionMode("plan", "default", inPlan);
+    expect(exited.autoModeActive).toBe(false);
+    expect(exited.prePlanMode).toBeUndefined();
+    expect(exited.alwaysAllowRules.userSettings).toEqual([
+      "Read(src/**)",
+      "Bash(*)",
+    ]);
+  });
+
   it("re-entering plan is a no-op (does not double-stash prePlanMode)", () => {
     const inPlan = baseCtx({ mode: "plan", prePlanMode: "acceptEdits" });
     const after = transitionPermissionMode("plan", "plan", inPlan);
@@ -179,10 +227,12 @@ describe("transitionPermissionMode — plan enter/exit", () => {
 
 describe("transitionPermissionMode — auto enter/leave", () => {
   it("throws if entering auto while gate is disabled", () => {
-    const ctx = baseCtx({ isAutoModeAvailable: true });
-    expect(() => transitionPermissionMode("default", "auto", ctx)).toThrow(
-      /gate is not enabled/,
-    );
+    withAutoModeEnv(() => {
+      const ctx = baseCtx({ isAutoModeAvailable: true });
+      expect(() => transitionPermissionMode("default", "auto", ctx)).toThrow(
+        /gate is not enabled/,
+      );
+    });
   });
 
   it("enters auto when gate enabled, sets autoModeActive, strips dangerous rules", () => {
@@ -236,6 +286,7 @@ describe("prepareContextForPlanMode", () => {
     });
     const next = prepareContextForPlanMode(ctx, { shouldUseAutoInPlan: true });
     expect(next.prePlanMode).toBe("default");
+    expect(next.autoModeActive).toBe(true);
     expect(next.strippedDangerousRules?.userSettings).toEqual(["Bash(*)"]);
     expect(next.alwaysAllowRules.userSettings).toBeUndefined();
   });
@@ -247,12 +298,25 @@ describe("prepareContextForPlanMode", () => {
     });
     const next = prepareContextForPlanMode(ctx, { shouldUseAutoInPlan: true });
     expect(next.alwaysAllowRules.userSettings).toEqual(["Bash(*)"]);
+    expect(next.autoModeActive).toBeUndefined();
     expect(next.strippedDangerousRules).toBeUndefined();
   });
 
   it("re-entering plan is a no-op", () => {
     const ctx = baseCtx({ mode: "plan", prePlanMode: "acceptEdits" });
     expect(prepareContextForPlanMode(ctx)).toBe(ctx);
+  });
+
+  it("preserves existing auto-mode state entering plan from auto", () => {
+    const ctx = baseCtx({
+      mode: "auto",
+      autoModeActive: true,
+      alwaysAllowRules: { userSettings: ["Read(src/**)"] },
+    });
+    const next = prepareContextForPlanMode(ctx, { shouldUseAutoInPlan: true });
+    expect(next.prePlanMode).toBe("auto");
+    expect(next.autoModeActive).toBe(true);
+    expect(next.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
   });
 });
 
@@ -498,18 +562,17 @@ describe("transitionPermissionMode — bypassPermissions consent gate", () => {
   });
 });
 
-describe("isAutoModeGateEnabled stub behaviour", () => {
-  let envBackup: string | undefined;
-  beforeEach(() => {
-    envBackup = process.env.AGENC_YOLO_GATE;
-  });
-  afterEach(() => {
-    if (envBackup === undefined) delete process.env.AGENC_YOLO_GATE;
-    else process.env.AGENC_YOLO_GATE = envBackup;
-  });
-
-  it("remains false regardless of env (gate wiring is T13)", () => {
+describe("isAutoModeGateEnabled env behaviour", () => {
+  it("ignores unrelated env and stays false without an xAI key", () => {
+    const previous = process.env.AGENC_YOLO_GATE;
     process.env.AGENC_YOLO_GATE = "1";
-    expect(isAutoModeGateEnabled()).toBe(false);
+    try {
+      withAutoModeEnv(() => {
+        expect(isAutoModeGateEnabled()).toBe(false);
+      });
+    } finally {
+      if (previous === undefined) delete process.env.AGENC_YOLO_GATE;
+      else process.env.AGENC_YOLO_GATE = previous;
+    }
   });
 });

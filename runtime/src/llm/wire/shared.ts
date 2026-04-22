@@ -16,6 +16,66 @@ import type {
 import { normalizeMessagesForAPI } from "../messages.js";
 import { validateToolCall } from "../types.js";
 
+function readContentPartRecord(part: unknown): Record<string, unknown> | null {
+  return part && typeof part === "object" && !Array.isArray(part)
+    ? (part as Record<string, unknown>)
+    : null;
+}
+
+function normalizeAudioFormat(format: string): string {
+  const normalized = format.trim().toLowerCase();
+  return normalized.startsWith("audio/") ? normalized.slice("audio/".length) : normalized;
+}
+
+function parseAudioDataUrl(
+  url: string,
+): { readonly data: string; readonly format: string } | null {
+  const match = /^data:audio\/([^;,]+)(?:;[^,]*)?;base64,([\s\S]+)$/i.exec(
+    url.trim(),
+  );
+  if (!match) return null;
+  const format = normalizeAudioFormat(match[1] ?? "");
+  const data = (match[2] ?? "").trim();
+  if (!format || !data) return null;
+  return { data, format };
+}
+
+export function readAudioPayload(
+  part: unknown,
+): { readonly data: string; readonly format: string } | null {
+  const record = readContentPartRecord(part);
+  if (!record) return null;
+  const nested = readContentPartRecord(record.input_audio);
+  if (
+    typeof nested?.data === "string" &&
+    nested.data.length > 0 &&
+    typeof nested.format === "string" &&
+    nested.format.length > 0
+  ) {
+    return {
+      data: nested.data,
+      format: normalizeAudioFormat(nested.format),
+    };
+  }
+  const audioUrl = readContentPartRecord(record.audio_url);
+  if (typeof audioUrl?.url === "string" && audioUrl.url.length > 0) {
+    return parseAudioDataUrl(audioUrl.url);
+  }
+  return null;
+}
+
+export function hasOpaqueAudioReference(part: unknown): boolean {
+  const record = readContentPartRecord(part);
+  if (!record) return false;
+  if (readAudioPayload(record)) return false;
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  if (type === "input_audio" || type === "audio_url") {
+    return true;
+  }
+  const audioUrl = readContentPartRecord(record.audio_url);
+  return typeof audioUrl?.url === "string" && audioUrl.url.trim().length > 0;
+}
+
 export function coerceUsage(usage: {
   readonly promptTokens?: unknown;
   readonly completionTokens?: unknown;
@@ -57,11 +117,24 @@ export function messageTextContent(
 ): string {
   if (typeof content === "string") return content;
   return content
-    .map((part) =>
-      part.type === "text"
-        ? part.text
-        : `[image: ${part.image_url.url}]`
-    )
+    .map((part) => {
+      const record = readContentPartRecord(part);
+      const type = typeof record?.type === "string" ? record.type : "";
+      if (type === "text") {
+        return String(record?.text ?? "");
+      }
+      if (type === "image_url") {
+        return `[image: ${String((record?.image_url as { url?: unknown } | undefined)?.url ?? "")}]`;
+      }
+      const audio = readAudioPayload(part);
+      if (audio) {
+        return `[audio:${audio.format}]`;
+      }
+      if (hasOpaqueAudioReference(part)) {
+        return "[audio]";
+      }
+      return `[${type || "content"}]`;
+    })
     .join("\n");
 }
 
@@ -70,12 +143,30 @@ export function toOpenAIMessageContent(
 ): string | Array<Record<string, unknown>> {
   if (typeof content === "string") return content;
   return content.map((part) => {
-    if (part.type === "text") {
-      return { type: "text", text: part.text };
+    const record = readContentPartRecord(part) ?? {};
+    if (record.type === "text") {
+      return { type: "text", text: String(record.text ?? "") };
+    }
+    const audio = readAudioPayload(part);
+    if (audio) {
+      return {
+        type: "input_audio",
+        input_audio: {
+          data: audio.data,
+          format: audio.format,
+        },
+      };
+    }
+    if (hasOpaqueAudioReference(part)) {
+      return { type: "text", text: "[audio]" };
     }
     return {
       type: "image_url",
-      image_url: { url: part.image_url.url },
+      image_url: {
+        url: String(
+          (record.image_url as { url?: unknown } | undefined)?.url ?? "",
+        ),
+      },
     };
   });
 }
@@ -86,12 +177,30 @@ export function toOpenAIToolMessageContent(
   if (typeof content === "string") return content;
 
   const parts = content.map((part) => {
-    if (part.type === "text") {
-      return { type: "text", text: part.text };
+    const record = readContentPartRecord(part) ?? {};
+    if (record.type === "text") {
+      return { type: "text", text: String(record.text ?? "") };
+    }
+    const audio = readAudioPayload(part);
+    if (audio) {
+      return {
+        type: "input_audio",
+        input_audio: {
+          data: audio.data,
+          format: audio.format,
+        },
+      };
+    }
+    if (hasOpaqueAudioReference(part)) {
+      return { type: "text", text: "[audio]" };
     }
     return {
       type: "image_url",
-      image_url: { url: part.image_url.url },
+      image_url: {
+        url: String(
+          (record.image_url as { url?: unknown } | undefined)?.url ?? "",
+        ),
+      },
     };
   });
 
@@ -107,12 +216,25 @@ export function toAnthropicMessageContent(
 ): Array<Record<string, unknown>> | string {
   if (typeof content === "string") return content;
   return content.map((part) => {
-    if (part.type === "text") {
-      return { type: "text", text: part.text };
+    const record = readContentPartRecord(part) ?? {};
+    if (record.type === "text") {
+      return { type: "text", text: String(record.text ?? "") };
+    }
+    const imageUrl = String(
+      (record.image_url as { url?: unknown } | undefined)?.url ?? "",
+    );
+    if (imageUrl.length > 0) {
+      return {
+        type: "image",
+        source: {
+          type: "url",
+          url: imageUrl,
+        },
+      };
     }
     return {
       type: "text",
-      text: `[image: ${part.image_url.url}]`,
+      text: messageTextContent([part] as unknown as readonly LLMContentPart[]),
     };
   });
 }
@@ -123,15 +245,25 @@ export function toAnthropicToolResultContent(
   if (typeof content === "string") return content;
 
   const parts = content.map((part) => {
-    if (part.type === "text") {
-      return { type: "text", text: part.text };
+    const record = readContentPartRecord(part) ?? {};
+    if (record.type === "text") {
+      return { type: "text", text: String(record.text ?? "") };
+    }
+    const imageUrl = String(
+      (record.image_url as { url?: unknown } | undefined)?.url ?? "",
+    );
+    if (imageUrl.length > 0) {
+      return {
+        type: "image",
+        source: {
+          type: "url",
+          url: imageUrl,
+        },
+      };
     }
     return {
-      type: "image",
-      source: {
-        type: "url",
-        url: part.image_url.url,
-      },
+      type: "text",
+      text: messageTextContent([part] as unknown as readonly LLMContentPart[]),
     };
   });
 
@@ -148,22 +280,42 @@ export function toResponsesToolOutput(
   if (typeof content === "string") return content;
 
   const parts: Array<Record<string, unknown>> = [];
-  let hasImage = false;
+  let hasStructuredPart = false;
   for (const part of content) {
-    if (part.type === "text") {
-      if (part.text.length === 0) continue;
-      parts.push({ type: "input_text", text: part.text });
+    const record = readContentPartRecord(part) ?? {};
+    if (record.type === "text") {
+      const text = String(record.text ?? "");
+      if (text.length === 0) continue;
+      parts.push({ type: "input_text", text });
       continue;
     }
-    hasImage = true;
+    const audio = readAudioPayload(part);
+    if (audio) {
+      hasStructuredPart = true;
+      parts.push({
+        type: "input_audio",
+        input_audio: {
+          data: audio.data,
+          format: audio.format,
+        },
+      });
+      continue;
+    }
+    if (hasOpaqueAudioReference(part)) {
+      parts.push({ type: "input_text", text: "[audio]" });
+      continue;
+    }
+    hasStructuredPart = true;
     parts.push({
       type: "input_image",
-      image_url: part.image_url.url,
+      image_url: String(
+        (record.image_url as { url?: unknown } | undefined)?.url ?? "",
+      ),
     });
   }
 
   if (parts.length === 0) return "";
-  if (!hasImage) {
+  if (!hasStructuredPart) {
     return parts
       .map((part) => String(part.text ?? ""))
       .filter((text) => text.length > 0)

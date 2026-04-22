@@ -3,9 +3,10 @@
  *
  * Port of openclaude reconnection pattern: on transient network /
  * provider errors (ECONNRESET, ECONNREFUSED, 503, stream_idle), the
- * recovery layer sleeps with exponential backoff (500ms → 8s cap)
- * then resamples. Pending tool-call re-injection ensures the model
- * sees the same prompt after the reconnect (history is unchanged).
+ * recovery layer sleeps with exponential backoff (1s → 30s cap,
+ * ±25% jitter, 10-minute give-up budget) then resamples. Pending
+ * tool-call re-injection ensures the model sees the same prompt
+ * after the reconnect (history is unchanged).
  *
  * Invariants covered:
  *   I-7  (stream abort cascade) — reconnection runs as a recovery
@@ -24,10 +25,12 @@ import { emitWarning } from "../session/event-log.js";
 // Backoff configuration
 // ─────────────────────────────────────────────────────────────────────
 
-export const RECONNECT_INITIAL_MS = 500;
-export const RECONNECT_MAX_MS = 8_000;
-export const RECONNECT_MAX_ATTEMPTS = 5;
+export const RECONNECT_INITIAL_MS = 1_000;
+export const RECONNECT_MAX_MS = 30_000;
+export const RECONNECT_GIVE_UP_MS = 600_000;
 export const RECONNECT_JITTER_FRAC = 0.25; // ±25 %
+export const RECONNECT_SLEEP_DETECTION_THRESHOLD_MS =
+  RECONNECT_MAX_MS * 2;
 
 /**
  * Compute the backoff delay for a given attempt (0-indexed). Caps at
@@ -60,14 +63,22 @@ export interface ReconnectOpts<T> {
   readonly session: Session;
   readonly signal?: AbortSignal;
   readonly maxAttempts?: number;
+  readonly giveUpMs?: number;
+  readonly sleepDetectionThresholdMs?: number;
+  readonly now?: () => number;
   readonly attempt: (attempt: number) => Promise<T>;
   readonly isTransient: (err: unknown) => boolean;
+  readonly onTransientRetry?: (
+    attempt: number,
+    err: unknown,
+  ) => Promise<boolean> | boolean;
 }
 
 /**
- * Retry `opts.attempt(n)` up to `maxAttempts` times, sleeping
- * exponentially between attempts. Returns early on non-transient
- * errors + surfaces them.
+ * Retry `opts.attempt(n)` until either a transient error succeeds,
+ * the optional `maxAttempts` cap trips, or the reconnect give-up
+ * budget expires. Returns early on non-transient errors + surfaces
+ * them.
  *
  * Emits `warning:'reconnecting'` with attempt + backoff + reason so
  * the event log captures every retry cycle.
@@ -75,9 +86,16 @@ export interface ReconnectOpts<T> {
 export async function reconnectWithBackoff<T>(
   opts: ReconnectOpts<T>,
 ): Promise<ReconnectOutcome<T>> {
-  const max = opts.maxAttempts ?? RECONNECT_MAX_ATTEMPTS;
+  const maxAttempts = opts.maxAttempts;
+  const giveUpMs = opts.giveUpMs ?? RECONNECT_GIVE_UP_MS;
+  const sleepDetectionThresholdMs =
+    opts.sleepDetectionThresholdMs ?? RECONNECT_SLEEP_DETECTION_THRESHOLD_MS;
+  const now = opts.now ?? monotonicMs;
   let lastError: unknown = undefined;
-  for (let attempt = 0; attempt < max; attempt += 1) {
+  let reconnectAttempts = 0;
+  let reconnectStartedAt: number | null = null;
+  let lastReconnectAttemptAt: number | null = null;
+  for (let attempt = 0; ; attempt += 1) {
     if (opts.signal?.aborted) {
       return {
         kind: "aborted",
@@ -94,12 +112,48 @@ export async function reconnectWithBackoff<T>(
         // appropriate error/stream_error event.
         throw err;
       }
-      const delay = computeBackoffMs(attempt);
+      const currentNow = now();
+      if (reconnectStartedAt === null) {
+        reconnectStartedAt = currentNow;
+      }
+      if (
+        lastReconnectAttemptAt !== null &&
+        currentNow - lastReconnectAttemptAt > sleepDetectionThresholdMs
+      ) {
+        reconnectStartedAt = currentNow;
+        reconnectAttempts = 0;
+      }
+      lastReconnectAttemptAt = currentNow;
+      if (maxAttempts !== undefined && attempt + 1 >= maxAttempts) {
+        return {
+          kind: "exhausted",
+          attempts: attempt + 1,
+          lastError,
+        };
+      }
+      if (currentNow - reconnectStartedAt >= giveUpMs) {
+        return {
+          kind: "exhausted",
+          attempts: attempt + 1,
+          lastError,
+        };
+      }
+      if ((await opts.onTransientRetry?.(attempt + 1, err)) === false) {
+        return {
+          kind: "exhausted",
+          attempts: attempt + 1,
+          lastError,
+        };
+      }
+      const delay = computeBackoffMs(reconnectAttempts);
+      reconnectAttempts += 1;
       emitWarning(
         opts.session.eventLog,
         opts.session.nextInternalSubId(),
         "reconnecting",
-        `transient provider error (attempt ${attempt + 1}/${max}); sleeping ${delay}ms: ${
+        `transient provider error (attempt ${attempt + 1}${
+          maxAttempts !== undefined ? `/${maxAttempts}` : ""
+        }); sleeping ${delay}ms: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -112,7 +166,6 @@ export async function reconnectWithBackoff<T>(
       }
     }
   }
-  return { kind: "exhausted", attempts: max, lastError };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -156,5 +209,8 @@ export function detectSuspend(lastMonotonicMs: number): {
 } {
   const now = monotonicMs();
   const gapMs = now - lastMonotonicMs;
-  return { suspended: gapMs > 60_000, gapMs };
+  return {
+    suspended: gapMs > RECONNECT_SLEEP_DETECTION_THRESHOLD_MS,
+    gapMs,
+  };
 }

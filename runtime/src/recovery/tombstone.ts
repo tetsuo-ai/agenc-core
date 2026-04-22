@@ -30,7 +30,11 @@ import type {
   UserMessage,
 } from "../session/turn-state.js";
 import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
-import { appendTerminalToolResults } from "./terminal-tool-result.js";
+import {
+  appendTerminalToolResults,
+  terminalToolCauseFromAbortReason,
+  type TerminalToolCause,
+} from "./terminal-tool-result.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Tombstone message shape
@@ -64,6 +68,8 @@ export function toTombstoneUserMessage(
 
 export interface TombstoneOrphansOpts {
   readonly reason: string;
+  readonly terminalToolCause?: TerminalToolCause;
+  readonly terminalToolDetail?: string;
   /** Optional in-flight tool executor to discard + recreate. */
   readonly executor?: StreamingToolExecutor | null;
 }
@@ -84,10 +90,17 @@ export function tombstoneOrphans(
   opts: TombstoneOrphansOpts,
 ): ReadonlyArray<TombstoneMessage> {
   if (opts.reason !== "model_fallback") {
+    const cause =
+      opts.terminalToolCause ??
+      terminalToolCauseFromAbortReason(opts.reason) ??
+      "aborted";
+    const detail =
+      opts.terminalToolDetail ??
+      (cause === "aborted" ? `recovery cleanup: ${opts.reason}` : undefined);
     appendTerminalToolResults(
       state,
-      "aborted",
-      `recovery cleanup: ${opts.reason}`,
+      cause,
+      detail,
     );
   }
 

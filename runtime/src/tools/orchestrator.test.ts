@@ -7,12 +7,15 @@ import {
   defaultExecApprovalRequirement,
   defaultRetryPolicy,
   defaultToolRetryPolicy,
+  escalateOnFailure,
   isApprovalAccepted,
   orchestrateToolCall,
   requestApproval,
   sandboxKindFromMode,
+  wantsNoSandboxApproval,
   type ApprovalCtx,
   type ApprovalResolver,
+  type GranularApprovalConfig,
   type PermissionRequestHook,
   type ReviewDecision,
 } from "./orchestrator.js";
@@ -492,7 +495,13 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     turnId: "t-1",
   });
 
-  test("sandbox escalation: first attempt sandbox-denied → approval → second attempt succeeds with sandbox=off", async () => {
+  test("sandbox escalation: first attempt sandbox-denied → approval → second attempt succeeds with sandbox=off (under on_failure which wants escalation)", async () => {
+    // Codex parity (sandboxing.rs:290-298): `AskForApproval::OnFailure`
+    // has `wants_no_sandbox_approval == true`. Under `never` /
+    // `on_request`, the orchestrator bails with the original denial
+    // (covered in separate tests below). This test exercises the
+    // approval → retry-with-sandbox-off pathway via the policy that
+    // opts into it.
     const calls: string[] = [];
     const resolver: ApprovalResolver = {
       request: async () => ({ kind: "approved" }),
@@ -500,7 +509,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     const result = await orchestrateToolCall<string>({
       tool: mkTool(),
       approvalCtx: mkCtx(),
-      approvalPolicy: "never",
+      approvalPolicy: "on_failure",
       sandboxMode: "workspace_write",
       dispatch: async (sandbox) => {
         calls.push(sandbox);
@@ -519,7 +528,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     expect(calls).toEqual(["workspace_write", "danger_full_access"]);
   });
 
-  test("sandbox escalation: approval denied → ApprovalRejectedError", async () => {
+  test("sandbox escalation: approval denied → ApprovalRejectedError (under on_failure policy)", async () => {
     const resolver: ApprovalResolver = {
       request: async () => ({ kind: "denied" }),
     };
@@ -527,7 +536,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
       orchestrateToolCall<string>({
         tool: mkTool(),
         approvalCtx: mkCtx(),
-        approvalPolicy: "never",
+        approvalPolicy: "on_failure",
         sandboxMode: "workspace_write",
         dispatch: async () => {
           throw new SandboxDeniedError("fs blocked", {
@@ -618,5 +627,271 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
       }),
     ).rejects.toBeInstanceOf(ApprovalRejectedError);
     expect(dispatched).not.toHaveBeenCalled();
+  });
+
+  test("sandbox-denied under on_request policy: bails with original error, no approval (codex orchestrator.rs:259-279 + sandboxing.rs:290-298)", async () => {
+    // Codex parity: `AskForApproval::OnRequest` has
+    // `wants_no_sandbox_approval == false` (without network-approval
+    // context). A SandboxDeniedError must propagate unchanged — the
+    // orchestrator must not prompt for approval to retry unsandboxed.
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const dispatches: string[] = [];
+    const denial = new SandboxDeniedError("fs blocked", {
+      denial: "filesystem",
+      target: "/tmp/block",
+      policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+    });
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool({ isReadOnly: true }),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "on_request",
+        sandboxMode: "workspace_write",
+        dispatch: async (sandbox) => {
+          dispatches.push(sandbox);
+          throw denial;
+        },
+        approvalResolver: resolver,
+      }),
+    ).rejects.toBe(denial);
+    // First attempt ran; no retry, no approval prompt.
+    expect(dispatches).toEqual(["workspace_write"]);
+    expect(resolver.request).not.toHaveBeenCalled();
+  });
+
+  test("sandbox-denied under never policy: bails with original error, no approval", async () => {
+    // `AskForApproval::Never` → `wants_no_sandbox_approval == false`.
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const denial = new SandboxDeniedError("fs blocked", {
+      denial: "filesystem",
+      target: "/tmp/block",
+      policy: { kind: "read_only", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+    });
+    await expect(
+      orchestrateToolCall<string>({
+        // `isReadOnly: true` avoids the classifier upgrading this to
+        // `needs_approval` before dispatch.
+        tool: mkTool({ isReadOnly: true }),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "never",
+        sandboxMode: "read_only",
+        dispatch: async () => {
+          throw denial;
+        },
+        approvalResolver: resolver,
+      }),
+    ).rejects.toBe(denial);
+    expect(resolver.request).not.toHaveBeenCalled();
+  });
+
+  test("sandbox-denied under untrusted policy: escalates via approval then retries sandbox=off (wants_no_sandbox_approval=true)", async () => {
+    // `AskForApproval::UnlessTrusted` → wants_no_sandbox_approval = true.
+    const dispatches: string[] = [];
+    const resolver: ApprovalResolver = {
+      request: async () => ({ kind: "approved" }),
+    };
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool(),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "untrusted",
+      sandboxMode: "workspace_write",
+      dispatch: async (sandbox) => {
+        dispatches.push(sandbox);
+        if (dispatches.length === 1) {
+          throw new SandboxDeniedError("fs blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
+        }
+        return "ok";
+      },
+      approvalResolver: resolver,
+    });
+    expect(result).toBe("ok");
+    // Under `untrusted`, the initial approval-classification path
+    // prompts; that approval also satisfies the post-denial retry, so
+    // the escalation dispatches sandbox=off once without re-prompting.
+    expect(dispatches).toEqual(["workspace_write", "danger_full_access"]);
+  });
+
+  test("escalateOnFailure=false: SandboxDeniedError bails without approval (codex sandboxing.rs:309-311)", async () => {
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const denial = new SandboxDeniedError("fs blocked", {
+      denial: "filesystem",
+      target: "/tmp/block",
+      policy: { kind: "workspace_write", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+    });
+    // Using a tool that escalateOnFailure=false and untrusted policy
+    // — the opt-out must win over wants_no_sandbox_approval=true.
+    const tool = mkTool({
+      // @ts-expect-error — structural extension on Tool.
+      escalateOnFailure: false,
+    });
+    await expect(
+      orchestrateToolCall<string>({
+        tool,
+        approvalCtx: mkCtx(),
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        dispatch: async () => {
+          throw denial;
+        },
+        approvalResolver: resolver,
+      }),
+    ).rejects.toBe(denial);
+    expect(resolver.request).not.toHaveBeenCalled();
+  });
+
+  test("granular policy with sandbox_approval=true: escalates via approval (codex sandboxing.rs:290-298)", async () => {
+    const dispatches: string[] = [];
+    const resolver: ApprovalResolver = {
+      request: async () => ({ kind: "approved" }),
+    };
+    const granular: GranularApprovalConfig = {
+      sandbox_approval: true,
+      rules: true,
+      skill_approval: true,
+      request_permissions: true,
+      mcp_elicitations: true,
+    };
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool({ isReadOnly: true }),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "granular",
+      sandboxMode: "read_only",
+      granular,
+      dispatch: async (sandbox) => {
+        dispatches.push(sandbox);
+        if (dispatches.length === 1) {
+          throw new SandboxDeniedError("fs blocked", {
+            denial: "filesystem",
+            target: "/tmp/block",
+            policy: { kind: "read_only", writable_roots: [], read_only_access: { kind: "full_access" }, network_access: { mode: "disabled" }, exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
+          });
+        }
+        return "ok";
+      },
+      approvalResolver: resolver,
+    });
+    expect(result).toBe("ok");
+    expect(dispatches).toEqual(["read_only", "danger_full_access"]);
+  });
+
+  test("granular policy with sandbox_approval=false: restricted fs forbids, never prompts (codex sandboxing.rs:200-209)", async () => {
+    const granular: GranularApprovalConfig = {
+      sandbox_approval: false,
+      rules: true,
+      skill_approval: true,
+      request_permissions: true,
+      mcp_elicitations: true,
+    };
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    // A local_shell payload under restricted fs + granular-no-sandbox
+    // must be classified as `forbidden` and throw ApprovalRejectedError
+    // without ever dispatching or prompting.
+    const dispatched = vi.fn();
+    await expect(
+      orchestrateToolCall<string>({
+        tool: mkTool(),
+        approvalCtx: mkCtx(),
+        approvalPolicy: "granular",
+        sandboxMode: "workspace_write",
+        granular,
+        payload: { kind: "local_shell", params: { command: ["ls"] } },
+        dispatch: dispatched,
+        approvalResolver: resolver,
+      }),
+    ).rejects.toBeInstanceOf(ApprovalRejectedError);
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(resolver.request).not.toHaveBeenCalled();
+  });
+
+  test("double-classification removed: read-only skip is final under granular+restricted (codex orchestrator.rs:124-127)", async () => {
+    // Regression for problem 6 (T6 audit). Previously: when the tool
+    // classifier returned `skip` without sandbox bypass, the
+    // orchestrator would re-run `defaultExecApprovalRequirement` and
+    // upgrade to `needs_approval`. That behavior is removed — the
+    // tool classifier's `skip` is now final.
+    const resolver: ApprovalResolver = {
+      request: vi.fn(async () => ({ kind: "approved" })),
+    };
+    const ran = vi.fn(async () => "ok");
+    const result = await orchestrateToolCall<string>({
+      tool: mkTool({ isReadOnly: true }),
+      approvalCtx: mkCtx(),
+      approvalPolicy: "granular",
+      sandboxMode: "read_only", // fs_kind = restricted
+      dispatch: ran,
+      approvalResolver: resolver,
+    });
+    expect(result).toBe("ok");
+    // Read-only skip is final — no resolver prompt.
+    expect(resolver.request).not.toHaveBeenCalled();
+    expect(ran).toHaveBeenCalledOnce();
+  });
+});
+
+describe("escalateOnFailure + wantsNoSandboxApproval helpers", () => {
+  const bareTool: Tool = {
+    name: "x",
+    description: "",
+    inputSchema: {},
+    execute: async () => ({ content: "ok" }),
+  };
+
+  test("escalateOnFailure: default true (codex sandboxing.rs:309-311)", () => {
+    expect(escalateOnFailure(bareTool)).toBe(true);
+  });
+
+  test("escalateOnFailure: boolean override honored", () => {
+    const optOut: Tool = {
+      ...bareTool,
+      // @ts-expect-error — structural extension on Tool.
+      escalateOnFailure: false,
+    };
+    expect(escalateOnFailure(optOut)).toBe(false);
+  });
+
+  test("escalateOnFailure: function override honored", () => {
+    const optOut: Tool = {
+      ...bareTool,
+      // @ts-expect-error — structural extension on Tool.
+      escalateOnFailure: () => false,
+    };
+    expect(escalateOnFailure(optOut)).toBe(false);
+  });
+
+  test("wantsNoSandboxApproval defaults per policy (codex sandboxing.rs:290-298)", () => {
+    expect(wantsNoSandboxApproval(bareTool, "never")).toBe(false);
+    expect(wantsNoSandboxApproval(bareTool, "on_request")).toBe(false);
+    expect(wantsNoSandboxApproval(bareTool, "on_failure")).toBe(true);
+    expect(wantsNoSandboxApproval(bareTool, "untrusted")).toBe(true);
+    expect(wantsNoSandboxApproval(bareTool, "granular")).toBe(false);
+    const g: GranularApprovalConfig = {
+      sandbox_approval: true,
+      rules: true,
+      skill_approval: true,
+      request_permissions: true,
+      mcp_elicitations: true,
+    };
+    expect(wantsNoSandboxApproval(bareTool, "granular", g)).toBe(true);
+  });
+
+  test("wantsNoSandboxApproval tool override honored", () => {
+    const forced: Tool = {
+      ...bareTool,
+      // @ts-expect-error — structural extension on Tool.
+      wantsNoSandboxApproval: true,
+    };
+    expect(wantsNoSandboxApproval(forced, "never")).toBe(true);
   });
 });

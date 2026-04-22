@@ -27,6 +27,47 @@ vi.mock("./execute-tools.js", () => ({
     streamedDispatchCalls.push(call.id);
     return true;
   },
+  validateToolCallsForDispatch: (
+    raw: unknown[],
+    session?: { nextInternalSubId?: () => string; emit?: (event: Event) => void },
+  ) => {
+    const valid = raw.filter((item) => {
+      if (!item || typeof item !== "object") return false;
+      const candidate = item as { id?: unknown; name?: unknown; arguments?: unknown };
+      if (typeof candidate.id !== "string" || candidate.id.trim().length === 0) {
+        return false;
+      }
+      if (typeof candidate.name !== "string" || candidate.name.trim().length === 0) {
+        return false;
+      }
+      if (typeof candidate.arguments !== "string") return false;
+      try {
+        const parsed = JSON.parse(candidate.arguments);
+        return !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
+      } catch {
+        return false;
+      }
+    });
+    const failures = raw.length - valid.length;
+    for (let i = 0; i < failures; i += 1) {
+      session?.emit?.({
+        id: session.nextInternalSubId?.() ?? `sub-${i}`,
+        msg: {
+          type: "stream_error",
+          payload: {
+            cause: "malformed_tool_call",
+            message: "provider returned malformed tool_use (invalid_json)",
+          },
+        },
+      } as Event);
+    }
+    return {
+      valid,
+      failures: Array.from({ length: failures }, () => ({
+        cause: "invalid_json",
+      })),
+    };
+  },
 }));
 
 import {
@@ -230,6 +271,68 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(state.toolUseBlocks.map((block) => block.id)).toEqual(["tool-1"]);
     expect(streamedDispatchCalls).toEqual(["tool-1"]);
     expect(events.some((event) => event.msg.type === "agent_message")).toBe(true);
+  });
+
+  test("validates streamed tool calls before queueing them", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const registry = mkRegistry([
+      {
+        name: "system.readFile",
+        description: "reads a file",
+        inputSchema: { type: "object" },
+        execute: async () => ({ content: "file contents" }),
+      },
+    ]);
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({
+        content: "Working...",
+        done: false,
+        toolCalls: [
+          {
+            id: "tool-bad",
+            name: "system.readFile",
+            arguments: "[",
+          } as unknown as LLMToolCall,
+        ],
+      });
+      return {
+        content: "Working...",
+        toolCalls: [
+          {
+            id: "tool-bad",
+            name: "system.readFile",
+            arguments: "[",
+          } as unknown as LLMToolCall,
+        ],
+        usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    });
+    const { session, events } = mkSession(provider, null, registry);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "hello" }]),
+        tools: registry.toLLMTools(),
+      },
+      undefined,
+    );
+
+    expect(streamedDispatchCalls).toEqual([]);
+    expect(state.toolUseBlocks).toEqual([]);
+    expect(
+      events.some(
+        (event) =>
+          event.msg.type === "stream_error" &&
+          event.msg.payload.cause === "malformed_tool_call",
+      ),
+    ).toBe(true);
   });
 
   test("strips hidden tags and spoof patterns before delta/final event emission", async () => {

@@ -32,6 +32,18 @@ const DELEGATE_INPUT_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
   required: ["taskPrompt"],
+  allOf: [
+    {
+      if: {
+        properties: {
+          isolation: { const: "worktree" },
+        },
+      },
+      then: {
+        required: ["taskPrompt", "worktreeSlug"],
+      },
+    },
+  ],
   properties: {
     taskPrompt: {
       type: "string",
@@ -193,12 +205,25 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
         ? args.role
         : undefined;
     const isolation = coerceIsolation(args.isolation);
-    const worktreeSlug =
+    const worktreeSlugRaw =
       typeof args.worktreeSlug === "string" ? args.worktreeSlug : undefined;
+    const worktreeSlug = worktreeSlugRaw;
     const runInBackground =
       typeof args.runInBackground === "boolean"
         ? args.runInBackground
         : undefined;
+
+    if (
+      isolation === "worktree" &&
+      (!worktreeSlugRaw || worktreeSlugRaw.trim().length === 0)
+    ) {
+      return {
+        content: safeStringify({
+          error: 'worktreeSlug is required when isolation="worktree"',
+        }),
+        isError: true,
+      };
+    }
 
     const session = opts.getSession();
     if (!session) {

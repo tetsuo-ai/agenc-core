@@ -1,19 +1,70 @@
-// @ts-nocheck
-// Stub — feature-gated path; real implementation lives in openclaude upstream.
-const __stubProxy: any = new Proxy(function __stub(..._args: any[]): any { return __stubProxy; }, {
-  get(target, prop) {
-    if (prop === 'then') return undefined;
-    if (prop === Symbol.toPrimitive) return () => '';
-    if (prop === Symbol.iterator) return function* () {};
-    if (prop === Symbol.asyncIterator) return async function* () {};
-    if (prop === 'length') return 0;
-    if (prop === 'size') return 0;
-    if (prop === 'cache') return new Map();
-    return __stubProxy;
-  },
-  apply() { return __stubProxy; },
-  construct() { return __stubProxy; },
-  has() { return true; },
-  set() { return true; },
-});
+import type { QuerySource } from "../../constants/querySource.js";
+import type { Message } from "../../types/message.js";
+import {
+  applyCollapsesIfNeeded as applyCollapsesFromIndex,
+  getContextCollapseState,
+  getContextVisualizationData,
+  getStats,
+  isContextCollapseEnabled,
+  maybeCollapseContext,
+  recoverFromOverflow,
+  resetContextCollapse,
+  stageContextCollapseForSession,
+  subscribe,
+} from "./index.js";
 
+export {
+  getContextCollapseState,
+  getStats,
+  isContextCollapseEnabled,
+  recoverFromOverflow,
+  resetContextCollapse,
+  stageContextCollapseForSession,
+  subscribe,
+};
+
+export function projectView(
+  messages: ReadonlyArray<Message>,
+  ctx?: { readonly session?: { readonly conversationId?: string } | null },
+): ReadonlyArray<Message> {
+  return maybeCollapseContext(messages, ctx);
+}
+
+export async function applyCollapsesIfNeeded(
+  messages: ReadonlyArray<Message>,
+  ctx?: unknown,
+  querySource?: QuerySource,
+): Promise<{ readonly messages: ReadonlyArray<Message>; readonly committed: number }> {
+  return applyCollapsesFromIndex(messages, ctx, querySource);
+}
+
+export async function getContextCollapseOperations() {
+  const visualization = getContextVisualizationData();
+  return [
+    {
+      type: "inspect",
+      stats: getStats(),
+      visualization,
+    },
+    {
+      type: "reset",
+      description: "Clear all in-memory context-collapse state",
+    },
+  ];
+}
+
+export async function executeContextCollapseOperation(
+  operation?: { type?: string },
+) {
+  if (operation?.type === "reset") {
+    resetContextCollapse();
+    return { ok: true, type: "reset" };
+  }
+
+  return {
+    ok: true,
+    type: "inspect",
+    stats: getStats(),
+    visualization: getContextVisualizationData(),
+  };
+}

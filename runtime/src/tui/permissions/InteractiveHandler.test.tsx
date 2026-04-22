@@ -32,6 +32,7 @@ import {
 } from "../state/AppState.js";
 import {
   InteractiveHandler,
+  type InteractiveRequestClassifier,
   resolveWithGrace,
   type InteractivePermissionRequest,
   type InteractiveResolver,
@@ -72,16 +73,20 @@ function createResolver(): {
 interface FakeSession extends SessionLike {
   emitted: Array<unknown>;
   abortController: AbortController;
+  setCurrentTurnId(next: string | null): void;
 }
 
 function createSession(opts?: { currentTurnId?: string | null }): FakeSession {
   const abortController = new AbortController();
   const emitted: Array<unknown> = [];
-  const currentTurnId = opts?.currentTurnId ?? "turn-1";
+  let currentTurnId = opts?.currentTurnId ?? "turn-1";
   const session: FakeSession = {
     abortController,
     cwd: "/tmp/agenc-test",
     emitted,
+    setCurrentTurnId(next) {
+      currentTurnId = next;
+    },
     nextInternalSubId: () => "sub-stale-warning",
     activeTurn: {
       unsafePeek() {
@@ -331,6 +336,7 @@ describe("InteractiveHandler", () => {
           request={request}
           session={session}
           overlayContext={overlay}
+          classifier={async () => null}
         />
       </KeybindingProvider>,
     );
@@ -387,6 +393,7 @@ describe("InteractiveHandler", () => {
             request={request}
             session={session}
             overlayContext={overlay}
+            classifier={async () => null}
           />
         </KeybindingProvider>
       </AgenCAppStateProvider>,
@@ -412,6 +419,7 @@ describe("InteractiveHandler", () => {
           request={request}
           session={session}
           overlayContext={overlay}
+          classifier={async () => null}
         />
       </KeybindingProvider>,
     );
@@ -436,5 +444,131 @@ describe("InteractiveHandler", () => {
 
     expect(outcome).toEqual({ bypassedModal: false });
     expect(payloads).toHaveLength(0);
+  });
+
+  test("classifier auto-approves within the grace window", async () => {
+    const { resolver, payloads } = createResolver();
+    const session = createSession({ currentTurnId: "turn-1" });
+    const overlay = createOverlayContext();
+    const classifier: InteractiveRequestClassifier = async () => {
+      await new Promise((r) => setTimeout(r, 10));
+      return { behavior: "allow", source: "classifier:test" };
+    };
+    const request = makeRequest(resolver, { turnId: "turn-1" });
+
+    const { unmount } = await mount(
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: new EventEmitter() }}>
+        <InteractiveHandler
+          request={request}
+          session={session}
+          overlayContext={overlay}
+          graceMs={40}
+          classifier={classifier}
+        />
+      </KeybindingProvider>,
+    );
+
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      behavior: "allow",
+      source: "classifier:test",
+    });
+    unmount();
+  });
+
+  test("classifier result after the grace window is ignored in favor of user input", async () => {
+    const { resolver, payloads } = createResolver();
+    const session = createSession({ currentTurnId: "turn-1" });
+    const emitter = new EventEmitter();
+    const classifier: InteractiveRequestClassifier = async () => {
+      await new Promise((r) => setTimeout(r, 80));
+      return { behavior: "allow", source: "classifier:late" };
+    };
+
+    let pushCb: ((node: ReactNode) => void) | null = null;
+    function OverlayHost({
+      onPush,
+    }: {
+      onPush: (setter: (node: ReactNode) => void) => void;
+    }): React.ReactElement {
+      const [node, setNode] = React.useState<ReactNode>(null);
+      React.useEffect(() => {
+        onPush(setNode);
+      }, [onPush]);
+      return <>{node}</>;
+    }
+
+    const overlay: OverlayContextLike = {
+      push(node) {
+        if (pushCb) pushCb(node);
+        return () => {
+          if (pushCb) pushCb(null);
+        };
+      },
+    };
+
+    const request = makeRequest(resolver, { turnId: "turn-1", toolName: "Edit" });
+
+    const { unmount } = await mount(
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        <OverlayHost
+          onPush={(setter) => {
+            pushCb = setter;
+          }}
+        />
+        <InteractiveHandler
+          request={request}
+          session={session}
+          overlayContext={overlay}
+          graceMs={20}
+          classifier={classifier}
+        />
+      </KeybindingProvider>,
+    );
+
+    await new Promise((r) => setTimeout(r, 40));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 70));
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      behavior: "allow",
+      source: "user",
+    });
+    unmount();
+  });
+
+  test("drops a request that becomes stale after the modal mounts", async () => {
+    const { resolver, payloads } = createResolver();
+    const session = createSession({ currentTurnId: "turn-1" });
+    const overlay = createOverlayContext();
+    const request = makeRequest(resolver, {
+      turnId: "turn-1",
+      toolName: "Edit",
+    });
+
+    const { unmount } = await mount(
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: new EventEmitter() }}>
+        <InteractiveHandler
+          request={request}
+          session={session}
+          overlayContext={overlay}
+          classifier={async () => null}
+        />
+      </KeybindingProvider>,
+    );
+
+    await new Promise((r) => setTimeout(r, 25));
+    session.setCurrentTurnId("turn-2");
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      behavior: "deny",
+      source: "stale_pending_dropped",
+    });
+    unmount();
   });
 });

@@ -99,6 +99,26 @@ describe("useMarkdownStream", () => {
     __resetMarkdownStreamModuleForTests();
   });
 
+  test("loads the real watch markdown module path when the chain is intact", async () => {
+    let observed: { rendered: string; isComplete: boolean } | null = null;
+    function Consumer({ chunks }: { chunks: readonly string[] }): null {
+      const res = useMarkdownStream(chunks);
+      observed = { rendered: res.rendered, isComplete: res.isComplete };
+      return null;
+    }
+    const { unmount } = await mount(
+      React.createElement(Consumer, {
+        chunks: ["See [docs](https://example.com)"],
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(observed).toEqual({
+      rendered: "See docs (https://example.com)",
+      isComplete: false,
+    });
+    unmount();
+  });
+
   test("renders the fallback concat when the module is marked failed", async () => {
     __setMarkdownStreamModuleForTests(null, "test-fail");
     let observed: { rendered: string; isComplete: boolean } | null = null;

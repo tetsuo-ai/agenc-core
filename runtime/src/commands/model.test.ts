@@ -152,6 +152,50 @@ describe("checkModelHistoryCompat", () => {
     expect(result.missingCapabilities).toContain("thinking history");
     expect(result.reason).toMatch(/thinking history/);
   });
+
+  it("allows audio-bearing history when the target model can replay persisted inline audio", () => {
+    const session = stubSession({
+      provider: "openai",
+      model: "gpt-audio",
+      history: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              audio_url: {
+                url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const result = checkModelHistoryCompat(session, "gpt-4o-audio-preview");
+    expect(result.compatible).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("fails closed when audio history is stored as opaque persisted references", () => {
+    const session = stubSession({
+      provider: "openai",
+      model: "gpt-audio",
+      history: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              audio_url: { url: "file:///tmp/example.wav" },
+            },
+          ],
+        },
+      ],
+    });
+    const result = checkModelHistoryCompat(session, "gpt-4o-audio-preview");
+    expect(result.compatible).toBe(false);
+    expect(result.reason).toMatch(/persisted audio history references/);
+  });
 });
 
 describe("modelCommand", () => {
@@ -252,6 +296,31 @@ describe("modelCommand", () => {
     const summary = await applyModelSwitch(session, "gpt-4.1");
     expect(summary).toMatch(/blocked/);
     expect(summary).toMatch(/thinking history/);
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown }).pendingProviderSwitch,
+    ).toBeNull();
+  });
+
+  it("allows switching between OpenAI audio models when the persisted audio can be replayed", async () => {
+    const session = stubSession({
+      provider: "openai",
+      model: "gpt-audio",
+      history: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_audio",
+              audio_url: {
+                url: "data:audio/wav;base64,UklGRiQAAABXQVZFZm10",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const summary = await applyModelSwitch(session, "gpt-4o-audio-preview");
+    expect(summary).toMatch(/Model switched to "gpt-4o-audio-preview"/);
     expect(
       (session as unknown as { pendingProviderSwitch: unknown }).pendingProviderSwitch,
     ).toBeNull();

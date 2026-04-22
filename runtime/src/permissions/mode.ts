@@ -340,6 +340,12 @@ export function transitionPermissionMode(
 
   // Plan-mode leave: clear stash + mark hasExitedPlanModeInSession.
   if (fromMode === "plan" && toMode !== "plan") {
+    if (toMode !== "auto" && next.autoModeActive === true) {
+      next = {
+        ...restoreDangerousPermissions(next),
+        autoModeActive: false,
+      };
+    }
     next = {
       ...next,
       prePlanMode: undefined,
@@ -385,8 +391,12 @@ export function prepareContextForPlanMode(
   const prePlanMode = ctx.mode;
 
   if (opts.shouldUseAutoInPlan && ctx.mode !== "bypassPermissions") {
+    const autoPrepared = ctx.autoModeActive === true
+      ? ctx
+      : stripDangerousPermissionsForAutoMode(ctx);
     return {
-      ...stripDangerousPermissionsForAutoMode(ctx),
+      ...autoPrepared,
+      autoModeActive: true,
       prePlanMode,
     };
   }

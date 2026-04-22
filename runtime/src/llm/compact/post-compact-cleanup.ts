@@ -6,10 +6,18 @@ import { clearAllResponseIds } from '../grok/incremental.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
-import { clearSessionMessagesCache } from '../../utils/sessionStorage.js'
 import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
 import { resetMicrocompactState } from './micro-compact.js'
 import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
+
+export interface PostCompactCleanupOptions {
+  /**
+   * Cached micro-compact needs to keep its pending cache_edits block alive
+   * until the next API request consumes it. Callers can preserve that state
+   * while still running the I-2 cleanup work.
+   */
+  preserveMicrocompactState?: boolean
+}
 
 /**
  * Run cleanup of caches and tracking state after compaction.
@@ -33,6 +41,7 @@ import type { CompactRuntimeContext } from '../../session/compact-runtime-contex
 export function runPostCompactCleanup(
   querySource?: QuerySource,
   context?: Pick<CompactRuntimeContext, 'clearProviderResponseId'>,
+  opts: PostCompactCleanupOptions = {},
 ): void {
   // I-2 (docs/plan/invariants.md): clear `previous_response_id` on every
   // compaction. Calls into the T5 grok incremental tracker registry.
@@ -50,7 +59,9 @@ export function runPostCompactCleanup(
     querySource.startsWith('repl_main_thread') ||
     querySource === 'sdk'
 
-  resetMicrocompactState()
+  if (!opts.preserveMicrocompactState) {
+    resetMicrocompactState()
+  }
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
       /* eslint-disable @typescript-eslint/no-require-imports */
@@ -85,5 +96,10 @@ export function runPostCompactCleanup(
       m.sweepFileContentCache(),
     )
   }
-  clearSessionMessagesCache()
+  // T5: the legacy `clearSessionMessagesCache` helper cleared a
+  // memoized `getSessionMessages` cache in `utils/sessionStorage.ts`
+  // consumed only by `doesMessageExistInSession` and `getLastSessionLog`
+  // — both legacy openclaude readers. Grep confirms no T5 consumer reads
+  // the memoized cache, so the post-compact clear is semantically dead
+  // here. The call has been removed along with the legacy import.
 }

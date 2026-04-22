@@ -145,6 +145,15 @@ export interface Tool {
   /** Orchestrator hint: `true` → under `on_request` policy the tool
    *  always requires user approval. */
   readonly requiresApproval?: boolean;
+  /**
+   * Openclaude parity: how this tool should respond to a user
+   * 'interrupt' abort (typed message mid-turn). `'cancel'` → the
+   * executor synthesizes a `user_interrupted` terminal result and
+   * stops the tool. `'block'` → the tool is allowed to finish; the
+   * interrupt does not cancel it. Omitting the field defaults to
+   * `'block'` — conservative, matches openclaude default.
+   */
+  readonly interruptBehavior?: () => "cancel" | "block";
 }
 
 /**

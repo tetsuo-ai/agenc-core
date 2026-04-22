@@ -149,7 +149,7 @@ graph TB
 | Openclaude | `utils/permissions/` + `hooks/toolPermission/` + `utils/sandbox/` | ~3,500 | `runtime/src/permissions/` |
 | Openclaude | `utils/worktree.ts` + `tools/AgentTool/*` | ~3,000 | `runtime/src/agents/{delegate,run-agent,worktree,fork-context}.ts` |
 | Codex | `core/src/session/` | 3,082 (session.rs+turn.rs) | `runtime/src/session/` (hand-port) |
-| Codex | `core/src/tools/parallel.rs` | 194 | `runtime/src/tools/concurrency.ts` (hand-port) |
+| AgenC | — (atop codex `parallel.rs` RwLock primitive) | 194 | `runtime/src/tools/concurrency.ts` (AgenC-original) |
 | Codex | `core/src/agent/{control,registry,role,status}.rs` | ~2,019 | `runtime/src/agents/{control,registry,role,status}.ts` (hand-port) |
 | Codex | `core/src/agent/mailbox.rs` | 161 | `runtime/src/agents/mailbox.ts` (hand-port) |
 | Codex | `protocol/src/protocol.rs` (event enums only) | ~500 effective | `runtime/src/session/event-log.ts` (hand-port) |
@@ -225,7 +225,7 @@ agenc-core/runtime/src/
     orchestration.ts             # openclaude-port
     execution.ts                 # openclaude-port
     hooks.ts                     # openclaude-port (tool hooks)
-    concurrency.ts               # codex-port: parallel.rs
+    concurrency.ts               # agenc-original (atop codex RwLock primitive)
     router.ts                    # codex-port: router.rs
     orchestrator.ts              # codex-port: orchestrator.rs
     context.ts                   # codex-port: ToolPayload
@@ -378,11 +378,12 @@ from openclaude's battle-tested implementation. These are not in
 conflict — codex says "here are the types and phase boundaries,"
 openclaude says "here is what runs inside."
 
-### 2. Concurrency contract = codex enum + openclaude streaming
+### 2. Concurrency contract = AgenC-new enum + openclaude streaming
 
-Codex's `RwLock` model gives us the read-vs-write discipline. Openclaude's
-`StreamingToolExecutor` gives us mid-stream tool dispatch + Bash-only
-sibling abort. Combine:
+Codex's `RwLock` model inspired the read-vs-write discipline, but the
+`ConcurrencyClass` enum itself is AgenC-original (codex has no such
+enum). Openclaude's `StreamingToolExecutor` gives us mid-stream tool
+dispatch + Bash-only sibling abort. Combine:
 
 - `ConcurrencyClass.SharedRead` maps to openclaude's `isConcurrencySafe=true`
 - `ConcurrencyClass.Exclusive` maps to `isConcurrencySafe=false`

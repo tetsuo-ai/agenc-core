@@ -15,11 +15,13 @@ import {
   assistantTextFromContentBlocks,
   coerceUsage,
   collectRequestMetrics,
+  hasOpaqueAudioReference,
   messageTextContent,
   normalizeFinishReason,
   normalizeToolCalls,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
+  readAudioPayload,
   toResponsesToolOutput,
   withEndpointMarkers,
   withSerializedMetrics,
@@ -73,15 +75,37 @@ function toResponsesMessageParts(
 
   const parts: Array<Record<string, unknown>> = [];
   for (const part of content) {
-    if (part.type === "text") {
-      if (part.text.length === 0) continue;
-      parts.push({ type: textType, text: part.text });
+    const record =
+      part && typeof part === "object" && !Array.isArray(part)
+        ? (part as Record<string, unknown>)
+        : {};
+    if (record.type === "text") {
+      const text = String(record.text ?? "");
+      if (text.length === 0) continue;
+      parts.push({ type: textType, text });
+      continue;
+    }
+    const audio = readAudioPayload(part);
+    if (role !== "assistant" && audio) {
+      parts.push({
+        type: "input_audio",
+        input_audio: {
+          data: audio.data,
+          format: audio.format,
+        },
+      });
+      continue;
+    }
+    if (role !== "assistant" && hasOpaqueAudioReference(part)) {
+      parts.push({ type: textType, text: "[audio]" });
       continue;
     }
     if (role === "assistant") continue;
     parts.push({
       type: "input_image",
-      image_url: part.image_url.url,
+      image_url: String(
+        (record.image_url as { url?: unknown } | undefined)?.url ?? "",
+      ),
     });
   }
   return parts;

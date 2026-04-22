@@ -9,6 +9,28 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
+vi.mock("../llm/compact/post-compact-cleanup.js", async () => {
+  const incremental = await import("../llm/grok/incremental.js");
+  return {
+    runPostCompactCleanup: vi.fn(() => incremental.clearAllResponseIds()),
+  };
+});
+vi.mock("axios", () => {
+  const axiosLike = {
+    create: vi.fn(() => axiosLike),
+    get: vi.fn(),
+    post: vi.fn(),
+    interceptors: {
+      request: { use: vi.fn() },
+      response: { use: vi.fn() },
+    },
+  };
+  return {
+    default: axiosLike,
+    create: axiosLike.create,
+    isAxiosError: () => false,
+  };
+});
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   isRetryableStreamError,

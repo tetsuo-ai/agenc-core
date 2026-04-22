@@ -372,7 +372,12 @@ async function* queryLoop(
       toolUseContext,
     )
 
-    yield { type: 'stream_request_start' }
+    yield {
+      type: 'stream_request_start',
+      ...(deps.transportMode !== undefined
+        ? { transportMode: deps.transportMode }
+        : {}),
+    }
 
     queryCheckpoint('query_fn_entry')
 

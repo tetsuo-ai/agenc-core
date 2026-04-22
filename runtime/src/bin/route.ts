@@ -45,6 +45,40 @@ export function extractFlagValue(
   return null;
 }
 
+export const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
+
+export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
+  "--help",
+  "--version",
+] as const);
+
+export const STARTUP_VALUE_FLAGS = Object.freeze([
+  "--resume",
+  "--fork",
+  "--provider",
+  "--model",
+  "--profile",
+  "--config",
+  "--sandbox",
+  "--approval-policy",
+  "--image",
+] as const);
+
+function shouldStripValueFlag(arg: string): boolean {
+  return STARTUP_VALUE_FLAGS.some(
+    (flag) => arg === flag || arg.startsWith(`${flag}=`),
+  );
+}
+
+function shouldStripBooleanFlag(arg: string): boolean {
+  return ROUTING_BOOLEAN_FLAGS.includes(
+    arg as (typeof ROUTING_BOOLEAN_FLAGS)[number],
+  ) ||
+    STARTUP_BOOLEAN_FLAGS.includes(
+      arg as (typeof STARTUP_BOOLEAN_FLAGS)[number],
+    );
+}
+
 /**
  * Strip routing-level flags from the argv vector so the downstream
  * prompt-resolver sees only the user-supplied text. Mirrors the flags
@@ -55,14 +89,14 @@ export function stripRoutingFlags(argv: readonly string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (arg === "--no-tui") continue;
-    if (arg === "--resume") {
+    if (shouldStripBooleanFlag(arg)) continue;
+    if (shouldStripValueFlag(arg)) {
+      if (arg.includes("=")) continue;
       // Skip flag + its value (if any non-flag follows).
       const next = argv[i + 1];
       if (typeof next === "string" && !next.startsWith("-")) i += 1;
       continue;
     }
-    if (arg.startsWith("--resume=")) continue;
     out.push(arg);
   }
   return out;

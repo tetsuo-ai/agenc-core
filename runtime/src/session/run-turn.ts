@@ -68,10 +68,8 @@ import {
   type StreamModelRequestContract,
 } from "../phases/stream-model.js";
 import { isTransientProviderError } from "../recovery/api-errors.js";
-import {
-  RECONNECT_MAX_ATTEMPTS,
-  reconnectWithBackoff,
-} from "../recovery/reconnection.js";
+import { reconnectWithBackoff } from "../recovery/reconnection.js";
+import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
 import {
   buildCompactCacheSafeParams,
@@ -176,7 +174,9 @@ export type CompactionPhase = "pre_turn" | "in_turn" | "post_turn";
 
 /** Whether to inject the initial context on post-compact. Port of
  *  codex `InitialContextInjection`. */
-export type InitialContextInjection = "inject" | "do_not_inject";
+export type InitialContextInjection =
+  | "before_last_user_message"
+  | "do_not_inject";
 
 /**
  * Structural shape of the resolved `autoCompactIfNeeded` export. Mirrors
@@ -253,7 +253,7 @@ function resolveAutoCompactImpl(): AutoCompactImpl | null {
 async function runAutoCompact(
   session: Session,
   ctx: TurnContext,
-  _initialContextInjection: InitialContextInjection,
+  initialContextInjection: InitialContextInjection,
   reason: CompactionReason,
   phase: CompactionPhase,
   state?: TurnState,
@@ -291,6 +291,7 @@ async function runAutoCompact(
       querySource,
       state?.autoCompactTracking,
       state?.snipTokensFreed ?? 0,
+      initialContextInjection,
     );
 
     if (result.wasCompacted && state) {
@@ -750,15 +751,9 @@ async function runSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
 ): Promise<SamplingRequestResult> {
-  // T13 adds per-provider `streamMaxRetries`; default matches the
-  // reconnection module's `RECONNECT_MAX_ATTEMPTS` (5) for parity with
-  // the rest of the recovery ladder.
-  const maxAttempts = RECONNECT_MAX_ATTEMPTS;
-
   const outcome = await reconnectWithBackoff<SamplingRequestResult>({
     session,
     signal,
-    maxAttempts,
     attempt: () => tryRunSamplingRequest(state, ctx, session, signal, events),
     isTransient: (err) => {
       if (isRetryableStreamError(err)) return true;
@@ -769,6 +764,12 @@ async function runSamplingRequest(
         return isTransientProviderError(err.cause);
       }
       return isTransientProviderError(err);
+    },
+    onTransientRetry: async () => {
+      const reservation = await reserveRecoveryReentry(session, state, {
+        triggerName: "reconnect",
+      });
+      return reservation.kind === "reserved";
     },
   });
 
@@ -876,26 +877,88 @@ function resolveMaxTurns(ctx: TurnContext): number {
 /**
  * Port of codex `drain_in_flight` (turn.rs:1794-1818). On abort/error,
  * drain any still-in-flight tool futures so their side effects record
- * into conversation state. AgenC's execute-tools phase uses the
- * StreamingToolExecutor which already buffers completed results; this
- * helper serves as the codex-shape counterpart.
+ * into conversation state.
+ *
+ * Openclaude parity (`query.ts:1046-1060`): each synthetic tool_result
+ * yielded from the executor MUST be surfaced back into the output
+ * stream and appended to `state.messages` / `state.toolResults` so
+ * every orphan `tool_use` block sent by the model during the
+ * abort/error window has a paired `tool_result`. Without this, the
+ * next turn's provider request would fail the Anthropic/openai
+ * tool-use-id pairing contract.
+ *
+ * The executor's internal abort + discard logic is responsible for
+ * generating the synthetic terminal results themselves. This helper
+ * only closes the queue, iterates the result stream, records each
+ * pair, and emits the `tool_call_completed` event the same way
+ * `execute-tools` does so observers and rollouts see the turn close
+ * cleanly.
  */
-async function drainInFlight(
+/** @internal — exported for drainInFlight unit tests only. */
+export async function drainInFlight(
   state: TurnState,
-  _ctx: TurnContext,
+  ctx: TurnContext,
   session: Session,
 ): Promise<void> {
   const exec = state.streamingToolExecutor as
-    | { close?: () => void; getRemainingResults?: () => AsyncIterable<unknown> }
+    | {
+        close?: () => void;
+        getRemainingResults?: () => AsyncIterable<{
+          toolCall: { id: string; name: string };
+          result: { content: string; isError?: boolean };
+          status: "completed" | "synthetic_error";
+        }>;
+      }
     | null;
   if (!exec || typeof exec.close !== "function") return;
   try {
     exec.close();
     if (typeof exec.getRemainingResults === "function") {
-      for await (const _ of exec.getRemainingResults()) {
-        // drain — results already recorded by the phase
+      for await (const drained of exec.getRemainingResults()) {
+        const callId = drained.toolCall.id;
+        const toolName = drained.toolCall.name;
+        const result = drained.result;
+        // Emit the tool_call_completed event so rollouts + observers
+        // close the turn boundary with the synthetic result (I-8).
+        const toolResultBytes = Buffer.byteLength(result.content, "utf8");
+        session.emit(
+          {
+            id: session.nextInternalSubId(),
+            msg: {
+              type: "tool_call_completed",
+              payload: {
+                callId,
+                result: result.content,
+                isError: result.isError === true,
+              },
+            },
+          },
+          {
+            turnId: ctx.subId,
+            toolResultBytes,
+          },
+        );
+        // Append both the LLM-facing tool message and the user-facing
+        // tool_result record so the pair shows up in the next
+        // request and in session history.
+        state.toolResults.push({
+          uuid: crypto.randomUUID(),
+          role: "user",
+          toolCallId: callId,
+          toolName,
+          content: result.content,
+        });
+        state.messages.push({
+          role: "tool",
+          toolCallId: callId,
+          content: result.content,
+        });
       }
     }
+    // Clear the executor so a fresh one is created on the next
+    // iteration, mirroring the per-iteration lifecycle in
+    // executeTools().
+    state.streamingToolExecutor = null;
   } catch (error) {
     session.emit({
       id: session.nextInternalSubId(),
@@ -1053,6 +1116,9 @@ export async function* runTurnKernel(
   };
   const persistNewResponseItems = (): void => {
     if (!session.rolloutStore) return;
+    if (state.messages.length < persistedMessageCount) {
+      persistedMessageCount = state.messages.length;
+    }
     const nextItems = state.messages.slice(persistedMessageCount);
     for (const message of nextItems) {
       session.rolloutStore.appendRollout({
@@ -1205,6 +1271,11 @@ export async function* runTurnKernel(
 
     // Codex run_sampling_request — phases 1-4.
     const pending: PhaseEvent[] = [];
+    // Hoisted so the mid-turn compaction check after the try/catch can
+    // read the just-returned model_needs_follow_up signal. Codex reads
+    // this from `SamplingRequestResult` at turn.rs:468-476 right before
+    // the `token_limit_reached && needs_follow_up` arm at turn.rs:493.
+    let modelNeedsFollowUp = false;
     try {
       const result = await runSamplingRequest(state, ctx, session, signal, pending);
       for (const ev of pending) yield ev;
@@ -1212,6 +1283,7 @@ export async function* runTurnKernel(
       // sampling request so the terminal turn_complete event carries
       // cumulative token consumption across continuation iterations.
       usage = cumulativeUsage(usage, result.usage);
+      modelNeedsFollowUp = result.needsFollowUp;
       if (result.terminal) {
         if (result.assistantText.length > 0) {
           lastContent = result.assistantText;
@@ -1280,6 +1352,147 @@ export async function* runTurnKernel(
         await sessionOwner.consumePendingProviderSwitch();
       }
       state.transition = undefined;
+      continue;
+    }
+
+    // Mid-turn compaction — port of codex `turn.rs:493-508`. When the
+    // just-finished sampling step pushed total token usage at or past
+    // the current model's auto-compact limit AND a follow-up is still
+    // required (tool calls pending or mailbox has queued user input),
+    // compact before the next sampling request instead of letting the
+    // next prepareContext stage blow through the window.
+    //
+    // Codex contract reconstructed here:
+    //   token_limit_reached = total_usage_tokens >= auto_compact_limit
+    //   needs_follow_up     = model_needs_follow_up || has_pending_input
+    //   if both: run_auto_compact(MidTurn) -> reset_websocket_session -> continue
+    //
+    // AgenC signal mapping:
+    //   model_needs_follow_up ← `result.needsFollowUp` (set by stream-model
+    //     when `toolUseBlocks.length > 0`; cleared by execute-tools after
+    //     dispatch, so we must evaluate BEFORE execute-tools runs below).
+    //   has_pending_input     ← `session.hasPendingInput()` (mailbox queue).
+    //   total_usage_tokens    ← `getTotalTokenUsage(session)` falling back
+    //     to this turn's cumulative `usage` when the session-level field
+    //     is not yet populated (AgenC's live writer is not yet wired for
+    //     every provider; the per-turn cumulative is the best available
+    //     proxy and matches codex's "post sampling token usage" read).
+    //   auto_compact_limit    ← `ctx.modelInfo.autoCompactTokenLimit`.
+    //
+    // Provider continuity reset (codex `client_session.reset_websocket_session()`):
+    //   `runAutoCompact` → `autoCompactIfNeeded` → `runPostCompactCleanup`
+    //   → `context.clearProviderResponseId()` wires through
+    //   `session.clearProviderResponseId()`, which is AgenC's equivalent.
+    //   That covers the reset when compaction actually runs; we add an
+    //   explicit `session.bindProviderConversation()` rebind after
+    //   compaction to mirror codex's "the next sampling request must
+    //   look like a fresh conversation" guarantee.
+    //
+    // Codex parity: mid-turn compaction must re-inject the current
+    // reference-context snapshot immediately before the last real user
+    // message in the compacted replacement history. That wiring is
+    // carried by `before_last_user_message` through runAutoCompact →
+    // autoCompactIfNeeded → compactConversation/session-memory compact.
+    const hasPendingInput = session.hasPendingInput();
+    const needsFollowUpForCompact = modelNeedsFollowUp || hasPendingInput;
+    const autoCompactLimit =
+      (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
+        .autoCompactTokenLimit ?? Number.POSITIVE_INFINITY;
+    const sessionTotalTokens = getTotalTokenUsage(session);
+    const totalUsageTokens = Math.max(sessionTotalTokens, usage.totalTokens);
+    const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
+
+    if (tokenLimitReached && needsFollowUpForCompact) {
+      let midTurnCompacted = false;
+      try {
+        midTurnCompacted = await runAutoCompact(
+          session,
+          ctx,
+          "before_last_user_message",
+          "context_limit",
+          "in_turn",
+          state,
+        );
+      } catch (error) {
+        // Codex returns None on mid-turn compact failure. AgenC's
+        // analogue is to terminate the turn cleanly with an error
+        // event so rollout reducers see a closed turn boundary.
+        // Matches the failure handling pattern used by
+        // `pre_sampling_compact_failed` at the top of runTurnKernel.
+        await drainInFlight(state, ctx, session);
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "error",
+            payload: {
+              cause: "mid_turn_compact_failed",
+              message: error instanceof Error ? error.message : String(error),
+            },
+          },
+        });
+        await syncSessionState();
+        emitTurnComplete(lastContent);
+        const underlying =
+          error instanceof Error ? error : new Error(String(error));
+        const terminal: Terminal = { reason: "completed", error: underlying };
+        yield {
+          type: "turn_complete",
+          content: lastContent,
+          usage,
+          stopReason: "error",
+          error: underlying,
+        };
+        return terminal;
+      }
+
+      if (!midTurnCompacted) {
+        // Codex's `is_err()` arm fires only on dispatcher failure. If
+        // the dispatcher ran but reported `wasCompacted=false` (circuit
+        // breaker tripped, feature disabled, or threshold logic inside
+        // the compact module disagreed with our outer check), we do NOT
+        // loop — that would spin forever with unchanged state. Surface
+        // the token-limit condition as a terminal error matching the
+        // semantics of codex's `return None`.
+        await drainInFlight(state, ctx, session);
+        const reasonText = `mid_turn_compact_skipped: tokens=${totalUsageTokens} limit=${autoCompactLimit}`;
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "error",
+            payload: {
+              cause: "mid_turn_compact_failed",
+              message: reasonText,
+            },
+          },
+        });
+        await syncSessionState();
+        emitTurnComplete(lastContent);
+        const underlying = new Error(reasonText);
+        const terminal: Terminal = { reason: "completed", error: underlying };
+        yield {
+          type: "turn_complete",
+          content: lastContent,
+          usage,
+          stopReason: "error",
+          error: underlying,
+        };
+        return terminal;
+      }
+
+      // Codex `client_session.reset_websocket_session()` parity.
+      // `runAutoCompact` → `runPostCompactCleanup` already called
+      // `session.clearProviderResponseId()` via the compact context;
+      // rebind the provider HTTP client to the current conversation
+      // so the next request opens a fresh continuation under the same
+      // conversationId (codex's websocket session is keyed per
+      // conversation the same way).
+      session.bindProviderConversation();
+      // Codex sets `can_drain_pending_input = !model_needs_follow_up;`
+      // to gate mailbox drain on the outer loop's next iteration. AgenC
+      // does not yet surface a matching gate (the phase machine drains
+      // pending input whenever `prepareContext` decides), so there is
+      // nothing to set here; the session mailbox fires naturally on the
+      // next iteration.
       continue;
     }
 

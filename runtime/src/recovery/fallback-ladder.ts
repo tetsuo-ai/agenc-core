@@ -101,18 +101,6 @@ export class RecoveryLadder {
     const lock = getRecoveryLock(this.session);
 
     return lock.with(async () => {
-      // I-42: per-turn cap on recovery re-entries.
-      if (state.recoveryReentryCount >= this.maxReentries) {
-        emitError(this.session.eventLog, this.session.nextInternalSubId(), {
-          cause: "recovery_loop",
-          message: `recovery ladder exceeded MAX_RECOVERY_REENTRIES=${this.maxReentries}`,
-        });
-        return {
-          kind: "reentry_cap_exhausted",
-          cap: this.maxReentries,
-        } satisfies LadderOutcome;
-      }
-
       const ctx: TriggerContext = {
         session: this.session,
         state,
@@ -124,13 +112,18 @@ export class RecoveryLadder {
       for (const trigger of this.triggers) {
         if (!trigger.match(ctx)) continue;
 
-        state.recoveryReentryCount += 1;
-        emitWarning(
-          this.session.eventLog,
-          this.session.nextInternalSubId(),
-          "recovery_triggered",
-          `trigger=${trigger.name}, reentryCount=${state.recoveryReentryCount}/${this.maxReentries}`,
+        const reservation = reserveRecoveryReentryLocked(
+          this.session,
+          state,
+          this.maxReentries,
+          trigger.name,
         );
+        if (reservation.kind === "exhausted") {
+          return {
+            kind: "reentry_cap_exhausted",
+            cap: reservation.cap,
+          } satisfies LadderOutcome;
+        }
 
         let outcome: TriggerOutcome;
         try {
@@ -181,4 +174,59 @@ export class RecoveryLadder {
  */
 export function resetRecoveryReentries(state: TurnState): void {
   state.recoveryReentryCount = 0;
+}
+
+export type RecoveryReentryReservation =
+  | { readonly kind: "reserved"; readonly count: number }
+  | { readonly kind: "exhausted"; readonly cap: number };
+
+function reserveRecoveryReentryLocked(
+  session: Session,
+  state: TurnState,
+  maxReentries: number,
+  triggerName?: string,
+): RecoveryReentryReservation {
+  if (state.recoveryReentryCount >= maxReentries) {
+    emitError(session.eventLog, session.nextInternalSubId(), {
+      cause: "recovery_loop",
+      message: `recovery ladder exceeded MAX_RECOVERY_REENTRIES=${maxReentries}`,
+    });
+    return {
+      kind: "exhausted",
+      cap: maxReentries,
+    };
+  }
+
+  state.recoveryReentryCount += 1;
+  if (triggerName) {
+    emitWarning(
+      session.eventLog,
+      session.nextInternalSubId(),
+      "recovery_triggered",
+      `trigger=${triggerName}, reentryCount=${state.recoveryReentryCount}/${maxReentries}`,
+    );
+  }
+  return {
+    kind: "reserved",
+    count: state.recoveryReentryCount,
+  };
+}
+
+export async function reserveRecoveryReentry(
+  session: Session,
+  state: TurnState,
+  opts: {
+    readonly triggerName?: string;
+    readonly maxReentries?: number;
+  } = {},
+): Promise<RecoveryReentryReservation> {
+  const lock = getRecoveryLock(session);
+  return lock.with(async () =>
+    reserveRecoveryReentryLocked(
+      session,
+      state,
+      opts.maxReentries ?? MAX_RECOVERY_REENTRIES,
+      opts.triggerName,
+    ),
+  );
 }

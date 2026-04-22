@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import type { PersistedWorktreeSession } from "../types/logs.js";
 import {
   _resetGitWorktreeMutationLocksForTesting,
+  cleanupStaleAgentWorktrees as cleanupStaleAgentWorktreesImpl,
   captureBaseCommit,
   findGitRoot,
   getOrCreateWorktree,
@@ -132,7 +133,14 @@ export async function createAgentWorktree(
 }
 
 export async function cleanupStaleAgentWorktrees(): Promise<number> {
-  throw unsupported("cleanupStaleAgentWorktrees");
+  const gitRoot = findGitRoot(process.cwd());
+  if (!gitRoot) {
+    return 0;
+  }
+  return cleanupStaleAgentWorktreesImpl({
+    gitRoot,
+    currentPath: currentWorktreeSession?.worktreePath,
+  });
 }
 
 export async function copyWorktreeIncludeFiles(): Promise<ReadonlyArray<string>> {

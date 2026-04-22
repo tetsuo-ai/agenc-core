@@ -29,6 +29,10 @@ import type {
   RolloutItem,
 } from "./rollout-item.js";
 import { isKnownRolloutType } from "./rollout-item.js";
+import {
+  isUserTurnBoundary,
+  isContextualUserMessageContent,
+} from "./rollout-reconstruction.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Reducer state shape
@@ -242,26 +246,59 @@ export function reduce(
 }
 
 /**
- * Codex `drop_last_n_user_turns` analogue. A "user-turn boundary"
- * is a user-role response_item. Returns a new array.
+ * Port of codex `History::drop_last_n_user_turns`
+ * (`context_manager/history.rs:240-263`) + companion
+ * `trim_pre_turn_context_updates` (`history.rs:428-456`).
+ *
+ * Codex semantics:
+ *   - a "user-turn boundary" is defined by `is_user_turn_boundary`
+ *     (role==="user" with non-contextual content, OR role==="assistant"
+ *     carrying an inter-agent-instruction payload). We delegate to the
+ *     shared helper in `rollout-reconstruction.ts` so forward replay
+ *     and compaction rebuild agree on what counts as a boundary.
+ *   - after choosing the cut index, walk backward from the cut while
+ *     the preceding item is a contextual pre-turn update (a
+ *     user-role Message whose content is purely contextual fragments).
+ *     These items sit above the rolled-back turn as prompt scaffolding
+ *     that belongs with the discarded turn, so codex trims them too.
+ *     We conservatively skip codex's "developer-role contextual
+ *     message" branch because AgenC does not yet emit developer-role
+ *     message items in rollout history (see feature matrix I-33 / I-82).
  */
 function dropLastNUserTurns(
   history: ReadonlyArray<ResponseItem>,
   n: number,
 ): ResponseItem[] {
   if (n <= 0) return [...history];
-  let userBoundariesSeen = 0;
-  let cutIndex = history.length;
-  for (let i = history.length - 1; i >= 0; i -= 1) {
+
+  // Collect user-turn boundary indices (codex `user_message_positions`).
+  const userPositions: number[] = [];
+  for (let i = 0; i < history.length; i += 1) {
     const item = history[i];
-    if (item?.role === "user") {
-      userBoundariesSeen += 1;
-      if (userBoundariesSeen === n) {
-        cutIndex = i;
-        break;
-      }
-    }
+    if (item && isUserTurnBoundary(item)) userPositions.push(i);
   }
+  if (userPositions.length === 0) return [...history];
+
+  const firstInstructionTurnIdx = userPositions[0]!;
+  let cutIndex: number;
+  if (n >= userPositions.length) {
+    cutIndex = firstInstructionTurnIdx;
+  } else {
+    cutIndex = userPositions[userPositions.length - n]!;
+  }
+
+  // Codex `trim_pre_turn_context_updates`: walk backward from the
+  // cut, stripping contiguous contextual user-message injections
+  // above the boundary. We stop at the first non-contextual item and
+  // never cross `firstInstructionTurnIdx`.
+  while (cutIndex > firstInstructionTurnIdx) {
+    const prev = history[cutIndex - 1];
+    if (!prev) break;
+    if (prev.role !== "user") break;
+    if (!isContextualUserMessageContent(prev.content)) break;
+    cutIndex -= 1;
+  }
+
   return history.slice(0, cutIndex);
 }
 

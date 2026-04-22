@@ -95,6 +95,44 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
+  test("preserves inline input_audio parts for OpenAI-compatible audio models", () => {
+    const request = buildChatCompletionsRequest({
+      model: "gpt-audio",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Transcribe this" },
+            {
+              type: "input_audio",
+              input_audio: {
+                data: "UklGRiQAAABXQVZFZm10",
+                format: "wav",
+              },
+            },
+          ] as unknown as Array<Record<string, unknown>>,
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Transcribe this" },
+          {
+            type: "input_audio",
+            input_audio: {
+              data: "UklGRiQAAABXQVZFZm10",
+              format: "wav",
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
   test("records chat completions endpoint markers in request metrics", () => {
     const response = parseChatCompletionsResponse(
       "gpt-4.1",

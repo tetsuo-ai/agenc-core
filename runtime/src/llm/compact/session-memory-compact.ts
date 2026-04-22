@@ -15,8 +15,8 @@ import {
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { getSessionMemoryPath } from '../../utils/permissions/filesystem.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
-import { getTranscriptPath } from '../../utils/sessionStorage.js'
 import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js'
+import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
 import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
 import {
   getDynamicConfig_BLOCKS_ON_INIT,
@@ -439,7 +439,7 @@ function createCompactionResultFromSessionMemory(
   sessionMemory: string,
   messagesToKeep: Message[],
   hookResults: HookResultMessage[],
-  transcriptPath: string,
+  transcriptPath: string | undefined,
   agentId?: AgentId,
 ): CompactionResult {
   const preCompactTokenCount = tokenCountFromLastAPIResponse(messages)
@@ -515,6 +515,7 @@ export async function trySessionMemoryCompaction(
   messages: Message[],
   agentId?: AgentId,
   autoCompactThreshold?: number,
+  context?: Pick<CompactRuntimeContext, 'rolloutStore'>,
 ): Promise<CompactionResult | null> {
   if (!shouldUseSessionMemoryCompaction()) {
     return null
@@ -585,8 +586,15 @@ export async function trySessionMemoryCompaction(
       model: getMainLoopModel(),
     })
 
-    // Get transcript path for the summary message
-    const transcriptPath = getTranscriptPath()
+    // Get transcript path for the summary message.
+    // T5: route through the SessionStore owner via CompactRuntimeContext
+    // instead of the legacy `utils/sessionStorage.getTranscriptPath()` which
+    // read from bootstrap/state stub proxies (wrong `<sessionId>.jsonl` in
+    // the T5 world). When no rollout context is available (tests, detached
+    // subagents) the stamp is simply omitted from the summary.
+    const transcriptPath =
+      context?.rolloutStore?.rolloutPath ??
+      context?.rolloutStore?.store?.rolloutPath
 
     const compactionResult = createCompactionResultFromSessionMemory(
       messages,

@@ -75,10 +75,21 @@ export async function delegate(
   const forkMode = opts.forkMode ?? { kind: "new" };
   const runInBackground = opts.runInBackground ?? false;
 
+  if (
+    isolation === "worktree" &&
+    (!opts.worktreeSlug || opts.worktreeSlug.trim().length === 0)
+  ) {
+    return {
+      kind: "rejected",
+      reason: 'worktree isolation requires a non-empty worktreeSlug',
+    };
+  }
+
   // Set up worktree if requested.
   let worktree: WorktreeHandle | undefined;
   let baseCommit: string | null = null;
-  if (isolation === "worktree" && opts.worktreeSlug) {
+  if (isolation === "worktree") {
+    const worktreeSlug = opts.worktreeSlug!;
     const workspaceRoot =
       opts.parent.sessionConfiguration.cwd ||
       opts.parent.config.cwd ||
@@ -93,7 +104,7 @@ export async function delegate(
     try {
       worktree = await getOrCreateWorktree({
         gitRoot: canonicalGitRoot,
-        slug: opts.worktreeSlug,
+        slug: worktreeSlug,
       });
       baseCommit = await captureBaseCommit(canonicalGitRoot);
     } catch (err) {

@@ -32,9 +32,11 @@
 
 import {
   existsSync,
+  readdirSync,
   realpathSync,
   readFileSync,
   statSync,
+  utimesSync,
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
@@ -171,6 +173,28 @@ function resolveCanonicalGitRoot(gitRoot: string): string {
   }
 }
 
+function resolveWorktreeGitDir(worktreePath: string): string | null {
+  const dotGit = join(worktreePath, ".git");
+  try {
+    const stat = statSync(dotGit);
+    if (stat.isDirectory()) {
+      return dotGit;
+    }
+  } catch {
+    return null;
+  }
+
+  try {
+    const gitContent = readFileSync(dotGit, "utf8").trim();
+    if (!gitContent.startsWith("gitdir:")) {
+      return null;
+    }
+    return resolvePath(worktreePath, gitContent.slice("gitdir:".length).trim());
+  } catch {
+    return null;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Slug validation
 // ─────────────────────────────────────────────────────────────────────
@@ -235,6 +259,7 @@ export async function getOrCreateWorktree(
     if (existsSync(path) && existsSync(join(path, ".git"))) {
       const existingGitRoot = findGitRoot(path);
       if (existingGitRoot === opts.gitRoot) {
+        touchWorktreeMtime(path);
         return { path, branch, gitRoot: opts.gitRoot, created: false };
       }
       if (existingGitRoot !== null) {
@@ -308,17 +333,33 @@ export async function hasWorktreeChanges(opts: {
   readonly hasCommits: boolean;
   readonly isDirty: boolean;
 }> {
-  const status = await runGit(
-    ["status", "--porcelain", "-uno"],
-    opts.path,
-  );
+  const status = await runGit(["status", "--porcelain", "-uno"], opts.path);
+  if (status.code !== 0) {
+    throw new Error(
+      `git status failed for ${opts.path}: ${formatGitFailure(status)}`,
+    );
+  }
+
   const revList = await runGit(
     ["rev-list", "--count", `${opts.baseCommit}..HEAD`],
     opts.path,
   );
+  if (revList.code !== 0) {
+    throw new Error(
+      `git rev-list failed for ${opts.path}: ${formatGitFailure(revList)}`,
+    );
+  }
+
+  const commitCount = Number.parseInt(revList.stdout.trim(), 10);
+  if (!Number.isFinite(commitCount)) {
+    throw new Error(
+      `git rev-list returned non-numeric count for ${opts.path}: ${revList.stdout.trim()}`,
+    );
+  }
+
   return {
-    hasCommits: revList.code === 0 && Number.parseInt(revList.stdout.trim(), 10) > 0,
-    isDirty: status.code === 0 && status.stdout.trim().length > 0,
+    hasCommits: commitCount > 0,
+    isDirty: status.stdout.trim().length > 0,
   };
 }
 
@@ -346,8 +387,10 @@ export async function removeAgentWorktree(
 ): Promise<void> {
   return gitMutationLock.with(async () => {
     // I-35: sparse-checkout teardown verify.
-    const sparseFile = join(opts.path, ".git", "info", "sparse-checkout");
-    if (existsSync(sparseFile)) {
+    const gitDir = resolveWorktreeGitDir(opts.path);
+    const sparseFile =
+      gitDir !== null ? join(gitDir, "info", "sparse-checkout") : null;
+    if (sparseFile !== null && existsSync(sparseFile)) {
       try {
         const contents = readFileSync(sparseFile, "utf8").trim();
         if (contents.length > 0) {
@@ -421,11 +464,110 @@ export const STALE_WORKTREE_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 export function isWorktreeStale(
   path: string,
   ageMs = STALE_WORKTREE_AGE_MS,
+  nowMs = Date.now(),
 ): boolean {
   try {
     const stat = statSync(path);
-    return Date.now() - stat.mtimeMs > ageMs;
+    return nowMs - stat.mtimeMs > ageMs;
   } catch {
     return false;
   }
+}
+
+const STALE_AGENT_WORKTREE_SLUG_PATTERNS = [
+  /^agent-[a-zA-Z0-9._-]+$/,
+  /^wf_[0-9a-zA-Z._-]+$/,
+  /^wf-\d+$/,
+  /^bridge-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*$/,
+  /^job-[a-zA-Z0-9._-]{1,55}-[0-9a-f]{8}$/,
+];
+
+export interface CleanupStaleAgentWorktreesOpts {
+  readonly gitRoot: string;
+  readonly workspaceRoot?: string;
+  readonly currentPath?: string;
+  readonly ageMs?: number;
+  readonly nowMs?: number;
+}
+
+export async function cleanupStaleAgentWorktrees(
+  opts: CleanupStaleAgentWorktreesOpts,
+): Promise<number> {
+  const workspaceRoot =
+    opts.workspaceRoot ?? join(opts.gitRoot, ".agenc-worktrees");
+  const currentPath =
+    opts.currentPath !== undefined ? resolvePath(opts.currentPath) : null;
+
+  let entries: string[];
+  try {
+    entries = readdirSync(workspaceRoot);
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const slug of entries) {
+    if (!isEphemeralAgentWorktreeSlug(slug)) {
+      continue;
+    }
+
+    const path = join(workspaceRoot, slug);
+    if (currentPath !== null && resolvePath(path) === currentPath) {
+      continue;
+    }
+    if (!isWorktreeStale(path, opts.ageMs, opts.nowMs)) {
+      continue;
+    }
+    if (!(await canRemoveStaleWorktree(path))) {
+      continue;
+    }
+
+    try {
+      await removeAgentWorktree({
+        path,
+        branch: worktreeBranchName(slug),
+        gitRoot: opts.gitRoot,
+      });
+      removed += 1;
+    } catch {
+      // Fail closed: leave the stale worktree in place if git does not
+      // recognize it or teardown cannot prove completion.
+    }
+  }
+
+  return removed;
+}
+
+function canRemoveStaleWorktree(path: string): Promise<boolean> {
+  return Promise.all([
+    runGit(["status", "--porcelain", "-uno"], path),
+    runGit(["rev-list", "--max-count=1", "HEAD", "--not", "--remotes"], path),
+  ]).then(([status, unpushed]) => {
+    if (status.code !== 0 || status.stdout.trim().length > 0) {
+      return false;
+    }
+    if (unpushed.code !== 0 || unpushed.stdout.trim().length > 0) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function isEphemeralAgentWorktreeSlug(slug: string): boolean {
+  return STALE_AGENT_WORKTREE_SLUG_PATTERNS.some((pattern) =>
+    pattern.test(slug),
+  );
+}
+
+function touchWorktreeMtime(path: string): void {
+  try {
+    const now = new Date();
+    utimesSync(path, now, now);
+  } catch {
+    // Best-effort only; the resume path still works even when mtime refresh fails.
+  }
+}
+
+function formatGitFailure(result: GitResult): string {
+  return result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
 }

@@ -45,13 +45,16 @@ import type { ToolInvocation, ToolPayload } from "./context.js";
 import {
   resolveHookPermissionDecision,
   type PermissionDecisionHook,
-} from "./tool-hooks.js";
+} from "./hooks.js";
 import {
   defaultExecApprovalRequirement as defaultExecApprovalRequirementFromPermissions,
   type ApprovalPolicy as PermissionsApprovalPolicy,
   type ExecApprovalRequirement as PermissionsExecApprovalRequirement,
   type FileSystemSandboxKind as PermissionsFileSystemSandboxKind,
+  type GranularApprovalConfig,
 } from "../permissions/approval-policy.js";
+
+export type { GranularApprovalConfig };
 import {
   reviewDecisionIsAllow,
   type ReviewDecision as PermissionsReviewDecision,
@@ -166,6 +169,15 @@ export interface ClassifyToolOptions {
    * MCP call falls through to the normal policy matrix.
    */
   readonly mcpServerTrusted?: (server: string) => boolean;
+  /**
+   * Optional `GranularApprovalConfig` that accompanies
+   * `approvalPolicy === "granular"`. Codex parity — port of
+   * `AskForApproval::Granular(GranularConfig)` inner payload
+   * (protocol.rs:859-874). When the granular config disallows sandbox
+   * approval prompts, classification of a restricted call returns
+   * `forbidden` instead of `needs_approval`.
+   */
+  readonly granular?: GranularApprovalConfig;
 }
 
 /**
@@ -214,12 +226,19 @@ export function classifyToolApproval(
         break;
       }
       case "local_shell": {
-        // Route shell calls through the fs-policy-aware default.
+        // Route shell calls through the fs-policy-aware default. Pipe
+        // through the optional `granular` config so the permissions
+        // layer can surface the `forbidden` branch when the user has
+        // disabled sandbox approval prompts.
         const fsKind = sandboxKindFromMode(opts.sandboxMode);
         const fallback = defaultExecApprovalRequirement(
           opts.approvalPolicy,
           fsKind,
+          opts.granular,
         );
+        if (fallback.kind === "forbidden") {
+          return fallback;
+        }
         if (fallback.kind === "needs_approval") {
           return {
             kind: "needs_approval",
@@ -324,13 +343,18 @@ export function sandboxKindFromMode(mode: SandboxMode): FileSystemSandboxKind {
 export function defaultExecApprovalRequirement(
   policy: ApprovalPolicy,
   fsKind: FileSystemSandboxKind,
+  granular?: GranularApprovalConfig,
 ): ExecApprovalRequirement {
   // Narrow the 3-variant orchestrator-side kind to the 2-variant
   // permissions-layer kind: `external_sandbox` is treated as a
   // non-restricted context for approval-table purposes (codex parity).
   const narrowed: PermissionsFileSystemSandboxKind =
     fsKind === "restricted" ? "restricted" : "full_access";
-  return defaultExecApprovalRequirementFromPermissions(policy, narrowed);
+  return defaultExecApprovalRequirementFromPermissions(
+    policy,
+    narrowed,
+    granular,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -391,6 +415,46 @@ function alreadyAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
 
+/**
+ * Codex parity: detect the abort branch without relying on
+ * `String(err).toLowerCase().includes("abort")` substring sniffing.
+ * Mirrors the `tokio::select!` cancellation arm — we match:
+ *   - `DOMException` / `AbortError` (browser/Node `AbortSignal` throws)
+ *   - our in-tree `awaitWithAbort` reject (error whose message matches
+ *     the signal's `reason` exactly)
+ *   - direct `AbortSignal`-rooted errors (`err.name === "AbortError"`)
+ * Never string-sniffs: an error message containing the word "abort"
+ * from a legitimate tool failure will no longer be misclassified.
+ */
+function isAbortError(err: unknown, signal?: AbortSignal): boolean {
+  if (err === null || err === undefined) return false;
+  // Signal-aborted path: synthesized rejection from awaitWithAbort
+  // carries `signal.reason` as the message; match by identity where
+  // possible, otherwise by the explicit AbortError `name` marker.
+  if (signal?.aborted === true) {
+    if (err instanceof Error) {
+      const expected = String(signal.reason ?? "aborted");
+      if (err.message === expected) return true;
+    }
+  }
+  if (typeof DOMException !== "undefined" && err instanceof DOMException) {
+    return err.name === "AbortError";
+  }
+  if (err instanceof Error && err.name === "AbortError") {
+    return true;
+  }
+  // Node's AbortController.abort(reason) propagates the reason directly
+  // as the rejection value — check its shape when it isn't an Error.
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  ) {
+    return true;
+  }
+  return false;
+}
+
 async function awaitWithAbort<T>(
   promise: Promise<T>,
   signal: AbortSignal | undefined,
@@ -448,7 +512,7 @@ export async function requestApproval(
     try {
       result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
     } catch (err) {
-      if (alreadyAborted(signal) || String(err).toLowerCase().includes("abort")) {
+      if (alreadyAborted(signal) || isAbortError(err, signal)) {
         return { decision: { kind: "abort" }, source: "aborted" };
       }
       throw err;
@@ -471,7 +535,7 @@ export async function requestApproval(
         signal,
       );
     } catch (err) {
-      if (alreadyAborted(signal) || String(err).toLowerCase().includes("abort")) {
+      if (alreadyAborted(signal) || isAbortError(err, signal)) {
         return { decision: { kind: "abort" }, source: "aborted" };
       }
       throw err;
@@ -495,7 +559,7 @@ export async function requestApproval(
       );
       return { decision, source: "resolver" };
     } catch (err) {
-      if (alreadyAborted(signal) || String(err).toLowerCase().includes("abort")) {
+      if (alreadyAborted(signal) || isAbortError(err, signal)) {
         return { decision: { kind: "abort" }, source: "aborted" };
       }
       throw err;
@@ -617,6 +681,15 @@ export interface OrchestrateToolCallOpts<T> {
   /** Per-tool overrides (denylist/allowlist). */
   readonly toolAllowlist?: ReadonlySet<string>;
   readonly toolDenylist?: ReadonlySet<string>;
+  /**
+   * Optional `GranularApprovalConfig` accompanying `"granular"` policy —
+   * codex parity (`AskForApproval::Granular(GranularConfig)`). Piped
+   * into `classifyToolApproval` and the fs-policy fallback so
+   * `allows_sandbox_approval == false` yields `forbidden` instead of
+   * `needs_approval`, and into `wantsNoSandboxApproval` gating on
+   * sandbox-denied escalation.
+   */
+  readonly granular?: GranularApprovalConfig;
   readonly approvalArgs?: Record<string, unknown>;
   /** Attempt executor — receives the selected sandbox mode. The caller
    *  may gate the actual FS/network constraints internally. Should
@@ -632,6 +705,86 @@ export interface OrchestrateToolCallOpts<T> {
   readonly maxAttempts?: number;
   /** Testing hook. */
   readonly sleep?: (ms: number) => Promise<void>;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Tool capability readers — codex `Sandboxable::escalate_on_failure()`
+// and `Approvable::wants_no_sandbox_approval(policy)`.
+//
+// Tool authors may opt into these via structural fields on the Tool
+// object. Adding them as full methods on the shared `Tool` interface
+// would ripple across Tool consumers outside this worker's scope, so
+// we read them by structural cast — matching how the existing
+// `requiresApproval` and `isReadOnly` hints are consumed.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Structural extension fields for sandbox-escalation behavior. A Tool
+ * may expose either as a plain boolean or a function. Defaults mirror
+ * codex: `escalate_on_failure: true`, `wants_no_sandbox_approval` per
+ * the policy table in `sandboxing.rs:290-298`.
+ */
+interface ToolSandboxCapabilities {
+  readonly escalateOnFailure?: boolean | (() => boolean);
+  readonly wantsNoSandboxApproval?:
+    | boolean
+    | ((policy: ApprovalPolicy, granular?: GranularApprovalConfig) => boolean);
+}
+
+/**
+ * Port of codex `Sandboxable::escalate_on_failure()` (sandboxing.rs:309-311).
+ * Default `true`. A tool that returns `false` bails with the original
+ * `SandboxDeniedError` instead of prompting for approval. Read-only
+ * tools can opt out so a sandbox denial does not propose running them
+ * unsandboxed.
+ */
+export function escalateOnFailure(tool: Tool): boolean {
+  const v = (tool as Tool & ToolSandboxCapabilities).escalateOnFailure;
+  if (v === undefined) return true;
+  if (typeof v === "function") return v();
+  return v;
+}
+
+/**
+ * Port of codex `Approvable::wants_no_sandbox_approval(policy)`
+ * (sandboxing.rs:290-298). Decides whether the runtime should ASK for
+ * approval to retry without the sandbox after a `SandboxDeniedError`.
+ *
+ * Codex table:
+ *   - `OnFailure`                         → true
+ *   - `UnlessTrusted` (= "untrusted")     → true
+ *   - `Never`                             → false
+ *   - `OnRequest`                         → false
+ *   - `Granular(config)`                  → `config.sandbox_approval`
+ *
+ * A tool may override by exposing a `wantsNoSandboxApproval` field on
+ * its object. When absent, the default table above applies.
+ */
+export function wantsNoSandboxApproval(
+  tool: Tool,
+  policy: ApprovalPolicy,
+  granular?: GranularApprovalConfig,
+): boolean {
+  const override = (tool as Tool & ToolSandboxCapabilities).wantsNoSandboxApproval;
+  if (override !== undefined) {
+    if (typeof override === "function") return override(policy, granular);
+    return override;
+  }
+  switch (policy) {
+    case "on_failure":
+    case "untrusted":
+      return true;
+    case "never":
+    case "on_request":
+      return false;
+    case "granular":
+      return granular?.sandbox_approval === true;
+    default: {
+      const _exhaustive: never = policy;
+      void _exhaustive;
+      return false;
+    }
+  }
 }
 
 export class ApprovalRejectedError extends Error {
@@ -694,7 +847,20 @@ export async function orchestrateToolCall<T>(
 ): Promise<T> {
   const approvalSignal = resolveApprovalSignal(opts);
   // Step 1 — approval classification.
-  const toolOverride = classifyToolApproval(opts.tool, {
+  //
+  // Codex parity (orchestrator.rs:124-127):
+  //
+  //   let requirement = tool.exec_approval_requirement(req)
+  //     .unwrap_or_else(|| default_exec_approval_requirement(policy, fs));
+  //
+  // The tool-side classifier is the FALLBACK shape. When it returns a
+  // concrete `Skip` or `Forbidden`, codex never upgrades that into
+  // `NeedsApproval` by re-running the default table. AgenC previously
+  // did exactly that upgrade for `skip` with `bypassSandbox=false`,
+  // which could promote a read-only tool under `granular + restricted`
+  // to `needs_approval` even though `classifyToolApproval` had already
+  // decided to skip. That upgrade is removed — `skip` is now final.
+  const toolRequirement = classifyToolApproval(opts.tool, {
     approvalPolicy: opts.approvalPolicy,
     sandboxMode: opts.sandboxMode,
     ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
@@ -703,28 +869,18 @@ export async function orchestrateToolCall<T>(
       : {}),
     ...(opts.toolAllowlist !== undefined ? { toolAllowlist: opts.toolAllowlist } : {}),
     ...(opts.toolDenylist !== undefined ? { toolDenylist: opts.toolDenylist } : {}),
+    ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
   });
 
-  let requirement = toolOverride;
-  // If the tool classifier returned `skip` without a sandbox bypass and
-  // the approval policy does not explicitly opt the tool in/out, fall
-  // through to the fs-policy-aware default (codex parity).
-  if (
-    toolOverride.kind === "skip" &&
-    !toolOverride.bypassSandbox &&
-    opts.toolAllowlist?.has(opts.tool.name) !== true
-  ) {
-    const fsKind = sandboxKindFromMode(opts.sandboxMode);
-    requirement = defaultExecApprovalRequirement(opts.approvalPolicy, fsKind);
-  }
+  const requirement = toolRequirement;
 
   if (requirement.kind === "forbidden") {
     throw new ApprovalRejectedError(requirement.reason, { kind: "denied" });
   }
 
   let alreadyApproved = false;
-  let bypassSandbox =
-    toolOverride.kind === "skip" ? toolOverride.bypassSandbox : false;
+  const bypassSandbox =
+    toolRequirement.kind === "skip" ? toolRequirement.bypassSandbox : false;
 
   if (requirement.kind === "needs_approval") {
     const approvalCtx: ApprovalCtx = {
@@ -769,6 +925,27 @@ export async function orchestrateToolCall<T>(
     });
   } catch (err) {
     if (!isSandboxDeniedError(err)) throw err;
+
+    // Codex parity (orchestrator.rs:253-258):
+    //   if !tool.escalate_on_failure() {
+    //     return Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied…)));
+    //   }
+    // Read-only or otherwise-opting-out tools bail with the original
+    // sandbox denial instead of requesting approval to rerun unsandboxed.
+    if (!escalateOnFailure(opts.tool)) {
+      throw err;
+    }
+
+    // Codex parity (orchestrator.rs:259-279):
+    //   if !tool.wants_no_sandbox_approval(approval_policy) { … }
+    // For `AskForApproval::Never` / `AskForApproval::OnRequest` (without
+    // network-approval context, which is not plumbed yet), codex
+    // surfaces the original `SandboxErr::Denied` and never prompts. Only
+    // policies that want the approval path continue into the escalation
+    // pipeline below.
+    if (!wantsNoSandboxApproval(opts.tool, opts.approvalPolicy, opts.granular)) {
+      throw err;
+    }
 
     // Step 3 — approval-gated escalation to sandbox=off.
     if (!alreadyApproved) {

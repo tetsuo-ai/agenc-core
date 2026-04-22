@@ -1,12 +1,22 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { join, resolve as resolvePath } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   STALE_WORKTREE_AGE_MS,
+  cleanupStaleAgentWorktrees,
   findGitRoot,
   getOrCreateWorktree,
+  hasWorktreeChanges,
   isWorktreeStale,
   removeAgentWorktree,
   validateWorktreeSlug,
@@ -25,6 +35,36 @@ function createLinkedWorktree(
   writeFileSync(join(worktreeRoot, ".git"), `gitdir: ${worktreeGitDir}\n`);
   writeFileSync(join(worktreeGitDir, "commondir"), "../..\n");
   writeFileSync(join(worktreeGitDir, "gitdir"), join(worktreeRoot, ".git"));
+}
+
+function initRepo(repo: string, remote?: string): void {
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "tests@example.com"], {
+    cwd: repo,
+  });
+  execFileSync("git", ["config", "user.name", "Tests"], { cwd: repo });
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "README.md"), "root\n");
+  writeFileSync(join(repo, "src", "index.ts"), "export const ok = true;\n");
+  execFileSync("git", ["add", "README.md", "src/index.ts"], { cwd: repo });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+
+  if (!remote) {
+    return;
+  }
+
+  execFileSync("git", ["init", "--bare", remote]);
+  execFileSync("git", ["remote", "add", "origin", remote], { cwd: repo });
+  execFileSync("git", ["push", "-u", "origin", "HEAD"], { cwd: repo });
+}
+
+function worktreeGitDir(worktreePath: string): string {
+  const gitFile = readFileSync(join(worktreePath, ".git"), "utf8").trim();
+  if (!gitFile.startsWith("gitdir:")) {
+    throw new Error(`expected linked-worktree .git file, got: ${gitFile}`);
+  }
+  return resolvePath(worktreePath, gitFile.slice("gitdir:".length).trim());
 }
 
 describe("validateWorktreeSlug", () => {
@@ -108,6 +148,27 @@ describe("getOrCreateWorktree", () => {
       }),
     ).rejects.toThrow(/already belongs to/);
   });
+
+  it("refreshes mtime when resuming an existing worktree", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+
+    const first = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-resume",
+    });
+    const old = (Date.now() - STALE_WORKTREE_AGE_MS - 1000) / 1000;
+    utimesSync(first.path, old, old);
+    expect(isWorktreeStale(first.path)).toBe(true);
+
+    const resumed = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-resume",
+    });
+
+    expect(resumed.created).toBe(false);
+    expect(isWorktreeStale(first.path)).toBe(false);
+  });
 });
 
 describe("removeAgentWorktree", () => {
@@ -123,13 +184,7 @@ describe("removeAgentWorktree", () => {
 
   it("fails closed when git rejects the worktree remove", async () => {
     const repo = join(tmpRoot, "repo");
-    mkdirSync(repo, { recursive: true });
-    execFileSync("git", ["init"], { cwd: repo });
-    execFileSync("git", ["config", "user.email", "tests@example.com"], { cwd: repo });
-    execFileSync("git", ["config", "user.name", "Tests"], { cwd: repo });
-    writeFileSync(join(repo, "README.md"), "root\n");
-    execFileSync("git", ["add", "README.md"], { cwd: repo });
-    execFileSync("git", ["commit", "-m", "init"], { cwd: repo });
+    initRepo(repo);
 
     await expect(
       removeAgentWorktree({
@@ -138,6 +193,118 @@ describe("removeAgentWorktree", () => {
         gitRoot: repo,
       }),
     ).rejects.toThrow(/git worktree remove failed/i);
+  });
+
+  it("checks linked-worktree sparse state before failing a remove", async () => {
+    const repo = join(tmpRoot, "repo");
+    const wrongRepo = join(tmpRoot, "wrong-repo");
+    initRepo(repo);
+    initRepo(wrongRepo);
+
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-sparse",
+    });
+    execFileSync("git", ["-C", handle.path, "sparse-checkout", "init", "--cone"]);
+    execFileSync("git", ["-C", handle.path, "sparse-checkout", "set", "src"]);
+
+    const sparseFile = join(
+      worktreeGitDir(handle.path),
+      "info",
+      "sparse-checkout",
+    );
+    expect(existsSync(sparseFile)).toBe(true);
+
+    await expect(
+      removeAgentWorktree({
+        path: handle.path,
+        branch: handle.branch,
+        gitRoot: wrongRepo,
+      }),
+    ).rejects.toThrow(/git worktree remove failed/i);
+
+    const sparseConfig = spawnSync(
+      "git",
+      ["-C", handle.path, "config", "--worktree", "--get", "core.sparseCheckout"],
+      { encoding: "utf8" },
+    );
+    expect(sparseConfig.stdout.trim()).not.toBe("true");
+  });
+});
+
+describe("hasWorktreeChanges", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "agenc-worktree-probe-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("throws when git cannot verify the baseline commit", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-probe",
+    });
+
+    await expect(
+      hasWorktreeChanges({
+        path: handle.path,
+        baseCommit: "not-a-commit",
+      }),
+    ).rejects.toThrow(/git rev-list failed/i);
+  });
+});
+
+describe("cleanupStaleAgentWorktrees", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "agenc-worktree-cleanup-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it("removes stale clean agent worktrees whose HEAD is already on a remote", async () => {
+    const repo = join(tmpRoot, "repo");
+    const remote = join(tmpRoot, "remote.git");
+    initRepo(repo, remote);
+
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "agent-cleanup",
+    });
+    const old = (Date.now() - STALE_WORKTREE_AGE_MS - 1000) / 1000;
+    utimesSync(handle.path, old, old);
+
+    await expect(
+      cleanupStaleAgentWorktrees({ gitRoot: repo }),
+    ).resolves.toBe(1);
+    expect(existsSync(handle.path)).toBe(false);
+  });
+
+  it("skips stale non-ephemeral worktrees", async () => {
+    const repo = join(tmpRoot, "repo");
+    const remote = join(tmpRoot, "remote.git");
+    initRepo(repo, remote);
+
+    const handle = await getOrCreateWorktree({
+      gitRoot: repo,
+      slug: "feature-keep",
+    });
+    const old = (Date.now() - STALE_WORKTREE_AGE_MS - 1000) / 1000;
+    utimesSync(handle.path, old, old);
+
+    await expect(
+      cleanupStaleAgentWorktrees({ gitRoot: repo }),
+    ).resolves.toBe(0);
+    expect(existsSync(handle.path)).toBe(true);
   });
 });
 

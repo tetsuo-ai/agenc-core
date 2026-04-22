@@ -91,6 +91,11 @@ export async function continuationNudge(
 
   injectNudgeMessage(state);
   state.continuationNudgeCount += 1;
+  state.maxOutputTokensRecoveryCount = 0;
+  state.hasAttemptedReactiveCompact = false;
+  state.maxOutputTokensOverride = undefined;
+  state.pendingToolUseSummary = undefined;
+  state.stopHookActive = undefined;
   state.transition = { reason: "continuation_nudge" };
   return state;
 }

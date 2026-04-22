@@ -19,6 +19,12 @@ import {
   type PreparedResponsesContinuationRequest,
   type ResponsesContinuationState,
 } from "./shape-request.js";
+import {
+  LLMCaptivePortalError,
+  LLMCertificateError,
+  extractTlsValidationDetails,
+  type TlsValidationDetails,
+} from "./errors.js";
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
@@ -164,8 +170,9 @@ export class ProviderHttpError extends Error {
 
 interface ProviderTransportError {
   readonly message: string;
-  readonly kind: "network" | "timeout" | "abort" | "unknown";
+  readonly kind: "network" | "timeout" | "abort" | "tls_cert" | "unknown";
   readonly cause?: unknown;
+  readonly tlsDetails?: TlsValidationDetails;
 }
 
 type NormalizedRetryBudget = Required<ProviderHttpRetryBudget>;
@@ -327,6 +334,23 @@ function readErrorBodyText(contentType: string, text: string): unknown {
   return text;
 }
 
+function isHtmlContentType(contentType: string): boolean {
+  return /\btext\/html\b/i.test(contentType);
+}
+
+function throwCaptivePortalError(args: {
+  providerName: string;
+  response: Response;
+  expected: "json" | "sse";
+}): never {
+  throw new LLMCaptivePortalError(args.providerName, {
+    contentType: args.response.headers.get("content-type") ?? undefined,
+    statusCode: args.response.status,
+    url: args.response.url,
+    expected: args.expected,
+  });
+}
+
 async function readErrorBody(response: Response): Promise<unknown> {
   try {
     const contentType = response.headers.get("content-type") ?? "";
@@ -393,6 +417,15 @@ function normalizeTransportError(error: unknown): ProviderTransportError {
     readonly cause?: unknown;
   };
   const message = candidate?.message ?? String(error);
+  const tlsDetails = extractTlsValidationDetails(error);
+  if (tlsDetails) {
+    return {
+      message: tlsDetails.message,
+      kind: "tls_cert",
+      cause: error,
+      tlsDetails,
+    };
+  }
   if (
     candidate?.name === "AbortError" ||
     candidate?.code === "ABORT_ERR" ||
@@ -430,8 +463,16 @@ function shouldRetryTransportError(
   retryBudget: NormalizedRetryBudget,
 ): boolean {
   if (error.kind === "abort") return false;
+  if (error.kind === "tls_cert") return false;
   if (!retryBudget.retryTransport) return false;
   return error.kind === "network" || error.kind === "timeout";
+}
+
+function shouldRetryTlsCertificateError(
+  error: ProviderTransportError,
+  attempt: number,
+): boolean {
+  return error.kind === "tls_cert" && attempt === 0;
 }
 
 function resolveRetryDelayMs(
@@ -455,6 +496,18 @@ function abortReasonToError(reason: unknown): Error {
 
 function isStreamIdleTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.message === "provider stream timed out";
+}
+
+function materializeTransportError(
+  providerName: string,
+  error: ProviderTransportError,
+): Error {
+  if (error.kind === "tls_cert" && error.tlsDetails) {
+    return new LLMCertificateError(providerName, error.tlsDetails);
+  }
+  return error.cause instanceof Error
+    ? error.cause
+    : new Error(error.message);
 }
 
 async function readWithAbort(
@@ -672,6 +725,13 @@ export class ProviderHttpClientSession {
     const prepared = this.prepareRequest(options);
     const response = await this.requestWithRetry(prepared.options, "request");
     const contentType = response.headers.get("content-type") ?? "";
+    if (isHtmlContentType(contentType)) {
+      throwCaptivePortalError({
+        providerName: this.config.providerName,
+        response,
+        expected: "json",
+      });
+    }
     const text = await response.text();
     const data = contentType.includes("application/json")
       ? (text.length > 0 ? (JSON.parse(text) as T) : (undefined as T))
@@ -731,6 +791,16 @@ export class ProviderHttpClientSession {
       retryBudget,
       0,
     );
+    const initialContentType =
+      initialAttempt.response.headers.get("content-type") ?? "";
+    if (isHtmlContentType(initialContentType)) {
+      initialAttempt.attemptState.cleanup();
+      throwCaptivePortalError({
+        providerName: this.config.providerName,
+        response: initialAttempt.response,
+        expected: "sse",
+      });
+    }
     const session = this;
     let decoder = new TextDecoder();
     let sseBuffer = "";
@@ -794,9 +864,19 @@ export class ProviderHttpClientSession {
                 retryBudget,
                 currentAttempt.attempt + 1,
               );
+              const retryContentType =
+                activeAttempt.response.headers.get("content-type") ?? "";
+              if (isHtmlContentType(retryContentType)) {
+                activeAttempt.attemptState.cleanup();
+                throwCaptivePortalError({
+                  providerName: session.config.providerName,
+                  response: activeAttempt.response,
+                  expected: "sse",
+                });
+              }
               continue;
             }
-            throw error;
+            throw materializeTransportError(session.config.providerName, transport);
           } finally {
             watchdog.stop();
             reader.releaseLock();
@@ -820,7 +900,11 @@ export class ProviderHttpClientSession {
     );
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options.timeoutMs);
 
-    for (let attempt = 0; attempt <= retryBudget.maxRetries; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt <= retryBudget.maxRetries + 1;
+      attempt += 1
+    ) {
       const attemptState = createAttemptAbortState(options.signal, timeoutMs);
       try {
         const response = await this.fetchResponse(
@@ -854,8 +938,9 @@ export class ProviderHttpClientSession {
         }
         const transport = normalizeTransportError(error);
         if (
-          attempt < retryBudget.maxRetries &&
-          shouldRetryTransportError(transport, retryBudget)
+          (attempt < retryBudget.maxRetries &&
+            shouldRetryTransportError(transport, retryBudget)) ||
+          shouldRetryTlsCertificateError(transport, attempt)
         ) {
           await sleep(
             resolveRetryDelayMs(retryBudget, attempt + 1),
@@ -863,7 +948,7 @@ export class ProviderHttpClientSession {
           );
           continue;
         }
-        throw error;
+        throw materializeTransportError(this.config.providerName, transport);
       }
     }
 
@@ -877,7 +962,7 @@ export class ProviderHttpClientSession {
   ): Promise<PreparedStreamAttempt> {
     for (
       let attempt = initialAttempt;
-      attempt <= retryBudget.maxRetries;
+      attempt <= retryBudget.maxRetries + 1;
       attempt += 1
     ) {
       const attemptState = createAttemptAbortState(options.signal, undefined);
@@ -920,8 +1005,9 @@ export class ProviderHttpClientSession {
         }
         const transport = normalizeTransportError(error);
         if (
-          attempt < retryBudget.maxRetries &&
-          shouldRetryTransportError(transport, retryBudget)
+          (attempt < retryBudget.maxRetries &&
+            shouldRetryTransportError(transport, retryBudget)) ||
+          shouldRetryTlsCertificateError(transport, attempt)
         ) {
           await sleep(
             resolveRetryDelayMs(retryBudget, attempt + 1),
@@ -929,7 +1015,7 @@ export class ProviderHttpClientSession {
           );
           continue;
         }
-        throw error;
+        throw materializeTransportError(this.config.providerName, transport);
       }
     }
 

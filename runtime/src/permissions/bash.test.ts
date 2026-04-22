@@ -317,6 +317,39 @@ describe("bashToolHasPermission", () => {
     expect(result.behavior).toBe("allow");
   });
 
+  test("allow rule with wildcard glob matches variable command suffixes", async () => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["Bash(git * status)"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const result = await bashToolHasPermission(
+      { command: "git origin status" },
+      evalCtx,
+    );
+    expect(result.behavior).toBe("allow");
+  });
+
+  test("wildcard rules honor escaped literal asterisks", async () => {
+    const ctx = makeCtx({
+      alwaysAllowRules: {
+        userSettings: ["Bash(echo \\*)"],
+      },
+    });
+    const evalCtx = makeEvaluatorCtx(ctx);
+    const allowed = await bashToolHasPermission(
+      { command: "echo *" },
+      evalCtx,
+    );
+    const asked = await bashToolHasPermission(
+      { command: "echo hello" },
+      evalCtx,
+    );
+    expect(allowed.behavior).toBe("allow");
+    expect(asked.behavior).toBe("ask");
+  });
+
   test("deny rule by prefix blocks matching command", async () => {
     const ctx = makeCtx({
       alwaysDenyRules: {

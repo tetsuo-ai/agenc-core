@@ -12,6 +12,28 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
+vi.mock("../llm/compact/post-compact-cleanup.js", async () => {
+  const incremental = await import("../llm/grok/incremental.js");
+  return {
+    runPostCompactCleanup: vi.fn(() => incremental.clearAllResponseIds()),
+  };
+});
+vi.mock("axios", () => {
+  const axiosLike = {
+    create: vi.fn(() => axiosLike),
+    get: vi.fn(),
+    post: vi.fn(),
+    interceptors: {
+      request: { use: vi.fn() },
+      response: { use: vi.fn() },
+    },
+  };
+  return {
+    default: axiosLike,
+    create: axiosLike.create,
+    isAxiosError: () => false,
+  };
+});
 import { EventLog, type Event } from "./event-log.js";
 import {
   type AssistantMessageStreamParsersLike,
@@ -504,12 +526,24 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     };
     (session as unknown as { state: unknown }).state = {
       unsafePeek: () => ({ totalTokenUsage: 0 }),
+      with: async (fn: (value: { totalTokenUsage: number; history?: unknown[] }) => void) =>
+        fn({ totalTokenUsage: 0, history: [] }),
     };
     (session as unknown as { abortController: AbortController }).abortController =
       new AbortController();
     (session as unknown as { pendingProviderSwitch: null }).pendingProviderSwitch =
       null;
     (session as unknown as { budgetTracker: null }).budgetTracker = null;
+    (
+      session as unknown as {
+        hasPendingInput: () => boolean;
+      }
+    ).hasPendingInput = () => false;
+    (
+      session as unknown as {
+        bindProviderConversation: () => void;
+      }
+    ).bindProviderConversation = () => {};
 
     const ctx = {
       subId: "turn-1",
@@ -562,8 +596,9 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     expect(call).toBeDefined();
     expect(typeof call!.attempt).toBe("function");
     expect(typeof call!.isTransient).toBe("function");
-    // maxAttempts should match reconnection module default (5).
-    expect(call!.maxAttempts).toBe(5);
+    // run-turn should rely on the reconnection helper's default
+    // 10-minute budget rather than pinning the old 5-attempt policy.
+    expect(call!.maxAttempts).toBeUndefined();
     spy.mockRestore();
   });
 

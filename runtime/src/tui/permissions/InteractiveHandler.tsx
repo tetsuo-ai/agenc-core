@@ -29,6 +29,8 @@
 import React, { useEffect, useRef, type ReactNode } from "react";
 
 import type { Event } from "../../session/event-log.js";
+import { classifyYoloAction } from "../../permissions/classifier.js";
+import { createEmptyToolPermissionContext } from "../../permissions/types.js";
 import {
   ApprovalOverlay,
   type ApprovalDecision,
@@ -114,6 +116,7 @@ export interface InteractiveHandlerProps {
   readonly overlayContext: OverlayContextLike;
   /** Override for the grace window length. Defaults to 200 ms. */
   readonly graceMs?: number;
+  readonly classifier?: InteractiveRequestClassifier;
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -121,6 +124,29 @@ export interface InteractiveHandlerProps {
 // ───────────────────────────────────────────────────────────────────────
 
 const DEFAULT_GRACE_MS = 200;
+const STALE_WATCH_INTERVAL_MS = 50;
+
+export type InteractiveRequestClassifier = (
+  request: InteractivePermissionRequest,
+  session: SessionLike,
+  signal: AbortSignal,
+) => Promise<ResolverPayload | null>;
+
+function getActiveTurnId(session: SessionLike): string | null {
+  const turnId = session.activeTurn?.unsafePeek()?.turnId;
+  return typeof turnId === "string" && turnId.length > 0 ? turnId : null;
+}
+
+function getStaleState(
+  request: InteractivePermissionRequest,
+  session: SessionLike,
+): { readonly stale: boolean; readonly actualTurnId?: string } {
+  const currentTurnId = getActiveTurnId(session);
+  if (currentTurnId === null || currentTurnId === request.turnId) {
+    return { stale: false };
+  }
+  return { stale: true, actualTurnId: currentTurnId };
+}
 
 function emitSessionWarning(
   session: SessionLike,
@@ -154,6 +180,39 @@ function emitSessionWarning(
   });
 }
 
+async function defaultInteractiveClassifier(
+  request: InteractivePermissionRequest,
+  _session: SessionLike,
+  signal: AbortSignal,
+): Promise<ResolverPayload | null> {
+  const result = await classifyYoloAction({
+    messages: [],
+    action: {
+      toolName: request.toolName,
+      input: request.toolInput,
+    },
+    tools: [],
+    permissionContext: createEmptyToolPermissionContext(),
+    signal,
+  });
+
+  if (result.unavailable === true) {
+    return null;
+  }
+
+  if (result.shouldBlock) {
+    return {
+      behavior: "deny",
+      source: `classifier:${result.reason}`,
+    };
+  }
+
+  return {
+    behavior: "allow",
+    source: `classifier:${result.reason}`,
+  };
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // resolveWithGrace — exported for tests
 // ───────────────────────────────────────────────────────────────────────
@@ -175,12 +234,8 @@ export async function resolveWithGrace(
   _opts?: { readonly graceMs?: number },
 ): Promise<ResolveWithGraceOutcome> {
   // ── I-44 stale-turn drop ────────────────────────────────────────────
-  const currentTurnId = session.activeTurn?.unsafePeek()?.turnId;
-  if (
-    typeof currentTurnId === "string" &&
-    currentTurnId.length > 0 &&
-    currentTurnId !== request.turnId
-  ) {
+  const stale = getStaleState(request, session);
+  if (stale.stale) {
     if (request.resolveOnce.claim({
       behavior: "deny",
       source: "stale_pending_dropped",
@@ -193,7 +248,7 @@ export async function resolveWithGrace(
           requestId: request.requestId,
           toolName: request.toolName,
           expectedTurnId: request.turnId,
-          actualTurnId: currentTurnId,
+          actualTurnId: stale.actualTurnId,
         },
       );
     }
@@ -211,6 +266,7 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
   session,
   overlayContext,
   graceMs = DEFAULT_GRACE_MS,
+  classifier = defaultInteractiveClassifier,
 }) => {
   const appState = useOptionalAgenCAppState();
   // Track the overlay disposer so unmount can pop the modal if still
@@ -221,6 +277,117 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
 
   useEffect(() => {
     cancelledRef.current = false;
+    let graceExpired = false;
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
+    let staleTimer: ReturnType<typeof setInterval> | null = null;
+
+    const disposeOverlay = (): void => {
+      if (disposeRef.current) {
+        try {
+          disposeRef.current();
+        } finally {
+          disposeRef.current = null;
+        }
+      }
+    };
+
+    const removeFromQueue = (): void => {
+      appState?.permissionQueueOps.remove(request.requestId);
+    };
+
+    const clearBackgroundTimers = (): void => {
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
+      }
+      if (staleTimer) {
+        clearInterval(staleTimer);
+        staleTimer = null;
+      }
+    };
+
+    const settleIfFresh = (
+      payload: ResolverPayload,
+      phase: "user" | "classifier" | "stale",
+    ): boolean => {
+      const stale = getStaleState(request, session);
+      if (stale.stale) {
+        if (request.resolveOnce.claim({
+          behavior: "deny",
+          source: "stale_pending_dropped",
+        })) {
+          clearBackgroundTimers();
+          disposeOverlay();
+          removeFromQueue();
+          emitSessionWarning(
+            session,
+            "stale_pending_dropped",
+            `dropped stale approval request ${request.requestId} after modal mount`,
+            {
+              requestId: request.requestId,
+              toolName: request.toolName,
+              expectedTurnId: request.turnId,
+              actualTurnId: stale.actualTurnId,
+              phase,
+            },
+          );
+          return true;
+        }
+        return false;
+      }
+
+      if (!request.resolveOnce.claim(payload)) {
+        return false;
+      }
+
+      clearBackgroundTimers();
+      disposeOverlay();
+      removeFromQueue();
+
+      if (
+        phase === "user" &&
+        payload.behavior === "allow-session" &&
+        payload.addRule === true
+      ) {
+        try {
+          session.addPermissionRule?.({
+            toolName: request.toolName,
+            requestId: request.requestId,
+          });
+        } catch {
+          // Rule persistence failures must never block claiming the decision.
+        }
+      }
+
+      return true;
+    };
+
+    const dropIfStale = (phase: "user" | "classifier" | "stale"): boolean => {
+      const stale = getStaleState(request, session);
+      if (!stale.stale) return false;
+      if (request.resolveOnce.claim({
+        behavior: "deny",
+        source: "stale_pending_dropped",
+      })) {
+        clearBackgroundTimers();
+        disposeOverlay();
+        removeFromQueue();
+        emitSessionWarning(
+          session,
+          "stale_pending_dropped",
+          `dropped stale approval request ${request.requestId} after modal mount`,
+          {
+            requestId: request.requestId,
+            toolName: request.toolName,
+            expectedTurnId: request.turnId,
+            actualTurnId: stale.actualTurnId,
+            phase,
+          },
+        );
+        return true;
+      }
+      return false;
+    };
 
     // Run the pre-modal phase asynchronously. This effect deliberately
     // returns the sync cleanup function below; the async body captures
@@ -240,39 +407,11 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
       const workspacePath = session.cwd ?? "";
 
       const handleResolve = (decision: ApprovalDecision): void => {
-        // Pop the overlay first so the UI is gone before any downstream
-        // observers see the decision fire.
-        if (disposeRef.current) {
-          try {
-            disposeRef.current();
-          } finally {
-            disposeRef.current = null;
-          }
-        }
-
-        appState?.permissionQueueOps.remove(request.requestId);
-
-        if (
-          decision.behavior === "allow-session" &&
-          decision.addRule === true
-        ) {
-          try {
-            session.addPermissionRule?.({
-              toolName: request.toolName,
-              requestId: request.requestId,
-            });
-          } catch {
-            // Rule persistence failures must never block claiming the
-            // decision. Higher layers are responsible for their own
-            // failure reporting.
-          }
-        }
-
-        request.resolveOnce.claim({
+        settleIfFresh({
           behavior: decision.behavior,
           addRule: decision.addRule,
           source: "user",
-        } as ResolverPayload);
+        } as ResolverPayload, "user");
       };
 
       disposeRef.current = overlayContext.push(
@@ -289,6 +428,22 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
           abortSignal={abortSignal}
         />,
       );
+
+      graceTimer = setTimeout(() => {
+        graceExpired = true;
+      }, Math.max(0, graceMs));
+
+      staleTimer = setInterval(() => {
+        if (cancelledRef.current || request.resolveOnce.isResolved()) return;
+        dropIfStale("stale");
+      }, STALE_WATCH_INTERVAL_MS);
+
+      void (async () => {
+        const classifierDecision = await classifier(request, session, abortSignal);
+        if (cancelledRef.current || request.resolveOnce.isResolved()) return;
+        if (graceExpired || classifierDecision === null) return;
+        settleIfFresh(classifierDecision, "classifier");
+      })();
     })();
 
     return () => {
@@ -296,21 +451,15 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
       // any mounted overlay. If the request is still unresolved, claim
       // `abort` so evaluator awaiters unstick.
       cancelledRef.current = true;
-      if (disposeRef.current) {
-        try {
-          disposeRef.current();
-        } catch {
-          // Ignore disposer errors during unmount; nothing we can do.
-        }
-        disposeRef.current = null;
-      }
+      clearBackgroundTimers();
+      disposeOverlay();
       if (!request.resolveOnce.isResolved()) {
         request.resolveOnce.claim({
           behavior: "abort",
           source: "component_unmounted",
         });
       }
-      appState?.permissionQueueOps.remove(request.requestId);
+      removeFromQueue();
     };
     // `request` and `session` are treated as stable for the lifetime of a
     // single mount — the orchestrator spawns a fresh handler per pending

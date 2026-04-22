@@ -1,16 +1,127 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { bootstrapLocalRuntimeSession } from "./bootstrap.js";
+vi.mock("../services/api/sessionIngress.js", () => ({
+  appendSessionLog: vi.fn(async () => true),
+  getSessionLogs: vi.fn(async () => []),
+  getSessionLogsViaOAuth: vi.fn(async () => []),
+  getTeleportEvents: vi.fn(async () => ({ data: [] })),
+  clearSession: vi.fn(),
+  clearAllSessions: vi.fn(),
+}));
+
+import {
+  bootstrapLocalRuntimeSession,
+  resolveStartupSelection,
+} from "./bootstrap.js";
+import { defaultConfig, mergeConfigs } from "../config/index.js";
 import type { Tool } from "../tools/types.js";
 import { Session } from "../session/session.js";
+import { getProjectDir } from "../session/session-store.js";
 import { getCurrentRuntimeSession } from "../utils/currentRuntimeSession.js";
+import { flushSessionStorage } from "../utils/sessionStorage.js";
+import {
+  getContextCollapseCommits,
+  getContextCollapseSnapshot,
+  resetContextCollapse,
+  restoreContextCollapseState,
+} from "../services/contextCollapse/index.js";
+
+describe("resolveStartupSelection", () => {
+  it("applies CLI provider/model/profile ahead of env and config", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      model: "grok-3",
+      model_provider: "grok",
+      profiles: {
+        strict: {
+          model: "claude-opus-4-7",
+          model_provider: "anthropic",
+          approval_policy: "never",
+        },
+        fast: {
+          model: "gpt-5",
+          model_provider: "openai",
+          sandbox_mode: "read-only",
+        },
+      },
+    });
+
+    const resolved = resolveStartupSelection({
+      config,
+      env: {
+        AGENC_PROVIDER: "anthropic",
+        AGENC_MODEL: "claude-opus-4-7",
+        AGENC_PROFILE: "strict",
+        OPENAI_API_KEY: "openai-env-key",
+      },
+      argv: [
+        "node",
+        "agenc",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-5",
+        "--profile",
+        "fast",
+      ],
+    });
+
+    expect(resolved.provider).toBe("openai");
+    expect(resolved.model).toBe("gpt-5");
+    expect(resolved.profileName).toBe("fast");
+    expect(resolved.config.approval_policy).toBe("on-request");
+    expect(resolved.config.sandbox_mode).toBe("read-only");
+    expect(resolved.apiKey).toBe("openai-env-key");
+  });
+
+  it("applies env profile/provider/model ahead of base config", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      model: "grok-3",
+      model_provider: "grok",
+      profiles: {
+        remote: {
+          model: "gpt-5",
+          model_provider: "openai",
+        },
+      },
+    });
+
+    const resolved = resolveStartupSelection({
+      config,
+      env: {
+        AGENC_PROFILE: "remote",
+        OPENAI_API_KEY: "openai-env-key",
+      },
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.profileName).toBe("remote");
+    expect(resolved.provider).toBe("openai");
+    expect(resolved.model).toBe("gpt-5");
+    expect(resolved.apiKey).toBe("openai-env-key");
+  });
+
+  it("uses provider defaults when only a provider is selected", () => {
+    const resolved = resolveStartupSelection({
+      config: defaultConfig(),
+      env: {
+        AGENC_PROVIDER: "openai",
+        OPENAI_API_KEY: "openai-env-key",
+      },
+      argv: ["node", "agenc"],
+    });
+
+    expect(resolved.provider).toBe("openai");
+    expect(resolved.model).toBe("gpt-5");
+  });
+});
 
 describe("bootstrapLocalRuntimeSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    resetContextCollapse();
   });
 
   it("builds the shared local bootstrap contract and forwards registry customizations", async () => {
@@ -135,6 +246,64 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       await rm(home, { recursive: true, force: true });
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves provider-specific startup auth from the selected provider instead of forcing xAI", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_PROVIDER: "openai",
+          OPENAI_API_KEY: "openai-test-key",
+          HOME: home,
+        },
+        argv: ["node", "agenc", "--provider", "openai"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("openai");
+      expect(boot.model).toBe("gpt-5");
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "openai",
+        expect.objectContaining({
+          apiKey: "openai-test-key",
+          model: "gpt-5",
+          tools: expect.any(Array),
+        }),
+      );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
     }
   });
 
@@ -314,9 +483,63 @@ describe("bootstrapLocalRuntimeSession", () => {
         id: first.session.nextInternalSubId(),
         msg: { type: "agent_message", payload: { message: "hi" } },
       });
+      await flushSessionStorage();
       first.rolloutStore.flushDurable();
       await first.shutdown();
       firstShutdown = null;
+
+      const transcriptPath = join(
+        getProjectDir(workspace),
+        "conv-resume-hydrated.jsonl",
+      );
+      await mkdir(getProjectDir(workspace), { recursive: true });
+      await appendFile(
+        transcriptPath,
+        [
+          JSON.stringify({
+            type: "marble-origami-commit",
+            sessionId: "conv-resume-hydrated",
+            collapseId: "0000000000000007",
+            summaryUuid: "resume-summary-uuid",
+            summaryContent:
+              '<collapsed id="0000000000000007">Earlier conversation collapsed.</collapsed>',
+            summary: "Earlier conversation collapsed.",
+            firstArchivedUuid: "resume-first-archived",
+            lastArchivedUuid: "resume-last-archived",
+          }),
+          JSON.stringify({
+            type: "marble-origami-snapshot",
+            sessionId: "conv-resume-hydrated",
+            staged: [],
+            armed: true,
+            lastSpawnTokens: 42,
+          }),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+
+      restoreContextCollapseState(
+        [
+          {
+            type: "marble-origami-commit",
+            sessionId: "stale-session" as never,
+            collapseId: "0000000000009999",
+            summaryUuid: "stale-summary-uuid",
+            summaryContent:
+              '<collapsed id="0000000000009999">stale in-memory state</collapsed>',
+            summary: "stale in-memory state",
+            firstArchivedUuid: "stale-first",
+            lastArchivedUuid: "stale-last",
+          },
+        ],
+        {
+          type: "marble-origami-snapshot",
+          sessionId: "stale-session" as never,
+          staged: [],
+          armed: false,
+          lastSpawnTokens: 7,
+        },
+      );
 
       const resumed = await bootstrapLocalRuntimeSession({
         apiKey: "test-key",
@@ -370,11 +593,94 @@ describe("bootstrapLocalRuntimeSession", () => {
             item.payload.msg.payload.initialMessages.length >= 2,
         ),
       ).toBe(true);
+      expect(getContextCollapseCommits()).toEqual([
+        expect.objectContaining({
+          collapseId: "0000000000000007",
+          summaryUuid: "resume-summary-uuid",
+          firstArchivedUuid: "resume-first-archived",
+          lastArchivedUuid: "resume-last-archived",
+        }),
+      ]);
+      expect(getContextCollapseSnapshot()).toEqual(
+        expect.objectContaining({
+          armed: true,
+          lastSpawnTokens: 42,
+        }),
+      );
     } finally {
       await secondShutdown?.().catch(() => {
         /* best effort */
       });
       await firstShutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("clears stale context-collapse state on fresh bootstrap without resume", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    restoreContextCollapseState(
+      [
+        {
+          type: "marble-origami-commit",
+          sessionId: "stale-session" as never,
+          collapseId: "0000000000009999",
+          summaryUuid: "stale-summary-uuid",
+          summaryContent:
+            '<collapsed id="0000000000009999">stale in-memory state</collapsed>',
+          summary: "stale in-memory state",
+          firstArchivedUuid: "stale-first",
+          lastArchivedUuid: "stale-last",
+        },
+      ],
+      {
+        type: "marble-origami-snapshot",
+        sessionId: "stale-session" as never,
+        staged: [],
+        armed: true,
+        lastSpawnTokens: 11,
+      },
+    );
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(getContextCollapseCommits()).toEqual([]);
+      expect(getContextCollapseSnapshot()).toBeUndefined();
+    } finally {
+      await shutdown?.().catch(() => {
         /* best effort */
       });
       await rm(home, { recursive: true, force: true });

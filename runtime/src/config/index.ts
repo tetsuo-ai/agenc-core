@@ -67,6 +67,9 @@ export type { EnvSnapshot } from "./env.js";
 export {
   resolveAgencHome,
   resolveApiKey,
+  resolveProvider,
+  resolveProfileName,
+  resolveProviderApiKey,
   resolveModel,
   resolveWorkspace,
   resolveSimpleMode,

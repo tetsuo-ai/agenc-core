@@ -5,6 +5,12 @@ import {
 export interface ProviderModelCapabilities {
   readonly provider: string;
   readonly model: string;
+  readonly supportsPromptCaching: boolean;
+  readonly supportsContextEdits: boolean;
+  readonly supportsImageInput: boolean;
+  readonly supportsAudioInput: boolean;
+  readonly supportsAudioOutput: boolean;
+  readonly supportsExtendedThinking: boolean;
   readonly acceptsImageHistory: boolean;
   readonly acceptsAudioHistory: boolean;
   readonly acceptsThinkingHistory: boolean;
@@ -20,6 +26,12 @@ export function normalizeProviderSlug(provider: string | undefined): string {
 }
 
 interface ProviderCapabilityDefinition {
+  readonly supportsPromptCaching: boolean | ((model: string) => boolean);
+  readonly supportsContextEdits: boolean | ((model: string) => boolean);
+  readonly supportsImageInput: boolean | ((model: string) => boolean);
+  readonly supportsAudioInput: boolean | ((model: string) => boolean);
+  readonly supportsAudioOutput: boolean | ((model: string) => boolean);
+  readonly supportsExtendedThinking: boolean | ((model: string) => boolean);
   readonly acceptsImageHistory: boolean | ((model: string) => boolean);
   readonly acceptsAudioHistory: boolean | ((model: string) => boolean);
   readonly acceptsThinkingHistory: boolean | ((model: string) => boolean);
@@ -34,6 +46,12 @@ function isVisionishOllamaModel(model: string): boolean {
 
 function resolveCapabilityFlag(
   value:
+    | ProviderCapabilityDefinition["supportsPromptCaching"]
+    | ProviderCapabilityDefinition["supportsContextEdits"]
+    | ProviderCapabilityDefinition["supportsImageInput"]
+    | ProviderCapabilityDefinition["supportsAudioInput"]
+    | ProviderCapabilityDefinition["supportsAudioOutput"]
+    | ProviderCapabilityDefinition["supportsExtendedThinking"]
     | ProviderCapabilityDefinition["acceptsImageHistory"]
     | ProviderCapabilityDefinition["acceptsAudioHistory"]
     | ProviderCapabilityDefinition["acceptsThinkingHistory"]
@@ -52,6 +70,30 @@ function buildCapabilities(
   return {
     provider,
     model: trimmedModel,
+    supportsPromptCaching: resolveCapabilityFlag(
+      definition.supportsPromptCaching,
+      trimmedModel,
+    ),
+    supportsContextEdits: resolveCapabilityFlag(
+      definition.supportsContextEdits,
+      trimmedModel,
+    ),
+    supportsImageInput: resolveCapabilityFlag(
+      definition.supportsImageInput,
+      trimmedModel,
+    ),
+    supportsAudioInput: resolveCapabilityFlag(
+      definition.supportsAudioInput,
+      trimmedModel,
+    ),
+    supportsAudioOutput: resolveCapabilityFlag(
+      definition.supportsAudioOutput,
+      trimmedModel,
+    ),
+    supportsExtendedThinking: resolveCapabilityFlag(
+      definition.supportsExtendedThinking,
+      trimmedModel,
+    ),
     acceptsImageHistory: resolveCapabilityFlag(
       definition.acceptsImageHistory,
       trimmedModel,
@@ -98,6 +140,20 @@ function isOpenAIReasoningModel(model: string): boolean {
   );
 }
 
+function isOpenAIAudioInputModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])(?:gpt-audio|gpt-4o(?:-mini)?-audio-preview|gpt-4o(?:-mini)?-transcribe(?:-diarize)?)(?:$|[-_.:])/,
+  );
+}
+
+function isOpenAIAudioOutputModel(model: string): boolean {
+  return matchesModelFamily(
+    model,
+    /(?:^|[/:])(?:gpt-audio|gpt-4o(?:-mini)?-audio-preview)(?:$|[-_.:])/,
+  );
+}
+
 function isDeepSeekThinkingModel(model: string): boolean {
   return matchesModelFamily(
     model,
@@ -111,12 +167,24 @@ function isGeminiThinkingModel(model: string): boolean {
 
 const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinition>> = {
   grok: {
+    supportsPromptCaching: true,
+    supportsContextEdits: false,
+    supportsImageInput: resolveGrokImageHistory,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: false,
     acceptsImageHistory: resolveGrokImageHistory,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,
     acceptsReasoningEffort: resolveGrokReasoningEffort,
   },
   anthropic: {
+    supportsPromptCaching: true,
+    supportsContextEdits: true,
+    supportsImageInput: true,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: true,
     acceptsImageHistory: true,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: true,
@@ -125,46 +193,95 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
   ollama: {
     // Ollama can preserve image turns only when the selected local model is
     // vision-capable; the runtime does not have a catalog lookup at switch time.
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: isVisionishOllamaModel,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: false,
     acceptsImageHistory: isVisionishOllamaModel,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,
     acceptsReasoningEffort: false,
   },
   openai: {
+    supportsPromptCaching: true,
+    supportsContextEdits: false,
+    supportsImageInput: true,
+    supportsAudioInput: isOpenAIAudioInputModel,
+    supportsAudioOutput: isOpenAIAudioOutputModel,
+    supportsExtendedThinking: isOpenAIReasoningModel,
     acceptsImageHistory: true,
-    acceptsAudioHistory: true,
+    // T13 only serializes inline/base64 OpenAI audio parts. Session history
+    // currently records audio as opaque URL-bearing blocks, so provider/model
+    // switches must fail closed until replay serialization grows a transcoding
+    // layer for those history entries.
+    acceptsAudioHistory: false,
     acceptsThinkingHistory: isOpenAIReasoningModel,
     acceptsReasoningEffort: isOpenAIReasoningModel,
   },
   openrouter: {
     // Routed upstreams vary by model/provider and the runtime does not have a
     // catalog handshake here, so model-switch checks must fail closed.
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: false,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,
     acceptsReasoningEffort: false,
   },
   groq: {
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: false,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,
     acceptsReasoningEffort: false,
   },
   deepseek: {
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: isDeepSeekThinkingModel,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: isDeepSeekThinkingModel,
     acceptsReasoningEffort: false,
   },
   gemini: {
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: true,
+    supportsAudioInput: true,
+    supportsAudioOutput: true,
+    supportsExtendedThinking: isGeminiThinkingModel,
     acceptsImageHistory: true,
-    acceptsAudioHistory: true,
+    // Gemini's OpenAI-compatible surface accepts inline `input_audio`
+    // payloads, but this runtime slice does not yet replay stored `audio_url`
+    // history into that wire format.
+    acceptsAudioHistory: false,
     acceptsThinkingHistory: isGeminiThinkingModel,
     acceptsReasoningEffort: false,
   },
   lmstudio: {
     // LM Studio is model-dependent, so use the same local-model heuristic as
     // Ollama instead of claiming universal multimodal support.
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: isVisionishOllamaModel,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: false,
     acceptsImageHistory: isVisionishOllamaModel,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,
@@ -179,6 +296,12 @@ function buildDefaultCapabilities(
   return {
     provider,
     model,
+    supportsPromptCaching: false,
+    supportsContextEdits: false,
+    supportsImageInput: false,
+    supportsAudioInput: false,
+    supportsAudioOutput: false,
+    supportsExtendedThinking: false,
     acceptsImageHistory: false,
     acceptsAudioHistory: false,
     acceptsThinkingHistory: false,

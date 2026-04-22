@@ -69,6 +69,21 @@ describe("tombstone", () => {
     expect(String(toolMessages[0]?.content)).toContain("tool_use_error");
   });
 
+  test("explicit terminalToolCause is preserved during synthesis", () => {
+    const state = mkState();
+
+    tombstoneOrphans(state, {
+      reason: "mode_changed",
+      terminalToolCause: "mode_changed",
+    });
+
+    const toolMessage = state.messages.find((m) => m.role === "tool");
+    expect(toolMessage).toBeDefined();
+    expect(String(toolMessage?.content)).toContain(
+      "permission mode changed mid-execution",
+    );
+  });
+
   test("toTombstoneUserMessage includes preview when text available", () => {
     const out = toTombstoneUserMessage(
       {

@@ -23,7 +23,13 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(request.messages).toEqual([
       {
         role: "user",
-        content: "run it",
+        content: [
+          {
+            type: "text",
+            text: "run it",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
       },
     ]);
   });
@@ -63,7 +69,13 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(request.messages).toEqual([
       {
         role: "user",
-        content: "inspect",
+        content: [
+          {
+            type: "text",
+            text: "inspect",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
       },
       {
         role: "assistant",
@@ -82,6 +94,7 @@ describe("buildAnthropicMessagesRequest", () => {
           {
             type: "tool_result",
             tool_use_id: "call_image",
+            cache_control: { type: "ephemeral" },
             content: [
               { type: "text", text: "Screenshot captured" },
               {
@@ -96,6 +109,83 @@ describe("buildAnthropicMessagesRequest", () => {
         ],
       },
     ]);
+  });
+
+  test("serializes user images as Anthropic image blocks and preserves cache_control breakpoints", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        {
+          role: "system",
+          content: "You are helpful",
+          cacheControl: "ephemeral",
+        } as unknown as { role: "system"; content: string },
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: "https://example.com/cat.png" } },
+            { type: "text", text: "Describe the image" },
+          ],
+          cacheControl: "ephemeral",
+        } as unknown as {
+          role: "user";
+          content: Array<Record<string, unknown>>;
+        },
+      ],
+      tools: [],
+    });
+
+    expect(request.system).toEqual([
+      {
+        type: "text",
+        text: "You are helpful",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: {
+              type: "url",
+              url: "https://example.com/cat.png",
+            },
+          },
+          {
+            type: "text",
+            text: "Describe the image",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("passes Anthropic context management through the request body", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      contextManagement: {
+        edits: [
+          {
+            type: "clear_thinking_20251015",
+            keep: "all",
+          },
+        ],
+      },
+    });
+
+    expect(request.context_management).toEqual({
+      edits: [
+        {
+          type: "clear_thinking_20251015",
+          keep: "all",
+        },
+      ],
+    });
   });
 
   test("records anthropic endpoint markers in request metrics", () => {

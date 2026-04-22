@@ -33,6 +33,7 @@ import {
   isWithheld413Message,
 } from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
+import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
 import {
   resetCollapseDrainAttempted,
   runCollapseDrain,
@@ -63,12 +64,28 @@ export async function postSampleRecovery(
   session: Session,
   signal?: AbortSignal,
 ): Promise<TurnState> {
+  const taskBudgetTotal =
+    (ctx as TurnContext & { taskBudget?: { total?: number } }).taskBudget
+      ?.total ??
+    (
+      session as Session & {
+        services?: { taskBudget?: { total?: number } };
+      }
+    ).services?.taskBudget?.total;
   if (signal?.aborted) return state;
 
   // I-22: if stream-model stashed a budget-exceeded decision on the
   // state, route to token_budget_continuation BEFORE walking the
   // trigger ladder. Mid-stream overshoot is its own recovery branch.
   if (state.pendingBudgetDecision?.kind === "stop") {
+    const reservation = await reserveRecoveryReentry(session, state, {
+      triggerName: "token_budget_continuation",
+    });
+    if (reservation.kind === "exhausted") {
+      state.pendingBudgetDecision = undefined;
+      state.transition = undefined;
+      return state;
+    }
     const continuationMessage = state.pendingBudgetDecision.reason;
     resetCollapseDrainAttempted(state);
     emitWarning(
@@ -91,7 +108,6 @@ export async function postSampleRecovery(
     state.pendingToolUseSummary = undefined;
     state.stopHookActive = undefined;
     state.pendingBudgetDecision = undefined;
-    state.recoveryReentryCount += 1;
     return state;
   }
 
@@ -124,6 +140,7 @@ export async function postSampleRecovery(
             session: c.session,
             state: c.state,
             lastMessage: c.lastMessage,
+            taskBudgetTotal,
           });
           if (rc.kind === "compacted") {
             return { kind: "applied", reason: "reactive_compact" };
@@ -148,6 +165,7 @@ export async function postSampleRecovery(
           session: c.session,
           state: c.state,
           lastMessage: c.lastMessage,
+          taskBudgetTotal,
         });
         if (rc.kind === "compacted") {
           return { kind: "applied", reason: "media_reactive_compact" };

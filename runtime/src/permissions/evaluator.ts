@@ -58,6 +58,7 @@ import {
   classifyYoloAction,
   isAutoModeAllowlistedTool,
   isAutoModeGateEnabled,
+  type LLMMessage as ClassifierLLMMessage,
   type YoloClassifierResult,
 } from "./classifier.js";
 import type {
@@ -181,6 +182,49 @@ function buildClassifierUnavailableMessage(
 
 function buildYoloRejectionMessage(reason: string): string {
   return `Blocked by auto-mode classifier: ${reason}`;
+}
+
+function readClassifierTranscriptMessages(
+  session: Session,
+): readonly ClassifierLLMMessage[] {
+  const history = (
+    session as {
+      state?: {
+        unsafePeek?: () => { history?: readonly unknown[] };
+      };
+    }
+  ).state?.unsafePeek?.().history;
+  if (!Array.isArray(history) || history.length === 0) {
+    return [];
+  }
+  const normalized: ClassifierLLMMessage[] = [];
+  for (const item of history) {
+    if (!item || typeof item !== "object") continue;
+    const candidate = item as {
+      role?: unknown;
+      content?: unknown;
+      toolCalls?: unknown;
+    };
+    if (
+      candidate.role !== "system" &&
+      candidate.role !== "user" &&
+      candidate.role !== "assistant" &&
+      candidate.role !== "tool"
+    ) {
+      continue;
+    }
+    normalized.push({
+      role: candidate.role,
+      content:
+        typeof candidate.content === "string" || Array.isArray(candidate.content)
+          ? candidate.content
+          : "",
+      ...(Array.isArray(candidate.toolCalls)
+        ? { toolCalls: candidate.toolCalls as ClassifierLLMMessage["toolCalls"] }
+        : {}),
+    });
+  }
+  return normalized;
 }
 
 // ---------------------------------------------------------------------------
@@ -630,7 +674,7 @@ async function runAutoClassifierPipeline(
 
   // 5.6 — classifier call.
   const classifierResult = await classifyYoloAction({
-    messages: [],
+    messages: readClassifierTranscriptMessages(context.session),
     action: { toolName: tool.name, input },
     tools: [],
     permissionContext: toolCtx,

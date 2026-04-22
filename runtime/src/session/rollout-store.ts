@@ -125,6 +125,14 @@ export class RolloutStore {
     return this.store.getToolResultBytesIndexSnapshot();
   }
 
+  getTokenEstimate(turnId: string): number {
+    return this.store.getTokenEstimate(turnId);
+  }
+
+  getTokenEstimateIndexSnapshot(): ReadonlyMap<string, number> {
+    return this.store.getTokenEstimateIndexSnapshot();
+  }
+
   getToolCallTurnIdSnapshot(): ReadonlyMap<string, string> {
     return this.store.getToolCallTurnIdSnapshot();
   }

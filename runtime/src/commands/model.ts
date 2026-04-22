@@ -17,6 +17,10 @@ import {
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
 import {
+  hasOpaqueAudioReference,
+  readAudioPayload,
+} from "../llm/wire/shared.js";
+import {
   safeExecute,
   type SlashCommand,
   type SlashCommandContext,
@@ -27,6 +31,57 @@ export interface HistoryCompatResult {
   readonly compatible: boolean;
   readonly reason?: string;
   readonly missingCapabilities?: readonly string[];
+}
+
+interface PersistedAudioHistoryAssessment {
+  hasReplayableAudio: boolean;
+  hasOpaqueAudioReferences: boolean;
+}
+
+function assessPersistedAudioHistory(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+  assessment: PersistedAudioHistoryAssessment = {
+    hasReplayableAudio: false,
+    hasOpaqueAudioReferences: false,
+  },
+): PersistedAudioHistoryAssessment {
+  if (value === null || value === undefined) {
+    return assessment;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      assessPersistedAudioHistory(item, seen, assessment);
+    }
+    return assessment;
+  }
+  if (typeof value !== "object") {
+    return assessment;
+  }
+  if (seen.has(value)) {
+    return assessment;
+  }
+  seen.add(value);
+
+  if (readAudioPayload(value)) {
+    assessment.hasReplayableAudio = true;
+  } else if (hasOpaqueAudioReference(value)) {
+    assessment.hasOpaqueAudioReferences = true;
+  }
+
+  for (const nested of Object.values(value)) {
+    assessPersistedAudioHistory(nested, seen, assessment);
+  }
+  return assessment;
+}
+
+function buildCompatibilityReason(
+  targetProvider: string,
+  targetModel: string,
+  missingCapabilities: readonly string[],
+): string {
+  return `${targetProvider || "target provider"} / ${targetModel || "target model"} ` +
+    `cannot satisfy this session's ${missingCapabilities.join(", ")} requirements`;
 }
 
 /**
@@ -56,6 +111,39 @@ export function checkModelHistoryCompat(
     caps,
     analyzeSessionHistoryRequirements(rawState),
   );
+  if (
+    !compat.compatible &&
+    compat.missingCapabilities.includes("audio history") &&
+    caps.supportsAudioInput
+  ) {
+    const audioHistory = assessPersistedAudioHistory(rawState?.history ?? []);
+    if (audioHistory.hasOpaqueAudioReferences) {
+      return {
+        compatible: false,
+        missingCapabilities: compat.missingCapabilities,
+        reason:
+          `${caps.provider || "target provider"} / ${caps.model || "target model"} ` +
+          "cannot replay this session's persisted audio history references",
+      };
+    }
+    if (audioHistory.hasReplayableAudio) {
+      const remainingMissing = compat.missingCapabilities.filter(
+        (capability) => capability !== "audio history",
+      );
+      if (remainingMissing.length === 0) {
+        return { compatible: true };
+      }
+      return {
+        compatible: false,
+        missingCapabilities: remainingMissing,
+        reason: buildCompatibilityReason(
+          caps.provider,
+          caps.model,
+          remainingMissing,
+        ),
+      };
+    }
+  }
   return compat.compatible
     ? { compatible: true }
     : {

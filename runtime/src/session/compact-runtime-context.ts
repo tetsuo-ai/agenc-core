@@ -8,7 +8,11 @@ import {
   type SystemPrompt,
 } from "../utils/systemPrompt.js";
 import type { Session } from "./session.js";
-import type { TurnContext } from "./turn-context.js";
+import {
+  toTurnContextItem,
+  type TurnContext,
+  type TurnContextItem,
+} from "./turn-context.js";
 
 import type { Tool } from "../Tool.js";
 import type { AgentId } from "../types/ids.js";
@@ -46,6 +50,7 @@ export interface CompactRuntimeContext {
   agentId?: AgentId;
   options: CompactRuntimeOptions;
   getAppState: () => CompactRuntimeAppState;
+  referenceContextItem?: TurnContextItem;
   readFileState: Map<string, unknown>;
   loadedNestedMemoryPaths?: Set<string>;
   setStreamMode?: (mode: "requesting" | "responding" | null) => void;
@@ -53,16 +58,26 @@ export interface CompactRuntimeContext {
   onCompactProgress?: (event: unknown) => void;
   setSDKStatus?: (status: "compacting" | null) => void;
   addNotification?: (notification: unknown) => void;
+  emitWarning?: (warning: { cause: string; message: string }) => void;
   queryTracking?: {
     chainId?: string;
     depth?: number;
   };
   clearProviderResponseId?: () => void;
+  /**
+   * T5-owned rollout surface. `rolloutPath` is the authoritative path to
+   * the current session's rollout JSONL (used to stamp compact summary
+   * references). `store.reAppendSessionMetadata` is the authorized seam
+   * for the I-12/I-49 metadata-at-EOF re-append after a compact boundary
+   * (see docs/plan/feature-matrix.md:39 and runtime-owner-manifest.md:239-244).
+   */
   rolloutStore?: {
+    readonly rolloutPath?: string;
     getCompactionIndexSnapshot?: () => unknown;
     getToolResultBytesIndexSnapshot?: () => ReadonlyMap<string, number>;
     getToolCallTurnIdSnapshot?: () => ReadonlyMap<string, string>;
     store?: {
+      readonly rolloutPath?: string;
       reAppendSessionMetadata?: () => void;
     };
   };
@@ -100,6 +115,7 @@ type SessionCompactRuntimeSurface = {
   onCompactProgress?: (event: unknown) => void;
   setSDKStatus?: (status: "compacting" | null) => void;
   addNotification?: (notification: unknown) => void;
+  emitWarning?: (warning: { cause: string; message: string }) => void;
 };
 
 function readSessionConfiguration(
@@ -136,7 +152,7 @@ function readCwd(session: Session, turnContext?: TurnContext): string | undefine
 function readSessionCompactRuntimeSurface(
   session: Session,
 ): SessionCompactRuntimeSurface {
-  const snapshot = session.state.unsafePeek() as Record<string, unknown>;
+  const snapshot = session.state.unsafePeek() as unknown as Record<string, unknown>;
   const direct = session as unknown as Record<string, unknown>;
   const read = <T>(key: keyof SessionCompactRuntimeSurface): T | undefined => {
     const directValue = direct[key];
@@ -165,6 +181,9 @@ function readSessionCompactRuntimeSurface(
     onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
     setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
     addNotification: read<(notification: unknown) => void>("addNotification"),
+    emitWarning: read<(warning: { cause: string; message: string }) => void>(
+      "emitWarning",
+    ),
   };
 }
 
@@ -236,6 +255,9 @@ export function createSessionBackedCompactContext(
       ...(cwd ? { cwd } : {}),
     },
     getAppState,
+    ...(opts.turnContext
+      ? { referenceContextItem: toTurnContextItem(opts.turnContext) }
+      : {}),
     readFileState,
     loadedNestedMemoryPaths,
     setStreamMode: surface.setStreamMode ?? (() => {}),
@@ -243,6 +265,17 @@ export function createSessionBackedCompactContext(
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
     setSDKStatus: surface.setSDKStatus ?? (() => {}),
     addNotification: surface.addNotification ?? (() => {}),
+    emitWarning:
+      surface.emitWarning ??
+      ((warning) => {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: {
+            type: "warning",
+            payload: warning,
+          },
+        });
+      }),
     queryTracking: surface.queryTracking,
     clearProviderResponseId: () => session.clearProviderResponseId(),
     rolloutStore: session.rolloutStore ?? undefined,

@@ -74,6 +74,29 @@ function runResult(result: {
 }
 
 describe("delegate lifecycle recovery", () => {
+  it("rejects worktree isolation without a slug", async () => {
+    const control = {
+      spawn: vi.fn(),
+      shutdown: vi.fn(),
+      resumeAgentFromRollout: vi.fn(),
+    };
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "fix it",
+      isolation: "worktree",
+    });
+
+    expect(outcome).toEqual({
+      kind: "rejected",
+      reason: "worktree isolation requires a non-empty worktreeSlug",
+    });
+    expect(control.spawn).not.toHaveBeenCalled();
+  });
+
   it("resumes the same live agent after a retryable failure", async () => {
     const live1 = makeLive("thread-1", "/root/alpha");
     const resumedLive = makeLive("thread-1", "/root/alpha");

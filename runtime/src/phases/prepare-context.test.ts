@@ -12,6 +12,22 @@
  *     writes the truncated slice back into `state.messagesForQuery`.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+vi.mock("axios", () => {
+  const axiosLike = {
+    create: vi.fn(() => axiosLike),
+    get: vi.fn(),
+    post: vi.fn(),
+    interceptors: {
+      request: { use: vi.fn() },
+      response: { use: vi.fn() },
+    },
+  };
+  return {
+    default: axiosLike,
+    create: axiosLike.create,
+    isAxiosError: () => false,
+  };
+});
 import type { LLMMessage } from "../llm/types.js";
 import * as autoCompactModule from "../llm/compact/auto-compact.js";
 import { PROMPT_TOO_LONG_ERROR_MESSAGE } from "../recovery/api-errors.js";
@@ -222,6 +238,20 @@ function mkCtx(
     },
     modelInfo: { slug: "claude-3-5-sonnet-20241022" },
     cwd: "/tmp",
+    approvalPolicy: { value: "never" },
+    sandboxPolicy: { value: "read_only" },
+    fileSystemSandboxPolicy: {
+      allowWrite: [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+    },
+    sessionSource: "cli_main",
     depth: 0,
     ...overrides,
   } as unknown as TurnContext;
@@ -235,6 +265,12 @@ function mkSession(
   return {
     conversationId: "conv-1",
     rolloutStore,
+    state: {
+      unsafePeek: () => ({ history: [], totalTokenUsage: 0 }),
+      with: async (
+        fn: (value: { history: LLMMessage[]; totalTokenUsage: number }) => void,
+      ) => fn({ history: [], totalTokenUsage: 0 }),
+    },
     services: { hooks: {} },
     nextInternalSubId: () => `sub-${++i}`,
     emit: (e: Event) => {
@@ -538,6 +574,31 @@ describe("prepareContext Stage 7 blocking-limit parity", () => {
       mkSession([]),
     );
     expect(getPrepareContextTerminal(contextCollapseState)).toBeUndefined();
+  });
+
+  test("projects the staged context-collapse view before auto-compact", async () => {
+    const state = mkState([
+      mkUserMsg("raw-history"),
+      mkAssistantMsg("assistant-tail"),
+    ]);
+    await prepareContext(
+      state,
+      mkCtx({
+        contextCollapse: {
+          isContextCollapseEnabled: () => true,
+          maybeCollapseContext: () => [
+            mkUserMsg("[collapsed-view]"),
+            mkAssistantMsg("tail"),
+          ],
+        },
+      }),
+      mkSession([]),
+    );
+
+    expect(state.messagesForQuery).toEqual([
+      mkUserMsg("[collapsed-view]"),
+      mkAssistantMsg("tail"),
+    ]);
   });
 
   test("successful compaction on this iteration skips blocking preempt and carries taskBudgetRemaining forward", async () => {

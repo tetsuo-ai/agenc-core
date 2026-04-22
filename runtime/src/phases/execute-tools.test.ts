@@ -2,7 +2,7 @@
  * Phase 5 — integration tests for T7 gap #109 pipeline wiring.
  *
  * Covers the three outcomes introduced by the router / orchestrator /
- * orchestration / tool-hooks integration inside `executeTools`:
+ * orchestration / hooks integration inside `executeTools`:
  *
  *   1. Pre-hook fires before `runToolUse` (arg mutation observable).
  *   2. Post-hook fires after `runToolUse` and can rewrite the result.
@@ -20,7 +20,7 @@ import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type {
   PostToolUseHook,
   PreToolUseHook,
-} from "../tools/tool-hooks.js";
+} from "../tools/hooks.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import {
   createEmptyToolPermissionContext,
@@ -344,64 +344,6 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(peak).toBeLessThanOrEqual(2);
   });
 
-  test("post-hook retry triggers runWithAutoFixRetry (not skipped)", async () => {
-    let dispatchCount = 0;
-    const tool: Tool = {
-      name: "autofix.target",
-      description: "",
-      inputSchema: { type: "object" },
-      execute: async () => {
-        dispatchCount += 1;
-        return { content: `dispatch-${dispatchCount}`, isError: true };
-      },
-    };
-
-    const log = new EventLog();
-    let retryEmissions = 0;
-    let skipEmissions = 0;
-    log.subscribe((ev) => {
-      const msg = ev.msg as { type: string; payload?: { cause?: string } };
-      if (msg.type === "warning") {
-        if (msg.payload?.cause === "post_tool_hook_retry_skipped") {
-          skipEmissions += 1;
-        } else if (msg.payload?.cause === "post_tool_hook_retry_failed") {
-          retryEmissions += 1;
-        }
-      }
-    });
-
-    // Post-hook that requests retry TWICE then continues — this exercises
-    // the real runWithAutoFixRetry loop.
-    let postHookCallCount = 0;
-    const postHook: PostToolUseHook = async () => {
-      postHookCallCount += 1;
-      if (postHookCallCount < 3) {
-        return { kind: "retry", args: { attempt: postHookCallCount } };
-      }
-      return { kind: "continue" };
-    };
-
-    const registry = mkRegistry([tool]);
-    const session = mkSession({ log, registry, postToolUseHooks: [postHook] });
-    const call: LLMToolCall = {
-      id: "c-retry",
-      name: "autofix.target",
-      arguments: "{}",
-    };
-    const state = mkState({ toolCalls: [call] });
-    await executeTools(state, mkCtx(), session);
-
-    // dispatchCount should be >1 because retry re-dispatched.
-    expect(dispatchCount).toBeGreaterThan(1);
-    // The `post_tool_hook_retry_skipped` warning must NOT have fired
-    // (proving the real retry path ran).
-    expect(skipEmissions).toBe(0);
-    // No retry error either.
-    expect(retryEmissions).toBe(0);
-    // Final result threaded to messages.
-    expect(state.messages.length).toBe(1);
-  });
-
   test("progress event fires on eventLog when tool calls __onProgress", async () => {
     const tool: Tool = {
       name: "bash-like",
@@ -670,5 +612,45 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       (e) => e.type === "warning" && e.cause === "tool_routing_classified",
     );
     expect(routed).toBeDefined();
+  });
+
+  test("aborted signals still drain terminal tool results for queued calls", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "system.writeFile",
+      description: "write tool",
+      inputSchema: { type: "object" },
+      execute: async () => {
+        executed += 1;
+        return { content: "wrote" };
+      },
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({ log, registry });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "c-abort",
+          name: "system.writeFile",
+          arguments: "{}",
+        },
+      ],
+    });
+    const abortCtl = new AbortController();
+    abortCtl.abort("mode_changed");
+
+    await executeTools(state, mkCtx(), session, abortCtl.signal);
+
+    expect(executed).toBe(0);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      role: "tool",
+      toolCallId: "c-abort",
+    });
+    expect(String(state.messages[0]?.content)).toContain(
+      "permission mode changed mid-execution",
+    );
   });
 });

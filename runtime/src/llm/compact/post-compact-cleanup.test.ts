@@ -9,6 +9,8 @@
  * @module
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   IncrementalTracker,
@@ -98,5 +100,19 @@ describe("runPostCompactCleanup (I-2)", () => {
     runPostCompactCleanup("compact", { clearProviderResponseId });
 
     expect(clearProviderResponseId).toHaveBeenCalledTimes(1);
+  });
+
+  it("T5 ownership: does not import from utils/sessionStorage or bootstrap/state", () => {
+    // Negative-import assertion. Prevents regression of the T5
+    // ownership-drift fix (compact ownership root must not reach into
+    // legacy bootstrap/state stub proxies or utils/sessionStorage).
+    const src = readFileSync(
+      join(__dirname, "post-compact-cleanup.ts"),
+      "utf8",
+    );
+    expect(src).not.toMatch(/from ['"]\.\.\/\.\.\/utils\/sessionStorage(\.js)?['"]/);
+    expect(src).not.toMatch(/from ['"]\.\.\/\.\.\/bootstrap\/state(\.js)?['"]/);
+    expect(src).not.toMatch(/from ['"]src\/bootstrap\/state(\.js)?['"]/);
+    expect(src).not.toMatch(/\bclearSessionMessagesCache\s*\(/);
   });
 });

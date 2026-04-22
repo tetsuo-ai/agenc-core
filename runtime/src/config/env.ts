@@ -1,7 +1,10 @@
 // T10 Group D — environment variable resolution.
 //
 // Precedence order (env wins over TOML):
-//   XAI_API_KEY | GROK_API_KEY | AGENC_XAI_API_KEY → api key
+//   XAI_API_KEY | GROK_API_KEY | AGENC_XAI_API_KEY → grok api key
+//   OPENAI_API_KEY / ANTHROPIC_API_KEY / ...       → provider api key
+//   AGENC_PROVIDER                                 → provider slug
+//   AGENC_PROFILE                                  → profile selector
 //   AGENC_MODEL                                    → model slug
 //   AGENC_WORKSPACE                                → workspace root
 //   AGENC_HOME                                     → ~/.agenc override
@@ -19,12 +22,21 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 export interface EnvSnapshot {
   readonly AGENC_HOME?: string;
+  readonly AGENC_PROFILE?: string;
+  readonly AGENC_PROVIDER?: string;
   readonly AGENC_MODEL?: string;
   readonly AGENC_WORKSPACE?: string;
   readonly AGENC_SIMPLE?: string;
   readonly XAI_API_KEY?: string;
   readonly GROK_API_KEY?: string;
   readonly AGENC_XAI_API_KEY?: string;
+  readonly OPENAI_API_KEY?: string;
+  readonly ANTHROPIC_API_KEY?: string;
+  readonly LMSTUDIO_API_KEY?: string;
+  readonly OPENROUTER_API_KEY?: string;
+  readonly GROQ_API_KEY?: string;
+  readonly DEEPSEEK_API_KEY?: string;
+  readonly GEMINI_API_KEY?: string;
   readonly HOME?: string;
   readonly [k: string]: string | undefined;
 }
@@ -58,6 +70,65 @@ export function resolveApiKey(
 ): string | undefined {
   const e = readEnv(env);
   return e.XAI_API_KEY || e.GROK_API_KEY || e.AGENC_XAI_API_KEY || undefined;
+}
+
+function readNonEmpty(
+  value: string | undefined,
+): string | undefined {
+  return value && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function normalizeProvider(
+  provider: string | undefined,
+): string | undefined {
+  const normalized = readNonEmpty(provider)?.toLowerCase();
+  if (!normalized) return undefined;
+  return normalized === "xai" ? "grok" : normalized;
+}
+
+/** Provider slug override from AGENC_PROVIDER, or `undefined`. */
+export function resolveProvider(
+  env: EnvSnapshot = process.env,
+): string | undefined {
+  return normalizeProvider(readEnv(env).AGENC_PROVIDER);
+}
+
+/** Active profile selector from AGENC_PROFILE, or `undefined`. */
+export function resolveProfileName(
+  env: EnvSnapshot = process.env,
+): string | undefined {
+  return readNonEmpty(readEnv(env).AGENC_PROFILE);
+}
+
+/**
+ * Provider-specific API key resolution for startup/bootstrap paths.
+ * Returns `undefined` for providers that do not require a key by default.
+ */
+export function resolveProviderApiKey(
+  provider: string,
+  env: EnvSnapshot = process.env,
+): string | undefined {
+  const e = readEnv(env);
+  switch (normalizeProvider(provider)) {
+    case "grok":
+      return resolveApiKey(e);
+    case "openai":
+      return readNonEmpty(e.OPENAI_API_KEY);
+    case "anthropic":
+      return readNonEmpty(e.ANTHROPIC_API_KEY);
+    case "lmstudio":
+      return readNonEmpty(e.LMSTUDIO_API_KEY);
+    case "openrouter":
+      return readNonEmpty(e.OPENROUTER_API_KEY);
+    case "groq":
+      return readNonEmpty(e.GROQ_API_KEY);
+    case "deepseek":
+      return readNonEmpty(e.DEEPSEEK_API_KEY);
+    case "gemini":
+      return readNonEmpty(e.GEMINI_API_KEY);
+    default:
+      return undefined;
+  }
 }
 
 /** Model slug from env, falling back to `defaultModel`. */
@@ -104,6 +175,10 @@ export function applyEnvOverrides(
 
   if (e.AGENC_MODEL && e.AGENC_MODEL.length > 0) {
     override.model = e.AGENC_MODEL;
+  }
+  const provider = normalizeProvider(e.AGENC_PROVIDER);
+  if (provider) {
+    override.model_provider = provider;
   }
   if (e.AGENC_HOME && e.AGENC_HOME.length > 0) {
     override.agenc_home = e.AGENC_HOME;

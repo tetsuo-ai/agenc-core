@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { createSessionBackedCompactContext } from "./compact-runtime-context.js";
 import type { Session } from "./session.js";
 
+vi.mock("axios", () => ({
+  default: {},
+  AxiosError: class AxiosError extends Error {},
+}));
+
 describe("createSessionBackedCompactContext", () => {
   it("reuses live session-backed runtime state instead of fabricating empty placeholders", () => {
     let currentMode = "plan";
@@ -17,6 +22,7 @@ describe("createSessionBackedCompactContext", () => {
     const onCompactProgress = vi.fn();
     const setSDKStatus = vi.fn();
     const addNotification = vi.fn();
+    const emitWarning = vi.fn();
     const clearProviderResponseId = vi.fn();
 
     const session = {
@@ -54,6 +60,7 @@ describe("createSessionBackedCompactContext", () => {
       onCompactProgress,
       setSDKStatus,
       addNotification,
+      emitWarning,
     } as unknown as Session;
 
     const context = createSessionBackedCompactContext(session, {
@@ -72,6 +79,7 @@ describe("createSessionBackedCompactContext", () => {
     expect(context.onCompactProgress).toBe(onCompactProgress);
     expect(context.setSDKStatus).toBe(setSDKStatus);
     expect(context.addNotification).toBe(addNotification);
+    expect(context.emitWarning).toBe(emitWarning);
 
     expect(context.getAppState().toolPermissionContext.mode).toBe("plan");
     currentMode = "acceptEdits";
@@ -79,5 +87,11 @@ describe("createSessionBackedCompactContext", () => {
 
     context.clearProviderResponseId?.();
     expect(clearProviderResponseId).toHaveBeenCalledTimes(1);
+
+    context.emitWarning?.({ cause: "auto_compact_failed", message: "x" });
+    expect(emitWarning).toHaveBeenCalledWith({
+      cause: "auto_compact_failed",
+      message: "x",
+    });
   });
 });

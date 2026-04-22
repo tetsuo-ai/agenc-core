@@ -30,6 +30,9 @@ import {
 import {
   resolveAgencHome,
   resolveApiKey,
+  resolveProvider,
+  resolveProfileName,
+  resolveProviderApiKey,
   resolveModel,
   resolveWorkspace,
   resolveSimpleMode,
@@ -789,7 +792,12 @@ describe("env: resolvers", () => {
     expect(resolveApiKey({})).toBeUndefined();
   });
 
-  test("resolveModel / resolveWorkspace / resolveSimpleMode", () => {
+  test("resolveProvider / resolveProfileName / resolveModel / resolveWorkspace / resolveSimpleMode", () => {
+    expect(resolveProvider({ AGENC_PROVIDER: "xai" })).toBe("grok");
+    expect(resolveProvider({ AGENC_PROVIDER: "  OpenAI  " })).toBe("openai");
+    expect(resolveProvider({})).toBeUndefined();
+    expect(resolveProfileName({ AGENC_PROFILE: "fast" })).toBe("fast");
+    expect(resolveProfileName({})).toBeUndefined();
     expect(resolveModel("grok-4-fast", { AGENC_MODEL: "grok-3" })).toBe(
       "grok-3",
     );
@@ -806,6 +814,12 @@ describe("env: resolvers", () => {
     const base = mergeConfigs(defaultConfig(), { model: "grok-3" });
     const out = applyEnvOverrides(base, { AGENC_MODEL: "grok-4-fast" });
     expect(out.model).toBe("grok-4-fast");
+  });
+
+  test("applyEnvOverrides — AGENC_PROVIDER wins over TOML model_provider", () => {
+    const base = mergeConfigs(defaultConfig(), { model_provider: "grok" });
+    const out = applyEnvOverrides(base, { AGENC_PROVIDER: "openai" });
+    expect(out.model_provider).toBe("openai");
   });
 
   test("applyEnvOverrides is a no-op when no overrides set", () => {
@@ -842,6 +856,15 @@ describe("env: resolvers", () => {
     expect(json).not.toContain("secret-xai");
     expect(json).not.toContain("secret-grok");
     expect(json).not.toContain("secret-agenc");
+  });
+
+  test("resolveProviderApiKey returns provider-specific keys", () => {
+    expect(resolveProviderApiKey("grok", { XAI_API_KEY: "x" })).toBe("x");
+    expect(resolveProviderApiKey("openai", { OPENAI_API_KEY: "o" })).toBe("o");
+    expect(resolveProviderApiKey("anthropic", { ANTHROPIC_API_KEY: "a" })).toBe(
+      "a",
+    );
+    expect(resolveProviderApiKey("ollama", {})).toBeUndefined();
   });
 });
 

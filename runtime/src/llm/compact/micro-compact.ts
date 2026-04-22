@@ -55,7 +55,7 @@ function isCompactableTool(name: string): boolean {
   return COMPACTABLE_TOOLS.has(name) || name.startsWith(MCP_TOOL_PREFIX)
 }
 
-// --- Cached microcompact state (shared by nested + role-based paths) ---
+// --- Cached microcompact state (gated by feature('CACHED_MICROCOMPACT')) ---
 
 // Lazy-initialized cached MC module and state to avoid importing in external builds.
 // The imports and state live inside feature() checks for dead code elimination.
@@ -171,12 +171,6 @@ export function estimateMessageTokens(messages: Message[]): number {
   let totalTokens = 0
 
   for (const message of messages) {
-    if (message && typeof message === 'object' && message.role === 'tool') {
-      totalTokens += roughTokenCountEstimation(
-        localMessageContentText(message.content),
-      )
-      continue
-    }
     if (message.type !== 'user' && message.type !== 'assistant') {
       continue
     }
@@ -262,54 +256,13 @@ function isMainThreadSource(querySource: QuerySource | undefined): boolean {
   return !querySource || querySource.startsWith('repl_main_thread')
 }
 
-function hasOpenClaudeMessageShape(messages: Message[]): boolean {
-  return messages.some(message => Boolean(message && typeof message === 'object' && 'message' in message))
-}
-
-function isRoleBasedToolMessage(message: Message): boolean {
-  return Boolean(message && typeof message === 'object' && message.role === 'tool')
-}
-
-function localMessageContentText(content: Message['content']): string {
-  if (typeof content === 'string') {
-    return content
-  }
-  return content
-    .filter((block: { type: string }) => block.type === 'text')
-    .map((block: { text: string }) => block.text)
-    .join('')
-}
-
-async function localMicrocompactPath(
-  messages: Message[],
-  toolUseContext: CompactRuntimeContext | undefined,
+async function runMicrocompactCleanup(
   querySource: QuerySource | undefined,
-): Promise<MicrocompactResult> {
-  const mod = await getCachedMCModule()
-  const model =
-    (toolUseContext as { modelInfo?: { slug?: string } } | undefined)?.modelInfo
-      ?.slug ?? toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
-  if (
-    !mod.isCachedMicrocompactEnabled() ||
-    !mod.isModelSupportedForCacheEditing(model) ||
-    !isMainThreadSource(querySource)
-  ) {
-    return { messages }
-  }
-
-  const config = mod.getCachedMCConfig()
-  if (!config?.enabled) {
-    return { messages }
-  }
-
-  const toolMessages = messages.filter(message => isRoleBasedToolMessage(message))
-  if (toolMessages.length > config.triggerThreshold) {
-    logForDebugging(
-      'Cached MC skipped for role-based history: cache_edits require openclaude-style tool_result blocks, and live tool messages must stay intact unless an explicit content-clearing path fires.',
-    )
-  }
-
-  return { messages }
+  toolUseContext: CompactRuntimeContext | undefined,
+  opts?: { preserveMicrocompactState?: boolean },
+): Promise<void> {
+  const { runPostCompactCleanup } = await import('./post-compact-cleanup.js')
+  runPostCompactCleanup(querySource, toolUseContext, opts)
 }
 
 export async function microcompactMessages(
@@ -326,33 +279,35 @@ export async function microcompactMessages(
   // tool results now, before the request, to shrink what gets rewritten.
   // Cached MC (cache-editing) is skipped when this fires: editing assumes a
   // warm cache, and we just established it's cold.
-  const timeBasedResult = maybeTimeBasedMicrocompact(messages, querySource)
+  const timeBasedResult = await maybeTimeBasedMicrocompact(
+    messages,
+    querySource,
+    toolUseContext,
+  )
   if (timeBasedResult) {
     return timeBasedResult
-  }
-
-  if (!hasOpenClaudeMessageShape(messages)) {
-    return await localMicrocompactPath(messages, toolUseContext, querySource)
   }
 
   // Only run cached MC for the main thread to prevent forked agents
   // (session_memory, prompt_suggestion, etc.) from registering their
   // tool_results in the global cachedMCState, which would cause the main
   // thread to try deleting tools that don't exist in its own conversation.
-  const mod = await getCachedMCModule()
-  const model =
-    (toolUseContext as { modelInfo?: { slug?: string } } | undefined)?.modelInfo
-      ?.slug ?? toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
-  if (
-    mod.isCachedMicrocompactEnabled() &&
-    mod.isModelSupportedForCacheEditing(model) &&
-    isMainThreadSource(querySource)
-  ) {
-    return await cachedMicrocompactPath(messages, querySource)
+  if (feature('CACHED_MICROCOMPACT')) {
+    const mod = await getCachedMCModule()
+    const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
+    if (
+      mod.isCachedMicrocompactEnabled() &&
+      mod.isModelSupportedForCacheEditing(model) &&
+      isMainThreadSource(querySource)
+    ) {
+      return await cachedMicrocompactPath(messages, querySource, toolUseContext)
+    }
   }
 
-  // Nested openclaude-shaped histories keep the original cached-MC flow.
-  // The local phase-machine path hits the role-based branch above.
+  // Legacy microcompact path removed — tengu_cache_plum_violet is always true.
+  // For contexts where cached microcompact is not available (external builds,
+  // non-ant users, unsupported models, sub-agents), no compaction happens here;
+  // autocompact handles context pressure instead.
   return { messages }
 }
 
@@ -369,6 +324,7 @@ export async function microcompactMessages(
 async function cachedMicrocompactPath(
   messages: Message[],
   querySource: QuerySource | undefined,
+  toolUseContext: CompactRuntimeContext | undefined,
 ): Promise<MicrocompactResult> {
   const mod = await getCachedMCModule()
   const state = ensureCachedMCState()
@@ -424,6 +380,16 @@ async function cachedMicrocompactPath(
 
     // Suppress warning after successful compaction
     suppressCompactWarning()
+
+    // AgenC divergence from upstream: I-2 invariant requires every
+    // compaction path (including micro-compact) to clear
+    // `previous_response_id` on the active provider adapter. Upstream
+    // doesn't have this concern because its ccrClient doesn't use
+    // previous_response_id. Preserve microcompact state so the pending
+    // cache_edits block survives until the next API request consumes it.
+    await runMicrocompactCleanup(querySource, toolUseContext, {
+      preserveMicrocompactState: true,
+    })
 
     // Notify cache break detection that cache reads will legitimately drop
     if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
@@ -510,10 +476,11 @@ export function evaluateTimeBasedTrigger(
   return { gapMinutes, config }
 }
 
-function maybeTimeBasedMicrocompact(
+async function maybeTimeBasedMicrocompact(
   messages: Message[],
   querySource: QuerySource | undefined,
-): MicrocompactResult | null {
+  toolUseContext?: CompactRuntimeContext,
+): Promise<MicrocompactResult | null> {
   const trigger = evaluateTimeBasedTrigger(messages, querySource)
   if (!trigger) {
     return null
@@ -539,15 +506,15 @@ function maybeTimeBasedMicrocompact(
       return message
     }
     let touched = false
-    const newContent = message.message.content.map((block: any) => {
+    const newContent = message.message.content.map((block: ToolResultBlockParam | { type: string }) => {
       if (
         block.type === 'tool_result' &&
-        clearSet.has(block.tool_use_id) &&
-        block.content !== TIME_BASED_MC_CLEARED_MESSAGE
+        clearSet.has((block as ToolResultBlockParam).tool_use_id) &&
+        (block as ToolResultBlockParam).content !== TIME_BASED_MC_CLEARED_MESSAGE
       ) {
-        tokensSaved += calculateToolResultTokens(block)
+        tokensSaved += calculateToolResultTokens(block as ToolResultBlockParam)
         touched = true
-        return { ...block, content: TIME_BASED_MC_CLEARED_MESSAGE }
+        return { ...(block as ToolResultBlockParam), content: TIME_BASED_MC_CLEARED_MESSAGE }
       }
       return block
     })
@@ -575,20 +542,18 @@ function maybeTimeBasedMicrocompact(
     `[TIME-BASED MC] gap ${Math.round(gapMinutes)}min > ${config.gapThresholdMinutes}min, cleared ${clearSet.size} tool results (~${tokensSaved} tokens), kept last ${keepSet.size}`,
   )
 
+  // AgenC divergence from upstream: I-2 invariant requires clearing
+  // `previous_response_id` on every compaction. Upstream calls
+  // resetMicrocompactState() directly here; runPostCompactCleanup subsumes
+  // that reset AND adds the I-2 provider response_id clear + ancillary
+  // cache invalidation.
+  await runMicrocompactCleanup(querySource, toolUseContext)
+
   suppressCompactWarning()
-  // Cached-MC state (module-level) holds tool IDs registered on prior turns.
-  // We just content-cleared some of those tools AND invalidated the server
-  // cache by changing prompt content. If cached-MC runs next turn with the
-  // stale state, it would try to cache_edit tools whose server-side entries
-  // no longer exist. Reset it.
-  resetMicrocompactState()
-  // We just changed the prompt content — the next response's cache read will
-  // be low, but that's us, not a break. Tell the detector to expect a drop.
-  // notifyCacheDeletion (not notifyCompaction) because it's already imported
-  // here and achieves the same false-positive suppression — adding the second
-  // symbol to the import was flagged by the circular-deps check.
-  // Pass the actual querySource: getTrackingKey returns the full source string
-  // (e.g. 'repl_main_thread:outputStyle:custom'), not just the prefix.
+  // We just changed the prompt content — the next response's cache read
+  // will be low, but that's us, not a break. Tell the detector to expect
+  // a drop. Pass the actual querySource because the tracker keys on the
+  // full source string, not just the main-thread prefix.
   if (feature('PROMPT_CACHE_BREAK_DETECTION') && querySource) {
     notifyCacheDeletion(querySource)
   }

@@ -14,7 +14,7 @@
  *   - `isPlanMode` returns true when `permissionContext.mode === "plan"`.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
@@ -50,6 +50,10 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
+import {
+  contextCollapseService,
+  resetContextCollapse,
+} from "../services/contextCollapse/index.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -216,6 +220,10 @@ async function withEnv<T>(
   }
 }
 
+afterEach(() => {
+  resetContextCollapse();
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // SessionServices.permissionModeRegistry bootstrap
 // ─────────────────────────────────────────────────────────────────────
@@ -228,6 +236,13 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
     const registry = session.services.permissionModeRegistry;
     expect(registry).toBeInstanceOf(PermissionModeRegistry);
     expect(registry.current().mode).toBe("default");
+  });
+
+  it("populates the live context-collapse service and default querySource when omitted", () => {
+    const session = buildSession();
+
+    expect(session.services.contextCollapse).toBe(contextCollapseService);
+    expect(session.services.querySource).toBe("repl_main_thread");
   });
 
   it("preserves a caller-supplied registry instead of replacing it", () => {

@@ -56,7 +56,6 @@ import {
 import {
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
-  resolveApiKey as resolveApiKeyFromEnv,
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
@@ -95,16 +94,6 @@ export {
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
 // ─────────────────────────────────────────────────────────────────────
-
-function resolveApiKey(): string {
-  const key = resolveApiKeyFromEnv(process.env) ?? "";
-  if (!key) {
-    throw new Error(
-      "missing xAI API key — set XAI_API_KEY (or GROK_API_KEY) in the environment",
-    );
-  }
-  return key;
-}
 
 async function readStdin(signal: AbortSignal): Promise<string> {
   if (process.stdin.isTTY) return "";
@@ -759,11 +748,7 @@ export async function oneShotCLI(
     validateAgencHome();
     throwIfAborted("validateAgencHome");
 
-    // Step 2: resolve API key.
-    const apiKey = resolveApiKey();
-    throwIfAborted("resolveApiKey");
-
-    // Step 3: resolve user message. The router may have pre-resolved
+    // Step 2: resolve user message. The router may have pre-resolved
     // the prompt from argv; fall through to stdin when nothing was
     // passed (preserves the legacy piped-only path).
     const resolvedUserMessage =
@@ -772,7 +757,7 @@ export async function oneShotCLI(
         : await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
-    // Step 3b: shared local-runtime bootstrap contract. Both the
+    // Step 3: shared local-runtime bootstrap contract. Both the
     // one-shot CLI and TUI entry adapters construct their Session
     // through this helper so the entry surface owns less runtime
     // setup directly.
@@ -793,8 +778,8 @@ export async function oneShotCLI(
       memoryMdPath,
       shutdown,
     } = await bootstrapLocalRuntimeSession({
-      apiKey,
       env: process.env,
+      argv: process.argv,
       cwd: processCwd(),
       toolRegistryOptions,
     });
@@ -1007,7 +992,6 @@ type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   try {
     validateAgencHome();
-    const apiKey = resolveApiKey();
     const {
       sessionSlot,
       delegateSessionHolder,
@@ -1024,8 +1008,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       memoryMdPath,
       shutdown,
     } = await bootstrapLocalRuntimeSession({
-      apiKey,
       env: process.env,
+      argv: process.argv,
       cwd: processCwd(),
       toolRegistryOptions,
       ...(args.resumeId !== undefined ? { conversationId: args.resumeId } : {}),

@@ -1,3 +1,15 @@
+// Parity stub — mirrors openclaude's `cachedMicrocompact.ts`, which also ships
+// a `return false` stub in the public source snapshot because the real
+// implementation is behind an internal Anthropic feature flag
+// (`feature('CACHED_MICROCOMPACT')`) and is not included in the external build.
+//
+// `micro-compact.ts` consumes these exports exclusively inside a
+// `feature('CACHED_MICROCOMPACT')` guard plus an `isCachedMicrocompactEnabled()`
+// early-return. With both gates closed by default, every export below is
+// dead code in normal builds. The shapes exist so `micro-compact.ts` can be
+// ported verbatim from upstream without refactoring the import graph when a
+// real cached-MC implementation lands here.
+
 export type CachedMCConfig = {
   triggerThreshold: number;
   keepRecent: number;

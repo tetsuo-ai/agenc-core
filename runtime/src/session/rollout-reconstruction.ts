@@ -51,6 +51,33 @@ import {
   DEFAULT_MAX_TOOL_RESULT_BYTES,
 } from "../tools/execution.js";
 
+/**
+ * Verbatim port of codex `core/templates/compact/summary_prefix.md`
+ * (referenced at `codex-rs/core/src/compact.rs:43`). Codex's
+ * `is_summary_message` check (`compact.rs:410-412`) does
+ * `message.starts_with(format!("{SUMMARY_PREFIX}\n"))` — we mirror that
+ * exactly so a legacy compaction summary re-entering replay is not
+ * re-fed as a real user message on the next compaction pass.
+ *
+ * Keep this string byte-for-byte identical to codex's template. If
+ * codex updates the prefix, update here and bump the rollout schema
+ * version so older rollouts still match the old prefix via a fallback
+ * list.
+ */
+const COMPACT_SUMMARY_PREFIX =
+  "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
+
+/**
+ * Codex `is_summary_message` (`compact.rs:410-412`): a user message
+ * whose text begins with the rendered summary_prefix template + "\n"
+ * is the compaction summary re-fed into history. Treat as non-user
+ * so `collectUserMessages` does not recycle it into a new compaction
+ * bundle on replay.
+ */
+function isSummaryMessage(text: string): boolean {
+  return text.startsWith(`${COMPACT_SUMMARY_PREFIX}\n`);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Reconstruction types
 // ─────────────────────────────────────────────────────────────────────
@@ -111,30 +138,93 @@ function turnIdsCompatible(active?: string, item?: string): boolean {
 }
 
 /**
- * Contextual user-message open tags (codex `contextual_user_message.rs`).
- * A user message whose content is *only* one of these fragments is an
- * injection, not a real user-turn boundary — excluding them matches
- * codex `is_contextual_user_message_content` semantics.
+ * Contextual user-message fragment definitions (port of codex
+ * `instructions/src/fragment.rs` + `core/src/contextual_user_message.rs`).
+ *
+ * A contextual fragment is marked by a matching open and close tag pair
+ * (codex `ContextualUserFragmentDefinition::matches_text` at
+ * `instructions/src/fragment.rs:23-33`). A user message whose content
+ * is *only* a contextual fragment is an injection, not a real
+ * user-turn boundary.
+ *
+ * AGENTS.md uses the codex literal start marker `"# AGENTS.md instructions for "`
+ * and end marker `"</INSTRUCTIONS>"` (fragment.rs:4-5). The older
+ * `<agents_md>` tag was incorrect — do not re-add it.
  */
-const CONTEXTUAL_USER_OPEN_TAGS: ReadonlyArray<string> = [
-  "<environment_context>",
-  "<user_shell_command>",
-  "<turn_aborted>",
-  "<subagent_notification>",
-  "<agents_md>",
-  "<skill>",
-  "<hook_prompt>",
+interface ContextualFragmentDef {
+  readonly startMarker: string;
+  readonly endMarker: string;
+}
+
+const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
+  // AGENTS.md instructions (codex AGENTS_MD_FRAGMENT).
+  {
+    startMarker: "# AGENTS.md instructions for ",
+    endMarker: "</INSTRUCTIONS>",
+  },
+  // Environment context (codex ENVIRONMENT_CONTEXT_FRAGMENT).
+  {
+    startMarker: "<environment_context>",
+    endMarker: "</environment_context>",
+  },
+  // Skill fragment (codex SKILL_FRAGMENT).
+  { startMarker: "<skill>", endMarker: "</skill>" },
+  // User shell command (codex USER_SHELL_COMMAND_FRAGMENT).
+  {
+    startMarker: "<user_shell_command>",
+    endMarker: "</user_shell_command>",
+  },
+  // Turn aborted marker (codex TURN_ABORTED_FRAGMENT).
+  { startMarker: "<turn_aborted>", endMarker: "</turn_aborted>" },
+  // Subagent notification (codex SUBAGENT_NOTIFICATION_FRAGMENT).
+  {
+    startMarker: "<subagent_notification>",
+    endMarker: "</subagent_notification>",
+  },
 ];
 
+/**
+ * Port of codex `ContextualUserFragmentDefinition::matches_text`
+ * (`instructions/src/fragment.rs:23-33`). Requires BOTH the start
+ * marker and the close marker to match (after trimming leading/
+ * trailing whitespace). Case-insensitive per codex's
+ * `eq_ignore_ascii_case`.
+ */
+function fragmentMatchesText(text: string, def: ContextualFragmentDef): boolean {
+  const trimmedStart = text.trimStart();
+  const startCandidate = trimmedStart.slice(0, def.startMarker.length);
+  const startsWith =
+    startCandidate.length >= def.startMarker.length &&
+    startCandidate.toLowerCase() === def.startMarker.toLowerCase();
+  if (!startsWith) return false;
+  const trimmedEnd = trimmedStart.trimEnd();
+  if (trimmedEnd.length < def.endMarker.length) return false;
+  const endCandidate = trimmedEnd.slice(trimmedEnd.length - def.endMarker.length);
+  return endCandidate.toLowerCase() === def.endMarker.toLowerCase();
+}
+
 function isContextualUserText(text: string): boolean {
-  const trimmed = text.trimStart().toLowerCase();
-  return CONTEXTUAL_USER_OPEN_TAGS.some((tag) => trimmed.startsWith(tag));
+  return CONTEXTUAL_USER_FRAGMENTS.some((def) => fragmentMatchesText(text, def));
+}
+
+/**
+ * Exported alias so sibling modules (notably event-log-reducer.ts'
+ * `trim_pre_turn_context_updates` equivalent) share the exact same
+ * fragment-detection behavior we use for user-turn boundary
+ * classification. Mirrors codex `is_contextual_user_message_content`
+ * (event_mapping.rs:35).
+ */
+export function isContextualUserMessageContent(
+  content: ResponseItem["content"],
+): boolean {
+  return isContextualUserContent(content);
 }
 
 /**
  * Does this message content count as a contextual injection rather
  * than a real user turn? Accepts both string and content-array
  * payloads so it matches the permissive `ResponseItem.content` shape.
+ * Mirrors codex `is_contextual_user_message_content` (event_mapping.rs:35).
  */
 function isContextualUserContent(
   content: ResponseItem["content"],
@@ -143,33 +233,87 @@ function isContextualUserContent(
     return isContextualUserText(content);
   }
   if (!Array.isArray(content) || content.length === 0) return false;
-  // Any fragment being contextual is enough (matches codex `.any`).
+  // codex: `message.iter().any(is_contextual_user_fragment)` — any
+  // fragment being contextual is enough.
   return content.some((frag) => {
     const text = typeof frag.text === "string" ? frag.text : "";
     return (
       frag.type === "function_call_output" ||
       frag.type === "tool_use_result" ||
       frag.type === "tool_result" ||
-      (frag.type === "input_text" && isContextualUserText(text)) ||
       (typeof text === "string" && isContextualUserText(text))
     );
   });
 }
 
 /**
- * Is this ResponseItem a user-turn boundary? Port of codex
- * `context_manager::is_user_turn_boundary`. A user-role item is a
- * boundary only when its content is a *real* user message — not a
- * contextual injection (tool_result, function_call_output,
- * `<environment_context>...</environment_context>`, etc.).
+ * Port of codex `InterAgentCommunication::is_message_content`
+ * (protocol.rs:753). An assistant message is an inter-agent instruction
+ * if its content is a single text fragment that parses as a JSON
+ * object with the inter-agent-communication shape (author, recipient,
+ * content, triggerTurn, ...).
  */
-function isUserTurnBoundary(item: ResponseItem): boolean {
-  if (item.role !== "user") return false;
+function isInterAgentInstructionContent(
+  content: ResponseItem["content"],
+): boolean {
+  let text: string;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content) && content.length === 1) {
+    const frag = content[0];
+    if (!frag) return false;
+    // codex matches `[InputText|OutputText]` single-fragment content
+    // only — other fragment shapes disqualify.
+    const ty = frag.type;
+    if (ty !== "input_text" && ty !== "output_text") return false;
+    text = typeof frag.text === "string" ? frag.text : "";
+  } else {
+    return false;
+  }
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      author?: unknown;
+      recipient?: unknown;
+      content?: unknown;
+    };
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "author" in parsed &&
+      "recipient" in parsed &&
+      typeof parsed.content === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is this ResponseItem a user-turn boundary? Port of codex
+ * `context_manager::is_user_turn_boundary` (history.rs:703-710). A
+ * boundary is either:
+ *   - a real (non-contextual) user-role message, OR
+ *   - an assistant-role message whose content is an inter-agent
+ *     instruction (structured JSON produced by
+ *     `InterAgentCommunication::to_response_input_item`).
+ *
+ * Contextual user injections and tool-role messages never count.
+ */
+export function isUserTurnBoundary(item: ResponseItem): boolean {
   // Tool-role messages (function_call_output equivalents) never count.
+  if (item.role === "tool") return false;
   if (item.toolCallId !== undefined || item.toolName !== undefined) {
     return false;
   }
-  return !isContextualUserContent(item.content);
+  if (item.role === "user") {
+    return !isContextualUserContent(item.content);
+  }
+  if (item.role === "assistant") {
+    return isInterAgentInstructionContent(item.content);
+  }
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -564,8 +708,13 @@ function responseItemText(item: ResponseItem): string {
 
 /**
  * Replace text within a `ResponseItem`. Preserves the original shape
- * (string vs content-array); for content arrays we place the new
- * text into the first text-carrying fragment.
+ * (string vs content-array). For content arrays we collapse the
+ * fragment list into a single text-carrying fragment so the truncation
+ * marker applies to the whole payload (codex
+ * `ContextManager::process_item` → `truncate_function_output_payload`
+ * replaces the body wholesale; we mirror that here rather than
+ * rewriting only fragment 0, which would leave later fragments
+ * holding untruncated untrustworthy leftovers).
  */
 function withResponseItemText(
   item: ResponseItem,
@@ -575,21 +724,63 @@ function withResponseItemText(
     return { ...item, content: newText };
   }
   if (!Array.isArray(item.content)) return item;
-  const cloned = item.content.map((frag, i) =>
-    i === 0 ? { ...frag, text: newText } : frag,
-  );
-  return { ...item, content: cloned };
+  const firstFrag = item.content[0];
+  const preservedType =
+    firstFrag && typeof firstFrag.type === "string"
+      ? firstFrag.type
+      : "input_text";
+  return {
+    ...item,
+    content: [{ type: preservedType, text: newText }],
+  };
 }
 
 /**
- * Forward-replay truncation (codex `ContextManager::record_items`).
- * If the response_item's text payload exceeds the I-15 cap, rewrite
- * it with the truncation marker. Kept simpler than codex's
- * TruncationPolicy (head/middle/off): AgenC uses head-truncation via
- * the shared `capToolResult` helper so every tool-result-sized payload
- * on replay gets the same 400KB ceiling.
+ * Is this a tool-output response item (the only kind codex truncates
+ * on replay)? Port of codex `ContextManager::process_item` branch
+ * selection at `history.rs:375-409`: ONLY `FunctionCallOutput` and
+ * `CustomToolCallOutput` are truncated — `Message`, `Reasoning`,
+ * `FunctionCall`, `LocalShellCall`, and the other variants pass
+ * through unchanged.
+ *
+ * In AgenC's flattened `ResponseItem` shape, tool outputs surface as
+ * `role: "tool"` or a message carrying `toolCallId`/`toolName`, plus
+ * inline `function_call_output` / `tool_result` content fragments.
+ */
+function isToolOutputItem(item: ResponseItem): boolean {
+  if (item.role === "tool") return true;
+  if (item.toolCallId !== undefined || item.toolName !== undefined) {
+    return true;
+  }
+  if (Array.isArray(item.content)) {
+    return item.content.some(
+      (frag) =>
+        frag.type === "function_call_output" ||
+        frag.type === "tool_use_result" ||
+        frag.type === "tool_result",
+    );
+  }
+  return false;
+}
+
+/**
+ * Forward-replay truncation (codex `ContextManager::process_item` at
+ * `history.rs:375-409`). Codex only truncates `FunctionCallOutput` /
+ * `CustomToolCallOutput` payloads on replay — every other
+ * `ResponseItem` variant (including plain `Message`) is returned
+ * as-is. This port mirrors that branch exactly.
+ *
+ * The truncation cap here is AgenC's byte-based `DEFAULT_MAX_TOOL_RESULT_BYTES`
+ * (400 KB). Codex's equivalent uses the token-based
+ * `COMPACT_USER_MESSAGE_MAX_TOKENS` (20 000 tokens at `compact.rs:44`)
+ * for compacted-history rebuild — see the note on `buildCompactedHistory`
+ * below for the token-vs-byte divergence. When AgenC wires an
+ * approximate token counter we can reconcile that axis; for
+ * tool-output replay the byte cap matches the runtime's live I-15
+ * ceiling and is the correct input here.
  */
 function applyReplayTruncation(item: ResponseItem): ResponseItem {
+  if (!isToolOutputItem(item)) return item;
   const text = responseItemText(item);
   if (!text) return item;
   const cap = capToolResult(text, DEFAULT_MAX_TOOL_RESULT_BYTES);
@@ -602,34 +793,54 @@ function applyReplayTruncation(item: ResponseItem): ResponseItem {
  * user-turn text (non-contextual, non-summary). Contextual and
  * tool-role items are skipped so legacy compaction rebuild sees only
  * human input.
+ *
+ * Codex's collector filters on role=="user" only; the inter-agent
+ * assistant branch is not relevant here because compaction rebuild
+ * replays literal user prompts. We mirror that by restricting to
+ * user-role (the isUserTurnBoundary assistant branch is intentionally
+ * NOT hit because we also check role directly first).
  */
 function collectUserMessages(
   history: ReadonlyArray<ResponseItem>,
 ): string[] {
   const out: string[] = [];
   for (const item of history) {
+    if (item.role !== "user") continue;
     if (!isUserTurnBoundary(item)) continue;
     const text = responseItemText(item);
     if (!text) continue;
     // Skip compaction-summary messages so we don't re-feed an old
-    // summary into a new compaction (codex `is_summary_message`).
-    if (text.startsWith("# Session Summary\n")) continue;
+    // summary into a new compaction (codex `is_summary_message`,
+    // compact.rs:410-412).
+    if (isSummaryMessage(text)) continue;
     out.push(text);
   }
   return out;
 }
 
 /**
- * Codex `compact::build_compacted_history` minimal port. Rebuilds a
- * compacted history from scratch when the legacy `Compacted` item
- * had no inline `replacementHistory`. Structure:
- *   - replay prior real user messages (bounded by a rough token cap
- *     equal to 400KB chars to stay within I-15 limits),
+ * Codex `compact::build_compacted_history` minimal port
+ * (`compact.rs:465-531`). Rebuilds a compacted history from scratch
+ * when the legacy `Compacted` item had no inline `replacementHistory`.
+ * Structure:
+ *   - replay prior real user messages,
  *   - append the compaction summary as a final user-role message.
  *
  * Inlined rather than importing from a `compact/` subsystem because
  * rollout reconstruction must stay free of the compact subsystem's
  * runtime dependencies.
+ *
+ * **Divergence from codex (documented per invariant policy).** Codex
+ * bounds the packed user-message slice with
+ * `COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000` (compact.rs:44) using
+ * `approx_token_count`. AgenC does not have a synchronous tokenizer
+ * wired here, so we bound with `DEFAULT_MAX_TOOL_RESULT_BYTES`
+ * (400 KB) instead. Both caps target the same safety property — a
+ * single oversized user prompt cannot blow replay — but the byte cap
+ * is looser for short high-token-density text (CJK, dense code) and
+ * tighter for long ASCII prose. When AgenC lands a shared token
+ * estimator (see feature matrix token-budget items), swap in an
+ * equivalent 20k-token cap here and update the feature matrix note.
  */
 export function buildCompactedHistory(
   userMessages: ReadonlyArray<string>,

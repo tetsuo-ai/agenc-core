@@ -212,7 +212,11 @@ describe("rollout-reconstruction", () => {
     // function_call_output / tool_use_result must NOT count as a
     // user-turn boundary during reverse-scan. We verify this via
     // the thread_rolled_back drop logic, which counts boundaries
-    // the same way.
+    // the same way. Codex `trim_pre_turn_context_updates`
+    // (history.rs:428-456) additionally strips contextual user
+    // injections sitting *above* the cut index, so the
+    // `<environment_context>` fragment between real-u1 and real-u2
+    // is trimmed along with the rolled-back turn (history.rs:260).
     const items: RolloutItem[] = [
       { type: "response_item", payload: { role: "user", content: "real-u1" } },
       { type: "response_item", payload: { role: "assistant", content: "a1" } },
@@ -226,7 +230,8 @@ describe("rollout-reconstruction", () => {
           toolName: "shell",
         },
       },
-      // Contextual user injection: NOT a boundary.
+      // Contextual user injection: NOT a boundary; trimmed by
+      // `trim_pre_turn_context_updates` when it sits above the cut.
       {
         type: "response_item",
         payload: {
@@ -246,18 +251,17 @@ describe("rollout-reconstruction", () => {
       },
     ];
     const r = reconstructFromRollout(items);
-    // Rollback=1 must drop the real-u2 user turn + everything after
-    // it, leaving the two contextual/tool items and real-u1+a1. If
-    // isUserTurnBoundary incorrectly counted the contextual message
-    // as a boundary, it would have been dropped instead of real-u2.
     const userTexts = r.history
       .filter((h) => h.role === "user")
       .map((h) => h.content);
+    // real-u1 survives: the rolled-back turn is real-u2, not real-u1.
     expect(userTexts).toContain("real-u1");
     expect(userTexts).not.toContain("real-u2");
-    // Contextual injection survives the rollback (proves it wasn't
-    // treated as the user-turn boundary target).
-    expect(userTexts).toContain(
+    // Codex `trim_pre_turn_context_updates` (history.rs:428-456)
+    // strips the contextual <environment_context> injection that
+    // sat immediately above the rollback cut, so the fragment is
+    // dropped too.
+    expect(userTexts).not.toContain(
       "<environment_context>cwd=/tmp</environment_context>",
     );
   });
@@ -351,19 +355,43 @@ describe("rollout-reconstruction", () => {
     }
   });
 
-  test("replay truncation caps oversized response_item text", () => {
+  test("replay truncation caps oversized tool-output text only (codex process_item)", () => {
+    // Codex `ContextManager::process_item` (history.rs:375-409)
+    // only truncates FunctionCallOutput / CustomToolCallOutput on
+    // replay — plain Message (role=assistant/user) content passes
+    // through unchanged. Verify both branches.
     const big = "x".repeat(DEFAULT_MAX_TOOL_RESULT_BYTES + 10_000);
     const items: RolloutItem[] = [
+      // Assistant Message: must NOT be truncated.
       { type: "response_item", payload: { role: "assistant", content: big } },
+      // Tool-role output: MUST be truncated (codex FunctionCallOutput).
+      {
+        type: "response_item",
+        payload: {
+          role: "tool",
+          content: big,
+          toolCallId: "call-big",
+          toolName: "shell",
+        },
+      },
     ];
     const r = reconstructFromRollout(items);
-    expect(r.history).toHaveLength(1);
-    const kept = r.history[0]?.content;
-    expect(typeof kept).toBe("string");
-    expect((kept as string).length).toBeLessThanOrEqual(
+    expect(r.history).toHaveLength(2);
+
+    // Assistant Message payload must be preserved byte-for-byte.
+    const assistant = r.history[0];
+    expect(assistant?.role).toBe("assistant");
+    expect(typeof assistant?.content).toBe("string");
+    expect((assistant?.content as string).length).toBe(big.length);
+
+    // Tool-output payload must be capped to the I-15 ceiling.
+    const toolOut = r.history[1];
+    expect(toolOut?.role).toBe("tool");
+    expect(typeof toolOut?.content).toBe("string");
+    expect((toolOut?.content as string).length).toBeLessThanOrEqual(
       DEFAULT_MAX_TOOL_RESULT_BYTES,
     );
-    expect(kept as string).toContain("[truncated:");
+    expect(toolOut?.content as string).toContain("[truncated:");
   });
 
   test("reductionReport surfaces processed count + propagates to result", () => {
@@ -401,5 +429,164 @@ describe("rollout-reconstruction", () => {
     ];
     const r = reconstructFromRollout(items);
     expect(r.state.history.length).toBeLessThanOrEqual(2);
+  });
+
+  /**
+   * Port of codex
+   * `reconstruct_history_rollback_counts_inter_agent_assistant_turns`
+   * (codex-rs/core/src/session/rollout_reconstruction_tests.rs:479-571).
+   *
+   * Codex `is_user_turn_boundary` (history.rs:703-710) counts an
+   * assistant-role message whose content is an inter-agent
+   * instruction JSON payload as a user-turn boundary. Rolling back
+   * one user turn must therefore drop the inter-agent assistant turn
+   * (second turn) while keeping the first real user turn.
+   */
+  test("thread_rolled_back counts inter-agent-assistant turns", () => {
+    const interAgentPayload = JSON.stringify({
+      author: "root",
+      recipient: "root/worker",
+      other_recipients: [],
+      content: "continue",
+      trigger_turn: true,
+    });
+
+    const items: RolloutItem[] = [
+      // Turn 1: real user turn.
+      {
+        type: "event_msg",
+        payload: {
+          id: "1",
+          seq: 1,
+          msg: { type: "turn_started", payload: { turnId: "t1" } },
+        },
+      },
+      {
+        type: "response_item",
+        payload: { role: "user", content: "turn 1 user" },
+      },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "turn 1 assistant" },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "2",
+          seq: 2,
+          msg: { type: "turn_complete", payload: { turnId: "t1" } },
+        },
+      },
+      // Turn 2: inter-agent assistant-instruction turn (counts as a
+      // user-turn boundary per codex).
+      {
+        type: "event_msg",
+        payload: {
+          id: "3",
+          seq: 3,
+          msg: { type: "turn_started", payload: { turnId: "t2" } },
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          role: "assistant",
+          content: [{ type: "output_text", text: interAgentPayload }],
+        },
+      },
+      {
+        type: "response_item",
+        payload: { role: "assistant", content: "worker reply" },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "4",
+          seq: 4,
+          msg: { type: "turn_complete", payload: { turnId: "t2" } },
+        },
+      },
+      // Roll back 1 user turn → the inter-agent-assistant turn + its
+      // tail must be dropped, leaving only turn 1's history.
+      {
+        type: "event_msg",
+        payload: {
+          id: "5",
+          seq: 5,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+    ];
+
+    const r = reconstructFromRollout(items);
+    // After rollback, only turn 1's items survive.
+    const texts = r.history.map((h) =>
+      typeof h.content === "string"
+        ? h.content
+        : h.content.map((f) => f.text ?? "").join(""),
+    );
+    expect(texts).toContain("turn 1 user");
+    expect(texts).toContain("turn 1 assistant");
+    expect(texts).not.toContain(interAgentPayload);
+    expect(texts).not.toContain("worker reply");
+  });
+
+  /**
+   * AGENTS.md fragments use codex literal markers
+   * (`# AGENTS.md instructions for ` / `</INSTRUCTIONS>`). A
+   * content-array fragment whose text matches both the start and
+   * end markers is contextual and must NOT count as a user-turn
+   * boundary. The matcher is case-insensitive per
+   * `fragment.rs:23-33`.
+   */
+  test("AGENTS.md-style contextual fragments require matching close tag", () => {
+    const agentsMdBody =
+      "# AGENTS.md instructions for project\nsome body\n</INSTRUCTIONS>";
+    const fakeOpenOnly = "# AGENTS.md instructions for project\nsome body"; // no close → real user turn
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: agentsMdBody } },
+      { type: "response_item", payload: { role: "user", content: fakeOpenOnly } },
+      {
+        type: "event_msg",
+        payload: {
+          id: "r",
+          seq: 1,
+          msg: { type: "thread_rolled_back", payload: { numTurns: 1 } },
+        },
+      },
+    ];
+    const r = reconstructFromRollout(items);
+    // Only the fakeOpenOnly message counts as a boundary, so
+    // rollback=1 drops it. The contextual AGENTS.md fragment stays.
+    const texts = r.history.map((h) => h.content as string);
+    expect(texts).toContain(agentsMdBody);
+    expect(texts).not.toContain(fakeOpenOnly);
+  });
+
+  /**
+   * `collectUserMessages` / legacy compaction rebuild must skip a
+   * previously-emitted summary message (codex `is_summary_message`
+   * at `compact.rs:410-412`). We feed a history with the rendered
+   * summary prefix verbatim and assert that a subsequent legacy
+   * compaction rebuild does not re-feed it.
+   */
+  test("legacy compaction rebuild skips a prior summary_prefix message", () => {
+    const summaryPrefix =
+      "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
+    const priorSummary = `${summaryPrefix}\nprevious summary body`;
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "real ask" } },
+      // A previous compaction summary now sitting in history:
+      { type: "response_item", payload: { role: "user", content: priorSummary } },
+      // Legacy compaction (no replacement history):
+      { type: "compacted", payload: { message: "new summary blob" } },
+    ];
+    const r = reconstructFromRollout(items);
+    const texts = r.history.map((h) => h.content as string);
+    // Real user message is preserved, prior summary is not re-fed.
+    expect(texts).toContain("real ask");
+    expect(texts).not.toContain(priorSummary);
+    // New summary is the tail.
+    expect(texts[texts.length - 1]).toBe("new summary blob");
   });
 });

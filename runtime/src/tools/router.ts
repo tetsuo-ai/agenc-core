@@ -56,6 +56,7 @@ import {
   type PermissionRequestHook,
   type SandboxMode,
   type ApprovalCtx,
+  type GranularApprovalConfig,
   orchestrateToolCall,
   ApprovalRejectedError,
 } from "./orchestrator.js";
@@ -69,7 +70,7 @@ import type {
   PostToolUseFailureHook,
   PostToolUseHook,
   PreToolUseHook,
-} from "./tool-hooks.js";
+} from "./hooks.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -118,6 +119,14 @@ export interface LiveToolDispatchOptions {
   readonly source?: ToolCallSource;
   readonly approvalPolicy: ApprovalPolicy;
   readonly sandboxMode: SandboxMode;
+  /**
+   * Optional `GranularApprovalConfig` paired with
+   * `approvalPolicy === "granular"`. Piped through to
+   * `orchestrateToolCall` so the fs-policy fallback honors the
+   * `allows_sandbox_approval` branch and the sandbox-denial escalation
+   * honors `wants_no_sandbox_approval`.
+   */
+  readonly granular?: GranularApprovalConfig;
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   readonly approvalResolver?: ApprovalResolver;
@@ -303,28 +312,100 @@ export class ToolRouter {
       }));
   }
 
-  /** Look up a single spec. */
+  /**
+   * Look up a single spec. Port of codex `ToolRouter::find_spec`
+   * (router.rs:110-133).
+   *
+   * Codex matches by walking specs:
+   *   - `ToolSpec::Function(tool)`  — only when `tool_name.namespace.is_none()`
+   *     and `tool.name == tool_name.name`
+   *   - `ToolSpec::Freeform(tool)`  — same
+   *   - `ToolSpec::Namespace(ns)`   — only when
+   *     `tool_name.namespace == Some(ns.name)` and an inner tool
+   *     matches by `tool.name`
+   *
+   * AgenC stores both kinds in the flat `byName` map — MCP tools are
+   * flagged with `serverId`. The port preserves codex's exclusion:
+   *
+   *   1. A request with no namespace resolves only to specs whose
+   *      `serverId` is not set (plain function/freeform). A dotted
+   *      storage key like `"a.b"` from an MCP umbrella entry must not
+   *      match a bare `{name: "a.b"}` request.
+   *   2. A request with a namespace (e.g. `{namespace: "server", name: "tool"}`)
+   *      resolves either by the canonical MCP flat storage form
+   *      `"server.tool"` when the stored entry carries `serverId === "server"`,
+   *      or by the AgenC legacy flat dotted key lookup when no
+   *      MCP-server match exists.
+   *
+   * Accepts either a `ToolName` struct or a string. A string is parsed
+   * via `parseToolName` — which splits on the first dot, so
+   * `"system.readFile"` becomes `{namespace: "system", name: "readFile"}`
+   * and uses the namespaced path below.
+   */
   findSpec(toolName: ToolName | string): ConfiguredToolSpec | undefined {
-    const name =
-      typeof toolName === "string" ? toolName : toolName.namespace
-        ? `${toolName.namespace}.${toolName.name}`
-        : toolName.name;
-    return this.byName.get(name);
+    const parsed: ToolName =
+      typeof toolName === "string" ? parseToolName(toolName) : toolName;
+    const ns = parsed.namespace;
+    if (ns === undefined) {
+      // Plain function/freeform lookup. Codex router.rs:111-121 only
+      // matches `ToolSpec::Function` or `ToolSpec::Freeform`, never a
+      // namespace tool. AgenC flag: `serverId === undefined` means the
+      // spec is not an MCP umbrella, so it's safe to return.
+      const spec = this.byName.get(parsed.name);
+      if (spec === undefined) return undefined;
+      if (spec.serverId !== undefined) return undefined;
+      return spec;
+    }
+    // Namespaced lookup. Codex router.rs:122-131 only accepts a
+    // `ToolSpec::Namespace` spec with matching `namespace.name`. In
+    // AgenC, MCP tools live in the flat map under `serverId.name` with
+    // `serverId === namespace`. Try the dotted storage key first, then
+    // fall back to a bare `name` lookup whose entry's `serverId`
+    // matches the request's namespace (defensive — catches MCP tools
+    // registered under the bare inner name).
+    const dotted = `${ns}.${parsed.name}`;
+    const dottedSpec = this.byName.get(dotted);
+    if (dottedSpec !== undefined) return dottedSpec;
+    const bare = this.byName.get(parsed.name);
+    if (bare !== undefined && bare.serverId === ns) return bare;
+    return undefined;
   }
 
   /**
-   * Port of codex `tool_supports_parallel` (router.rs:161-169).
+   * Port of codex `tool_supports_parallel` (router.rs:142-169).
    *
    *   - MCP tools: parallel iff the owning server is in the allowlist.
-   *   - Everything else: check the registered spec's
+   *   - Namespaced tool names (`tool_name.namespace.is_some()`): hard
+   *     `false` regardless of the spec flag. Matches codex
+   *     `configured_tool_supports_parallel` (router.rs:142-145).
+   *   - Non-Function/Freeform spec kinds: codex hard-codes `false` for
+   *     `ToolSpec::Namespace | ToolSpec::ToolSearch | ToolSpec::LocalShell |
+   *     ToolSpec::ImageGeneration | ToolSpec::WebSearch` (router.rs:
+   *     150-158). AgenC detects these by spec shape — any spec whose
+   *     `tool.name` matches a forbidden built-in returns `false`.
+   *   - Everything else: honor the registered spec's
    *     `supportsParallelToolCalls` flag.
    */
   toolSupportsParallel(call: ToolCall): boolean {
     if (call.payload.kind === "mcp") {
       return this.parallelMcpServerNames.has(call.payload.server);
     }
+    // Namespaced tool names can never parallelize — codex parity
+    // (router.rs:142-145). Checked BEFORE spec lookup so a namespace-
+    // flagged call never leaks a true via the underlying spec's
+    // `supportsParallelToolCalls` flag.
+    if (call.toolName.namespace !== undefined) {
+      return false;
+    }
     const spec = this.findSpec(call.toolName);
-    return spec?.supportsParallelToolCalls === true;
+    if (spec === undefined) return false;
+    if (!spec.supportsParallelToolCalls) return false;
+    // Hard-false list — spec variants codex forbids from parallel:
+    // Namespace / ToolSearch / LocalShell / ImageGeneration / WebSearch
+    // (router.rs:150-158). AgenC carries these as plain tool entries
+    // rather than a ToolSpec union, so guard by the canonical name.
+    if (isNonParallelSpecTool(spec.tool.name)) return false;
+    return true;
   }
 
   /**
@@ -453,6 +534,7 @@ export class ToolRouter {
         sandboxMode: opts.sandboxMode,
         payload: routed.payload,
         approvalArgs: parsedArgs,
+        ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
           ? { permissionHooks: opts.permissionHooks }
           : {}),
@@ -747,6 +829,37 @@ function parseToolSearchArguments(
     }
   }
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Non-parallel spec variants — codex router.rs:150-158 hard-false list.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Tool names corresponding to codex `ToolSpec` variants that codex
+ * hard-codes as non-parallel in `configured_tool_supports_parallel`:
+ *
+ *   - `ToolSpec::Namespace(_)`        — MCP umbrella (handled by name/
+ *     serverId above; listed here for spec-registry entries that carry
+ *     the umbrella tool-name directly)
+ *   - `ToolSpec::ToolSearch { .. }`   — `tool_search`
+ *   - `ToolSpec::LocalShell {}`       — `local_shell`
+ *   - `ToolSpec::ImageGeneration`     — `image_generation`
+ *   - `ToolSpec::WebSearch`           — `web_search`
+ *
+ * Any tool registered under one of these names returns `false` from
+ * `toolSupportsParallel` regardless of its own
+ * `supportsParallelToolCalls` flag.
+ */
+const NON_PARALLEL_SPEC_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "tool_search",
+  "local_shell",
+  "image_generation",
+  "web_search",
+]);
+
+function isNonParallelSpecTool(toolName: string): boolean {
+  return NON_PARALLEL_SPEC_TOOL_NAMES.has(toolName);
 }
 
 // ─────────────────────────────────────────────────────────────────────

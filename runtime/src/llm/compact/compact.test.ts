@@ -39,10 +39,17 @@ import {
 } from 'vitest'
 import type { Mock } from 'vitest'
 
+vi.mock('axios', () => ({
+  default: {},
+  AxiosError: class AxiosError extends Error {},
+}))
+
 import {
   CompactionShrinkRatioError,
   DEFAULT_COMPACTION_MIN_SHRINK_RATIO,
   assertCompactionShrank,
+  buildPostCompactMessages,
+  createReferenceContextMessages,
   getCompactionMinShrinkRatio,
 } from './compact.ts'
 
@@ -148,6 +155,49 @@ describe('assertCompactionShrank (I-18)', () => {
   })
 })
 
+describe('mid-turn initial context injection', () => {
+  test('buildPostCompactMessages inserts reference context immediately before the last real user message', () => {
+    const referenceContextMessages = createReferenceContextMessages({
+      cwd: '/tmp/project',
+      approvalPolicy: 'never',
+      sandboxPolicy: 'read_only',
+      model: 'claude-sonnet-4',
+    })
+
+    const built = buildPostCompactMessages({
+      boundaryMarker: {
+        role: 'system',
+        content: '[boundary] compacted',
+      } as never,
+      summaryMessages: [
+        {
+          type: 'user',
+          isCompactSummary: true,
+          message: {
+            role: 'user',
+            content: 'summary',
+          },
+        } as never,
+      ],
+      referenceContextMessages,
+      messagesToKeep: [
+        { role: 'user', content: 'older user' } as never,
+        { role: 'user', content: 'latest user' } as never,
+      ],
+      attachments: [],
+      hookResults: [],
+    })
+
+    expect(built.map((message) => (message as { content?: string }).content ?? (message as { message?: { content?: string } }).message?.content)).toEqual([
+      '[boundary] compacted',
+      'summary',
+      'older user',
+      expect.stringContaining('<reference_context_item>'),
+      'latest user',
+    ])
+  })
+})
+
 // ─────────────────────────────────────────────────────────────────────
 // Part 2: autoCompact circuit-breaker increment on I-18 failure.
 //
@@ -232,6 +282,7 @@ function mkToolUseContext(): unknown {
     setStreamMode: () => {},
     setResponseLength: () => {},
     onCompactProgress: () => {},
+    emitWarning: vi.fn(),
     queryTracking: undefined,
   }
 }
@@ -250,6 +301,55 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
     delete process.env.DISABLE_COMPACT
     delete process.env.DISABLE_AUTO_COMPACT
     vi.clearAllMocks()
+  })
+
+  test('session-memory fast path carries reference context injection for before_last_user_message', async () => {
+    const { autoCompactIfNeeded } = await import('./auto-compact.ts')
+    const smCompact = await import('./session-memory-compact.js')
+    vi.mocked(smCompact.trySessionMemoryCompaction).mockResolvedValueOnce({
+      boundaryMarker: {
+        role: 'system',
+        content: '[boundary] compacted',
+      },
+      summaryMessages: [
+        {
+          type: 'user',
+          isCompactSummary: true,
+          message: { role: 'user', content: 'summary' },
+        },
+      ],
+      attachments: [],
+      hookResults: [],
+      messagesToKeep: [{ role: 'user', content: 'latest user' }],
+    } as never)
+
+    const toolUseContext = mkToolUseContext() as {
+      referenceContextItem?: unknown
+    }
+    toolUseContext.referenceContextItem = {
+      cwd: '/tmp/project',
+      approvalPolicy: 'never',
+      sandboxPolicy: 'read_only',
+      model: 'claude-sonnet-4',
+    }
+
+    const result = await autoCompactIfNeeded(
+      makeFatMessages(40),
+      toolUseContext as never,
+      {} as never,
+      'repl_main_thread',
+      undefined,
+      0,
+      'before_last_user_message',
+    )
+
+    expect(result.wasCompacted).toBe(true)
+    expect(
+      result.compactionResult?.referenceContextMessages?.[0],
+    ).toMatchObject({
+      role: 'user',
+      content: expect.stringContaining('<reference_context_item>'),
+    })
   })
 
   afterEach(() => {
@@ -274,6 +374,9 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
     const { autoCompactIfNeeded, shouldAutoCompact } = await import(
       './auto-compact.ts'
     )
+    const context = mkToolUseContext() as {
+      emitWarning: Mock
+    }
     // Pad messages so tokenCountWithEstimation clears the 1% threshold.
     const messages = makeFatMessages(40)
     // Smoke-check the upstream gate so a failure in `shouldAutoCompact`
@@ -298,7 +401,7 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
 
     const result = await autoCompactIfNeeded(
       messages,
-      mkToolUseContext() as never,
+      context as never,
       {} as never, // cacheSafeParams — irrelevant because compactConversation is mocked
       'repl_main_thread',
       tracking,
@@ -309,6 +412,15 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
     // On I-18 failure the caller should observe the increment so
     // subsequent turns can enforce MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES.
     expect(result.consecutiveFailures).toBe(1)
+    expect(context.emitWarning).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cause: 'auto_compact_failed',
+      }),
+    )
+    expect(context.emitWarning.mock.calls[0]?.[0]?.message).toContain(
+      'auto compact failed',
+    )
+    expect(result.warning?.cause).toBe('auto_compact_failed')
   })
 
   test('consecutiveFailures grows by 1 per failed turn', async () => {

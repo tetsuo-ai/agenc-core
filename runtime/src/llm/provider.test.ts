@@ -101,6 +101,32 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test("preserves Anthropic context-management config in factory state", () => {
+    const provider = withEnv(
+      {
+        ANTHROPIC_API_KEY: "anthropic-test",
+      },
+      () =>
+        createProvider("anthropic", {
+          model: "claude-sonnet-4.5",
+          extra: {
+            contextManagement: {
+              edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+            },
+          },
+        }),
+    );
+
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      model: "claude-sonnet-4.5",
+      extra: {
+        contextManagement: {
+          edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+        },
+      },
+    });
+  });
+
   test("uses the documented Anthropic default model when no model override is supplied", () => {
     const provider = withEnv(
       {

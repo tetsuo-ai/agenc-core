@@ -3,12 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   ensureAgentTaskRegistered,
+  lastTokenInfoFromRollout,
   latestPersistedAgentTask,
   maybePrewarmAgentTaskRegistration,
+  recordInitialHistoryOnResume,
   restorePersistedAgentTask,
   type RegisteredAgentTask,
   type SessionAgentTask,
 } from "./agent-task-lifecycle.js";
+import type { RolloutItem } from "./rollout-item.js";
 import {
   Session,
   type Event,
@@ -290,5 +293,150 @@ describe("agent task lifecycle", () => {
       taskId: "task-3",
       registeredAt: "2026-04-21T00:00:02Z",
     });
+  });
+
+  it("lastTokenInfoFromRollout returns the newest token_count payload", () => {
+    const items: RolloutItem[] = [
+      {
+        type: "event_msg",
+        payload: {
+          id: "a",
+          seq: 1,
+          msg: {
+            type: "token_count",
+            payload: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          },
+        },
+      },
+      { type: "response_item", payload: { role: "user", content: "ok" } },
+      {
+        type: "event_msg",
+        payload: {
+          id: "b",
+          seq: 2,
+          msg: {
+            type: "token_count",
+            payload: {
+              promptTokens: 100,
+              completionTokens: 50,
+              totalTokens: 150,
+            },
+          },
+        },
+      },
+    ];
+    expect(lastTokenInfoFromRollout(items)).toEqual({
+      promptTokens: 100,
+      completionTokens: 50,
+      totalTokens: 150,
+    });
+  });
+
+  it("lastTokenInfoFromRollout returns undefined when no token_count ever emitted", () => {
+    const items: RolloutItem[] = [
+      { type: "response_item", payload: { role: "user", content: "ok" } },
+    ];
+    expect(lastTokenInfoFromRollout(items)).toBeUndefined();
+  });
+
+  it("recordInitialHistoryOnResume restores task, emits model-change warning, seeds token usage", async () => {
+    const registeredTask: RegisteredAgentTask = {
+      agentRuntimeId: "agent-resume",
+      taskId: "task-resume",
+      registeredAt: "2026-04-21T00:00:00Z",
+    };
+    const session = buildSession({
+      services: {
+        agentIdentityManager: {
+          ensureRegistered: async () => {},
+          registerTask: vi.fn(async () => null),
+          taskMatchesCurrentIdentity: vi.fn(async () => true),
+        } as SessionServices["agentIdentityManager"],
+      },
+    });
+
+    const rollout: RolloutItem[] = [
+      {
+        type: "session_state",
+        payload: { agentTask: registeredTask },
+      },
+      {
+        type: "event_msg",
+        payload: {
+          id: "tok",
+          seq: 1,
+          msg: {
+            type: "token_count",
+            payload: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+          },
+        },
+      },
+    ];
+
+    await recordInitialHistoryOnResume(session, rollout, {
+      previousModel: "grok-3",
+      currentModel: "grok-4-fast",
+    });
+
+    // 1. Agent task restored.
+    expect(await readStoredAgentTask(session)).toEqual(registeredTask);
+
+    // 2. Initial token usage seeded on session state.
+    const seededUsage = await session.state.with(
+      (state) =>
+        (state as { initialTokenUsage?: { totalTokens?: number } })
+          .initialTokenUsage,
+    );
+    expect(seededUsage).toEqual({
+      promptTokens: 7,
+      completionTokens: 3,
+      totalTokens: 10,
+    });
+
+    // 3. Model-change warning emitted onto the session event stream.
+    const warnings: Array<{ type: string; cause?: string; message?: string }> =
+      [];
+    while (true) {
+      const next = session.txEvent.tryRecv();
+      if (!next) break;
+      const payload = next.msg.payload as {
+        cause?: string;
+        message?: string;
+      };
+      warnings.push({
+        type: next.msg.type,
+        cause: payload?.cause,
+        message: payload?.message,
+      });
+    }
+    expect(
+      warnings.some(
+        (w) =>
+          w.type === "warning" &&
+          w.cause === "resumed_with_different_model" &&
+          (w.message ?? "").includes("grok-3") &&
+          (w.message ?? "").includes("grok-4-fast"),
+      ),
+    ).toBe(true);
+  });
+
+  it("recordInitialHistoryOnResume is quiet when model matches", async () => {
+    const session = buildSession({
+      services: {
+        agentIdentityManager: {
+          ensureRegistered: async () => {},
+          registerTask: vi.fn(async () => null),
+          taskMatchesCurrentIdentity: vi.fn(async () => true),
+        } as SessionServices["agentIdentityManager"],
+      },
+    });
+
+    await recordInitialHistoryOnResume(session, [], {
+      previousModel: "grok-4-fast",
+      currentModel: "grok-4-fast",
+    });
+
+    // No events emitted, no state mutations.
+    expect(session.txEvent.tryRecv()).toBeUndefined();
   });
 });

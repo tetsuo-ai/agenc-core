@@ -65,6 +65,7 @@ import {
   type PermissionRuleValue,
   type ToolPermissionContext,
 } from "./types.js";
+import { isAutoModeGateEnabled } from "./mode.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./permissions/settings"`
@@ -589,6 +590,10 @@ export interface InitialPermissionModeInput {
   readonly policySettings?: SettingsJson | null;
   /** Resolved `userSettings.permissions.defaultMode`. */
   readonly userDefaultMode?: string;
+  /** Effective auto-mode availability after settings resolution. */
+  readonly isAutoModeAvailable?: boolean;
+  /** Live circuit-breaker state for auto mode. */
+  readonly isAutoModeGateEnabled?: boolean;
 }
 
 export interface InitialPermissionModeResult {
@@ -614,6 +619,8 @@ export function initialPermissionModeFromCLI(
   const disableBypass =
     input.policySettings?.permissions?.disableBypassPermissionsMode ===
     "disable";
+  const autoModeDisabled = input.isAutoModeAvailable === false;
+  const autoModeGateEnabled = input.isAutoModeGateEnabled !== false;
 
   const ordered: PermissionMode[] = [];
   if (input.dangerouslySkipPermissions) ordered.push("bypassPermissions");
@@ -630,10 +637,75 @@ export function initialPermissionModeFromCLI(
       notification = "Bypass permissions mode was disabled by settings";
       continue;
     }
+    if (mode === "auto" && autoModeDisabled) {
+      notification = "Auto mode was disabled by settings";
+      continue;
+    }
+    if (mode === "auto" && !autoModeGateEnabled) {
+      notification = "Auto mode is unavailable because the live gate is closed";
+      continue;
+    }
     return { mode, notification };
   }
 
   return { mode: "default", notification };
+}
+
+function getAutoModeDisableSetting(
+  json: SettingsJson | null,
+): "disable" | "enable" | null {
+  if (!json) return null;
+  const permissionValue = json.permissions?.disableAutoMode;
+  if (permissionValue === "disable" || permissionValue === "enable") {
+    return permissionValue;
+  }
+  const rootValue = json.disableAutoMode;
+  if (rootValue === "disable" || rootValue === "enable") {
+    return rootValue;
+  }
+  return null;
+}
+
+async function loadModeSettingsInputs(
+  env?: DiskEnv,
+): Promise<{
+  readonly policySettings: SettingsJson | null;
+  readonly defaultMode?: string;
+  readonly autoModeDisabled: boolean;
+}> {
+  const sources: readonly PermissionRuleSource[] = [
+    "userSettings",
+    "projectSettings",
+    "localSettings",
+    "flagSettings",
+    "policySettings",
+  ];
+
+  let defaultMode: string | undefined;
+  let autoModeDisabled = false;
+  let policySettings: SettingsJson | null = null;
+
+  for (const source of sources) {
+    const path = getSettingsFilePathForSource(source, env);
+    if (!path) continue;
+    const json = await readSettingsFileLenient(path);
+    if (json === null) continue;
+    if (source === "policySettings") {
+      policySettings = json;
+    }
+    if (
+      typeof json.permissions?.defaultMode === "string" &&
+      json.permissions.defaultMode.length > 0
+    ) {
+      defaultMode = json.permissions.defaultMode;
+    }
+    const autoSetting = getAutoModeDisableSetting(json);
+    if (autoSetting !== null) {
+      autoModeDisabled = autoSetting === "disable";
+    }
+  }
+
+  return { policySettings, defaultMode, autoModeDisabled };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -668,27 +740,27 @@ export async function initializeToolPermissionContext(
   opts: InitializeToolPermissionContextOpts = {},
 ): Promise<InitializeToolPermissionContextResult> {
   const warnings: string[] = [];
-  const policyPath = getSettingsFilePathForSource("policySettings", opts.env);
-  const policyJson = policyPath
-    ? await readSettingsFileLenient(policyPath)
-    : null;
+  const { policySettings, defaultMode, autoModeDisabled } =
+    await loadModeSettingsInputs(opts.env);
 
-  const userPath = getSettingsFilePathForSource("userSettings", opts.env);
-  const userJson = userPath ? await readSettingsFileLenient(userPath) : null;
-
-  const { mode } = initialPermissionModeFromCLI({
+  const { mode, notification } = initialPermissionModeFromCLI({
     permissionModeCli: opts.permissionMode,
     dangerouslySkipPermissions: opts.allowDangerouslySkipPermissions,
-    policySettings: policyJson,
-    userDefaultMode: userJson?.permissions?.defaultMode,
+    policySettings,
+    userDefaultMode: defaultMode,
+    isAutoModeAvailable: !autoModeDisabled,
+    isAutoModeGateEnabled: isAutoModeGateEnabled(),
   });
+  if (notification) {
+    warnings.push(notification);
+  }
 
-  const effectiveMode: PermissionMode = opts.permissionMode ?? mode;
+  const effectiveMode: PermissionMode = mode;
 
   const isBypassPermissionsModeAvailable =
     (effectiveMode === "bypassPermissions" ||
       opts.allowDangerouslySkipPermissions === true) &&
-    policyJson?.permissions?.disableBypassPermissionsMode !== "disable";
+    policySettings?.permissions?.disableBypassPermissionsMode !== "disable";
 
   // Parse CLI rule flags.
   const cliAllowRules = parseToolListFromCLI(opts.cliAllows ?? []).map(
@@ -707,6 +779,7 @@ export async function initializeToolPermissionContext(
   let ctx: ToolPermissionContext = createEmptyToolPermissionContext({
     mode: effectiveMode,
     isBypassPermissionsModeAvailable,
+    isAutoModeAvailable: !autoModeDisabled,
   });
 
   // Apply CLI rules first (they carry the lowest persistence weight
@@ -743,6 +816,8 @@ export async function initializeToolPermissionContext(
   }
 
   // Merge settings.permissions.additionalDirectories (user settings).
+  const userPath = getSettingsFilePathForSource("userSettings", opts.env);
+  const userJson = userPath ? await readSettingsFileLenient(userPath) : null;
   const settingsDirs = collectSettingsDirs(userJson);
   if (settingsDirs.length > 0) {
     ctx = applyPermissionUpdate(ctx, {

@@ -11,6 +11,7 @@ export interface AnthropicProviderConfig extends LLMProviderConfig {
   readonly baseURL?: string;
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
+  readonly contextManagement?: Record<string, unknown>;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
 }

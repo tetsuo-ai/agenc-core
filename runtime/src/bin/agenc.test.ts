@@ -1682,7 +1682,8 @@ describe("main() full-IIFE smoke", () => {
 
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
-    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
 
     const providerMod = await import("../llm/provider.js");
@@ -1715,6 +1716,12 @@ describe("main() full-IIFE smoke", () => {
       const code = await oneShotCLI("/help\nextra");
       expect(code).toBe(1);
       expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "openai",
+        expect.objectContaining({
+          apiKey: "stub-openai-key-for-test",
+        }),
+      );
       expect(startMcpSpy).toHaveBeenCalledTimes(1);
       expect(runTurnSpy).not.toHaveBeenCalled();
       expect(

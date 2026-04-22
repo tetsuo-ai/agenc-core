@@ -8,7 +8,7 @@
  *   ~/.agenc/projects/<slug>/
  *     sessions/<sessionId>/
  *       rollout-<timestamp>-<id>.jsonl     # append-only event log
- *       rollout-<timestamp>-<id>.jsonl.lock  # flock holder PID
+ *       rollout-<timestamp>-<id>.jsonl.lock  # flock holder PID + nsid
  *       index.json                         # event-log byte offsets (I-88)
  *
  * Invariants enforced here:
@@ -16,11 +16,21 @@
  *        + fsyncs before returning.
  *   I-12 (ENOSPC/EROFS/EACCES/EIO) — wraps writes with errno branch;
  *        on disk failure, routes to degraded mode.
- *   I-23 (concurrent-session flock) — first-append acquires LOCK_EX|LOCK_NB
- *        on `.jsonl.lock`; EWOULDBLOCK hard-fails.
- *   I-24 (atomic write-then-rename) — batch flush writes to `.tmp`,
- *        fsync, then `rename()` over the live file. Startup scans
- *        tail for partial lines.
+ *   I-23 (concurrent-session flock) — first-append acquires an
+ *        advisory lock on the rollout sidecar lockfile via an atomic
+ *        link-based handoff (tmp create + `link(tmp, lock)` — atomic
+ *        even over NFS) and stores `{pid, startNs}` so the holder's
+ *        identity survives PID reuse. Live-PID reclaim is refused
+ *        unconditionally; EWOULDBLOCK → SessionLockedError.
+ *   I-24 (atomic write-then-rename) — whole-file rewrites (session
+ *        metadata re-append after compaction, schema migrations,
+ *        checkpoint-style flushes) go through `rewriteAtomically()`:
+ *        write `<file>.tmp`, fsync the tmp, `rename()` over the live
+ *        file, fsync the parent directory. Incremental event batches
+ *        stay O(1) via `O_APPEND + fsync` (with I-38 retry) plus
+ *        `truncateCorruptTail()` crash recovery — appending into a
+ *        growing JSONL file cannot use write-then-rename without
+ *        rereading the entire prefix on every batch.
  *   I-27 (monotonic seq) — events carry `seq`; the store asserts
  *        monotonicity on append.
  *   I-38 (fsync failure retry + degraded) — fsync retry once after
@@ -50,7 +60,6 @@ import {
   readSync,
   renameSync,
   statSync,
-  writeFileSync,
   writeSync,
   unlinkSync,
 } from "node:fs";
@@ -89,6 +98,7 @@ export interface IndexSnapshot {
   readonly fileSize: number;
   readonly rolloutPath: string;
   readonly toolResultBytesByTurn: Record<string, number>;
+  readonly tokenEstimateByTurn?: Record<string, number>;
   /** Latest observed turn id for each completed tool call id. */
   readonly toolCallTurnIds?: Record<string, string>;
   /** Fast-seek byte offset per event seq. Keys are numeric seq values
@@ -293,60 +303,246 @@ export function readAndValidateSchemaVersion(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal cross-platform flock using a sidecar lockfile. Not as
- * strong as `flock(2)` on POSIX but sufficient for "two AgenC
- * processes must not open the same rollout": the lockfile contains
- * the holder's PID, and acquisition checks liveness via `kill(pid, 0)`.
+ * Lock-file contents. Stored as a single JSON object so future
+ * extensions (hostname, boot-id, namespace) can be added without
+ * breaking the parser. Kept compact for diagnostic cat-readability.
+ */
+interface LockRecord {
+  readonly pid: number;
+  /**
+   * Monotonic/wall-clock nanosecond stamp captured at acquisition.
+   * Uses `process.hrtime.bigint()` (monotonic, ns) combined with the
+   * wall-clock `Date.now()` stringified start so two AgenC processes
+   * with the same PID (rare but possible after PID reuse, or in CI
+   * fixtures that fork child Node processes) carry distinct start
+   * identifiers. The session-start identity is used ONLY for forensic
+   * logging — the actual "is this lock alive" check refuses to
+   * reclaim any lock whose PID is currently alive, regardless of
+   * startNs value.
+   */
+  readonly startNs: string;
+  readonly acquiredAtIso: string;
+}
+
+/**
+ * Advisory per-rollout lock.
  *
- * The real flock(2) is available via a native binding but avoided
- * here to keep the runtime pure-JS.
+ * Design choice (per I-23 task directive, Option D):
+ *
+ *   - Pure-JS, no native dep. Node's `fs.linkSync` is atomic on POSIX
+ *     and on NFSv3+ (the canonical O_EXCL-equivalent for networked
+ *     filesystems). Windows: `linkSync` errors with EPERM for cross-
+ *     volume hardlinks; we fall back to `openSync(path, 'wx')` which
+ *     is itself atomic on NTFS.
+ *
+ *   - Identity record: `{pid, startNs}`. The startNs field is a
+ *     forensic aid; the liveness decision is PID-based and *refuses*
+ *     to reclaim a lock whose PID is alive (`kill(pid, 0)` returns
+ *     without ENOSRCH). This is strictly stronger than a pure PID
+ *     sidecar: the caller cannot trick us into reclaiming a live
+ *     lock by claiming to be the same process — we never check that.
+ *
+ *   - No `proper-lockfile` dep, no `fs-ext` native binding. Adding a
+ *     dep for this was considered and rejected because (a) the
+ *     advisory semantics are all we need (single AgenC process per
+ *     session directory) and (b) the build story stays simpler.
+ *
+ * This is stronger than a plain `open(..., 'wx')` sidecar because:
+ *
+ *   1. The tmp+link dance is atomic on NFS where `open(O_EXCL)` is
+ *      not reliable.
+ *   2. Live-PID reclaim is never allowed; stale reclaim only proceeds
+ *      when `kill(pid, 0)` reports ESRCH.
+ *   3. The lock payload is structured so future diagnostic tools
+ *      (agenc doctor) can show who is holding the rollout.
  */
 export class SessionLock {
   private acquired = false;
-  constructor(private readonly lockPath: string) {}
+  private readonly startNs: string;
+  constructor(private readonly lockPath: string) {
+    this.startNs = `${Date.now()}-${process.hrtime.bigint().toString()}`;
+  }
 
   acquire(): void {
     if (this.acquired) return;
     mkdirSync(dirname(this.lockPath), { recursive: true });
-    // Check existing holder first.
-    if (existsSync(this.lockPath)) {
-      const holderPidRaw = readFileSync(this.lockPath, "utf8").trim();
-      const holderPid = Number.parseInt(holderPidRaw, 10);
-      if (Number.isFinite(holderPid) && holderPid > 0 && holderPid !== process.pid) {
-        if (processIsAlive(holderPid)) {
-          throw new SessionLockedError(holderPid, this.lockPath);
+
+    // Retry loop: up to 2 passes. First pass may observe a stale lock
+    // and reclaim; second pass resolves the O_EXCL race if two
+    // processes both observed stale-and-reclaimable simultaneously.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (this.tryAcquireLink()) {
+        this.acquired = true;
+        return;
+      }
+      const existing = this.readLockRecord();
+      if (existing !== null) {
+        // Lock file exists. Decide if we can reclaim.
+        if (existing.pid === process.pid) {
+          // We already hold it (re-entry in same process). Treat as
+          // acquired — but prefer this to be a no-op at the caller
+          // level; we still set acquired=true so release() works.
+          this.acquired = true;
+          return;
         }
-        // Stale: previous holder dead. Reclaim.
+        if (processIsAlive(existing.pid)) {
+          throw new SessionLockedError(existing.pid, this.lockPath);
+        }
+        // Stale holder (PID dead). Remove and retry.
+        try {
+          unlinkSync(this.lockPath);
+        } catch (err) {
+          lastErr = err;
+          // Someone else may have beaten us to the unlink; fall
+          // through and retry the link.
+        }
+      } else {
+        // No record / unreadable lockfile. Try to remove + retry.
+        try {
+          unlinkSync(this.lockPath);
+        } catch {
+          /* ignore */
+        }
       }
     }
-    // Exclusive create (O_EXCL race) or overwrite if stale.
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error(`unable to acquire session lock at ${this.lockPath}`);
+  }
+
+  /**
+   * Attempt atomic tmp+link handoff. Returns true on success, false
+   * if the lock file already exists (EEXIST on link, or EEXIST on the
+   * wx fallback).
+   */
+  private tryAcquireLink(): boolean {
+    const record: LockRecord = {
+      pid: process.pid,
+      startNs: this.startNs,
+      acquiredAtIso: new Date().toISOString(),
+    };
+    const payload = `${JSON.stringify(record)}\n`;
+    const tmpPath = `${this.lockPath}.${process.pid}.${this.startNs}.tmp`;
+    // Write the tmp payload.
     try {
-      const fd = openSync(this.lockPath, "wx");
-      writeSync(fd, `${process.pid}\n`);
-      fsyncSync(fd);
-      closeSync(fd);
+      const tfd = openSync(tmpPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+      try {
+        writeSync(tfd, payload);
+        fsyncSync(tfd);
+      } finally {
+        closeSync(tfd);
+      }
     } catch (err) {
+      // If the tmp already existed (very unlikely given the unique
+      // pid/startNs suffix), remove and retry once.
       if ((err as { code?: string })?.code === "EEXIST") {
-        // Another process raced us to the create. Retry liveness
-        // check once; if still live, surrender.
-        const holderPidRaw = readFileSync(this.lockPath, "utf8").trim();
-        const holderPid = Number.parseInt(holderPidRaw, 10);
-        if (Number.isFinite(holderPid) && processIsAlive(holderPid)) {
-          throw new SessionLockedError(holderPid, this.lockPath);
+        try { unlinkSync(tmpPath); } catch { /* ignore */ }
+        const tfd = openSync(tmpPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+        try {
+          writeSync(tfd, payload);
+          fsyncSync(tfd);
+        } finally {
+          closeSync(tfd);
         }
-        // Stale — overwrite.
-        writeFileSync(this.lockPath, `${process.pid}\n`);
       } else {
         throw err;
       }
     }
-    this.acquired = true;
+    // Atomic link handoff.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { linkSync } = require("node:fs") as typeof import("node:fs");
+      linkSync(tmpPath, this.lockPath);
+      // Success — unlink the tmp (the lock file is a separate inode via
+      // link but shares the payload).
+      try { unlinkSync(tmpPath); } catch { /* ignore */ }
+      return true;
+    } catch (linkErr) {
+      const code = (linkErr as { code?: string })?.code;
+      if (code === "EEXIST") {
+        // Another process owns (or a stale lockfile remains). Caller
+        // will inspect and decide to reclaim.
+        try { unlinkSync(tmpPath); } catch { /* ignore */ }
+        return false;
+      }
+      // Windows / filesystems without hardlink support (EPERM/ENOSYS):
+      // fall back to the `wx` open path. This is strictly weaker but
+      // still atomic on NTFS / local POSIX FSes.
+      if (code === "EPERM" || code === "ENOSYS" || code === "EXDEV") {
+        try { unlinkSync(tmpPath); } catch { /* ignore */ }
+        return this.tryAcquireWxFallback(payload);
+      }
+      // Unexpected — clean up and propagate.
+      try { unlinkSync(tmpPath); } catch { /* ignore */ }
+      throw linkErr;
+    }
+  }
+
+  /** Fallback for filesystems without hardlink support. */
+  private tryAcquireWxFallback(payload: string): boolean {
+    try {
+      const fd = openSync(
+        this.lockPath,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+        0o600,
+      );
+      try {
+        writeSync(fd, payload);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      return true;
+    } catch (err) {
+      if ((err as { code?: string })?.code === "EEXIST") return false;
+      throw err;
+    }
+  }
+
+  private readLockRecord(): LockRecord | null {
+    if (!existsSync(this.lockPath)) return null;
+    let raw: string;
+    try {
+      raw = readFileSync(this.lockPath, "utf8").trim();
+    } catch {
+      return null;
+    }
+    if (raw.length === 0) return null;
+    try {
+      const parsed = JSON.parse(raw) as Partial<LockRecord>;
+      if (typeof parsed.pid === "number" && Number.isFinite(parsed.pid) && parsed.pid > 0) {
+        return {
+          pid: parsed.pid,
+          startNs: typeof parsed.startNs === "string" ? parsed.startNs : "",
+          acquiredAtIso:
+            typeof parsed.acquiredAtIso === "string" ? parsed.acquiredAtIso : "",
+        };
+      }
+      return null;
+    } catch {
+      // Legacy lockfile format (pre-I-23-hardening): bare PID on a
+      // single line. Parse best-effort so migrations don't strand a
+      // session directory.
+      const pid = Number.parseInt(raw, 10);
+      if (Number.isFinite(pid) && pid > 0) {
+        return { pid, startNs: "", acquiredAtIso: "" };
+      }
+      return null;
+    }
   }
 
   release(): void {
     if (!this.acquired) return;
     try {
-      unlinkSync(this.lockPath);
+      // Only remove the lock if we still own it. A stale reclaim by
+      // another process after our death is acceptable, but a live
+      // handoff to another holder must not be clobbered by our
+      // release.
+      const existing = this.readLockRecord();
+      if (existing === null || existing.pid === process.pid) {
+        unlinkSync(this.lockPath);
+      }
     } catch {
       /* best-effort */
     }
@@ -373,6 +569,87 @@ function processIsAlive(pid: number): boolean {
     return true;
   } catch (err) {
     return (err as { code?: string })?.code === "EPERM";
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-24 · atomic write-then-rename helper
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Durable whole-file replace. Used for checkpoint-style writes:
+ * index.json snapshots, rollout compaction rewrites, schema
+ * migrations. Incremental event-log batches DO NOT use this — see the
+ * class docstring at top of file for the rationale.
+ *
+ * Steps:
+ *   1. Write bytes to `<targetPath>.tmp` with O_EXCL so a stale tmp
+ *      from a crashed sibling cannot be silently reused.
+ *   2. fsync the tmp file so its contents are on disk before the
+ *      rename.
+ *   3. `rename(tmp, target)` — atomic on POSIX; overwrites the live
+ *      file in a single inode swap.
+ *   4. fsync the parent directory so the rename entry itself is
+ *      durable. On ext4 (and most journalled Linux filesystems) a
+ *      file fsync does NOT imply directory-entry durability — the
+ *      rename is a directory operation and needs its own fsync on
+ *      the parent. See codex pattern in
+ *      `runtime/src/session/rollout-store.ts:238-251`
+ *      (`persistThreadSpawnEdgesSnapshot`) which follows the same
+ *      sequence for the thread-spawn-edges snapshot.
+ *
+ * On failure the tmp file is removed and the original target is left
+ * intact. Caller owns diagnostic emission.
+ */
+export function rewriteAtomically(
+  targetPath: string,
+  bytes: string | Buffer,
+  mode: number = 0o600,
+): void {
+  const tmpPath = `${targetPath}.tmp`;
+  // Clear any stale tmp from a prior crash so O_EXCL can succeed.
+  try {
+    unlinkSync(tmpPath);
+  } catch {
+    /* ignore */
+  }
+  // Step 1 + 2: write and fsync the tmp.
+  const flags =
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL;
+  const fd = openSync(tmpPath, flags, mode);
+  try {
+    writeSync(fd, bytes as never);
+    fsyncSync(fd);
+  } catch (err) {
+    try { closeSync(fd); } catch { /* ignore */ }
+    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+  try {
+    closeSync(fd);
+  } catch {
+    /* ignore — we already fsynced */
+  }
+  // Step 3: atomic rename.
+  try {
+    renameSync(tmpPath, targetPath);
+  } catch (err) {
+    try { unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+  // Step 4: fsync the parent directory so the rename is durable.
+  // Best-effort: on non-POSIX filesystems `open(dir, O_RDONLY)` may
+  // fail (notably on Windows); swallow quietly because the rename
+  // itself is already a durable metadata op on NTFS.
+  try {
+    const dirFd = openSync(dirname(targetPath), fsConstants.O_RDONLY);
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
+  } catch {
+    /* best-effort */
   }
 }
 
@@ -465,12 +742,15 @@ export interface AppendOptions {
    * passes this for each tool_call_completed event.
    */
   readonly toolResultBytes?: number;
+  /** Estimated tool-result tokens for I-88 parity. */
+  readonly tokenEstimate?: number;
   /** Turn id for I-88 index keying. */
   readonly turnId?: string;
 }
 
 export interface CompactionIndexSnapshot {
   readonly toolResultBytesByTurn: ReadonlyMap<string, number>;
+  readonly tokenEstimateByTurn?: ReadonlyMap<string, number>;
   readonly toolCallTurnIds: ReadonlyMap<string, string>;
 }
 
@@ -499,6 +779,8 @@ export class SessionStore {
   private readonly lock: SessionLock;
   /** I-88 per-turn tool-result-bytes index. */
   private readonly toolResultBytesByTurn = new Map<string, number>();
+  /** I-88 parity: per-turn token estimate for completed tool results. */
+  private readonly tokenEstimateByTurn = new Map<string, number>();
   /** I-88 — resolve compacted tool_result blocks back to their source turns. */
   private readonly toolCallTurnIds = new Map<string, string>();
   /** I-88 (+ fast-seek) — byte offset in the rollout file where each
@@ -598,6 +880,14 @@ export class SessionStore {
           )) {
             if (typeof bytes === "number" && bytes > 0) {
               this.toolResultBytesByTurn.set(turnId, bytes);
+            }
+          }
+          this.tokenEstimateByTurn.clear();
+          for (const [turnId, tokens] of Object.entries(
+            snapshot.tokenEstimateByTurn ?? {},
+          )) {
+            if (typeof tokens === "number" && tokens > 0) {
+              this.tokenEstimateByTurn.set(turnId, tokens);
             }
           }
           this.toolCallTurnIds.clear();
@@ -729,9 +1019,18 @@ export class SessionStore {
       (toolCompletion
         ? measureToolResultBytesFromPayload(toolCompletion.result)
         : 0);
+    const tokenEstimate =
+      opts.tokenEstimate ??
+      (toolCompletion
+        ? estimateToolResultTokensFromPayload(toolCompletion.result)
+        : 0);
     if (turnId && toolResultBytes > 0) {
       const prev = this.toolResultBytesByTurn.get(turnId) ?? 0;
       this.toolResultBytesByTurn.set(turnId, prev + toolResultBytes);
+    }
+    if (turnId && tokenEstimate > 0) {
+      const prev = this.tokenEstimateByTurn.get(turnId) ?? 0;
+      this.tokenEstimateByTurn.set(turnId, prev + tokenEstimate);
     }
     if (
       turnId &&
@@ -1012,6 +1311,48 @@ export class SessionStore {
   }
 
   /**
+   * I-24 · Write-then-rename whole-file rewrite.
+   *
+   * Use this for checkpoint-style rewrites of the rollout file
+   * (compaction rewrites, schema migrations, metadata-at-EOF
+   * snapshots). Incremental event batches MUST NOT use this path —
+   * they stay on the O(1) `writeBytesWithFsync` append + fsync +
+   * tail-truncation crash recovery strategy, because rewriting a
+   * growing JSONL file for every batch is O(N).
+   *
+   * Sequence:
+   *   1. Write the full new file contents to `<rolloutPath>.tmp`.
+   *   2. fsync the tmp file (durable before rename).
+   *   3. `fs.rename(tmp, rolloutPath)` — atomic on POSIX.
+   *   4. fsync the parent directory so the rename entry itself is
+   *      durable on ext4 (directory entries are not implicit in the
+   *      file fsync on any Linux FS). Mirrors the pattern in
+   *      `rollout-store.ts::persistThreadSpawnEdgesSnapshot` (which
+   *      already calls `fsyncPath(this.store.sessionDir)` after the
+   *      rename of the thread-spawn-edge snapshot).
+   *
+   * On failure the tmp file is removed and the live rollout is left
+   * intact. Caller is responsible for diagnostic emission (we don't
+   * know the semantic meaning of the rewrite here).
+   *
+   * Exposed as a public method so compaction and migration callers
+   * outside this module can route through the same durability dance.
+   */
+  rewriteRolloutAtomically(bytes: string | Buffer): void {
+    if (!this.opened || this.closed) {
+      throw new Error("rewriteRolloutAtomically called on unopened store");
+    }
+    rewriteAtomically(this.rolloutPath, bytes);
+    // Reset the in-memory file size + offset index so subsequent
+    // appends know the new EOF. Offsets are rebuilt lazily as new
+    // events are appended; any caller doing a compaction rewrite is
+    // expected to also reset lastSeqWritten if needed.
+    this.fileSize = typeof bytes === "string"
+      ? Buffer.byteLength(bytes, "utf8")
+      : bytes.byteLength;
+  }
+
+  /**
    * Re-append the session_meta line to the rollout tail. Called by
    * the compaction boundary (auto-compact.ts in phase 1) so
    * `--resume` metadata readers that scan the last 16KB of the
@@ -1021,6 +1362,13 @@ export class SessionStore {
    * Port of openclaude `sessionStorage.ts::reAppendSessionMetadata`.
    * Idempotent; safe to call multiple times. No-op if no session_meta
    * has been written yet (shouldn't happen post-open).
+   *
+   * Note on I-24: this is a *tail append*, not a whole-file rewrite,
+   * so it correctly uses `writeBytesWithFsync` (O_APPEND + fsync with
+   * the I-38 retry path) rather than `rewriteRolloutAtomically()`.
+   * Callers that want full-file atomic rewrites (e.g. compaction
+   * that drops old rows) should call `rewriteRolloutAtomically()`
+   * explicitly.
    */
   reAppendSessionMetadata(): void {
     if (!this.opened || this.closed || !this.lastSessionMeta) return;
@@ -1087,6 +1435,14 @@ export class SessionStore {
     return new Map(this.toolResultBytesByTurn);
   }
 
+  getTokenEstimate(turnId: string): number {
+    return this.tokenEstimateByTurn.get(turnId) ?? 0;
+  }
+
+  getTokenEstimateIndexSnapshot(): ReadonlyMap<string, number> {
+    return new Map(this.tokenEstimateByTurn);
+  }
+
   getToolCallTurnIdSnapshot(): ReadonlyMap<string, string> {
     return new Map(this.toolCallTurnIds);
   }
@@ -1094,6 +1450,7 @@ export class SessionStore {
   getCompactionIndexSnapshot(): CompactionIndexSnapshot {
     return {
       toolResultBytesByTurn: this.getToolResultBytesIndexSnapshot(),
+      tokenEstimateByTurn: this.getTokenEstimateIndexSnapshot(),
       toolCallTurnIds: this.getToolCallTurnIdSnapshot(),
     };
   }
@@ -1139,14 +1496,12 @@ export class SessionStore {
   /**
    * I-24 + I-25: write the index.json snapshot atomically.
    *
-   *   1. Write to `index.json.tmp` with the accumulated seq, byte
-   *      offsets, tool-result-bytes index, and snapshotSequenceNumber.
-   *   2. fsync the tmp file.
-   *   3. `fs.rename(tmp, final)` — atomic on POSIX.
-   *
-   * If any step fails, leave the previous `index.json` intact and
-   * emit a warning. I-25 guarantees rollout JSONL is the source of
-   * truth; a stale or missing snapshot is recoverable.
+   * Routes through {@link rewriteAtomically} so the same durability
+   * dance (tmp + fsync + rename + parent-dir fsync) covers both the
+   * rollout-body rewrite path and the index snapshot path. On failure
+   * the tmp is cleaned up and the previous snapshot is left intact;
+   * I-25 guarantees rollout JSONL is the source of truth, so a stale
+   * or missing snapshot is recoverable.
    */
   private writeIndexSnapshot(): void {
     const snapshot: IndexSnapshot = {
@@ -1154,6 +1509,7 @@ export class SessionStore {
       fileSize: this.fileSize,
       rolloutPath: this.rolloutPath,
       toolResultBytesByTurn: Object.fromEntries(this.toolResultBytesByTurn),
+      tokenEstimateByTurn: Object.fromEntries(this.tokenEstimateByTurn),
       toolCallTurnIds: Object.fromEntries(this.toolCallTurnIds),
       offsetsBySeq: Object.fromEntries(
         Array.from(this.offsetsBySeq.entries()).map(([k, v]) => [String(k), v]),
@@ -1162,25 +1518,9 @@ export class SessionStore {
       agencVersion: this.agencVersion,
       schemaVersion: ROLLOUT_SCHEMA_VERSION,
     };
-    const tmp = `${this.indexPath}.tmp`;
     try {
-      writeFileSync(tmp, JSON.stringify(snapshot), { mode: 0o600 });
-      // fsync the tmp before rename so a crash here leaves either
-      // the old index (intact) or the new index (intact).
-      const fd = openSync(tmp, fsConstants.O_RDONLY);
-      try {
-        fsyncSync(fd);
-      } finally {
-        closeSync(fd);
-      }
-      renameSync(tmp, this.indexPath);
+      rewriteAtomically(this.indexPath, JSON.stringify(snapshot));
     } catch (err) {
-      // Cleanup tmp if it exists; leave index.json untouched.
-      try {
-        unlinkSync(tmp);
-      } catch {
-        /* ignore */
-      }
       this.emitDiagnostic({
         at: Date.now(),
         level: "warning",
@@ -1250,4 +1590,12 @@ function measureToolResultBytesFromPayload(payload: unknown): number {
   } catch {
     return 0;
   }
+}
+
+function estimateToolResultTokensFromPayload(payload: unknown): number {
+  const bytes = measureToolResultBytesFromPayload(payload);
+  if (bytes <= 0) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil(bytes / 4));
 }

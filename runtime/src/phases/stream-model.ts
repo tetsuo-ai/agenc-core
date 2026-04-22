@@ -53,6 +53,7 @@ import { normalizeToolCallsForProvider } from "../llm/tool-call-normalize.js";
 import {
   ensureStreamingToolExecutor,
   queueStreamingToolCall,
+  validateToolCallsForDispatch,
 } from "./execute-tools.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -272,6 +273,47 @@ function estimateChunkTokens(chunk: LLMStreamChunk): number {
   return Math.max(1, Math.ceil(chars / 4));
 }
 
+/**
+ * I-8 invariant — synthetic `tool_result` for malformed tool_use.
+ *
+ * When the provider streams a tool_use block that fails shape
+ * validation (invalid json args, missing name, etc.) we can't
+ * dispatch it, but the conversation invariant is every tool_use
+ * paired to a tool_result. Emit a paired `tool_call_completed{isError}`
+ * event for each dropped id so the history has a matching entry and
+ * the next iteration doesn't stall.
+ *
+ * Openclaude does the equivalent via `ensureToolResultPairing` in
+ * `utils/messages.ts:5109`; AgenC's event stream is the direct
+ * surface, so we emit here at the drop site.
+ */
+function emitMalformedToolCallSyntheticResults(
+  session: Session,
+  failures: ReadonlyArray<{ readonly raw: unknown; readonly cause: string }>,
+): void {
+  for (const failure of failures) {
+    const id = extractToolUseId(failure.raw);
+    if (!id) continue;
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: id,
+          result: `<tool_use_error>malformed tool_use dropped (${failure.cause})</tool_use_error>`,
+          isError: true,
+        },
+      },
+    });
+  }
+}
+
+function extractToolUseId(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const id = (raw as { id?: unknown }).id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
 export async function streamModel(
   state: TurnState,
   ctx: TurnContext,
@@ -360,14 +402,30 @@ export async function streamModel(
         providerName,
         chunk.toolCalls,
       );
-      if (normalizedToolCalls.length === 0) return;
+      const validatedToolCalls = validateToolCallsForDispatch(
+        normalizedToolCalls,
+        session,
+      );
+      // I-8: a malformed tool_use chunk still has a provider-assigned
+      // `id`, and the conversation invariant is every tool_use block
+      // gets a paired tool_result. Emit a synthetic
+      // `tool_call_completed{isError}` event paired to the dropped
+      // id so the history has a matching entry — otherwise the next
+      // iteration stalls on mismatched tool_use/tool_result pairing.
+      if (validatedToolCalls.failures.length > 0) {
+        emitMalformedToolCallSyntheticResults(
+          session,
+          validatedToolCalls.failures,
+        );
+      }
+      if (validatedToolCalls.valid.length === 0) return;
       const executor = ensureStreamingToolExecutor(
         state,
         ctx,
         session,
         scoped.signal,
       );
-      for (const call of normalizedToolCalls) {
+      for (const call of validatedToolCalls.valid) {
         const block = parseToolUseBlocks([call])[0];
         if (!block) continue;
         streamedToolCalls.set(call.id, call);
@@ -403,14 +461,27 @@ export async function streamModel(
     planMode,
     providerName,
   );
-  if (streamedToolCalls.size > 0) {
-    const mergedToolCalls = new Map(streamedToolCalls);
-    for (const call of assistant.toolCalls) {
-      mergedToolCalls.set(call.id, call);
+  const mergedToolCalls = new Map(streamedToolCalls);
+  for (const call of assistant.toolCalls) {
+    mergedToolCalls.set(call.id, call);
+  }
+  if (mergedToolCalls.size > 0) {
+    const validatedMergedToolCalls = validateToolCallsForDispatch(
+      [...mergedToolCalls.values()],
+      session,
+    );
+    // I-8: same synthetic-tool_result invariant for the final merged
+    // pass (covers providers that only surface tool_use blocks in the
+    // final response envelope rather than per-chunk).
+    if (validatedMergedToolCalls.failures.length > 0) {
+      emitMalformedToolCallSyntheticResults(
+        session,
+        validatedMergedToolCalls.failures,
+      );
     }
     assistant = {
       ...assistant,
-      toolCalls: [...mergedToolCalls.values()],
+      toolCalls: validatedMergedToolCalls.valid,
     };
   }
   state.assistantMessages = [assistant];

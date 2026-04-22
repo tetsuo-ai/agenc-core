@@ -18,6 +18,45 @@ function sseResponse(frames: string[]): Response {
 }
 
 describe("AnthropicProvider", () => {
+  test("adds the context-management beta header when context management is configured", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-3-7-sonnet",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      contextManagement: {
+        edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+      },
+      fetchImpl,
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    const headers = fetchImpl.mock.calls[0]?.[1]?.headers as Headers;
+    expect(request.context_management).toEqual({
+      edits: [{ type: "clear_thinking_20251015", keep: "all" }],
+    });
+    expect(headers.get("anthropic-beta")).toContain("context-management-2025-06-27");
+  });
+
   test("streams messages-api text deltas and emits final tool calls from tool_use blocks", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
