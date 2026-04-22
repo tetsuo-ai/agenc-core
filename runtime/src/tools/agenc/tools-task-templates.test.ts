@@ -25,10 +25,7 @@ function createAgentRegistrationData(agentIdSeed: number) {
   return data;
 }
 
-function createMockTaskCreateProgram(
-  jobSpecPublishError: Error,
-  creatorReviewProbeError?: Error,
-) {
+function createMockTaskCreateProgram(jobSpecPublishError: Error) {
   const creator = PublicKey.unique();
   const creatorAgentPda = PublicKey.unique();
   const createTaskRpc = vi.fn(async () => "create-task-tx");
@@ -42,16 +39,6 @@ function createMockTaskCreateProgram(
   }));
   const setTaskJobSpec = vi.fn(() => ({
     accountsPartial: setTaskJobSpecAccountsPartial,
-  }));
-  const configureTaskValidationSimulate = vi.fn(async () => {
-    if (creatorReviewProbeError) throw creatorReviewProbeError;
-    throw new Error("Account does not exist");
-  });
-  const configureTaskValidationAccountsPartial = vi.fn(() => ({
-    simulate: configureTaskValidationSimulate,
-  }));
-  const configureTaskValidation = vi.fn(() => ({
-    accountsPartial: configureTaskValidationAccountsPartial,
   }));
 
   const program = {
@@ -69,7 +56,6 @@ function createMockTaskCreateProgram(
     },
     methods: {
       createTask,
-      configureTaskValidation,
       setTaskJobSpec,
     },
   };
@@ -78,10 +64,7 @@ function createMockTaskCreateProgram(
     program,
     creator,
     creatorAgentPda,
-    createTask,
     createTaskAccountsPartial,
-    configureTaskValidationAccountsPartial,
-    configureTaskValidationSimulate,
     setTaskJobSpecAccountsPartial,
   };
 }
@@ -149,41 +132,11 @@ describe("agenc task template tools", () => {
     expect(createTaskAccountsPartial).toHaveBeenCalledWith(
       expect.objectContaining({
         creatorAgent: creatorAgentPda,
+        authorityRateLimit: expect.any(PublicKey),
         authority: creator,
         creator,
       }),
     );
-    expect(createTaskAccountsPartial.mock.calls[0]?.[0]).not.toHaveProperty(
-      "authorityRateLimit",
-    );
-  });
-
-  it("fails before task creation when the deployed program does not support creator-review validation", async () => {
-    const unsupportedInstructionError = new Error(
-      "InstructionFallbackNotFound\nFallback functions are not supported.",
-    );
-    const { program, createTask } = createMockTaskCreateProgram(
-      new Error("job spec publish should not run"),
-      unsupportedInstructionError,
-    );
-    const tool = createCreateTaskTool(program as never, createLogger() as never, {
-      allowRawTaskCreation: true,
-    });
-
-    const result = await tool.execute({
-      taskDescription: "Reviewed task blocked by old devnet ABI",
-      reward: "1",
-      requiredCapabilities: "1",
-      taskId: "12".repeat(32),
-      validationMode: "creator-review",
-      reviewWindowSecs: 3600,
-    });
-
-    expect(result.isError).toBe(true);
-    expect(JSON.parse(result.content)).toMatchObject({
-      error: expect.stringContaining("does not support creator-review task validation yet"),
-    });
-    expect(createTask).not.toHaveBeenCalled();
   });
 
   it("uses taskDescription (not description) as the input schema property name", () => {

@@ -57,7 +57,7 @@ describe('IDL exports', () => {
       (ix) => ix.name === 'initiate_dispute',
     );
 
-    expect(createTask?.accounts.map((account) => account.name)).not.toContain(
+    expect(createTask?.accounts.map((account) => account.name)).toContain(
       'authority_rate_limit',
     );
     expect(
@@ -66,7 +66,7 @@ describe('IDL exports', () => {
     ).toBe(true);
     expect(
       createDependentTask?.accounts.map((account) => account.name),
-    ).not.toContain('authority_rate_limit');
+    ).toContain('authority_rate_limit');
     expect(
       createDependentTask?.accounts.find(
         (account) => account.name === 'creator_agent',
@@ -111,12 +111,15 @@ describe('IDL exports', () => {
       const authorityIndex = accountNames.indexOf('authority');
       const creatorIndex = accountNames.indexOf('creator');
 
-      expect(accountNames).not.toContain('authority_rate_limit');
+      expect(accountNames).toContain('authority_rate_limit');
       expect(creatorAgent?.writable).toBe(true);
       expect(creatorAgentIndex).toBeGreaterThanOrEqual(0);
+      const authorityRateLimitIndex = accountNames.indexOf('authority_rate_limit');
       expect(authorityIndex).toBeGreaterThanOrEqual(0);
       expect(creatorIndex).toBeGreaterThanOrEqual(0);
       expect(creatorAgentIndex).toBeLessThan(authorityIndex);
+      expect(authorityRateLimitIndex).toBeGreaterThan(creatorAgentIndex);
+      expect(authorityRateLimitIndex).toBeLessThan(authorityIndex);
       expect(authorityIndex).toBeLessThan(creatorIndex);
     }
   });
@@ -129,6 +132,7 @@ describe('IDL exports', () => {
       'escrow',
       'protocol_config',
       'creator_agent',
+      'authority_rate_limit',
       'authority',
       'creator',
       'system_program',
@@ -160,6 +164,32 @@ describe('IDL exports', () => {
       'workerClaim',
       'authority',
       'systemProgram',
+    ]);
+  });
+
+  it('supports the legacy create_task account order for devnet compatibility', () => {
+    const connection = new Connection('http://127.0.0.1:8899', 'confirmed');
+    const wallet = new Wallet(Keypair.generate());
+    const provider = new AnchorProvider(connection, wallet, { commitment: 'confirmed' });
+    const customId = Keypair.generate().publicKey;
+    const program = createProgram(provider, customId, 'legacyCreateTask');
+    const createTask = program.idl.instructions.find(
+      (ix: { name: string }) => ix.name === 'createTask',
+    );
+
+    expect(createTask.accounts.map((account: { name: string }) => account.name)).toEqual([
+      'task',
+      'escrow',
+      'protocolConfig',
+      'creatorAgent',
+      'authority',
+      'creator',
+      'systemProgram',
+      'rewardMint',
+      'creatorTokenAccount',
+      'tokenEscrowAta',
+      'tokenProgram',
+      'associatedTokenProgram',
     ]);
   });
 
