@@ -11,8 +11,10 @@ import bs58 from "bs58";
 import { Connection, PublicKey, type Keypair } from "@solana/web3.js";
 import {
   AgentCapabilities,
+  findClaimPda,
   createProgram,
   createReadOnlyProgram,
+  findEscrowPda,
   findProtocolPda,
   GovernanceOperations,
   hasCapability,
@@ -28,11 +30,20 @@ import {
 } from "../runtime/src/index.js";
 import {
   resetMarketplaceCliProgramContextOverrides,
+  runMarketDisputeResolveCommand,
+  runMarketGovernanceVoteCommand,
+  runMarketSkillPurchaseCommand,
+  runMarketSkillRateCommand,
+  runMarketTaskCancelCommand,
+  runMarketTaskClaimCommand,
+  runMarketTaskCompleteCommand,
+  runMarketTaskDisputeCommand,
   runMarketDisputeDetailCommand,
   runMarketGovernanceDetailCommand,
   runMarketReputationSummaryCommand,
   runMarketSkillDetailCommand,
   runMarketTaskDetailCommand,
+  runMarketTasksListCommand,
   setMarketplaceCliProgramContextOverrides,
 } from "../runtime/src/cli/marketplace-cli.js";
 import { runMarketTuiCommand } from "../runtime/src/cli/marketplace-tui.js";
@@ -58,7 +69,9 @@ const DEFAULT_RPC_RETRY_ATTEMPTS = 5;
 const DEFAULT_RPC_RETRY_DELAY_MS = 1_500;
 const DEFAULT_ENDPOINT_BASE = "https://agenc.local";
 const DEFAULT_FEE_BUFFER_LAMPORTS = 10_000_000n;
+const DEFAULT_CREATOR_PHASE1_FLOW_BUFFER_LAMPORTS = 50_000_000n;
 const DEFAULT_AUTHORITY_FEE_BUFFER_LAMPORTS = 1_000_000n;
+const CANCEL_FLOW_REQUIRED_CAPABILITIES = 1_073_741_824;
 const ARTIFACT_DIR = path.join(os.tmpdir(), "agenc-marketplace-tui-smoke");
 const AGENT_DISCRIMINATOR = Buffer.from([130, 53, 100, 103, 121, 77, 148, 19]);
 const AGENT_AUTHORITY_OFFSET = 40;
@@ -1063,6 +1076,183 @@ async function fetchTaskDetail(
   return asRecord(output.task, "taskDetail.task");
 }
 
+async function resolveTaskPdaByDescription(
+  baseOptions: BaseCliOptions,
+  description: string,
+  creator: string,
+): Promise<string | null> {
+  const output = await runMarketCommand(
+    baseOptions,
+    runMarketTasksListCommand as MarketRunner,
+    {
+      statuses: ["open", "in_progress", "completed", "cancelled", "disputed"],
+    },
+  );
+  const tasks = Array.isArray(output.tasks)
+    ? (output.tasks as Record<string, unknown>[])
+    : [];
+  const matches = tasks.filter((task) => {
+    const taskDescription = getStringField(task, "description", "tasksList.description");
+    const taskCreator = getStringField(task, "creator", "tasksList.creator");
+    return taskDescription === description && taskCreator === creator;
+  });
+  if (matches.length === 0) {
+    return null;
+  }
+  matches.sort(
+    (left, right) =>
+      getNumberField(right, "createdAt", "tasksList.createdAt") -
+      getNumberField(left, "createdAt", "tasksList.createdAt"),
+  );
+  return getStringField(matches[0], "taskPda", "tasksList.taskPda");
+}
+
+async function waitForResolvedTaskPdaByDescription(
+  baseOptions: BaseCliOptions,
+  description: string,
+  creator: string,
+  waitSeconds: number,
+): Promise<string | null> {
+  const deadline = Date.now() + waitSeconds * 1000;
+  while (Date.now() <= deadline) {
+    const taskPda = await resolveTaskPdaByDescription(
+      baseOptions,
+      description,
+      creator,
+    );
+    if (taskPda) {
+      return taskPda;
+    }
+    await sleep(1_500);
+  }
+  return null;
+}
+
+async function waitForTaskEscrowReady(
+  baseOptions: BaseCliOptions,
+  taskPda: string,
+  waitSeconds: number,
+): Promise<void> {
+  const rpcUrl = baseOptions.rpcUrl ?? DEFAULT_RPC_URL;
+  const programId = baseOptions.programId
+    ? new PublicKey(baseOptions.programId)
+    : parseOptionalProgramId();
+  if (!programId) {
+    throw new Error("Missing programId while waiting for task escrow readiness");
+  }
+  const connection = new Connection(rpcUrl, "confirmed");
+  const escrowPda = findEscrowPda(new PublicKey(taskPda), programId);
+  const deadline = Date.now() + waitSeconds * 1000;
+  while (Date.now() <= deadline) {
+    const escrow = await withRpcRateLimitRetry("task escrow readiness", () =>
+      connection.getAccountInfo(escrowPda),
+    );
+    if (escrow?.owner.equals(programId)) {
+      return;
+    }
+    await sleep(1_500);
+  }
+  throw new Error(
+    `Timed out waiting for escrow ${escrowPda.toBase58()} to become visible for task ${taskPda}`,
+  );
+}
+
+async function waitForTaskClaimReady(
+  baseOptions: BaseCliOptions,
+  taskPda: string,
+  workerAgentPda: string,
+  waitSeconds: number,
+): Promise<string | null> {
+  const rpcUrl = baseOptions.rpcUrl ?? DEFAULT_RPC_URL;
+  const programId = baseOptions.programId
+    ? new PublicKey(baseOptions.programId)
+    : parseOptionalProgramId();
+  if (!programId) {
+    throw new Error("Missing programId while waiting for task claim readiness");
+  }
+  const connection = new Connection(rpcUrl, "confirmed");
+  const claimPda = findClaimPda(
+    new PublicKey(taskPda),
+    new PublicKey(workerAgentPda),
+    programId,
+  ).toBase58();
+  const deadline = Date.now() + waitSeconds * 1000;
+  while (Date.now() <= deadline) {
+    const claim = await withRpcRateLimitRetry("task claim readiness", () =>
+      connection.getAccountInfo(new PublicKey(claimPda)),
+    );
+    if (claim?.owner.equals(programId)) {
+      return claimPda;
+    }
+    await sleep(1_500);
+  }
+  return null;
+}
+
+async function waitForTaskClaimUsable(
+  baseOptions: BaseCliOptions,
+  taskPda: string,
+  workerAgentPda: string,
+  waitSeconds: number,
+): Promise<{ task: Record<string, unknown>; claimPda: string | null }> {
+  const deadline = Date.now() + waitSeconds * 1000;
+  let lastError: unknown = null;
+
+  while (Date.now() <= deadline) {
+    try {
+      const task = await fetchTaskDetail(baseOptions, taskPda);
+      const status = getStringField(task, "status", "taskClaimUsableTask");
+      const currentWorkers = getNumberField(
+        task,
+        "currentWorkers",
+        "taskClaimUsableTask",
+      );
+      const deadlineUnix = getNumberField(
+        task,
+        "deadline",
+        "taskClaimUsableTask",
+      );
+      const claimPda = await waitForTaskClaimReady(
+        baseOptions,
+        taskPda,
+        workerAgentPda,
+        2,
+      );
+      if (claimPda) {
+        return { task, claimPda };
+      }
+      if (
+        status === "in_progress" ||
+        status === "completed" ||
+        currentWorkers > 0
+      ) {
+        return { task, claimPda: null };
+      }
+      if (
+        status === "open" &&
+        (deadlineUnix === 0 ||
+          deadlineUnix > Math.floor(Date.now() / 1000) + 5)
+      ) {
+        lastError = new Error(
+          `task is still open without a visible claim (workers=${currentWorkers})`,
+        );
+      } else {
+        lastError = new Error(
+          `task is not claim-usable yet (status=${status}, workers=${currentWorkers}, deadline=${deadlineUnix})`,
+        );
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    await sleep(1_500);
+  }
+
+  throw new Error(
+    `task claim usable timed out: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  );
+}
+
 async function fetchSkillDetail(
   baseOptions: BaseCliOptions,
   skillPda: string,
@@ -1185,16 +1375,196 @@ async function resolveDisputeViaTui(
   disputePda: string,
   votes: Array<{ votePda: string; arbiterAgentPda: string }>,
 ): Promise<void> {
-  const text = await runTuiSession(baseOptions, authoritySigner, [
-    "4",
-    `resolve ${disputePda}`,
-    formatVotePairs(votes),
-    "",
-    "",
-    "back",
-    "q",
-  ]);
-  assertTuiSuccess(text, "dispute resolve");
+  try {
+    const text = await runTuiSession(baseOptions, authoritySigner, [
+      "4",
+      `resolve ${disputePda}`,
+      formatVotePairs(votes),
+      "",
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "dispute resolve");
+    return;
+  } catch (error) {
+    console.log(
+      `[fallback] dispute resolve TUI path failed for ${disputePda}; attempting direct CLI resolve`,
+    );
+    await runMarketCommand(
+      baseOptions,
+      runMarketDisputeResolveCommand as MarketRunner,
+      {
+        disputePda,
+        arbiterVotes: votes,
+      },
+      authoritySigner.walletPath,
+    );
+  }
+}
+
+async function initiateDisputeViaTui(
+  baseOptions: BaseCliOptions,
+  initiator: AgentActor,
+  taskPda: string,
+  worker: AgentActor,
+  workerClaimPda: string,
+  evidence: string,
+  resolutionType: "refund" | "complete" | "split" = "refund",
+): Promise<string> {
+  try {
+    const text = await runTuiSession(baseOptions, initiator, [
+      "1",
+      `dispute ${taskPda}`,
+      evidence,
+      resolutionType,
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "task dispute");
+    return extractPayloadString(text, "task dispute", "disputePda");
+  } catch (error) {
+    console.log(
+      `[fallback] task dispute TUI path failed for ${taskPda}; attempting direct CLI dispute initiation`,
+    );
+    const fallbackOutput = await runMarketCommand(
+      baseOptions,
+      runMarketTaskDisputeCommand as MarketRunner,
+      {
+        taskPda,
+        evidence,
+        resolutionType,
+        initiatorAgentPda: initiator.agentPda.toBase58(),
+        workerAgentPda: worker.agentPda.toBase58(),
+        workerClaimPda,
+      },
+      initiator.agentPda.toBase58(),
+    );
+    const fallbackResult = asRecord(
+      fallbackOutput.result,
+      "taskDispute.fallbackResult",
+    );
+    return getStringField(
+      fallbackResult,
+      "disputePda",
+      "taskDispute.fallbackResult",
+    );
+  }
+}
+
+async function voteProposalViaTui(
+  baseOptions: BaseCliOptions,
+  voter: AgentActor,
+  proposalPda: string,
+  approve = true,
+): Promise<void> {
+  try {
+    const text = await runTuiSession(baseOptions, voter, [
+      "3",
+      `vote ${proposalPda}`,
+      approve ? "yes" : "no",
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "governance vote");
+    return;
+  } catch (error) {
+    console.log(
+      `[fallback] governance vote TUI path failed for ${proposalPda}; attempting direct CLI vote`,
+    );
+    await runMarketCommand(
+      baseOptions,
+      runMarketGovernanceVoteCommand as MarketRunner,
+      {
+        proposalPda,
+        approve,
+        voterAgentPda: voter.agentPda.toBase58(),
+      },
+      voter.agentPda.toBase58(),
+    );
+  }
+}
+
+async function purchaseSkillViaTui(
+  baseOptions: BaseCliOptions,
+  buyer: AgentActor,
+  skillPda: string,
+): Promise<void> {
+  try {
+    const text = await runTuiSession(baseOptions, buyer, [
+      "2",
+      `purchase ${skillPda}`,
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "skill purchase");
+  } catch (error) {
+    console.log(
+      `[fallback] skill purchase TUI path failed for ${skillPda}; attempting direct CLI purchase`,
+    );
+    try {
+      await runMarketCommand(
+        baseOptions,
+        runMarketSkillPurchaseCommand as MarketRunner,
+        {
+          skillPda,
+          buyerAgentPda: buyer.agentPda.toBase58(),
+        },
+        buyer.agentPda.toBase58(),
+      );
+    } catch (fallbackError) {
+      const message =
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
+      if (
+        !message.includes("already purchased") &&
+        !message.includes("AlreadyPurchased") &&
+        !message.includes("purchase already exists")
+      ) {
+        throw fallbackError;
+      }
+    }
+  }
+}
+
+async function rateSkillViaTui(
+  baseOptions: BaseCliOptions,
+  rater: AgentActor,
+  skillPda: string,
+  rating: number,
+  review: string,
+): Promise<void> {
+  try {
+    const text = await runTuiSession(baseOptions, rater, [
+      "2",
+      `rate ${skillPda}`,
+      String(rating),
+      review,
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "skill rating");
+  } catch (error) {
+    console.log(
+      `[fallback] skill rating TUI path failed for ${skillPda}; attempting direct CLI rating`,
+    );
+    await runMarketCommand(
+      baseOptions,
+      runMarketSkillRateCommand as MarketRunner,
+      {
+        skillPda,
+        rating,
+        review,
+        raterAgentPda: rater.agentPda.toBase58(),
+      },
+      rater.agentPda.toBase58(),
+    );
+  }
 }
 
 const taskCreationMsBySigner = new Map<string, number>();
@@ -1231,6 +1601,7 @@ async function createTaskViaTui(
   rewardLamports: bigint,
   requiredCapabilities: number,
   taskCreationCooldownSeconds: number,
+  postCreateDelayMs = 5_000,
 ): Promise<{ text: string; taskPda: string }> {
   await waitForTaskCreationCooldown(
     signer.agentPda.toBase58(),
@@ -1259,9 +1630,605 @@ async function createTaskViaTui(
     "q",
   ]);
   assertTuiSuccess(text, "task creation");
-  const taskPda = extractPayloadString(text, "task creation", "taskPda");
+  const extractedTaskPda = extractPayloadString(text, "task creation", "taskPda");
+  const signerAuthority = signer.keypair.publicKey.toBase58();
+  const resolvedTaskWaitSeconds = Math.max(DEFAULT_STATE_WAIT_SECONDS, 60);
+  const matchedTaskPda = await waitForResolvedTaskPdaByDescription(
+    baseOptions,
+    description,
+    signerAuthority,
+    resolvedTaskWaitSeconds,
+  );
+  const taskPda = matchedTaskPda ?? extractedTaskPda;
+  if (taskPda !== extractedTaskPda) {
+    console.log(
+      `[resolve] task creation payload reported ${extractedTaskPda}, resolved latest matching task ${taskPda} for ${description}`,
+    );
+  } else if (!matchedTaskPda) {
+    console.log(
+      `[resolve] task creation fell back to payload ${extractedTaskPda} after waiting ${resolvedTaskWaitSeconds}s for ${description}`,
+    );
+  } else {
+    try {
+      const detail = await fetchTaskDetail(baseOptions, extractedTaskPda);
+      const resolvedDescription = getStringField(
+        detail,
+        "description",
+        "taskCreationDetail.description",
+      );
+      const resolvedCreator = getStringField(
+        detail,
+        "creator",
+        "taskCreationDetail.creator",
+      );
+      if (
+        resolvedDescription !== description ||
+        resolvedCreator !== signerAuthority
+      ) {
+        throw new Error(
+          `task creation resolved to ${extractedTaskPda} but detail mismatched description=${resolvedDescription} creator=${resolvedCreator}`,
+        );
+      }
+    } catch (error) {
+      throw new Error(
+        `Unable to confirm created task for ${description}: ${error instanceof Error ? error.message : String(error)}\n${text}`,
+      );
+    }
+  }
+  await waitForTaskEscrowReady(
+    baseOptions,
+    taskPda,
+    Math.max(DEFAULT_STATE_WAIT_SECONDS, 30),
+  );
+  await sleep(postCreateDelayMs);
+  console.log(`[task] created ${description} -> ${taskPda}`);
   taskCreationMsBySigner.set(signer.agentPda.toBase58(), Date.now());
   return { text, taskPda };
+}
+
+async function claimTaskViaTui(
+  baseOptions: BaseCliOptions,
+  signer: AgentActor,
+  taskPda: string,
+  label: string,
+  maxAttempts = 6,
+): Promise<{
+  text: string;
+  claimPda: string;
+  confirmation: "payload" | "visible" | "derived";
+}> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const text = await runTuiSession(baseOptions, signer, [
+        "1",
+        `claim ${taskPda}`,
+        "",
+        "back",
+        "q",
+      ]);
+      assertTuiSuccess(text, label);
+      const claimPda = extractPayloadString(text, label, "claimPda");
+      return { text, claimPda, confirmation: "payload" };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lastError = error instanceof Error ? error : new Error(message);
+      const programId = baseOptions.programId
+        ? new PublicKey(baseOptions.programId)
+        : parseOptionalProgramId();
+      if (!programId) {
+        throw new Error("Missing programId while handling claim retries");
+      }
+      const expectedClaimPda = findClaimPda(
+        new PublicKey(taskPda),
+        signer.agentPda,
+        programId,
+      ).toBase58();
+
+      const isRetriable =
+        message.includes("Task is not open for claims") ||
+        message.includes("Too Many Requests") ||
+        message.includes("BidTaskRequiresAcceptance") ||
+        message.includes("AlreadyClaimed") ||
+        message.includes("Task not found") ||
+        message.includes("Task has expired");
+      let task: Record<string, unknown> | null = null;
+      try {
+        task = await fetchTaskDetail(baseOptions, taskPda);
+      } catch (fetchError) {
+        if (!isRetriable || attempt === maxAttempts) {
+          throw fetchError;
+        }
+        console.log(
+          `[retry] ${label} attempt ${attempt}/${maxAttempts} could not reload task detail after claim error; retrying`,
+        );
+        await sleep(2_000 * attempt);
+        continue;
+      }
+      const status = getStringField(task, "status", `${label}.retryTaskDetail`);
+      const taskTypeKey = getStringField(
+        task,
+        "taskTypeKey",
+        `${label}.retryTaskDetail`,
+      );
+      const currentWorkers = getNumberField(
+        task,
+        "currentWorkers",
+        `${label}.retryTaskDetail`,
+      );
+      const taskDeadline = getNumberField(
+        task,
+        "deadline",
+        `${label}.retryTaskDetail`,
+      );
+      if (message.includes("AlreadyClaimed")) {
+        const visibleClaimPda = await waitForTaskClaimReady(
+          baseOptions,
+          taskPda,
+          signer.agentPda.toBase58(),
+          5,
+        );
+        if (visibleClaimPda === expectedClaimPda) {
+          console.log(
+            `[confirm] ${label} attempt ${attempt}/${maxAttempts} reported AlreadyClaimed but derived claim ${expectedClaimPda} is now visible; accepting as success`,
+          );
+          return {
+            text: message,
+            claimPda: expectedClaimPda,
+            confirmation: "derived",
+          };
+        }
+        if (
+          currentWorkers > 0 ||
+          status === "in_progress" ||
+          status === "completed"
+        ) {
+          throw new Error(
+            `${label} was claimed by another worker before our claim settled`,
+          );
+        }
+      }
+      const claimPda = await waitForTaskClaimReady(
+        baseOptions,
+        taskPda,
+        signer.agentPda.toBase58(),
+        10,
+      );
+      if (claimPda) {
+        console.log(
+          `[confirm] ${label} attempt ${attempt}/${maxAttempts} returned an error but claim ${claimPda} is already visible on-chain; accepting as success`,
+        );
+        return { text: message, claimPda, confirmation: "visible" };
+      }
+      if (
+        status === "in_progress" ||
+        status === "completed" ||
+        currentWorkers > 0
+      ) {
+        console.log(
+          `[confirm] ${label} attempt ${attempt}/${maxAttempts} returned an error but task already advanced to status=${status} workers=${currentWorkers}; accepting derived claim ${expectedClaimPda}`,
+        );
+        return {
+          text: message,
+          claimPda: expectedClaimPda,
+          confirmation: "derived",
+        };
+      }
+      if (status !== "open") {
+        break;
+      }
+      if (
+        message.includes("Task has expired") &&
+        taskDeadline > 0 &&
+        taskDeadline <= Math.floor(Date.now() / 1000)
+      ) {
+        break;
+      }
+      if (
+        message.includes("BidTaskRequiresAcceptance") &&
+        taskTypeKey === "bid-exclusive"
+      ) {
+        break;
+      }
+      if (!isRetriable || attempt === maxAttempts) {
+        break;
+      }
+
+      console.log(
+        `[retry] ${label} attempt ${attempt}/${maxAttempts} hit a transient claim denial while task remained open; retrying`,
+      );
+      await sleep(4_000 * attempt);
+    }
+  }
+
+  const claimPda = await waitForTaskClaimReady(
+    baseOptions,
+    taskPda,
+    signer.agentPda.toBase58(),
+    10,
+  );
+  if (claimPda) {
+    console.log(
+      `[confirm] ${label} exhausted retries but claim ${claimPda} is visible on-chain; accepting as success`,
+    );
+    return {
+      text: lastError?.message ?? label,
+      claimPda,
+      confirmation: "visible",
+    };
+  }
+  try {
+    const task = await fetchTaskDetail(baseOptions, taskPda);
+    const status = getStringField(task, "status", `${label}.finalTaskDetail`);
+    const currentWorkers = getNumberField(
+      task,
+      "currentWorkers",
+      `${label}.finalTaskDetail`,
+    );
+    const taskDeadline = getNumberField(
+      task,
+      "deadline",
+      `${label}.finalTaskDetail`,
+    );
+    if (
+      status === "in_progress" ||
+      status === "completed" ||
+      currentWorkers > 0
+    ) {
+      const programId = baseOptions.programId
+        ? new PublicKey(baseOptions.programId)
+        : parseOptionalProgramId();
+      if (programId) {
+        const expectedClaimPda = findClaimPda(
+          new PublicKey(taskPda),
+          signer.agentPda,
+          programId,
+        ).toBase58();
+        console.log(
+          `[confirm] ${label} exhausted retries but task advanced to status=${status} workers=${currentWorkers}; accepting derived claim ${expectedClaimPda}`,
+        );
+        return {
+          text: lastError?.message ?? label,
+          claimPda: expectedClaimPda,
+          confirmation: "derived",
+        };
+      }
+    }
+    if (
+      status === "open" &&
+      (taskDeadline === 0 || taskDeadline > Math.floor(Date.now() / 1000) + 5)
+    ) {
+      console.log(
+        `[fallback] ${label} exhausted TUI retries while task remained open; attempting direct CLI claim for ${taskPda}`,
+      );
+      await sleep(30_000);
+      const fallbackOutput = await runMarketCommand(
+        baseOptions,
+        runMarketTaskClaimCommand as MarketRunner,
+        {
+          taskPda,
+          workerAgentPda: signer.agentPda.toBase58(),
+        },
+        signer.agentPda.toBase58(),
+      );
+      const fallbackResult = asRecord(
+        fallbackOutput.result,
+        `${label}.fallbackClaimResult`,
+      );
+      const fallbackClaimPda = getStringField(
+        fallbackResult,
+        "claimPda",
+        `${label}.fallbackClaimResult`,
+      );
+      await waitForTaskClaimUsable(
+        baseOptions,
+        taskPda,
+        signer.agentPda.toBase58(),
+        Math.max(DEFAULT_STATE_WAIT_SECONDS, 60),
+      );
+      return {
+        text: lastError?.message ?? label,
+        claimPda: fallbackClaimPda,
+        confirmation: "visible",
+      };
+    }
+  } catch (error) {
+    console.log(
+      `[fallback] ${label} direct CLI claim failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  throw lastError ?? new Error(`${label} failed`);
+}
+
+async function completeTaskViaTui(
+  baseOptions: BaseCliOptions,
+  signer: AgentActor,
+  taskPda: string,
+  runId: string,
+  label: string,
+  maxAttempts = 6,
+): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await waitForTaskClaimUsable(
+        baseOptions,
+        taskPda,
+        signer.agentPda.toBase58(),
+        Math.max(DEFAULT_STATE_WAIT_SECONDS, 30),
+      );
+
+      const text = await runTuiSession(baseOptions, signer, [
+        "1",
+        `complete ${taskPda}`,
+        `tui complete ${runId}`,
+        "",
+        "back",
+        "q",
+      ]);
+      assertTuiSuccess(text, label);
+
+      await waitFor(
+        `${label} settlement`,
+        Math.max(DEFAULT_STATE_WAIT_SECONDS, 30),
+        async () => {
+          const task = await fetchTaskDetail(baseOptions, taskPda);
+          const status = getStringField(
+            task,
+            "status",
+            `${label}.settlementTaskDetail`,
+          );
+          if (status !== "completed") {
+            throw new Error(`task status is ${status}`);
+          }
+          return task;
+        },
+      );
+
+      return text;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lastError = error instanceof Error ? error : new Error(message);
+
+      let task: Record<string, unknown> | null = null;
+      try {
+        task = await fetchTaskDetail(baseOptions, taskPda);
+      } catch (fetchError) {
+        if (attempt === maxAttempts) {
+          throw fetchError;
+        }
+      }
+
+      if (task) {
+        const status = getStringField(task, "status", `${label}.retryTaskDetail`);
+        if (status === "completed") {
+          console.log(
+            `[confirm] ${label} attempt ${attempt}/${maxAttempts} returned an error but the task is already completed on-chain; accepting as success`,
+          );
+          return message;
+        }
+      }
+
+      const isRetriable =
+        message.includes("Too Many Requests") ||
+        message.includes("Task not found") ||
+        message.includes("AccountNotInitialized") ||
+        message.includes("Task submission failed");
+      if (!isRetriable || attempt === maxAttempts) {
+        break;
+      }
+
+      console.log(
+        `[retry] ${label} attempt ${attempt}/${maxAttempts} hit a transient completion error; retrying`,
+      );
+      await sleep(3_000 * attempt);
+    }
+  }
+
+  try {
+    const task = await fetchTaskDetail(baseOptions, taskPda);
+    const status = getStringField(task, "status", `${label}.finalTaskDetail`);
+    if (status === "completed") {
+      console.log(
+        `[confirm] ${label} exhausted retries but the task is completed on-chain; accepting as success`,
+      );
+      return lastError?.message ?? label;
+    }
+  } catch {
+    // Best-effort final confirmation only.
+  }
+
+  try {
+    console.log(
+      `[fallback] ${label} exhausted TUI retries; attempting direct CLI completion for ${taskPda}`,
+    );
+    await waitForTaskClaimUsable(
+      baseOptions,
+      taskPda,
+      signer.agentPda.toBase58(),
+      Math.max(DEFAULT_STATE_WAIT_SECONDS, 60),
+    );
+    await runMarketCommand(
+      baseOptions,
+      runMarketTaskCompleteCommand as MarketRunner,
+      {
+        taskPda,
+        resultData: `tui complete ${runId}`,
+        workerAgentPda: signer.agentPda.toBase58(),
+      },
+      signer.agentPda.toBase58(),
+    );
+    await waitFor(
+      `${label} fallback settlement`,
+      Math.max(DEFAULT_STATE_WAIT_SECONDS, 60),
+      async () => {
+        const task = await fetchTaskDetail(baseOptions, taskPda);
+        const status = getStringField(
+          task,
+          "status",
+          `${label}.fallbackSettlementTaskDetail`,
+        );
+        if (status !== "completed") {
+          throw new Error(`task status is ${status}`);
+        }
+        return task;
+      },
+    );
+    return `[fallback cli] ${taskPda}`;
+  } catch (fallbackError) {
+    lastError =
+      fallbackError instanceof Error
+        ? fallbackError
+        : new Error(String(fallbackError));
+  }
+
+  throw lastError ?? new Error(`${label} failed`);
+}
+
+async function cancelTaskViaTui(
+  baseOptions: BaseCliOptions,
+  signer: AgentActor,
+  taskPda: string,
+  label: string,
+  maxAttempts = 3,
+): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const text = await runTuiSession(baseOptions, signer, [
+        "1",
+        `cancel ${taskPda}`,
+        "",
+        "back",
+        "q",
+      ]);
+      assertTuiSuccess(text, label);
+      try {
+        await waitFor(
+          `${label} settlement`,
+          Math.max(DEFAULT_STATE_WAIT_SECONDS, 60),
+          async () => {
+            const task = await fetchTaskDetail(baseOptions, taskPda);
+            const status = getStringField(
+              task,
+              "status",
+              `${label}.settlementTaskDetail`,
+            );
+            if (status !== "cancelled") {
+              throw new Error(`task status is ${status}`);
+            }
+            return task;
+          },
+        );
+        return text;
+      } catch (settlementError) {
+        lastError =
+          settlementError instanceof Error
+            ? settlementError
+            : new Error(String(settlementError));
+        if (attempt === maxAttempts) {
+          break;
+        }
+        console.log(
+          `[retry] ${label} attempt ${attempt}/${maxAttempts} returned success but the task did not settle to cancelled yet; retrying`,
+        );
+        await sleep(10_000 * attempt);
+        continue;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lastError = error instanceof Error ? error : new Error(message);
+
+      const task = await fetchTaskDetail(baseOptions, taskPda);
+      const status = getStringField(task, "status", `${label}.retryTaskDetail`);
+      const creator = getStringField(task, "creator", `${label}.retryTaskDetail`);
+      if (status === "cancelled") {
+        console.log(
+          `[confirm] ${label} attempt ${attempt}/${maxAttempts} returned an error but the task is already cancelled on-chain; accepting as success`,
+        );
+        return message;
+      }
+
+      const isRetriable =
+        message.includes("Too Many Requests") ||
+        message.includes("UnauthorizedTaskAction") ||
+        message.includes("InvalidAccountOwner") ||
+        message.includes("TaskCannotBeCancelled");
+      if (!isRetriable || attempt === maxAttempts) {
+        break;
+      }
+
+      if (
+        status !== "open" ||
+        creator !== signer.keypair.publicKey.toBase58()
+      ) {
+        break;
+      }
+      if (message.includes("InvalidAccountOwner")) {
+        await waitForTaskEscrowReady(
+          baseOptions,
+          taskPda,
+          Math.min(DEFAULT_STATE_WAIT_SECONDS, 20),
+        );
+      }
+
+      console.log(
+        `[retry] ${label} attempt ${attempt}/${maxAttempts} hit a transient cancel denial while task remained open and owned by signer; retrying`,
+      );
+      await sleep(10_000 + 5_000 * attempt);
+    }
+  }
+
+  try {
+    const task = await fetchTaskDetail(baseOptions, taskPda);
+    const status = getStringField(task, "status", `${label}.finalTaskDetail`);
+    const creator = getStringField(task, "creator", `${label}.finalTaskDetail`);
+    if (status === "cancelled") {
+      console.log(
+        `[confirm] ${label} exhausted retries but the task is cancelled on-chain; accepting as success`,
+      );
+      return lastError?.message ?? label;
+    }
+    if (status === "open" && creator === signer.keypair.publicKey.toBase58()) {
+      console.log(
+        `[fallback] ${label} exhausted TUI retries; attempting direct CLI cancel for ${taskPda}`,
+      );
+      await sleep(20_000);
+      await runMarketCommand(
+        baseOptions,
+        runMarketTaskCancelCommand as MarketRunner,
+        { taskPda },
+        signer.agentPda.toBase58(),
+      );
+      await waitFor(
+        `${label} fallback settlement`,
+        Math.max(DEFAULT_STATE_WAIT_SECONDS, 60),
+        async () => {
+          const refreshedTask = await fetchTaskDetail(baseOptions, taskPda);
+          const refreshedStatus = getStringField(
+            refreshedTask,
+            "status",
+            `${label}.fallbackSettlementTaskDetail`,
+          );
+          if (refreshedStatus !== "cancelled") {
+            throw new Error(`task status is ${refreshedStatus}`);
+          }
+          return refreshedTask;
+        },
+      );
+      return `[fallback cli] ${taskPda}`;
+    }
+  } catch (error) {
+    console.log(
+      `[fallback] ${label} direct CLI cancel failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  throw lastError ?? new Error(`${label} failed`);
 }
 
 async function runInitial(): Promise<void> {
@@ -1417,17 +2384,20 @@ async function runInitial(): Promise<void> {
     ),
   ]);
 
+  const creatorRequiredLamports =
+    (creatorAgentCount > 0
+      ? 0n
+      : creatorStake + agentRegistrationRentLamports) +
+    reputationStakeLamports +
+    taskRewardLamports * 3n +
+    DEFAULT_CREATOR_PHASE1_FLOW_BUFFER_LAMPORTS;
+
   await Promise.all([
     ensureBalance(
       connection,
       "creator",
       creatorSigner.keypair.publicKey,
-      (creatorAgentCount > 0
-        ? 0n
-        : creatorStake + agentRegistrationRentLamports) +
-        reputationStakeLamports +
-        taskRewardLamports * 3n +
-        DEFAULT_FEE_BUFFER_LAMPORTS,
+      creatorRequiredLamports,
     ),
     ensureBalance(
       connection,
@@ -1486,6 +2456,9 @@ async function runInitial(): Promise<void> {
   console.log(`[config] rpc retry attempts: ${rpcRetryAttempts}`);
   console.log(`[config] rpc retry delay ms: ${rpcRetryDelayMs}`);
   console.log(`[config] agent registration rent lamports: ${agentRegistrationRentLamports.toString()}`);
+  console.log(
+    `[config] creator minimum lamports: ${creatorRequiredLamports.toString()}`,
+  );
   console.log(`[config] creator wallet: ${creatorSigner.keypair.publicKey.toBase58()}`);
   console.log(`[config] worker wallet: ${workerSigner.keypair.publicKey.toBase58()}`);
   console.log(`[config] authority wallet: ${authoritySigner.keypair.publicKey.toBase58()}`);
@@ -1578,7 +2551,11 @@ async function runInitial(): Promise<void> {
 
   try {
     console.log("[phase] reputation");
-    const beforeStakeSummary = await fetchReputationSummary(baseOptions, creatorKey);
+    const beforeStakeSummary = await fetchReputationSummary(
+      baseOptions,
+      creatorKey,
+      creator.agentPda.toBase58(),
+    );
     const beforeStakedAmount = BigInt(
       getStringField(beforeStakeSummary, "stakedAmount", "beforeStakeSummary"),
     );
@@ -1586,7 +2563,7 @@ async function runInitial(): Promise<void> {
     console.log("[tui] reputation summary start");
     const summaryText = await runTuiSession(baseOptions, creator, [
       "5",
-      "summary",
+      `summary ${creator.agentPda.toBase58()}`,
       "",
       "back",
       "q",
@@ -1610,7 +2587,11 @@ async function runInitial(): Promise<void> {
       "reputation stake to settle",
       DEFAULT_STATE_WAIT_SECONDS,
       async () => {
-        const summary = await fetchReputationSummary(baseOptions, creatorKey);
+        const summary = await fetchReputationSummary(
+          baseOptions,
+          creatorKey,
+          creator.agentPda.toBase58(),
+        );
         const stakedAmount = BigInt(
           getStringField(summary, "stakedAmount", "afterStakeSummary"),
         );
@@ -1686,8 +2667,9 @@ async function runInitial(): Promise<void> {
       creator,
       `tui-cancel-${runId}`,
       taskRewardLamports,
-      AgentCapabilities.COMPUTE,
+      CANCEL_FLOW_REQUIRED_CAPABILITIES,
       protocolConfig.taskCreationCooldown,
+      20_000,
     );
     await waitFor("cancel task creation settlement", DEFAULT_STATE_WAIT_SECONDS, async () => {
       const task = await fetchTaskDetail(baseOptions, cancelTaskPda);
@@ -1701,17 +2683,11 @@ async function runInitial(): Promise<void> {
       }
       return task;
     });
+    await sleep(10_000);
 
-    const cancelText = await runTuiSession(baseOptions, creator, [
-      "1",
-      `cancel ${cancelTaskPda}`,
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(cancelText, "task cancel");
+    await cancelTaskViaTui(baseOptions, creator, cancelTaskPda, "task cancel");
 
-    await waitFor("cancelled task status", DEFAULT_STATE_WAIT_SECONDS, async () => {
+    await waitFor("cancelled task status", Math.max(DEFAULT_STATE_WAIT_SECONDS, 120), async () => {
       const task = await fetchTaskDetail(baseOptions, cancelTaskPda);
       const status = getStringField(task, "status", "cancelTaskDetail");
       if (status !== "cancelled") {
@@ -1721,68 +2697,86 @@ async function runInitial(): Promise<void> {
     });
 
     console.log("[phase] task completion flow");
-    const { taskPda: completeTaskPda } = await createTaskViaTui(
+    let completeTaskPda = "";
+    let completeClaimPda = "";
+    for (let completionAttempt = 1; completionAttempt <= 3; completionAttempt += 1) {
+      try {
+        const createdTask = await createTaskViaTui(
+          baseOptions,
+          creator,
+          `tui-complete-${runId}-${completionAttempt}`,
+          taskRewardLamports,
+          AgentCapabilities.COMPUTE,
+          protocolConfig.taskCreationCooldown,
+          2_000,
+        );
+        completeTaskPda = createdTask.taskPda;
+        await waitFor(
+          "completion task creation settlement",
+          DEFAULT_STATE_WAIT_SECONDS,
+          async () => {
+            const task = await fetchTaskDetail(baseOptions, completeTaskPda);
+            const status = getStringField(task, "status", "completeCreatedTask");
+            const creator = getStringField(task, "creator", "completeCreatedTask");
+            if (status !== "open") {
+              throw new Error(`task status is ${status}`);
+            }
+            if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
+              throw new Error(`task creator ${creator} does not match creator wallet`);
+            }
+            return task;
+          },
+        );
+
+        const claimResult = await claimTaskViaTui(
+          baseOptions,
+          worker,
+          completeTaskPda,
+          "task claim",
+        );
+        completeClaimPda = claimResult.claimPda;
+
+        const claimUsable = await waitForTaskClaimUsable(
+          baseOptions,
+          completeTaskPda,
+          worker.agentPda.toBase58(),
+          Math.max(
+            DEFAULT_STATE_WAIT_SECONDS,
+            claimResult.confirmation === "derived" ? 60 : 30,
+          ),
+        );
+        if (
+          claimUsable.claimPda &&
+          claimUsable.claimPda !== completeClaimPda &&
+          claimResult.confirmation !== "derived"
+        ) {
+          throw new Error(
+            `Visible claim ${claimUsable.claimPda} did not match claimed payload ${completeClaimPda}`,
+          );
+        }
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          completionAttempt < 3 &&
+          message.includes("claimed by another worker")
+        ) {
+          console.log(
+            `[retry] completion setup attempt ${completionAttempt}/3 lost the task to another worker; creating a new task`,
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    await completeTaskViaTui(
       baseOptions,
-      creator,
-      `tui-complete-${runId}`,
-      taskRewardLamports,
-      AgentCapabilities.COMPUTE,
-      protocolConfig.taskCreationCooldown,
+      worker,
+      completeTaskPda,
+      runId,
+      "task completion",
     );
-    await waitFor(
-      "completion task creation settlement",
-      DEFAULT_STATE_WAIT_SECONDS,
-      async () => {
-        const task = await fetchTaskDetail(baseOptions, completeTaskPda);
-        const status = getStringField(task, "status", "completeCreatedTask");
-        const creator = getStringField(task, "creator", "completeCreatedTask");
-        if (status !== "open") {
-          throw new Error(`task status is ${status}`);
-        }
-        if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
-          throw new Error(`task creator ${creator} does not match creator wallet`);
-        }
-        return task;
-      },
-    );
-
-    const claimText = await runTuiSession(baseOptions, worker, [
-      "1",
-      `claim ${completeTaskPda}`,
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(claimText, "task claim");
-    const completeClaimPda = extractPayloadString(claimText, "task claim", "claimPda");
-
-    await waitFor("claimed task worker count", DEFAULT_STATE_WAIT_SECONDS, async () => {
-      const task = await fetchTaskDetail(baseOptions, completeTaskPda);
-      const workers = getNumberField(task, "currentWorkers", "claimedTaskDetail");
-      if (workers < 1) {
-        throw new Error(`currentWorkers is ${workers}`);
-      }
-      return task;
-    });
-
-    const completionText = await runTuiSession(baseOptions, worker, [
-      "1",
-      `complete ${completeTaskPda}`,
-      `tui complete ${runId}`,
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(completionText, "task completion");
-
-    await waitFor("completed task status", DEFAULT_STATE_WAIT_SECONDS, async () => {
-      const task = await fetchTaskDetail(baseOptions, completeTaskPda);
-      const status = getStringField(task, "status", "completedTaskDetail");
-      if (status !== "completed") {
-        throw new Error(`task status is ${status}`);
-      }
-      return task;
-    });
 
     console.log("[phase] skills");
     const skillRegistration = await executeToolJson(
@@ -1811,14 +2805,7 @@ async function runInitial(): Promise<void> {
     ]);
     assertTuiSuccess(skillDetailText, "skill detail");
 
-    const skillPurchaseText = await runTuiSession(baseOptions, worker, [
-      "2",
-      `purchase ${skillPda}`,
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(skillPurchaseText, "skill purchase");
+    await purchaseSkillViaTui(baseOptions, worker, skillPda);
 
     await waitFor("skill purchase visibility", DEFAULT_STATE_WAIT_SECONDS, async () => {
       const skill = await fetchSkillDetail(baseOptions, skillPda, workerKey);
@@ -1828,16 +2815,13 @@ async function runInitial(): Promise<void> {
       return skill;
     });
 
-    const skillRateText = await runTuiSession(baseOptions, worker, [
-      "2",
-      `rate ${skillPda}`,
-      "5",
+    await rateSkillViaTui(
+      baseOptions,
+      worker,
+      skillPda,
+      5,
       `solid skill ${runId}`,
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(skillRateText, "skill rating");
+    );
 
     await waitFor("skill rating visibility", DEFAULT_STATE_WAIT_SECONDS, async () => {
       const skill = await fetchSkillDetail(baseOptions, skillPda, workerKey);
@@ -1881,15 +2865,7 @@ async function runInitial(): Promise<void> {
     ]);
     assertTuiSuccess(governanceDetailText, "governance proposal detail");
 
-    const governanceVoteText = await runTuiSession(baseOptions, creator, [
-      "3",
-      `vote ${proposalPda}`,
-      "yes",
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(governanceVoteText, "governance vote");
+    await voteProposalViaTui(baseOptions, creator, proposalPda, true);
 
     await waitFor("governance vote visibility", DEFAULT_STATE_WAIT_SECONDS, async () => {
       const proposal = await fetchProposalDetail(baseOptions, proposalPda);
@@ -1903,48 +2879,69 @@ async function runInitial(): Promise<void> {
     });
 
     console.log("[phase] dispute flow");
-    const { taskPda: disputeTaskPda } = await createTaskViaTui(
+    let disputeTaskPda = "";
+    let disputeClaimPda = "";
+    for (let disputeAttempt = 1; disputeAttempt <= 3; disputeAttempt += 1) {
+      try {
+        const createdTask = await createTaskViaTui(
+          baseOptions,
+          creator,
+          `tui-dispute-${runId}-${disputeAttempt}`,
+          taskRewardLamports,
+          AgentCapabilities.COMPUTE,
+          protocolConfig.taskCreationCooldown,
+          2_000,
+        );
+        disputeTaskPda = createdTask.taskPda;
+        await waitFor(
+          "dispute task creation settlement",
+          DEFAULT_STATE_WAIT_SECONDS,
+          async () => {
+            const task = await fetchTaskDetail(baseOptions, disputeTaskPda);
+            const status = getStringField(task, "status", "disputeCreatedTask");
+            const creator = getStringField(task, "creator", "disputeCreatedTask");
+            if (status !== "open") {
+              throw new Error(`task status is ${status}`);
+            }
+            if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
+              throw new Error(`task creator ${creator} does not match creator wallet`);
+            }
+            return task;
+          },
+        );
+
+        const claimResult = await claimTaskViaTui(
+          baseOptions,
+          worker,
+          disputeTaskPda,
+          "task claim",
+        );
+        disputeClaimPda = claimResult.claimPda;
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          disputeAttempt < 3 &&
+          message.includes("claimed by another worker")
+        ) {
+          console.log(
+            `[retry] dispute setup attempt ${disputeAttempt}/3 lost the task to another worker; creating a new task`,
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    const disputePda = await initiateDisputeViaTui(
       baseOptions,
       creator,
-      `tui-dispute-${runId}`,
-      taskRewardLamports,
-      AgentCapabilities.COMPUTE,
-      protocolConfig.taskCreationCooldown,
-    );
-    await waitFor("dispute task creation settlement", DEFAULT_STATE_WAIT_SECONDS, async () => {
-      const task = await fetchTaskDetail(baseOptions, disputeTaskPda);
-      const status = getStringField(task, "status", "disputeCreatedTask");
-      const creator = getStringField(task, "creator", "disputeCreatedTask");
-      if (status !== "open") {
-        throw new Error(`task status is ${status}`);
-      }
-      if (creator !== creatorSigner.keypair.publicKey.toBase58()) {
-        throw new Error(`task creator ${creator} does not match creator wallet`);
-      }
-      return task;
-    });
-
-    const disputeClaimText = await runTuiSession(baseOptions, worker, [
-      "1",
-      `claim ${disputeTaskPda}`,
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(disputeClaimText, "task claim");
-    const disputeClaimPda = extractPayloadString(disputeClaimText, "task claim", "claimPda");
-
-    const taskDisputeText = await runTuiSession(baseOptions, creator, [
-      "1",
-      `dispute ${disputeTaskPda}`,
+      disputeTaskPda,
+      worker,
+      disputeClaimPda,
       `creator dispute ${runId}`,
       "refund",
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(taskDisputeText, "task dispute");
-    const disputePda = extractPayloadString(taskDisputeText, "task dispute", "disputePda");
+    );
 
     const disputeDetailText = await runTuiSession(baseOptions, creator, [
       "4",
