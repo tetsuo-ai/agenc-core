@@ -537,6 +537,72 @@ function isUnsupportedJobSpecMetadataInstructionError(message: string): boolean 
   );
 }
 
+function isUnsupportedCreatorReviewInstructionError(message: string): boolean {
+  return isUnsupportedJobSpecMetadataInstructionError(message);
+}
+
+function createPlaceholderPublicKey(seed: number): PublicKey {
+  return new PublicKey(new Uint8Array(32).fill(seed));
+}
+
+async function assertCreatorReviewInstructionSupported(
+  program: Program<AgencCoordination>,
+  creator: PublicKey,
+  reviewWindowSecs: number,
+): Promise<void> {
+  const methods = program.methods as unknown as {
+    configureTaskValidation: (
+      validationMode: number,
+      reviewWindow: BN,
+      validatorQuorum: number,
+      attestor: PublicKey | null,
+    ) => {
+      accountsPartial: (accounts: Record<string, unknown>) => {
+        simulate?: () => Promise<unknown>;
+      };
+    };
+  };
+
+  if (typeof methods.configureTaskValidation !== 'function') {
+    throw new Error(
+      `Local runtime build does not expose configureTaskValidation for creator-review tasks on program ${program.programId.toBase58()}.`,
+    );
+  }
+
+  const probeTask = createPlaceholderPublicKey(11);
+  const probeValidationConfig = createPlaceholderPublicKey(12);
+  const probeAttestorConfig = createPlaceholderPublicKey(13);
+  const protocolPda = findProtocolPda(program.programId);
+
+  try {
+    const builder = methods
+      .configureTaskValidation(
+        Number(TaskValidationMode.CreatorReview),
+        new BN(reviewWindowSecs.toString()),
+        0,
+        null,
+      )
+      .accountsPartial({
+        task: probeTask,
+        taskValidationConfig: probeValidationConfig,
+        taskAttestorConfig: probeAttestorConfig,
+        protocolConfig: protocolPda,
+        creator,
+        systemProgram: SystemProgram.programId,
+      });
+
+    if (typeof builder.simulate !== 'function') return;
+    await builder.simulate();
+  } catch (error) {
+    const message = formatUnknownError(error);
+    if (isUnsupportedCreatorReviewInstructionError(message)) {
+      throw new Error(
+        `The deployed marketplace program ${program.programId.toBase58()} does not support creator-review task validation yet. Upgrade the protocol deployment or switch this task to validationMode="auto". Underlying error: ${message}`,
+      );
+    }
+  }
+}
+
 function formatJobSpecPublishWarning(error: unknown): string {
   const message = formatUnknownError(error);
   if (isUnsupportedJobSpecMetadataInstructionError(message)) {
@@ -2745,6 +2811,17 @@ export function createCreateTaskTool(
           validationMode !== TaskValidationMode.CreatorReview
         ) {
           return errorResult('reviewWindowSecs is only valid when validationMode is "creator-review"');
+        }
+        if (validationMode === TaskValidationMode.CreatorReview) {
+          try {
+            await assertCreatorReviewInstructionSupported(
+              program,
+              creator,
+              reviewWindowSecs,
+            );
+          } catch (error) {
+            return errorResult(formatUnknownError(error));
+          }
         }
 
         const [customConstraintHash, constraintHashErr] = parseOptionalHexBytes(
