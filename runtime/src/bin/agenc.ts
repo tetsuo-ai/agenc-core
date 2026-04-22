@@ -79,6 +79,7 @@ import {
 } from "../prompts/system-prompt.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
+import { enableConfigs } from "../utils/config.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -1096,6 +1097,16 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
   return bootTUIEntry({ resumeId: args.resumeId });
 }
 
+/**
+ * Openclaude-style CLI startup gate: config reads must be enabled before any
+ * downstream path can touch global settings (auto-compact, theme, provider
+ * profiles, etc.). AgenC routes both the one-shot and Ink console through this
+ * same entrypoint, so the gate belongs here rather than in individual phases.
+ */
+export function initializeCliRuntime(): void {
+  enableConfigs();
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // main — Wave 5-B routing entrypoint
 // ─────────────────────────────────────────────────────────────────────
@@ -1106,6 +1117,7 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
  * for the routing table.
  */
 export async function main(): Promise<number> {
+  initializeCliRuntime();
   return routeCLI({
     argv: process.argv,
     isTTY: Boolean(process.stdin.isTTY),

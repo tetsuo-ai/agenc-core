@@ -457,7 +457,9 @@ function deriveRoleRuntimeHints(
   if (!roleLayerToml) return {};
 
   const normalizedLayer = roleTomlToConfigLayer(roleLayerToml);
-  const derived: Partial<AgentRoleConfig> = {};
+  const derived: Partial<{
+    -readonly [K in keyof AgentRoleConfig]: AgentRoleConfig[K];
+  }> = {};
 
   if (config.reasoningEffort === undefined) {
     const reasoningEffort = asAgentReasoningEffort(

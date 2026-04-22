@@ -27,6 +27,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,6 +35,7 @@ import React, {
 import type { Key } from "../ink/events/input-event.js";
 import { InputEvent } from "../ink/events/input-event.js";
 import type { EventEmitter } from "../ink/events/emitter.js";
+import StdinContext from "../ink/components/StdinContext.js";
 import {
   DEFAULT_BINDINGS,
   normalizeKeySequence,
@@ -197,6 +199,7 @@ export const KeybindingProvider: React.FC<ProviderProps> = ({
   onWarning,
   children,
 }) => {
+  const { setRawMode, isRawModeSupported } = useContext(StdinContext);
   const mergedBindings = bindings ?? DEFAULT_BINDINGS;
 
   // Handler registry keyed by `${context}:${command}` -> Set<handler>. Using
@@ -395,6 +398,20 @@ export const KeybindingProvider: React.FC<ProviderProps> = ({
   useEffect(() => {
     handleInputEventRef.current = handleInputEvent;
   }, [handleInputEvent]);
+
+  // The live TUI routes all keyboard ownership through this provider.
+  // Claim raw mode synchronously during commit so the shell doesn't keep
+  // stdin in cooked/echo mode while the composer is mounted.
+  useLayoutEffect(() => {
+    if (!isRawModeSupported) {
+      return;
+    }
+
+    setRawMode(true);
+    return () => {
+      setRawMode(false);
+    };
+  }, [isRawModeSupported, setRawMode]);
 
   // Subscribe to the injected stdin context. Tests pass a stub; production
   // passes the real Ink StdinContext value (Wave 2-A wires this up).

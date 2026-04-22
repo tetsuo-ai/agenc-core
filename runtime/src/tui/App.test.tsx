@@ -34,7 +34,7 @@ function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
   const stdout = new PassThrough();
   const stdin = new PassThrough() as TestStdin;
   stdin.isTTY = true;
-  stdin.setRawMode = () => undefined;
+  stdin.setRawMode = vi.fn(() => undefined);
   stdin.ref = () => undefined;
   stdin.unref = () => undefined;
   (stdout as unknown as { columns: number }).columns = 80;
@@ -45,7 +45,7 @@ function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
 
 async function mount(
   element: React.ReactElement,
-): Promise<{ unmount: () => void }> {
+): Promise<{ unmount: () => void; stdin: TestStdin }> {
   const { stdout, stdin } = createStreams();
   const root = await createRoot({
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -55,6 +55,7 @@ async function mount(
   root.render(element);
   await new Promise((r) => setTimeout(r, 20));
   return {
+    stdin,
     unmount: () => {
       root.unmount();
       instances.delete(stdout as unknown as NodeJS.WriteStream);
@@ -105,6 +106,22 @@ describe("App", () => {
       />,
     );
     unmount();
+  });
+
+  test("claims raw mode while the live App is mounted", async () => {
+    const session = createFakeSession("default");
+    const { stdin, unmount } = await mount(
+      <App
+        session={session}
+        configStore={FAKE_CONFIG_STORE}
+        model="grok-code-fast-1"
+      />,
+    );
+    const setRawMode = vi.mocked(stdin.setRawMode);
+    expect(setRawMode).toHaveBeenCalledWith(true);
+
+    unmount();
+    expect(setRawMode).toHaveBeenCalledWith(false);
   });
 
   test("AgenCAppStateProvider propagates mode changes to consumers", async () => {

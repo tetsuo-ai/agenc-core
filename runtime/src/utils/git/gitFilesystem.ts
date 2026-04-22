@@ -13,13 +13,12 @@
  *   - Shallow: mere existence of `<commonDir>/shallow` means shallow (shallow.c)
  */
 
-import { unwatchFile, watchFile } from 'fs'
+import { statSync, unwatchFile, watchFile } from 'fs'
 import { readdir, readFile, stat } from 'fs/promises'
-import { join, resolve } from 'path'
+import { dirname, join, resolve, sep } from 'path'
 import { waitForScrollIdle } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getCwd } from '../cwd.js'
-import { findGitRoot } from '../git.js'
 import { parseGitConfigValue } from './gitConfigParser.js'
 
 // ---------------------------------------------------------------------------
@@ -27,6 +26,41 @@ import { parseGitConfigValue } from './gitConfigParser.js'
 // ---------------------------------------------------------------------------
 
 const resolveGitDirCache = new Map<string, string | null>()
+
+function findGitRootLocal(startPath: string): string | null {
+  let current = resolve(startPath)
+  const root = current.substring(0, current.indexOf(sep) + 1) || sep
+
+  while (current !== root) {
+    try {
+      const gitPath = join(current, '.git')
+      const st = statSync(gitPath)
+      if (st.isDirectory() || st.isFile()) {
+        return current.normalize('NFC')
+      }
+    } catch {
+      // keep walking upward
+    }
+
+    const parent = dirname(current)
+    if (parent === current) {
+      break
+    }
+    current = parent
+  }
+
+  try {
+    const gitPath = join(root, '.git')
+    const st = statSync(gitPath)
+    if (st.isDirectory() || st.isFile()) {
+      return root.normalize('NFC')
+    }
+  } catch {
+    // no repo at filesystem root
+  }
+
+  return null
+}
 
 /** Clear cached git dir resolutions. Exported for testing only. */
 export function clearResolveGitDirCache(): void {
@@ -47,7 +81,7 @@ export async function resolveGitDir(
     return cached
   }
 
-  const root = findGitRoot(cwd)
+  const root = findGitRootLocal(cwd)
   if (!root) {
     resolveGitDirCache.set(cwd, null)
     return null

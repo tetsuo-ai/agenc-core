@@ -1,3 +1,5 @@
+import { createHash, randomBytes } from "node:crypto";
+
 /**
  * Encoding utilities for @tetsuo-ai/runtime
  * Cross-platform utilities for ID generation, hex/byte conversion,
@@ -26,9 +28,6 @@ export function generateAgentId(): Uint8Array {
 
   // Fallback for older Node.js versions
   try {
-    // Dynamic import to avoid bundler issues in browser
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { randomBytes } = require("crypto");
     return new Uint8Array(randomBytes(32));
   } catch {
     throw new Error(
@@ -109,8 +108,6 @@ export function agentIdFromString(str: string): Uint8Array {
   // For longer strings, use SHA-256 hash (Node.js) or FNV-1a mixing (browser)
   // Try Node's crypto.createHash (sync)
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createHash } = require("crypto");
     const hash = createHash("sha256").update(encoded).digest();
     return new Uint8Array(hash);
   } catch {

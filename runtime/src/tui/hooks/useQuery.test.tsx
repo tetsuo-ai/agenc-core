@@ -229,6 +229,37 @@ describe("useQuery", () => {
     unmount();
   });
 
+  test("still consumes phase-only slash results when eventLog is present", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: true,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emit({
+      type: "slash_result",
+      input: "/permissions",
+      result: { kind: "text", text: "Mode: default" },
+      timestamp: Date.now(),
+      turnId: null,
+    } as PhaseEvent);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(
+      latest!.events.some(
+        (event) =>
+          event.type === "slash_result" &&
+          "result" in event &&
+          event.result.kind === "text" &&
+          event.result.text.includes("Mode: default"),
+      ),
+    ).toBe(true);
+    unmount();
+  });
+
   test("submit forwards to session.submit when available", async () => {
     const session = createFakeSession();
     let latest: ReturnType<typeof useQuery> | null = null;

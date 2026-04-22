@@ -2279,7 +2279,7 @@ export function createSkillAttachmentIfNeeded(
   // the invoked-skills registry yet; when one lands it should be
   // threaded through CompactRuntimeContext. Until then, the attachment
   // is always empty and the function short-circuits to null.
-  const invokedSkills: ReadonlyMap<string, never> = new Map()
+  const invokedSkills: ReadonlyMap<string, never> = new Map<string, never>()
 
   if (invokedSkills.size === 0) {
     return null

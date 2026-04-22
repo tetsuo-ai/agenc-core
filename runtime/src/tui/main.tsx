@@ -19,7 +19,6 @@
  * `process.exit(130)`.
  */
 
-import React from "react";
 import { onExit } from "signal-exit";
 
 // The Ink render API lives in `./ink/root.js` (default export mirrors the

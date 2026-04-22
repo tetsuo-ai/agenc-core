@@ -776,27 +776,6 @@ function classifyRuntimeFastPath(
   return classifyRuntimeBashAction(opts.action);
 }
 
-function classifyRuntimeThinkingPath(
-  opts: ClassifyYoloActionOpts,
-): {
-  readonly shouldBlock: boolean;
-  readonly reason: string;
-  readonly unavailable?: boolean;
-} {
-  if (isRuntimeBackedBashToolName(opts.action.toolName)) {
-    return {
-      shouldBlock: true,
-      reason: `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
-      unavailable: true,
-    };
-  }
-  return {
-    shouldBlock: true,
-    reason: `runtime_classifier_manual_approval_required:${opts.action.toolName}`,
-    unavailable: true,
-  };
-}
-
 function classifyRuntimeBashAction(
   action: ClassifyYoloActionOpts["action"],
 ):

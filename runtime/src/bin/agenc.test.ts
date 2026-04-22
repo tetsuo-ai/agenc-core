@@ -27,6 +27,7 @@ import {
   __setActiveInkUnmountForTest,
   buildExtractMemoriesViaSubagent,
   bootTUIEntry,
+  initializeCliRuntime,
   installInitSignalHandlers,
   installSignalHandlers,
   main,
@@ -42,6 +43,7 @@ import {
   type ConfigReloadLatch,
 } from "./agenc.js";
 import { ConfigStore, defaultConfig } from "../config/index.js";
+import * as configUtils from "../utils/config.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -252,6 +254,21 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     const result = await tool.execute({ taskPrompt: "x" });
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content).error).toBe("boom");
+  });
+});
+
+describe("initializeCliRuntime", () => {
+  it("enables config reads before the CLI routes into turn logic", () => {
+    const enableSpy = vi
+      .spyOn(configUtils, "enableConfigs")
+      .mockImplementation(() => undefined);
+
+    try {
+      initializeCliRuntime();
+      expect(enableSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      enableSpy.mockRestore();
+    }
   });
 });
 
@@ -1981,6 +1998,97 @@ describe("main() full-IIFE smoke", () => {
         }),
       );
     } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      runTurnSpy.mockRestore();
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry wires /permissions through the TUI session contract", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-cwd-"));
+    const prevArgv = process.argv;
+    const prevEnv = { ...process.env };
+    process.argv = ["node", "agenc", "--provider", "xai"];
+    process.env.HOME = tmpHome;
+    process.env.USERPROFILE = tmpHome;
+    process.env.AGENC_HOME = tmpHome;
+    process.env.XAI_API_KEY = "test-key";
+
+    const createProviderSpy = vi
+      .spyOn(await import("../llm/provider.js"), "createProvider")
+      .mockResolvedValue({
+        provider: {
+          name: "xai",
+          sendMessage: vi.fn(),
+          sendStreamingMessage: vi.fn(),
+        } as never,
+        modelInfo: { id: "grok-4-fast", displayName: "grok-4-fast" } as never,
+      });
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+    const runTurnSpy = vi.spyOn(await import("../session/run-turn.js"), "runTurn");
+
+    let resolveExit: (() => void) | null = null;
+    const waitUntilExit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveExit = resolve;
+        }),
+    );
+    const unmount = vi.fn();
+    let capturedSession: {
+      submit?: (message: string) => Promise<void>;
+      subscribeToEvents?: (
+        cb: (event: { type: string; [key: string]: unknown }) => void,
+      ) => () => void;
+    } | null = null;
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async (opts: { session: typeof capturedSession }) => {
+        capturedSession = opts.session as typeof capturedSession;
+        return { unmount, waitUntilExit };
+      }),
+    }));
+
+    try {
+      const pending = bootTUIEntry({});
+      await new Promise((r) => setTimeout(r, 20));
+      expect(capturedSession).not.toBeNull();
+
+      const seenEvents: Array<{ type: string; [key: string]: unknown }> = [];
+      const unsubscribe =
+        capturedSession?.subscribeToEvents?.((event) => {
+          seenEvents.push(event);
+        }) ?? (() => undefined);
+      await capturedSession?.submit?.("/permissions");
+      unsubscribe();
+
+      resolveExit?.();
+      const code = await pending;
+      expect(code).toBe(0);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(startMcpSpy).toHaveBeenCalledTimes(1);
+      expect(runTurnSpy).not.toHaveBeenCalled();
+      expect(seenEvents).toContainEqual(
+        expect.objectContaining({
+          type: "slash_result",
+          input: "/permissions",
+          result: expect.objectContaining({
+            kind: "text",
+            text: expect.stringContaining("Mode: default"),
+          }),
+        }),
+      );
+    } finally {
+      process.argv = prevArgv;
       createProviderSpy.mockRestore();
       startMcpSpy.mockRestore();
       runTurnSpy.mockRestore();

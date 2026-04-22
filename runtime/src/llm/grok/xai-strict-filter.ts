@@ -199,6 +199,9 @@ const DOCUMENTED_XAI_MODEL_ALIASES: ReadonlyMap<string, string> = new Map([
   ["grok-4.20-reasoning", "grok-4.20-0309-reasoning"],
   ["grok-4.20-non-reasoning", "grok-4.20-0309-non-reasoning"],
   ["grok-4.20-multi-agent", "grok-4.20-multi-agent-0309"],
+  // Legacy "fast" marketing alias still appears in older AgenC defaults and
+  // should resolve to the current fast non-reasoning catalog ID.
+  ["grok-4-fast", "grok-4-1-fast-non-reasoning"],
   ["grok-4-fast-reasoning", "grok-4-1-fast-reasoning"],
   ["grok-4-fast-non-reasoning", "grok-4-1-fast-non-reasoning"],
   // -latest aliases → canonical
@@ -1222,4 +1225,3 @@ export function validateXaiResponsePostFlight(params: {
 
   return anomalies;
 }
-

@@ -7,7 +7,7 @@ const entry = [
   'src/bin/agenc.ts',
   'src/bin/agenc-runtime.ts',
   'src/bin/agenc-watch.ts',
-  'src/bin/daemon.ts',
+  'src/tui/main.tsx',
 ];
 
 const external = [
@@ -46,7 +46,7 @@ const external = [
 
 export default defineConfig({
   entry,
-  format: ['cjs', 'esm'],
+  format: ['esm'],
   dts: true,
   clean: true,
   platform: 'node',

@@ -16,7 +16,26 @@ import { logError } from './log.js'
 import { getPlatform } from './platform.js'
 import { countCharInString } from './stringUtils.js'
 
-const __filename = fileURLToPath(import.meta.url)
+function resolveModuleFilename(): string {
+  const moduleUrl =
+    typeof import.meta !== 'undefined' &&
+    import.meta &&
+    typeof import.meta.url === 'string'
+      ? import.meta.url
+      : undefined
+  if (moduleUrl) {
+    return fileURLToPath(moduleUrl)
+  }
+
+  const entry = process.argv[1]
+  if (typeof entry === 'string' && entry.length > 0) {
+    return entry
+  }
+
+  return process.cwd()
+}
+
+const __filename = resolveModuleFilename()
 // we use node:path.join instead of node:url.resolve because the former doesn't encode spaces
 const __dirname = path.join(
   __filename,

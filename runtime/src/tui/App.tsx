@@ -179,7 +179,7 @@ function toHandlerRequest(
     toolInput: request.toolInput,
     turnId: request.turnId,
     message: request.message,
-    resolveOnce: resolver,
+    resolveOnce: request.resolveOnce,
   };
 }
 

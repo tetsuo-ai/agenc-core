@@ -21,6 +21,13 @@ describe("detectDocumentedXaiModelAlias", () => {
     expect(notice!.replacement).toBe("grok-4.20-0309-reasoning");
   });
 
+  test("resolves the legacy fast alias used by older AgenC defaults", () => {
+    const notice = detectDocumentedXaiModelAlias("grok-4-fast");
+    expect(notice).not.toBeNull();
+    expect(notice!.subject).toBe("grok-4-fast");
+    expect(notice!.replacement).toBe("grok-4-1-fast-non-reasoning");
+  });
+
   test("legacy -beta- alias carries deprecated_since", () => {
     const notice = detectDocumentedXaiModelAlias(
       "grok-4.20-beta-0309-reasoning",
@@ -43,6 +50,19 @@ describe("validateXaiRequestPreFlight — deprecation notice side-channel", () =
     expect(emitted[0]!.subject).toBe("grok-4.20-beta-0309-reasoning");
     expect(emitted[0]!.replacement).toBe("grok-4.20-0309-reasoning");
     expect(emitted[0]!.deprecated_since).toBe("2026-04");
+  });
+
+  test("accepts the legacy fast alias and emits the canonical replacement", () => {
+    const emitted: XaiModelDeprecationNotice[] = [];
+    expect(() =>
+      validateXaiRequestPreFlight(
+        { model: "grok-4-fast" },
+        { onDeprecationNotice: (notice) => emitted.push(notice) },
+      ),
+    ).not.toThrow();
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]!.subject).toBe("grok-4-fast");
+    expect(emitted[0]!.replacement).toBe("grok-4-1-fast-non-reasoning");
   });
 
   test("does NOT fire for a canonical model", () => {

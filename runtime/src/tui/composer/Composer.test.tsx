@@ -280,7 +280,7 @@ describe("Composer", () => {
     unmount();
   });
 
-  test("Enter confirms the slash palette before submitting the composer", async () => {
+  test("Enter submits an exact slash command on the first press", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();
     const { unmount } = await mount(
@@ -297,15 +297,37 @@ describe("Composer", () => {
     emitter.emit("input", makeKeyEvent({ name: "/", sequence: "/" }));
     emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
     emitter.emit("input", makeKeyEvent({ name: "e", sequence: "e" }));
+    emitter.emit("input", makeKeyEvent({ name: "l", sequence: "l" }));
+    emitter.emit("input", makeKeyEvent({ name: "p", sequence: "p" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(onSubmit).toHaveBeenCalledWith("/help");
+    unmount();
+  });
+
+  test("Enter still waits on partial slash input until the command is completed", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "/", sequence: "/" }));
+    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
     await new Promise((r) => setTimeout(r, 25));
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 25));
     expect(onSubmit).not.toHaveBeenCalled();
-
-    emitter.emit("input", makeKeyEvent({ name: "return" }));
-    await new Promise((r) => setTimeout(r, 25));
-    expect(onSubmit).toHaveBeenCalledWith("/help ");
     unmount();
   });
 

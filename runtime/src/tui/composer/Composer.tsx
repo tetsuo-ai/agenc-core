@@ -366,10 +366,19 @@ export const Composer: React.FC<ComposerProps> = ({
     () => (slashDraft ? fuzzyMatch(slashItems, slashDraft.query) : []),
     [slashDraft, slashItems],
   );
+  const slashPreviewItem = slashMatches[0] ?? null;
+  const exactSlashSelection = useMemo(() => {
+    if (!slashDraft || !slashPreviewItem) return false;
+    const activeToken = state.value.slice(
+      slashDraft.replaceStart,
+      slashDraft.replaceEnd,
+    );
+    return activeToken === slashPreviewItem.value;
+  }, [slashDraft, slashPreviewItem, state.value]);
   const showSlashPalette =
     Boolean(slashDraft?.cursorInsideToken) &&
-    slashTokenKey !== dismissedSlashToken;
-  const slashPreviewItem = slashMatches[0] ?? null;
+    slashTokenKey !== dismissedSlashToken &&
+    !exactSlashSelection;
   const slashConflict = hasSlashMultilineConflict(state.value);
   useEffect(() => {
     if (slashTokenKey === null && dismissedSlashToken !== null) {
@@ -481,7 +490,14 @@ export const Composer: React.FC<ComposerProps> = ({
         // Silent — history is best-effort.
       });
     }
-  }, [dispatch, hasPendingTurn, home, session.cwd, showSlashPalette, store]);
+  }, [
+    dispatch,
+    hasPendingTurn,
+    home,
+    session.cwd,
+    showSlashPalette,
+    store,
+  ]);
 
   const handleCancel = useCallback((): void => {
     if (showSlashPalette) return;
@@ -618,9 +634,10 @@ export const Composer: React.FC<ComposerProps> = ({
     if (slashDraft && slashPreviewItem) {
       return {
         color: colors.primary,
-        text:
-          slashPreviewItem.description ??
-          `${slashPreviewItem.label} is available.`,
+        text: exactSlashSelection
+          ? `Enter runs ${slashPreviewItem.label}. Tab inserts it without submitting.`
+          : (slashPreviewItem.description ??
+            `${slashPreviewItem.label} is available.`),
       };
     }
     return {
@@ -635,6 +652,7 @@ export const Composer: React.FC<ComposerProps> = ({
     slashPreviewItem,
     state.pasteInFlight,
     state.pendingEnters,
+    exactSlashSelection,
   ]);
 
   // ── render ─────────────────────────────────────────────────────────

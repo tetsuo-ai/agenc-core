@@ -52,7 +52,9 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  ftruncateSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -452,7 +454,6 @@ export class SessionLock {
     // Atomic link handoff.
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { linkSync } = require("node:fs") as typeof import("node:fs");
       linkSync(tmpPath, this.lockPath);
       // Success — unlink the tmp (the lock file is a separate inode via
       // link but shares the payload).
@@ -686,7 +687,6 @@ export function truncateCorruptTail(rolloutPath: string): {
         // node fs doesn't expose ftruncate on fd directly in sync API
         // via `fd` — use ftruncateSync.
         // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { ftruncateSync } = require("node:fs");
         ftruncateSync(fd, 0);
       } catch {
         /* best-effort */
@@ -701,7 +701,6 @@ export function truncateCorruptTail(rolloutPath: string): {
     // Partial line exists after last newline — truncate.
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { ftruncateSync } = require("node:fs");
       ftruncateSync(fd, afterLastNewlineIdx);
       fsyncSync(fd);
     } catch {

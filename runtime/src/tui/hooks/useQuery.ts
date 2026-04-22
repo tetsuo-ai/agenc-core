@@ -207,6 +207,10 @@ function toTranscriptEvent(event: Event): TranscriptEventEnvelope | null {
   }
 }
 
+function isPhaseOnlyTranscriptEvent(event: PhaseEvent): boolean {
+  return event.type === "slash_result";
+}
+
 /**
  * One-shot stderr warning. Multiple hook mounts should not spam the
  * terminal; we track each distinct tag in a module-local Set.
@@ -289,10 +293,17 @@ export function useQuery(session: SessionLike): UseQueryResult {
     }
 
     const subscribeToEvents = session.subscribeToEvents;
-    if (typeof subscribeToEvents === "function" && unsubscribers.length === 0) {
+    if (typeof subscribeToEvents === "function") {
       try {
         unsubscribers.push(
-          subscribeToEvents.call(session, (event: PhaseEvent) => push(event)),
+          subscribeToEvents.call(session, (event: PhaseEvent) => {
+            if (
+              isPhaseOnlyTranscriptEvent(event) ||
+              typeof eventLogSubscribe !== "function"
+            ) {
+              push(event);
+            }
+          }),
         );
       } catch (error) {
         warnOnce(
