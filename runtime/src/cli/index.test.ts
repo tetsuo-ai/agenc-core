@@ -41,6 +41,8 @@ const {
   runMarketTasksListCommand,
   runMarketTaskCreateCommand,
   runMarketTaskClaimCommand,
+  runMarketTaskAcceptCommand,
+  runMarketTaskRejectCommand,
   runMarketGovernanceVoteCommand,
   runMarketInspectCommand,
   runMarketReputationSummaryCommand,
@@ -48,6 +50,8 @@ const {
   runMarketTasksListCommand: vi.fn(async () => 0),
   runMarketTaskCreateCommand: vi.fn(async () => 0),
   runMarketTaskClaimCommand: vi.fn(async () => 0),
+  runMarketTaskAcceptCommand: vi.fn(async () => 0),
+  runMarketTaskRejectCommand: vi.fn(async () => 0),
   runMarketGovernanceVoteCommand: vi.fn(async () => 0),
   runMarketInspectCommand: vi.fn(async () => 0),
   runMarketReputationSummaryCommand: vi.fn(async () => 0),
@@ -103,6 +107,8 @@ vi.mock("./marketplace-cli.js", async () => {
     runMarketTasksListCommand,
     runMarketTaskCreateCommand,
     runMarketTaskClaimCommand,
+    runMarketTaskAcceptCommand,
+    runMarketTaskRejectCommand,
     runMarketGovernanceVoteCommand,
     runMarketInspectCommand,
     runMarketReputationSummaryCommand,
@@ -838,6 +844,69 @@ describe("runtime root CLI", () => {
         requiredCapabilities: "1",
         validationMode: "creator-review",
         reviewWindowSecs: 120,
+      }),
+    );
+  });
+
+  it("routes market task acceptance through the root CLI command surface", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runCli({
+      argv: [
+        "market",
+        "tasks",
+        "accept",
+        "Task111111111111111111111111111111111111111",
+        "--worker-agent-pda",
+        "Agent11111111111111111111111111111111111111",
+        "--output",
+        "json",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runMarketTaskAcceptCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        taskPda: "Task111111111111111111111111111111111111111",
+        workerAgentPda: "Agent11111111111111111111111111111111111111",
+      }),
+    );
+  });
+
+  it("routes market task rejection through the root CLI command surface", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runCli({
+      argv: [
+        "market",
+        "tasks",
+        "reject",
+        "Task111111111111111111111111111111111111111",
+        "--worker-agent-pda",
+        "Agent11111111111111111111111111111111111111",
+        "--reason",
+        "Need another pass on the delivery",
+        "--output",
+        "json",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runMarketTaskRejectCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        taskPda: "Task111111111111111111111111111111111111111",
+        workerAgentPda: "Agent11111111111111111111111111111111111111",
+        reason: "Need another pass on the delivery",
       }),
     );
   });

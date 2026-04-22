@@ -80,6 +80,8 @@ import type {
   MarketSkillsListOptions,
   MarketTaskClaimOptions,
   MarketTaskCompleteOptions,
+  MarketTaskAcceptOptions,
+  MarketTaskRejectOptions,
   MarketTaskDetailOptions,
   MarketTaskDisputeOptions,
   MarketTasksListOptions,
@@ -103,10 +105,12 @@ import {
   runMarketSkillPurchaseCommand,
   runMarketSkillRateCommand,
   runMarketSkillsListCommand,
+  runMarketTaskAcceptCommand,
   runMarketTaskClaimCommand,
   runMarketTaskCompleteCommand,
   runMarketTaskDetailCommand,
   runMarketTaskDisputeCommand,
+  runMarketTaskRejectCommand,
   runMarketTasksListCommand,
 } from "./marketplace-cli.js";
 import type { MarketTuiOptions } from "./marketplace-tui.js";
@@ -629,6 +633,8 @@ type MarketCommand =
   | "tasks.cancel"
   | "tasks.claim"
   | "tasks.complete"
+  | "tasks.accept"
+  | "tasks.reject"
   | "tasks.dispute"
   | "skills.list"
   | "skills.detail"
@@ -674,6 +680,8 @@ const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
   "tasks.cancel": new Set(),
   "tasks.claim": new Set(["worker-agent-pda", "job-spec-store-dir"]),
   "tasks.complete": new Set(["proof-hash", "result-data", "worker-agent-pda"]),
+  "tasks.accept": new Set(["worker-agent-pda"]),
+  "tasks.reject": new Set(["worker-agent-pda", "reason"]),
   "tasks.dispute": new Set([
     "evidence",
     "resolution-type",
@@ -749,6 +757,18 @@ const MARKET_COMMANDS: Record<MarketCommand, MarketCommandDescriptor> = {
     description: "Complete a marketplace task",
     commandOptions: MARKET_COMMAND_OPTIONS["tasks.complete"],
     run: runMarketTaskCompleteCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.accept": {
+    name: "tasks.accept",
+    description: "Accept a creator-reviewed marketplace task submission",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.accept"],
+    run: runMarketTaskAcceptCommand as MarketCommandDescriptor["run"],
+  },
+  "tasks.reject": {
+    name: "tasks.reject",
+    description: "Reject a creator-reviewed marketplace task submission",
+    commandOptions: MARKET_COMMAND_OPTIONS["tasks.reject"],
+    run: runMarketTaskRejectCommand as MarketCommandDescriptor["run"],
   },
   "tasks.dispute": {
     name: "tasks.dispute",
@@ -856,6 +876,8 @@ function validateMarketCommand(name: string): name is MarketCommand {
     name === "tasks.cancel" ||
     name === "tasks.claim" ||
     name === "tasks.complete" ||
+    name === "tasks.accept" ||
+    name === "tasks.reject" ||
     name === "tasks.dispute" ||
     name === "skills.list" ||
     name === "skills.detail" ||
@@ -2974,6 +2996,44 @@ function normalizeAndValidateMarketCommand(
         resultData: parseOptionalStringFlag(parsed.flags["result-data"]),
         workerAgentPda: parseOptionalStringFlag(parsed.flags["worker-agent-pda"]),
       } as MarketTaskCompleteOptions;
+      break;
+    }
+    case "tasks.accept": {
+      const taskPda = parsed.positional[3];
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks accept requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      options = {
+        ...base,
+        taskPda,
+        workerAgentPda: parseOptionalStringFlag(parsed.flags["worker-agent-pda"]),
+      } as MarketTaskAcceptOptions;
+      break;
+    }
+    case "tasks.reject": {
+      const taskPda = parsed.positional[3];
+      const reason = parseOptionalStringFlag(parsed.flags.reason);
+      if (!taskPda) {
+        throw createCliError(
+          "market tasks reject requires <taskPda>",
+          ERROR_CODES.MISSING_TARGET,
+        );
+      }
+      if (!reason) {
+        throw createCliError(
+          "market tasks reject requires --reason <text>",
+          ERROR_CODES.MISSING_REQUIRED_OPTION,
+        );
+      }
+      options = {
+        ...base,
+        taskPda,
+        reason,
+        workerAgentPda: parseOptionalStringFlag(parsed.flags["worker-agent-pda"]),
+      } as MarketTaskRejectOptions;
       break;
     }
     case "tasks.dispute": {

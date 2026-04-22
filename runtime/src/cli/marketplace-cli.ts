@@ -111,6 +111,15 @@ export interface MarketTaskCompleteOptions extends MarketTaskDetailOptions {
   workerAgentPda?: string;
 }
 
+export interface MarketTaskAcceptOptions extends MarketTaskDetailOptions {
+  workerAgentPda?: string;
+}
+
+export interface MarketTaskRejectOptions extends MarketTaskDetailOptions {
+  workerAgentPda?: string;
+  reason: string;
+}
+
 export interface MarketTaskDisputeOptions extends MarketTaskDetailOptions {
   evidence: string;
   resolutionType?: string;
@@ -197,6 +206,8 @@ export type MarketCommandOptions =
   | MarketTaskCancelOptions
   | MarketTaskClaimOptions
   | MarketTaskCompleteOptions
+  | MarketTaskAcceptOptions
+  | MarketTaskRejectOptions
   | MarketTaskDisputeOptions
   | MarketSkillsListOptions
   | MarketSkillDetailOptions
@@ -1311,6 +1322,148 @@ export async function runMarketTaskCompleteCommand(
     context.error({
       status: "error",
       code: "MARKET_TASK_COMPLETE_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return 1;
+  }
+}
+
+export async function runMarketTaskAcceptCommand(
+  context: CliRuntimeContext,
+  options: MarketTaskAcceptOptions,
+): Promise<CliStatusCode> {
+  if (!requireRpcUrl(context, options)) return 1;
+
+  try {
+    const { program } = await createSignerProgramContext(options);
+    const taskPda = new PublicKey(options.taskPda);
+    const workerAgentPda = options.workerAgentPda?.trim();
+    if (!workerAgentPda) {
+      context.error({
+        status: "error",
+        code: "MARKET_TASK_ACCEPT_FAILED",
+        message:
+          "market tasks accept requires --worker-agent-pda <agentPda>",
+      });
+      return 1;
+    }
+
+    const ops = new TaskOperations({
+      program,
+      agentId: ZERO_AGENT_ID,
+      logger: silentLogger,
+    });
+    const task = await ops.fetchTask(taskPda);
+    if (!task) {
+      context.error({
+        status: "error",
+        code: "MARKET_TASK_NOT_FOUND",
+        message: `Task not found: ${options.taskPda}`,
+      });
+      return 1;
+    }
+
+    const result = await ops.acceptTaskResult(
+      taskPda,
+      task,
+      new PublicKey(workerAgentPda),
+    );
+
+    context.output({
+      status: "ok",
+      command: "market.tasks.accept",
+      schema: "market.tasks.accept.output.v1",
+      result: {
+        taskPda: taskPda.toBase58(),
+        workerAgentPda,
+        taskId: Buffer.from(result.taskId).toString("hex"),
+        transactionSignature: result.transactionSignature,
+      },
+    });
+    return 0;
+  } catch (error) {
+    context.error({
+      status: "error",
+      code: "MARKET_TASK_ACCEPT_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return 1;
+  }
+}
+
+export async function runMarketTaskRejectCommand(
+  context: CliRuntimeContext,
+  options: MarketTaskRejectOptions,
+): Promise<CliStatusCode> {
+  if (!requireRpcUrl(context, options)) return 1;
+
+  try {
+    const { program } = await createSignerProgramContext(options);
+    const taskPda = new PublicKey(options.taskPda);
+    const workerAgentPda = options.workerAgentPda?.trim();
+    if (!workerAgentPda) {
+      context.error({
+        status: "error",
+        code: "MARKET_TASK_REJECT_FAILED",
+        message:
+          "market tasks reject requires --worker-agent-pda <agentPda>",
+      });
+      return 1;
+    }
+
+    const rejectionReason = options.reason.trim();
+    if (!rejectionReason) {
+      context.error({
+        status: "error",
+        code: "MARKET_TASK_REJECT_FAILED",
+        message: "market tasks reject requires --reason <text>",
+      });
+      return 1;
+    }
+
+    const ops = new TaskOperations({
+      program,
+      agentId: ZERO_AGENT_ID,
+      logger: silentLogger,
+    });
+    const task = await ops.fetchTask(taskPda);
+    if (!task) {
+      context.error({
+        status: "error",
+        code: "MARKET_TASK_NOT_FOUND",
+        message: `Task not found: ${options.taskPda}`,
+      });
+      return 1;
+    }
+
+    const rejectionHash = createHash("sha256")
+      .update(rejectionReason)
+      .digest();
+    const result = await ops.rejectTaskResult(
+      taskPda,
+      task,
+      new PublicKey(workerAgentPda),
+      rejectionHash,
+    );
+
+    context.output({
+      status: "ok",
+      command: "market.tasks.reject",
+      schema: "market.tasks.reject.output.v1",
+      result: {
+        taskPda: taskPda.toBase58(),
+        workerAgentPda,
+        taskId: Buffer.from(result.taskId).toString("hex"),
+        taskSubmissionPda: result.taskSubmissionPda.toBase58(),
+        rejectionHash: rejectionHash.toString("hex"),
+        transactionSignature: result.transactionSignature,
+      },
+    });
+    return 0;
+  } catch (error) {
+    context.error({
+      status: "error",
+      code: "MARKET_TASK_REJECT_FAILED",
       message: error instanceof Error ? error.message : String(error),
     });
     return 1;
