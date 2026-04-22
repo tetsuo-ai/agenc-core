@@ -23,7 +23,10 @@ export type { AgencCoordination };
 
 type NamedIdlEntry = { name: string };
 type NamedIdlInstruction = NamedIdlEntry & { accounts?: unknown[] };
-export type ProgramLayoutMode = "default" | "legacyInitiateDispute";
+export type ProgramLayoutMode =
+  | "default"
+  | "legacyInitiateDispute"
+  | "legacyCreateTask";
 
 // The published protocol package currently diverges from the deployed
 // marketplace/task-dispute account layouts on devnet. Override the stale
@@ -71,6 +74,23 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
             path: "creator_agent.agent_id",
             account: "AgentRegistration",
           },
+        ],
+      },
+    },
+    {
+      name: "authority_rate_limit",
+      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
+      writable: true,
+      pda: {
+        seeds: [
+          {
+            kind: "const",
+            value: [
+              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
+              109, 105, 116,
+            ],
+          },
+          { kind: "account", path: "authority" },
         ],
       },
     },
@@ -177,6 +197,23 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
             path: "creator_agent.agent_id",
             account: "AgentRegistration",
           },
+        ],
+      },
+    },
+    {
+      name: "authority_rate_limit",
+      docs: ["Wallet-scoped task/dispute rate limit state shared across all agents"],
+      writable: true,
+      pda: {
+        seeds: [
+          {
+            kind: "const",
+            value: [
+              97, 117, 116, 104, 111, 114, 105, 116, 121, 95, 114, 97, 116, 101, 95, 108, 105,
+              109, 105, 116,
+            ],
+          },
+          { kind: "account", path: "authority" },
         ],
       },
     },
@@ -330,6 +367,11 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
     },
   ],
 } as const;
+
+const LEGACY_CREATE_TASK_ACCOUNT_LAYOUT = [
+  ...MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES.create_task.slice(0, 4),
+  ...MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES.create_task.slice(5),
+];
 
 const LEGACY_INITIATE_DISPUTE_ACCOUNT_LAYOUT = [
   {
@@ -1402,9 +1444,11 @@ function overrideInstructionAccounts(
       mode === "legacyInitiateDispute" &&
       instruction.name === "initiate_dispute"
         ? LEGACY_INITIATE_DISPUTE_ACCOUNT_LAYOUT
-        : MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES[
-            instruction.name as keyof typeof MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES
-          ];
+        : mode === "legacyCreateTask" && instruction.name === "create_task"
+          ? LEGACY_CREATE_TASK_ACCOUNT_LAYOUT
+          : MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES[
+              instruction.name as keyof typeof MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES
+            ];
     if (!override) {
       return instruction;
     }
@@ -1464,6 +1508,11 @@ const LEGACY_INITIATE_DISPUTE_IDL: Idl = {
   address: PROGRAM_ID.toBase58(),
 };
 
+const LEGACY_CREATE_TASK_IDL: Idl = {
+  ...augmentIdl(AGENC_COORDINATION_IDL as Idl, "legacyCreateTask"),
+  address: PROGRAM_ID.toBase58(),
+};
+
 /**
  * Placeholder public key for read-only providers.
  * Uses a deterministic value derived from ones to avoid Keypair.generate() overhead.
@@ -1503,7 +1552,12 @@ function getIdlForProgram(
   programId: PublicKey,
   mode: ProgramLayoutMode = "default",
 ): Idl {
-  const baseIdl = mode === "legacyInitiateDispute" ? LEGACY_INITIATE_DISPUTE_IDL : IDL;
+  const baseIdl =
+    mode === "legacyInitiateDispute"
+      ? LEGACY_INITIATE_DISPUTE_IDL
+      : mode === "legacyCreateTask"
+        ? LEGACY_CREATE_TASK_IDL
+        : IDL;
   if (programId.equals(PROGRAM_ID)) {
     return baseIdl;
   }

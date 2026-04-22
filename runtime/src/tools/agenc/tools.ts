@@ -29,7 +29,7 @@
  */
 
 import { PublicKey, SystemProgram } from '@solana/web3.js';
-import { BN, type Program } from '@coral-xyz/anchor';
+import { AnchorProvider, BN, type Program } from '@coral-xyz/anchor';
 import { getAssociatedTokenAddressSync } from '@tetsuo-ai/sdk';
 import type { AgencCoordination } from '../../types/agenc_coordination.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -37,7 +37,7 @@ import { safeStringify } from '../types.js';
 import { TaskOperations } from '../../task/operations.js';
 import { GovernanceOperations } from '../../governance/operations.js';
 import { DisputeOperations } from '../../dispute/operations.js';
-import { findAgentPda, findProtocolPda } from '../../agent/pda.js';
+import { findAgentPda, findAuthorityRateLimitPda, findProtocolPda } from '../../agent/pda.js';
 import { findTaskPda, findEscrowPda } from '../../task/pda.js';
 import {
   taskStatusToString,
@@ -73,6 +73,7 @@ import type {
 } from '../../marketplace/surfaces.mjs';
 import { parseProtocolConfig } from '../../types/protocol.js';
 import { buildCreateTaskTokenAccounts } from '../../utils/token.js';
+import { createProgram } from '../../idl.js';
 import {
   hasMarketplaceJobSpecInput,
   linkMarketplaceJobSpecToTask,
@@ -520,6 +521,17 @@ function isMissingAccountError(err: unknown): boolean {
   );
 }
 
+function shouldRetryLegacyCreateTask(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    ((msg.includes('AnchorError caused by account: creator') ||
+      msg.includes('AnchorError caused by account: authority')) &&
+      msg.includes('AccountNotSigner')) ||
+    (msg.includes('AnchorError caused by account: creator_agent') &&
+      msg.includes('AccountOwnedByWrongProgram'))
+  );
+}
+
 
 function getJobSpecStoreOptions(rootDir?: string): { rootDir: string } | undefined {
   return rootDir ? { rootDir } : undefined;
@@ -535,72 +547,6 @@ function isUnsupportedJobSpecMetadataInstructionError(message: string): boolean 
     normalized.includes('instructionfallbacknotfound') ||
     normalized.includes('fallback functions are not supported')
   );
-}
-
-function isUnsupportedCreatorReviewInstructionError(message: string): boolean {
-  return isUnsupportedJobSpecMetadataInstructionError(message);
-}
-
-function createPlaceholderPublicKey(seed: number): PublicKey {
-  return new PublicKey(new Uint8Array(32).fill(seed));
-}
-
-async function assertCreatorReviewInstructionSupported(
-  program: Program<AgencCoordination>,
-  creator: PublicKey,
-  reviewWindowSecs: number,
-): Promise<void> {
-  const methods = program.methods as unknown as {
-    configureTaskValidation: (
-      validationMode: number,
-      reviewWindow: BN,
-      validatorQuorum: number,
-      attestor: PublicKey | null,
-    ) => {
-      accountsPartial: (accounts: Record<string, unknown>) => {
-        simulate?: () => Promise<unknown>;
-      };
-    };
-  };
-
-  if (typeof methods.configureTaskValidation !== 'function') {
-    throw new Error(
-      `Local runtime build does not expose configureTaskValidation for creator-review tasks on program ${program.programId.toBase58()}.`,
-    );
-  }
-
-  const probeTask = createPlaceholderPublicKey(11);
-  const probeValidationConfig = createPlaceholderPublicKey(12);
-  const probeAttestorConfig = createPlaceholderPublicKey(13);
-  const protocolPda = findProtocolPda(program.programId);
-
-  try {
-    const builder = methods
-      .configureTaskValidation(
-        Number(TaskValidationMode.CreatorReview),
-        new BN(reviewWindowSecs.toString()),
-        0,
-        null,
-      )
-      .accountsPartial({
-        task: probeTask,
-        taskValidationConfig: probeValidationConfig,
-        taskAttestorConfig: probeAttestorConfig,
-        protocolConfig: protocolPda,
-        creator,
-        systemProgram: SystemProgram.programId,
-      });
-
-    if (typeof builder.simulate !== 'function') return;
-    await builder.simulate();
-  } catch (error) {
-    const message = formatUnknownError(error);
-    if (isUnsupportedCreatorReviewInstructionError(message)) {
-      throw new Error(
-        `The deployed marketplace program ${program.programId.toBase58()} does not support creator-review task validation yet. Upgrade the protocol deployment or switch this task to validationMode="auto". Underlying error: ${message}`,
-      );
-    }
-  }
 }
 
 function formatJobSpecPublishWarning(error: unknown): string {
@@ -2812,17 +2758,6 @@ export function createCreateTaskTool(
         ) {
           return errorResult('reviewWindowSecs is only valid when validationMode is "creator-review"');
         }
-        if (validationMode === TaskValidationMode.CreatorReview) {
-          try {
-            await assertCreatorReviewInstructionSupported(
-              program,
-              creator,
-              reviewWindowSecs,
-            );
-          } catch (error) {
-            return errorResult(formatUnknownError(error));
-          }
-        }
 
         const [customConstraintHash, constraintHashErr] = parseOptionalHexBytes(
           args.constraintHash,
@@ -2898,36 +2833,65 @@ export function createCreateTaskTool(
         const taskPda = findTaskPda(creator, taskId, program.programId);
         const escrowPda = findEscrowPda(taskPda, program.programId);
         const protocolPda = findProtocolPda(program.programId);
+        const authorityRateLimitPda = findAuthorityRateLimitPda(
+          creator,
+          program.programId,
+        );
         const tokenAccounts = buildCreateTaskTokenAccounts(
           rewardMint,
           escrowPda,
           creator,
         );
 
-        const txSignature = await (program.methods as any)
-          .createTask(
-            toAnchorBytes(taskId),
-            new BN(requiredCapabilities.toString()),
-            toAnchorBytes(descBytes),
-            new BN(reward.toString()),
-            maxWorkers,
-            new BN(deadline),
-            taskType,
-            constraintHash ? toAnchorBytes(constraintHash) : null,
-            minReputation,
-            rewardMint,
-          )
-          .accountsPartial({
-            task: taskPda,
-            escrow: escrowPda,
-            protocolConfig: protocolPda,
-            creatorAgent: creatorAgentPda,
-            authority: creator,
-            creator,
-            systemProgram: SystemProgram.programId,
-            ...tokenAccounts,
-          })
-          .rpc();
+        const executeCreateTask = async (
+          targetProgram: Program<AgencCoordination>,
+          mode: 'default' | 'legacyCreateTask' = 'default',
+        ): Promise<string> =>
+          await (targetProgram.methods as any)
+            .createTask(
+              toAnchorBytes(taskId),
+              new BN(requiredCapabilities.toString()),
+              toAnchorBytes(descBytes),
+              new BN(reward.toString()),
+              maxWorkers,
+              new BN(deadline),
+              taskType,
+              constraintHash ? toAnchorBytes(constraintHash) : null,
+              minReputation,
+              rewardMint,
+            )
+            .accountsPartial({
+              task: taskPda,
+              escrow: escrowPda,
+              protocolConfig: protocolPda,
+              creatorAgent: creatorAgentPda,
+              ...(mode === 'default'
+                ? { authorityRateLimit: authorityRateLimitPda }
+                : {}),
+              authority: creator,
+              creator,
+              systemProgram: SystemProgram.programId,
+              ...tokenAccounts,
+            })
+            .rpc();
+
+        let txSignature: string;
+        try {
+          txSignature = await executeCreateTask(program);
+        } catch (error) {
+          if (!shouldRetryLegacyCreateTask(error)) {
+            throw error;
+          }
+          logger.warn(
+            'Retrying task creation with legacy devnet create_task account layout compatibility',
+          );
+          const legacyProgram = createProgram(
+            program.provider as AnchorProvider,
+            program.programId,
+            'legacyCreateTask',
+          );
+          txSignature = await executeCreateTask(legacyProgram, 'legacyCreateTask');
+        }
 
         let validationTransactionSignature: string | null = null;
         let taskValidationConfigPda: string | null = null;
