@@ -77,6 +77,7 @@ import { createProgram } from '../../idl.js';
 import {
   hasMarketplaceJobSpecInput,
   linkMarketplaceJobSpecToTask,
+  normalizeJobSpecReferenceUri,
   persistMarketplaceJobSpec,
   readMarketplaceJobSpecPointerForTask,
   resolveMarketplaceJobSpecReference,
@@ -151,10 +152,12 @@ export interface TaskTemplateToolOptions extends CreateTaskToolOptions {
 
 export interface GetJobSpecToolOptions {
   readonly jobSpecStoreDir?: string;
+  readonly allowRemoteJobSpecResolution?: boolean;
 }
 export interface TaskJobSpecQueryToolOptions {
   readonly program?: Program<AgencCoordination>;
   readonly jobSpecStoreDir?: string;
+  readonly allowRemoteJobSpecResolution?: boolean;
 }
 
 const KNOWN_MINTS: Record<string, { symbol: string; decimals: number }> = {
@@ -533,8 +536,15 @@ function shouldRetryLegacyCreateTask(err: unknown): boolean {
 }
 
 
-function getJobSpecStoreOptions(rootDir?: string): { rootDir: string } | undefined {
-  return rootDir ? { rootDir } : undefined;
+function getJobSpecStoreOptions(
+  rootDir?: string,
+  allowRemoteJobSpecResolution = false,
+): { rootDir?: string; allowRemote?: boolean } | undefined {
+  if (!rootDir && !allowRemoteJobSpecResolution) return undefined;
+  return {
+    ...(rootDir ? { rootDir } : {}),
+    ...(allowRemoteJobSpecResolution ? { allowRemote: true } : {}),
+  };
 }
 
 function formatUnknownError(error: unknown): string {
@@ -590,7 +600,10 @@ async function buildTaskJobSpecView(
   options: TaskJobSpecQueryToolOptions,
   includePayload: boolean,
 ): Promise<SerializedTaskJobSpec | null> {
-  const storeOptions = getJobSpecStoreOptions(options.jobSpecStoreDir);
+  const storeOptions = getJobSpecStoreOptions(
+    options.jobSpecStoreDir,
+    options.allowRemoteJobSpecResolution,
+  );
 
   if (options.program) {
     const onChainPointer = await fetchTaskJobSpecPointer(options.program, taskPda);
@@ -668,7 +681,10 @@ async function resolveTaskJobSpecPayloadOrThrow(
   taskPda: PublicKey,
   options: TaskJobSpecQueryToolOptions,
 ): Promise<Record<string, unknown>> {
-  const storeOptions = getJobSpecStoreOptions(options.jobSpecStoreDir);
+  const storeOptions = getJobSpecStoreOptions(
+    options.jobSpecStoreDir,
+    options.allowRemoteJobSpecResolution,
+  );
   const taskAddress = taskPda.toBase58();
   const localPointer = await readMarketplaceJobSpecPointerForTask(
     taskAddress,
@@ -2580,6 +2596,11 @@ export function createCreateTaskTool(
           description:
             'Optional full marketplace job spec. Stored off-chain as canonical JSON with a sha256 integrity hash; use for long requirements, scope, examples, and notes.',
         },
+        jobSpecPublishUri: {
+          type: 'string',
+          description:
+            'Optional published URI for the task job-spec pointer. Must be either the canonical agenc:// URI for the resulting hash or an absolute https URL that serves the canonical envelope.',
+        },
         fullDescription: {
           type: 'string',
           description: 'Optional long-form job description stored in the marketplace jobSpec object.',
@@ -2759,12 +2780,12 @@ export function createCreateTaskTool(
           return errorResult('reviewWindowSecs is only valid when validationMode is "creator-review"');
         }
 
-        const [customConstraintHash, constraintHashErr] = parseOptionalHexBytes(
-          args.constraintHash,
-          'constraintHash',
-          TASK_ID_BYTES,
-        );
-        if (constraintHashErr) return constraintHashErr;
+	        const [customConstraintHash, constraintHashErr] = parseOptionalHexBytes(
+	          args.constraintHash,
+	          'constraintHash',
+	          TASK_ID_BYTES,
+	        );
+	        if (constraintHashErr) return constraintHashErr;
         if (
           validationMode === TaskValidationMode.CreatorReview &&
           customConstraintHash !== null
@@ -2773,7 +2794,13 @@ export function createCreateTaskTool(
             'Do not provide constraintHash with validationMode="creator-review"; creator-review tasks are configured through validation settings',
           );
         }
-        const constraintHash = customConstraintHash;
+	        const constraintHash = customConstraintHash;
+
+	        const [jobSpecPublishUri, jobSpecPublishUriErr] = parseOptionalString(
+	          args.jobSpecPublishUri,
+	          'jobSpecPublishUri',
+	        );
+	        if (jobSpecPublishUriErr) return jobSpecPublishUriErr;
 
         const [rewardMint, rewardMintErr] = parseKnownRewardMint(args.rewardMint);
         if (rewardMintErr) return rewardMintErr;
@@ -2923,24 +2950,33 @@ export function createCreateTaskTool(
           }
         }
 
-        let taskJobSpecPda: string | null = null;
-        let jobSpecTransactionSignature: string | null = null;
-        let jobSpecPublishWarning: string | null = null;
-        if (storedJobSpec) {
-          try {
-            const published = await setTaskJobSpecPointer(
-              program,
-              creator,
-              taskPda,
-              storedJobSpec.hash,
-              storedJobSpec.uri,
-            );
-            taskJobSpecPda = published.taskJobSpecPda.toBase58();
-            jobSpecTransactionSignature = published.transactionSignature;
-          } catch (error) {
-            jobSpecPublishWarning = formatJobSpecPublishWarning(error);
-          }
-        }
+	        let taskJobSpecPda: string | null = null;
+	        let jobSpecTransactionSignature: string | null = null;
+	        let jobSpecPublishWarning: string | null = null;
+	        if (storedJobSpec) {
+	          try {
+	            const publishedJobSpecUri = normalizeJobSpecReferenceUri(
+	              jobSpecPublishUri ?? storedJobSpec.uri,
+	              storedJobSpec.hash,
+	              'jobSpecPublishUri',
+	            );
+	            const published = await setTaskJobSpecPointer(
+	              program,
+	              creator,
+	              taskPda,
+	              storedJobSpec.hash,
+	              publishedJobSpecUri,
+	            );
+	            taskJobSpecPda = published.taskJobSpecPda.toBase58();
+	            jobSpecTransactionSignature = published.transactionSignature;
+	            storedJobSpec = {
+	              ...storedJobSpec,
+	              uri: publishedJobSpecUri,
+	            };
+	          } catch (error) {
+	            jobSpecPublishWarning = formatJobSpecPublishWarning(error);
+	          }
+	        }
 
         let jobSpecTaskLinkPath: string | null = null;
         let jobSpecLinkWarning: string | null = null;

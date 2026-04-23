@@ -668,6 +668,7 @@ const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
     "review-window-secs",
     "creator-agent-pda",
     "job-spec",
+    "job-spec-publish-uri",
     "full-description",
     "acceptance-criteria",
     "deliverables",
@@ -676,9 +677,9 @@ const MARKET_COMMAND_OPTIONS: Record<MarketCommand, Set<string>> = {
     "attachments",
     "job-spec-store-dir",
   ]),
-  "tasks.detail": new Set(["job-spec-store-dir"]),
+  "tasks.detail": new Set(["job-spec-store-dir", "allow-remote-job-spec"]),
   "tasks.cancel": new Set(),
-  "tasks.claim": new Set(["worker-agent-pda", "job-spec-store-dir"]),
+  "tasks.claim": new Set(["worker-agent-pda", "job-spec-store-dir", "allow-remote-job-spec"]),
   "tasks.complete": new Set(["proof-hash", "result-data", "worker-agent-pda"]),
   "tasks.accept": new Set(["worker-agent-pda"]),
   "tasks.reject": new Set(["worker-agent-pda", "reason"]),
@@ -1242,12 +1243,14 @@ export function buildHelp(): string {
     "      --review-window-secs <n>              Review window for creator-review task creation",
     "      --creator-agent-pda <pda>             Explicit creator agent PDA for task creation",
     "      --job-spec <text>                    Full off-chain job spec text for task creation",
+    "      --job-spec-publish-uri <url>         Published URI for the task job-spec pointer",
     "      --full-description <text>            Detailed off-chain task description",
     "      --acceptance-criteria <items>        Comma/newline-separated acceptance criteria",
     "      --deliverables <items>               Comma/newline-separated deliverables",
     "      --constraints <json>                 JSON constraints stored in the off-chain job spec",
     "      --attachment <url>                   Off-chain job spec attachment URL (repeatable)",
     "      --job-spec-store-dir <path>          Local content-addressed job spec store override",
+    "      --allow-remote-job-spec              Allow trusted remote https job spec resolution",
     "      --query <text>                        Text filter for skills list",
     "      --tags <t1,t2>                        Tag filter for skills list",
     "      --limit <n>                           Limit skills list results",
@@ -2922,6 +2925,7 @@ function normalizeAndValidateMarketCommand(
         reviewWindowSecs: parseOptionalNumberFlag(parsed.flags["review-window-secs"]),
         creatorAgentPda: parseOptionalStringFlag(parsed.flags["creator-agent-pda"]),
         jobSpec: parseOptionalStringFlag(parsed.flags["job-spec"]),
+        jobSpecPublishUri: parseOptionalStringFlag(parsed.flags["job-spec-publish-uri"]),
         fullDescription: parseOptionalStringFlag(parsed.flags["full-description"]),
         acceptanceCriteria: parseStringListFlag(parsed.flags["acceptance-criteria"]),
         deliverables: parseStringListFlag(parsed.flags.deliverables),
@@ -2949,6 +2953,7 @@ function normalizeAndValidateMarketCommand(
         jobSpecStoreDir: parseOptionalStringFlag(
           parsed.flags["job-spec-store-dir"],
         ),
+        allowRemoteJobSpecResolution: normalizeBool(parsed.flags["allow-remote-job-spec"], false),
       } as MarketTaskDetailOptions;
       break;
     }
@@ -2978,6 +2983,7 @@ function normalizeAndValidateMarketCommand(
         jobSpecStoreDir: parseOptionalStringFlag(
           parsed.flags["job-spec-store-dir"],
         ),
+        allowRemoteJobSpecResolution: normalizeBool(parsed.flags["allow-remote-job-spec"], false),
       } as MarketTaskClaimOptions;
       break;
     }

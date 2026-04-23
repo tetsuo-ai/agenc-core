@@ -65,6 +65,7 @@ function createMockTaskCreateProgram(jobSpecPublishError: Error) {
     creator,
     creatorAgentPda,
     createTaskAccountsPartial,
+    setTaskJobSpec,
     setTaskJobSpecAccountsPartial,
   };
 }
@@ -102,6 +103,7 @@ describe("agenc task template tools", () => {
       creator,
       creatorAgentPda,
       createTaskAccountsPartial,
+      setTaskJobSpec,
       setTaskJobSpecAccountsPartial,
     } = createMockTaskCreateProgram(unsupportedInstructionError);
     const tool = createCreateTaskTool(program as never, createLogger() as never, {
@@ -117,6 +119,7 @@ describe("agenc task template tools", () => {
       jobSpec: {
         fullDescription: "Exercise unsupported job spec metadata on devnet.",
       },
+      jobSpecPublishUri: "https://marketplace-devnet.agenc.tech/api/job-specs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
     const payload = JSON.parse(result.content);
 
@@ -128,6 +131,10 @@ describe("agenc task template tools", () => {
     expect(payload.jobSpecPublishWarning).toContain("Task was created");
     expect(payload.jobSpecPublishWarning).toContain("does not support");
     expect(payload.jobSpecPublishWarning).toContain("InstructionFallbackNotFound");
+    expect(setTaskJobSpec).toHaveBeenCalledWith(
+      expect.any(Array),
+      "https://marketplace-devnet.agenc.tech/api/job-specs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
     expect(setTaskJobSpecAccountsPartial).toHaveBeenCalledOnce();
     expect(createTaskAccountsPartial).toHaveBeenCalledWith(
       expect.objectContaining({

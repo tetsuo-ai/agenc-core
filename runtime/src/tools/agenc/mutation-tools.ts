@@ -589,6 +589,7 @@ export function createClaimTaskTool(
   logger: Logger,
   options: {
     jobSpecStoreDir?: string;
+    allowRemoteJobSpecResolution?: boolean;
     claimJobSpecVerification?: "when-present" | "required" | "disabled";
   } = {},
 ): Tool {
@@ -627,6 +628,9 @@ export function createClaimTaskTool(
           logger,
           ...(options.jobSpecStoreDir
             ? { jobSpecStoreDir: options.jobSpecStoreDir }
+            : {}),
+          ...(options.allowRemoteJobSpecResolution
+            ? { allowRemoteJobSpecResolution: true }
             : {}),
           ...(options.claimJobSpecVerification
             ? { claimJobSpecVerification: options.claimJobSpecVerification }

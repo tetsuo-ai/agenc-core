@@ -27,7 +27,10 @@ import {
   createListTasksTool,
   createListSkillsTool,
 } from './tools.js';
-import { linkMarketplaceJobSpecToTask } from '../../marketplace/job-spec-store.js';
+import {
+  linkMarketplaceJobSpecToTask,
+  persistMarketplaceJobSpec,
+} from '../../marketplace/job-spec-store.js';
 
 function parseJson(result: ToolResult) {
   return JSON.parse(result.content) as Record<string, any>;
@@ -173,6 +176,42 @@ async function linkRemoteJobSpecForTask(
   );
 }
 
+async function linkTrustedRemoteJobSpecForTask(
+  taskPda: PublicKey,
+  task: OnChainTask,
+  jobSpecStoreDir: string,
+) {
+  const stored = await persistMarketplaceJobSpec(
+    {
+      description: 'Remote audit task',
+      fullDescription: 'Resolve from trusted storefront.',
+      acceptanceCriteria: ['Produce a verified payload'],
+    },
+    { rootDir: jobSpecStoreDir },
+  );
+  await linkMarketplaceJobSpecToTask(
+    {
+      hash: stored.hash,
+      uri: 'https://trusted.example/job-spec.json',
+      taskPda: taskPda.toBase58(),
+      taskId: Buffer.from(task.taskId).toString('hex'),
+      transactionSignature: 'remote-job-spec-test',
+    },
+    { rootDir: jobSpecStoreDir },
+  );
+  return {
+    schemaVersion: 1,
+    kind: 'agenc.marketplace.jobSpecEnvelope',
+    integrity: {
+      algorithm: 'sha256',
+      canonicalization: 'json-stable-v1',
+      payloadHash: stored.hash,
+      uri: stored.uri,
+    },
+    payload: stored.payload,
+  };
+}
+
 function createMockProgram() {
   const firstSkillPda = PublicKey.unique();
   const secondSkillPda = PublicKey.unique();
@@ -304,6 +343,33 @@ describe('agenc query tools', () => {
     expect(result.isError).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(parsed.error).toMatch(/allowRemote=true/);
+  });
+
+  it('agenc.getJobSpec resolves remote job specs when explicitly allowed', async () => {
+    const taskPda = PublicKey.unique();
+    const task = makeTaskRecord({ status: OnChainTaskStatus.Open, currentWorkers: 0 });
+    const jobSpecStoreDir = await mkdtemp(join(tmpdir(), 'agenc-tool-job-spec-'));
+    const remoteEnvelope = await linkTrustedRemoteJobSpecForTask(taskPda, task, jobSpecStoreDir);
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => null },
+      text: async () => JSON.stringify(remoteEnvelope),
+    }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const tool = createGetJobSpecTool(silentLogger, {
+      jobSpecStoreDir,
+      allowRemoteJobSpecResolution: true,
+    });
+
+    const result = await tool.execute({ taskPda: taskPda.toBase58() });
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(parsed.verified).toBe(true);
+    expect(parsed.payload.title).toBeTruthy();
   });
 
   it('agenc.listTasks payload enrichment does not fetch remote job specs by default', async () => {

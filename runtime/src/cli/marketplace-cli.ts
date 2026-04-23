@@ -86,6 +86,7 @@ export interface MarketTaskCreateOptions extends BaseCliOptions {
   reviewWindowSecs?: number;
   creatorAgentPda?: string;
   jobSpec?: unknown;
+  jobSpecPublishUri?: string;
   fullDescription?: string;
   acceptanceCriteria?: string[];
   deliverables?: string[];
@@ -97,6 +98,7 @@ export interface MarketTaskCreateOptions extends BaseCliOptions {
 export interface MarketTaskDetailOptions extends BaseCliOptions {
   taskPda: string;
   jobSpecStoreDir?: string;
+  allowRemoteJobSpecResolution?: boolean;
 }
 
 export interface MarketTaskCancelOptions extends MarketTaskDetailOptions {}
@@ -509,8 +511,12 @@ type SerializedResolvedJobSpec = {
 
 function getJobSpecStoreOptions(
   rootDir?: string,
+  allowRemoteJobSpecResolution = false,
 ): MarketplaceJobSpecStoreOptions {
-  return rootDir ? { rootDir } : {};
+  return {
+    ...(rootDir ? { rootDir } : {}),
+    ...(allowRemoteJobSpecResolution ? { allowRemote: true } : {}),
+  };
 }
 
 function serializeJobSpecPointer(
@@ -584,8 +590,9 @@ async function enrichTaskDetailWithJobSpec<T extends { taskPda: string }>(
   task: T,
   rootDir?: string,
   program?: MarketProgram,
+  allowRemoteJobSpecResolution = false,
 ): Promise<T & { jobSpec: SerializedResolvedJobSpec | null }> {
-  const storeOptions = getJobSpecStoreOptions(rootDir);
+  const storeOptions = getJobSpecStoreOptions(rootDir, allowRemoteJobSpecResolution);
   if (program) {
     const taskPda = new PublicKey(task.taskPda);
     const onChainSpec = await resolveOnChainTaskJobSpecForTask(
@@ -1103,6 +1110,7 @@ export async function runMarketTaskCreateCommand(
       reviewWindowSecs: options.reviewWindowSecs,
       creatorAgentPda: options.creatorAgentPda,
       jobSpec: options.jobSpec,
+      jobSpecPublishUri: options.jobSpecPublishUri,
       fullDescription: options.fullDescription,
       acceptanceCriteria: options.acceptanceCriteria,
       deliverables: options.deliverables,
@@ -1174,6 +1182,7 @@ export async function runMarketTaskDetailCommand(
         taskDetail,
         options.jobSpecStoreDir,
         program,
+        options.allowRemoteJobSpecResolution,
       ),
     });
     return 0;
@@ -1248,12 +1257,17 @@ export async function runMarketTaskClaimCommand(
     const tool = createClaimTaskTool(
       program,
       silentLogger,
-      options.jobSpecStoreDir
-        ? {
-            jobSpecStoreDir: options.jobSpecStoreDir,
-            claimJobSpecVerification: "required",
-          }
-        : {},
+      {
+        ...(options.jobSpecStoreDir
+          ? {
+              jobSpecStoreDir: options.jobSpecStoreDir,
+            }
+          : {}),
+        ...(options.allowRemoteJobSpecResolution
+          ? { allowRemoteJobSpecResolution: true }
+          : {}),
+        claimJobSpecVerification: "required",
+      },
     );
     const result = await tool.execute({
       taskPda: options.taskPda,

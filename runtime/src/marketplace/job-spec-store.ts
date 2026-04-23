@@ -628,7 +628,7 @@ function canonicalJobSpecUri(hash: string): string {
   return `agenc://job-spec/sha256/${hash}`;
 }
 
-function normalizeJobSpecReferenceUri(input: string, hash: string, field: string): string {
+export function normalizeJobSpecReferenceUri(input: string, hash: string, field: string): string {
   const uri = normalizeBoundedString(input, field, MAX_JOB_SPEC_URI_BYTES);
   const canonicalUri = canonicalJobSpecUri(hash);
   if (uri === canonicalUri) return uri;
