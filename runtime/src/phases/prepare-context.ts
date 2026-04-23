@@ -46,7 +46,7 @@
  */
 
 import type { LLMMessage } from "../llm/types.js";
-import type { QuerySource } from "../constants/querySource.js";
+import type { QuerySource } from "./_deps/query-source.js";
 import { calculateTokenWarningState, isAutoCompactEnabled } from "../llm/compact/auto-compact.js";
 import {
   buildCompactedRolloutItem,

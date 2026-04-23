@@ -1,7 +1,7 @@
-// @ts-nocheck
-// Stub for openclaude's `src/utils/attributionHooks.ts`, which is conditionally
-// loaded via `feature('COMMIT_ATTRIBUTION')` in the compact module but never
-// ships in upstream source. The feature flag resolves to `false` in AgenC via
-// the `bun:bundle` shim, so this module is dead code at runtime. The stub
-// exists only to keep the dynamic import type-resolvable.
-export function sweepFileContentCache(): void {}
+// Lean stub: the openclaude attribution hooks were deleted. The only
+// remaining call site is gated behind feature('COMMIT_ATTRIBUTION') which
+// is disabled in the lean build, so this stub is never executed at
+// runtime. Kept only so a dynamic `import()` typechecks.
+export function sweepFileContentCache(): void {
+  // intentional no-op
+}

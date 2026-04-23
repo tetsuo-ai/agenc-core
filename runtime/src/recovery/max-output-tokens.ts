@@ -29,7 +29,7 @@ import type { LLMMessage } from "../llm/types.js";
 import { emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
-import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import { appendTerminalToolResults } from "./terminal-tool-result.js";
 
 export const MAX_OUTPUT_TOKENS_ESCALATED = 64_000;

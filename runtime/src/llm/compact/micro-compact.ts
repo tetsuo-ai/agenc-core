@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
-import type { QuerySource } from '../../constants/querySource.js'
+import type { QuerySource } from './_deps/query-source.js'
 import { FILE_EDIT_TOOL_NAME } from './_deps/tool-names.js';
 import { FILE_READ_TOOL_NAME } from './_deps/tool-names.js';
 import { FILE_WRITE_TOOL_NAME } from './_deps/tool-names.js';
@@ -8,7 +8,7 @@ import { GLOB_TOOL_NAME } from './_deps/tool-names.js';
 import { GREP_TOOL_NAME } from './_deps/tool-names.js';
 import { WEB_FETCH_TOOL_NAME } from './_deps/tool-names.js';
 import { WEB_SEARCH_TOOL_NAME } from './_deps/tool-names.js';
-import type { Message } from '../../types/message.js'
+import type { Message } from './_deps/types-message.js'
 import { logForDebugging } from './_deps/utils.js';
 import { getMainLoopModel } from './_deps/model-info.js';
 import { SHELL_TOOL_NAMES } from './_deps/tool-names.js';

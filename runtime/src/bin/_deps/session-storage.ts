@@ -18,7 +18,7 @@
 import type {
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
-} from "../../types/logs.js";
+} from "./types-logs.js";
 
 export interface LoadedTranscript {
   readonly contextCollapseCommits: ContextCollapseCommitEntry[];

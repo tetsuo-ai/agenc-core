@@ -29,7 +29,7 @@ import type {
   TurnState,
   UserMessage,
 } from "../session/turn-state.js";
-import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import {
   appendTerminalToolResults,
   terminalToolCauseFromAbortReason,

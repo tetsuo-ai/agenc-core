@@ -1,4 +1,4 @@
-import type { PartialCompactDirection } from '../../types/message.js'
+import type { PartialCompactDirection } from './_deps/types-message.js'
 
 // Aggressive no-tools preamble. The cache-sharing fork path inherits the
 // parent's full tool set (required for cache-key match), and on Sonnet 4.6+

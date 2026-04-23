@@ -44,7 +44,7 @@ import {
   type PendingPermissionRequest,
   type PermissionQueueOps,
 } from "../../permissions/context.js";
-import type { ApprovalResolver } from "../../tools/orchestrator.js";
+import type { ApprovalResolver } from "../_deps/orchestrator-types.js";
 
 /**
  * Minimum shape the TUI cares about from the runtime session. Using a

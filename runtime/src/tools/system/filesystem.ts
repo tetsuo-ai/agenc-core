@@ -64,7 +64,7 @@ function resolveSessionWorkspaceRoot(entry?: string): string {
 import { addLineNumbers } from "../../utils/file.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
-import { normalizeOverescapedToolText } from "../../utils/overescaped-text.js";
+import { normalizeOverescapedToolText } from "./_deps/overescaped-text.js";
 
 const DEFAULT_MAX_READ_BYTES = 10_485_760; // 10 MB
 const DEFAULT_MAX_WRITE_BYTES = 10_485_760; // 10 MB

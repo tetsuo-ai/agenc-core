@@ -2,23 +2,27 @@ import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const sessionTranscriptModule = feature('KAIROS')
-  ? (require('../../services/sessionTranscript/sessionTranscript.js') as typeof import('../../services/sessionTranscript/sessionTranscript.js'))
-  : null
+// Openclaude `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
+// has no transcript writer, so this stays null and the optional-chained calls
+// below become no-ops.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const sessionTranscriptModule: { writeSessionTranscriptSegment: (...args: any[]) => any } | null =
+  null
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
-import type { QuerySource } from '../../constants/querySource.js'
+import type { QuerySource } from './_deps/query-source.js'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CanUseToolFn = (...args: any[]) => any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Tool = any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LocalAgentTaskState = any
-import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
+// Lean stubs: openclaude port deleted in gut-cleanup; compact path retained but
+// tool object refs are no-op placeholders carrying just the canonical name.
 import { FILE_READ_TOOL_NAME, FILE_UNCHANGED_STUB } from './_deps/tool-names.js';
-import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
-import type { AgentId } from '../../types/ids.js'
+const FileReadTool: any = { name: FILE_READ_TOOL_NAME, isMcp: false }
+const ToolSearchTool: any = { name: 'ToolSearch', isMcp: false }
+import type { AgentId } from './_deps/types-ids.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -28,7 +32,7 @@ import type {
   SystemCompactBoundaryMessage,
   SystemMessage,
   UserMessage,
-} from '../../types/message.js'
+} from './_deps/types-message.js'
 import { createAttachmentMessage, generateFileAttachment, getAgentListingDeltaAttachment, getDeferredToolsDeltaAttachment, getMcpInstructionsDeltaAttachment } from './_deps/attachments.js';
 import { getMemoryPath } from './_deps/config.js';
 import { COMPACT_MAX_OUTPUT_TOKENS } from './_deps/model-info.js';
@@ -39,7 +43,7 @@ import { cacheToObject } from './_deps/utils.js';
 import { type CacheSafeParams, runForkedAgent } from './_deps/fork-agent.js';
 import { executePostCompactHooks, executePreCompactHooks } from './_deps/hooks.js';
 import { logError } from './_deps/utils.js';
-import { MEMORY_TYPE_VALUES } from '../../utils/memory/types.js'
+import { MEMORY_TYPE_VALUES } from './_deps/memory-types.js'
 import { createCompactBoundaryMessage, createUserMessage, getAssistantMessageText, getLastAssistantMessage, getMessagesAfterCompactBoundary, isCompactBoundaryMessage, normalizeMessagesForAPI } from './_deps/messages.js';
 import { expandPath } from './_deps/utils.js';
 import { getPlan, getPlanFilePath } from './_deps/file-paths.js';

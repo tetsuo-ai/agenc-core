@@ -2,8 +2,8 @@
  * EXPERIMENT: Session memory compaction
  */
 
-import type { AgentId } from '../../types/ids.js'
-import type { HookResultMessage, Message } from '../../types/message.js'
+import type { AgentId } from './_deps/types-ids.js'
+import type { HookResultMessage, Message } from './_deps/types-message.js'
 import { logForDebugging } from './_deps/utils.js';
 import { isEnvTruthy } from './_deps/utils.js';
 import { errorMessage } from './_deps/utils.js';

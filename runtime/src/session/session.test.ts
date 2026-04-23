@@ -53,7 +53,7 @@ import {
 import {
   contextCollapseService,
   resetContextCollapse,
-} from "../services/contextCollapse/index.js";
+} from "./_deps/context-collapse.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers

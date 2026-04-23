@@ -20,7 +20,7 @@
  */
 
 import type { LLMMessage, LLMToolCall } from "../llm/types.js";
-import type { ToolDispatchResult } from "../tool-registry.js";
+import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 import type {
   AssistantMessage,
   ToolUseBlock,

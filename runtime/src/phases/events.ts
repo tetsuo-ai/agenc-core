@@ -10,7 +10,7 @@
  */
 
 import type { LLMToolCall, LLMUsage } from "../llm/types.js";
-import type { ToolDispatchResult } from "../tool-registry.js";
+import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 
 export type PhaseEvent =
   | { readonly type: "turn_start"; readonly turnIndex: number }

@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { SystemCompactBoundaryMessage } from "../../../types/message.js";
+import type { SystemCompactBoundaryMessage } from "./types-message.js";
 
 export type { SystemCompactBoundaryMessage };
 

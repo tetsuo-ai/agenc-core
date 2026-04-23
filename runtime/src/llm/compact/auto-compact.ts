@@ -1,6 +1,6 @@
 import { feature } from 'bun:bundle'
-import type { QuerySource } from '../../constants/querySource.js'
-import type { Message } from '../../types/message.js'
+import type { QuerySource } from './_deps/query-source.js'
+import type { Message } from './_deps/types-message.js'
 import { getGlobalConfig } from './_deps/config.js';
 import { getContextWindowForModel } from './_deps/model-info.js';
 import { logForDebugging } from './_deps/utils.js';
@@ -223,10 +223,9 @@ export async function shouldAutoCompact(
   // inside the block breaks the init-time cycle (this file exports
   // getEffectiveContextWindowSize which collapse's index imports).
   if (feature('CONTEXT_COLLAPSE')) {
-    /* eslint-disable @typescript-eslint/no-require-imports */
-    const { isContextCollapseEnabled } =
-      require('../../services/contextCollapse/index.js') as typeof import('../../services/contextCollapse/index.js')
-    /* eslint-enable @typescript-eslint/no-require-imports */
+    // Openclaude context-collapse subsystem deleted in gut-cleanup. Lean runtime
+    // does not provide an alternative, so collapse is always disabled here.
+    const isContextCollapseEnabled = (): boolean => false
     if (isContextCollapseEnabled()) {
       return false
     }

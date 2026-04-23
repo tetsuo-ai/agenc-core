@@ -31,7 +31,7 @@ import {
 } from "../provider-capabilities.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
-import { safeStringify } from "../../tools/types.js";
+import { safeStringify } from "../_deps/safe-stringify.js";
 import { resolveContextWindowProfile } from "../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "../providers/ollama/health.js";
 

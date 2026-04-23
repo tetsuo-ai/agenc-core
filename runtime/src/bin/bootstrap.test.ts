@@ -28,7 +28,7 @@ import {
   getContextCollapseSnapshot,
   resetContextCollapse,
   restoreContextCollapseState,
-} from "../services/contextCollapse/index.js";
+} from "../session/_deps/context-collapse.js";
 
 describe("resolveStartupSelection", () => {
   it("applies CLI provider/model/profile ahead of env and config", () => {

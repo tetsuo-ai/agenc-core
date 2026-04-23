@@ -1,6 +1,7 @@
 import { structuredPatch, type StructuredPatchHunk } from "diff";
 
-import { addToTotalLinesChanged } from "../cost-tracker.js";
+// Inlined stub: openclaude cost-tracker is gone post-gut.
+const addToTotalLinesChanged = (_additions: number, _removals: number): void => {};
 import { convertLeadingTabsToSpaces } from "./file.js";
 
 export const CONTEXT_LINES = 3;

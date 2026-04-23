@@ -36,7 +36,7 @@ import {
 import {
   resetContextCollapse,
   stageContextCollapseForSession,
-} from "../services/contextCollapse/index.js";
+} from "../session/_deps/context-collapse.js";
 
 function mkCtx(): TurnContext {
   return {

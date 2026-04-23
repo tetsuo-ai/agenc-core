@@ -8,7 +8,7 @@ import chalk from "chalk";
 import { getUserContext } from "./_deps/system-prompt.js";
 import { getShortcutDisplay, getUpgradeMessage } from "./_deps/display.js";
 import { notifyCompaction, setLastSummarizedMessageId } from "./_deps/no-op.js";
-import type { Message } from "../types/message.js";
+import type { Message } from "./_deps/types-message.js";
 import { hasExactErrorMessage, logError } from "./_deps/utils.js";
 import {
   createSyntheticUserCaveatMessage,

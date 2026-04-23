@@ -6,8 +6,8 @@ import {
   type SystemPrompt,
 } from "./_deps/system-prompt.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import type { Message } from "../types/message.js";
-import type { CacheSafeParams } from "../utils/forkedAgent.js";
+import type { Message } from "./_deps/types-message.js";
+import type { CacheSafeParams } from "./_deps/forked-agent.js";
 import type { Session } from "./session.js";
 import {
   toTurnContextItem,
@@ -15,9 +15,10 @@ import {
   type TurnContextItem,
 } from "./turn-context.js";
 
-import type { Tool } from "../Tool.js";
-import type { AgentId } from "../types/ids.js";
-import type { EffortValue } from "../utils/effort.js";
+// Inlined stub: openclaude `Tool` type is gone post-gut.
+type Tool = any;
+import type { AgentId } from "./_deps/types-ids.js";
+import type { EffortValue } from "./_deps/effort.js";
 
 export interface CompactRuntimeAppState {
   toolPermissionContext: {

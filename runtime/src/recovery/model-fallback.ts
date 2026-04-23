@@ -30,7 +30,7 @@ import type {
   TurnState,
   UserMessage,
 } from "../session/turn-state.js";
-import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import type { FallbackTriggeredError } from "./api-errors.js";
 import { synthesizeTerminalResults } from "./terminal-tool-result.js";
 import { tombstoneOrphans } from "./tombstone.js";

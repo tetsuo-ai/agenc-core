@@ -32,6 +32,9 @@ const EMPTY_STATE = Object.freeze({
   lastSpawnTokens: 0,
 });
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ContextCollapseRuntimeService = any;
+
 export const contextCollapseService = Object.freeze({
   isContextCollapseEnabled: () => false,
   isEnabled: () => false,
@@ -58,3 +61,35 @@ export const contextCollapseService = Object.freeze({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ) => ({ messages, recovered: false }) as any,
 });
+
+// Module-level helpers used by tests and openclaude-era callsites. The lean
+// runtime does not implement context collapse, so these are no-ops returning
+// shapes that satisfy historical callers.
+
+export function resetContextCollapse(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ..._args: any[]
+): void {}
+
+export function stageContextCollapseForSession(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ..._args: any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  return undefined;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getContextCollapseCommits(..._args: any[]): any[] {
+  return [];
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getContextCollapseSnapshot(..._args: any[]): any {
+  return undefined;
+}
+
+export function restoreContextCollapseState(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ..._args: any[]
+): void {}

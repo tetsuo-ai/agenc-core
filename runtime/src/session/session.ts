@@ -51,14 +51,14 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
-import type { ToolRegistry } from "../tool-registry.js";
+import type { ToolRegistry } from "./_deps/tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import type { QuerySource } from "../constants/querySource.js";
+import type { QuerySource } from "./_deps/query-source.js";
 import {
   freshDenialTracking,
   type DenialTrackingState,
@@ -67,9 +67,11 @@ import type { ConfigStore } from "../config/store.js";
 import type {
   ApprovalResolver,
   PermissionRequestHook,
-} from "../tools/orchestrator.js";
-import { contextCollapseService } from "./_deps/context-collapse.js";
-import type { ContextCollapseRuntimeService } from "../services/contextCollapse/index.js";
+} from "./_deps/orchestrator-types.js";
+import {
+  contextCollapseService,
+  type ContextCollapseRuntimeService,
+} from "./_deps/context-collapse.js";
 import { startMcpManagerForSession } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {

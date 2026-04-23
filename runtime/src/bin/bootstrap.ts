@@ -64,7 +64,7 @@ import type { RolloutItem } from "../session/rollout-item.js";
 import type {
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
-} from "../types/logs.js";
+} from "./_deps/types-logs.js";
 import { AgentControl } from "../agents/control.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {

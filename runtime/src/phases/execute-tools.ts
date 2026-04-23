@@ -48,9 +48,9 @@ import {
   type ApprovalResolver,
   type PermissionRequestHook,
   type SandboxMode,
-} from "../tools/orchestrator.js";
+} from "./_deps/orchestrator-types.js";
 import { resolveMaxToolUseConcurrency } from "./_deps/orchestration.js";
-import type { ToolDispatchResult } from "../tool-registry.js";
+import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";

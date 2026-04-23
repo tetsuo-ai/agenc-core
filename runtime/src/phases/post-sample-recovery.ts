@@ -45,7 +45,7 @@ import {
   evaluateWithholdCascade,
   isMediaWithholdRoute,
 } from "../recovery/withhold-cascading.js";
-import type { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import type { StreamingToolExecutor } from "./_deps/orchestrator-types.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
 

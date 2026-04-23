@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import type { QuerySource } from '../../constants/querySource.js'
+import type { QuerySource } from './_deps/query-source.js'
 import { clearSystemPromptSections } from './_deps/system-prompt.js';
 import { getUserContext } from './_deps/no-op.js';
 import { clearAllResponseIds } from '../grok/incremental.js'
@@ -64,11 +64,8 @@ export function runPostCompactCleanup(
   }
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      ;(
-        require('../../services/contextCollapse/index.js') as typeof import('../../services/contextCollapse/index.js')
-      ).resetContextCollapse()
-      /* eslint-enable @typescript-eslint/no-require-imports */
+      // Openclaude context-collapse subsystem deleted in gut-cleanup; nothing
+      // to reset in the lean runtime.
     }
   }
   if (isMainThreadCompact) {
@@ -92,9 +89,8 @@ export function runPostCompactCleanup(
   // cacheUtils resets. See compactConversation() for full rationale.
   clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
-    void import('../../utils/attributionHooks.js').then(m =>
-      m.sweepFileContentCache(),
-    )
+    // Openclaude commit-attribution helpers were deleted in gut-cleanup; the
+    // feature flag is always false in the lean runtime, so this branch is dead.
   }
   // T5: the legacy `clearSessionMessagesCache` helper cleared a
   // memoized `getSessionMessages` cache in `utils/sessionStorage.ts`
