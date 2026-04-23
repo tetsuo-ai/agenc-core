@@ -11,23 +11,27 @@
  *     marker at top-of-loop and applies the switch before the next turn.
  *
  *   I-57 (history compatibility on provider/model switch): before
- *     staging the switch, we run `checkModelHistoryCompat(...)`. Today
- *     this is a stub that always returns `{ compatible: true }`; the
- *     T13 capability registry will replace it with a real comparison of
- *     required capabilities (vision, function-calling shape, etc.) of
- *     pending tool calls and history items against the target model.
+ *     staging the switch, we run `checkModelHistoryCompat(...)` using
+ *     the live T13 capability registry and the same history-requirement
+ *     scan the provider request shaper uses.
  *
  * Session field access: this command reads `session.activeTurn` (an
  * AsyncLock<ActiveTurn | null> already declared on Session) and stages
  * the pending marker on `session.pendingProviderSwitch` (already
  * declared on Session for I-13). When the real ModelsManager/provider
- * capability registry lands (T13), `checkModelHistoryCompat` becomes a
- * call into that surface.
+ * capability registry lands (T13), `checkModelHistoryCompat` reads
+ * directly from that surface.
  *
  * @module
  */
 
 import type { Session } from "../session/session.js";
+import { readProviderConfig } from "../config/resolve-provider.js";
+import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
+import {
+  analyzeSessionHistoryRequirements,
+  validateHistoryCompatibility,
+} from "../llm/shape-request.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -35,36 +39,40 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 
-/**
- * Result of the I-57 history-compatibility check. A future T13 wire
- * will add `missingCapabilities: string[]` and `incompatibleHistoryIds`
- * so callers can render actionable messages; today the stub never
- * produces them.
- */
 export interface HistoryCompatResult {
   readonly compatible: boolean;
+  readonly missingCapabilities?: readonly string[];
   readonly reason?: string;
 }
 
-/**
- * I-57 stub — always returns compatible. The T13 provider-capability
- * registry will compare the required capabilities (vision,
- * function-calling shape, structured-output, server-side search, etc.)
- * of pending tool calls and history items against the target model's
- * declared capability matrix.
- *
- * @remarks
- * Keep the signature stable so T13 can drop in the real implementation
- * without touching callers. The session parameter is accepted up front
- * so the real impl can peek history/tool-call items without a second
- * round of refactoring.
- */
-// TODO T13: wire real provider capability registry
 export function checkModelHistoryCompat(
-  _session: Session,
-  _targetModel: string,
+  session: Session,
+  targetModel: string,
+  targetProvider?: string,
 ): HistoryCompatResult {
-  return { compatible: true };
+  const snapshot = session.state.unsafePeek() as {
+    history?: unknown[];
+    sessionConfiguration?: {
+      provider?: { slug?: string };
+      collaborationMode?: { reasoningEffort?: string };
+    };
+  };
+  const provider =
+    targetProvider ??
+    snapshot.sessionConfiguration?.provider?.slug ??
+    "unknown";
+  const config = session.services.configStore?.current();
+  const overrides =
+    config !== undefined
+      ? readProviderConfig(config, provider)?.capability_overrides
+      : undefined;
+  const caps = resolveProviderCapabilityEntry({
+    provider,
+    model: targetModel,
+    overrides,
+  });
+  const requirements = analyzeSessionHistoryRequirements(snapshot);
+  return validateHistoryCompatibility(caps, requirements);
 }
 
 /**

@@ -12,6 +12,7 @@ interface StubSessionOpts {
   activeTurn?: unknown;
   abortTerminal?: ReturnType<typeof vi.fn>;
   pendingProviderSwitch?: unknown;
+  history?: unknown[];
 }
 
 function stubSession(opts: StubSessionOpts = {}): Session {
@@ -25,12 +26,19 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     activeTurn: { unsafePeek: () => unknown };
     abortTerminal: ReturnType<typeof vi.fn>;
     pendingProviderSwitch: unknown;
+    services: {};
     setPendingProviderSwitch(next: unknown): void;
   } = {
-    state: { unsafePeek: () => ({ sessionConfiguration }) },
+    state: {
+      unsafePeek: () => ({
+        sessionConfiguration,
+        history: opts.history ?? [],
+      }),
+    },
     activeTurn: { unsafePeek: () => opts.activeTurn ?? null },
     abortTerminal,
     pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
+    services: {},
     setPendingProviderSwitch(next) {
       this.pendingProviderSwitch = next;
     },
@@ -49,10 +57,20 @@ describe("providerCommand", () => {
     expect(providerCommand.name).toBe("provider");
   });
 
-  it("re-exports the I-57 stub so callers can reach it without model.js", () => {
-    const session = stubSession();
-    const compat = checkModelHistoryCompat(session, "grok-4");
-    expect(compat.compatible).toBe(true);
+  it("re-exports the live I-57 implementation", () => {
+    const session = stubSession({
+      provider: "openai",
+      model: "gpt-5",
+      history: [
+        {
+          role: "assistant",
+          content: [{ type: "reasoning", summary: [] }],
+        },
+      ],
+    });
+    const compat = checkModelHistoryCompat(session, "gpt-5", "ollama");
+    expect(compat.compatible).toBe(false);
+    expect(compat.missingCapabilities).toEqual(["thinking history"]);
   });
 
   it("returns a usage error when args are empty", async () => {
@@ -105,6 +123,30 @@ describe("providerCommand", () => {
       pendingProviderSwitch: { provider: string; model: string } | null;
     }).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "ollama", model: "grok-4" });
+  });
+
+  it("blocks the switch when the target provider cannot satisfy current history", async () => {
+    const session = stubSession({
+      provider: "openai",
+      model: "gpt-5",
+      history: [
+        {
+          role: "assistant",
+          content: [{ type: "reasoning", summary: [] }],
+        },
+      ],
+    });
+
+    const res = await providerCommand.execute(mkctx(session, "ollama"));
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toMatch(/blocked/);
+      expect(res.text).toMatch(/thinking history/);
+    }
+    const pending = (session as unknown as {
+      pendingProviderSwitch: { provider: string; model: string } | null;
+    }).pendingProviderSwitch;
+    expect(pending).toBeNull();
   });
 
   it("applyProviderSwitch does not invoke abortTerminal when no turn is active", async () => {

@@ -2,7 +2,8 @@
  * Slash-command dispatcher for the `agenc` CLI entry point.
  *
  * Thin wrapper over the canonical dispatcher in
- * `../commands/dispatcher.ts`. The CLI entry point calls
+ * `../commands/dispatcher.ts` (re-exported through
+ * `./_deps/commands.js`). The CLI entry point calls
  * `runSlashCommand(input, ctx)` once per slash-intent line; the wrapper
  * builds the default command registry, parses the input, and routes
  * through `dispatchSlashCommand`. Bridge-safety (for IPC / daemon
@@ -90,7 +91,9 @@ function getOrBuildRegistry(): CommandRegistry {
  *   - I-68 fence violation → `{ kind: "skip" }` (same as non-slash).
  *   - Bridge-gated call to a non-bridge-safe command →
  *     `{ kind: "blocked_by_bridge" }`.
- *   - Mistyped filesystem path fallback → `{ kind: "passthrough" }`.
+ *   - Mistyped filesystem path fallback (dispatcher resolved the name to
+ *     an existing file under cwd) → `{ kind: "passthrough" }` carrying
+ *     the original input so the caller can forward it as a user prompt.
  *   - Unknown command (dispatcher returned `error` for unknown) →
  *     `{ kind: "unknown" }` for readable CLI routing.
  *   - Anything else → `{ kind: "dispatched", outcome, result }`.
@@ -118,8 +121,14 @@ export async function runSlashCommand(
     argsRaw: parsed.argsRaw,
   };
   const outcome = await dispatchSlashCommand(parsed, fullCtx, registry);
-  if (outcome.passthroughInput !== undefined) {
-    return { kind: "passthrough", input: outcome.passthroughInput };
+
+  // Mistyped filesystem path: the dispatcher returns
+  // `result.kind === "skip"` when `<cwd>/<name>` resolved to an
+  // existing file. Forward the original line as a user prompt so the
+  // caller (CLI / TUI) can route it through the normal turn loop
+  // instead of rejecting it as an unknown command.
+  if (outcome.result.kind === "skip") {
+    return { kind: "passthrough", input };
   }
 
   // Distinguish unknown-command errors from other error kinds so the CLI

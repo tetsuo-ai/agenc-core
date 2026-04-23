@@ -3,8 +3,8 @@
  * (T11 Wave 2, Agent W2-E).
  *
  * Same semantics as `/model`: enforces I-13 (mid-stream abort + pending
- * switch marker) and I-57 (history compatibility check, stubbed until
- * T13 wires the real provider capability registry).
+ * switch marker) and I-57 (history compatibility check using the live
+ * T13 provider capability registry).
  *
  * Why provider + model are staged together on `pendingProviderSwitch`:
  * the run-turn loop consumes both atomically at top-of-loop per I-13
@@ -30,8 +30,7 @@ import {
 
 /**
  * Re-export so callers that only pull in `provider.ts` can still reach
- * the I-57 stub without a second import. Kept as a direct re-export
- * rather than a wrapper so T13's real impl remains a one-liner change.
+ * the I-57 implementation without a second import.
  */
 export { checkModelHistoryCompat };
 export type { HistoryCompatResult };
@@ -59,10 +58,11 @@ export async function applyProviderSwitch(
   const currentModel =
     rawState?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
 
-  // I-57: the stub checks compatibility against the currently-selected
-  // model because the model is what carries capability requirements.
-  // T13 will expand this to a provider × model pairing check.
-  const compat = checkModelHistoryCompat(session, currentModel);
+  const compat = checkModelHistoryCompat(
+    session,
+    currentModel,
+    targetProvider,
+  );
   if (!compat.compatible) {
     return `Provider switch to "${targetProvider}" blocked: ${
       compat.reason ?? "history incompatible with target provider"

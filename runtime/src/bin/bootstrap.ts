@@ -9,6 +9,7 @@ import {
 } from "../llm/provider.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
+import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
@@ -1357,6 +1358,11 @@ export async function bootstrapLocalRuntimeSession(
     config: startup.config,
     fallbackProvider: resolvedProvider,
   });
+  // Register the live (model, ModelsManager) pair so sync helpers like
+  // `getUpgradeMessage` (post-compact stdout breadcrumb, status hints)
+  // can propose same-family larger-context-window models without
+  // having to await a fresh catalog lookup.
+  setContextWindowUpgradeContext({ currentModel: model, modelsManager });
   const modelInfo = await modelsManager.getModelInfo(model);
   const baseSessionConfiguration = sessionConfigurationFromAgenCConfig({
     config: startup.config,

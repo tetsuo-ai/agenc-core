@@ -1,22 +1,14 @@
 /**
  * Tests for the `runSlashCommand` wrapper in `src/bin/slash.ts`.
  *
- * After the openclaude-port gut, the canonical slash-command registry
- * + dispatcher (formerly under `src/commands/**`) has been removed.
- * The bin entry point now sits on top of the per-dir
- * `_deps/commands.ts` shim, which:
- *   - provides a permissive parser for `/name args…`
- *   - returns `Unknown command: /<name>` for every dispatch
- *   - exposes an empty bridge-safe allowlist
- *   - returns a no-op default registry
- *
- * As a result, real command behavior (`/help`, `/exit`, …), the
- * registry coverage spot-check, and bridge-allowlist gating no longer
- * exercise live functionality and have been removed. What remains:
- *   - non-slash / empty input is rejected as `skip`
- *   - unknown slash commands surface as `kind: "unknown"` for routing
- *   - the bridge gate still blocks every command (allowlist is empty)
- *     when `opts.bridge === true`
+ * After T11 restoration the canonical slash-command registry +
+ * dispatcher (under `src/commands/**`) is wired through the
+ * per-dir `_deps/commands.ts` shim. The bin entry routes parsed
+ * slash input through the real dispatcher, so the tests below
+ * exercise both the wrapper-level routing variants (skip /
+ * passthrough / unknown / blocked_by_bridge) and a smoke test
+ * that a real registered command (`/help`) returns a `dispatched`
+ * outcome rather than `Unknown command`.
  */
 
 import { describe, it, expect } from "vitest";
@@ -57,6 +49,11 @@ describe("runSlashCommand — skip / parse gating", () => {
     const result = await runSlashCommand("", stubCtx());
     expect(result).toEqual({ kind: "skip" });
   });
+
+  it("returns { kind: 'skip' } when a multi-line slash-prefixed input violates I-68", async () => {
+    const result = await runSlashCommand("/help\nfollowup", stubCtx());
+    expect(result).toEqual({ kind: "skip" });
+  });
 });
 
 describe("runSlashCommand — unknown command routing", () => {
@@ -73,22 +70,37 @@ describe("runSlashCommand — unknown command routing", () => {
 });
 
 describe("runSlashCommand — bridge allowlist", () => {
-  it("blocks any command when opts.bridge is true (empty allowlist after gut)", async () => {
-    // The lean rebuild's `_deps/commands.ts` shim ships an empty
-    // BRIDGE_SAFE set, so every command is rejected over the bridge
-    // path until a real allowlist is reintroduced.
-    const result = await runSlashCommand("/anything", stubCtx(), { bridge: true });
+  it("blocks bridge-unsafe commands when opts.bridge is true", async () => {
+    const result = await runSlashCommand("/exit", stubCtx(), { bridge: true });
     expect(result.kind).toBe("blocked_by_bridge");
     if (result.kind !== "blocked_by_bridge") throw new Error("unreachable");
-    expect(result.message).toContain("/anything");
+    expect(result.message).toContain("/exit");
     expect(result.message).toMatch(/bridge/i);
-    expect(isBridgeSafeCommand("anything")).toBe(false);
+    expect(isBridgeSafeCommand("exit")).toBe(false);
+  });
+
+  it("allows bridge-safe commands when opts.bridge is true", async () => {
+    // `/help` is on the BRIDGE_SAFE allowlist (read-only command).
+    const result = await runSlashCommand("/help", stubCtx(), { bridge: true });
+    expect(result.kind).not.toBe("blocked_by_bridge");
+    expect(isBridgeSafeCommand("help")).toBe(true);
   });
 
   it("ignores the bridge gate when opts.bridge is not set", async () => {
-    // Local CLI path: the dispatcher is reached (and surfaces
-    // unknown-command as `unknown`).
-    const result = await runSlashCommand("/anything", stubCtx());
-    expect(result.kind).toBe("unknown");
+    // Local CLI path: the dispatcher is reached and `/help` runs.
+    const result = await runSlashCommand("/help", stubCtx());
+    expect(result.kind).toBe("dispatched");
+  });
+});
+
+describe("runSlashCommand — real command dispatch smoke", () => {
+  it("/help returns a dispatched text result (registry is live)", async () => {
+    const result = await runSlashCommand("/help", stubCtx());
+    expect(result.kind).toBe("dispatched");
+    if (result.kind !== "dispatched") throw new Error("unreachable");
+    expect(result.result.kind).toBe("text");
+    if (result.result.kind !== "text") throw new Error("unreachable");
+    // Real /help text should mention the command surface.
+    expect(result.result.text.length).toBeGreaterThan(0);
   });
 });

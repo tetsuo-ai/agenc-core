@@ -455,8 +455,12 @@ describe("bootstrapLocalRuntimeSession", () => {
   // resume path now sits on top of `_deps/session-storage.loadTranscriptFile`
   // which is a no-op stub (always throws ENOENT), so JSONL-backed transcript
   // hydration + marble-origami context-collapse rehydration can no longer
-  // run. The remaining "clears stale context-collapse state" test still
-  // covers the in-memory side of that surface.
+  // run. The in-memory context-collapse subsystem itself is now real
+  // (`session/_deps/context-collapse.ts`) and is covered by the
+  // "clears stale context-collapse state" test below plus the
+  // dedicated tests in `recovery/collapse-drain.test.ts` and
+  // `phases/post-sample-recovery.test.ts`. Restore this test once
+  // `loadTranscriptFile` ports over the JSONL parse path.
   it.skip("hydrates reconstructed history and seeded transcript events when resuming (deleted with openclaude-port gut)", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
