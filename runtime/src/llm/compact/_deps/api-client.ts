@@ -1,19 +1,40 @@
 /**
  * Compaction model-call adapter that delegates to the gut runtime's
- * `LLMProvider` factory. The compact subsystem expects an async
- * generator yielding Anthropic-style `stream_event` chunks plus a
- * terminal `assistant` event; this implementation calls the active
- * provider via `chat()` and then yields a single `assistant` event
- * carrying the full compacted text.
+ * `LLMProvider` factory.
  *
- * Streaming UX is degraded compared to the upstream openclaude impl
- * (no token-level deltas surface to the cockpit during compaction),
- * but the compaction summary itself is produced correctly. A
- * future tranche can wire `chatStream()` to surface per-chunk deltas.
+ * The compact subsystem expects an async generator yielding
+ * Anthropic-style `stream_event` chunks (matching the upstream
+ * openclaude wire shape — `content_block_start` + `text_delta`
+ * `content_block_delta` events) plus a terminal `assistant` event
+ * carrying the final compacted text and usage.
+ *
+ * This implementation drives the active gut LLM provider's
+ * `chatStream()` and translates each delta into the upstream-shaped
+ * stream event consumed by `compactConversation` (see
+ * `compact.ts:2068-2095`). Streaming UX surfaces real per-token
+ * deltas during compaction so the cockpit "responding" status and
+ * response-length counter advance live, matching the original
+ * upstream behavior at
+ * `/home/tetsuo/git/claude/src/services/api/claude.ts::queryModelWithStreaming`
+ * (line 762).
+ *
+ * What we deliberately do NOT pull in from upstream:
+ *   - the Anthropic SDK / `Stream<BetaRawMessageStreamEvent>` graph
+ *   - `withRetry` / `withStreamingVCR`: gut providers own their
+ *     own retry policy, so a second wrapper would double-retry
+ *   - non-streaming fallback: the gut provider's stream path
+ *     already returns a complete `LLMResponse` after the stream
+ *     drains, so no separate fallback is required here
+ *
+ * The translation is intentionally narrow: we synthesize one text
+ * block (`content_block_start` + N `content_block_delta` events)
+ * because that is all the compact consumer reads. Tool-call deltas
+ * are not surfaced as compaction never asks the model to invoke
+ * tools (it requests a summary).
  */
 
 import { createProvider, resolveProviderNameFromEnv } from "../../provider.js";
-import type { LLMMessage, LLMTool } from "../../types.js";
+import type { LLMMessage, LLMTool, LLMStreamChunk } from "../../types.js";
 
 interface QueryArgs {
   readonly messages: ReadonlyArray<unknown>;
@@ -92,6 +113,96 @@ function randomId(): string {
   ).join("-");
 }
 
+/**
+ * Pump events from a callback-style provider stream into an async
+ * iterator. The provider's `chatStream` invokes the `onChunk`
+ * callback one or more times before its returned promise resolves;
+ * we need those chunks to surface from a generator, in order, with
+ * the final `LLMResponse` available afterwards.
+ *
+ * The queue uses single-resumer back-pressure: each `push` either
+ * resolves a parked `next()` waiter or buffers the chunk. The
+ * `complete`/`fail` calls flush the terminator so the consumer
+ * exits cleanly.
+ */
+interface ChunkQueue {
+  push(chunk: LLMStreamChunk): void;
+  complete(): void;
+  fail(err: unknown): void;
+  drain(): AsyncIterableIterator<LLMStreamChunk>;
+}
+
+function createChunkQueue(): ChunkQueue {
+  const buffer: LLMStreamChunk[] = [];
+  let waiter:
+    | {
+        resolve: (value: IteratorResult<LLMStreamChunk>) => void;
+        reject: (err: unknown) => void;
+      }
+    | null = null;
+  let done = false;
+  let error: unknown = null;
+
+  function push(chunk: LLMStreamChunk): void {
+    if (done) return;
+    if (waiter) {
+      const w = waiter;
+      waiter = null;
+      w.resolve({ value: chunk, done: false });
+    } else {
+      buffer.push(chunk);
+    }
+  }
+
+  function complete(): void {
+    if (done) return;
+    done = true;
+    if (waiter) {
+      const w = waiter;
+      waiter = null;
+      w.resolve({ value: undefined as unknown as LLMStreamChunk, done: true });
+    }
+  }
+
+  function fail(err: unknown): void {
+    if (done) return;
+    done = true;
+    error = err;
+    if (waiter) {
+      const w = waiter;
+      waiter = null;
+      w.reject(err);
+    }
+  }
+
+  function drain(): AsyncIterableIterator<LLMStreamChunk> {
+    return {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next(): Promise<IteratorResult<LLMStreamChunk>> {
+        if (buffer.length > 0) {
+          return Promise.resolve({ value: buffer.shift()!, done: false });
+        }
+        if (error) {
+          return Promise.reject(error);
+        }
+        if (done) {
+          return Promise.resolve({
+            value: undefined as unknown as LLMStreamChunk,
+            done: true,
+          });
+        }
+        return new Promise((resolve, reject) => {
+          waiter = { resolve, reject };
+        });
+      },
+    };
+  }
+
+  return { push, complete, fail, drain };
+}
+
 export async function* queryModelWithStreaming(
   args: QueryArgs,
 ): AsyncGenerator<CompactStreamEvent, void> {
@@ -104,6 +215,7 @@ export async function* queryModelWithStreaming(
     const adapted = adaptMessage(raw);
     if (adapted) messages.push(adapted);
   }
+
   const providerName = resolveProviderNameFromEnv();
   const provider = createProvider(providerName, {
     ...(args.options?.model ? { model: args.options.model } : {}),
@@ -112,43 +224,143 @@ export async function* queryModelWithStreaming(
       : {}),
     tools: (args.tools ?? []) as ReadonlyArray<LLMTool>,
   });
-  const response = await provider.chat(messages, {
-    ...(args.signal ? { signal: args.signal } : {}),
-  });
-  const text = response.content ?? "";
-  // Yield a synthesized stream_event so call sites that watch
-  // `event.event.type === 'content_block_start'` for streaming UI
-  // updates fire once before the terminal `assistant` event.
-  yield {
-    type: "stream_event",
-    event: {
-      type: "content_block_start",
-      content_block: { type: "text" },
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
-  if (text.length > 0) {
+
+  const queue = createChunkQueue();
+  const chatPromise = provider
+    .chatStream(
+      messages,
+      (chunk) => {
+        queue.push(chunk);
+      },
+      {
+        ...(args.signal ? { signal: args.signal } : {}),
+      },
+    )
+    .then(
+      (response) => {
+        queue.complete();
+        return response;
+      },
+      (err) => {
+        queue.fail(err);
+        throw err;
+      },
+    );
+
+  // Track whether we have already opened the synthetic text block.
+  // Upstream emits `content_block_start` once before any deltas; we
+  // mirror that so the compact consumer's `setStreamMode('responding')`
+  // gate fires exactly once when real content begins.
+  let openedTextBlock = false;
+  // Running accumulator for the assistant text. Most adapters emit
+  // incremental deltas, but `LLMStreamChunk.resetBuffer === true`
+  // indicates a snapshot rewrite (Grok mitigation path) — when that
+  // arrives we discard our accumulator and re-emit the corrected
+  // snapshot as a single text_delta.
+  let accumulated = "";
+
+  function* openTextBlockIfNeeded(): Generator<CompactStreamEvent> {
+    if (openedTextBlock) return;
+    openedTextBlock = true;
     yield {
       type: "stream_event",
       event: {
-        type: "content_block_delta",
-        delta: { type: "text_delta", text },
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any;
+    };
   }
-  yield {
-    type: "assistant",
-    uuid: randomId(),
-    timestamp: new Date().toISOString(),
-    message: {
-      role: "assistant",
-      content: [{ type: "text", text }],
-      usage: {
-        input_tokens: response.usage?.promptTokens ?? 0,
-        output_tokens: response.usage?.completionTokens ?? 0,
+
+  try {
+    for await (const chunk of queue.drain()) {
+      // Terminal callback — provider signals end of stream. We ignore
+      // here because the resolved `chatPromise` carries the
+      // authoritative final content and usage.
+      if (chunk.done) {
+        continue;
+      }
+
+      // Snapshot rewrite (Grok partial-reply mitigation). Replace
+      // the accumulator and emit the corrected snapshot as one
+      // text_delta so the compact consumer's response-length
+      // counter advances by the correct delta on the next chunk.
+      if (chunk.resetBuffer === true) {
+        accumulated = chunk.content ?? "";
+        if (accumulated.length === 0) continue;
+        yield* openTextBlockIfNeeded();
+        yield {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: accumulated },
+          },
+        };
+        continue;
+      }
+
+      const text = chunk.content ?? "";
+      if (text.length === 0) continue;
+
+      accumulated += text;
+      yield* openTextBlockIfNeeded();
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text },
+        },
+      };
+    }
+
+    // Wait for the provider call to settle and grab the
+    // authoritative final response. If the stream queue completed
+    // cleanly, this resolves immediately.
+    const response = await chatPromise;
+    const finalText = response.content ?? accumulated;
+
+    // If the provider produced text but never streamed a delta
+    // (e.g. an adapter that buffers internally and only fires a
+    // terminal `done` chunk), surface it as a single delta so the
+    // compact consumer's "responding" state still advances.
+    if (!openedTextBlock && finalText.length > 0) {
+      yield* openTextBlockIfNeeded();
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: finalText },
+        },
+      };
+    }
+
+    if (openedTextBlock) {
+      yield {
+        type: "stream_event",
+        event: { type: "content_block_stop", index: 0 },
+      };
+    }
+
+    yield {
+      type: "assistant",
+      uuid: randomId(),
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: finalText }],
+        usage: {
+          input_tokens: response.usage?.promptTokens ?? 0,
+          output_tokens: response.usage?.completionTokens ?? 0,
+        },
       },
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+    };
+  } catch (err) {
+    // Make sure the chat promise is awaited so we don't leave a
+    // dangling unhandled rejection. We rethrow the original error.
+    await chatPromise.catch(() => undefined);
+    throw err;
+  }
 }
