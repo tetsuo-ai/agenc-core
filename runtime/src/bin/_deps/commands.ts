@@ -27,11 +27,35 @@ interface ParsedSlashLine {
   readonly argsRaw: string;
 }
 
+/**
+ * Permissive slash-line parser. Returns `null` when the input is not a
+ * dispatchable slash command, mirroring the openclaude dispatcher
+ * contract:
+ *   - non-slash input (no leading `/`) → `null`
+ *   - empty body after `/` → `null`
+ *   - I-68 fence: when a slash line is followed by another non-empty
+ *     line, the parse is rejected → `null`
+ *   - otherwise the first whitespace-separated token is the command
+ *     name and the rest is `argsRaw`.
+ */
 export function parseSlashCommand(input: string): ParsedSlashLine | null {
   if (typeof input !== "string") return null;
   const trimmed = input.trimStart();
   if (!trimmed.startsWith("/")) return null;
-  const body = trimmed.slice(1);
+
+  // I-68: enforce single-line slash input. A trailing newline is fine,
+  // but any non-whitespace follow-up content rejects the parse.
+  const newlineIdx = trimmed.indexOf("\n");
+  if (newlineIdx !== -1) {
+    const tail = trimmed.slice(newlineIdx + 1);
+    if (tail.trim().length > 0) {
+      return null;
+    }
+  }
+
+  const head =
+    newlineIdx !== -1 ? trimmed.slice(0, newlineIdx) : trimmed;
+  const body = head.slice(1);
   const space = body.search(/\s/);
   if (space === -1) {
     return body.length === 0 ? null : { name: body, argsRaw: "" };
@@ -50,9 +74,39 @@ export function isBridgeSafeCommand(_name: string): boolean {
 
 export async function dispatchSlashCommand(
   parsed: ParsedSlashLine,
-  _ctx: SlashCommandContext,
+  ctx: SlashCommandContext,
   _registry: CommandRegistry,
 ): Promise<DispatchOutcome> {
+  // Filesystem-path passthrough: if the slash-prefixed token resolves
+  // to an existing file or directory in the caller's `cwd`, treat the
+  // line as a normal user prompt rather than a command. Mirrors the
+  // openclaude dispatcher's `/notes.txt → passthrough` behavior so
+  // mistyped paths don't surface as "Unknown command".
+  const argsRaw =
+    typeof (ctx as { argsRaw?: unknown })?.argsRaw === "string"
+      ? ((ctx as { argsRaw?: string }).argsRaw ?? "")
+      : "";
+  if (argsRaw.length === 0 && parsed.name.length > 0) {
+    const cwd =
+      typeof (ctx as { cwd?: unknown })?.cwd === "string"
+        ? ((ctx as { cwd?: string }).cwd ?? "")
+        : "";
+    if (cwd && (parsed.name.includes(".") || parsed.name.includes("/"))) {
+      try {
+        const { existsSync } = await import("node:fs");
+        const { join: joinPath } = await import("node:path");
+        if (existsSync(joinPath(cwd, parsed.name))) {
+          return {
+            result: { kind: "skip" },
+            passthroughInput: `/${parsed.name}`,
+          };
+        }
+      } catch {
+        /* best effort — fall through to the unknown-command branch */
+      }
+    }
+  }
+
   return {
     result: {
       kind: "error",

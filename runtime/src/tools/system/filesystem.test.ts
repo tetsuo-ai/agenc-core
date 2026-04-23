@@ -12,7 +12,7 @@ import {
   isPathAllowed,
 } from "./filesystem.js";
 import type { Tool } from "../types.js";
-import { addLineNumbers } from "../../utils/file.js";
+import { addLineNumbers } from "./_deps/line-numbers.js";
 
 // ============================================================================
 // Mock node:fs/promises

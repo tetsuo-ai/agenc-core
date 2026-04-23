@@ -291,7 +291,11 @@ export async function microcompactMessages(
   // thread to try deleting tools that don't exist in its own conversation.
   if (feature('CACHED_MICROCOMPACT')) {
     const mod = await getCachedMCModule()
-    const model = toolUseContext?.options.mainLoopModel ?? getMainLoopModel()
+    // `options` may be absent on lightweight contexts (e.g. callers that
+    // only need clearProviderResponseId wiring). Fall back to the
+    // process-level main-loop model rather than crashing on `.mainLoopModel`.
+    const model =
+      toolUseContext?.options?.mainLoopModel ?? getMainLoopModel()
     if (
       mod.isCachedMicrocompactEnabled() &&
       mod.isModelSupportedForCacheEditing(model) &&

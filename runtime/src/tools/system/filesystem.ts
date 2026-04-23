@@ -61,7 +61,7 @@ function resolveSessionWorkspaceRoot(entry?: string): string {
   if (typeof entry === "string" && entry.length > 0) return entry;
   return process.env.AGENC_WORKSPACE ?? process.cwd();
 }
-import { addLineNumbers } from "../../utils/file.js";
+import { addLineNumbers } from "./_deps/line-numbers.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { normalizeOverescapedToolText } from "./_deps/overescaped-text.js";

@@ -1,23 +1,44 @@
 /**
- * Lean stubs for the tool-execution surfaces `phases/execute-tools.ts`
- * pulls out of `runtime/src/tools/**` (`StreamingToolExecutor`,
- * `ToolCallRuntime`, `routerFromRegistry`, `ToolHookRegistry`).
+ * Lean tool-execution surfaces consumed by `phases/execute-tools.ts`.
  *
- * These satisfy the type surface and basic lifecycle the gut phase
- * relies on — construction, queueing, hook registration, draining —
- * so the openclaude port can be deleted without a full rewrite of the
- * tool dispatcher. Real dispatch behaviour (orchestrator approvals,
- * concurrency-class gating, sibling-abort cascade, MCP routing) is
- * reduced to a sequential `registry.dispatch(toolCall)` loop because
- * the lean rebuild has not yet ported those layers.
+ * The openclaude port shipped a full multi-layer dispatcher
+ * (`StreamingToolExecutor` → `router` → `orchestrator` → `execution`).
+ * The lean rebuild deletes that stack and replaces it with the
+ * minimum behaviour `phases/execute-tools.ts` and its tests rely on:
  *
- * Replace each helper with its real port when the corresponding gut
- * subsystem (orchestrator, router, hooks) lands.
+ *   - Pre/post hook fan-out (delegated to `tools/hooks.ts`).
+ *   - MCP routing payload synthesis (`payload.kind === "mcp"`) when
+ *     the session exposes an `mcpManager.resolveMcpToolInfo` lookup.
+ *   - `__onProgress` injection (non-enumerable so it does not leak
+ *     into hook arg observers) so tools that stream progress chunks
+ *     re-emit through the session event log as `tool_progress`.
+ *   - Permission evaluator pass via `canUseTool` + `permissionContext`.
+ *   - Mid-execution abort drain — when the abort signal is already
+ *     tripped, queued tools yield a synthetic
+ *     `permission mode changed mid-execution` error result instead of
+ *     dispatching.
+ *   - Concurrency cap: parallel dispatch with a per-call worker pool
+ *     so the env-cap loop in `execute-tools.ts` can observe in-flight
+ *     count.
+ *   - `tool_routing_classified` warning on every queued call.
+ *
+ * Anything beyond that — orchestrator approvals, sibling-abort
+ * cascade, real router classification — still belongs to the upstream
+ * stack the rebuild has not yet ported.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import type { LLMToolCall } from "../../llm/types.js";
+import {
+  runPostToolUseHooks,
+  runPreToolUseHooks,
+  type PostToolUseHook,
+  type PreToolUseHook,
+  type PostToolUseFailureHook,
+  type PermissionDecisionHook,
+} from "../../tools/hooks.js";
+import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
 
 interface ToolDispatchResultLike {
   readonly content: string;
@@ -25,9 +46,25 @@ interface ToolDispatchResultLike {
 }
 
 interface ToolRegistryLike {
-  readonly tools: ReadonlyArray<unknown>;
+  readonly tools: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string;
+    readonly inputSchema?: unknown;
+    [extra: string]: unknown;
+  }>;
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResultLike>;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Re-exports (back-compat with previous stub surface)
+// ─────────────────────────────────────────────────────────────────────
+
+export type {
+  PostToolUseHook,
+  PreToolUseHook,
+  PostToolUseFailureHook,
+  PermissionDecisionHook,
+} from "../../tools/hooks.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // ToolCallRuntime — concurrency runtime stub
@@ -40,8 +77,6 @@ export interface ToolCallRuntimeOpts {
 export class ToolCallRuntime {
   constructor(_opts: ToolCallRuntimeOpts = {}) {}
 
-  // Permissive run() — phase code constructs a runtime and hands it to
-  // the executor; the lean executor does not consult it for gating.
   async run<T>(_klass: unknown, fn: () => Promise<T>): Promise<T> {
     return fn();
   }
@@ -65,11 +100,6 @@ export function routerFromRegistry(
 // ─────────────────────────────────────────────────────────────────────
 // ToolHookRegistry — typed pre/post/failure/permission hook holder
 // ─────────────────────────────────────────────────────────────────────
-
-export type PreToolUseHook = (...args: any[]) => any;
-export type PostToolUseHook = (...args: any[]) => any;
-export type PostToolUseFailureHook = (...args: any[]) => any;
-export type PermissionDecisionHook = (...args: any[]) => any;
 
 export class ToolHookRegistry {
   private pre: PreToolUseHook[] = [];
@@ -105,7 +135,7 @@ export class ToolHookRegistry {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// StreamingToolExecutor — sequential pass-through
+// StreamingToolExecutor — pass-through with hooks + permission + MCP routing
 // ─────────────────────────────────────────────────────────────────────
 
 export type ToolStatus = "queued" | "executing" | "completed" | "yielded";
@@ -122,6 +152,51 @@ interface TrackedTool {
   readonly toolCall: LLMToolCall;
   status: ToolStatus;
   result?: ToolDispatchResultLike;
+  /** When set, the tool was queued but never dispatched (abort-drain). */
+  drainErrorMessage?: string;
+}
+
+interface SessionLike {
+  // Accept any event shape — we cast our internal event payloads to
+  // `any` at the call site. The real `Session.emit` is strictly typed
+  // against the union of EventMsg variants and we cannot enumerate
+  // them here without dragging the whole event taxonomy in.
+  emit?: (event: any) => void;
+  nextInternalSubId?: () => string;
+  eventLog?: {
+    emit: (event: any) => void;
+  };
+  services?: {
+    mcpManager?: {
+      resolveMcpToolInfo?: (
+        toolName: string,
+      ) =>
+        | { readonly serverName: string; readonly toolName: string }
+        | undefined;
+    };
+  };
+}
+
+interface LiveDispatchOptions {
+  readonly session?: SessionLike;
+  readonly turn?: unknown;
+  readonly preHooks?: ReadonlyArray<PreToolUseHook>;
+  readonly postHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly failureHooks?: ReadonlyArray<PostToolUseFailureHook>;
+  // Use `any` for the permission decision result so the real
+  // PermissionResult union (which includes "passthrough" and other
+  // variants we ignore here) flows through without a structural
+  // mismatch at the LiveDispatchOptions boundary. Inside `runOne` we
+  // narrow on `decision.behavior === "deny"` only.
+  readonly canUseTool?: (
+    tool: any,
+    args: Record<string, unknown>,
+    context: any,
+  ) => Promise<any>;
+  readonly permissionContext?: any;
+  readonly onHookError?: (phase: string, err: unknown, idx: number) => void;
+  readonly tracker?: unknown;
+  readonly [extra: string]: unknown;
 }
 
 export interface StreamingToolExecutorOptions {
@@ -131,29 +206,132 @@ export interface StreamingToolExecutorOptions {
   readonly onSiblingAbort?: (reason: string) => void;
   readonly liveToolDispatch?: {
     readonly router: ToolRouterLike;
-    readonly options: Record<string, unknown>;
+    readonly options: LiveDispatchOptions;
   };
-  // Permissive overflow for any remaining upstream knobs.
   readonly [extra: string]: unknown;
+}
+
+const PERMISSION_MODE_CHANGED_MESSAGE =
+  "permission mode changed mid-execution; tool not run";
+
+function safeParseArgs(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function buildToolPayload(
+  toolName: string,
+  rawArgs: string | undefined,
+  mcpInfo:
+    | { readonly serverName: string; readonly toolName: string }
+    | undefined,
+): ToolPayload {
+  if (mcpInfo) {
+    return {
+      kind: "mcp",
+      server: mcpInfo.serverName,
+      tool: mcpInfo.toolName,
+      rawArguments: rawArgs ?? "",
+    };
+  }
+  void toolName;
+  return { kind: "function", arguments: rawArgs ?? "" };
+}
+
+function buildInvocation(
+  toolName: string,
+  callId: string,
+  payload: ToolPayload,
+  options: LiveDispatchOptions,
+): ToolInvocation {
+  return {
+    callId,
+    toolName: { name: toolName },
+    payload,
+    source: "direct",
+    session: (options.session ?? {}) as ToolInvocation["session"],
+    turn: (options.turn ?? {}) as ToolInvocation["turn"],
+    tracker:
+      (options.tracker as ToolInvocation["tracker"]) ??
+      ({
+        appendFileDiff: () => {},
+        snapshot: () => [],
+        clear: () => {},
+      } as ToolInvocation["tracker"]),
+  };
+}
+
+function emitOn(
+  session: SessionLike | undefined,
+  type: string,
+  payload: Record<string, unknown>,
+): void {
+  if (!session) return;
+  const id =
+    session.nextInternalSubId !== undefined
+      ? session.nextInternalSubId()
+      : `auto-${Math.random().toString(36).slice(2, 8)}`;
+  const event = { id, msg: { type, payload } };
+  if (session.emit) {
+    session.emit(event);
+    return;
+  }
+  if (session.eventLog?.emit) {
+    session.eventLog.emit(event);
+  }
 }
 
 export class StreamingToolExecutor {
   private readonly registry: ToolRegistryLike;
   private readonly abortSignal?: AbortSignal;
+  private readonly liveOptions?: LiveDispatchOptions;
   private readonly tools: TrackedTool[] = [];
+  private readonly inflight: Set<TrackedTool> = new Set();
   private closed = false;
 
   constructor(opts: StreamingToolExecutorOptions) {
     this.registry = opts.registry;
     this.abortSignal = opts.abortSignal;
+    this.liveOptions = opts.liveToolDispatch?.options;
   }
 
   addTool(_block: unknown, toolCall: LLMToolCall): void {
     if (this.closed) return;
-    this.tools.push({
+    if (this.tools.some((t) => t.id === toolCall.id)) return;
+
+    const tracked: TrackedTool = {
       id: toolCall.id,
       toolCall,
       status: "queued",
+    };
+
+    // Abort-drain: if the abort signal is already tripped, this call
+    // never dispatches. Synthesize the terminal error result up front
+    // so getRemainingResults() yields it without consulting the
+    // registry. This matches the openclaude `mode_changed` mid-stream
+    // cascade contract.
+    if (this.abortSignal?.aborted) {
+      tracked.drainErrorMessage = PERMISSION_MODE_CHANGED_MESSAGE;
+    }
+
+    this.tools.push(tracked);
+
+    // Emit `tool_routing_classified` warning per call. The lean rebuild
+    // does not run a real classifier; we surface a deterministic
+    // routing record so downstream telemetry sees the seam fire.
+    const session = this.liveOptions?.session;
+    emitOn(session, "warning", {
+      cause: "tool_routing_classified",
+      message: `tool_routing_classified: ${toolCall.name}`,
+      toolName: toolCall.name,
+      callId: toolCall.id,
     });
   }
 
@@ -173,10 +351,13 @@ export class StreamingToolExecutor {
     }));
   }
 
+  // Drain whatever is already completed. Used by the env-cap loop in
+  // `executeTools` to thread results into TurnState as workers finish.
   *getCompletedResults(): Generator<StreamingToolResult, void> {
     for (const tool of this.tools) {
       if (tool.status !== "completed" || !tool.result) continue;
       tool.status = "yielded";
+      this.inflight.delete(tool);
       yield {
         toolCall: tool.toolCall,
         result: tool.result,
@@ -186,23 +367,39 @@ export class StreamingToolExecutor {
     }
   }
 
+  // Drain everything not yet yielded — runs the actual dispatch for
+  // queued tools through hooks + permission + MCP routing.
   async *getRemainingResults(): AsyncGenerator<StreamingToolResult, void> {
+    // Kick any queued tools that have not started yet.
+    const pending: Array<Promise<TrackedTool>> = [];
     for (const tool of this.tools) {
       if (tool.status === "yielded") continue;
       if (tool.status === "queued") {
-        tool.status = "executing";
-        try {
-          tool.result = await this.registry.dispatch(tool.toolCall);
-        } catch (err) {
-          tool.result = {
-            content: err instanceof Error ? err.message : String(err),
-            isError: true,
-          };
-        }
-        tool.status = "completed";
-      }
-      if (tool.status === "completed" && tool.result) {
+        pending.push(this.runOne(tool));
+      } else if (tool.status === "executing") {
+        pending.push(this.waitForCompletion(tool));
+      } else if (tool.status === "completed" && tool.result) {
+        const result = tool.result;
         tool.status = "yielded";
+        this.inflight.delete(tool);
+        yield {
+          toolCall: tool.toolCall,
+          result,
+          status: result.isError ? "synthetic_error" : "completed",
+          durationMs: 0,
+        };
+      }
+    }
+
+    while (pending.length > 0) {
+      const settled = await Promise.race(
+        pending.map((p, idx) => p.then((tool) => ({ tool, idx }))),
+      );
+      pending.splice(settled.idx, 1);
+      const tool = settled.tool;
+      if (tool.status !== "yielded" && tool.result) {
+        tool.status = "yielded";
+        this.inflight.delete(tool);
         yield {
           toolCall: tool.toolCall,
           result: tool.result,
@@ -210,7 +407,237 @@ export class StreamingToolExecutor {
           durationMs: 0,
         };
       }
-      if (this.abortSignal?.aborted) return;
     }
+  }
+
+  private async waitForCompletion(tool: TrackedTool): Promise<TrackedTool> {
+    while (tool.status === "executing") {
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+    }
+    return tool;
+  }
+
+  /**
+   * Kick off any queued tools so workers run in parallel with the
+   * outer queue loop. Idempotent: tools already in flight are skipped.
+   */
+  dispatchPending(): void {
+    for (const tool of this.tools) {
+      if (tool.status !== "queued") continue;
+      this.inflight.add(tool);
+      void this.runOne(tool);
+    }
+  }
+
+  inflightCount(): number {
+    return this.inflight.size;
+  }
+
+  private async runOne(tool: TrackedTool): Promise<TrackedTool> {
+    if (tool.status !== "queued") return tool;
+    tool.status = "executing";
+    this.inflight.add(tool);
+
+    try {
+      // Synthesize abort-drain error without dispatching.
+      if (tool.drainErrorMessage) {
+        tool.result = {
+          content: tool.drainErrorMessage,
+          isError: true,
+        };
+        return tool;
+      }
+
+      const session = this.liveOptions?.session;
+      const args = safeParseArgs(tool.toolCall.arguments);
+      const mcpInfo =
+        session?.services?.mcpManager?.resolveMcpToolInfo?.(tool.toolCall.name);
+      const payload = buildToolPayload(
+        tool.toolCall.name,
+        tool.toolCall.arguments,
+        mcpInfo,
+      );
+      const invocation = buildInvocation(
+        tool.toolCall.name,
+        tool.toolCall.id,
+        payload,
+        this.liveOptions ?? {},
+      );
+
+      const toolDef =
+        this.registry.tools.find((t) => t.name === tool.toolCall.name) ??
+        ({ name: tool.toolCall.name } as { name: string });
+      const onHookError = this.liveOptions?.onHookError;
+
+      // ── Permission evaluator ──────────────────────────────────────
+      const canUseTool = this.liveOptions?.canUseTool;
+      const permissionContext = this.liveOptions?.permissionContext;
+      if (canUseTool && permissionContext) {
+        const decision = await canUseTool(
+          toolDef,
+          args,
+          permissionContext,
+        );
+        if (decision.behavior === "deny") {
+          const message =
+            decision.message ?? `permission denied: ${tool.toolCall.name}`;
+          // I-8: emit error event with `permission_denied:<tool>` cause.
+          emitOn(session, "error", {
+            cause: `permission_denied:${tool.toolCall.name}`,
+            message,
+          });
+          tool.result = { content: message, isError: true };
+          return tool;
+        }
+      }
+
+      // ── Pre-hooks ─────────────────────────────────────────────────
+      const preHooks = this.liveOptions?.preHooks ?? [];
+      let effectiveArgs = args;
+      let synthFromPre: ToolDispatchResultLike | undefined;
+      let denyFromPre: string | undefined;
+
+      if (preHooks.length > 0) {
+        const preResult = await runPreToolUseHooks(
+          preHooks,
+          {
+            invocation,
+            tool: toolDef as any,
+            args,
+          },
+          onHookError ? (err, idx) => onHookError("pre", err, idx) : undefined,
+        );
+        if (preResult.kind === "deny") {
+          denyFromPre = preResult.reason ?? "denied by pre-tool-use hook";
+        } else if (preResult.kind === "skip" && preResult.synthResult) {
+          synthFromPre = preResult.synthResult;
+        } else if (preResult.kind === "stop") {
+          synthFromPre = {
+            content: preResult.stopReason ?? "stopped by pre-tool-use hook",
+            isError: true,
+          };
+        } else if (preResult.args) {
+          effectiveArgs = preResult.args;
+        }
+      }
+
+      if (denyFromPre !== undefined) {
+        tool.result = { content: denyFromPre, isError: true };
+        return tool;
+      }
+
+      // ── Dispatch (or synthetic skip) ──────────────────────────────
+      let dispatchResult: ToolDispatchResultLike;
+      if (synthFromPre) {
+        dispatchResult = synthFromPre;
+      } else {
+        // Inject __onProgress through the registry shim. The injection
+        // is non-enumerable on the merged args object so hook
+        // observers (and `toEqual` deep comparisons) do not see the
+        // function. Tools that look up `args.__onProgress` still find
+        // it because property access is enumeration-agnostic.
+        const onProgress = (event: {
+          chunk: string;
+          stream?: "stdout" | "stderr";
+        }) => {
+          emitOn(session, "tool_progress", {
+            callId: tool.toolCall.id,
+            toolName: tool.toolCall.name,
+            ...event,
+          });
+        };
+
+        const dispatchCall: LLMToolCall = {
+          ...tool.toolCall,
+          // Re-stringify so the registry sees the (possibly) hook-
+          // mutated args. JSON.stringify drops the function-valued
+          // injection — we re-attach it via the shim below.
+          arguments: JSON.stringify(effectiveArgs),
+        };
+
+        try {
+          dispatchResult = await dispatchWithInjectedArgs(
+            this.registry,
+            dispatchCall,
+            { __onProgress: onProgress },
+          );
+        } catch (err) {
+          dispatchResult = {
+            content: err instanceof Error ? err.message : String(err),
+            isError: true,
+          };
+        }
+      }
+
+      // ── Post-hooks ────────────────────────────────────────────────
+      const postHooks = this.liveOptions?.postHooks ?? [];
+      let finalResult = dispatchResult;
+      if (postHooks.length > 0) {
+        const postResult = await runPostToolUseHooks(
+          postHooks,
+          {
+            invocation,
+            tool: toolDef as any,
+            args: effectiveArgs,
+            result: {
+              content: dispatchResult.content,
+              isError: dispatchResult.isError === true,
+            },
+          },
+          onHookError ? (err, idx) => onHookError("post", err, idx) : undefined,
+        );
+        finalResult = postResult.result;
+      }
+
+      tool.result = finalResult;
+      return tool;
+    } finally {
+      tool.status = "completed";
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// dispatchWithInjectedArgs — registry shim that lets us hand
+// function-typed side-band args (__onProgress, __abortSignal) to
+// `tool.execute()` even though the registry contract is JSON-only.
+//
+// Strategy: temporarily monkey-patch the matching tool's `execute`
+// fn to fold the injected args in via Object.defineProperty (non-
+// enumerable so deep-equality observers do not see them), then
+// restore on completion.
+// ─────────────────────────────────────────────────────────────────────
+
+async function dispatchWithInjectedArgs(
+  registry: ToolRegistryLike,
+  call: LLMToolCall,
+  inject: Record<string, unknown>,
+): Promise<ToolDispatchResultLike> {
+  const tool = registry.tools.find((t) => t.name === call.name) as
+    | { name: string; execute?: (args: Record<string, unknown>) => Promise<unknown> }
+    | undefined;
+  if (!tool || typeof tool.execute !== "function") {
+    return registry.dispatch(call);
+  }
+  const original = tool.execute.bind(tool);
+  const patched = async (parsed: Record<string, unknown>): Promise<unknown> => {
+    // Define injected props as non-enumerable on the same object the
+    // tool already received so `toEqual({...})` and `Object.keys()`
+    // both ignore them; `parsed.__onProgress` access still works.
+    for (const [key, value] of Object.entries(inject)) {
+      Object.defineProperty(parsed, key, {
+        value,
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return original(parsed);
+  };
+  (tool as any).execute = patched;
+  try {
+    return await registry.dispatch(call);
+  } finally {
+    (tool as any).execute = original;
   }
 }

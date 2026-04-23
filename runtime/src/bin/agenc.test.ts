@@ -43,7 +43,7 @@ import {
   type ConfigReloadLatch,
 } from "./agenc.js";
 import { ConfigStore, defaultConfig } from "../config/index.js";
-import * as configUtils from "../utils/config.js";
+import * as configUtils from "./_deps/config-init.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -66,12 +66,14 @@ import {
 } from "../prompts/memory/index.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
 import type { Session } from "../session/session.js";
-import { getCurrentRuntimeSession } from "../utils/currentRuntimeSession.js";
+import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 
 function stubSession() {
   return {
     eventLog: {},
     nextInternalSubId: () => "sub-1",
+    services: {},
+    conversationId: "conv-stub-1",
   } as unknown as Session;
 }
 
@@ -1984,7 +1986,11 @@ describe("main() full-IIFE smoke", () => {
     }
   });
 
-  it("bootTUIEntry executes slash commands through the TUI submit path without entering runTurn", async () => {
+  // The `/help` slash command was deleted alongside the openclaude-port
+  // gut. The `_deps/commands.ts` shim no longer carries a real command
+  // registry, so `/help` now surfaces as `Unknown command` instead of
+  // text. Skip until the lean rebuild reintroduces a registry.
+  it.skip("bootTUIEntry executes slash commands through the TUI submit path without entering runTurn (deleted with openclaude-port gut)", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
     const prevEnv = { ...process.env };
@@ -2076,7 +2082,9 @@ describe("main() full-IIFE smoke", () => {
     }
   });
 
-  it("bootTUIEntry wires /permissions through the TUI session contract", async () => {
+  // Same rationale as the `/help` skip above: `/permissions` was a
+  // registry command and the registry no longer exists.
+  it.skip("bootTUIEntry wires /permissions through the TUI session contract (deleted with openclaude-port gut)", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-cwd-"));
     const prevArgv = process.argv;

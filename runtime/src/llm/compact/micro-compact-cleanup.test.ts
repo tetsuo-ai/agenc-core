@@ -61,8 +61,12 @@ describe('microcompact cleanup wiring', () => {
   })
 
   test('time-based microcompact runs post-compact cleanup before returning', async () => {
-    vi.doMock('../../services/analytics/growthbook.js', () => ({
-      getFeatureValue_CACHED_MAY_BE_STALE: () => ({
+    // The gut runtime gets the time-based-MC config through the compact
+    // `_deps/no-op.js` shim (not the upstream openclaude
+    // `services/analytics/growthbook.js` path), so mock the live import
+    // surface that `time-based-mc-config.ts` actually reads from.
+    vi.doMock('./time-based-mc-config.js', () => ({
+      getTimeBasedMCConfig: () => ({
         enabled: true,
         gapThresholdMinutes: 1,
         keepRecent: 1,
@@ -76,10 +80,14 @@ describe('microcompact cleanup wiring', () => {
     const context = {
       clearProviderResponseId: vi.fn(),
     }
+    // Use the gut runtime's actual compactable tool name (`system.readFile`)
+    // so `collectCompactableToolIds` recognizes the tool_use entries via the
+    // built-in `COMPACTABLE_TOOLS` set. Upstream openclaude's `'Read'` name
+    // doesn't match the live registry-aligned constants in `_deps/tool-names.ts`.
     const messages: Message[] = [
-      assistantToolUse('tool-1', 'Read', old),
+      assistantToolUse('tool-1', 'system.readFile', old),
       userToolResult('tool-1', 'old tool output'),
-      assistantToolUse('tool-2', 'Read', old),
+      assistantToolUse('tool-2', 'system.readFile', old),
       userToolResult('tool-2', 'recent tool output'),
     ]
 

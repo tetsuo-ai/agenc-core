@@ -26,29 +26,15 @@ const mocks = vi.hoisted(() => ({
     ).pathname,
     runtimeContext: new URL("./compact-runtime-context.js", import.meta.url)
       .pathname,
-    context: new URL("../context.js", import.meta.url).pathname,
+    systemPrompt: new URL("./_deps/system-prompt.js", import.meta.url).pathname,
     compactWarningState: new URL(
       "../llm/compact/compact-warning-state.js",
       import.meta.url,
     ).pathname,
-    sessionMemoryUtils: new URL(
-      "../services/SessionMemory/sessionMemoryUtils.js",
-      import.meta.url,
-    ).pathname,
-    promptCacheBreakDetection: new URL(
-      "../services/api/promptCacheBreakDetection.js",
-      import.meta.url,
-    ).pathname,
-    shortcutFormat: new URL(
-      "../keybindings/shortcutFormat.js",
-      import.meta.url,
-    ).pathname,
-    upgradeCheck: new URL(
-      "../utils/model/contextWindowUpgradeCheck.js",
-      import.meta.url,
-    ).pathname,
-    messages: new URL("../utils/messages.js", import.meta.url).pathname,
-    log: new URL("../utils/log.js", import.meta.url).pathname,
+    noOp: new URL("./_deps/no-op.js", import.meta.url).pathname,
+    display: new URL("./_deps/display.js", import.meta.url).pathname,
+    messages: new URL("./_deps/messages.js", import.meta.url).pathname,
+    utils: new URL("./_deps/utils.js", import.meta.url).pathname,
   },
 }));
 
@@ -76,8 +62,9 @@ vi.mock(mocks.paths.postCompactCleanup, () => ({
 }));
 vi.mock(mocks.paths.runtimeContext, () => ({
   buildCompactCacheSafeParams: mocks.buildCompactCacheSafeParams,
+  createSessionBackedCompactContext: vi.fn(),
 }));
-vi.mock(mocks.paths.context, () => ({
+vi.mock(mocks.paths.systemPrompt, () => ({
   getUserContext: Object.assign(async () => ({}), {
     cache: { clear: mocks.clearUserContextCache },
   }),
@@ -85,22 +72,30 @@ vi.mock(mocks.paths.context, () => ({
 vi.mock(mocks.paths.compactWarningState, () => ({
   suppressCompactWarning: mocks.suppressCompactWarning,
 }));
-vi.mock(mocks.paths.sessionMemoryUtils, () => ({
+vi.mock(mocks.paths.noOp, () => ({
+  notifyCompaction: mocks.notifyCompaction,
   setLastSummarizedMessageId: mocks.setLastSummarizedMessageId,
 }));
-vi.mock(mocks.paths.promptCacheBreakDetection, () => ({
-  notifyCompaction: mocks.notifyCompaction,
-}));
-vi.mock(mocks.paths.shortcutFormat, () => ({
+vi.mock(mocks.paths.display, () => ({
   getShortcutDisplay: () => "ctrl+o",
-}));
-vi.mock(mocks.paths.upgradeCheck, () => ({
   getUpgradeMessage: () => undefined,
 }));
 vi.mock(mocks.paths.messages, () => ({
   getMessagesAfterCompactBoundary: (messages: unknown[]) => messages,
+  createSyntheticUserCaveatMessage: () => ({
+    type: "user",
+    message: { role: "user", content: "caveat" },
+  }),
+  createUserMessage: (input: { content: unknown }) => ({
+    type: "user",
+    message: { role: "user", content: input.content },
+  }),
+  formatCommandInputTags: (commandName: string, args: string) =>
+    `<${commandName}>${args}</${commandName}>`,
 }));
-vi.mock(mocks.paths.log, () => ({
+vi.mock(mocks.paths.utils, () => ({
+  hasExactErrorMessage: () => false,
+  errorMessage: (err: unknown) => String(err),
   logError: vi.fn(),
 }));
 

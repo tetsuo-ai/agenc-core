@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),
@@ -21,9 +21,8 @@ vi.mock("../llm/compact/post-compact-cleanup.js", async () => {
     runPostCompactCleanup: vi.fn(() => incremental.clearAllResponseIds()),
   };
 });
-import { AsyncQueue } from "../utils/async-queue.js";
 import { EventLog } from "../session/event-log.js";
-import { Session, type Event, type SessionOpts, type SessionServices } from "../session/session.js";
+import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
 import { postSampleRecovery } from "./post-sample-recovery.js";
@@ -33,10 +32,6 @@ import {
   runCollapseDrain,
   type CollapseDrainDriver,
 } from "../recovery/collapse-drain.js";
-import {
-  resetContextCollapse,
-  stageContextCollapseForSession,
-} from "../session/_deps/context-collapse.js";
 
 function mkCtx(): TurnContext {
   return {
@@ -97,71 +92,6 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
     ...opts,
   };
 }
-
-function buildLiveSession(): Session {
-  const services = {
-    mcpConnectionManager: {
-      setApprovalPolicy: () => {},
-      setSandboxPolicy: () => {},
-      requiredStartupFailures: async () => [],
-    },
-    mcpStartupCancellationToken: {
-      cancel: () => {},
-      isCancelled: () => false,
-    },
-    provider: { name: "grok" },
-    registry: {
-      tools: [],
-      toLLMTools: () => [],
-      dispatch: async () => ({ content: "", isError: false }),
-    },
-    hooks: {},
-  } as unknown as SessionServices;
-
-  return new Session({
-    conversationId: "conv-live",
-    services,
-    initialState: {
-      sessionConfiguration: {
-        cwd: "/tmp",
-        approvalPolicy: { value: "never" },
-        sandboxPolicy: { value: "read_only" },
-        fileSystemSandboxPolicy: {
-          allowWrite: [],
-          denyWrite: [],
-          allowRead: [],
-          denyRead: [],
-        },
-        networkSandboxPolicy: {
-          allowlist: [],
-          denylist: [],
-          allowManagedDomainsOnly: false,
-        },
-        windowsSandboxLevel: "none",
-        collaborationMode: { model: "stub" },
-        dynamicTools: [],
-        sessionSource: "cli_main",
-      },
-      history: [],
-    } as SessionOpts["initialState"],
-    features: {
-      appsEnabledForAuth: () => false,
-      useLegacyLandlock: () => false,
-    },
-    jsRepl: { id: "repl-test" },
-    config: {
-      model: "stub",
-      cwd: "/tmp",
-      permissions: { allowLoginShell: false },
-    } as SessionOpts["config"],
-    modelInfo: { slug: "stub" } as SessionOpts["modelInfo"],
-    eventQueue: new AsyncQueue<Event>(),
-  });
-}
-
-afterEach(() => {
-  resetContextCollapse();
-});
 
 describe("post-sample-recovery integration", () => {
   test("I-22: pendingBudgetDecision=stop → transition=token_budget_continuation + reset flag", async () => {
@@ -296,44 +226,12 @@ describe("post-sample-recovery integration", () => {
     expect(hasAttemptedCollapseDrain(state)).toBe(false);
   });
 
-  test("withheld 413 routes through the live session contextCollapse service before reactive compact", async () => {
-    const session = buildLiveSession();
-    const state = mkState({
-      messagesForQuery: [
-        { role: "user", content: "before" },
-        { role: "assistant", content: "after" },
-      ],
-      assistantMessages: [
-        {
-          uuid: "a",
-          role: "assistant",
-          text: "Prompt is too long: 137500 tokens > 135000 maximum",
-          toolCalls: [],
-          apiError: "prompt_too_long",
-        },
-      ],
-    });
-
-    stageContextCollapseForSession(
-      session.conversationId,
-      [{ role: "user", content: "[collapsed]" }],
-      {
-        committed: 1,
-        collapsedMessages: 1,
-        querySource: session.services.querySource,
-      },
-    );
-
-    await postSampleRecovery(state, mkCtx(), session);
-
-    expect(state.transition?.reason).toBe("collapse_drain_retry");
-    expect(state.messagesForQuery).toEqual([
-      { role: "user", content: "[collapsed]" },
-    ]);
-    expect(session.services.contextCollapse?.isContextCollapseEnabled()).toBe(
-      false,
-    );
-  });
+  // Removed: "withheld 413 routes through the live session contextCollapse
+  // service before reactive compact". This test exercised the openclaude
+  // contextCollapse runtime service end-to-end via stageContextCollapseForSession,
+  // which the lean rebuild stubbed out as a no-op. Without that subsystem
+  // the assertions cannot hold; if the gut runtime ever re-implements
+  // context-collapse, restore the test then.
 
   test("stopHookActive alone does not re-trigger stop_hook_blocking", async () => {
     const log = new EventLog();

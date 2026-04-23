@@ -36,6 +36,7 @@ export interface ToolRegistry {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type BuildToolRegistryOptions = Record<string, any> & {
   readonly workspaceRoot?: string;
+  readonly extraTools?: ReadonlyArray<Tool>;
 };
 
 /**
@@ -44,8 +45,11 @@ export type BuildToolRegistryOptions = Record<string, any> & {
  * by default — child sessions still get a non-null `ToolRegistry`
  * shape and the LLM payload is empty until tool wiring is ported.
  *
- * Callers that need real tool dispatch can supply a
- * `BuildToolRegistryOptions.factory` thunk to override.
+ * Caller-supplied `extraTools` are appended to the registry as-is so
+ * the bootstrap path can ship its built-in `system.agent.delegate`
+ * tool (and any future built-ins) without depending on the deleted
+ * openclaude registry. Callers that need full tool dispatch can supply
+ * a `BuildToolRegistryOptions.factory` thunk to override entirely.
  */
 export function buildToolRegistry(
   options: BuildToolRegistryOptions = {},
@@ -54,12 +58,29 @@ export function buildToolRegistry(
   if (typeof factory === "function") {
     return factory();
   }
+  const tools: Tool[] = [...(options.extraTools ?? [])];
   return {
-    tools: [],
+    tools,
     toLLMTools: () => [],
-    dispatch: async () => ({
-      content: "tool registry not wired in lean rebuild",
-      isError: true,
-    }),
+    dispatch: async (toolCall: LLMToolCall): Promise<ToolDispatchResult> => {
+      const name =
+        toolCall && typeof toolCall === "object" && "name" in toolCall
+          ? String((toolCall as { name?: unknown }).name ?? "")
+          : "";
+      const tool = tools.find((t) => t.name === name);
+      if (tool) {
+        const args =
+          (toolCall as { arguments?: Record<string, unknown> }).arguments ?? {};
+        const result = await tool.execute(args);
+        return {
+          content: result.content,
+          ...(result.isError ? { isError: true } : {}),
+        };
+      }
+      return {
+        content: "tool registry not wired in lean rebuild",
+        isError: true,
+      };
+    },
   };
 }

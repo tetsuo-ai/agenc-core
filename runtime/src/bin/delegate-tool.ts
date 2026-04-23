@@ -98,11 +98,12 @@ export function bindSessionAgentControl(
     pair.registry;
   controlCache.set(session, pair);
   try {
-    (
-      session.services as unknown as {
-        agentControl?: unknown;
-      }
-    ).agentControl = pair.control as unknown;
+    const services = session.services as unknown as
+      | { agentControl?: unknown }
+      | undefined;
+    if (services !== undefined && services !== null) {
+      services.agentControl = pair.control as unknown;
+    }
   } catch {
     /* best effort */
   }
@@ -118,11 +119,10 @@ export function ensureAgentControl(session: Session): {
 } {
   const cached = controlCache.get(session);
   if (cached) return cached;
-  const bound = (
-    session.services as unknown as {
-      agentControl?: unknown;
-    }
-  ).agentControl;
+  const services = (session.services ?? {}) as unknown as {
+    agentControl?: unknown;
+  };
+  const bound = services.agentControl;
   if (bound instanceof AgentControl) {
     const registry = (bound as AgentControlWithRegistry)[SESSION_AGENT_REGISTRY];
     if (registry instanceof AgentRegistry) {

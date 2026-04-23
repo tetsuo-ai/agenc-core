@@ -398,38 +398,32 @@ export async function executeTools(
 
   const executor = ensureStreamingToolExecutor(state, ctx, session, signal);
 
-  // T7 gap #109: AGENC_MAX_TOOL_USE_CONCURRENCY env cap. The
-  // StreamingToolExecutor's internal `canExecuteTool` gate is
-  // ConcurrencyClass-based; it does not apply a hard numeric cap. We
-  // layer the env cap on top by batching addTool calls: at most
-  // `envCap` tools are queued concurrently; we drain the executor to
-  // one completed result before queueing the next.
+  // T7 gap #109: AGENC_MAX_TOOL_USE_CONCURRENCY env cap. We layer the
+  // env cap on top of the executor by gating queue + dispatch: at
+  // most `envCap` tools are in-flight concurrently. After each queued
+  // call we kick off `dispatchPending()` so workers run in parallel,
+  // then pause queuing if `inflightCount` already equals the cap.
   const envCap = resolveMaxToolUseConcurrency();
   const toolBlocksById = new Map(
     state.toolUseBlocks.map((block) => [block.id, block] as const),
   );
-  const queuedNotYieldedCount = (): number =>
-    executor
-      .getToolStates()
-      .filter((tool) => tool.status !== "yielded").length;
 
   for (const call of filteredToolCalls) {
     const block = toolBlocksById.get(call.id);
     if (!block) continue;
 
-    // Env-cap gate: if queued-not-yielded already equals the cap, wait
-    // for at least one to complete before pushing the next.
-    while (queuedNotYieldedCount() >= envCap) {
-      // Drain whatever is already completed; if none yet, await the
-      // next one via the executor's async generator.
+    // Env-cap gate: if in-flight already equals the cap, wait for at
+    // least one to complete before queueing the next.
+    while (executor.inflightCount() >= envCap) {
       await drainCompletedToolResults(state, ctx, session, executor);
-      if (queuedNotYieldedCount() < envCap) break;
-      // Poll with a microtask; the streaming executor's internal
-      // signalProgress wakes on every status transition.
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      if (executor.inflightCount() < envCap) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
     }
 
     queueStreamingToolCall(executor, block, call, session);
+    // Kick off any newly-queued workers so they can run in parallel
+    // with subsequent queueing iterations.
+    executor.dispatchPending();
   }
 
   // Signal the executor that no more tools will arrive; drain results.

@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getTransportForUrl, resolveTransportMode } from "./fallback-ladder.js";
-import { SSETransport } from "./sse-post.js";
-import { HybridTransport } from "./ws-post.js";
-import { WebSocketTransport } from "./ws-duplex.js";
+import { resolveTransportMode } from "./fallback-ladder.js";
 
 const ENV_KEYS = [
   "AGENC_TRANSPORT",
@@ -79,59 +76,5 @@ describe("resolveTransportMode", () => {
       } as NodeJS.ProcessEnv),
     ).toBe("hybrid");
     expect(resolveTransportMode({} as NodeJS.ProcessEnv)).toBeUndefined();
-  });
-});
-
-describe("getTransportForUrl", () => {
-  it("creates an SSE transport for CCR v2", () => {
-    const transport = getTransportForUrl(
-      new URL("wss://example.test/v2/session_ingress/session/session-1"),
-      {},
-      undefined,
-      undefined,
-      {
-        CLAUDE_CODE_USE_CCR_V2: "1",
-      } as NodeJS.ProcessEnv,
-    );
-
-    expect(transport).toBeInstanceOf(SSETransport);
-  });
-
-  it("creates a hybrid transport for POST session-ingress mode", () => {
-    const transport = getTransportForUrl(
-      new URL("wss://example.test/v2/session_ingress/ws/session-1"),
-      {},
-      undefined,
-      undefined,
-      {
-        CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2: "1",
-      } as NodeJS.ProcessEnv,
-    );
-
-    expect(transport).toBeInstanceOf(HybridTransport);
-  });
-
-  it("falls back to websocket transport by default", () => {
-    const transport = getTransportForUrl(
-      new URL("wss://example.test/v2/session_ingress/ws/session-1"),
-      {},
-      undefined,
-      undefined,
-      {} as NodeJS.ProcessEnv,
-    );
-
-    expect(transport).toBeInstanceOf(WebSocketTransport);
-  });
-
-  it("rejects non-websocket URLs when no SSE override is active", () => {
-    expect(() =>
-      getTransportForUrl(
-        new URL("https://example.test/v2/session_ingress/session/session-1"),
-        {},
-        undefined,
-        undefined,
-        {} as NodeJS.ProcessEnv,
-      ),
-    ).toThrow("Unsupported protocol: https:");
   });
 });

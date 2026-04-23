@@ -101,6 +101,26 @@ export class RecoveryLadder {
     const lock = getRecoveryLock(this.session);
 
     return lock.with(async () => {
+      // I-42: enforce the re-entry cap at ladder entry. If the
+      // counter is already at MAX_RECOVERY_REENTRIES the ladder
+      // refuses to walk triggers — even if no trigger would match —
+      // and emits the typed `recovery_loop` error so the surrounding
+      // phase can transition to a terminal failure.
+      if (state.recoveryReentryCount >= this.maxReentries) {
+        emitError(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          {
+            cause: "recovery_loop",
+            message: `recovery ladder exceeded MAX_RECOVERY_REENTRIES=${this.maxReentries}`,
+          },
+        );
+        return {
+          kind: "reentry_cap_exhausted",
+          cap: this.maxReentries,
+        } satisfies LadderOutcome;
+      }
+
       const ctx: TriggerContext = {
         session: this.session,
         state,

@@ -1320,6 +1320,12 @@ export async function runToolUse(
 
   // Step 4: permission gate. Merge hook result with rule/evaluator.
   let inputForTool: Record<string, unknown> = args;
+  // When the evaluator (canUseTool) decides "ask" and a legacy
+  // requestApproval prompt is wired, we still need to invoke that prompt
+  // to let the resolver record the modal decision. Track that here so
+  // step 4b can opt back into the legacy fallback even though the
+  // evaluator path was wired.
+  let evaluatorRequestedAsk = false;
   if (opts.canUseTool && opts.permissionContext) {
     const merged = await mergeHookPermissionDecision({
       hookPermissionResult,
@@ -1407,6 +1413,10 @@ export async function runToolUse(
               elapsedMs: performance.now() - startedAt,
             });
           }
+          // Evaluator returned ask with a prompt wired — fall through to
+          // the legacy approval-modal fallback so the resolver gets the
+          // call and records a decision.
+          evaluatorRequestedAsk = true;
         } else if (permResult.behavior === "allow") {
           if (permResult.updatedInput !== undefined) {
             inputForTool = permResult.updatedInput as Record<string, unknown>;
@@ -1451,7 +1461,7 @@ export async function runToolUse(
   // second time on an already-approved call.
   const shouldUseLegacyApprovalFallback =
     opts.requestApproval &&
-    (!opts.canUseTool || !opts.permissionContext);
+    (!opts.canUseTool || !opts.permissionContext || evaluatorRequestedAsk);
   if (shouldUseLegacyApprovalFallback) {
     const approvalCache = resolveApprovalCache(invocation);
     const decision = await requestApprovalWithAbortRace(opts.requestApproval, {

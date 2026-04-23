@@ -22,7 +22,7 @@ import type { Event } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
-import { createContentReplacementState } from "../utils/toolResultStorage.js";
+import { createContentReplacementState } from "../session/_deps/tool-result-storage.js";
 import {
   getPrepareContextTerminal,
   prepareContext,

@@ -75,17 +75,26 @@ export class Cursor {
     const display = mask
       ? mask.repeat(this.text.length)
       : this.text;
-    const lines = display.split("\n");
+    const sourceLines = display.split("\n");
     const { line, column } = this.getPosition();
     const renderedCursor = cursorChar ? invert(cursorChar) : "";
-    return lines
-      .map((text, i) => {
-        if (i !== line) return text;
-        const before = text.slice(0, column);
-        const after = text.slice(column);
-        return before + renderedCursor + after;
-      })
-      .join("\n");
+
+    // Reserve one column at the right edge for the inline cursor cell so
+    // the caret never lands past the visible viewport.
+    const wrapWidth = Math.max(1, this.columns - 1);
+
+    const wrappedSegments: string[] = [];
+    for (let i = 0; i < sourceLines.length; i += 1) {
+      const sourceLine = sourceLines[i] ?? "";
+      const lineWithCursor =
+        i === line
+          ? sourceLine.slice(0, column) +
+            renderedCursor +
+            sourceLine.slice(column)
+          : sourceLine;
+      wrappedSegments.push(hardWrap(lineWithCursor, wrapWidth));
+    }
+    return wrappedSegments.join("\n");
   }
 
   left(): Cursor {
@@ -99,4 +108,22 @@ export class Cursor {
       Math.min(this.text.length, this.offset + 1),
     );
   }
+}
+
+/**
+ * Hard-wrap `line` into chunks of at most `width` characters. Empty
+ * lines pass through unchanged so the rendered transcript keeps blank
+ * lines intact. This is intentionally character-based (no word boundary
+ * smartness) — the openclaude `MeasuredText` viewport that the upstream
+ * Cursor class wraps does grapheme-aware wrapping, but for the TUI tests
+ * a simple fixed-width split is enough to produce a stable wrapped
+ * frame.
+ */
+function hardWrap(line: string, width: number): string {
+  if (line.length <= width) return line;
+  const out: string[] = [];
+  for (let i = 0; i < line.length; i += width) {
+    out.push(line.slice(i, i + width));
+  }
+  return out.join("\n");
 }

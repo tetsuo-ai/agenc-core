@@ -1,53 +1,66 @@
-import { describe, expect, test, vi } from 'vitest'
+import { describe, expect, test } from 'vitest'
 
-// Environmental workaround: the transitive graph through `utils/messages.ts`
-// pulls in `services/api/sessionIngress.ts`, which hard-imports `axios`.
-// `axios` is not declared as a runtime dependency in this workspace, so
-// resolution fails under vitest. The upstream openclaude parity test
-// imports the same factories, so we keep them but block the unreachable
-// sessionIngress branch at the mocking layer.
-vi.mock('../../services/api/sessionIngress.js', () => ({}))
-
-import type { Message } from '../../types/message.js'
-import { createAssistantMessage, createUserMessage } from '../../utils/messages.js'
-
-// We test the exported collectCompactableToolIds behavior indirectly via
-// the public microcompactMessages + time-based path. But first we need to
-// verify the core predicate: MCP tools (prefixed 'mcp__') should be
-// compactable alongside the built-in tool set.
+// `Message` type and the message-helper module from upstream openclaude
+// (`src/types/message.ts` + `src/utils/messages.ts`) were removed in the
+// gut runtime. Inline minimal duck-typed shapes here so this test can
+// exercise the public `micro-compact.ts` surface without those imports.
+type Message = any
 
 // Import internals we can test
 import { evaluateTimeBasedTrigger } from './micro-compact.js'
 
 /**
  * Helper: build a minimal assistant message with a tool_use block.
+ *
+ * Mirrors the upstream `createAssistantMessage` shape only as far as
+ * `microcompactMessages` and `estimateMessageTokens` actually inspect it
+ * (type === 'assistant', timestamp, message.content[]).
  */
 function assistantWithToolUse(toolName: string, toolId: string): Message {
-  return createAssistantMessage({
-    content: [
-      {
-        type: 'tool_use' as const,
-        id: toolId,
-        name: toolName,
-        input: {},
+  return {
+    type: 'assistant',
+    uuid: `assistant-${toolId}`,
+    timestamp: new Date().toISOString(),
+    message: {
+      id: `resp-${toolId}`,
+      role: 'assistant',
+      model: 'claude-sonnet-4',
+      content: [
+        {
+          type: 'tool_use' as const,
+          id: toolId,
+          name: toolName,
+          input: {},
+        },
+      ],
+      usage: {
+        input_tokens: 1,
+        output_tokens: 1,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
       },
-    ],
-  })
+    },
+  }
 }
 
 /**
  * Helper: build a user message with a tool_result block.
  */
 function userWithToolResult(toolId: string, output: string): Message {
-  return createUserMessage({
-    content: [
-      {
-        type: 'tool_result' as const,
-        tool_use_id: toolId,
-        content: output,
-      },
-    ],
-  })
+  return {
+    type: 'user',
+    uuid: `user-${toolId}`,
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result' as const,
+          tool_use_id: toolId,
+          content: output,
+        },
+      ],
+    },
+  }
 }
 
 describe('microCompact MCP tool compaction', () => {

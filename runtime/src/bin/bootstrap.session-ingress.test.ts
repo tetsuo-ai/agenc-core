@@ -13,13 +13,18 @@ const authMocks = vi.hoisted(() => ({
   getSessionIngressAuthHeaders: vi.fn(),
 }));
 
-vi.mock("../utils/sessionStorage.js", () => ({
+vi.mock("./_deps/session-storage.js", () => ({
+  loadTranscriptFile: vi.fn(async () => {
+    const err = new Error("ENOENT");
+    (err as NodeJS.ErrnoException).code = "ENOENT";
+    throw err;
+  }),
   setInternalEventReader: sessionStorageMocks.setInternalEventReader,
   setInternalEventWriter: sessionStorageMocks.setInternalEventWriter,
   setRemoteIngressUrl: sessionStorageMocks.setRemoteIngressUrl,
 }));
 
-vi.mock("../utils/sessionIngressAuth.js", () => ({
+vi.mock("./_deps/session-ingress-auth.js", () => ({
   getSessionIngressAuthHeaders: authMocks.getSessionIngressAuthHeaders,
 }));
 

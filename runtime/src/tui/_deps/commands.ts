@@ -45,15 +45,49 @@ export function getGlobalCommandRegistry(): CommandRegistry | null {
   return globalRegistry;
 }
 
-class EmptyCommandRegistry implements CommandRegistry {
+/**
+ * Minimal command set surfaced when no live registry is installed.
+ *
+ * The composer needs at least `/help` so that a typed `/help` resolves
+ * to an exact slash selection — that is what flips the palette off and
+ * lets Enter submit the slash command on the first press. Additional
+ * commands here have no behavior wired up; they exist only so the
+ * palette and exact-token detection have something to match against.
+ */
+const FALLBACK_COMMANDS: readonly SlashCommandLike[] = Object.freeze([
+  Object.freeze({
+    name: "help",
+    description: "Show available slash commands",
+    userInvocable: true,
+    immediate: true,
+  }),
+  Object.freeze({
+    name: "clear",
+    description: "Clear the transcript",
+    userInvocable: true,
+    immediate: true,
+  }),
+  Object.freeze({
+    name: "exit",
+    description: "Exit the TUI",
+    userInvocable: true,
+    immediate: true,
+  }),
+] as const);
+
+class FallbackCommandRegistry implements CommandRegistry {
   list(): readonly SlashCommandLike[] {
-    return [];
+    return FALLBACK_COMMANDS;
   }
-  find(_nameOrAlias: string): SlashCommandLike | undefined {
-    return undefined;
+  find(nameOrAlias: string): SlashCommandLike | undefined {
+    return FALLBACK_COMMANDS.find(
+      (cmd) =>
+        cmd.name === nameOrAlias ||
+        (cmd.aliases?.includes(nameOrAlias) ?? false),
+    );
   }
 }
 
 export function buildDefaultRegistry(): CommandRegistry {
-  return new EmptyCommandRegistry();
+  return new FallbackCommandRegistry();
 }
