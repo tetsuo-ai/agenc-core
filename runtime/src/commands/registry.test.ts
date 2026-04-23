@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CommandRegistry, buildDefaultRegistry } from "./registry.js";
-import type { SlashCommand, SlashCommandResult } from "./types.js";
+import type {
+  SlashCommand,
+  SlashCommandContext,
+  SlashCommandResult,
+} from "./types.js";
 
 function mkCmd(
   name: string,
@@ -195,5 +199,30 @@ describe("buildDefaultRegistry()", () => {
       "permissions",
       "config",
     ]);
+  });
+
+  it("rejects invalid /exit-worktree args instead of treating them as keep", async () => {
+    const reg = buildDefaultRegistry();
+    const command = reg.find("exit-worktree");
+    expect(command).toBeDefined();
+    const setPendingWorktreeState = vi.fn();
+    const ctx = {
+      session: {
+        pendingWorktreeState: {
+          handle: { path: "/tmp/agenc-worktree" },
+          baseCommit: "abc123",
+        },
+        setPendingWorktreeState,
+      },
+      argsRaw: "remove discard",
+      cwd: "/tmp/project",
+      home: "/home/test",
+    } as unknown as SlashCommandContext;
+
+    const result = await command!.execute(ctx);
+
+    expect(result.kind).toBe("error");
+    if (result.kind === "error") expect(result.message).toMatch(/Usage/);
+    expect(setPendingWorktreeState).not.toHaveBeenCalled();
   });
 });

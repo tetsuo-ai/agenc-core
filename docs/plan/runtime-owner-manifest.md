@@ -36,11 +36,6 @@ ownership is fully consolidated.
 - `runtime/src/bin/slash.ts`
   Slash-command wrapper and registry bridge gate. It is a live entry
   surface, but not a separate runtime owner.
-- `runtime/src/tasks/LocalMainSessionTask.ts`
-  Background main-session path. The approved plan names
-  `startBackgroundSession`; the live tree currently exposes
-  `registerMainSessionTask` and `completeMainSessionTask`, so Phase 0
-  keys on the file path.
 - `runtime/src/agents/delegate.ts`
   Local delegate/subagent entry path. It must converge on the same
   session bootstrap and turn kernel as the main CLI path.
@@ -63,47 +58,22 @@ ownership is fully consolidated.
 
 ## Compatibility-Only Surfaces
 
-- `runtime/src/entrypoints/agentSdkTypes.ts::unstable_v2_createSession`
-- `runtime/src/entrypoints/agentSdkTypes.ts::unstable_v2_resumeSession`
-- `runtime/src/bridge/createSession.ts::createBridgeSession`
-- `runtime/src/bridge/createSession.ts::getBridgeSession`
-
-These surfaces must stay visible in the manifest so the replacement work
-does not accidentally claim that local runtime ownership already covers
-SDK or remote bridge creation/resume paths. They are compatibility
-surfaces, not proof of local runtime ownership.
+No compatibility-only creation/resume surfaces are present in the current
+runtime tree. If SDK or remote bridge creation/resume surfaces are
+reintroduced, they must be listed here rather than treated as local runtime
+owners.
 
 ## Fabricated-Context Seams
 
-Owner-owned context fabrication is declared directly on the owner
-records in the machine-readable contract below. The files listed here
-are the remaining non-owner seams or near-boundary paths that still need
-explicit tracking until the cutover removes them:
-
-- `runtime/src/utils/forkedAgent.ts`
-- `runtime/src/utils/hooks/execAgentHook.ts`
-- `runtime/src/commands/context/context-noninteractive.ts`
-- `runtime/src/utils/processUserInput/processSlashCommand.tsx`
-- `runtime/src/services/MagicDocs/magicDocs.ts`
-- `runtime/src/tools/AgentTool/runAgent.ts`
-- `runtime/src/tools/AgentTool/**`
-
-Some listed seams have already dropped their legacy-owner imports. They
-remain in the manifest until the surrounding compatibility surface is
-fully retired or recategorized, so the checker can keep tracking the
-remaining boundary risk deliberately.
+Owner-owned context fabrication is declared directly on the owner records in
+the machine-readable contract below. The old non-owner seams named during the
+Phase 0 cutover have been removed from the live tree.
 
 ## Legacy Runtime-Owner Files
 
-These are the legacy owners or owner families the plan forbids from
-growing back into the live runtime boundary:
-
-- `runtime/src/query.ts`
-- `runtime/src/services/tools/StreamingToolExecutor.ts`
-- `runtime/src/services/tools/toolExecution.ts`
-- `runtime/src/services/tools/toolHooks.ts`
-- `runtime/src/services/tools/toolOrchestration.ts`
-- `runtime/src/tools/AgentTool/**`
+The exact legacy owner files named during Phase 0 have been removed from the
+live tree. The forbidden-import patterns below remain the guardrail that keeps
+those owner families from growing back into the live runtime boundary.
 
 ## Ownership Rules
 
@@ -187,13 +157,6 @@ JSON together.
       "disposition": "thin adapter only; no standalone runtime ownership"
     },
     {
-      "id": "background_main_session",
-      "path": "runtime/src/tasks/LocalMainSessionTask.ts",
-      "kind": "live_entrypoint",
-      "ownedSurface": "background main-session path",
-      "disposition": "must converge on the same session bootstrap contract as the CLI path"
-    },
-    {
       "id": "delegate_entry",
       "path": "runtime/src/agents/delegate.ts",
       "kind": "live_entrypoint",
@@ -243,112 +206,9 @@ JSON together.
       "disposition": "destination owner root after legacy compact removal"
     }
   ],
-  "compatibilityOnlySurfaces": [
-    {
-      "surface": "runtime/src/entrypoints/agentSdkTypes.ts::unstable_v2_createSession",
-      "path": "runtime/src/entrypoints/agentSdkTypes.ts",
-      "symbol": "unstable_v2_createSession",
-      "disposition": "compatibility stub only; not a local runtime owner"
-    },
-    {
-      "surface": "runtime/src/entrypoints/agentSdkTypes.ts::unstable_v2_resumeSession",
-      "path": "runtime/src/entrypoints/agentSdkTypes.ts",
-      "symbol": "unstable_v2_resumeSession",
-      "disposition": "compatibility stub only; not a local runtime owner"
-    },
-    {
-      "surface": "runtime/src/bridge/createSession.ts::createBridgeSession",
-      "path": "runtime/src/bridge/createSession.ts",
-      "symbol": "createBridgeSession",
-      "disposition": "remote bridge compatibility surface only"
-    },
-    {
-      "surface": "runtime/src/bridge/createSession.ts::getBridgeSession",
-      "path": "runtime/src/bridge/createSession.ts",
-      "symbol": "getBridgeSession",
-      "disposition": "remote bridge compatibility surface only"
-    }
-  ],
-  "fabricatedContextSeams": [
-    {
-      "path": "runtime/src/utils/forkedAgent.ts",
-      "status": "known_transitional_seam",
-      "expectedHeuristics": [
-        "imports_tool_use_context",
-        "declares_create_subagent_context",
-        "create_subagent_context_call"
-      ]
-    },
-    {
-      "path": "runtime/src/utils/hooks/execAgentHook.ts",
-      "status": "known_transitional_seam",
-      "expectedHeuristics": [
-        "imports_tool_use_context"
-      ]
-    },
-    {
-      "path": "runtime/src/commands/context/context-noninteractive.ts",
-      "status": "near_boundary_review_only",
-      "expectedHeuristics": [
-        "imports_tool_use_context"
-      ]
-    },
-    {
-      "path": "runtime/src/utils/processUserInput/processSlashCommand.tsx",
-      "status": "near_boundary_review_only",
-      "expectedHeuristics": [
-        "imports_tool_use_context"
-      ]
-    },
-    {
-      "path": "runtime/src/services/MagicDocs/magicDocs.ts",
-      "status": "known_transitional_seam",
-      "expectedHeuristics": [
-        "imports_tool_use_context",
-        "tool_use_context_object_literal"
-      ]
-    },
-    {
-      "path": "runtime/src/tools/AgentTool/runAgent.ts",
-      "status": "legacy_owner_path",
-      "expectedHeuristics": [
-        "imports_tool_use_context",
-        "create_subagent_context_call"
-      ]
-    }
-  ],
-  "legacyRuntimeOwnerFiles": [
-    {
-      "path": "runtime/src/query.ts",
-      "category": "legacy_query_owner",
-      "finalDisposition": "remove as a live runtime owner"
-    },
-    {
-      "path": "runtime/src/services/tools/StreamingToolExecutor.ts",
-      "category": "legacy_tool_owner",
-      "finalDisposition": "runtime uses runtime/src/tools/streaming-executor.ts instead"
-    },
-    {
-      "path": "runtime/src/services/tools/toolExecution.ts",
-      "category": "legacy_tool_owner",
-      "finalDisposition": "runtime uses runtime/src/tools/execution.ts instead"
-    },
-    {
-      "path": "runtime/src/services/tools/toolHooks.ts",
-      "category": "legacy_tool_owner",
-      "finalDisposition": "replace with runtime hook ownership and delete old owner"
-    },
-    {
-      "path": "runtime/src/services/tools/toolOrchestration.ts",
-      "category": "legacy_tool_owner",
-      "finalDisposition": "runtime uses runtime/src/tools/orchestrator.ts instead"
-    },
-    {
-      "path": "runtime/src/tools/AgentTool/**",
-      "category": "legacy_agent_owner_family",
-      "finalDisposition": "replace with runtime/src/agents/* ownership and delete old owner path"
-    }
-  ],
+  "compatibilityOnlySurfaces": [],
+  "fabricatedContextSeams": [],
+  "legacyRuntimeOwnerFiles": [],
   "allowedNonRuntimeConsumers": [],
   "ownershipRules": [
     "All live turns must converge on the same session bootstrap and turn kernel.",
@@ -368,7 +228,6 @@ JSON together.
       "runtime/src/bin/bootstrap.ts",
       "runtime/src/tui/main.tsx",
       "runtime/src/bin/slash.ts",
-      "runtime/src/tasks/LocalMainSessionTask.ts",
       "runtime/src/agents/delegate.ts"
     ],
     "forbiddenDirectImports": [
@@ -391,11 +250,7 @@ JSON together.
     ],
     "directImportExceptions": [],
     "helperImportPolicies": [],
-    "allowlistedFabricationSeams": [
-      "runtime/src/utils/forkedAgent.ts",
-      "runtime/src/services/MagicDocs/magicDocs.ts",
-      "runtime/src/tools/AgentTool/runAgent.ts"
-    ]
+    "allowlistedFabricationSeams": []
   }
 }
 ```

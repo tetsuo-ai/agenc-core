@@ -2,15 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import { defaultConfig } from "../config/index.js";
 import { resolveProviderCapabilityEntry } from "./capabilities.js";
-import { GrokProvider } from "./grok/index.js";
 import { StaticModelsManager } from "./models-manager.js";
-import { OllamaProvider } from "./ollama/index.js";
 import { createProvider, readProviderIdentity, type ProviderName } from "./provider.js";
 import { AnthropicProvider } from "./providers/anthropic/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
+import { GrokProvider } from "./providers/grok/index.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
+import { OllamaProvider } from "./providers/ollama/index.js";
 import { OpenAIProvider } from "./providers/openai/index.js";
 import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import type {

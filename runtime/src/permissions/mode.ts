@@ -38,8 +38,8 @@ import {
 /**
  * External modes — addressable via CLI / settings / SDK control messages.
  * These are the modes cycled through by Shift+Tab. Excludes the internal
- * `dontAsk` and `bubble` modes. `auto` is external-visible once the YOLO
- * gate is enabled (T13).
+ * `dontAsk` and `bubble` modes. `auto` is external-visible when the live
+ * classifier gate is enabled.
  */
 export const EXTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
   Object.freeze([
@@ -74,7 +74,7 @@ export function isExternalPermissionMode(mode: PermissionMode): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-mode gate (T13 territory)
+// Auto-mode gate
 // ---------------------------------------------------------------------------
 
 export function isAutoModeGateEnabled(): boolean {
@@ -82,9 +82,8 @@ export function isAutoModeGateEnabled(): boolean {
 }
 
 /**
- * Test / T13-only hook: swap the gate resolver. Returns a restore thunk.
- * Not part of the public Wave-1-B API — intended for `vitest` setup and
- * for T13 to install the real YOLO circuit breaker.
+ * Test-only hook: swap the gate resolver. Returns a restore thunk. Not part
+ * of the public API.
  */
 export function __setAutoModeGateResolverForTesting(
   resolver: () => boolean,

@@ -22,14 +22,13 @@
  *        next request can't reference a server-side state that covered
  *        compacted-away turns. Synchronous + idempotent.
  *   I-14 (`previous_response_id` server-side expiration retry):
- *        T13's transport layer catches the "previous_response_id expired"
+ *        the Grok adapter transport catches the "previous_response_id expired"
  *        server error; recovery reads/writes this tracker to fall back
  *        to a full-history request without the `previous_response_id`
  *        hint.
  *
- * T13 wires the real transport-layer coupling. For T5 this module is
- * a standalone bookkeeping class with a well-defined surface that the
- * Grok adapter can opt into incrementally.
+ * The Grok adapter consults this tracker before request construction and
+ * records completed response IDs after successful responses.
  *
  * @module
  */
@@ -128,8 +127,7 @@ function baselineIsPrefix(
  * on every outbound request and `recordResponse()` on every completed
  * response for the tracker to stay in sync.
  *
- * T13 wires the adapter to consult `decide()` before constructing the
- * HTTP body; T5 ships the class + unit-testable surface.
+ * The adapter consults `decide()` before constructing the HTTP body.
  */
 export class IncrementalTracker {
   private lastRequestShape: IncrementalRequestShape | null = null;
@@ -229,9 +227,9 @@ export class IncrementalTracker {
 /**
  * Process-level singleton set keyed by provider-instance identity.
  * `runPostCompactCleanup()` (I-2) calls `clearAllResponseIds()` to
- * invalidate every tracker without knowing which one the current
- * provider owns; T13 replaces this with a real provider-registry
- * reference when the provider abstraction lands.
+ * invalidate every tracker without knowing which one the current provider
+ * owns. Shared ProviderHttpClient-based Responses adapters also clear their
+ * per-turn continuation state through the compact runtime context.
  */
 const registered = new Set<IncrementalTracker>();
 

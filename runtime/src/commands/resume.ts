@@ -3,9 +3,9 @@
  *
  * Walks every `rollout-*.jsonl` file under the per-project slug
  * directory, sorts by mtime (newest first), and returns up to 20 with
- * the session id + first-user-message preview. The actual rollout
- * reconstruction (loading the history back into a new Session) lands
- * in W3 — this command is listing-only for W1.
+ * the session id + first-user-message preview. Full session hydration
+ * is handled by the CLI `--resume <sessionId>` entry path; this command
+ * is the in-session discovery surface.
  *
  * Flags:
  *   --last            Return only the newest session
@@ -181,7 +181,7 @@ function formatEntries(entries: ReadonlyArray<RolloutEntry>): string {
   }
   lines.push("");
   lines.push(
-    "Use `/resume <sessionId>` to select one once W3 reconstruction lands.",
+    "Resume with: agenc --resume <sessionId>",
   );
   return lines.join("\n");
 }
@@ -233,7 +233,7 @@ export async function runResume(
 
 export const resumeCommand: SlashCommand = {
   name: "resume",
-  description: "List resumable sessions for this project (W3 wires real resume)",
+  description: "List resumable sessions for this project",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(() => runResume(ctx.cwd, ctx.argsRaw)),
 };

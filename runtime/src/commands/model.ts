@@ -1,6 +1,5 @@
 /**
- * `/model <model-name>` — switch the model for subsequent turns
- * (T11 Wave 2, Agent W2-E).
+ * `/model <model-name>` — switch the model for subsequent turns.
  *
  * Enforces two runtime invariants:
  *
@@ -12,15 +11,14 @@
  *
  *   I-57 (history compatibility on provider/model switch): before
  *     staging the switch, we run `checkModelHistoryCompat(...)` using
- *     the live T13 capability registry and the same history-requirement
+ *     the live provider capability registry and the same history-requirement
  *     scan the provider request shaper uses.
  *
  * Session field access: this command reads `session.activeTurn` (an
  * AsyncLock<ActiveTurn | null> already declared on Session) and stages
  * the pending marker on `session.pendingProviderSwitch` (already
- * declared on Session for I-13). When the real ModelsManager/provider
- * capability registry lands (T13), `checkModelHistoryCompat` reads
- * directly from that surface.
+ * declared on Session for I-13). `checkModelHistoryCompat` reads the
+ * live provider capability registry before staging the switch.
  *
  * @module
  */
@@ -87,8 +85,6 @@ export async function applyModelSwitch(
 ): Promise<string> {
   const compat = checkModelHistoryCompat(session, targetModel);
   if (!compat.compatible) {
-    // T13 lands the real reason surface. For now the stub never fails,
-    // but the code path is wired so future callers get a useful error.
     return `Model switch to "${targetModel}" blocked: ${
       compat.reason ?? "history incompatible with target model"
     }`;
@@ -108,8 +104,8 @@ export async function applyModelSwitch(
   const currentModel =
     rawState?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
 
-  // T11 W3-A: use the typed mutator so the I-13 + I-57 staging site
-  // has a single well-typed entry point.
+  // Use the typed mutator so the I-13 + I-57 staging site has a single
+  // well-typed entry point.
   session.setPendingProviderSwitch({
     provider: currentProvider,
     model: targetModel,

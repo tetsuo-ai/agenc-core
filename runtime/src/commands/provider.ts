@@ -1,17 +1,15 @@
 /**
- * `/provider <name>` — switch the LLM provider for subsequent turns
- * (T11 Wave 2, Agent W2-E).
+ * `/provider <name>` — switch the LLM provider for subsequent turns.
  *
  * Same semantics as `/model`: enforces I-13 (mid-stream abort + pending
  * switch marker) and I-57 (history compatibility check using the live
- * T13 provider capability registry).
+ * provider capability registry).
  *
  * Why provider + model are staged together on `pendingProviderSwitch`:
  * the run-turn loop consumes both atomically at top-of-loop per I-13
  * so a provider-only swap keeps whatever model was previously selected
  * (and vice-versa for `/model`). The `/config profile <name>` path
- * staged by W2 populates the optional `profile` slot for the same
- * reason.
+ * populates the optional `profile` slot for the same reason.
  *
  * @module
  */
@@ -83,8 +81,8 @@ export async function applyProviderSwitch(
     }`;
   }
 
-  // T11 W3-A: use the typed mutator so the I-13 + I-57 staging site
-  // has a single well-typed entry point.
+  // Use the typed mutator so the I-13 + I-57 staging site has a single
+  // well-typed entry point.
   session.setPendingProviderSwitch({
     provider: normalizedProvider,
     model: resolvedModel,

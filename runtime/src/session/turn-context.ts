@@ -22,13 +22,12 @@ import type { PermissionModeRegistry } from "../permissions/mode.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Forward-dep placeholder types (real impls land in later tranches).
-// Each `interface` here is a structural placeholder so TS can typecheck
-// the TurnContext shape without dragging in the real subsystem.
+// Forward-dep structural types. Keep these narrow so TurnContext can carry
+// cross-cutting session metadata without importing provider implementations.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Codex `AuthManager`. T13 wires real OAuth refresh; today stubbed.
+ * Codex `AuthManager` metadata. Provider adapters own concrete OAuth refresh.
  *
  * `mode` matches codex `AuthMode` at the transport level: `bearer_key` for
  * static API keys, `oauth` for any OAuth-authorized session, and
@@ -53,7 +52,7 @@ export interface AuthManager {
   readonly authProvider?: AuthProviderId;
 }
 
-/** Codex `ModelInfo`. T13 (multi-provider capability registry) lands real shape. */
+/** Codex `ModelInfo` shape backed by the runtime models manager. */
 export interface ModelInfo {
   readonly slug: string;
   readonly contextWindow?: number;
@@ -131,7 +130,7 @@ export interface NetworkSandboxPolicy {
   readonly enabled?: boolean;
 }
 
-/** Codex `NetworkProxy`. T13 (transport) lands real impl. */
+/** Codex `NetworkProxy`. Managed network transport remains deferred. */
 export interface NetworkProxy {
   readonly httpsProxy?: string;
 }
@@ -502,7 +501,7 @@ export interface TurnContext {
   /** Network sandbox split policy. T11 wires. */
   readonly networkSandboxPolicy: NetworkSandboxPolicy;
 
-  /** Optional managed-network proxy. T13 wires. */
+  /** Optional managed-network proxy. */
   readonly network?: NetworkProxy;
 
   /** Windows sandbox level. T11 wires. */

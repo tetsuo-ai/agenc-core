@@ -29,7 +29,6 @@ import type {
 import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
 import {
-  DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
   validateXaiRequestPreFlight,
   validateXaiResponsePostFlight,
   XAI_RESPONSES_MAX_TOOL_COUNT,
@@ -74,6 +73,13 @@ import {
   type ToolSelectionDiagnostics,
 } from "./adapter-utils.js";
 import { isProviderCapabilityMismatch } from "../capabilities.js";
+import {
+  buildXaiResponsesInputItems,
+  resolveXaiResponsesToolChoice,
+  sanitizeToDocumentedXaiResponsesParams,
+  toXaiResponsesTools,
+  XAI_ENCRYPTED_REASONING_INCLUDE,
+} from "../wire/responses-xai.js";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
@@ -83,12 +89,6 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
 //
-// The canonical /v1/responses field allowlist now lives in
-// `xai-strict-filter.ts` as `DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS` and is
-// imported above. Single source of truth — both the strict pre-flight
-// validator and `sanitizeToDocumentedXaiResponsesParams()` use the same set.
-const DOCUMENTED_XAI_RESPONSES_FIELDS = DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS;
-
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4-0709",
@@ -167,16 +167,6 @@ function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.floor(timeoutMs));
-}
-
-function sanitizeToDocumentedXaiResponsesParams(
-  params: Record<string, unknown>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(params).filter(([key]) =>
-      DOCUMENTED_XAI_RESPONSES_FIELDS.has(key)
-    ),
-  );
 }
 
 type RequestTimeoutSource =
@@ -305,39 +295,6 @@ function closeAsyncIterator(iterator: AsyncIterator<unknown>): void {
   } catch {
     // best-effort stream cleanup
   }
-}
-
-function normalizeResponsesToolChoice(
-  toolChoice: LLMToolChoice | undefined,
-): string | Record<string, unknown> | undefined {
-  if (toolChoice === undefined || typeof toolChoice === "string") {
-    return toolChoice;
-  }
-
-  const directName = typeof toolChoice.name === "string"
-    ? toolChoice.name.trim()
-    : "";
-  if (toolChoice.type === "function" && directName.length > 0) {
-    return { type: "function", function: { name: directName } };
-  }
-
-  const legacyName = typeof (toolChoice as { function?: { name?: unknown } }).function
-      ?.name === "string"
-    ? (toolChoice as { function?: { name?: string } }).function!.name!.trim()
-    : "";
-  if (toolChoice.type === "function" && legacyName.length > 0) {
-    return { type: "function", function: { name: legacyName } };
-  }
-
-  return toolChoice;
-}
-
-function resolveResponsesToolChoice(
-  toolChoice: LLMToolChoice | undefined,
-): string | Record<string, unknown> | undefined {
-  // xAI documents `required` as a first-class tool_choice mode. Preserve it
-  // instead of tightening it into a named-function selection.
-  return normalizeResponsesToolChoice(toolChoice);
 }
 
 function estimateOpenAIContentChars(content: unknown): number {
@@ -656,28 +613,20 @@ function emitProviderTraceEvent(
 }
 
 
-function hasImageContent(content: unknown): boolean {
-  if (!Array.isArray(content)) return false;
-  return content.some((part) => {
-    if (!part || typeof part !== "object") return false;
-    const p = part as Record<string, unknown>;
-    return p.type === "image_url";
-  });
-}
-
 export class GrokProvider implements LLMProvider {
   readonly name = "grok";
 
   private client: unknown | null = null;
   private readonly config: GrokProviderConfig;
   /** I-2 / I-14 tracker — zeroed by post-compact-cleanup.ts via
-   *  clearAllResponseIds(); delta logic is T13's full-integration job. */
+   *  clearAllResponseIds(); used to send delta input with
+   *  previous_response_id when the request shape is unchanged. */
   private readonly incrementalTracker = new IncrementalTracker();
   /** Registry unsubscribe; called on dispose to drop the tracker. */
   private readonly unregisterIncrementalTracker: () => void;
   /** I-14 auth refresh callback. Bearer-key auth has no refresh;
    *  callers can override via `withAuthRefreshCallbacks()` for OAuth
-   *  flows (T13 wires OAuth providers). */
+   *  flows. */
   private authRefreshCallbacks: AuthRefreshCallbacks = {
     refreshBearer: async (): Promise<AuthRefreshOutcome> => ({
       kind: "skipped",
@@ -715,7 +664,7 @@ export class GrokProvider implements LLMProvider {
     }
     const slimmed = slimTools(rawTools);
     this.tools = slimmed.tools;
-    this.responseTools = this.toResponseTools(this.tools);
+    this.responseTools = toXaiResponsesTools(this.tools);
     for (let i = 0; i < this.tools.length; i++) {
       const name = this.tools[i]?.function?.name;
       const responseTool = this.responseTools[i];
@@ -752,8 +701,7 @@ export class GrokProvider implements LLMProvider {
 
   /**
    * I-14 hook point: supply real OAuth-refresh callbacks. Bearer-key
-   * mode leaves the default (no-refresh) in place. T13 wires this for
-   * OpenAI/Anthropic OAuth providers.
+   * mode leaves the default (no-refresh) in place.
    */
   withAuthRefreshCallbacks(callbacks: AuthRefreshCallbacks): this {
     this.authRefreshCallbacks = callbacks;
@@ -769,9 +717,8 @@ export class GrokProvider implements LLMProvider {
    * I-2 / I-14 incremental-tracker integration for chat path.
    * Records the pre-flight request shape + post-response snapshot so
    * `clearAllResponseIds()` (called from post-compact-cleanup.ts) can
-   * zero the cached previous_response_id. T13 extends to compute and
-   * send an actual delta payload; today the tracker is purely a
-   * book-keeping slot exposed to the I-2 cleanup path.
+   * zero the cached previous_response_id. Matching follow-up turns reuse
+   * the cached response ID and send only the delta input.
    */
   private noteIncrementalRequest(
     messages: readonly LLMMessage[],
@@ -993,8 +940,8 @@ export class GrokProvider implements LLMProvider {
 
       // I-14: retry-on-401 wrapper. Bearer-key mode's refresh callback
       // returns `skipped`, so the original 401 bubbles up unchanged.
-      // OAuth providers (T13) install real refresh callbacks via
-      // withAuthRefreshCallbacks().
+      // OAuth-capable providers install real refresh callbacks via
+      // withAuthRefreshCallbacks(); bearer-key mode skips refresh.
       const parsed = await retryWithAuthRefresh(
         String(this.config.apiKey),
         async () => run(plan),
@@ -1002,9 +949,7 @@ export class GrokProvider implements LLMProvider {
       );
 
       // Record the response metadata so the tracker can supply
-      // previous_response_id on the next incremental call. T13 adds
-      // the actual delta-input computation; today this is purely the
-      // I-2 clear-target bookkeeping.
+      // previous_response_id and delta input on the next compatible call.
       const respId = (parsed as { requestMetrics?: { responseId?: string } })
         ?.requestMetrics?.responseId;
       if (respId) {
@@ -1690,66 +1635,12 @@ export class GrokProvider implements LLMProvider {
       providerName: this.name,
     });
 
-    // Build mapped messages, handling multimodal tool messages.
-    // The OpenAI API requires tool message content to be a string.
-    // When tool results contain images (e.g. screenshots), we extract
-    // the text for the tool message and inject images as a user message
-    // after all tool results in the block.
-    const mapped: Record<string, unknown>[] = [];
-    const pendingImages: Array<{
-      type: "image_url";
-      image_url: { url: string };
-    }> = [];
-
-    for (let i = 0; i < repairedMessages.length; i++) {
-      const m = repairedMessages[i];
-
-      // Collect images from multimodal tool messages
-      if (m.role === "tool" && Array.isArray(m.content)) {
-        for (const part of m.content) {
-          if (part.type === "image_url") {
-            pendingImages.push({
-              type: "image_url",
-              image_url: part.image_url,
-            });
-          }
-        }
-      }
-
-      mapped.push(this.toOpenAIMessage(m));
-
-      // Flush collected images as a user message after the last tool message
-      // in a contiguous tool-result block
-      if (pendingImages.length > 0) {
-        const nextMsg = repairedMessages[i + 1];
-        if (!nextMsg || nextMsg.role !== "tool") {
-          mapped.push({
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Here is the screenshot from the tool result above.",
-              },
-              ...pendingImages.map((img) => ({
-                type: img.type,
-                image_url: img.image_url,
-              })),
-            ],
-          });
-          pendingImages.length = 0;
-        }
-      }
-    }
-
-    const hasImages = mapped.some((m) => hasImageContent(m.content));
-    const model = hasImages ? visionModel : this.config.model;
-    const input = mapped.flatMap((message) =>
-      this.toResponseInputItems(message),
-    );
+    const xaiInput = buildXaiResponsesInputItems(repairedMessages);
+    const model = xaiInput.hasImages ? visionModel : this.config.model;
 
     const params: Record<string, unknown> = {
       model,
-      input,
+      input: xaiInput.input,
       store: options?.store ?? false,
     };
     // Cut 5.10: xAI prompt caching is prefix-based and is maximized by
@@ -1789,7 +1680,7 @@ export class GrokProvider implements LLMProvider {
     const includeEncryptedReasoning =
       options?.includeEncryptedReasoning ?? this.config.includeEncryptedReasoning;
     if (includeEncryptedReasoning) {
-      params.include = ["reasoning.encrypted_content"];
+      params.include = [XAI_ENCRYPTED_REASONING_INCLUDE];
     }
     const selectedTools = {
       ...(options?.toolSelection ??
@@ -1816,7 +1707,7 @@ export class GrokProvider implements LLMProvider {
     // array is cheap; the previous guard was a token-saving theory that
     // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
-      if (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+      if (!xaiInput.hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
         // Enforce the documented xAI Responses API maximum of 128
         // tools (developers/rest-api-reference/inference/chat). The
         // strict pre-flight validator throws on any request with more
@@ -1856,7 +1747,7 @@ export class GrokProvider implements LLMProvider {
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;
-        const toolChoice = resolveResponsesToolChoice(options?.toolChoice);
+        const toolChoice = resolveXaiResponsesToolChoice(options?.toolChoice);
         if (toolChoice !== undefined) {
           params.tool_choice = toolChoice;
         }
@@ -2009,7 +1900,7 @@ export class GrokProvider implements LLMProvider {
         const rawTool = this.rawToolsByName.get(name);
         if (rawTool) {
           const slimTool = toSlimTool(rawTool);
-          responseTool = this.toResponseTools([slimTool.tool])[0];
+          responseTool = toXaiResponsesTools([slimTool.tool])[0];
           responseToolChars = JSON.stringify(responseTool).length;
         }
       }
@@ -2066,165 +1957,6 @@ export class GrokProvider implements LLMProvider {
         missingRequestedToolNames.length > 0 ? "subset_partial" : "subset_exact",
       toolsAttached: false,
     };
-  }
-
-  private toOpenAIMessage(msg: LLMMessage): Record<string, unknown> {
-    if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
-      return {
-        role: "assistant",
-        content: msg.content,
-        tool_calls: msg.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: "function",
-          function: {
-            name: tc.name,
-            arguments: tc.arguments,
-          },
-        })),
-      };
-    }
-
-    if (msg.role === "tool") {
-      // Tool messages require string content per the OpenAI API spec.
-      // When content is a multimodal array (e.g. from screenshot tool results),
-      // extract only the text parts. Images are injected separately by buildParams.
-      let content: string;
-      if (Array.isArray(msg.content)) {
-        content =
-          msg.content
-            .filter((p) => p.type === "text")
-            .map((p) => (p as { type: "text"; text: string }).text)
-            .join("\n") || "Tool executed successfully.";
-      } else {
-        content = msg.content;
-      }
-      return {
-        role: "tool",
-        content,
-        tool_call_id: msg.toolCallId,
-      };
-    }
-    return {
-      role: msg.role,
-      content: msg.content,
-    };
-  }
-
-  private toResponseTools(tools: readonly LLMTool[]): Record<string, unknown>[] {
-    return tools.map((tool) => ({
-      type: "function",
-      name: tool.function.name,
-      description: tool.function.description,
-      parameters: tool.function.parameters,
-    }));
-  }
-
-  private toResponseInputItems(
-    message: Record<string, unknown>,
-  ): Record<string, unknown>[] {
-    const role = String(message.role ?? "");
-    const content = message.content;
-
-    if (role === "tool") {
-      const toolCallId = String(message.tool_call_id ?? "").trim();
-      if (!toolCallId) return [];
-      let output: string;
-      if (typeof content === "string") {
-        output = content;
-      } else {
-        try {
-          output = JSON.stringify(content);
-        } catch {
-          output = String(content ?? "");
-        }
-      }
-      return [
-        {
-          type: "function_call_output",
-          call_id: toolCallId,
-          output,
-        },
-      ];
-    }
-
-    if (role === "assistant") {
-      const toolCalls = Array.isArray(message.tool_calls)
-        ? (message.tool_calls as Array<Record<string, unknown>>)
-        : [];
-      const items: Record<string, unknown>[] = [];
-      const normalizedContent = this.normalizeResponseMessageContent(content);
-      if (normalizedContent !== undefined) {
-        items.push({
-          role,
-          content: normalizedContent,
-        });
-      } else if (toolCalls.length > 0) {
-        // xAI requires every message to have at least one content
-        // element. When an assistant message carries tool calls but
-        // has empty content (e.g. at-mention file injection preludes),
-        // emit a minimal placeholder so the function_call items are
-        // not orphaned.
-        items.push({
-          role,
-          content: "Calling tool.",
-        });
-      }
-      for (const tc of toolCalls) {
-        const functionData = (tc.function as Record<string, unknown> | undefined) ?? {};
-        const callId = String(tc.id ?? "").trim();
-        const name = String(functionData.name ?? "").trim();
-        const args = String(functionData.arguments ?? "");
-        if (!callId || !name) continue;
-        items.push({
-          type: "function_call",
-          call_id: callId,
-          name,
-          arguments: args,
-        });
-      }
-      return items;
-    }
-
-    if (role === "system" || role === "user") {
-      const normalizedContent = this.normalizeResponseMessageContent(content);
-      if (normalizedContent === undefined) return [];
-      return [{ role, content: normalizedContent }];
-    }
-
-    const normalizedContent = this.normalizeResponseMessageContent(content);
-    if (normalizedContent === undefined) return [];
-    return [{ role, content: normalizedContent }];
-  }
-
-  private normalizeResponseMessageContent(
-    content: unknown,
-  ): string | Array<Record<string, unknown>> | undefined {
-    if (typeof content === "string") {
-      if (content.length === 0) return undefined;
-      return content;
-    }
-    if (!Array.isArray(content)) {
-      return undefined;
-    }
-    const parts: Array<Record<string, unknown>> = [];
-    for (const part of content) {
-      if (!part || typeof part !== "object") continue;
-      const entry = part as Record<string, unknown>;
-      if (entry.type === "text") {
-        const text = String(entry.text ?? "");
-        if (text.length > 0) {
-          parts.push({ type: "input_text", text });
-        }
-      } else if (entry.type === "image_url") {
-        const image = (entry.image_url as Record<string, unknown> | undefined) ?? {};
-        const url = String(image.url ?? "");
-        if (url.length > 0) {
-          parts.push({ type: "input_image", image_url: url });
-        }
-      }
-    }
-    if (parts.length === 0) return undefined;
-    return parts;
   }
 
   /**

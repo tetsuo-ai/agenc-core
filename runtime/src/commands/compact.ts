@@ -1,6 +1,5 @@
 /**
- * `/compact [instructions]` — manually trigger conversation compaction
- * (T11 Wave 2, Agent W2-E).
+ * `/compact [instructions]` — manually trigger conversation compaction.
  *
  * Mid-stream guard (mirrors I-13): if a turn is currently in flight we
  * REFUSE the request with an error result. Unlike `/model` and

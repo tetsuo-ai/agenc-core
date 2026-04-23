@@ -10,9 +10,8 @@
  *   - Subscribe to `token_count` events and tally cumulative
  *     input/output/cached/reasoning tokens per model.
  *   - Maintain a model cost registry (USD/1K input + USD/1K output
- *     + USD/1K cached). T13 populates the registry with real rates;
- *     T5 ships sensible defaults for grok-4-*, gpt-*, claude-*, and
- *     a fallback 0-cost entry.
+ *     + USD/1K cached). Ships sensible defaults for grok-4-*, gpt-*,
+ *     claude-*, and local providers; callers can override the registry.
  *   - Format cumulative cost for `/status` and status-line display.
  *   - Emit `token_budget_exceeded` warnings via the session-level
  *     BudgetTracker (integrates with llm/token-budget.ts per I-22).
@@ -42,9 +41,7 @@ export interface ModelCostEntry {
 
 /**
  * Default model cost registry. Values are best-available public
- * pricing at the time of T6 + reasonable defaults for local
- * providers (zero cost). T13 replaces with a capability-aware
- * dynamic registry.
+ * pricing plus reasonable defaults for local providers (zero cost).
  *
  * Prices here are illustrative; override via `registerModelCost()`.
  */
@@ -120,7 +117,6 @@ export function computeUsdCost(
 
 /**
  * Normalize model slug to a canonical key present in the registry.
- * T13 replaces this with the capability-registry alias map.
  */
 function canonicalModel(model: string): string {
   if (model.startsWith("grok-4-fast")) return "grok-4-fast";

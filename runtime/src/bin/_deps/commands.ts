@@ -7,8 +7,7 @@
  *     wrapper relies on (the wrapper does not need the dispatcher's
  *     `(MCP)` marker)
  *   - performs the filesystem-passthrough check before dispatch so a
- *     mistyped path like `/notes.txt` (which the dispatcher's strict
- *     `[a-z][a-z0-9_-]*` shape would reject outright) still becomes a
+ *     mistyped path like `/notes.txt` or `/README` still becomes a
  *     normal user prompt rather than an unknown-command error
  *   - delegates real command dispatch to the canonical
  *     `dispatchSlashCommand` + the registry built by
@@ -126,20 +125,17 @@ export async function dispatchSlashCommand(
   ctx: SlashCommandContext,
   registry: CommandRegistry,
 ): Promise<DispatchOutcome> {
-  // Filesystem-path passthrough: if the slash-prefixed token resolves
-  // to an existing file or directory in the caller's `cwd`, treat the
-  // line as a normal user prompt rather than a command. We perform the
-  // check here (instead of relying on the dispatcher's
-  // `buildMistypedPathHint`) because the canonical parser's strict
-  // shape regex rejects names containing `.` or `/` outright — without
-  // this preflight a `/notes.txt` line would bypass the dispatcher
-  // entirely and surface as `unknown`.
-  if (parsed.name.length > 0) {
+  // Filesystem-path passthrough: if an unknown slash-prefixed token
+  // resolves to an existing file or directory in the caller's `cwd`,
+  // treat the line as a normal user prompt rather than a command. Known
+  // command names win over files, so a local `./help` cannot shadow
+  // `/help`.
+  if (parsed.name.length > 0 && registry.find(parsed.name) === undefined) {
     const cwd =
       typeof (ctx as { cwd?: unknown })?.cwd === "string"
         ? ((ctx as { cwd?: string }).cwd ?? "")
         : "";
-    if (cwd && (parsed.name.includes(".") || parsed.name.includes("/"))) {
+    if (cwd) {
       try {
         const { existsSync } = await import("node:fs");
         const { join: joinPath } = await import("node:path");

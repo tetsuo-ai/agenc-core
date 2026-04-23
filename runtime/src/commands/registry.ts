@@ -1,11 +1,10 @@
 /**
- * Command registry (T11 Wave 1 agent-F).
+ * Command registry.
  *
  * Holds the set of `SlashCommand` entries the dispatcher can route to.
  * Ports the minimum openclaude `hasCommand` / `getCommand` / `findCommand`
  * lookup behavior (`src/commands.js`) without pulling in plugin marketplace,
- * skill loading, MCP wiring, or hook registration — those land in later
- * waves.
+ * skill loading, MCP wiring, or hook registration.
  *
  * Collision policy (documented in JSDoc on each method):
  *
@@ -49,8 +48,8 @@ import { exitWorktree } from "./exit-worktree.js";
 /**
  * Concrete in-memory implementation of `CommandRegistry`. The registry
  * is immutable after construction from the dispatcher's point of view;
- * callers can still `register` new commands in setup code (W2/W3), but
- * the dispatcher treats the registry as read-only during a turn.
+ * callers can still `register` new commands in setup code, but the
+ * dispatcher treats the registry as read-only during a turn.
  */
 export class CommandRegistry implements CommandRegistryInterface {
   private readonly byName = new Map<string, SlashCommand>();
@@ -201,18 +200,27 @@ const exitWorktreeCommand: SlashCommand = {
         message: "No active worktree. Use /enter-worktree <slug> first.",
       };
     }
-    const argsNorm = ctx.argsRaw.trim().toLowerCase();
+    const args = ctx.argsRaw
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
     let action: "keep" | "remove";
     let discardChanges: boolean;
-    if (argsNorm === "remove --discard" || (argsNorm.startsWith("remove") && argsNorm.includes("discard"))) {
-      action = "remove";
-      discardChanges = true;
-    } else if (argsNorm === "remove") {
-      action = "remove";
-      discardChanges = false;
-    } else {
+    if (args.length === 0 || (args.length === 1 && args[0] === "keep")) {
       action = "keep";
       discardChanges = false;
+    } else if (
+      args[0] === "remove" &&
+      (args.length === 1 || (args.length === 2 && args[1] === "--discard"))
+    ) {
+      action = "remove";
+      discardChanges = args[1] === "--discard";
+    } else {
+      return {
+        kind: "error",
+        message: "Usage: /exit-worktree [keep|remove [--discard]]",
+      };
     }
     try {
       const outcome = await exitWorktree({
@@ -237,11 +245,8 @@ const exitWorktreeCommand: SlashCommand = {
 /**
  * Build the default registry.
  *
- * W1-E shipped the command modules for `help` and `status` (the only
- * command files on disk at that point); Wave 2 added the bulk of the
- * user-facing commands (init, diff, exit, clear, context, keybindings,
- * resume, fork, plan, permissions, config, model, provider, compact)
- * and Wave 3 wires the registry into the CLI binary.
+ * The registry owns presentation order for the user-facing command
+ * surface and the CLI/TUI dispatch path.
  *
  * Worktree commands are included as thin adapters so the bin entry
  * can migrate off the bespoke `bin/slash.ts` path without a second

@@ -44,9 +44,9 @@ export function runPostCompactCleanup(
   opts: PostCompactCleanupOptions = {},
 ): void {
   // I-2 (docs/plan/invariants.md): clear `previous_response_id` on every
-  // compaction. Calls into the T5 grok incremental tracker registry.
-  // Other providers register their trackers the same way; T13 extends
-  // with per-adapter normalizers.
+  // compaction. Grok clears through its legacy tracker registry; shared
+  // ProviderHttpClient-based Responses adapters clear through the compact
+  // runtime context hook.
   clearAllResponseIds()
   context?.clearProviderResponseId?.()
 

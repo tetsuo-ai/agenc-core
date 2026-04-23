@@ -54,7 +54,8 @@ function stubCtx(
     session: overrides.session ?? stubSession(),
     argsRaw: overrides.argsRaw ?? "",
     cwd: overrides.cwd ?? "/tmp",
-    home: overrides.home ?? "/home/test/.agenc",
+    home: overrides.home ?? "/home/test",
+    agencHome: overrides.agencHome ?? "/home/test/.agenc",
     configStore: overrides.configStore,
   };
 }
@@ -278,13 +279,14 @@ describe("configCommand — profile", () => {
 });
 
 describe("configCommand — path", () => {
-  it("prints the config.toml path under ctx.home", async () => {
+  it("prints the config.toml path under ctx.agencHome when provided", async () => {
     const store = makeStore();
     const r = await configCommand.execute(
       stubCtx({
         configStore: store,
         argsRaw: "path",
-        home: "/tmp/my-agenc",
+        home: "/home/alice",
+        agencHome: "/tmp/my-agenc",
       }),
     );
     if (r.kind !== "text") throw new Error("expected text");
@@ -304,7 +306,7 @@ describe("configCommand — edit", () => {
       });
       const store = makeStore();
       const r = await cmd.execute(
-        stubCtx({ configStore: store, argsRaw: "edit", home: tmp }),
+        stubCtx({ configStore: store, argsRaw: "edit", agencHome: tmp }),
       );
       if (r.kind !== "text") throw new Error("expected text");
       expect(spawner).toHaveBeenCalledTimes(1);
@@ -326,7 +328,7 @@ describe("configCommand — edit", () => {
       });
       const store = makeStore();
       const r = await cmd.execute(
-        stubCtx({ configStore: store, argsRaw: "edit", home: tmp }),
+        stubCtx({ configStore: store, argsRaw: "edit", agencHome: tmp }),
       );
       if (r.kind !== "text") throw new Error("expected text");
       expect(spawner).not.toHaveBeenCalled();
@@ -347,7 +349,7 @@ describe("configCommand — edit", () => {
       });
       const store = makeStore();
       const r = await cmd.execute(
-        stubCtx({ configStore: store, argsRaw: "edit", home: tmp }),
+        stubCtx({ configStore: store, argsRaw: "edit", agencHome: tmp }),
       );
       expect(r.kind).toBe("error");
     } finally {

@@ -1,5 +1,5 @@
 /**
- * `/plan` — enter plan mode or display the active plan (T11 Wave 2, Agent C).
+ * `/plan` — enter plan mode or display the active plan.
  *
  * Port of openclaude `src/commands/plan/plan.tsx` adapted to AgenC's
  * `SlashCommand` contract (`runtime/src/commands/types.ts`).
@@ -30,12 +30,7 @@
  * storage under `~/.agenc/sessions/<id>/plan.json` was rejected because
  * openclaude's plan file is explicitly designed to survive session boundaries.
  *
- * Dependency: expects `session.services.permissionModeRegistry`. The W1
- * `SessionServices` interface does not currently declare this field —
- * tests and production wiring access it through a `Record<string, unknown>`
- * cast, matching the same pattern `clear.ts` uses for `memorySidecar`
- * and friends. W3 (session wiring) is expected to add the field to the
- * `SessionServices` type formally.
+ * Dependency: expects `session.services.permissionModeRegistry`.
  *
  * @module
  */
@@ -174,9 +169,7 @@ export function formatPlanText(plan: PlanRecord, path: string): string {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Resolve the session's permission-mode registry. Uses the same
- * `Record<string, unknown>` cast pattern as `clear.ts` until W3 lifts
- * `permissionModeRegistry` into the canonical `SessionServices` type.
+ * Resolve the session's permission-mode registry.
  */
 export function getPermissionModeRegistry(
   session: Session,

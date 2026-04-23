@@ -5,10 +5,10 @@
  */
 
 import { resolveApiKey } from "./_deps/env.js";
-import { GrokProvider } from "./grok/index.js";
-import type { GrokProviderConfig } from "./grok/index.js";
-import { OllamaProvider } from "./ollama/index.js";
-import type { OllamaProviderConfig } from "./ollama/types.js";
+import { GrokProvider } from "./providers/grok/index.js";
+import type { GrokProviderConfig } from "./providers/grok/index.js";
+import { OllamaProvider } from "./providers/ollama/index.js";
+import type { OllamaProviderConfig } from "./providers/ollama/index.js";
 import type { LLMProvider, LLMProviderConfig, LLMTool } from "./types.js";
 import { OpenAIProvider } from "./providers/openai/index.js";
 import type { OpenAIProviderConfig } from "./providers/openai/index.js";

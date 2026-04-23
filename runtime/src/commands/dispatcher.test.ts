@@ -314,11 +314,27 @@ describe("dispatchSlashCommand", () => {
   it("returns { kind: 'skip' } when the cwd has a file matching the unknown name", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "agenc-dispatcher-"));
     try {
-      // The mistyped-path heuristic only fires when the name fails the
-      // command-name regex (contains filesystem characters).
       writeFileSync(path.join(dir, "notes.txt"), "data");
       const out = await dispatchSlashCommand(
         { name: "notes.txt", argsRaw: "", isMcp: false },
+        stubCtx({ cwd: dir }),
+        registry,
+      );
+      expect(out.result).toEqual({ kind: "skip" });
+      expect(out.trace.resultKind).toBe("skip");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns { kind: 'skip' } for extensionless cwd files when no command is registered", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "agenc-dispatcher-"));
+    try {
+      writeFileSync(path.join(dir, "notes"), "data");
+      const parsed = parseSlashCommand("/notes");
+      expect(parsed).not.toBeNull();
+      const out = await dispatchSlashCommand(
+        parsed!,
         stubCtx({ cwd: dir }),
         registry,
       );

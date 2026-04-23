@@ -18,11 +18,10 @@
  *   - Err(401 with recovery available) → refresh + continue
  *   - Err(other)                       → map + throw
  *
- * For T5 the refresh side is a callback surface: the caller supplies
- * a `refreshBearer()` function and receives a retry wrapper that
- * detects 401, invokes the refresh, and retries. T13's real adapter
- * uses this wrapper; bin/agenc.ts today passes plain bearer tokens
- * with no refresh (so `retryWithAuthRefresh` no-ops).
+ * The refresh side is a callback surface: the caller supplies a
+ * `refreshBearer()` function and receives a retry wrapper that detects
+ * 401, invokes the refresh, and retries. Bearer-token Grok calls pass no
+ * refresh callback, so `retryWithAuthRefresh` no-ops.
  *
  * @module
  */

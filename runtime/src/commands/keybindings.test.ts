@@ -30,18 +30,22 @@ afterEach(() => {
 });
 
 describe("keybindingsCommand", () => {
-  it("returns a prompt to create when file is missing and no --create", async () => {
+  it("creates default bindings when the file is missing", async () => {
+    const spawnEditor = vi.fn(async () => 0);
     const res = await runKeybindings(workHome, "", {
-      spawnEditor: async () => 0,
-      ensureFile: async () => false,
+      spawnEditor,
+      ensureFile: async (file: string) => {
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, JSON.stringify(DEFAULT_KEYBINDINGS), "utf8");
+        return true;
+      },
     });
     expect(res.kind).toBe("text");
-    if (res.kind === "text")
-      expect(res.text).toMatch(/No keybindings file found/);
-    expect(existsSync(keybindingsPath(workHome))).toBe(false);
+    expect(existsSync(keybindingsPath(workHome))).toBe(true);
+    expect(spawnEditor).toHaveBeenCalled();
   });
 
-  it("creates the default bindings when --create is passed", async () => {
+  it("continues to accept --create for compatibility", async () => {
     const spawnEditor = vi.fn(async () => 0);
     const res = await runKeybindings(workHome, "--create", {
       spawnEditor,
@@ -61,7 +65,6 @@ describe("keybindingsCommand", () => {
 
   it("emits an error when the editor fails to spawn", async () => {
     const file = keybindingsPath(workHome);
-    mkdirSync(join(workHome, ".agenc"), { recursive: true });
     writeFileSync(file, JSON.stringify(DEFAULT_KEYBINDINGS), "utf8");
 
     const res = await runKeybindings(workHome, "", {
@@ -70,6 +73,16 @@ describe("keybindingsCommand", () => {
     });
     expect(res.kind).toBe("error");
     if (res.kind === "error") expect(res.message).toMatch(/Failed to launch/);
+  });
+
+  it("errors if the injected creator does not leave a file behind", async () => {
+    const res = await runKeybindings(workHome, "", {
+      spawnEditor: async () => 0,
+      ensureFile: async () => false,
+    });
+
+    expect(res.kind).toBe("error");
+    if (res.kind === "error") expect(res.message).toMatch(/Failed to create/);
   });
 
   it("exposes a command descriptor that uses the real dep chain", async () => {

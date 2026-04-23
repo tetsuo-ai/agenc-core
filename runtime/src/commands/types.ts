@@ -1,8 +1,8 @@
 /**
- * Shared contract for runtime slash commands (T11 Wave 1).
+ * Shared contract for runtime slash commands.
  *
  * Every user-invocable command under `runtime/src/commands/` implements
- * the `SlashCommand` interface. The dispatcher (landing in W1-F) iterates
+ * the `SlashCommand` interface. The dispatcher iterates
  * a registry of these and routes by `name`/`aliases`.
  *
  * Design rules (agent-E scope):
@@ -34,6 +34,8 @@ export interface SlashCommandContext {
   readonly configStore?: ConfigStore;
   /** Resolved user home directory (e.g. `os.homedir()`). */
   readonly home: string;
+  /** Resolved AgenC state directory (`AGENC_HOME` or `$HOME/.agenc`). */
+  readonly agencHome?: string;
 }
 
 /** Discriminated union of outcomes a command can return. */
@@ -80,9 +82,9 @@ export async function safeExecute(
 }
 
 /**
- * Lazy registry accessor. W1-F (the dispatcher tranche) installs a real
- * registry via `setGlobalCommandRegistry`; until then `help.ts` falls
- * back to a "registry pending" message.
+ * Lazy registry accessor. Runtime entry points install the live registry
+ * via `setGlobalCommandRegistry`; until then `help.ts` falls back to a
+ * "registry pending" message.
  */
 export interface CommandRegistry {
   list(): readonly SlashCommand[];

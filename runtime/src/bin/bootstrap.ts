@@ -610,12 +610,12 @@ function transcriptMessagesFrom(
  *  - `agentIdentityManager` (T9)
  *  - `shellSnapshotTx` (T9)
  *  - `execPolicy` (T11)
- *  - `authManager` (T13 — multi-provider auth)
+ *  - `authManager` (provider auth mode metadata)
  *  - `sessionTelemetry` (T6)
- *  - `modelsManager` (T13)
+ *  - `modelsManager` (live provider/model catalog)
  *  - `skillsManager` / `pluginsManager` / `skillsWatcher` (T10)
  *  - `threadStore` (T6)
- *  - `modelClient` (T13)
+ *  - `modelClient` (deferred codex ModelClient facade)
  *  - `codeModeService` (T-future)
  *
  * Every deferred stub here must stay structurally valid (no field reads
@@ -697,18 +697,14 @@ function buildDeferredServices(
     showRawAgentReasoning: false,
     /** T11: `ExecPolicyManager` (exec-policy DSL evaluator). */
     execPolicy: { current: () => null },
-    /** T13: `AuthManager` (multi-provider OAuth refresh + bearer). */
+    /** Provider auth mode metadata; adapters own concrete OAuth refresh. */
     authManager: { mode: "bearer_key" },
     /** T6: `SessionTelemetry` (per-turn timing + retry classification). */
     sessionTelemetry: {},
     /**
-     * T13: `ModelsManager` (per-model capability registry + online refresh).
-     *
-     * Until T13 lands, this stub returns a safe structural default. The
-     * `effectiveContextWindowPercent: 100` value intentionally matches codex's
-     * "no reduction" meaning (codex default is 95; we use 100 as the fallback
-     * for a model we know nothing about, which keeps `modelContextWindow` from
-     * shrinking the live context to 1% of the real window).
+     * Live `ModelsManager` (per-model capability registry + online refresh).
+     * Its fallback `effectiveContextWindowPercent: 100` value intentionally
+     * matches codex's "no reduction" meaning for unknown models.
      */
     modelsManager,
     /** T11 live: per-session approval cache backed by `RuntimeApprovalStore`. */
@@ -773,7 +769,7 @@ function buildDeferredServices(
       threadName: async () => undefined,
       setThreadName: noopAsync,
     },
-    /** T13: `ModelClient` (two-level Session + Turn client per `client.rs`). */
+    /** Deferred codex `ModelClient`; provider dispatch uses `services.provider`. */
     modelClient: { setWindowGeneration: () => {} },
     /** T-future: `CodeModeService` (codex JS-REPL tool surface). */
     codeModeService: { enabled: () => false },

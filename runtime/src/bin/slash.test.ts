@@ -11,6 +11,9 @@
  * outcome rather than `Unknown command`.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect } from "vitest";
 
 import {
@@ -66,6 +69,28 @@ describe("runSlashCommand — unknown command routing", () => {
     if (result.kind !== "unknown") throw new Error("unreachable");
     expect(result.message).toMatch(/Unknown command/);
     expect(result.message).toContain("/definitely-not-a-real-command");
+  });
+
+  it("passes extensionless cwd files through as prompt input", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-slash-"));
+    try {
+      writeFileSync(join(dir, "README"), "read me");
+      const result = await runSlashCommand("/README", stubCtx({ cwd: dir }));
+      expect(result).toEqual({ kind: "passthrough", input: "/README" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let cwd files shadow registered commands", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agenc-slash-"));
+    try {
+      writeFileSync(join(dir, "help"), "not a command");
+      const result = await runSlashCommand("/help", stubCtx({ cwd: dir }));
+      expect(result.kind).toBe("dispatched");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

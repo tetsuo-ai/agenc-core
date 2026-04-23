@@ -1,8 +1,8 @@
 /**
- * `/permissions` — list / manage permission rules + mode (T11 W2-D).
+ * `/permissions` — list / manage permission rules + mode.
  *
  * Pure text output. No TUI (T12 ships the interactive variant). Shares
- * the rule-string grammar + registry primitives shipped in W1-A:
+ * the rule-string grammar + registry primitives used by the evaluator:
  *
  *   - `rules.ts`        — parseRuleString, serializeRuleValue,
  *                         applyPermissionUpdate
@@ -29,10 +29,8 @@
  *     session-level allowlist and persists to the user settings file so
  *     subsequent sessions in the same workspace do not re-prompt.
  *
- * Integration notes (W3):
+ * Integration notes:
  *   - `session.services.permissionModeRegistry` is the source of truth.
- *     Until W3 wires that service, this command returns an explicit
- *     "registry not initialised" error. Tests inject a stub registry.
  *   - `applyPermissionUpdate` on the session source is transient; the
  *     `--persist` flag (user/project/local) additionally routes to
  *     `addPermissionRulesToSettings` / `deletePermissionRule`.
@@ -76,8 +74,8 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Until W3 introduces `permissionModeRegistry` on `SessionServices`, look
- * it up via a loose cast. Tests inject a stub via this same slot.
+ * Look up `permissionModeRegistry` on `SessionServices`. Tests inject a
+ * registry via this same slot.
  */
 function findPermissionRegistry(
   session: Session,
@@ -577,7 +575,7 @@ export const permissionsCommand: SlashCommand = {
         return {
           kind: "error",
           message:
-            "Permission registry not initialised (session.services.permissionModeRegistry missing — W3 integration pending)",
+            "Permission registry not initialised (session.services.permissionModeRegistry missing)",
         };
       }
       const raw = ctx.argsRaw.trim();

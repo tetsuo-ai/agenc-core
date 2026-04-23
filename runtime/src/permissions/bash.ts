@@ -27,7 +27,7 @@
  * INTENTIONALLY SKIPPED (vs openclaude):
  *   - tree-sitter AST (openclaude's primary parse; we use regex fallback).
  *   - shell-quote npm dep (inline argv parser covers our matching needs).
- *   - Bash classifier async race (T13 auto-mode wiring).
+ *   - Remote Bash classifier race policy (orchestrator owns).
  *   - React dialog queue / pending classifier hooks (orchestrator owns).
  *   - Heredoc extraction (rule matching uses first-word prefix only).
  *   - Full path-constraint validator (T11 Wave 2 Agent C owns).

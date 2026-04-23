@@ -1,9 +1,9 @@
 /**
- * `/config` — show / manage runtime configuration (T11 W2-D).
+ * `/config` — show / manage runtime configuration.
  *
  * Reads from `ctx.configStore` (preferred) or `session.services.configStore`
- * (W3 integration slot) and returns plain-text output. Profile switching
- * respects I-30 (per-turn config-snapshot immutability): `/config profile
+ * and returns plain-text output. Profile switching respects I-30
+ * (per-turn config-snapshot immutability): `/config profile
  * <name>` stages a pending switch on `session.pendingProviderSwitch`
  * which the turn loop applies at the top of the next turn.
  *
@@ -40,9 +40,8 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
- * Prefer the top-level `ctx.configStore` (already on the slash-command
- * interface). Fall back to `session.services.configStore` for parity
- * with the task's stated W3 integration seam.
+ * Prefer the top-level `ctx.configStore` and fall back to
+ * `session.services.configStore`; both entry paths wire the same store.
  */
 function findConfigStore(ctx: SlashCommandContext): ConfigStore | null {
   if (ctx.configStore) return ctx.configStore;
@@ -57,14 +56,16 @@ function findConfigStore(ctx: SlashCommandContext): ConfigStore | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the path to the active `config.toml`. Honors `AGENC_HOME` via
- * the caller-supplied home base (same resolution rule as `ConfigStore`).
+ * Compute the path to the active `config.toml`. The input must already
+ * be the resolved AgenC home (`AGENC_HOME` or `$HOME/.agenc`), matching
+ * `ConfigStore`.
  */
-export function getConfigFilePath(home: string): string {
-  // `home` is already the AgenC home (`AGENC_HOME` / `$HOME/.agenc`).
-  // The slash-command dispatcher hands us the resolved path via
-  // ctx.home — see runtime initialisation in bin/agenc.ts.
-  return join(home, "config.toml");
+export function getConfigFilePath(agencHome: string): string {
+  return join(agencHome, "config.toml");
+}
+
+function agencHomeFromCtx(ctx: SlashCommandContext): string {
+  return ctx.agencHome ?? join(ctx.home, ".agenc");
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ export function getConfigPath(cfg: AgenCConfig, key: string): string {
 /**
  * Active profile name: prefer `session.pendingProviderSwitch.profile`
  * (staged swap), else null — the snapshot itself does not carry a profile
- * name today (tracked as W3 TODO on pendingProviderSwitch extension).
+ * name today.
  */
 function currentProfileName(session: Session): string | null {
   const pending = session.pendingProviderSwitch;
@@ -155,8 +156,8 @@ function handleProfileSubcommand(
   }
   // Stage the switch. Preserve any existing provider/model if already
   // set by recovery/fallback — the turn loop applies provider+profile
-  // together at top-of-loop (I-13 + I-30). T11 W3-A: route through the
-  // typed mutator so the staging site stays consistent across commands.
+  // together at top-of-loop (I-13 + I-30). Route through the typed
+  // mutator so the staging site stays consistent across commands.
   const prior = ctx.session.pendingProviderSwitch;
   const profile = snapshot.profiles?.[name];
   const nextProvider = profile?.model_provider ?? prior?.provider ?? "";
@@ -255,7 +256,7 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
           return {
             kind: "error",
             message:
-              "ConfigStore not initialised (ctx.configStore / session.services.configStore missing — W3 integration pending)",
+              "ConfigStore not initialised (ctx.configStore / session.services.configStore missing)",
           };
         }
         const raw = ctx.argsRaw.trim();
@@ -293,9 +294,12 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
           case "profile":
             return handleProfileSubcommand(rest, configStore, ctx);
           case "edit":
-            return openConfigInEditor(ctx.home, env, spawner);
+            return openConfigInEditor(agencHomeFromCtx(ctx), env, spawner);
           case "path":
-            return { kind: "text", text: getConfigFilePath(ctx.home) };
+            return {
+              kind: "text",
+              text: getConfigFilePath(agencHomeFromCtx(ctx)),
+            };
           default:
             return {
               kind: "error",

@@ -1,9 +1,9 @@
 /**
- * Slash-command dispatcher (T11 Wave 1 agent-F).
+ * Slash-command dispatcher.
  *
  * Parses raw user input into a `ParsedSlashCommand`, looks up the target
  * command in a `CommandRegistry`, and executes it with an opinionated
- * wrapper that enforces the Wave 1 contract:
+ * wrapper that enforces the runtime command contract:
  *
  *   - I-68 — multi-line input never dispatches. A slash command must be
  *     a single non-empty logical line; any subsequent non-whitespace line
@@ -16,10 +16,6 @@
  *   - `sensitive: true` args are masked in any trace record the dispatcher
  *     emits (the dispatcher does not persist a transcript directly; the
  *     caller consumes the `TraceRecord` from `DispatchOutcome`).
- *
- * The CLI entry point (`bin/agenc.ts` / `bin/slash.ts`) is rewired in W3
- * to drive through this module. W1-F produces the parser + dispatcher
- * + registry and tests only; bin/* is untouched.
  *
  * Port notes: parse + unknown-command fallback logic is ported from
  * openclaude `src/utils/slashCommandParsing.ts` and the selection path
@@ -50,8 +46,6 @@ export interface ParsedSlashCommand {
   readonly isMcp: boolean;
 }
 
-/** Command-name shape per openclaude `looksLikeCommand`. */
-const COMMAND_NAME_RE = /^[a-z][a-z0-9_-]*$/;
 /** First-line command shape: `/name(MCP)? [args]`. */
 const FIRST_LINE_RE = /^\/([a-z][a-z0-9_-]*)(\(MCP\))?(?:\s+(.*))?$/;
 
@@ -67,7 +61,7 @@ export function extractFirstLine(input: string): string {
 
 /**
  * Parse raw user input into a slash command, or return null if the input
- * is not a slash command under the Wave 1 contract.
+ * is not a slash command under the runtime command contract.
  *
  * I-68 fence: only the first line may carry the command; any subsequent
  * line with non-whitespace content rejects the parse (returns null).
@@ -167,11 +161,6 @@ export async function dispatchSlashCommand(
       return {
         result: {
           kind: "skip",
-          // `skip` has no payload in the SlashCommandResult union, but
-          // we still want to surface a hint in the trace. The dispatcher
-          // does not read `text` from a `skip` — callers rely solely on
-          // the TraceRecord for the hint. We capture the hint in the
-          // trace's aliasUsed slot via a synthetic marker.
         },
         immediate: false,
         trace: {
@@ -262,17 +251,16 @@ export async function dispatchSlashCommand(
 /**
  * Heuristic from openclaude — if the would-be command name is also a
  * valid path in the cwd, treat the input as a mistyped file reference
- * rather than an unknown command. Returns a short hint string on match,
- * null otherwise.
+ * rather than an unknown command. This intentionally also checks names
+ * that fit the normal command regex: `/notes` should pass through when
+ * `./notes` exists and no command named `notes` is registered.
+ *
+ * Returns a short hint string on match, null otherwise.
  */
 async function buildMistypedPathHint(
   cwd: string,
   name: string,
 ): Promise<string | null> {
-  // Only check when the name LOOKS like a filesystem fragment — names
-  // that match the command-name shape are treated as real command names
-  // (openclaude does the inverse check; we keep the same fence).
-  if (COMMAND_NAME_RE.test(name)) return null;
   try {
     const target = path.resolve(cwd, name);
     await stat(target);

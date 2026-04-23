@@ -264,7 +264,7 @@ export interface RolloutRecorder {
   setWindowGeneration(n: number): void;
 }
 
-/** Codex `ModelsManager`. T13 (multi-provider) wires. */
+/** Codex `ModelsManager`; runtime provider/model catalog. */
 export interface ModelsManager {
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
@@ -361,10 +361,10 @@ export interface LocalThreadStore {
   setThreadName(threadId: ThreadId, name: string): Promise<void>;
 }
 
-/** Codex `ModelClient`. T13 wires (full multi-provider client.rs port). */
+/** Deferred codex `ModelClient`; live provider dispatch uses `services.provider`. */
 export interface ModelClient {
   setWindowGeneration(n: number): void;
-  // T13 expands.
+  // Deferred until a caller needs the full codex ModelClient facade.
 }
 
 /** Codex `CodeModeService`. T-future. */
@@ -1551,9 +1551,8 @@ function deriveMinimalSessionConfig(
 
 /**
  * Structural `ModelInfo` fallback used when test fixtures construct a
- * Session without wiring a real `ModelsManager`. Mirrors
- * `bootstrap.ts::buildDeferredModelInfo`: T13's `ModelsManager` is the real
- * owner of per-model metadata.
+ * Session without wiring a real `ModelsManager`. The runtime models manager is
+ * the real owner of per-model metadata.
  *
  * `effectiveContextWindowPercent: 100` matches codex's "no reduction"
  * meaning (codex backend default is 95; 100 here is the safe fallback when

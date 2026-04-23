@@ -13,10 +13,9 @@ import type {
 } from "../types.js";
 import { safeStringify } from "../_deps/safe-stringify.js";
 
-// Lean-rebuild stub: the original sanitizer lived in the deleted
-// chat-executor-tool-utils. The Grok adapter only uses it to strip
-// obviously-oversize tool-call arguments before tracing; a bounded
-// JSON stringifier is close enough for now.
+// The original sanitizer lived in the deleted chat-executor-tool-utils.
+// The Grok adapter only needs bounded trace replay strings, so this keeps
+// the local surface intentionally narrow.
 function sanitizeToolCallArgumentsForReplay(args: unknown): string {
   try {
     const serialized = safeStringify(args);

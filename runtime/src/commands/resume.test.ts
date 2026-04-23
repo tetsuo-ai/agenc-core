@@ -129,6 +129,7 @@ describe("resumeCommand helpers", () => {
     if (res.kind === "text") {
       expect(res.text).toMatch(/bbbbbbbb/);
       expect(res.text).not.toMatch(/ a  —/);
+      expect(res.text).toMatch(/agenc --resume <sessionId>/);
     }
   });
 });

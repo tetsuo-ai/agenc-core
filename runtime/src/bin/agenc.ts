@@ -630,9 +630,17 @@ function createSharedBootstrapTooling(): {
   };
 }
 
+function resolveUserHome(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback: string = processCwd(),
+): string {
+  return env.HOME ?? env.USERPROFILE ?? fallback;
+}
+
 function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
+  readonly agencHome: string;
   readonly resolvedProvider: string;
   readonly loadTurnInputsFn: () => Promise<PreparedTurnRuntimeInputs>;
 }): () => void {
@@ -694,11 +702,11 @@ function installTuiSessionContract(params: {
         const slash = await runSlashCommand(message, {
           session: params.session,
           cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
-          home:
-            process.env.HOME ??
-            process.env.USERPROFILE ??
-            params.session.sessionConfiguration.cwd ??
-            process.cwd(),
+          home: resolveUserHome(
+            process.env,
+            params.session.sessionConfiguration.cwd ?? process.cwd(),
+          ),
+          agencHome: params.agencHome,
           configStore: params.configStore,
         });
         switch (slash.kind) {
@@ -873,7 +881,11 @@ export async function oneShotCLI(
         const runResult = await runSlashCommand(resolvedUserMessage, {
           session,
           cwd: session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
-          home: agencHome,
+          home: resolveUserHome(
+            process.env,
+            session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
+          ),
+          agencHome,
           configStore,
         });
         switch (runResult.kind) {
@@ -1062,6 +1074,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       toolRegistryOptions,
     } = createSharedBootstrapTooling();
     const {
+      agencHome,
       configStore,
       workspaceRoot,
       resolvedProvider,
@@ -1094,6 +1107,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       const uninstallTuiSessionContract = installTuiSessionContract({
         session,
         configStore,
+        agencHome,
         resolvedProvider,
         loadTurnInputsFn,
       });

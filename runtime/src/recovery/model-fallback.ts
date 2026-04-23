@@ -92,8 +92,7 @@ function findOrphanToolCalls(state: TurnState): LLMToolCall[] {
  *
  * Actual provider swap is signaled via
  * `session.pendingProviderSwitch` which run-turn observes at the
- * top of each iteration (I-13 integration). T13 wires the real
- * provider switch; T8 ships the signal.
+ * top of each iteration (I-13 integration).
  */
 export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutcome {
   const { error, session, state } = opts;
@@ -154,9 +153,8 @@ export function runModelFallback(opts: RunModelFallbackOpts): ModelFallbackOutco
     "model_fallback",
   );
 
-  // Signal the next iteration to use the fallback model. T13 wires
-  // the real provider factory swap; for T8 we flag the pending-switch
-  // slot so run-turn's I-13 path picks it up before the next stream.
+  // Signal the next iteration to use the fallback model. run-turn's I-13
+  // path consumes the pending switch before the next stream.
   session.pendingProviderSwitch = {
     provider:
       readProviderIdentity(session.services.provider) ??

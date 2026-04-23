@@ -1,19 +1,19 @@
 /**
- * T11 Wave 2-A — auto-mode classifier surface.
+ * Auto-mode classifier surface.
  *
- * Ports the STUB shape of openclaude's `yoloClassifier.ts` +
- * `classifierDecision.ts`:
+ * Ports openclaude's `yoloClassifier.ts` + `classifierDecision.ts`
+ * decision shape onto AgenC's provider abstraction:
  *
  *   - `isAutoModeAllowlistedTool` — safe-tool allowlist consulted by the
  *     evaluator before it invokes the classifier. Tools on this list are
  *     auto-allowed in auto mode with `{fastPath: "allowlist"}`.
- *   - `classifyYoloAction` — async classifier surface. T13 now ships a
- *     narrow runtime-backed implementation for Bash actions and falls back
- *     to manual approval for tools without a live local classifier path.
+ *   - `classifyYoloAction` — async classifier surface backed by the
+ *     xAI/Grok provider path for Bash actions, with manual-approval fallback
+ *     for tools without a live local classifier path.
  *   - `formatActionForClassifier` — deterministic one-line summary of the
  *     action for the classifier prompt (also used in analytics).
- *   - `isAutoModeGateEnabled` — circuit breaker. Default off; overridable
- *     via `__setAutoModeGateResolverForTesting` (tests + T13 integration).
+ *   - `isAutoModeGateEnabled` — local circuit breaker. Default on only when
+ *     the xAI-backed classifier is reachable; tests can override it.
  *
  * Unsupported tools emit a once-per-session warning so operators can tell
  * which requests are still falling back to manual approval.
@@ -101,8 +101,8 @@ export function isAutoModeAllowlistedTool(toolName: string): boolean {
 }
 
 /**
- * Exposed for tests and for T13 wiring verification. Not a public API
- * surface; do not re-export from the barrel.
+ * Exposed for tests and wiring verification. Not a public API surface; do not
+ * re-export from the barrel.
  */
 export function __listAutoModeAllowlistedToolsForTesting(): readonly string[] {
   return Array.from(SAFE_YOLO_ALLOWLISTED_TOOLS);
@@ -231,7 +231,8 @@ export function __setClassifierWarningSinkForTesting(
 /**
  * Session-level sentinel so the classifier warning fires exactly once per
  * process regardless of how many times `classifyYoloAction` is called.
- * Tests call `__resetClassifierStubSessionForTesting` to reset.
+ * Tests call the legacy-named `__resetClassifierStubSessionForTesting` hook
+ * to reset this state.
  */
 let stubWarningFired = false;
 
@@ -244,7 +245,7 @@ export function __resetClassifierStubSessionForTesting(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * T13 remote path:
+ * Remote classifier path:
  *
  *   - Stage 0: safe-tool allowlist + Bash sandbox/danger heuristics.
  *   - Stage 1: xAI-backed fast classifier (`grok-4-fast`) with a compact

@@ -1,0 +1,181 @@
+import { describe, expect, test } from "vitest";
+
+import type { LLMMessage, LLMTool } from "../types.js";
+import {
+  buildXaiResponsesInputItems,
+  buildXaiResponsesRequest,
+  resolveXaiResponsesToolChoice,
+  sanitizeToDocumentedXaiResponsesParams,
+  toXaiResponsesTools,
+  XAI_ENCRYPTED_REASONING_INCLUDE,
+} from "./responses-xai.js";
+
+const TEST_TOOL: LLMTool = {
+  type: "function",
+  function: {
+    name: "system.echo",
+    description: "Echo text.",
+    parameters: {
+      type: "object",
+      properties: {
+        text: { type: "string" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+};
+
+describe("responses-xai wire shim", () => {
+  test("maps assistant tool calls and tool outputs to xAI Responses items", () => {
+    const built = buildXaiResponsesInputItems([
+      { role: "user", content: "run echo" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_echo",
+            name: "system.echo",
+            arguments: "{\"text\":\"hi\"}",
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_echo",
+        toolName: "system.echo",
+        content: "hi",
+      },
+    ]);
+
+    expect(built).toEqual({
+      hasImages: false,
+      input: [
+        { role: "user", content: "run echo" },
+        { role: "assistant", content: "Calling tool." },
+        {
+          type: "function_call",
+          call_id: "call_echo",
+          name: "system.echo",
+          arguments: "{\"text\":\"hi\"}",
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_echo",
+          output: "hi",
+        },
+      ],
+    });
+  });
+
+  test("injects multimodal tool-result images as a follow-up user item", () => {
+    const messages: LLMMessage[] = [
+      {
+        role: "tool",
+        toolCallId: "call_screenshot",
+        toolName: "screenshot",
+        content: [
+          { type: "text", text: "captured" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,abc" },
+          },
+        ],
+      },
+    ];
+
+    const built = buildXaiResponsesInputItems(messages);
+
+    expect(built.hasImages).toBe(true);
+    expect(built.input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_screenshot",
+        output: "captured",
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "Here is the screenshot from the tool result above.",
+          },
+          {
+            type: "input_image",
+            image_url: "data:image/png;base64,abc",
+          },
+        ],
+      },
+    ]);
+  });
+
+  test("builds flat xAI function tools and documented request controls", () => {
+    const tools = toXaiResponsesTools([TEST_TOOL]);
+    const request = buildXaiResponsesRequest({
+      model: "grok-4-fast",
+      messages: [{ role: "user", content: "hello" }],
+      tools,
+      options: {
+        promptCacheKey: "session-1",
+        includeEncryptedReasoning: true,
+        parallelToolCalls: false,
+        toolChoice: {
+          type: "function",
+          name: "system.echo",
+        },
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: { type: "object", additionalProperties: false },
+            strict: true,
+          },
+        },
+      },
+    });
+
+    expect(request).toMatchObject({
+      model: "grok-4-fast",
+      store: false,
+      prompt_cache_key: "session-1",
+      include: [XAI_ENCRYPTED_REASONING_INCLUDE],
+      parallel_tool_calls: false,
+      tool_choice: {
+        type: "function",
+        function: { name: "system.echo" },
+      },
+      tools: [
+        {
+          type: "function",
+          name: "system.echo",
+          description: "Echo text.",
+        },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "answer",
+          strict: true,
+        },
+      },
+    });
+  });
+
+  test("preserves required tool_choice and strips undocumented fields", () => {
+    expect(resolveXaiResponsesToolChoice("required")).toBe("required");
+
+    const sanitized = sanitizeToDocumentedXaiResponsesParams({
+      model: "grok-4-fast",
+      input: [],
+      store: false,
+      unsupported_local_field: true,
+    });
+
+    expect(sanitized).toEqual({
+      model: "grok-4-fast",
+      input: [],
+      store: false,
+    });
+  });
+});

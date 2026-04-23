@@ -1,7 +1,7 @@
 /**
  * `/help` — list registered slash commands.
  *
- * Reads the global command registry (installed by the dispatcher in W1-F).
+ * Reads the global command registry installed by runtime entry points.
  * Until the registry is wired, emits a "registry pending" notice so the
  * command itself is safe to land standalone.
  *

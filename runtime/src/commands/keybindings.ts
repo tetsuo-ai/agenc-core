@@ -1,10 +1,10 @@
 /**
- * `/keybindings` — open `~/.agenc/keybindings.json` in `$EDITOR`.
+ * `/keybindings` — open `keybindings.json` in AgenC home.
  *
- * If the file is missing, emit a message inviting the user to create
- * it with a default bindings block. Actual editor launch uses
- * `child_process.spawn` with the inherited stdio so the user sees the
- * real editor UI; when `$EDITOR` is unset we fall back to `nano`.
+ * If the file is missing, scaffold the default bindings before opening
+ * it. Actual editor launch uses `child_process.spawn` with inherited
+ * stdio so the user sees the real editor UI; when `$EDITOR` is unset
+ * we fall back to `nano`.
  *
  * The default bindings map mirrors the shortcuts T11 wires in the TUI
  * layer (Shift+Tab → cycleMode, Ctrl+C → interrupt).
@@ -33,8 +33,8 @@ export const DEFAULT_KEYBINDINGS = {
   ],
 };
 
-export function keybindingsPath(home: string): string {
-  return join(home, ".agenc", "keybindings.json");
+export function keybindingsPath(agencHome: string): string {
+  return join(agencHome, "keybindings.json");
 }
 
 export interface KeybindingsDeps {
@@ -57,31 +57,28 @@ async function defaultEnsureFile(file: string): Promise<boolean> {
   return true;
 }
 
-/** Parse `--create` so we can offer the non-interactive create path. */
-function wantsCreate(argsRaw: string): boolean {
-  return /(^|\s)--create(\s|$)/.test(argsRaw);
+function agencHomeFromCtx(ctx: SlashCommandContext): string {
+  return ctx.agencHome ?? join(ctx.home, ".agenc");
 }
 
 export async function runKeybindings(
-  home: string,
-  argsRaw: string,
+  agencHome: string,
+  _argsRaw: string,
   deps: KeybindingsDeps = {
     spawnEditor: defaultSpawnEditor,
     ensureFile: defaultEnsureFile,
   },
 ): Promise<SlashCommandResult> {
-  const file = keybindingsPath(home);
+  const file = keybindingsPath(agencHome);
 
   if (!existsSync(file)) {
-    if (!wantsCreate(argsRaw)) {
+    await deps.ensureFile(file);
+    if (!existsSync(file)) {
       return {
-        kind: "text",
-        text:
-          `No keybindings file found at ${file}.\n` +
-          `Re-run \`/keybindings --create\` to scaffold the default bindings, then edit.`,
+        kind: "error",
+        message: `Failed to create keybindings file at ${file}.`,
       };
     }
-    await deps.ensureFile(file);
   }
 
   const editor = process.env.EDITOR || process.env.VISUAL || "nano";
@@ -103,9 +100,9 @@ export async function runKeybindings(
 
 export const keybindingsCommand: SlashCommand = {
   name: "keybindings",
-  description: "Edit ~/.agenc/keybindings.json in $EDITOR",
+  description: "Edit keybindings.json in $EDITOR",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
-    safeExecute(() => runKeybindings(ctx.home, ctx.argsRaw)),
+    safeExecute(() => runKeybindings(agencHomeFromCtx(ctx), ctx.argsRaw)),
 };
 
 export default keybindingsCommand;
