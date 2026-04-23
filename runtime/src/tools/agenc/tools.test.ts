@@ -180,6 +180,7 @@ async function linkTrustedRemoteJobSpecForTask(
   taskPda: PublicKey,
   task: OnChainTask,
   jobSpecStoreDir: string,
+  uri = 'https://trusted.example/job-spec.json',
 ) {
   const stored = await persistMarketplaceJobSpec(
     {
@@ -192,7 +193,7 @@ async function linkTrustedRemoteJobSpecForTask(
   await linkMarketplaceJobSpecToTask(
     {
       hash: stored.hash,
-      uri: 'https://trusted.example/job-spec.json',
+      uri,
       taskPda: taskPda.toBase58(),
       taskId: Buffer.from(task.taskId).toString('hex'),
       transactionSignature: 'remote-job-spec-test',
@@ -369,6 +370,41 @@ describe('agenc query tools', () => {
     expect(result.isError).toBeUndefined();
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(parsed.verified).toBe(true);
+    expect(parsed.payload.title).toBeTruthy();
+  });
+
+  it('agenc.getJobSpec normalizes trusted remote URIs that end with a stale hash segment', async () => {
+    const taskPda = PublicKey.unique();
+    const task = makeTaskRecord({ status: OnChainTaskStatus.Open, currentWorkers: 0 });
+    const jobSpecStoreDir = await mkdtemp(join(tmpdir(), 'agenc-tool-job-spec-'));
+    const remoteEnvelope = await linkTrustedRemoteJobSpecForTask(
+      taskPda,
+      task,
+      jobSpecStoreDir,
+      'https://trusted.example/api/job-specs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    const fetchSpy = vi.fn(async (input: string | URL) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: () => null },
+      text: async () => JSON.stringify(remoteEnvelope),
+    }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const tool = createGetJobSpecTool(silentLogger, {
+      jobSpecStoreDir,
+      allowRemoteJobSpecResolution: true,
+    });
+
+    const result = await tool.execute({ taskPda: taskPda.toBase58() });
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledWith(
+      `https://trusted.example/api/job-specs/${remoteEnvelope.integrity.payloadHash}`,
+      expect.any(Object),
+    );
+    expect(parsed.jobSpecHash).toBe(remoteEnvelope.integrity.payloadHash);
     expect(parsed.payload.title).toBeTruthy();
   });
 

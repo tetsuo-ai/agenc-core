@@ -133,7 +133,7 @@ describe("agenc task template tools", () => {
     expect(payload.jobSpecPublishWarning).toContain("InstructionFallbackNotFound");
     expect(setTaskJobSpec).toHaveBeenCalledWith(
       expect.any(Array),
-      "https://marketplace-devnet.agenc.tech/api/job-specs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      `https://marketplace-devnet.agenc.tech/api/job-specs/${payload.jobSpecHash}`,
     );
     expect(setTaskJobSpecAccountsPartial).toHaveBeenCalledOnce();
     expect(createTaskAccountsPartial).toHaveBeenCalledWith(
