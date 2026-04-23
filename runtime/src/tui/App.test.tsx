@@ -194,6 +194,42 @@ function createConfigStore(
   };
 }
 
+function createMethodBackedConfigStore(
+  initialConfig: unknown = {},
+): ConfigStoreLike & {
+  readonly setConfig: (next: unknown) => void;
+  readonly subscriberCount: () => number;
+} {
+  class MethodBackedConfigStore {
+    private config = initialConfig;
+    private readonly listeners = new Set<(next: unknown) => void>();
+
+    current(): unknown {
+      return this.config;
+    }
+
+    subscribe(listener: (next: unknown) => void): () => void {
+      this.listeners.add(listener);
+      return () => {
+        this.listeners.delete(listener);
+      };
+    }
+
+    setConfig(next: unknown): void {
+      this.config = next;
+      for (const listener of Array.from(this.listeners)) {
+        listener(next);
+      }
+    }
+
+    subscriberCount(): number {
+      return this.listeners.size;
+    }
+  }
+
+  return new MethodBackedConfigStore() as never;
+}
+
 const FAKE_CONFIG_STORE: ConfigStoreLike = { current: () => ({}) as never };
 
 describe("App", () => {
@@ -466,6 +502,30 @@ describe("App", () => {
     const text = collectText(getRoot(stdout));
     expect(text.indexOf("commands.")).toBeLessThan(text.indexOf("SESSION"));
     unmount();
+  });
+
+  test("supports real method-backed ConfigStore instances without losing `this`", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      conversationId: "conv-method-store",
+    };
+    const configStore = createMethodBackedConfigStore({
+      statusLine: { items: ["session"] },
+    });
+
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={configStore} />,
+    );
+
+    expect(collectText(getRoot(stdout))).toContain("SESSION");
+    expect(configStore.subscriberCount()).toBe(1);
+
+    configStore.setConfig({});
+    await new Promise((r) => setTimeout(r, 20));
+    expect(collectText(getRoot(stdout))).not.toContain("SESSION");
+
+    unmount();
+    expect(configStore.subscriberCount()).toBe(0);
   });
 
   test("surfaces active tool count and tool phase in the banner", async () => {

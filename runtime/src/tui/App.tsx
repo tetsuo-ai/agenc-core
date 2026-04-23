@@ -235,7 +235,7 @@ function readStatusLineItemsFromStore(
   ).current;
   if (typeof current === "function") {
     try {
-      return readStatusLineItems(current());
+      return readStatusLineItems(current.call(configStore));
     } catch {
       return undefined;
     }
@@ -266,7 +266,7 @@ function useStatusLineItems(
       return undefined;
     }
 
-    return subscribe((nextConfig: unknown) => {
+    return subscribe.call(configStore, (nextConfig: unknown) => {
       setItems(readStatusLineItems(nextConfig));
     });
   }, [configStore]);
