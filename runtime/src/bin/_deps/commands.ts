@@ -1,42 +1,82 @@
 /**
  * Per-dir slash-command surface for `runtime/src/bin/**`.
  *
- * The lean rebuild does not yet own a slash-command system; the gut
- * dispatcher / registry / types live in the openclaude-port
- * `runtime/src/commands/**`. This shim provides a permissive surface
- * that mirrors the names `bin/slash.ts` consumes so the bin entry
- * point can build without crossing into openclaude.
- *
- * Behavior is intentionally degraded: every command parses to `null`
- * (treated as a non-slash line by the wrapper) and the registry is a
- * placeholder. Real slash-command behavior will be reintroduced in a
- * later tranche.
+ * Bridges the bin entry to the canonical T11 slash-command system in
+ * `runtime/src/commands/**`. The shim:
+ *   - keeps the permissive `parseSlashCommand` shape that the bin
+ *     wrapper relies on (the wrapper does not need the dispatcher's
+ *     `(MCP)` marker)
+ *   - performs the filesystem-passthrough check before dispatch so a
+ *     mistyped path like `/notes.txt` (which the dispatcher's strict
+ *     `[a-z][a-z0-9_-]*` shape would reject outright) still becomes a
+ *     normal user prompt rather than an unknown-command error
+ *   - delegates real command dispatch to the canonical
+ *     `dispatchSlashCommand` + the registry built by
+ *     `buildDefaultRegistry()` so every restored T11 command (`/help`,
+ *     `/exit`, `/permissions`, …) actually executes
+ *   - re-exports the canonical bridge-safe allowlist
+ *   - wires the global registry slot through the canonical
+ *     `setGlobalCommandRegistry` so `/help` (which reads the global
+ *     slot) sees the real list
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type DispatchOutcome = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type CommandRegistry = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type SlashCommandContext = any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type SlashCommandResult = any;
+import {
+  dispatchSlashCommand as realDispatch,
+  isBridgeSafeCommand as realIsBridgeSafe,
+  type DispatchOutcome as RealDispatchOutcome,
+  type ParsedSlashCommand as RealParsedSlashCommand,
+} from "../../commands/dispatcher.js";
+import {
+  buildDefaultRegistry as realBuildRegistry,
+  CommandRegistry as RealCommandRegistry,
+} from "../../commands/registry.js";
+import {
+  getGlobalCommandRegistry as realGetGlobal,
+  setGlobalCommandRegistry as realSetGlobal,
+  type SlashCommandContext as RealSlashCommandContext,
+  type SlashCommandResult as RealSlashCommandResult,
+} from "../../commands/types.js";
 
-interface ParsedSlashLine {
+// ---------------------------------------------------------------------------
+// Re-exported types (the bin wrapper imports through this seam only)
+// ---------------------------------------------------------------------------
+
+export type DispatchOutcome = RealDispatchOutcome & {
+  /**
+   * Bin-only marker emitted when the dispatcher decided to forward the
+   * raw input as a user prompt instead of executing a command (mistyped
+   * filesystem path). The canonical dispatcher's `result.kind === "skip"`
+   * already signals this; the bin wrapper consumes `passthroughInput`
+   * for backward compatibility with the lean shim contract.
+   */
+  passthroughInput?: string;
+};
+export type CommandRegistry = RealCommandRegistry;
+export type SlashCommandContext = RealSlashCommandContext;
+export type SlashCommandResult = RealSlashCommandResult;
+
+// ---------------------------------------------------------------------------
+// Permissive parser (kept identical to the lean shim shape)
+// ---------------------------------------------------------------------------
+
+export interface ParsedSlashLine {
   readonly name: string;
   readonly argsRaw: string;
 }
 
 /**
  * Permissive slash-line parser. Returns `null` when the input is not a
- * dispatchable slash command, mirroring the openclaude dispatcher
- * contract:
+ * dispatchable slash command:
  *   - non-slash input (no leading `/`) → `null`
  *   - empty body after `/` → `null`
  *   - I-68 fence: when a slash line is followed by another non-empty
  *     line, the parse is rejected → `null`
  *   - otherwise the first whitespace-separated token is the command
  *     name and the rest is `argsRaw`.
+ *
+ * The parser intentionally accepts names the canonical dispatcher's
+ * strict regex would reject (e.g. `/notes.txt`) so the dispatch step
+ * can surface them as filesystem passthroughs.
  */
 export function parseSlashCommand(input: string): ParsedSlashLine | null {
   if (typeof input !== "string") return null;
@@ -66,27 +106,35 @@ export function parseSlashCommand(input: string): ParsedSlashLine | null {
   };
 }
 
-const BRIDGE_SAFE = new Set<string>();
+// ---------------------------------------------------------------------------
+// Bridge-safe allowlist — delegated to the canonical dispatcher.
+// ---------------------------------------------------------------------------
 
-export function isBridgeSafeCommand(_name: string): boolean {
-  return BRIDGE_SAFE.has(_name);
+export function isBridgeSafeCommand(name: string): boolean {
+  return realIsBridgeSafe(name);
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+/** Names accepted by the canonical dispatcher (strict shape). */
+const COMMAND_NAME_SHAPE = /^[a-z][a-z0-9_-]*$/;
 
 export async function dispatchSlashCommand(
   parsed: ParsedSlashLine,
   ctx: SlashCommandContext,
-  _registry: CommandRegistry,
+  registry: CommandRegistry,
 ): Promise<DispatchOutcome> {
   // Filesystem-path passthrough: if the slash-prefixed token resolves
   // to an existing file or directory in the caller's `cwd`, treat the
-  // line as a normal user prompt rather than a command. Mirrors the
-  // openclaude dispatcher's `/notes.txt → passthrough` behavior so
-  // mistyped paths don't surface as "Unknown command".
-  const argsRaw =
-    typeof (ctx as { argsRaw?: unknown })?.argsRaw === "string"
-      ? ((ctx as { argsRaw?: string }).argsRaw ?? "")
-      : "";
-  if (argsRaw.length === 0 && parsed.name.length > 0) {
+  // line as a normal user prompt rather than a command. We perform the
+  // check here (instead of relying on the dispatcher's
+  // `buildMistypedPathHint`) because the canonical parser's strict
+  // shape regex rejects names containing `.` or `/` outright — without
+  // this preflight a `/notes.txt` line would bypass the dispatcher
+  // entirely and surface as `unknown`.
+  if (parsed.name.length > 0) {
     const cwd =
       typeof (ctx as { cwd?: unknown })?.cwd === "string"
         ? ((ctx as { cwd?: string }).cwd ?? "")
@@ -96,38 +144,79 @@ export async function dispatchSlashCommand(
         const { existsSync } = await import("node:fs");
         const { join: joinPath } = await import("node:path");
         if (existsSync(joinPath(cwd, parsed.name))) {
+          const passthroughLine =
+            parsed.argsRaw.length > 0
+              ? `/${parsed.name} ${parsed.argsRaw}`
+              : `/${parsed.name}`;
           return {
             result: { kind: "skip" },
-            passthroughInput: `/${parsed.name}`,
+            immediate: false,
+            trace: {
+              name: parsed.name,
+              aliasUsed: parsed.name,
+              argsRaw: parsed.argsRaw,
+              sensitive: false,
+              immediate: false,
+              isMcp: false,
+              resultKind: "skip",
+            },
+            passthroughInput: passthroughLine,
           };
         }
       } catch {
-        /* best effort — fall through to the unknown-command branch */
+        /* best effort — fall through to the real dispatcher */
       }
     }
   }
 
-  return {
-    result: {
-      kind: "error",
-      message: `Unknown command: /${parsed.name}`,
-    },
-    passthroughInput: undefined,
+  // Names that don't fit the canonical command shape but didn't resolve
+  // to a filesystem entry: surface as an explicit unknown-command
+  // error so the CLI can render a readable message. The canonical
+  // dispatcher would reject these at the parser, so we synthesize a
+  // matching outcome here.
+  if (!COMMAND_NAME_SHAPE.test(parsed.name)) {
+    const message = `Unknown command: /${parsed.name}`;
+    return {
+      result: { kind: "error", message },
+      immediate: false,
+      trace: {
+        name: parsed.name,
+        aliasUsed: parsed.name,
+        argsRaw: parsed.argsRaw,
+        sensitive: false,
+        immediate: false,
+        isMcp: false,
+        resultKind: "error",
+      },
+    };
+  }
+
+  const parsedFull: RealParsedSlashCommand = {
+    name: parsed.name,
+    argsRaw: parsed.argsRaw,
+    isMcp: false,
   };
+  return realDispatch(parsedFull, ctx, registry);
 }
 
+// ---------------------------------------------------------------------------
+// Registry — lazily built once and shared with the global slot so /help
+// (and any future "list registered commands" surface) sees the real set.
+// ---------------------------------------------------------------------------
+
+let cachedRegistry: CommandRegistry | null = null;
 export function buildDefaultRegistry(): CommandRegistry {
-  return { commands: new Map<string, unknown>() };
+  if (cachedRegistry !== null) return cachedRegistry;
+  cachedRegistry = realBuildRegistry();
+  return cachedRegistry;
 }
-
-let globalRegistry: CommandRegistry | null = null;
 
 export function getGlobalCommandRegistry(): CommandRegistry | null {
-  return globalRegistry;
+  return realGetGlobal() as CommandRegistry | null;
 }
 
 export function setGlobalCommandRegistry(
   registry: CommandRegistry | null,
 ): void {
-  globalRegistry = registry;
+  realSetGlobal(registry);
 }

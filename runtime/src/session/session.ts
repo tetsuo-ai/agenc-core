@@ -41,6 +41,7 @@ import {
 } from "./_deps/utils.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { ProviderHttpClient } from "../llm/client.js";
+import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
 import type { LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
@@ -1107,6 +1108,16 @@ export class Session {
     previousClient?.resetResponsesContinuation();
     nextClient?.bindConversationId(this.conversationId);
     nextClient?.resetResponsesContinuation();
+
+    // Keep the sync upgrade-message snapshot in sync with the live model.
+    // Bootstrap registers the initial snapshot; subsequent /model switches
+    // (or recovery-driven model fallbacks) flow through here so the
+    // post-compact stdout breadcrumb continues to surface accurate
+    // upgrade tips after a switch.
+    setContextWindowUpgradeContext({
+      currentModel: preparedSwitch.model,
+      modelsManager: this.services.modelsManager,
+    });
 
     this.setPendingProviderSwitch(null);
 

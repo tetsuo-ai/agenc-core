@@ -1,16 +1,22 @@
 /**
- * No-op replacements for openclaude-port subsystems the gut session
- * subsystem does not implement: prompt-cache break-detection notifications
- * and SessionMemory message-id tracking.
+ * Re-exports the openclaude-port shims that the session subsystem needs
+ * for compact-adjacent calls. These were previously local stubs that
+ * silently dropped state; both surfaces now have canonical
+ * implementations elsewhere in the gut runtime:
  *
- * The openclaude versions live under `services/api/promptCacheBreakDetection`
- * and `services/SessionMemory/sessionMemoryUtils`; both are infrastructure
- * the gut runtime does not own. These no-ops satisfy the call signatures
- * without side effect so existing call sites compile and run.
+ * - `notifyCompaction`: prompt-cache break-detection signal. The gut
+ *   runtime does not own the openclaude prompt-cache subsystem, so the
+ *   canonical version remains a no-op, but it lives alongside the rest
+ *   of the openclaude-port no-op surface in
+ *   `src/llm/compact/_deps/no-op.ts`.
+ *
+ * - `setLastSummarizedMessageId`: SessionMemory anchor for the next
+ *   compact pass. The canonical version in
+ *   `src/llm/compact/_deps/session-memory.ts` is a real implementation
+ *   with persistence under `${AGENC_HOME}/memory/last-summarized.json`.
+ *   The previous local stub silently dropped writes, which broke the
+ *   manual-compact path's cleanup contract.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function notifyCompaction(..._args: any[]): void {}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function setLastSummarizedMessageId(..._args: any[]): void {}
+export { notifyCompaction } from "../../llm/compact/_deps/no-op.js";
+export { setLastSummarizedMessageId } from "../../llm/compact/_deps/session-memory.js";

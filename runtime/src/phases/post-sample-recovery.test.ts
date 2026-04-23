@@ -226,12 +226,76 @@ describe("post-sample-recovery integration", () => {
     expect(hasAttemptedCollapseDrain(state)).toBe(false);
   });
 
-  // Removed: "withheld 413 routes through the live session contextCollapse
-  // service before reactive compact". This test exercised the openclaude
-  // contextCollapse runtime service end-to-end via stageContextCollapseForSession,
-  // which the lean rebuild stubbed out as a no-op. Without that subsystem
-  // the assertions cannot hold; if the gut runtime ever re-implements
-  // context-collapse, restore the test then.
+  // Restored after the gut runtime grew a real context-collapse
+  // subsystem (`session/_deps/context-collapse.ts`). The test now
+  // exercises the post-sample-recovery routing layer end-to-end through
+  // the live `services.contextCollapse.recoverFromOverflow` driver: a
+  // withheld 413 must hit collapse-drain BEFORE reactive-compact, and
+  // the resulting transition must be `collapse_drain_retry`.
+  test("withheld 413 routes through the live session contextCollapse service before reactive compact", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    let recoverCalls = 0;
+    let reactiveCompactCalls = 0;
+    (session as unknown as { services: Record<string, unknown> }).services = {
+      ...((session as unknown as { services: Record<string, unknown> }).services ?? {}),
+      contextCollapse: {
+        isContextCollapseEnabled: () => true,
+        recoverFromOverflow: (
+          messages: ReadonlyArray<{ role: string; content: string }>,
+        ) => {
+          recoverCalls += 1;
+          return {
+            committed: 1,
+            messages: [{ role: "user", content: "[collapsed]" }],
+          };
+        },
+      },
+      reactiveCompact: {
+        isReactiveCompactEnabled: () => true,
+      },
+      provider: { name: "grok" },
+      hooks: {},
+    };
+    // Stub the reactive-compact path so we can assert it was NOT
+    // reached on the first 413 attempt.
+    const reactiveCompactMod = await import("../recovery/reactive-compact.js");
+    const spy = vi
+      .spyOn(reactiveCompactMod, "runReactiveCompact")
+      .mockImplementation(async () => {
+        reactiveCompactCalls += 1;
+        return { kind: "compacted" } as never;
+      });
+    try {
+      const state = mkState({
+        messagesForQuery: [
+          { role: "user", content: "earlier prompt 1" },
+          { role: "assistant", content: "earlier reply 1" },
+          { role: "user", content: "earlier prompt 2" },
+          { role: "assistant", content: "earlier reply 2" },
+          { role: "user", content: "current prompt" },
+        ],
+        assistantMessages: [
+          {
+            uuid: "a",
+            role: "assistant",
+            text: "Prompt is too long",
+            toolCalls: [],
+            apiError: "prompt_too_long",
+          },
+        ],
+      });
+
+      await postSampleRecovery(state, mkCtx(), session);
+
+      expect(recoverCalls).toBe(1);
+      expect(reactiveCompactCalls).toBe(0);
+      expect(state.transition?.reason).toBe("collapse_drain_retry");
+      expect(hasAttemptedCollapseDrain(state)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   test("stopHookActive alone does not re-trigger stop_hook_blocking", async () => {
     const log = new EventLog();
