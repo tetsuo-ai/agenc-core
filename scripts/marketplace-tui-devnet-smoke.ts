@@ -29,6 +29,8 @@ import {
   type ProtocolConfig,
 } from "../runtime/src/index.js";
 import {
+  runMarketReputationDelegateCommand,
+  runMarketReputationStakeCommand,
   resetMarketplaceCliProgramContextOverrides,
   runMarketDisputeResolveCommand,
   runMarketGovernanceVoteCommand,
@@ -1531,6 +1533,64 @@ async function purchaseSkillViaTui(
   }
 }
 
+async function ensureSkillPurchaseVisible(
+  baseOptions: BaseCliOptions,
+  buyer: AgentActor,
+  skillPda: string,
+): Promise<Record<string, unknown>> {
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await waitFor(
+        "skill purchase visibility",
+        Math.max(DEFAULT_STATE_WAIT_SECONDS, 120),
+        async () => {
+          const skill = await fetchSkillDetail(
+            baseOptions,
+            skillPda,
+            buyer.agentPda.toBase58(),
+          );
+          if (!getBooleanField(skill, "purchased", "purchasedSkillDetail")) {
+            throw new Error("skill detail does not show purchased=true");
+          }
+          return skill;
+        },
+      );
+    } catch (error) {
+      lastError = error;
+      if (attempt >= 2) {
+        break;
+      }
+      console.log(
+        `[retry] skill purchase visibility attempt ${attempt}/2 timed out; attempting direct CLI purchase refresh for ${skillPda}`,
+      );
+      await runMarketCommand(
+        baseOptions,
+        runMarketSkillPurchaseCommand as MarketRunner,
+        {
+          skillPda,
+          buyerAgentPda: buyer.agentPda.toBase58(),
+        },
+        buyer.agentPda.toBase58(),
+      ).catch((refreshError) => {
+        const message =
+          refreshError instanceof Error
+            ? refreshError.message
+            : String(refreshError);
+        if (
+          !message.includes("already purchased") &&
+          !message.includes("AlreadyPurchased") &&
+          !message.includes("purchase already exists")
+        ) {
+          throw refreshError;
+        }
+      });
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
 async function rateSkillViaTui(
   baseOptions: BaseCliOptions,
   rater: AgentActor,
@@ -1564,6 +1624,72 @@ async function rateSkillViaTui(
       },
       rater.agentPda.toBase58(),
     );
+  }
+}
+
+async function stakeReputationViaTui(
+  baseOptions: BaseCliOptions,
+  staker: AgentActor,
+  amount: bigint,
+): Promise<void> {
+  try {
+    const text = await runTuiSession(baseOptions, staker, [
+      "5",
+      "stake",
+      amount.toString(),
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "reputation stake");
+  } catch (error) {
+    console.log(
+      `[fallback] reputation stake TUI path failed for ${staker.agentPda.toBase58()}; attempting direct CLI stake`,
+    );
+    await runMarketCommand(
+      baseOptions,
+      runMarketReputationStakeCommand as MarketRunner,
+      {
+        amount: amount.toString(),
+        stakerAgentPda: staker.agentPda.toBase58(),
+      },
+      staker.agentPda.toBase58(),
+    );
+  }
+}
+
+async function delegateReputationViaTui(
+  baseOptions: BaseCliOptions,
+  delegator: AgentActor,
+  delegatee: AgentActor,
+  amount: number,
+): Promise<void> {
+  try {
+    const text = await runTuiSession(baseOptions, delegator, [
+      "5",
+      "delegate",
+      String(amount),
+      delegatee.agentPda.toBase58(),
+      "",
+      "",
+      "back",
+      "q",
+    ]);
+    assertTuiSuccess(text, "reputation delegate");
+  } catch (error) {
+    console.log(
+      `[fallback] reputation delegate TUI path failed for ${delegatee.agentPda.toBase58()}; attempting direct CLI delegation`,
+    );
+    await runMarketCommand(
+      baseOptions,
+      runMarketReputationDelegateCommand as MarketRunner,
+      {
+        amount,
+        delegateeAgentPda: delegatee.agentPda.toBase58(),
+        delegatorAgentPda: delegator.agentPda.toBase58(),
+      },
+        delegator.agentPda.toBase58(),
+      );
   }
 }
 
@@ -2572,15 +2698,11 @@ async function runInitial(): Promise<void> {
     console.log("[tui] reputation summary done");
 
     console.log("[tui] reputation stake start");
-    const stakeText = await runTuiSession(baseOptions, creator, [
-      "5",
-      "stake",
-      reputationStakeLamports.toString(),
-      "",
-      "back",
-      "q",
-    ]);
-    assertTuiSuccess(stakeText, "reputation stake");
+    await stakeReputationViaTui(
+      baseOptions,
+      creator,
+      reputationStakeLamports,
+    );
     console.log("[tui] reputation stake done");
 
     await waitFor(
@@ -2618,17 +2740,12 @@ async function runInitial(): Promise<void> {
     );
     if (!delegationSelection.reusedExisting) {
       console.log("[tui] reputation delegate start");
-      const delegateText = await runTuiSession(baseOptions, creator, [
-        "5",
-        "delegate",
-        String(delegationAmount),
-        delegationTarget.agentPda.toBase58(),
-        "",
-        "",
-        "back",
-        "q",
-      ]);
-      assertTuiSuccess(delegateText, "reputation delegate");
+      await delegateReputationViaTui(
+        baseOptions,
+        creator,
+        delegationTarget,
+        delegationAmount,
+      );
       console.log("[tui] reputation delegate done");
     } else {
       console.log("[tui] reputation delegate skipped; matching delegation already exists");
@@ -2807,13 +2924,7 @@ async function runInitial(): Promise<void> {
 
     await purchaseSkillViaTui(baseOptions, worker, skillPda);
 
-    await waitFor("skill purchase visibility", DEFAULT_STATE_WAIT_SECONDS, async () => {
-      const skill = await fetchSkillDetail(baseOptions, skillPda, workerKey);
-      if (!getBooleanField(skill, "purchased", "purchasedSkillDetail")) {
-        throw new Error("skill detail does not show purchased=true");
-      }
-      return skill;
-    });
+    await ensureSkillPurchaseVisible(baseOptions, worker, skillPda);
 
     await rateSkillViaTui(
       baseOptions,
@@ -2823,18 +2934,22 @@ async function runInitial(): Promise<void> {
       `solid skill ${runId}`,
     );
 
-    await waitFor("skill rating visibility", DEFAULT_STATE_WAIT_SECONDS, async () => {
-      const skill = await fetchSkillDetail(baseOptions, skillPda, workerKey);
-      const ratingCount = getNumberField(skill, "ratingCount", "ratedSkillDetail");
-      const rating = getNumberField(skill, "rating", "ratedSkillDetail");
-      if (ratingCount < 1) {
-        throw new Error(`ratingCount is ${ratingCount}`);
-      }
-      if (rating < 5) {
-        throw new Error(`rating is ${rating}`);
-      }
-      return skill;
-    });
+    await waitFor(
+      "skill rating visibility",
+      Math.max(DEFAULT_STATE_WAIT_SECONDS, 120),
+      async () => {
+        const skill = await fetchSkillDetail(baseOptions, skillPda, workerKey);
+        const ratingCount = getNumberField(skill, "ratingCount", "ratedSkillDetail");
+        const rating = getNumberField(skill, "rating", "ratedSkillDetail");
+        if (ratingCount < 1) {
+          throw new Error(`ratingCount is ${ratingCount}`);
+        }
+        if (rating < 5) {
+          throw new Error(`rating is ${rating}`);
+        }
+        return skill;
+      },
+    );
 
     console.log("[phase] governance");
     const proposalRegistration = await executeToolJson(

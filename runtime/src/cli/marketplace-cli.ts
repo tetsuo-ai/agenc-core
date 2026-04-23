@@ -138,11 +138,11 @@ export interface MarketSkillsListOptions extends BaseCliOptions {
 
 export interface MarketSkillDetailOptions extends BaseCliOptions {
   skillPda: string;
+  buyerAgentPda?: string;
 }
 
 export interface MarketSkillPurchaseOptions extends MarketSkillDetailOptions {
   expectedPrice?: string;
-  buyerAgentPda?: string;
 }
 
 export interface MarketSkillRateOptions extends MarketSkillDetailOptions {
@@ -1607,31 +1607,19 @@ export async function runMarketSkillDetailCommand(
     }
 
     const detail = mapSkillSummary({ publicKey: skillPda, account });
+    let signerContext:
+      | {
+          connection: Connection;
+          program: MarketProgram;
+        }
+      | null = null;
     try {
-      const { connection, program: signerProgram } =
-        await createSignerProgramContext(options);
-      const signerAgent = await resolveSignerAgent(signerProgram);
-      const registryClient = new OnChainSkillRegistryClient({
-        connection,
-        logger: silentLogger,
-      });
-      const purchaseManager = new SkillPurchaseManager({
-        program: signerProgram,
-        agentId: signerAgent.agentId,
-        registryClient,
-        logger: silentLogger,
-      });
-      context.output({
-        status: "ok",
-        command: "market.skills.detail",
-        schema: "market.skills.detail.output.v1",
-        skill: {
-          ...detail,
-          purchased: await purchaseManager.isPurchased(skillPda),
-        },
-      });
-      return 0;
+      signerContext = await createSignerProgramContext(options);
     } catch {
+      signerContext = null;
+    }
+
+    if (!signerContext) {
       context.output({
         status: "ok",
         command: "market.skills.detail",
@@ -1640,6 +1628,31 @@ export async function runMarketSkillDetailCommand(
       });
       return 0;
     }
+
+    const signerAgent = await resolveSignerAgent(
+      signerContext.program,
+      options.buyerAgentPda,
+    );
+    const registryClient = new OnChainSkillRegistryClient({
+      connection: signerContext.connection,
+      logger: silentLogger,
+    });
+    const purchaseManager = new SkillPurchaseManager({
+      program: signerContext.program,
+      agentId: signerAgent.agentId,
+      registryClient,
+      logger: silentLogger,
+    });
+    context.output({
+      status: "ok",
+      command: "market.skills.detail",
+      schema: "market.skills.detail.output.v1",
+      skill: {
+        ...detail,
+        purchased: await purchaseManager.isPurchased(skillPda),
+      },
+    });
+    return 0;
   } catch (error) {
     context.error({
       status: "error",

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T15:03:13.914Z",
+  "mode": "tui",
+  "iterations": 1,
+  "childMaxWaitSeconds": 300,
+  "maxPendingWaitSeconds": 0,
+  "allowDeferred": false,
+  "overallPassed": true,
+  "runs": [
+    {
+      "flow": "tui",
+      "iteration": 1,
+      "startedAt": "2026-04-23T14:52:21.417Z",
+      "status": "completed",
+      "rpc429Count": 84,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/tui-run-1-1776955941417.json",
+      "okLine": "[ok] marketplace TUI devnet smoke complete: dispute status=resolved, task status=cancelled, task claim=FwYcv13GZKW1aNdMR5zjRtGTAc2jRZ8QQUbMVvJewzhq",
+      "finishedAt": "2026-04-23T15:03:11.911Z",
+      "durationMs": 650494,
+      "exitCode": 0
+    }
+  ]
+}

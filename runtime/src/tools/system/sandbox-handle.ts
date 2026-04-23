@@ -370,6 +370,7 @@ function buildSandboxJobResponse(
 export class SystemSandboxManager {
   private readonly rootDir: string;
   private readonly registryPath: string;
+  private readonly maxTrackedJobs: number;
   private readonly defaultImage: string;
   private readonly workspacePath: string;
   private readonly defaultWorkspaceAccess: SystemSandboxWorkspaceAccessMode;
@@ -392,6 +393,7 @@ export class SystemSandboxManager {
   ) {
     this.rootDir = config?.rootDir ?? SYSTEM_SANDBOX_ROOT;
     this.registryPath = join(this.rootDir, "registry.json");
+    this.maxTrackedJobs = resolvePositiveInteger(config?.maxTrackedJobs) ?? MAX_SANDBOX_JOBS;
     this.defaultImage = config?.defaultImage ?? DEFAULT_SANDBOX_IMAGE;
     this.workspacePath = resolve(config?.workspacePath ?? DEFAULT_WORKSPACE_PATH);
     this.defaultWorkspaceAccess = config?.defaultWorkspaceAccess ?? "readwrite";
@@ -998,13 +1000,13 @@ export class SystemSandboxManager {
       });
     }
 
-    if (this.jobs.size >= MAX_SANDBOX_JOBS) {
+    if (this.jobs.size >= this.maxTrackedJobs) {
       return handleErrorResult(
         SYSTEM_SANDBOX_FAMILY,
         "system_sandbox.blocked",
         "Too many sandbox jobs are already tracked. Stop or clean up an existing job before starting another one.",
         true,
-        { maxJobs: MAX_SANDBOX_JOBS },
+        { maxJobs: this.maxTrackedJobs },
         "job_start",
         "blocked",
       );
@@ -1198,6 +1200,17 @@ export class SystemSandboxManager {
     this.persistChain = Promise.resolve();
     rmSync(this.rootDir, { recursive: true, force: true });
   }
+}
+
+function resolvePositiveInteger(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return undefined;
 }
 
 export function createSandboxTools(

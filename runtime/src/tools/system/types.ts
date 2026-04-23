@@ -173,6 +173,8 @@ export type SystemSandboxWorkspaceAccessMode = "none" | "readonly" | "readwrite"
 export interface SystemSandboxToolConfig {
   /** Durable registry root for sandbox handles. */
   readonly rootDir?: string;
+  /** Maximum number of sandbox jobs tracked at once before new starts are blocked. */
+  readonly maxTrackedJobs?: number;
   /** Default Docker image for sandbox environments. */
   readonly defaultImage?: string;
   /** Optional allowlist of Docker images permitted for sandbox creation. */

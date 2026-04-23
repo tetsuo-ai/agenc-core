@@ -148,7 +148,7 @@ describe("system.sandbox tools", () => {
     }
   });
 
-  function createManager(): {
+  function createManager(configOverrides: Record<string, unknown> = {}): {
     readonly manager: SystemSandboxManager;
     readonly adapter: FakeContainerAdapter;
     readonly jobs: FakeJobRunner;
@@ -161,6 +161,7 @@ describe("system.sandbox tools", () => {
         rootDir,
         logger: silentLogger,
         workspacePath: "/workspace",
+        ...configOverrides,
       },
       {
         containerAdapter: adapter as any,
@@ -299,6 +300,36 @@ describe("system.sandbox tools", () => {
     expect(logs.state).toBe("exited");
     expect(String(logs.output)).toContain("docker exec");
     expect(status.state).toBe("exited");
+  });
+
+  it("respects a configurable tracked-job ceiling", async () => {
+    const { manager } = createManager({ maxTrackedJobs: 1 });
+    const startedSandbox = JSON.parse((await manager.startSandbox({
+      label: "job-limit-sandbox",
+    })).content) as Record<string, unknown>;
+
+    const firstJob = JSON.parse((await manager.sandboxJobStart({
+      sandboxId: String(startedSandbox.sandboxId),
+      label: "job-one",
+      command: "node",
+      args: ["--version"],
+    })).content) as Record<string, unknown>;
+
+    expect(firstJob.state).toBe("running");
+
+    const blocked = await manager.sandboxJobStart({
+      sandboxId: String(startedSandbox.sandboxId),
+      label: "job-two",
+      command: "node",
+      args: ["--version"],
+    });
+
+    const parsed = JSON.parse(blocked.content) as {
+      error?: { code?: string; details?: { maxJobs?: number } };
+    };
+    expect(blocked.isError).toBe(true);
+    expect(parsed.error?.code).toBe("system_sandbox.blocked");
+    expect(parsed.error?.details?.maxJobs).toBe(1);
   });
 
   it("resolves label-shaped model retries when sandboxId carries the sandbox label", async () => {

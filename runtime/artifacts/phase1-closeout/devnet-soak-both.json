@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T16:43:45.732Z",
+  "mode": "both",
+  "iterations": 2,
+  "childMaxWaitSeconds": 300,
+  "maxPendingWaitSeconds": 0,
+  "allowDeferred": true,
+  "overallPassed": true,
+  "runs": [
+    {
+      "flow": "plain",
+      "iteration": 1,
+      "startedAt": "2026-04-23T16:16:44.862Z",
+      "status": "completed",
+      "rpc429Count": 0,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/plain-run-1-1776961004862.json",
+      "okLine": "[ok] lifecycle complete for 5ggSNkbLkLrC5QRYdtPrryjSZjySeZfqFq2yhc3FLcyd: dispute status=resolved, task status=cancelled",
+      "finishedAt": "2026-04-23T16:21:59.488Z",
+      "durationMs": 314626,
+      "exitCode": 0
+    },
+    {
+      "flow": "tui",
+      "iteration": 1,
+      "startedAt": "2026-04-23T16:22:01.490Z",
+      "status": "completed",
+      "rpc429Count": 55,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/tui-run-1-1776961321489.json",
+      "okLine": "[ok] marketplace TUI devnet smoke complete: dispute status=resolved, task status=cancelled, task claim=C8Y8gvF3MUcqNRgHjbEt8x7U77ypmsuUAZEFSYQYvibb",
+      "finishedAt": "2026-04-23T16:30:05.314Z",
+      "durationMs": 483824,
+      "exitCode": 0
+    },
+    {
+      "flow": "plain",
+      "iteration": 2,
+      "startedAt": "2026-04-23T16:30:07.315Z",
+      "status": "completed",
+      "rpc429Count": 0,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/plain-run-2-1776961807314.json",
+      "okLine": "[ok] lifecycle complete for C2ioFote7Jwrqgnbqu9Yek9uyTznUauYh6NRFefv9ucg: dispute status=resolved, task status=cancelled",
+      "finishedAt": "2026-04-23T16:35:21.167Z",
+      "durationMs": 313852,
+      "exitCode": 0
+    },
+    {
+      "flow": "tui",
+      "iteration": 2,
+      "startedAt": "2026-04-23T16:35:23.169Z",
+      "status": "completed",
+      "rpc429Count": 53,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/tui-run-2-1776962123168.json",
+      "okLine": "[ok] marketplace TUI devnet smoke complete: dispute status=resolved, task status=cancelled, task claim=5LtjrHQbzRSpHmcXJ75N3theeKUTufo8dMYvycdwQ4Wd",
+      "finishedAt": "2026-04-23T16:43:43.730Z",
+      "durationMs": 500561,
+      "exitCode": 0
+    }
+  ]
+}

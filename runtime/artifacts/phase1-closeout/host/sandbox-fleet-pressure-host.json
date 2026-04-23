@@ -1,0 +1,325 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T17:03:02.643Z",
+  "config": {
+    "sandboxes": 8,
+    "jobsPerSandbox": 3,
+    "waves": 3,
+    "jobDurationMs": 3000,
+    "timeoutSeconds": 120,
+    "image": "node:20-slim",
+    "workspaceAccess": "none",
+    "networkAccess": false
+  },
+  "overallPassed": false,
+  "waves": [
+    {
+      "wave": 1,
+      "startedAt": "2026-04-23T17:02:24.462Z",
+      "finishedAt": "2026-04-23T17:02:36.991Z",
+      "sandboxesStarted": 8,
+      "jobsStarted": 24,
+      "jobsCompleted": 24,
+      "jobResults": [
+        {
+          "sandboxId": "sandbox_ced94b751c",
+          "sandboxJobId": "sjob_ad88bffadf",
+          "processId": "proc_b5242ac8",
+          "durationMs": 4972
+        },
+        {
+          "sandboxId": "sandbox_ced94b751c",
+          "sandboxJobId": "sjob_b87465e917",
+          "processId": "proc_4d92ce16",
+          "durationMs": 5976
+        },
+        {
+          "sandboxId": "sandbox_ced94b751c",
+          "sandboxJobId": "sjob_d657fa1fc8",
+          "processId": "proc_db69d449",
+          "durationMs": 5960
+        },
+        {
+          "sandboxId": "sandbox_c6e3faa2e4",
+          "sandboxJobId": "sjob_f7642ca925",
+          "processId": "proc_c181cd39",
+          "durationMs": 7648
+        },
+        {
+          "sandboxId": "sandbox_c6e3faa2e4",
+          "sandboxJobId": "sjob_ab81d090e8",
+          "processId": "proc_1640fda7",
+          "durationMs": 7621
+        },
+        {
+          "sandboxId": "sandbox_b8f60c7b94",
+          "sandboxJobId": "sjob_49af68fa29",
+          "processId": "proc_945369ed",
+          "durationMs": 7178
+        },
+        {
+          "sandboxId": "sandbox_b8f60c7b94",
+          "sandboxJobId": "sjob_ad65dcea33",
+          "processId": "proc_76a4d6fe",
+          "durationMs": 7156
+        },
+        {
+          "sandboxId": "sandbox_b8f60c7b94",
+          "sandboxJobId": "sjob_e4b8704578",
+          "processId": "proc_890b7df7",
+          "durationMs": 7117
+        },
+        {
+          "sandboxId": "sandbox_c6e3faa2e4",
+          "sandboxJobId": "sjob_f3d53ce475",
+          "processId": "proc_79103af0",
+          "durationMs": 8640
+        },
+        {
+          "sandboxId": "sandbox_315983af45",
+          "sandboxJobId": "sjob_8da0abb0ac",
+          "processId": "proc_bc64ba2b",
+          "durationMs": 7700
+        },
+        {
+          "sandboxId": "sandbox_315983af45",
+          "sandboxJobId": "sjob_bf3dbfa5b4",
+          "processId": "proc_96f804e8",
+          "durationMs": 7675
+        },
+        {
+          "sandboxId": "sandbox_315983af45",
+          "sandboxJobId": "sjob_b6384ff5af",
+          "processId": "proc_08ff8e0b",
+          "durationMs": 7647
+        },
+        {
+          "sandboxId": "sandbox_0f25d7135e",
+          "sandboxJobId": "sjob_33b4870fb6",
+          "processId": "proc_b68dc730",
+          "durationMs": 7171
+        },
+        {
+          "sandboxId": "sandbox_0f25d7135e",
+          "sandboxJobId": "sjob_e6a2714c99",
+          "processId": "proc_9bcfd200",
+          "durationMs": 7143
+        },
+        {
+          "sandboxId": "sandbox_0f25d7135e",
+          "sandboxJobId": "sjob_62de661bc6",
+          "processId": "proc_f8f2b747",
+          "durationMs": 7118
+        },
+        {
+          "sandboxId": "sandbox_5241700a88",
+          "sandboxJobId": "sjob_b5a6a761e5",
+          "processId": "proc_2a5668d5",
+          "durationMs": 6138
+        },
+        {
+          "sandboxId": "sandbox_8eceefa1ec",
+          "sandboxJobId": "sjob_10856f78f2",
+          "processId": "proc_bbfe7a6b",
+          "durationMs": 7731
+        },
+        {
+          "sandboxId": "sandbox_8eceefa1ec",
+          "sandboxJobId": "sjob_80755bfb3c",
+          "processId": "proc_b9d0e6f9",
+          "durationMs": 7707
+        },
+        {
+          "sandboxId": "sandbox_8eceefa1ec",
+          "sandboxJobId": "sjob_4ff4e93262",
+          "processId": "proc_cec42b7a",
+          "durationMs": 7676
+        },
+        {
+          "sandboxId": "sandbox_5241700a88",
+          "sandboxJobId": "sjob_bcc2338f29",
+          "processId": "proc_97d1a29d",
+          "durationMs": 7185
+        },
+        {
+          "sandboxId": "sandbox_5241700a88",
+          "sandboxJobId": "sjob_0bfb9ce52e",
+          "processId": "proc_f20a2d64",
+          "durationMs": 7140
+        },
+        {
+          "sandboxId": "sandbox_edbe4dbe97",
+          "sandboxJobId": "sjob_274c22b146",
+          "processId": "proc_b467b5d8",
+          "durationMs": 6537
+        },
+        {
+          "sandboxId": "sandbox_edbe4dbe97",
+          "sandboxJobId": "sjob_bbd9e3737f",
+          "processId": "proc_a3a9bef6",
+          "durationMs": 6474
+        },
+        {
+          "sandboxId": "sandbox_edbe4dbe97",
+          "sandboxJobId": "sjob_2205cbcc46",
+          "processId": "proc_b1ff4bc7",
+          "durationMs": 6405
+        }
+      ]
+    },
+    {
+      "wave": 2,
+      "startedAt": "2026-04-23T17:02:38.884Z",
+      "finishedAt": "2026-04-23T17:02:51.218Z",
+      "sandboxesStarted": 8,
+      "jobsStarted": 24,
+      "jobsCompleted": 24,
+      "jobResults": [
+        {
+          "sandboxId": "sandbox_8dc384499c",
+          "sandboxJobId": "sjob_2ddadaed26",
+          "processId": "proc_5f5439e9",
+          "durationMs": 5478
+        },
+        {
+          "sandboxId": "sandbox_8dc384499c",
+          "sandboxJobId": "sjob_36eb9554fb",
+          "processId": "proc_0bef53f4",
+          "durationMs": 5439
+        },
+        {
+          "sandboxId": "sandbox_8dc384499c",
+          "sandboxJobId": "sjob_12152c397b",
+          "processId": "proc_5555ed37",
+          "durationMs": 5425
+        },
+        {
+          "sandboxId": "sandbox_6b19bd0460",
+          "sandboxJobId": "sjob_cf2fd7145a",
+          "processId": "proc_6e9cc66c",
+          "durationMs": 6066
+        },
+        {
+          "sandboxId": "sandbox_6b19bd0460",
+          "sandboxJobId": "sjob_5dd4e121f7",
+          "processId": "proc_68479610",
+          "durationMs": 7052
+        },
+        {
+          "sandboxId": "sandbox_6b19bd0460",
+          "sandboxJobId": "sjob_d1c59ffdd5",
+          "processId": "proc_79199d4b",
+          "durationMs": 7020
+        },
+        {
+          "sandboxId": "sandbox_4986c65495",
+          "sandboxJobId": "sjob_70af9b550a",
+          "processId": "proc_263fe77c",
+          "durationMs": 6573
+        },
+        {
+          "sandboxId": "sandbox_4986c65495",
+          "sandboxJobId": "sjob_2d1ae5b64f",
+          "processId": "proc_f4367668",
+          "durationMs": 6538
+        },
+        {
+          "sandboxId": "sandbox_4986c65495",
+          "sandboxJobId": "sjob_bef80c2533",
+          "processId": "proc_f470a96e",
+          "durationMs": 6511
+        },
+        {
+          "sandboxId": "sandbox_f50fbe2d4d",
+          "sandboxJobId": "sjob_2a1bfb952f",
+          "processId": "proc_80ea73e8",
+          "durationMs": 6088
+        },
+        {
+          "sandboxId": "sandbox_f50fbe2d4d",
+          "sandboxJobId": "sjob_58317df9b4",
+          "processId": "proc_e187fa88",
+          "durationMs": 7066
+        },
+        {
+          "sandboxId": "sandbox_f50fbe2d4d",
+          "sandboxJobId": "sjob_a4c0553daf",
+          "processId": "proc_1234fdc9",
+          "durationMs": 7017
+        },
+        {
+          "sandboxId": "sandbox_08543dc459",
+          "sandboxJobId": "sjob_27646c4bbf",
+          "processId": "proc_777e0a83",
+          "durationMs": 6627
+        },
+        {
+          "sandboxId": "sandbox_08543dc459",
+          "sandboxJobId": "sjob_362d69a536",
+          "processId": "proc_30b14d4e",
+          "durationMs": 6603
+        },
+        {
+          "sandboxId": "sandbox_08543dc459",
+          "sandboxJobId": "sjob_7ffb4b4c10",
+          "processId": "proc_52be4bab",
+          "durationMs": 6568
+        },
+        {
+          "sandboxId": "sandbox_bc86625c43",
+          "sandboxJobId": "sjob_ed2dcb4d0b",
+          "processId": "proc_32d52748",
+          "durationMs": 5763
+        },
+        {
+          "sandboxId": "sandbox_437b05b1ed",
+          "sandboxJobId": "sjob_6e1b644fcf",
+          "processId": "proc_e62bb265",
+          "durationMs": 7216
+        },
+        {
+          "sandboxId": "sandbox_437b05b1ed",
+          "sandboxJobId": "sjob_c7da141ae1",
+          "processId": "proc_793981b3",
+          "durationMs": 7188
+        },
+        {
+          "sandboxId": "sandbox_437b05b1ed",
+          "sandboxJobId": "sjob_f8b44c9c45",
+          "processId": "proc_eec1f46d",
+          "durationMs": 7166
+        },
+        {
+          "sandboxId": "sandbox_bc86625c43",
+          "sandboxJobId": "sjob_0d7bd878af",
+          "processId": "proc_60bd972e",
+          "durationMs": 6733
+        },
+        {
+          "sandboxId": "sandbox_bc86625c43",
+          "sandboxJobId": "sjob_16e6422315",
+          "processId": "proc_a7e110ea",
+          "durationMs": 6713
+        },
+        {
+          "sandboxId": "sandbox_1eedbaa870",
+          "sandboxJobId": "sjob_bb37da6519",
+          "processId": "proc_5437137e",
+          "durationMs": 6393
+        },
+        {
+          "sandboxId": "sandbox_1eedbaa870",
+          "sandboxJobId": "sjob_f4fc717e48",
+          "processId": "proc_d1c3383d",
+          "durationMs": 6289
+        },
+        {
+          "sandboxId": "sandbox_1eedbaa870",
+          "sandboxJobId": "sjob_d29ac94033",
+          "processId": "proc_0e55c17f",
+          "durationMs": 6240
+        }
+      ]
+    }
+  ]
+}

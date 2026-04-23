@@ -82,6 +82,8 @@ import {
 } from "./daemon.js";
 
 const CHROMIUM_SHIM_DIR_SEGMENTS = [".agenc", "bin"] as const;
+const DEFAULT_SANDBOX_MAX_TRACKED_JOBS_ENV =
+  "AGENC_SYSTEM_SANDBOX_MAX_TRACKED_JOBS";
 
 function prependPathEntry(
   pathValue: string | undefined,
@@ -95,6 +97,14 @@ function prependPathEntry(
     return entries.join(delimiter);
   }
   return [entry, ...entries].join(delimiter);
+}
+
+function resolvePositiveIntegerEnv(
+  value: string | undefined,
+): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 // ============================================================================
@@ -271,6 +281,9 @@ export async function createDaemonToolRegistry(
         configPath,
         daemonCwd: process.cwd(),
       }),
+      maxTrackedJobs: resolvePositiveIntegerEnv(
+        process.env[DEFAULT_SANDBOX_MAX_TRACKED_JOBS_ENV],
+      ),
     }),
   );
   registry.registerAll(
