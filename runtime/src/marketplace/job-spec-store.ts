@@ -648,6 +648,22 @@ export function normalizeJobSpecReferenceUri(input: string, hash: string, field:
   if (!parsed.hostname) {
     throw new Error(`${field} must include a hostname`);
   }
+  if (uri.includes("{hash}")) {
+    return uri.replaceAll("{hash}", hash);
+  }
+
+  const segments = parsed.pathname.split("/");
+  const lastSegment = segments.at(-1) ?? "";
+  if (HASH_RE.test(lastSegment) && lastSegment !== hash) {
+    segments[segments.length - 1] = hash;
+    parsed.pathname = segments.join("/");
+    return parsed.toString();
+  }
+  if (parsed.pathname.endsWith("/")) {
+    parsed.pathname = `${parsed.pathname}${hash}`;
+    return parsed.toString();
+  }
+
   return uri;
 }
 
