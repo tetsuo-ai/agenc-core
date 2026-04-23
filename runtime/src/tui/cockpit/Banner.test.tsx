@@ -15,6 +15,7 @@ import { describe, expect, test } from "vitest";
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
 import type { DOMElement } from "../ink/dom.js";
+import { charInCellAt } from "../ink/screen.js";
 import {
   ClockContext,
   createClock,
@@ -94,6 +95,23 @@ function getRoot(stdout: PassThrough): DOMElement {
   return instance.rootNode;
 }
 
+function latestFrameRows(stdout: PassThrough): string[] {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return [];
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen as never, x, y) ?? " ";
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
 /**
  * Build a minimal controllable clock so we can force the animation tick
  * deterministically without the real Ink clock driving us.
@@ -127,6 +145,17 @@ function createControllableClock(): {
 }
 
 describe("Banner", () => {
+  test("keeps the right border flush with the rendered frame edge", async () => {
+    const { stdout, unmount } = await mount(<Banner mode="default" />);
+    const rows = latestFrameRows(stdout).filter((row) => row.trim().length > 0);
+
+    expect(rows[0]?.trimEnd().endsWith("╮")).toBe(true);
+    expect(rows[1]?.trimEnd().endsWith("│")).toBe(true);
+    expect(rows[2]?.trimEnd().endsWith("╯")).toBe(true);
+
+    unmount();
+  });
+
   test("renders with default mode", async () => {
     const { stdout, unmount } = await mount(<Banner mode="default" />);
     const text = collectText(getRoot(stdout));

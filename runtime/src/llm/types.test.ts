@@ -1,0 +1,50 @@
+import { describe, expect, test } from "vitest";
+
+import { validateToolCallDetailed } from "./types.js";
+
+describe("validateToolCallDetailed", () => {
+  test("normalizes plain-string file arguments for readFile", () => {
+    const result = validateToolCallDetailed({
+      id: "call-1",
+      name: "system.readFile",
+      arguments: "PLAN.MD",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-1",
+      name: "system.readFile",
+      arguments: JSON.stringify({ path: "PLAN.MD" }),
+    });
+  });
+
+  test("normalizes JSON string bash arguments into the command field", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2",
+      name: "system.bash",
+      arguments: JSON.stringify("pwd"),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2",
+      name: "system.bash",
+      arguments: JSON.stringify({ command: "pwd" }),
+    });
+  });
+
+  test("keeps malformed structured file arguments from being rewrapped as a fake path", () => {
+    const result = validateToolCallDetailed({
+      id: "call-3",
+      name: "system.readFile",
+      arguments: "{}\nPLAN.MD",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-3",
+      name: "system.readFile",
+      arguments: JSON.stringify({}),
+    });
+  });
+});

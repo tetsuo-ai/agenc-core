@@ -215,6 +215,30 @@ describe("Composer", () => {
     // Nothing to tear down — each test uses its own tmp HOME.
   });
 
+  test("keeps the right border flush with the rendered frame edge", async () => {
+    const emitter = new EventEmitter();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={() => undefined}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+    const rows = latestFrameText(stdout)
+      .split("\n")
+      .filter((row) => row.trim().length > 0);
+
+    expect(rows[0]?.trimEnd().endsWith("╮")).toBe(true);
+    expect(rows[1]?.trimEnd().endsWith("│")).toBe(true);
+    expect(rows[2]?.trimEnd().endsWith("│")).toBe(true);
+    expect(rows[3]?.trimEnd().endsWith("╯")).toBe(true);
+
+    unmount();
+  });
+
   test("renders without throwing on an empty initial state", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();

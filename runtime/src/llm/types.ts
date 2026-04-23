@@ -103,6 +103,58 @@ interface ToolCallValidationResult {
   readonly failure?: ToolCallValidationFailure;
 }
 
+const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
+  "system.bash": "command",
+  "system.readFile": "path",
+  "system.writeFile": "path",
+  "system.appendFile": "path",
+  "system.editFile": "path",
+  "system.listDir": "path",
+  "system.stat": "path",
+  "system.mkdir": "path",
+  "system.delete": "path",
+  "system.glob": "pattern",
+};
+
+function isBlankString(value: string): boolean {
+  return value.trim().length === 0;
+}
+
+function isLikelyStructuredObjectLiteral(value: string): boolean {
+  return /^\s*\{\s*['"]?\w+['"]?\s*:/.test(value);
+}
+
+function shouldTreatMalformedArgumentsAsStructuredLiteral(
+  toolName: string,
+  value: string,
+): boolean {
+  if (isLikelyStructuredObjectLiteral(value)) {
+    return true;
+  }
+  // openclaude preserves Bash's plain-string command mode even when the
+  // command starts with bracket syntax (`[ -f foo ] && pwd`, `{ pwd; }`).
+  // File/path tools do not have that escape hatch: if their arguments start
+  // with JSON-like delimiters but failed to parse, keep them as malformed
+  // structured input instead of converting the entire blob into a fake path.
+  if (toolName === "system.bash") {
+    return false;
+  }
+  return /^\s*[\[{]/.test(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function wrapPlainStringToolArguments(
+  toolName: string,
+  value: string,
+): Record<string, string> | null {
+  const field = STRING_ARGUMENT_TOOL_FIELDS[toolName];
+  if (!field) return null;
+  return { [field]: value };
+}
+
 /**
  * Token usage statistics
  */
@@ -663,19 +715,38 @@ function decodeHtmlEntitiesDeep(value: unknown): unknown {
   );
 }
 
-function parseToolArguments(
+function normalizeToolArguments(
+  toolName: string,
   argumentsRaw: string,
 ): { value: unknown } | null {
+  const finalizeParsed = (value: unknown): { value: unknown } => {
+    if (isRecord(value)) {
+      return { value };
+    }
+    if (typeof value === "string" && !isBlankString(value)) {
+      return {
+        value: wrapPlainStringToolArguments(toolName, value) ?? value,
+      };
+    }
+    return { value };
+  };
   try {
-    return {
-      value: JSON.parse(argumentsRaw) as unknown,
-    };
+    return finalizeParsed(JSON.parse(argumentsRaw) as unknown);
   } catch {
     try {
-      return {
-        value: JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown,
-      };
+      return finalizeParsed(JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown);
     } catch {
+      const decoded = decodeHtmlEntities(argumentsRaw);
+      if (
+        isBlankString(decoded) ||
+        shouldTreatMalformedArgumentsAsStructuredLiteral(toolName, decoded)
+      ) {
+        return { value: {} };
+      }
+      const wrapped = wrapPlainStringToolArguments(toolName, decoded);
+      if (wrapped) {
+        return { value: wrapped };
+      }
       return null;
     }
   }
@@ -735,7 +806,7 @@ export function validateToolCallDetailed(
     };
   }
 
-  const parsedResult = parseToolArguments(argumentsRaw);
+  const parsedResult = normalizeToolArguments(name, argumentsRaw);
   if (!parsedResult) {
     return {
       toolCall: null,
