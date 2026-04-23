@@ -1,6 +1,5 @@
 import type { LLMContentPart, LLMMessage } from "../types.js";
-import { roughTokenCountEstimation } from "../../services/tokenEstimation.js";
-
+import { roughTokenCountEstimation } from './_deps/token-counts.js';
 const SNIP_CLEAR_MESSAGE = "[Old tool result content cleared]";
 const SNIP_BOUNDARY_MESSAGE = "[snip] tool result content cleared";
 const SNIP_CLEAR_THRESHOLD_BYTES = 8 * 1024;

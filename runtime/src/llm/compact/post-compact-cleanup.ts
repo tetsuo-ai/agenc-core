@@ -1,12 +1,12 @@
 import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../constants/querySource.js'
-import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
-import { getUserContext } from '../../context.js'
+import { clearSystemPromptSections } from './_deps/system-prompt.js';
+import { getUserContext } from './_deps/no-op.js';
 import { clearAllResponseIds } from '../grok/incremental.js'
-import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
-import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
-import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
-import { clearBetaTracingState } from '../../utils/telemetry/betaSessionTracing.js'
+import { clearSpeculativeChecks } from './_deps/no-op.js';
+import { clearClassifierApprovals } from './_deps/no-op.js';
+import { resetGetMemoryFilesCache } from './_deps/no-op.js';
+import { clearBetaTracingState } from './_deps/no-op.js';
 import { resetMicrocompactState } from './micro-compact.js'
 import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
 

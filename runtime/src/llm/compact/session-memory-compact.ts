@@ -4,34 +4,20 @@
 
 import type { AgentId } from '../../types/ids.js'
 import type { HookResultMessage, Message } from '../../types/message.js'
-import { logForDebugging } from '../../utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { errorMessage } from '../../utils/errors.js'
-import {
-  createCompactBoundaryMessage,
-  createUserMessage,
-  isCompactBoundaryMessage,
-} from '../../utils/messages.js'
-import { getMainLoopModel } from '../../utils/model/model.js'
-import { getSessionMemoryPath } from '../../utils/permissions/filesystem.js'
-import { processSessionStartHooks } from '../../utils/sessionStart.js'
-import { tokenCountFromLastAPIResponse } from '../../utils/tokens.js'
+import { logForDebugging } from './_deps/utils.js';
+import { isEnvTruthy } from './_deps/utils.js';
+import { errorMessage } from './_deps/utils.js';
+import { createCompactBoundaryMessage, createUserMessage, isCompactBoundaryMessage } from './_deps/messages.js';
+import { getMainLoopModel } from './_deps/model-info.js';
+import { getSessionMemoryPath } from './_deps/session-memory.js';
+import { processSessionStartHooks } from './_deps/hooks.js';
+import { tokenCountFromLastAPIResponse } from './_deps/token-counts.js';
 import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
-import { extractDiscoveredToolNames } from '../../utils/toolSearch.js'
-import {
-  getDynamicConfig_BLOCKS_ON_INIT,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-} from '../../services/analytics/growthbook.js'
-import { logEvent } from '../../services/analytics/index.js'
-import {
-  isSessionMemoryEmpty,
-  truncateSessionMemoryForCompact,
-} from '../../services/SessionMemory/prompts.js'
-import {
-  getLastSummarizedMessageId,
-  getSessionMemoryContent,
-  waitForSessionMemoryExtraction,
-} from '../../services/SessionMemory/sessionMemoryUtils.js'
+import { extractDiscoveredToolNames } from './_deps/tool-search.js';
+import { getDynamicConfig_BLOCKS_ON_INIT, getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
+import { logEvent } from './_deps/no-op.js';
+import { isSessionMemoryEmpty, truncateSessionMemoryForCompact } from './_deps/session-memory.js';
+import { getLastSummarizedMessageId, getSessionMemoryContent, waitForSessionMemoryExtraction } from './_deps/session-memory.js';
 import {
   annotateBoundaryWithPreservedSegment,
   buildPostCompactMessages,
@@ -487,7 +473,7 @@ function createCompactionResultFromSessionMemory(
   return {
     boundaryMarker: annotateBoundaryWithPreservedSegment(
       boundaryMarker,
-      summaryMessages[summaryMessages.length - 1]!.uuid,
+      summaryMessages[summaryMessages.length - 1]!.uuid as `${string}-${string}-${string}-${string}-${string}`,
       messagesToKeep,
     ),
     summaryMessages,

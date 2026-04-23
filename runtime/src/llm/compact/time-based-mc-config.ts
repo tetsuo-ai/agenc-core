@@ -1,5 +1,4 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-
+import { getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
 /**
  * GrowthBook config for time-based microcompact.
  *

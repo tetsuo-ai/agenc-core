@@ -1,18 +1,18 @@
 import { feature } from 'bun:bundle'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { Message } from '../../types/message.js'
-import { getGlobalConfig } from '../../utils/config.js'
-import { getContextWindowForModel } from '../../utils/context.js'
-import { logForDebugging } from '../../utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
+import { getGlobalConfig } from './_deps/config.js';
+import { getContextWindowForModel } from './_deps/model-info.js';
+import { logForDebugging } from './_deps/utils.js';
+import { isEnvTruthy } from './_deps/utils.js';
+import { hasExactErrorMessage } from './_deps/utils.js';
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import { logError } from '../../utils/log.js'
-import { tokenCountWithEstimation } from '../../utils/tokens.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import { getMaxOutputTokensForModel } from '../../services/api/claude.js'
-import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.js'
-import { setLastSummarizedMessageId } from '../../services/SessionMemory/sessionMemoryUtils.js'
+import { logError } from './_deps/utils.js';
+import { tokenCountWithEstimation } from './_deps/token-counts.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
+import { getMaxOutputTokensForModel } from './_deps/model-info.js';
+import { notifyCompaction } from './_deps/no-op.js';
+import { setLastSummarizedMessageId } from './_deps/session-memory.js';
 import {
   type CompactionResult,
   createReferenceContextMessages,

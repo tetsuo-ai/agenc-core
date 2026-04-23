@@ -13,10 +13,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool } from '../../Tool.js'
 import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
-import {
-  FILE_READ_TOOL_NAME,
-  FILE_UNCHANGED_STUB,
-} from '../../tools/FileReadTool/prompt.js'
+import { FILE_READ_TOOL_NAME, FILE_UNCHANGED_STUB } from './_deps/tool-names.js';
 import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
 import type { AgentId } from '../../types/ids.js'
 import type {
@@ -29,89 +26,47 @@ import type {
   SystemMessage,
   UserMessage,
 } from '../../types/message.js'
-import {
-  createAttachmentMessage,
-  generateFileAttachment,
-  getAgentListingDeltaAttachment,
-  getDeferredToolsDeltaAttachment,
-  getMcpInstructionsDeltaAttachment,
-} from '../../utils/attachments.js'
-import { getMemoryPath } from '../../utils/config.js'
-import { COMPACT_MAX_OUTPUT_TOKENS } from '../../utils/context.js'
-import {
-  analyzeContext,
-  tokenStatsToStatsigMetrics,
-} from '../../utils/contextAnalysis.js'
-import { logForDebugging } from '../../utils/debug.js'
-import { hasExactErrorMessage } from '../../utils/errors.js'
-import { cacheToObject } from '../../utils/fileStateCache.js'
+import { createAttachmentMessage, generateFileAttachment, getAgentListingDeltaAttachment, getDeferredToolsDeltaAttachment, getMcpInstructionsDeltaAttachment } from './_deps/attachments.js';
+import { getMemoryPath } from './_deps/config.js';
+import { COMPACT_MAX_OUTPUT_TOKENS } from './_deps/model-info.js';
+import { analyzeContext, tokenStatsToStatsigMetrics } from './_deps/analytics.js';
+import { logForDebugging } from './_deps/utils.js';
+import { hasExactErrorMessage } from './_deps/utils.js';
+import { cacheToObject } from './_deps/utils.js';
 import {
   type CacheSafeParams,
   runForkedAgent,
 } from '../../utils/forkedAgent.js'
-import {
-  executePostCompactHooks,
-  executePreCompactHooks,
-} from '../../utils/hooks.js'
-import { logError } from '../../utils/log.js'
+import { executePostCompactHooks, executePreCompactHooks } from './_deps/hooks.js';
+import { logError } from './_deps/utils.js';
 import { MEMORY_TYPE_VALUES } from '../../utils/memory/types.js'
-import {
-  createCompactBoundaryMessage,
-  createUserMessage,
-  getAssistantMessageText,
-  getLastAssistantMessage,
-  getMessagesAfterCompactBoundary,
-  isCompactBoundaryMessage,
-  normalizeMessagesForAPI,
-} from '../../utils/messages.js'
-import { expandPath } from '../../utils/path.js'
-import { getPlan, getPlanFilePath } from '../../utils/plans.js'
-import { getProjectInstructionFilePaths } from '../../utils/projectInstructions.js'
-import {
-  isSessionActivityTrackingActive,
-  sendSessionActivitySignal,
-} from '../../utils/sessionActivity.js'
-import { processSessionStartHooks } from '../../utils/sessionStart.js'
+import { createCompactBoundaryMessage, createUserMessage, getAssistantMessageText, getLastAssistantMessage, getMessagesAfterCompactBoundary, isCompactBoundaryMessage, normalizeMessagesForAPI } from './_deps/messages.js';
+import { expandPath } from './_deps/utils.js';
+import { getPlan, getPlanFilePath } from './_deps/file-paths.js';
+import { getProjectInstructionFilePaths } from './_deps/file-paths.js';
+import { isSessionActivityTrackingActive, sendSessionActivitySignal } from './_deps/no-op.js';
+import { processSessionStartHooks } from './_deps/hooks.js';
 import {
   getSessionDir,
   readIndexSnapshot,
 } from '../../session/session-store.js'
 import type { CompactedItem, ResponseItem } from '../../session/rollout-item.js'
-import { sleep } from '../../utils/sleep.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { sleep } from './_deps/utils.js';
+import { jsonStringify } from './_deps/utils.js';
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { asSystemPrompt } from '../../utils/systemPromptType.js'
-import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
-import {
-  getTokenUsage,
-  tokenCountFromLastAPIResponse,
-  tokenCountWithEstimation,
-} from '../../utils/tokens.js'
-import {
-  extractDiscoveredToolNames,
-  isToolSearchEnabled,
-} from '../../utils/toolSearch.js'
+import { asSystemPrompt } from './_deps/utils.js';
+import { getTaskOutputPath } from './_deps/file-paths.js';
+import { getTokenUsage, tokenCountFromLastAPIResponse, tokenCountWithEstimation } from './_deps/token-counts.js';
+import { extractDiscoveredToolNames, isToolSearchEnabled } from './_deps/tool-search.js';
 import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
-import {
-  getMaxOutputTokensForModel,
-  queryModelWithStreaming,
-} from '../../services/api/claude.js'
-import {
-  getPromptTooLongTokenGap,
-  PROMPT_TOO_LONG_ERROR_MESSAGE,
-  startsWithApiErrorPrefix,
-} from '../../services/api/errors.js'
-import { notifyCompaction } from '../../services/api/promptCacheBreakDetection.js'
-import { getRetryDelay } from '../../services/api/withRetry.js'
-import {
-  roughTokenCountEstimation,
-  roughTokenCountEstimationForMessages,
-} from '../../services/tokenEstimation.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from './_deps/no-op.js';
+import { getMaxOutputTokensForModel } from './_deps/model-info.js';
+import { queryModelWithStreaming } from '../../services/api/claude.js';
+import { getPromptTooLongTokenGap, PROMPT_TOO_LONG_ERROR_MESSAGE, startsWithApiErrorPrefix } from './_deps/api-errors.js';
+import { notifyCompaction } from './_deps/no-op.js';
+import { getRetryDelay } from './_deps/no-op.js';
+import { roughTokenCountEstimation, roughTokenCountEstimationForMessages } from './_deps/token-counts.js';
 import { groupMessagesByApiRound } from './grouping.js'
 import {
   getCompactPrompt,
@@ -1454,10 +1409,10 @@ export async function compactConversation(
       compactionCacheCreationTokens:
         compactionUsage?.cache_creation_input_tokens ?? 0,
       compactionTotalTokens: compactionUsage
-        ? compactionUsage.input_tokens +
+        ? (compactionUsage.input_tokens ?? 0) +
           (compactionUsage.cache_creation_input_tokens ?? 0) +
           (compactionUsage.cache_read_input_tokens ?? 0) +
-          compactionUsage.output_tokens
+          (compactionUsage.output_tokens ?? 0)
         : 0,
       promptCacheSharingEnabled,
       // analyzeContext walks every content block (~11ms on a 4.5K-message

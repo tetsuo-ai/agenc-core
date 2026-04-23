@@ -1,5 +1,4 @@
-import { createStore } from '../../state/store.js'
-
+import { createStore } from './_deps/state-store.js';
 /**
  * Tracks whether the "context left until autocompact" warning should be suppressed.
  * We suppress immediately after successful compaction since we don't have accurate

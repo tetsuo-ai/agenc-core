@@ -1,24 +1,21 @@
 import { feature } from 'bun:bundle'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { QuerySource } from '../../constants/querySource.js'
-import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
-import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
-import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
-import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
-import { GREP_TOOL_NAME } from '../../tools/GrepTool/prompt.js'
-import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
-import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from './_deps/tool-names.js';
+import { FILE_READ_TOOL_NAME } from './_deps/tool-names.js';
+import { FILE_WRITE_TOOL_NAME } from './_deps/tool-names.js';
+import { GLOB_TOOL_NAME } from './_deps/tool-names.js';
+import { GREP_TOOL_NAME } from './_deps/tool-names.js';
+import { WEB_FETCH_TOOL_NAME } from './_deps/tool-names.js';
+import { WEB_SEARCH_TOOL_NAME } from './_deps/tool-names.js';
 import type { Message } from '../../types/message.js'
-import { logForDebugging } from '../../utils/debug.js'
-import { getMainLoopModel } from '../../utils/model/model.js'
-import { SHELL_TOOL_NAMES } from '../../utils/shell/shellToolUtils.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
-import {
-  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  logEvent,
-} from '../../services/analytics/index.js'
-import { notifyCacheDeletion } from '../../services/api/promptCacheBreakDetection.js'
-import { roughTokenCountEstimation } from '../../services/tokenEstimation.js'
+import { logForDebugging } from './_deps/utils.js';
+import { getMainLoopModel } from './_deps/model-info.js';
+import { SHELL_TOOL_NAMES } from './_deps/tool-names.js';
+import { jsonStringify } from './_deps/utils.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from './_deps/no-op.js';
+import { notifyCacheDeletion } from './_deps/no-op.js';
+import { roughTokenCountEstimation } from './_deps/token-counts.js';
 import {
   clearCompactWarningSuppression,
   suppressCompactWarning,
