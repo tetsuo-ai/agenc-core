@@ -33,7 +33,7 @@ import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import { theme } from "../theme.js";
 
-import type { SlashCommandResult } from "../../commands/types.js";
+import type { SlashCommandResult } from "../_deps/commands.js";
 
 export interface SlashResultProps {
   /** Raw user input (e.g. `/help` or `/model grok-4`). Rendered as-is. */

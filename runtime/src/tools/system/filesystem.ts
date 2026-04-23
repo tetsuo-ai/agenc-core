@@ -56,7 +56,11 @@ import {
 } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { tmpdir } from "node:os";
-import { resolveSessionWorkspaceRoot } from "../../gateway/host-workspace.js";
+// Inline lean replacement (gateway/host-workspace.js was deleted).
+function resolveSessionWorkspaceRoot(entry?: string): string {
+  if (typeof entry === "string" && entry.length > 0) return entry;
+  return process.env.AGENC_WORKSPACE ?? process.cwd();
+}
 import { addLineNumbers } from "../../utils/file.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";

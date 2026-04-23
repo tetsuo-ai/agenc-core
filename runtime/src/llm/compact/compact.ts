@@ -9,9 +9,12 @@ const sessionTranscriptModule = feature('KAIROS')
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { QuerySource } from '../../constants/querySource.js'
-import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import type { Tool } from '../../Tool.js'
-import type { LocalAgentTaskState } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type CanUseToolFn = (...args: any[]) => any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Tool = any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LocalAgentTaskState = any
 import { FileReadTool } from '../../tools/FileReadTool/FileReadTool.js'
 import { FILE_READ_TOOL_NAME, FILE_UNCHANGED_STUB } from './_deps/tool-names.js';
 import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'

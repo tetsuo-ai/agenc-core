@@ -21,7 +21,7 @@
  * @module
  */
 
-import type { SlashCommandResult } from "../../commands/types.js";
+import type { SlashCommandResult } from "../_deps/commands.js";
 import type { PhaseEvent } from "../../phases/events.js";
 import type { EventMsg } from "../../session/event-log.js";
 import type { TranscriptMessage } from "../transcript/MessageList.js";

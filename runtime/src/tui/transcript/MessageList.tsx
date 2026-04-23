@@ -34,7 +34,7 @@ import { StreamingMessage } from "./StreamingMessage.js";
 import { ExecCell, collapseOutput } from "./ExecCell.js";
 import { PlanProgress, type PlanEvent } from "./PlanProgress.js";
 import { SlashResultRenderer } from "./SlashResultRenderer.js";
-import type { SlashCommandResult } from "../../commands/types.js";
+import type { SlashCommandResult } from "../_deps/commands.js";
 import { sanitizeTranscriptText } from "./sanitize.js";
 
 /* ────────────────────────────────────────────────────────────────────── */

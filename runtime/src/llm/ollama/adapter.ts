@@ -32,7 +32,7 @@ import {
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import { safeStringify } from "../../tools/types.js";
-import { resolveContextWindowProfile } from "../../gateway/context-window.js";
+import { resolveContextWindowProfile } from "../_deps/context-window.js";
 import { withOllamaHealthSidecar } from "../providers/ollama/health.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
