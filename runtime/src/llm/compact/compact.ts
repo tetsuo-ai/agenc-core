@@ -33,10 +33,7 @@ import { analyzeContext, tokenStatsToStatsigMetrics } from './_deps/analytics.js
 import { logForDebugging } from './_deps/utils.js';
 import { hasExactErrorMessage } from './_deps/utils.js';
 import { cacheToObject } from './_deps/utils.js';
-import {
-  type CacheSafeParams,
-  runForkedAgent,
-} from '../../utils/forkedAgent.js'
+import { type CacheSafeParams, runForkedAgent } from './_deps/fork-agent.js';
 import { executePostCompactHooks, executePreCompactHooks } from './_deps/hooks.js';
 import { logError } from './_deps/utils.js';
 import { MEMORY_TYPE_VALUES } from '../../utils/memory/types.js'
@@ -62,7 +59,7 @@ import type { CompactRuntimeContext } from '../../session/compact-runtime-contex
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from './_deps/no-op.js';
 import { getMaxOutputTokensForModel } from './_deps/model-info.js';
-import { queryModelWithStreaming } from '../../services/api/claude.js';
+import { queryModelWithStreaming } from './_deps/api-client.js';
 import { getPromptTooLongTokenGap, PROMPT_TOO_LONG_ERROR_MESSAGE, startsWithApiErrorPrefix } from './_deps/api-errors.js';
 import { notifyCompaction } from './_deps/no-op.js';
 import { getRetryDelay } from './_deps/no-op.js';

@@ -6,7 +6,7 @@ import { getContextWindowForModel } from './_deps/model-info.js';
 import { logForDebugging } from './_deps/utils.js';
 import { isEnvTruthy } from './_deps/utils.js';
 import { hasExactErrorMessage } from './_deps/utils.js';
-import type { CacheSafeParams } from '../../utils/forkedAgent.js'
+import type { CacheSafeParams } from './_deps/fork-agent.js';
 import { logError } from './_deps/utils.js';
 import { tokenCountWithEstimation } from './_deps/token-counts.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
