@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
 import type { QuerySource } from './_deps/query-source.js'
 import { clearSystemPromptSections } from './_deps/system-prompt.js';
-import { getUserContext } from './_deps/no-op.js';
+import { getUserContext, getSystemContext } from '../../session/_deps/system-prompt.js';
 import { clearAllResponseIds } from '../grok/incremental.js'
 import { clearSpeculativeChecks } from './_deps/no-op.js';
 import { clearClassifierApprovals } from './_deps/no-op.js';
@@ -69,14 +69,15 @@ export function runPostCompactCleanup(
     }
   }
   if (isMainThreadCompact) {
-    // getUserContext is a memoized outer layer wrapping getClaudeMds() →
-    // getMemoryFiles(). If only the inner getMemoryFiles cache is cleared,
-    // the next turn hits the getUserContext cache and never reaches
-    // getMemoryFiles(), so the armed InstructionsLoaded hook never fires.
-    // Manual /compact already clears this explicitly at its call sites;
-    // auto-compact and reactive-compact did not — this centralizes the
-    // clear so all compaction paths behave consistently.
+    // getUserContext is a memoized outer layer over project-memory +
+    // current-date reads; getSystemContext is a memoized git-status
+    // snapshot. Both are stale after compaction. Manual /compact also
+    // clears getUserContext at its call sites; this centralizes the
+    // clear so auto-compact and reactive-compact behave consistently
+    // (and clears the gut-only getSystemContext cache, which upstream
+    // does not have as a separate cache layer).
     getUserContext.cache.clear?.()
+    getSystemContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
   }
   clearSystemPromptSections()

@@ -45,15 +45,12 @@ export function clearBetaTracingState(): void {}
 
 export function resetGetMemoryFilesCache(_reason?: string): void {}
 
-interface UserContextFn {
-  (): Promise<Record<string, string>>;
-  cache: { clear: () => void };
-}
-
-const _userContextFn = (() => Promise.resolve({})) as unknown as UserContextFn;
-_userContextFn.cache = { clear: () => {} };
-
-export const getUserContext: UserContextFn = _userContextFn;
+// `getUserContext` is intentionally NOT re-exported from this stub module.
+// post-compact-cleanup imports the real implementation directly from
+// `session/_deps/system-prompt.ts` so the cache it clears is the same one
+// the prompt assembly populates. A stub here would silently make the
+// post-compact reset a no-op, leaving the next turn with stale project
+// memory + date.
 
 export function isSessionActivityTrackingActive(): boolean {
   return false;
