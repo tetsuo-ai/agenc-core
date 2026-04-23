@@ -56,18 +56,16 @@ Current status:
 
 - baseline host drill passed
 - supported-capacity host drill (`8 sandboxes x 3 jobs x 2 waves`) passed
-- the documented higher-pressure profile (`8 x 3 x 3`) failed on wave 3 with:
-  - `system_sandbox.blocked`
-  - `Too many sandbox jobs are already tracked`
-  - `maxJobs: 64`
+- the documented higher-pressure profile (`8 x 3 x 3`) now also passes on the real host after explicitly raising the tracked-job ceiling:
+  - `maxTrackedJobs: 96`
+  - `overallPassed: true`
+  - all `3` waves completed with `24` jobs each
 
 Interpretation:
 
 - the sandbox fleet drill has now been executed on the real runtime host class
-- the host is healthy at baseline and a meaningful supported-capacity profile
-- there is still a real capacity ceiling at `64` tracked sandbox jobs that needs either:
-  - an explicit launch-limit signoff, or
-  - a fix plus re-drill of the documented higher-pressure profile
+- the host is healthy at baseline, supported-capacity, and the documented higher-pressure profile
+- the launch-relevant pressure blocker is closed, with the chosen runtime ceiling now recorded in the host artifact
 
 ### Operator live drill on the actual runtime host
 
@@ -85,43 +83,30 @@ What passed on-host:
 - compiler version rollback control
 - dependency fail-closed denial and restore
 - synthetic policy-failure and domain-denial alert emission
-
-What is still blocked:
-
-- real alert routing to pager / Slack / incident room
-- human acknowledgement timing evidence
-- real on-call response evidence
+- real alert routing to a primary and backup destination
+- human receipt and acknowledgement timing evidence
+- explicit first-response step capture
 
 Interpretation:
 
 - we now have real runtime-host control-plane evidence for the operator drill itself
-- however, the production-only parts of the drill remain incomplete because no real alert destination or human acknowledgement path was discoverable on this host during the drill
-- this means the operator live drill is **partially complete, but not closed**
+- the production-only route is now exercised end to end:
+  - primary alert destination delivered
+  - backup alert destination delivered
+  - receiver seen time recorded
+  - acknowledgement time recorded
+  - first containment step recorded
+- this closes the operator live-drill blocker for Phase 1
 
 ## Remaining blockers
 
-### Sandbox capacity signoff or fix
-
-- The runtime host has a reproducible `64` tracked-job ceiling on the documented higher-pressure sandbox profile.
-- Phase 1 closeout still needs either:
-  - a recorded decision that the supported-capacity profile is the launch envelope, or
-  - a runtime fix that raises the ceiling and a green re-run of the higher-pressure artifact.
-
-### Production-only alert routing and on-call evidence
-
-- The drill harness proved synthetic alert emission on the actual runtime host.
-- It did **not** prove that alerts reach a real human destination.
-- Phase 1 still needs:
-  - one real configured alert destination
-  - receipt timestamp
-  - acknowledgement timestamp
-  - an explicit first-response action from the on-call/operator side
+- none identified in this closeout lane
 
 ## Bottom line
 
 - The Phase 1 devnet validation lane is green in both required soak artifacts.
 - The code is materially more resilient to real devnet RPC-rate-limit behavior than it was at the start of this pass.
 - The sandbox fleet drill and operator control drill are now executed on the actual runtime host environment.
-- Phase 1 closeout is **still not fully complete** because:
-  - the documented higher-pressure sandbox profile exposed a real `64` tracked-job ceiling that still needs a launch decision or a fix, and
-  - production-only alert routing / on-call acknowledgement evidence is still missing.
+- Phase 1 closeout evidence for this lane is now complete:
+  - documented higher-pressure sandbox concurrency passed on the host with recorded ceiling `96`
+  - production alert routing and on-call acknowledgement evidence are attached in the host artifact set

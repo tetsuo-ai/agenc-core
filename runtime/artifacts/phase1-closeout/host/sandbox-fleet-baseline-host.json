@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-04-23T17:02:06.113Z",
+  "generatedAt": "2026-04-23T18:17:30.867Z",
   "config": {
     "sandboxes": 4,
     "jobsPerSandbox": 2,
@@ -9,123 +9,124 @@
     "timeoutSeconds": 120,
     "image": "node:20-slim",
     "workspaceAccess": "none",
-    "networkAccess": false
+    "networkAccess": false,
+    "maxTrackedJobs": null
   },
   "overallPassed": true,
   "waves": [
     {
       "wave": 1,
-      "startedAt": "2026-04-23T17:01:41.572Z",
-      "finishedAt": "2026-04-23T17:01:58.843Z",
+      "startedAt": "2026-04-23T18:17:17.585Z",
+      "finishedAt": "2026-04-23T18:17:24.037Z",
       "sandboxesStarted": 4,
       "jobsStarted": 8,
       "jobsCompleted": 8,
       "jobResults": [
         {
-          "sandboxId": "sandbox_23b90ba00b",
-          "sandboxJobId": "sjob_411be20056",
-          "processId": "proc_3a9064f1",
-          "durationMs": 3931
+          "sandboxId": "sandbox_c6f4ef7695",
+          "sandboxJobId": "sjob_f7e0ee7262",
+          "processId": "proc_93c4a80a",
+          "durationMs": 4295
         },
         {
-          "sandboxId": "sandbox_23b90ba00b",
-          "sandboxJobId": "sjob_432c302d7d",
-          "processId": "proc_36da9308",
-          "durationMs": 3926
+          "sandboxId": "sandbox_c6f4ef7695",
+          "sandboxJobId": "sjob_a8dee8c4f6",
+          "processId": "proc_174f33a5",
+          "durationMs": 4289
         },
         {
-          "sandboxId": "sandbox_f3e7b63c0a",
-          "sandboxJobId": "sjob_27ae54dc9a",
-          "processId": "proc_07d05dcd",
-          "durationMs": 3704
+          "sandboxId": "sandbox_c27968c584",
+          "sandboxJobId": "sjob_131be08673",
+          "processId": "proc_9a2f20c1",
+          "durationMs": 4070
         },
         {
-          "sandboxId": "sandbox_f3e7b63c0a",
-          "sandboxJobId": "sjob_78e9df84f5",
-          "processId": "proc_74ed80f0",
-          "durationMs": 3691
+          "sandboxId": "sandbox_c27968c584",
+          "sandboxJobId": "sjob_54539694a4",
+          "processId": "proc_d853b530",
+          "durationMs": 4053
         },
         {
-          "sandboxId": "sandbox_e8f6c70e20",
-          "sandboxJobId": "sjob_dd7a2784e4",
-          "processId": "proc_80974e26",
-          "durationMs": 3408
+          "sandboxId": "sandbox_4edeb727f4",
+          "sandboxJobId": "sjob_4b969fe8e0",
+          "processId": "proc_121427bc",
+          "durationMs": 3698
         },
         {
-          "sandboxId": "sandbox_e8f6c70e20",
-          "sandboxJobId": "sjob_f1294c98a0",
-          "processId": "proc_bc802f3e",
-          "durationMs": 3402
+          "sandboxId": "sandbox_4edeb727f4",
+          "sandboxJobId": "sjob_62b2ed9815",
+          "processId": "proc_771d2b60",
+          "durationMs": 3638
         },
         {
-          "sandboxId": "sandbox_860007257e",
-          "sandboxJobId": "sjob_f3351bb645",
-          "processId": "proc_9d2c5767",
-          "durationMs": 3143
+          "sandboxId": "sandbox_cabccf1466",
+          "sandboxJobId": "sjob_9652cf6744",
+          "processId": "proc_1f58eafd",
+          "durationMs": 3151
         },
         {
-          "sandboxId": "sandbox_860007257e",
-          "sandboxJobId": "sjob_8aeaf6fbce",
-          "processId": "proc_6833e895",
-          "durationMs": 3101
+          "sandboxId": "sandbox_cabccf1466",
+          "sandboxJobId": "sjob_5f71615843",
+          "processId": "proc_72215ca6",
+          "durationMs": 3137
         }
       ]
     },
     {
       "wave": 2,
-      "startedAt": "2026-04-23T17:01:59.619Z",
-      "finishedAt": "2026-04-23T17:02:05.355Z",
+      "startedAt": "2026-04-23T18:17:24.728Z",
+      "finishedAt": "2026-04-23T18:17:29.866Z",
       "sandboxesStarted": 4,
       "jobsStarted": 8,
       "jobsCompleted": 8,
       "jobResults": [
         {
-          "sandboxId": "sandbox_bd6b0f8c7c",
-          "sandboxJobId": "sjob_67d9c80164",
-          "processId": "proc_57a2681f",
-          "durationMs": 2991
+          "sandboxId": "sandbox_a5157d2458",
+          "sandboxJobId": "sjob_34b6b97c92",
+          "processId": "proc_9aff80ef",
+          "durationMs": 2913
         },
         {
-          "sandboxId": "sandbox_bd6b0f8c7c",
-          "sandboxJobId": "sjob_13e7ed0158",
-          "processId": "proc_a8cf3d1a",
-          "durationMs": 2984
+          "sandboxId": "sandbox_a5157d2458",
+          "sandboxJobId": "sjob_585cce5ac7",
+          "processId": "proc_b5e87c03",
+          "durationMs": 3912
         },
         {
-          "sandboxId": "sandbox_44a9dffdd8",
-          "sandboxJobId": "sjob_b5d77f9417",
-          "processId": "proc_04b5229a",
-          "durationMs": 3768
+          "sandboxId": "sandbox_902043cc7c",
+          "sandboxJobId": "sjob_aff4184bb2",
+          "processId": "proc_74f00a11",
+          "durationMs": 3693
         },
         {
-          "sandboxId": "sandbox_44a9dffdd8",
-          "sandboxJobId": "sjob_ca1fff3500",
-          "processId": "proc_694e9985",
-          "durationMs": 3759
+          "sandboxId": "sandbox_902043cc7c",
+          "sandboxJobId": "sjob_4cdec1f94c",
+          "processId": "proc_52a2e7ad",
+          "durationMs": 3678
         },
         {
-          "sandboxId": "sandbox_58c4948e29",
-          "sandboxJobId": "sjob_622eec2e6a",
-          "processId": "proc_5a1cfa83",
-          "durationMs": 3438
+          "sandboxId": "sandbox_d316479570",
+          "sandboxJobId": "sjob_a84ad3489b",
+          "processId": "proc_58d0cc28",
+          "durationMs": 3436
         },
         {
-          "sandboxId": "sandbox_58c4948e29",
-          "sandboxJobId": "sjob_1f401d9a74",
-          "processId": "proc_c75d1b0e",
-          "durationMs": 3422
+          "sandboxId": "sandbox_d316479570",
+          "sandboxJobId": "sjob_e5e6c01e20",
+          "processId": "proc_8dc0168b",
+          "durationMs": 3371
         },
         {
-          "sandboxId": "sandbox_d3871b17ee",
-          "sandboxJobId": "sjob_d7c0c3a85e",
-          "processId": "proc_b47b02f1",
-          "durationMs": 3102
+          "sandboxId": "sandbox_1434091532",
+          "sandboxJobId": "sjob_a7642f2ce3",
+          "processId": "proc_77b45508",
+          "durationMs": 3078
         },
         {
-          "sandboxId": "sandbox_d3871b17ee",
-          "sandboxJobId": "sjob_b1ef84fc2e",
-          "processId": "proc_08aad69a",
-          "durationMs": 3061
+          "sandboxId": "sandbox_1434091532",
+          "sandboxJobId": "sjob_1c5a9ae13f",
+          "processId": "proc_829ae784",
+          "durationMs": 3057
         }
       ]
     }
