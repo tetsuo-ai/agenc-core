@@ -2,11 +2,7 @@ import { defineConfig } from 'tsup';
 
 const entry = [
   'src/index.ts',
-  'src/browser.ts',
-  'src/operator-events.ts',
   'src/bin/agenc.ts',
-  'src/bin/agenc-runtime.ts',
-  'src/bin/agenc-watch.ts',
   'src/tui/main.tsx',
 ];
 
