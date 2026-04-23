@@ -28,6 +28,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cwd as processCwd } from "node:process";
+import { VERSION } from "../index.js";
 import {
   routeCLI,
   stripRoutingFlags,
@@ -91,6 +92,58 @@ export {
   sessionConfigurationFromAgenCConfig,
   TurnStateAccumulator,
 } from "./bootstrap.js";
+
+function hasArgFlag(argv: readonly string[], flag: string): boolean {
+  return argv.includes(flag);
+}
+
+function hasArgValueFlag(argv: readonly string[], flag: string): boolean {
+  return argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+
+export function formatCliHelpText(): string {
+  return [
+    "Usage: agenc [options] [PROMPT]",
+    "",
+    "Options:",
+    "  --help                                   Show this help text",
+    `  --version                                Show version (${VERSION})`,
+    "  --no-tui                                 Force one-shot CLI mode",
+    "  --resume <session-id>                    Resume a prior session in the TUI",
+    "  --provider <name>                        Override the startup model provider",
+    "  --model <name>                           Override the startup model",
+    "  --profile <name>                         Use a named config profile",
+    "  --permission-mode <mode>                 Override the startup permission mode",
+    "  --dangerously-bypass-approvals-and-sandbox",
+    "  --yolo",
+    "  --allow-dangerously-skip-permissions     Skip approval prompts",
+    "  --image <file>                           Reserved for startup image attachments",
+  ].join("\n");
+}
+
+type StartupShortCircuit =
+  | { readonly kind: "help"; readonly text: string }
+  | { readonly kind: "version"; readonly text: string }
+  | { readonly kind: "error"; readonly message: string };
+
+export function detectStartupShortCircuit(
+  argv: readonly string[],
+): StartupShortCircuit | null {
+  if (hasArgFlag(argv, "--help")) {
+    return { kind: "help", text: formatCliHelpText() };
+  }
+  if (hasArgFlag(argv, "--version")) {
+    return { kind: "version", text: `agenc ${VERSION}` };
+  }
+  if (hasArgValueFlag(argv, "--image")) {
+    return {
+      kind: "error",
+      message:
+        "startup --image attachments are not wired in this runtime yet; use the TUI picker flow once image preload support lands",
+    };
+  }
+  return null;
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Argv / stdin / env resolution
@@ -1128,6 +1181,15 @@ export function initializeCliRuntime(): void {
  */
 export async function main(): Promise<number> {
   initializeCliRuntime();
+  const startupShortCircuit = detectStartupShortCircuit(process.argv.slice(2));
+  if (startupShortCircuit !== null) {
+    if (startupShortCircuit.kind === "error") {
+      process.stderr.write(`agenc: ${startupShortCircuit.message}\n`);
+      return 1;
+    }
+    process.stdout.write(`${startupShortCircuit.text}\n`);
+    return 0;
+  }
   return routeCLI({
     argv: process.argv,
     isTTY: Boolean(process.stdin.isTTY),

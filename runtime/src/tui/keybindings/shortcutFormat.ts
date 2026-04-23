@@ -85,25 +85,51 @@ export function formatKeySequence(normalized: string): string {
     .join(" ");
 }
 
-/**
- * Find the first key sequence bound to the given `command` in the
- * provided context map. Returns the sequence in canonical (already
- * normalized) form, or `undefined` if the command is not bound. Iterates
- * via `Object.keys` so the lookup is deterministic with respect to
- * insertion order in `DEFAULT_BINDINGS`.
- */
-function findKeyForCommand(
+function findKeysForCommand(
   command: BindingCommand,
   map: BindingMap,
-): string | undefined {
+): string[] {
+  const matches: string[] = [];
   for (const key of Object.keys(map)) {
-    if (map[key] === command) return key;
+    if (map[key] === command) {
+      matches.push(key);
+    }
   }
-  return undefined;
+  return matches;
 }
 
 /**
- * Reverse-lookup helper: given a gut `BindingCommand`, return the
+ * Reverse-lookup helper: given a gut `BindingCommand`, return every
+ * pretty-printed shortcut bound to that command, walking the active
+ * context first and falling back to the global context.
+ *
+ * Duplicate bindings that appear in both maps are de-duped while keeping
+ * the first-seen order stable.
+ */
+export function getDisplaysForCommand(
+  command: BindingCommand,
+  context: BindingContext,
+  bindings: Record<BindingContext, BindingMap> = DEFAULT_BINDINGS,
+): string[] {
+  const order: BindingContext[] =
+    context === "global" ? ["global"] : [context, "global"];
+  const displays: string[] = [];
+  const seen = new Set<string>();
+  for (const ctx of order) {
+    const map = bindings[ctx];
+    if (!map) continue;
+    for (const hit of findKeysForCommand(command, map)) {
+      const display = formatKeySequence(hit);
+      if (seen.has(display)) continue;
+      seen.add(display);
+      displays.push(display);
+    }
+  }
+  return displays;
+}
+
+/**
+ * Reverse-lookup helper: given a gut `BindingCommand`, return the first
  * pretty-printed display string of the configured shortcut, walking
  * the active context first and falling back to the global context.
  *
@@ -116,15 +142,7 @@ export function getDisplayForCommand(
   context: BindingContext,
   bindings: Record<BindingContext, BindingMap> = DEFAULT_BINDINGS,
 ): string | undefined {
-  const order: BindingContext[] =
-    context === "global" ? ["global"] : [context, "global"];
-  for (const ctx of order) {
-    const map = bindings[ctx];
-    if (!map) continue;
-    const hit = findKeyForCommand(command, map);
-    if (hit !== undefined) return formatKeySequence(hit);
-  }
-  return undefined;
+  return getDisplaysForCommand(command, context, bindings)[0];
 }
 
 /**

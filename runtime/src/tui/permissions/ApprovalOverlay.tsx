@@ -33,6 +33,7 @@ import {
   useKeybinding,
   useSetKeybindingContext,
 } from "../keybindings/KeybindingContext.js";
+import { getDisplayForCommand } from "../keybindings/shortcutFormat.js";
 import type { PendingPermissionRequest } from "../../permissions/context.js";
 
 export type ApprovalBehavior = "allow" | "allow-session" | "deny" | "abort";
@@ -346,6 +347,11 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
       ? (theme.colors.primary as Color)
       : (theme.colors.secondary as Color);
   const detailTabs = useMemo(() => DETAIL_TABS.slice(), []);
+  const confirmKey = getDisplayForCommand("modal:confirm", "modal") ?? "Enter";
+  const denyKey = getDisplayForCommand("modal:deny", "modal") ?? "D";
+  const allowSessionKey =
+    getDisplayForCommand("modal:allowSession", "modal") ?? "A";
+  const cancelKey = getDisplayForCommand("modal:cancel", "modal") ?? "Esc";
   const rawPreview = useMemo(
     () => truncateLines(safeStringify(request.args ?? {}), MAX_ARGS_LINES),
     [request.args],
@@ -515,8 +521,8 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
         </Text>
         <Text dim>
           {focusZone === "details"
-            ? "Details focused · Tab/Esc returns to actions · arrows or H/J/K/L switch tabs"
-            : "Actions focused · Tab moves into details · C aborts"}
+            ? `Details focused · Tab/${cancelKey} returns to actions · arrows or H/J/K/L switch tabs`
+            : `Actions focused · ${confirmKey} allows · ${allowSessionKey} allows for session · ${denyKey} denies · C aborts`}
         </Text>
       </Box>
 

@@ -5,6 +5,7 @@ import providerCommand, {
 } from "./provider.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "./types.js";
+import type { ConfigStore } from "../config/store.js";
 
 interface StubSessionOpts {
   provider?: string;
@@ -13,6 +14,7 @@ interface StubSessionOpts {
   abortTerminal?: ReturnType<typeof vi.fn>;
   pendingProviderSwitch?: unknown;
   history?: unknown[];
+  configModelByProvider?: Record<string, string>;
 }
 
 function stubSession(opts: StubSessionOpts = {}): Session {
@@ -26,7 +28,9 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     activeTurn: { unsafePeek: () => unknown };
     abortTerminal: ReturnType<typeof vi.fn>;
     pendingProviderSwitch: unknown;
-    services: {};
+    services: {
+      configStore?: Pick<ConfigStore, "current">;
+    };
     setPendingProviderSwitch(next: unknown): void;
   } = {
     state: {
@@ -38,7 +42,19 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     activeTurn: { unsafePeek: () => opts.activeTurn ?? null },
     abortTerminal,
     pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
-    services: {},
+    services: opts.configModelByProvider
+      ? {
+          configStore: {
+            current: () => ({
+              providers: Object.fromEntries(
+                Object.entries(opts.configModelByProvider ?? {}).map(
+                  ([provider, model]) => [provider, { default_model: model }],
+                ),
+              ),
+            }),
+          } satisfies Pick<ConfigStore, "current">,
+        }
+      : {},
     setPendingProviderSwitch(next) {
       this.pendingProviderSwitch = next;
     },
@@ -54,7 +70,8 @@ describe("providerCommand", () => {
   it("is userInvocable and immediate", () => {
     expect(providerCommand.userInvocable).toBe(true);
     expect(providerCommand.immediate).toBe(true);
-    expect(providerCommand.name).toBe("provider");
+    expect(providerCommand.name).toBe("model-provider");
+    expect(providerCommand.aliases).toEqual(["provider"]);
   });
 
   it("re-exports the live I-57 implementation", () => {
@@ -78,11 +95,11 @@ describe("providerCommand", () => {
     const res = await providerCommand.execute(mkctx(session, ""));
     expect(res.kind).toBe("error");
     if (res.kind === "error") {
-      expect(res.message).toMatch(/Usage: \/provider/);
+      expect(res.message).toMatch(/Usage: \/model-provider/);
     }
   });
 
-  it("applies the switch immediately when no turn is active", async () => {
+  it("applies the provider default model immediately when no turn is active", async () => {
     const session = stubSession({
       provider: "xai",
       model: "grok-4",
@@ -94,12 +111,46 @@ describe("providerCommand", () => {
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/ollama/);
-      expect(res.text).toMatch(/was "xai"/);
+      expect(res.text).toMatch(/model "llama3\.3"/);
     }
     const pending = (session as unknown as {
       pendingProviderSwitch: { provider: string; model: string } | null;
     }).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "ollama", model: "grok-4" });
+    expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
+  });
+
+  it("uses an explicit model when the picker submits provider and model", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+    });
+    const res = await providerCommand.execute(
+      mkctx(session, "openai gpt-5"),
+    );
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toMatch(/openai/);
+      expect(res.text).toMatch(/gpt-5/);
+    }
+    const pending = (session as unknown as {
+      pendingProviderSwitch: { provider: string; model: string } | null;
+    }).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
+  });
+
+  it("prefers configured provider defaults when available", async () => {
+    const session = stubSession({
+      provider: "xai",
+      model: "grok-4",
+      configModelByProvider: {
+        openai: "gpt-5-mini",
+      },
+    });
+    await providerCommand.execute(mkctx(session, "openai"));
+    const pending = (session as unknown as {
+      pendingProviderSwitch: { provider: string; model: string } | null;
+    }).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "openai", model: "gpt-5-mini" });
   });
 
   it("stages pending switch + aborts current turn when I-13 applies", async () => {
@@ -122,7 +173,7 @@ describe("providerCommand", () => {
     const pending = (session as unknown as {
       pendingProviderSwitch: { provider: string; model: string } | null;
     }).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "ollama", model: "grok-4" });
+    expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
   });
 
   it("blocks the switch when the target provider cannot satisfy current history", async () => {

@@ -98,7 +98,11 @@ function getRoot(stdout: PassThrough): DOMElement {
  * Build a minimal controllable clock so we can force the animation tick
  * deterministically without the real Ink clock driving us.
  */
-function createControllableClock(): { clock: Clock; tick: () => void } {
+function createControllableClock(): {
+  clock: Clock;
+  tick: () => void;
+  subscriberCount: () => number;
+} {
   const real = createClock(1_000_000);
   const callbacks = new Set<() => void>();
   const originalSubscribe = real.subscribe;
@@ -118,6 +122,7 @@ function createControllableClock(): { clock: Clock; tick: () => void } {
     tick: () => {
       for (const cb of Array.from(callbacks)) cb();
     },
+    subscriberCount: () => callbacks.size,
   };
 }
 
@@ -195,8 +200,20 @@ describe("Banner", () => {
     unmount();
   });
 
+  test("does not keep the frame clock subscribed while idle", async () => {
+    const { clock, subscriberCount } = createControllableClock();
+    const { unmount } = await mount(
+      <ClockContext.Provider value={clock}>
+        <Banner mode="default" />
+      </ClockContext.Provider>,
+    );
+
+    expect(subscriberCount()).toBe(0);
+    unmount();
+  });
+
   test("streaming spinner advances on tick", async () => {
-    const { clock, tick } = createControllableClock();
+    const { clock, tick, subscriberCount } = createControllableClock();
     const observed = new Set<string>();
     function Probe(): React.ReactElement {
       return (
@@ -206,6 +223,7 @@ describe("Banner", () => {
       );
     }
     const { stdout, unmount } = await mount(<Probe />);
+    expect(subscriberCount()).toBe(1);
     // Snapshot the first spinner character.
     const snapshotSpinner = (): string => {
       const root = getRoot(stdout);
@@ -230,5 +248,6 @@ describe("Banner", () => {
     // The spinner should have rotated to at least two distinct glyphs.
     expect(observed.size).toBeGreaterThanOrEqual(2);
     unmount();
+    expect(subscriberCount()).toBe(0);
   });
 });

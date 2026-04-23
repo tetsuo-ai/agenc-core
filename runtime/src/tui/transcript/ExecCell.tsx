@@ -23,7 +23,7 @@ import { sanitizeTranscriptText } from "./sanitize.js";
 /* Pure helpers                                                            */
 /* ────────────────────────────────────────────────────────────────────── */
 
-const DEFAULT_KEEP_HEAD = 10;
+const DEFAULT_KEEP_HEAD = 5;
 const DEFAULT_KEEP_TAIL = 5;
 const MAX_LINES_BEFORE_COLLAPSE = DEFAULT_KEEP_HEAD + DEFAULT_KEEP_TAIL + 5;
 

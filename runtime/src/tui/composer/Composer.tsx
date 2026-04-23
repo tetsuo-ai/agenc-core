@@ -49,6 +49,10 @@ import {
   useActiveKeybindingContext,
   useKeybinding,
 } from "../keybindings/KeybindingContext.js";
+import {
+  getDisplayForCommand,
+  getDisplaysForCommand,
+} from "../keybindings/shortcutFormat.js";
 import { slashCommandOpensPicker } from "../picker-intents.js";
 import { useAgenCAppState } from "../state/AppState.js";
 import { theme } from "../theme.js";
@@ -169,12 +173,16 @@ interface DetectedMention {
 }
 
 const MENTION_REGEX = /@([^\s]+)/g;
+const EMPTY_MENTIONS: readonly DetectedMention[] = Object.freeze([]);
 
 function scanMentions(
   value: string,
   cwd: string,
   allowedRoots?: readonly string[],
 ): DetectedMention[] {
+  if (!value.includes("@")) {
+    return EMPTY_MENTIONS as DetectedMention[];
+  }
   const out: DetectedMention[] = [];
   // Build a fresh RegExp per call — `g` regexes carry lastIndex state
   // which would leak between renders if we reused the module-level one.
@@ -194,10 +202,16 @@ function scanMentions(
 
 const COMPOSER_FRAME_CHROME_COLUMNS = 4;
 const MIN_BUFFER_COLUMNS = 4;
+const PASTE_BURST_CHAR_INTERVAL_MS =
+  process.platform === "win32" ? 30 : 8;
 // Match openclaude's fallback threshold: regular typing can occasionally
 // arrive in small multi-char chunks, so only treat very large unbracketed
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;
+
+function isSingleAsciiPrintable(text: string): boolean {
+  return text.length === 1 && text.charCodeAt(0) <= 0x7f;
+}
 
 function ComposerBuffer({
   value,
@@ -332,13 +346,16 @@ function isPrintableInputEvent(event: InputEvent): boolean {
 
 function buildHistorySearchStatusLine(
   search: ComposerHistorySearchState | null,
+  keys: {
+    readonly accept: string;
+    readonly cancel: string;
+  },
 ): { readonly color: Color; readonly text: string } | null {
   if (search === null) return null;
 
   let suffix = "";
   if (search.status === "match") {
-    const currentIndex = (search.matchIndex ?? 0) + 1;
-    suffix = `  ${currentIndex}/${search.matches.length}  Enter accept  Esc cancel`;
+    suffix = `  ${keys.accept} accept  ${keys.cancel} cancel`;
   } else if (search.status === "no-match") {
     suffix = "  no match";
   }
@@ -417,18 +434,9 @@ export const Composer: React.FC<ComposerProps> = ({
     [slashDraft, slashItems],
   );
   const slashPreviewItem = slashMatches[0] ?? null;
-  const exactSlashSelection = useMemo(() => {
-    if (!slashDraft || !slashPreviewItem) return false;
-    const activeToken = state.value.slice(
-      slashDraft.replaceStart,
-      slashDraft.replaceEnd,
-    );
-    return activeToken === slashPreviewItem.value;
-  }, [slashDraft, slashPreviewItem, state.value]);
   const showSlashPalette =
     Boolean(slashDraft?.cursorInsideToken) &&
     slashTokenKey !== dismissedSlashToken &&
-    !exactSlashSelection &&
     state.historySearch === null;
   const slashConflict = hasSlashMultilineConflict(state.value);
   useEffect(() => {
@@ -444,6 +452,50 @@ export const Composer: React.FC<ComposerProps> = ({
   useEffect(() => {
     valueRef.current = state.value;
   }, [state.value]);
+
+  const pendingPlainCharRef = useRef<{
+    readonly text: string;
+    readonly deadline: number;
+    readonly timer: ReturnType<typeof setTimeout>;
+  } | null>(null);
+
+  const flushPendingPlainChar = useCallback((): string => {
+    const pending = pendingPlainCharRef.current;
+    if (pending === null) return "";
+    clearTimeout(pending.timer);
+    pendingPlainCharRef.current = null;
+    dispatch({ type: "INSERT", text: pending.text });
+    return pending.text;
+  }, [dispatch]);
+
+  const clearPendingPlainChar = useCallback((): void => {
+    const pending = pendingPlainCharRef.current;
+    if (pending === null) return;
+    clearTimeout(pending.timer);
+    pendingPlainCharRef.current = null;
+  }, []);
+
+  const beginPasteBurst = useCallback(
+    (currentText: string): void => {
+      const pending = pendingPlainCharRef.current;
+      if (pending !== null) {
+        clearTimeout(pending.timer);
+        pendingPlainCharRef.current = null;
+        store.pushChunk(pending.text);
+      }
+      if (currentText.length > 0) {
+        store.pushChunk(currentText);
+      }
+    },
+    [store],
+  );
+
+  useEffect(
+    () => () => {
+      clearPendingPlainChar();
+    },
+    [clearPendingPlainChar],
+  );
 
   // ── paste-store → reducer bridge ───────────────────────────────────
   useEffect(() => {
@@ -477,6 +529,9 @@ export const Composer: React.FC<ComposerProps> = ({
         return;
       }
       if (state.historySearch !== null) {
+        if (!isPrintableInputEvent(event)) {
+          flushPendingPlainChar();
+        }
         if (event.key.ctrl && event.input.toLowerCase() === "s") {
           dispatch({ type: "HISTORY_SEARCH_NEWER" });
           return;
@@ -501,9 +556,36 @@ export const Composer: React.FC<ComposerProps> = ({
           store.isInFlight() ||
           event.input.length > PASTE_THRESHOLD);
       if (shouldTreatAsPaste) {
-        store.pushChunk(event.input);
+        beginPasteBurst(event.input);
         return;
       }
+
+      if (isPrintableInputEvent(event) && isSingleAsciiPrintable(event.input)) {
+        const now = Date.now();
+        const pending = pendingPlainCharRef.current;
+        if (pending !== null && now <= pending.deadline) {
+          beginPasteBurst(event.input);
+          return;
+        }
+
+        if (pending !== null) {
+          flushPendingPlainChar();
+        }
+
+        const timer = setTimeout(() => {
+          if (pendingPlainCharRef.current?.timer !== timer) return;
+          pendingPlainCharRef.current = null;
+          dispatch({ type: "INSERT", text: event.input });
+        }, PASTE_BURST_CHAR_INTERVAL_MS + 1);
+        pendingPlainCharRef.current = {
+          text: event.input,
+          deadline: now + PASTE_BURST_CHAR_INTERVAL_MS,
+          timer,
+        };
+        return;
+      }
+
+      flushPendingPlainChar();
 
       if (event.key.leftArrow || (event.key.ctrl && event.input === "b")) {
         dispatch({ type: "MOVE_CURSOR", delta: -1 });
@@ -539,7 +621,9 @@ export const Composer: React.FC<ComposerProps> = ({
     };
   }, [
     activeKeybindingContext,
+    beginPasteBurst,
     dispatch,
+    flushPendingPlainChar,
     inputLocked,
     state.historySearch,
     stdin,
@@ -556,6 +640,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleSubmit = useCallback((): void => {
     if (inputLocked) return;
+    flushPendingPlainChar();
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_ACCEPT" });
       return;
@@ -588,6 +673,7 @@ export const Composer: React.FC<ComposerProps> = ({
     hasPendingTurn,
     home,
     inputLocked,
+    flushPendingPlainChar,
     session.cwd,
     showSlashPalette,
     state.historySearch,
@@ -596,6 +682,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleCancel = useCallback((): void => {
     if (inputLocked) return;
+    flushPendingPlainChar();
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_CANCEL" });
       return;
@@ -610,6 +697,7 @@ export const Composer: React.FC<ComposerProps> = ({
     if (onCancel) onCancel();
   }, [
     dispatch,
+    flushPendingPlainChar,
     hasPendingTurn,
     inputLocked,
     onCancel,
@@ -619,36 +707,58 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleNewline = useCallback((): void => {
     if (inputLocked) return;
+    flushPendingPlainChar();
     if (state.historySearch !== null) return;
     dispatch({ type: "NEWLINE" });
-  }, [dispatch, inputLocked, state.historySearch]);
+  }, [dispatch, flushPendingPlainChar, inputLocked, state.historySearch]);
 
   const handleHistoryPrev = useCallback((): void => {
     if (inputLocked) return;
+    flushPendingPlainChar();
     if (showSlashPalette) return;
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_OLDER" });
       return;
     }
     dispatch({ type: "HISTORY_PREV" });
-  }, [dispatch, inputLocked, showSlashPalette, state.historySearch]);
+  }, [
+    dispatch,
+    flushPendingPlainChar,
+    inputLocked,
+    showSlashPalette,
+    state.historySearch,
+  ]);
 
   const handleHistoryNext = useCallback((): void => {
     if (inputLocked) return;
+    flushPendingPlainChar();
     if (showSlashPalette) return;
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_NEWER" });
       return;
     }
     dispatch({ type: "HISTORY_NEXT" });
-  }, [dispatch, inputLocked, showSlashPalette, state.historySearch]);
+  }, [
+    dispatch,
+    flushPendingPlainChar,
+    inputLocked,
+    showSlashPalette,
+    state.historySearch,
+  ]);
 
   const handleHistorySearch = useCallback((): void => {
     if (inputLocked) return;
+    flushPendingPlainChar();
     if (activeKeybindingContext !== "chat") return;
     if (showSlashPalette) return;
     dispatch({ type: "HISTORY_SEARCH_START" });
-  }, [activeKeybindingContext, dispatch, inputLocked, showSlashPalette]);
+  }, [
+    activeKeybindingContext,
+    dispatch,
+    flushPendingPlainChar,
+    inputLocked,
+    showSlashPalette,
+  ]);
 
   useKeybinding("chat:submit", handleSubmit, "chat");
   useKeybinding("chat:cancel", handleCancel, "chat");
@@ -707,9 +817,32 @@ export const Composer: React.FC<ComposerProps> = ({
         ? colors.accent
         : colors.primary
   ) as Color;
+  const submitKey = getDisplayForCommand("chat:submit", "chat") ?? "Enter";
+  const acceptSuggestionKey =
+    getDisplayForCommand("chat:acceptSuggestion", "chat") ?? "Tab";
+  const newlineKeys = getDisplaysForCommand("chat:newline", "chat");
+  const formattedNewlineKeys =
+    newlineKeys.length > 0 ? newlineKeys.join(" or ") : "Shift+Enter or Ctrl+J";
+  const approvalDecisionKeys = [
+    getDisplayForCommand("modal:yes", "modal") ?? "Y",
+    getDisplayForCommand("modal:no", "modal") ?? "N",
+    getDisplayForCommand("modal:allowSession", "modal") ?? "A",
+    getDisplayForCommand("modal:deny", "modal") ?? "D",
+  ].join("/");
+  const cancelKey = getDisplayForCommand("chat:cancel", "chat") ?? "Esc";
   const handleSlashSelect = useCallback(
     (item: PaletteItem): void => {
       if (!slashDraft) return;
+      const activeToken = state.value.slice(
+        slashDraft.replaceStart,
+        slashDraft.replaceEnd,
+      );
+      if (activeToken === item.value) {
+        if (slashTokenKey !== null) {
+          setDismissedSlashToken(slashTokenKey);
+        }
+        return;
+      }
       setDismissedSlashToken(null);
       const trailing = state.value.slice(slashDraft.replaceEnd);
       const needsTrailingSpace =
@@ -721,24 +854,27 @@ export const Composer: React.FC<ComposerProps> = ({
         text: `${item.value}${needsTrailingSpace ? " " : ""}`,
       });
     },
-    [dispatch, slashDraft, state.value],
+    [dispatch, slashDraft, slashTokenKey, state.value],
   );
 
   const statusLine = useMemo(() => {
-    const historySearchLine = buildHistorySearchStatusLine(state.historySearch);
+    const historySearchLine = buildHistorySearchStatusLine(state.historySearch, {
+      accept: submitKey,
+      cancel: cancelKey,
+    });
     if (historySearchLine) {
       return historySearchLine;
     }
     if (pendingRequestCount > 0) {
       return {
         color: colors.warning,
-        text: "Approval pending. Resolve the modal with Y/N/A/D before sending the next turn.",
+        text: `Approval pending. Resolve the modal with ${approvalDecisionKeys} before sending the next turn.`,
       };
     }
     if (isStreaming) {
       return {
         color: colors.accent,
-        text: "Turn active. Keep drafting; Enter waits until the current turn is done.",
+        text: `Turn active. Keep drafting; ${submitKey} waits until the current turn is done.`,
       };
     }
     if (state.pasteInFlight) {
@@ -760,28 +896,29 @@ export const Composer: React.FC<ComposerProps> = ({
     if (slashDraft && slashDraft.query.length === 0) {
       return {
         color: colors.primary,
-        text: "Browse commands with Up/Down. Tab or Enter inserts the selected command.",
+        text: `Browse commands with Up/Down. ${acceptSuggestionKey} or ${submitKey} inserts the selected command.`,
       };
     }
     if (slashDraft && slashPreviewItem) {
-      const opensPicker =
-        exactSlashSelection && slashCommandOpensPicker(slashPreviewItem.value);
       return {
         color: colors.primary,
-        text: opensPicker
-          ? `Enter opens the ${slashPreviewItem.label} picker. Tab inserts it without submitting.`
-          : exactSlashSelection
-            ? `Enter runs ${slashPreviewItem.label}. Tab inserts it without submitting.`
-          : (slashPreviewItem.description ??
-            `${slashPreviewItem.label} is available.`),
+        text:
+          slashPreviewItem.description ??
+          (slashCommandOpensPicker(slashPreviewItem.value)
+            ? `${slashPreviewItem.label} opens a picker after you accept it.`
+            : `${slashPreviewItem.label} is available.`),
       };
     }
     return {
       color: colors.dim,
-      text: "Type a prompt or / for commands. Shift+Enter or Ctrl+J adds a newline.",
+      text: `Type a prompt or / for commands. ${formattedNewlineKeys} adds a newline.`,
     };
   }, [
+    acceptSuggestionKey,
+    approvalDecisionKeys,
+    cancelKey,
     isStreaming,
+    formattedNewlineKeys,
     pendingRequestCount,
     slashConflict,
     slashDraft,
@@ -789,7 +926,7 @@ export const Composer: React.FC<ComposerProps> = ({
     state.pasteInFlight,
     state.pendingEnters,
     state.historySearch,
-    exactSlashSelection,
+    submitKey,
   ]);
 
   // ── render ─────────────────────────────────────────────────────────
@@ -839,7 +976,7 @@ export const Composer: React.FC<ComposerProps> = ({
         {state.value.length > 0 && hasPendingTurn ? (
           <Box>
             <Text color={colors.dim}>
-              {"Esc clears the draft first. Press Esc again on an empty composer to interrupt the turn."}
+              {`${cancelKey} clears the draft first. Press ${cancelKey} again on an empty composer to interrupt the turn.`}
             </Text>
           </Box>
         ) : null}

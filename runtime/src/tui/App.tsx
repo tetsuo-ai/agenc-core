@@ -88,7 +88,10 @@ import {
   type OverlayContextLike,
 } from "./permissions/InteractiveHandler.js";
 import { useQuery, type SessionLike as QuerySessionLike } from "./hooks/useQuery.js";
-import { eventsToMessages } from "./state/events-to-messages.js";
+import {
+  eventsToMessages,
+  type TranscriptSourceEvent,
+} from "./state/events-to-messages.js";
 import { isPlanActive, type PlanEvent } from "./state/plan-state.js";
 import {
   readPickerCommandIntent,
@@ -202,14 +205,13 @@ function emitSessionWarning(
 }
 
 function readStatusLineItems(
-  configStore: ConfigStoreLike,
+  config: unknown,
 ): readonly string[] | undefined {
-  const snapshot = configStore.snapshot;
-  if (!snapshot || typeof snapshot !== "object") {
+  if (!config || typeof config !== "object") {
     return undefined;
   }
   const statusLine = (
-    snapshot as {
+    config as {
       readonly statusLine?: { readonly items?: unknown };
     }
   ).statusLine;
@@ -220,6 +222,144 @@ function readStatusLineItems(
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
   return items.length > 0 ? items : undefined;
+}
+
+function readStatusLineItemsFromStore(
+  configStore: ConfigStoreLike,
+): readonly string[] | undefined {
+  const current = (
+    configStore as {
+      readonly current?: () => unknown;
+      readonly snapshot?: unknown;
+    }
+  ).current;
+  if (typeof current === "function") {
+    try {
+      return readStatusLineItems(current());
+    } catch {
+      return undefined;
+    }
+  }
+  return readStatusLineItems(
+    (configStore as { readonly snapshot?: unknown }).snapshot,
+  );
+}
+
+function useStatusLineItems(
+  configStore: ConfigStoreLike,
+): readonly string[] | undefined {
+  const [items, setItems] = useState<readonly string[] | undefined>(() =>
+    readStatusLineItemsFromStore(configStore),
+  );
+
+  useEffect(() => {
+    setItems(readStatusLineItemsFromStore(configStore));
+
+    const subscribe = (
+      configStore as {
+        readonly subscribe?: (
+          listener: (config: unknown) => void,
+        ) => (() => void) | void;
+      }
+    ).subscribe;
+    if (typeof subscribe !== "function") {
+      return undefined;
+    }
+
+    return subscribe((nextConfig: unknown) => {
+      setItems(readStatusLineItems(nextConfig));
+    });
+  }, [configStore]);
+
+  return items;
+}
+
+function deriveBannerPhase(
+  events: readonly TranscriptSourceEvent[],
+): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    switch (event.type) {
+      case "assistant_text":
+      case "agent_message_delta":
+        return "stream_model";
+      case "tool_call":
+      case "tool_call_started":
+      case "tool_progress":
+        return "tool";
+      case "tool_result":
+      case "tool_call_completed":
+        return "tool_result";
+      case "exec_command_begin":
+        return "exec";
+      case "exec_command_end":
+        return "exec_done";
+      case "plan_started":
+      case "plan_delta":
+      case "plan_item_completed":
+      case "plan_exited":
+        return "plan";
+      case "context_compacted":
+        return "compact";
+      case "turn_start":
+      case "turn_started":
+        return "turn";
+      case "turn_complete":
+        return "complete";
+      case "turn_aborted":
+        return "aborted";
+      case "warning":
+        return "warning";
+      case "error":
+        return "error";
+      case "stream_error":
+        return "stream_error";
+      case "deprecation_notice":
+        return "notice";
+      case "slash_result":
+        return "command";
+      case "user_message":
+        return "user";
+      case "agent_message":
+        return "assistant";
+      case "session_configured":
+        return "ready";
+      default:
+        break;
+    }
+  }
+  return undefined;
+}
+
+function deriveActiveToolCount(events: readonly TranscriptSourceEvent[]): number {
+  const active = new Set<string>();
+
+  for (const event of events) {
+    switch (event.type) {
+      case "tool_call":
+        active.add(event.toolCall.id);
+        break;
+      case "tool_result":
+        active.delete(event.toolCall.id);
+        break;
+      case "tool_call_started":
+        active.add(event.payload.callId);
+        break;
+      case "tool_call_completed":
+        active.delete(event.payload.callId);
+        break;
+      case "turn_start":
+      case "turn_started":
+      case "turn_complete":
+      case "turn_aborted":
+        active.clear();
+        break;
+      default:
+        break;
+    }
+  }
+
+  return active.size;
 }
 
 function readInitialTokenTotal(session: AppSessionLike): number | undefined {
@@ -381,9 +521,11 @@ function TUIRoot({
     return out;
   }, [events]);
   const hasPlanActive = isPlanActive(planEvents);
-  const statusLineItems = useMemo<readonly string[] | undefined>(
-    () => readStatusLineItems(configStore),
-    [configStore],
+  const statusLineItems = useStatusLineItems(configStore);
+  const bannerPhase = useMemo(() => deriveBannerPhase(events), [events]);
+  const activeToolCount = useMemo(
+    () => deriveActiveToolCount(events),
+    [events],
   );
 
   // Overlay context adapter. `InteractiveHandler` wants a minimal
@@ -887,17 +1029,11 @@ function TUIRoot({
           mode={mode}
           model={statusLineSession.model}
           runId={statusLineSession.sessionId}
+          phase={bannerPhase}
+          activeToolCount={activeToolCount}
           isStreaming={isStreaming}
           hasPlanActive={hasPlanActive}
         />
-        {statusLineItems !== undefined ? (
-          <StatusLineConfig
-            items={statusLineItems}
-            session={statusLineSession}
-            configStore={configStore}
-            cwd={composerSession.cwd}
-          />
-        ) : null}
       </Box>
 
       {/* transcript region (middle, flex:1) */}
@@ -912,6 +1048,13 @@ function TUIRoot({
           onSubmit={handleSubmit}
           onCancel={handleCancel}
         />
+        {statusLineItems !== undefined ? (
+          <StatusLineConfig
+            items={statusLineItems}
+            session={statusLineSession}
+            cwd={composerSession.cwd}
+          />
+        ) : null}
       </Box>
 
       {/* invisible orchestrators — one per pending permission request */}

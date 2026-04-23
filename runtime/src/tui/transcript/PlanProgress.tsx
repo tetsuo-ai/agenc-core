@@ -196,7 +196,13 @@ const PlanItemLine: React.FC<{
         <Text dim>{"  \u2514 "}</Text>
         <Text color={color}>{icon}</Text>
         <Text> </Text>
-        <Text {...(status === "completed" ? { dim: true } : {})}>{summary}</Text>
+        <Text
+          {...(status === "completed"
+            ? { dim: true, strikethrough: true }
+            : {})}
+        >
+          {summary}
+        </Text>
       </Box>
       {detail.length > 0 && detail !== summary ? (
         <Box flexDirection="column">

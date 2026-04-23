@@ -60,14 +60,9 @@ export interface SessionLike {
   readonly contextPercent?: number;
 }
 
-export interface ConfigStoreLike {
-  readonly snapshot?: unknown;
-}
-
 export interface StatusLineConfigProps {
   readonly items: readonly string[];
   readonly session: SessionLike;
-  readonly configStore?: ConfigStoreLike;
   /** Override the current working directory — primarily a test hook. */
   readonly cwd?: string;
 }

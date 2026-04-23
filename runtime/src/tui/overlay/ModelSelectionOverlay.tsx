@@ -3,6 +3,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 
@@ -16,6 +17,7 @@ import {
   useKeybinding,
   useSetKeybindingContext,
 } from "../keybindings/KeybindingContext.js";
+import { getDisplayForCommand } from "../keybindings/shortcutFormat.js";
 import { theme } from "../theme.js";
 
 export interface ModelSelectionItem {
@@ -130,11 +132,14 @@ function itemSearchValue(item: ModelSelectionItem): string {
 
 function filterItems(
   items: readonly ModelSelectionItem[],
+  searchValues: readonly string[],
   query: string,
 ): readonly ModelSelectionItem[] {
   const foldedQuery = query.trim().toLocaleLowerCase();
   if (foldedQuery.length === 0) return items;
-  return items.filter((item) => itemSearchValue(item).includes(foldedQuery));
+  return items.filter((_, index) =>
+    (searchValues[index] ?? "").includes(foldedQuery),
+  );
 }
 
 function isItemDisabled(item: ModelSelectionItem | undefined): boolean {
@@ -187,11 +192,17 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
   const terminalSize = useContext(TerminalSizeContext);
   const setActiveContext = useSetKeybindingContext();
   const [searchQuery, setSearchQuery] = useState("");
+  const searchValues = useMemo(
+    () => items.map((item) => itemSearchValue(item)),
+    [items],
+  );
   const filteredItems = useMemo(
-    () => filterItems(items, searchable ? searchQuery : ""),
-    [items, searchQuery, searchable],
+    () => filterItems(items, searchValues, searchable ? searchQuery : ""),
+    [items, searchQuery, searchValues, searchable],
   );
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [localTabIndex, setLocalTabIndex] = useState<number | null>(null);
+  const previousActiveTabRef = useRef(activeTab);
   const accent = theme.colors.primary as Color;
   const secondary = theme.colors.secondary as Color;
   const dim = theme.colors.dim as Color;
@@ -226,18 +237,35 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
     setSelectedIndex((current) => normalizeSelectedIndex(filteredItems, current));
   }, [filteredItems]);
 
-  const activeTabIndex = useMemo(() => {
+  useEffect(() => {
+    if (previousActiveTabRef.current === activeTab) return;
+    previousActiveTabRef.current = activeTab;
+    setLocalTabIndex(null);
+    setSearchQuery("");
+    setSelectedIndex(0);
+  }, [activeTab]);
+
+  const derivedActiveTabIndex = useMemo(() => {
     if (!tabs || tabs.length === 0) return -1;
     if (!activeTab) return 0;
     return Math.max(0, tabs.indexOf(activeTab));
   }, [activeTab, tabs]);
+  const activeTabIndex =
+    localTabIndex !== null && tabs && localTabIndex < tabs.length
+      ? localTabIndex
+      : derivedActiveTabIndex;
 
   const handleTabCycle = useCallback(
     (delta: number): void => {
       if (!tabs || tabs.length === 0 || typeof onTabChange !== "function") return;
       const currentIndex = activeTabIndex >= 0 ? activeTabIndex : 0;
       const nextTab = tabs[cycleIndex(currentIndex, delta, tabs.length)];
-      if (nextTab) onTabChange(nextTab);
+      if (nextTab) {
+        setLocalTabIndex(tabs.indexOf(nextTab));
+        setSearchQuery("");
+        setSelectedIndex(0);
+        onTabChange(nextTab);
+      }
     },
     [activeTabIndex, onTabChange, tabs],
   );
@@ -249,12 +277,6 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
     onSelectionChange(selectedItem);
   }, [onSelectionChange, selectedItem]);
 
-  const handleConfirm = useCallback(() => {
-    if (selectedItem && !isItemDisabled(selectedItem)) {
-      onSelect(selectedItem);
-    }
-  }, [onSelect, selectedItem]);
-
   const handleDismiss = useCallback(() => {
     if (onBack) {
       onBack();
@@ -262,6 +284,16 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
     }
     onClose();
   }, [onBack, onClose]);
+
+  const handleConfirm = useCallback(() => {
+    if (filteredItems.length === 0) {
+      handleDismiss();
+      return;
+    }
+    if (selectedItem && !isItemDisabled(selectedItem)) {
+      onSelect(selectedItem);
+    }
+  }, [filteredItems.length, handleDismiss, onSelect, selectedItem]);
 
   useKeybinding("modal:confirm", handleConfirm, "modal");
   useKeybinding("modal:yes", handleConfirm, "modal");
@@ -311,15 +343,13 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
         );
         return;
       }
-      if (
-        searchable &&
-        !event.key.ctrl &&
-        !event.key.meta &&
-        searchQuery.length === 0 &&
-        /^[1-9]$/.test(event.input)
-      ) {
+      if (!searchable && /^[1-9]$/.test(event.input)) {
         const target = Number.parseInt(event.input, 10) - 1;
-        setSelectedIndex(normalizeSelectedIndex(filteredItems, target));
+        const nextIndex = normalizeSelectedIndex(filteredItems, target);
+        const targetItem = filteredItems[nextIndex];
+        if (!targetItem || isItemDisabled(targetItem)) return;
+        setSelectedIndex(nextIndex);
+        onSelect(targetItem);
         return;
       }
       if (searchable && isPrintableSearchInput(event)) {
@@ -333,7 +363,7 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
   }, [
     filteredItems,
     handleTabCycle,
-    searchQuery.length,
+    onSelect,
     searchable,
     stdin,
     tabs,
@@ -341,10 +371,14 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
 
   const tabLine = useMemo(() => {
     if (!tabs || tabs.length === 0) return null;
+    const visibleActiveTab =
+      activeTabIndex >= 0 ? tabs[activeTabIndex] : activeTab;
     return tabs
-      .map((tab) => (tab === activeTab ? `[${tab}]` : tab))
+      .map((tab) => (tab === visibleActiveTab ? `[${tab}]` : tab))
       .join("  ");
-  }, [activeTab, tabs]);
+  }, [activeTab, activeTabIndex, tabs]);
+  const confirmKey = getDisplayForCommand("modal:confirm", "modal") ?? "Enter";
+  const cancelKey = getDisplayForCommand("modal:cancel", "modal") ?? "Esc";
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={accent} paddingX={1} paddingY={0}>
@@ -401,10 +435,10 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
       <Box marginTop={1}>
         <Text color={dim}>
           {onBack
-            ? "Enter selects · Esc goes back"
-            : "Enter selects · Esc closes"}
+            ? `${confirmKey} selects · ${cancelKey} goes back`
+            : `${confirmKey} selects · ${cancelKey} closes`}
           {tabs && tabs.length > 1 ? " · Tab / ← → switches tabs" : ""}
-          {searchable ? " · type to filter · Ctrl+U clears · 1-9 jumps" : ""}
+          {searchable ? " · type to filter · Ctrl+U clears" : " · 1-9 selects"}
         </Text>
       </Box>
     </Box>

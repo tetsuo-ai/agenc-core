@@ -39,6 +39,17 @@ interface WatchMarkdownModule {
     value: string,
     options?: BuildMarkdownOptions,
   ) => MarkdownDisplayLine[];
+  readonly createMarkdownStreamCollector: (
+    options?: BuildMarkdownOptions,
+  ) => {
+    clear(): void;
+    pushDelta(delta: string): void;
+    syncToValue(value: string): void;
+    commitCompleteLines(): MarkdownDisplayLine[];
+    previewPendingLines(): MarkdownDisplayLine[];
+    snapshot(): MarkdownDisplayLine[];
+    finalizeAndDrain(): MarkdownDisplayLine[];
+  };
 }
 
 const watch = watchMarkdown as unknown as WatchMarkdownModule;
@@ -47,3 +58,4 @@ export const stripTerminalControlSequences = watch.stripTerminalControlSequences
 export const buildMarkdownDisplayLines = watch.buildMarkdownDisplayLines;
 export const buildStreamingMarkdownDisplayLines =
   watch.buildStreamingMarkdownDisplayLines;
+export const createMarkdownStreamCollector = watch.createMarkdownStreamCollector;

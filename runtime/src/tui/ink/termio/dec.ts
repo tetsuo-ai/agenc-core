@@ -14,6 +14,7 @@ export const DEC = {
   CURSOR_VISIBLE: 25,
   ALT_SCREEN: 47,
   ALT_SCREEN_CLEAR: 1049,
+  ALT_SCROLL: 1007,
   MOUSE_NORMAL: 1000,
   MOUSE_BUTTON: 1002,
   MOUSE_ANY: 1003,
@@ -44,6 +45,8 @@ export const SHOW_CURSOR = decset(DEC.CURSOR_VISIBLE)
 export const HIDE_CURSOR = decreset(DEC.CURSOR_VISIBLE)
 export const ENTER_ALT_SCREEN = decset(DEC.ALT_SCREEN_CLEAR)
 export const EXIT_ALT_SCREEN = decreset(DEC.ALT_SCREEN_CLEAR)
+export const ENABLE_ALTERNATE_SCROLL = decset(DEC.ALT_SCROLL)
+export const DISABLE_ALTERNATE_SCROLL = decreset(DEC.ALT_SCROLL)
 // Mouse tracking: 1000 reports button press/release/wheel, 1002 adds drag
 // events (button-motion), 1003 adds all-motion (no button held — for
 // hover), 1006 uses SGR format (CSI < btn;col;row M/m) instead of legacy

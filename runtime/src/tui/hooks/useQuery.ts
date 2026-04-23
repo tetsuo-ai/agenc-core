@@ -70,6 +70,8 @@ interface QueryState {
   events: TranscriptSourceEvent[];
   isStreaming: boolean;
   currentTurnId: string | null;
+  seenEventKeys: Set<string>;
+  lastEventSeq: number;
 }
 
 interface ResetPayload {
@@ -84,6 +86,76 @@ type QueryAction =
     }
   | { readonly kind: "event"; readonly event: TranscriptSourceEvent };
 
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(
+    ([left], [right]) => left.localeCompare(right),
+  );
+  return `{${entries
+    .map(([key, entry]) => `${JSON.stringify(key)}:${stableSerialize(entry)}`)
+    .join(",")}}`;
+}
+
+function transcriptEventKey(event: TranscriptSourceEvent): string | null {
+  if ("seq" in event && typeof event.seq === "number") {
+    return `seq:${event.seq}`;
+  }
+  if ("id" in event && typeof event.id === "string" && event.id.length > 0) {
+    return `id:${event.id}`;
+  }
+  if (
+    event.type === "slash_result" &&
+    typeof event.timestamp === "number"
+  ) {
+    return `slash:${event.turnId ?? ""}:${event.input}:${event.timestamp}`;
+  }
+  if (!("payload" in event)) {
+    return null;
+  }
+  return `${event.type}:${stableSerialize(event.payload)}`;
+}
+
+function transcriptEventSeq(event: TranscriptSourceEvent): number | null {
+  return "seq" in event && typeof event.seq === "number" ? event.seq : null;
+}
+
+function buildEventIndex(events: readonly TranscriptSourceEvent[]): {
+  readonly events: TranscriptSourceEvent[];
+  readonly seenEventKeys: Set<string>;
+  readonly lastEventSeq: number;
+} {
+  const seenEventKeys = new Set<string>();
+  const deduped: TranscriptSourceEvent[] = [];
+  let lastEventSeq = 0;
+  for (const event of events) {
+    const seq = transcriptEventSeq(event);
+    if (seq !== null && seq <= lastEventSeq) {
+      continue;
+    }
+    const key = transcriptEventKey(event);
+    if (key !== null) {
+      if (seenEventKeys.has(key)) {
+        continue;
+      }
+      seenEventKeys.add(key);
+    }
+    if (seq !== null) {
+      lastEventSeq = Math.max(lastEventSeq, seq);
+    }
+    deduped.push(event);
+  }
+  return {
+    events: deduped,
+    seenEventKeys,
+    lastEventSeq,
+  };
+}
+
 function createInitialState(
   payload: ResetPayload = {
     initialEvents: [],
@@ -91,9 +163,10 @@ function createInitialState(
   },
 ): QueryState {
   const { initialEvents, liveTurnId } = payload;
+  const indexed = buildEventIndex(initialEvents);
   let isStreaming = false;
   let currentTurnId: string | null = null;
-  for (const event of initialEvents) {
+  for (const event of indexed.events) {
     if (event.type === "turn_start" || event.type === "turn_started") {
       isStreaming = true;
     }
@@ -116,11 +189,13 @@ function createInitialState(
     }
   }
   return {
-    events: [...initialEvents],
+    events: [...indexed.events],
     // Resume / history hydration should not look like a live tail unless the
     // session still reports an active turn at mount/reset time.
     isStreaming: liveTurnId !== null ? true : false,
     currentTurnId: liveTurnId ?? currentTurnId,
+    seenEventKeys: indexed.seenEventKeys,
+    lastEventSeq: indexed.lastEventSeq,
   };
 }
 
@@ -150,11 +225,27 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
       return createInitialState(action.payload);
     case "event": {
       const { event } = action;
+      const eventSeq = transcriptEventSeq(event);
+      if (eventSeq !== null && eventSeq <= state.lastEventSeq) {
+        return state;
+      }
+      const eventKey = transcriptEventKey(event);
+      if (eventKey !== null && state.seenEventKeys.has(eventKey)) {
+        return state;
+      }
+      const nextSeenEventKeys = new Set(state.seenEventKeys);
+      if (eventKey !== null) {
+        nextSeenEventKeys.add(eventKey);
+      }
+      const nextLastEventSeq =
+        eventSeq !== null ? Math.max(state.lastEventSeq, eventSeq) : state.lastEventSeq;
       if (event.type === "turn_start" || event.type === "turn_started") {
         return {
           events: [...state.events, event],
           isStreaming: true,
           currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
+          seenEventKeys: nextSeenEventKeys,
+          lastEventSeq: nextLastEventSeq,
         };
       }
       if (event.type === "turn_complete" || event.type === "turn_aborted") {
@@ -162,12 +253,16 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
           events: [...state.events, event],
           isStreaming: false,
           currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
+          seenEventKeys: nextSeenEventKeys,
+          lastEventSeq: nextLastEventSeq,
         };
       }
       return {
         events: [...state.events, event],
         isStreaming: state.isStreaming,
         currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
+        seenEventKeys: nextSeenEventKeys,
+        lastEventSeq: nextLastEventSeq,
       };
     }
     default:

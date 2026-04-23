@@ -124,13 +124,13 @@ describe("CommandRegistry — collision policy", () => {
 });
 
 describe("CommandRegistry — list()", () => {
-  it("returns commands sorted by name", () => {
+  it("returns commands in registration order", () => {
     const reg = new CommandRegistry();
     reg.register(mkCmd("zeta"));
     reg.register(mkCmd("alpha"));
     reg.register(mkCmd("mu"));
     const names = reg.list().map((c) => c.name);
-    expect(names).toEqual(["alpha", "mu", "zeta"]);
+    expect(names).toEqual(["zeta", "alpha", "mu"]);
   });
 
   it("returns a stable snapshot (does not expose internal Map)", () => {
@@ -174,16 +174,26 @@ describe("buildDefaultRegistry()", () => {
     expect(reg.has("status")).toBe(true);
   });
 
+  it("exposes codex-facing aliases like /provider and /approvals", () => {
+    const reg = buildDefaultRegistry();
+    expect(reg.has("provider")).toBe(true);
+    expect(reg.has("approvals")).toBe(true);
+  });
+
   it("includes the worktree adapters", () => {
     const reg = buildDefaultRegistry();
     expect(reg.has("enter-worktree")).toBe(true);
     expect(reg.has("exit-worktree")).toBe(true);
   });
 
-  it("returns a stable sorted list", () => {
+  it("returns the curated presentation order", () => {
     const reg = buildDefaultRegistry();
     const names = reg.list().map((c) => c.name);
-    const sorted = [...names].sort((a, b) => a.localeCompare(b));
-    expect(names).toEqual(sorted);
+    expect(names.slice(0, 4)).toEqual([
+      "model",
+      "model-provider",
+      "permissions",
+      "config",
+    ]);
   });
 });

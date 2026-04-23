@@ -117,13 +117,14 @@ export class CommandRegistry implements CommandRegistryInterface {
   }
 
   /**
-   * Return every registered command, sorted by canonical name
-   * (ascending, locale-aware) for deterministic `/help` output.
+   * Return every registered command in registration order.
+   *
+   * This is presentation order for `/help` and the slash palette, so it
+   * must stay aligned with the curated command order in
+   * `buildDefaultRegistry()` rather than being alpha-sorted.
    */
   list(): readonly SlashCommand[] {
-    return [...this.byName.values()].sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
+    return [...this.byName.values()];
   }
 
   /** Convenience constructor — register every command in order. */
@@ -248,28 +249,25 @@ const exitWorktreeCommand: SlashCommand = {
  */
 export function buildDefaultRegistry(): CommandRegistry {
   return CommandRegistry.fromCommands([
-    // Wave 1
+    // Presentation order mirrors codex-style picker prominence.
+    modelCommand,
+    providerCommand,
+    permissionsCommand,
+    configCommand,
     helpCommand,
     statusCommand,
     initCommand,
-    diffCommand,
-    exitCommand,
-    clearCommand,
-    contextCommand,
-    keybindingsCommand,
+    compactCommand,
+    planCommand,
     resumeCommand,
     forkCommand,
-    // Wave 2-C
-    planCommand,
-    // Wave 2-D
-    permissionsCommand,
-    configCommand,
-    // Wave 2-E
-    modelCommand,
-    providerCommand,
-    compactCommand,
+    diffCommand,
+    contextCommand,
+    keybindingsCommand,
     // Pre-existing worktree adapters
     enterWorktreeCommand,
     exitWorktreeCommand,
+    exitCommand,
+    clearCommand,
   ]);
 }

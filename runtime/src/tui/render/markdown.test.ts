@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createMarkdownDisplayLineStream,
   renderMarkdownDisplayLines,
   renderMarkdownDisplayLinesSync,
   renderStreamingMarkdownDisplayLinesSync,
@@ -24,12 +25,31 @@ describe("tui/render/markdown", () => {
     );
 
     expect(lines[0]?.mode).toBe("code-meta");
-    expect(lines.some((line) => line.mode === "code" && line.text.includes("\u001b["))).toBe(true);
+    expect(
+      lines.some(
+        (line) =>
+          line.mode === "code" && line.plainText.includes("const answer = 42;"),
+      ),
+    ).toBe(true);
   });
 
   it("renders streaming markdown previews with the same display-line shape", () => {
     const lines = renderStreamingMarkdownDisplayLinesSync("# Heading\n\nhello");
     expect(lines[0]?.mode).toBe("heading");
     expect(lines.at(-1)?.plainText).toContain("hello");
+  });
+
+  it("commits complete streaming lines without re-rendering the settled prefix", () => {
+    const stream = createMarkdownDisplayLineStream({ width: 80 });
+    stream.syncToValue("# Heading");
+    expect(stream.commitCompleteLines()).toEqual([]);
+    expect(stream.previewPendingLines()[0]?.plainText).toContain("Heading");
+
+    stream.syncToValue("# Heading\n\nhello");
+    const committed = stream.commitCompleteLines();
+    expect(committed[0]?.mode).toBe("heading");
+    expect(committed[0]?.plainText).toContain("Heading");
+    const preview = stream.previewPendingLines();
+    expect(preview.at(-1)?.plainText).toContain("hello");
   });
 });

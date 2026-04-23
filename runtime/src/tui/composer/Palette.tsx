@@ -30,6 +30,10 @@ import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import type { Color } from "../ink/styles.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
+import {
+  getDisplayForCommand,
+  getDisplaysForCommand,
+} from "../keybindings/shortcutFormat.js";
 import { theme } from "../theme.js";
 
 /** Shape of a single palette entry. */
@@ -453,6 +457,18 @@ export const Palette: React.FC<PaletteProps> = ({
   const borderColor = theme.colors.accent as Color;
   const dimColor = theme.colors.dim as Color;
   const accentColor = theme.colors.accent as Color;
+  const hintLine = useMemo(() => {
+    const acceptKeys = [
+      ...getDisplaysForCommand("chat:acceptSuggestion", "chat"),
+      ...getDisplaysForCommand("chat:submit", "chat"),
+    ];
+    const uniqueAcceptKeys = Array.from(new Set(acceptKeys));
+    const up = getDisplayForCommand("history:prev", "chat") ?? "Up";
+    const down = getDisplayForCommand("history:next", "chat") ?? "Down";
+    return `${
+      trigger === "/" ? "Commands" : "Mentions"
+    }  ${uniqueAcceptKeys.join("/")} accept  ${up}/${down} move`;
+  }, [trigger]);
 
   if (totalMatches === 0) {
     return (
@@ -486,11 +502,7 @@ export const Palette: React.FC<PaletteProps> = ({
       paddingX={1}
       flexDirection="column"
     >
-      <Text color={dimColor}>
-        {trigger === "/"
-          ? "Commands  Tab/Enter accept  Up/Down move"
-          : "Mentions  Tab/Enter accept  Up/Down move"}
-      </Text>
+      <Text color={dimColor}>{hintLine}</Text>
       {overflowAbove > 0 ? (
         <Text color={dimColor}>… {overflowAbove} above</Text>
       ) : null}

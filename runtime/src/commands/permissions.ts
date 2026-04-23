@@ -566,7 +566,7 @@ async function handleAcceptBypassSubcommand(
 
 export const permissionsCommand: SlashCommand = {
   name: "permissions",
-  aliases: ["allowed-tools"],
+  aliases: ["approvals", "allowed-tools"],
   description: "List or manage permission rules and mode",
   immediate: true,
   userInvocable: true,

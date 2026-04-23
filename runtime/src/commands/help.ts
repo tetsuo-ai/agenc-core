@@ -25,9 +25,7 @@ export function formatHelp(reg: CommandRegistry): string {
   const cmds = reg.list().filter((c) => c.userInvocable !== false);
   if (cmds.length === 0) return "No slash commands registered.";
   const lines: string[] = ["Available commands:"];
-  // Sort alphabetically for stable output.
-  const sorted = [...cmds].sort((a, b) => a.name.localeCompare(b.name));
-  for (const c of sorted) {
+  for (const c of cmds) {
     const names = [c.name, ...(c.aliases ?? [])].map((n) => `/${n}`).join(", ");
     lines.push(`  ${names} — ${c.description}`);
   }

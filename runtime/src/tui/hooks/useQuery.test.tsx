@@ -326,6 +326,86 @@ describe("useQuery", () => {
     unmount();
   });
 
+  test("dedupes repeated hydrated transcript envelopes on mount", async () => {
+    const duplicate = {
+      id: "evt-1",
+      seq: 1,
+      type: "session_configured" as const,
+      payload: {
+        sessionId: "sess-1",
+        model: "gpt",
+        modelProviderId: "openai",
+        cwd: "/tmp",
+        historyLogId: 1,
+        historyEntryCount: 0,
+        initialMessages: [],
+      },
+    };
+    const session = createFakeSession({
+      initialTranscriptEvents: [duplicate, duplicate],
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    expect(latest!.events).toHaveLength(1);
+    unmount();
+  });
+
+  test("ignores stale or duplicate event-log seq values after hydration", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+      initialTranscriptEvents: [
+        {
+          id: "evt-2",
+          seq: 2,
+          type: "turn_started",
+          payload: { turnId: "turn-hydrated" },
+        },
+      ],
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-2",
+      seq: 2,
+      msg: {
+        type: "turn_started",
+        payload: { turnId: "turn-hydrated" },
+      },
+    });
+    session.emitEventLog({
+      id: "evt-1",
+      seq: 1,
+      msg: {
+        type: "user_message",
+        payload: { message: "stale" },
+      },
+    });
+    session.emitEventLog({
+      id: "evt-3",
+      seq: 3,
+      msg: {
+        type: "user_message",
+        payload: { message: "fresh" },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(2);
+    expect(latest!.events[1]).toMatchObject({
+      type: "user_message",
+      payload: { message: "fresh" },
+    });
+    unmount();
+  });
+
   test("submit forwards to session.submit when available", async () => {
     const session = createFakeSession();
     let latest: ReturnType<typeof useQuery> | null = null;

@@ -16,13 +16,7 @@ import App from './components/App.js';
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js';
 import { FRAME_INTERVAL_MS } from './constants.js';
 
-// I-70: throttle to 1fps on idle unless alt-screen mode.
-// Idle threshold (5s without stdin input) and idle render interval (1fps)
-// are co-located here so the test can import them directly. Re-export
-// FRAME_INTERVAL_MS so the i70 test only has to import from ink.js.
 export { FRAME_INTERVAL_MS } from './constants.js';
-export const I70_IDLE_THRESHOLD_MS = 5000;
-export const I70_IDLE_INTERVAL_MS = 1000;
 import * as dom from './dom.js';
 import { KeyboardEvent } from './events/keyboard-event.js';
 import { FocusManager } from './focus.js';
@@ -43,7 +37,7 @@ import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
 import { shouldSkipMainScreenSyncMarkers, shouldUseMainScreenRewrite, SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
+import { DBP, DFE, DISABLE_ALTERNATE_SCROLL, DISABLE_MOUSE_TRACKING, EBP, EFE, ENABLE_ALTERNATE_SCROLL, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
 import { TerminalWriteProvider } from './useTerminalNotification.js';
 
@@ -185,16 +179,6 @@ export default class Ink {
     x: number;
     y: number;
   } | null = null;
-  // I-70: throttle to 1fps on idle unless alt-screen mode.
-  // Tracks the last stdin-derived event timestamp; the scheduleRender
-  // wrapper uses (now - i70LastStdinEventAt > I70_IDLE_THRESHOLD_MS &&
-  // !altScreenActive) to swap from the FRAME_INTERVAL_MS throttle to the
-  // I70_IDLE_INTERVAL_MS throttle. Tests assert i70CurrentInterval to
-  // observe the swap without instrumenting the throttle internals.
-  i70LastStdinEventAt = Date.now();
-  i70CurrentInterval = 16;
-  private i70FastSchedule!: (() => void) & { cancel?: () => void };
-  private i70IdleSchedule!: (() => void) & { cancel?: () => void };
   private reportRenderError = (label: string, error: unknown): void => {
     const message =
       error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -241,27 +225,11 @@ export default class Ink {
     // Test env uses onImmediateRender (direct onRender, no throttle) so
     // existing synchronous lastFrame() tests are unaffected.
     const deferredRender = (): void => queueMicrotask(this.onRender);
-    // I-70: throttle to 1fps on idle unless alt-screen mode. Two pre-built
-    // throttles: the active 60fps one (FRAME_INTERVAL_MS) and an idle 1fps
-    // one. getScheduleRender swaps between them based on the last stdin
-    // event timestamp; the swap is observable via this.i70CurrentInterval.
-    const fastSchedule = throttle(deferredRender, FRAME_INTERVAL_MS, {
+    const throttledRender = throttle(deferredRender, FRAME_INTERVAL_MS, {
       leading: true,
       trailing: true,
     });
-    const idleSchedule = throttle(deferredRender, I70_IDLE_INTERVAL_MS, {
-      leading: true,
-      trailing: true,
-    });
-    this.i70FastSchedule = fastSchedule;
-    this.i70IdleSchedule = idleSchedule;
-    this.i70CurrentInterval = FRAME_INTERVAL_MS;
-    this.scheduleRender = (() => {
-      const idleFor = Date.now() - this.i70LastStdinEventAt;
-      const idle = idleFor > I70_IDLE_THRESHOLD_MS && !this.altScreenActive;
-      this.i70CurrentInterval = idle ? I70_IDLE_INTERVAL_MS : FRAME_INTERVAL_MS;
-      return idle ? idleSchedule() : fastSchedule();
-    }) as typeof this.scheduleRender;
+    this.scheduleRender = throttledRender as typeof this.scheduleRender;
 
     // Ignore last render after unmounting a tree to prevent empty output before exit
     this.isUnmounted = false;
@@ -389,9 +357,7 @@ export default class Ink {
     // doesn't exit alt-screen. Do NOT write ERASE_SCREEN: render() below
     // can take ~80ms; erasing first leaves the screen blank that whole time.
     if (this.altScreenActive && !this.isPaused && this.options.stdout.isTTY) {
-      if (this.altScreenMouseTracking) {
-        this.options.stdout.write(ENABLE_MOUSE_TRACKING);
-      }
+      this.options.stdout.write(ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
       this.resetFramesForAltScreen();
       this.needsEraseBeforePaint = true;
     }
@@ -422,12 +388,10 @@ export default class Ink {
     // Disable extended key reporting first — editors that don't speak
     // CSI-u (e.g. nano) show "Unknown sequence" for every Ctrl-<key> if
     // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
-    DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
+    DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + DBP + DFE + DISABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
     // disable mouse (no-op if off)
     this.altScreenActive ? '' : '\x1b[?1049h') +
     // enter alt (already in alt if fullscreen)
-    '\x1b[?1004l' +
-    // disable focus reporting
     '\x1b[0m' +
     // reset attributes
     '\x1b[?25h' +
@@ -457,12 +421,13 @@ export default class Ink {
     // clear screen (now alt if fullscreen)
     '\x1b[H' + (
     // cursor home
+    this.altScreenActive ? ENABLE_ALTERNATE_SCROLL : '') + (
     this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') + (
-    // re-enable mouse (skip if CLAUDE_CODE_DISABLE_MOUSE)
     this.altScreenActive ? '' : '\x1b[?1049l') +
     // exit alt (non-fullscreen only)
     '\x1b[?25l' // hide cursor (Ink manages)
     );
+    this.options.stdout.write(EBP + EFE + (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''));
     this.resumeStdin();
     if (this.altScreenActive) {
       this.resetFramesForAltScreen();
@@ -470,13 +435,6 @@ export default class Ink {
       this.repaint();
     }
     this.resume();
-    // Re-enable focus reporting and extended key reporting — terminal
-    // editors (vim, nano, etc.) write their own modifyOtherKeys level on
-    // entry and reset it on exit, leaving us unable to distinguish
-    // ctrl+shift+<letter> from ctrl+<letter>. Pop-before-push keeps the
-    // Kitty stack balanced (a well-behaved editor restores our entry, so
-    // without the pop we'd accumulate depth on each editor round-trip).
-    this.options.stdout.write('\x1b[?1004h' + (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''));
   }
   onRender() {
     if (this.isUnmounted || this.isPaused) {
@@ -964,39 +922,18 @@ export default class Ink {
    * sleep/wake — none of which send SIGCONT. The terminal may reset DEC
    * private modes on reconnect; this method restores them.
    *
-   * Always re-asserts extended key reporting and mouse tracking. Mouse
-   * tracking is idempotent (DEC private mode set-when-set is a no-op). The
-   * Kitty keyboard protocol is NOT — CSI >1u is a stack push, so we pop
-   * first to keep depth balanced (pop on empty stack is a no-op per spec,
-   * so after a terminal reset this still restores depth 0→1). Without the
-   * pop, each >5s idle gap adds a stack entry, and the single pop on exit
-   * or suspend can't drain them — the shell is left in CSI u mode where
-   * Ctrl+C/Ctrl+D leak as escape sequences. The alt-screen
-   * re-entry (ERASE_SCREEN + frame reset) is NOT idempotent — it blanks the
-   * screen — so it's opt-in via includeAltScreen. The stdin-gap caller fires
-   * on ordinary >5s idle + keypress and must not erase; the event-loop stall
-   * detector fires on genuine sleep/wake and opts in. tmux attach / ssh
-   * reconnect typically send a resize, which already covers alt-screen via
-   * handleResize.
+   * Re-asserts the output-side modes that App.tsx does not own:
+   * alternate-scroll and, when enabled, mouse tracking. The alt-screen
+   * re-entry (ERASE_SCREEN + frame reset) is destructive, so it's opt-in
+   * via includeAltScreen. The stdin-gap caller fires on ordinary idle +
+   * keypress and must not erase; explicit resume/stall recovery can opt in.
    */
   reassertTerminalModes = (includeAltScreen = false): void => {
     if (!this.options.stdout.isTTY) return;
-    // Don't touch the terminal during an editor handoff — re-enabling kitty
-    // keyboard here would undo enterAlternateScreen's disable and nano would
-    // start seeing CSI-u sequences again.
+    // Don't touch the terminal during an editor handoff.
     if (this.isPaused) return;
-    // Extended keys — re-assert if enabled (App.tsx enables these on
-    // allowlisted terminals at raw-mode entry; a terminal reset clears them).
-    // Pop-before-push keeps Kitty stack depth at 1 instead of accumulating
-    // on each call.
-    if (supportsExtendedKeys()) {
-      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS);
-    }
     if (!this.altScreenActive) return;
-    // Mouse tracking — idempotent, safe to re-assert on every stdin gap.
-    if (this.altScreenMouseTracking) {
-      this.options.stdout.write(ENABLE_MOUSE_TRACKING);
-    }
+    this.options.stdout.write(ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
     // Alt-screen re-entry — destructive (ERASE_SCREEN). Only for callers that
     // have a strong signal the terminal actually dropped mode 1049.
     if (includeAltScreen) {
@@ -1048,7 +985,7 @@ export default class Ink {
    * stays true. ENTER_ALT_SCREEN is a terminal-side no-op if already in alt.
    */
   private reenterAltScreen(): void {
-    this.options.stdout.write(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
+    this.options.stdout.write(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
     this.resetFramesForAltScreen();
   }
 
@@ -1353,11 +1290,6 @@ export default class Ink {
     dispatchHover(this.rootNode, col, row, this.hoveredNodes);
   }
   dispatchKeyboardEvent(parsedKey: ParsedKey): void {
-    // I-70: throttle to 1fps on idle unless alt-screen mode. Each stdin-
-    // derived keystroke restores the active 60fps cadence on the next
-    // scheduleRender call (the timestamp is read by the wrapper, which
-    // picks the fast vs idle throttle on every invocation).
-    this.i70LastStdinEventAt = Date.now();
     const target = this.focusManager.activeElement ?? this.rootNode;
     const event = new KeyboardEvent(parsedKey);
     dispatcher.dispatchDiscrete(target, event);
@@ -1460,18 +1392,28 @@ export default class Ink {
       return;
     }
 
-    // Store and remove all 'readable' event listeners temporarily
+    // Store and remove all stdin listeners temporarily.
     // This prevents Ink from consuming stdin while the editor is active
     const readableListeners = stdin.listeners('readable');
-    logForDebugging(`[stdin] suspendStdin: removing ${readableListeners.length} readable listener(s), wasRawMode=${(stdin as NodeJS.ReadStream & {
+    const dataListeners = stdin.listeners('data');
+    logForDebugging(`[stdin] suspendStdin: removing ${readableListeners.length} readable listener(s), ${dataListeners.length} data listener(s), wasRawMode=${(stdin as NodeJS.ReadStream & {
       isRaw?: boolean;
     }).isRaw ?? false}`);
-    readableListeners.forEach(listener => {
+    [...readableListeners.map(listener => ({
+      event: 'readable',
+      listener
+    })), ...dataListeners.map(listener => ({
+      event: 'data',
+      listener
+    }))].forEach(({
+      event,
+      listener
+    }) => {
       this.stdinListeners.push({
-        event: 'readable',
+        event,
         listener: listener as (...args: unknown[]) => void
       });
-      stdin.removeListener('readable', listener as (...args: unknown[]) => void);
+      stdin.removeListener(event, listener as (...args: unknown[]) => void);
     });
 
     // If raw mode is enabled, disable it temporarily
@@ -1483,6 +1425,7 @@ export default class Ink {
       stdinWithRaw.setRawMode(false);
       this.wasRawMode = true;
     }
+    stdin.pause();
   }
   resumeStdin(): void {
     const stdin = this.options.stdin;
@@ -1515,6 +1458,7 @@ export default class Ink {
       }
       this.wasRawMode = false;
     }
+    stdin.resume();
   }
 
   // Stable identity for TerminalWriteContext. An inline arrow here would
@@ -1574,7 +1518,9 @@ export default class Ink {
       if (this.altScreenActive) {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
-        writeSync(1, EXIT_ALT_SCREEN);
+        writeSync(1, DISABLE_ALTERNATE_SCROLL + EXIT_ALT_SCREEN);
+      } else {
+        writeSync(1, DISABLE_ALTERNATE_SCROLL);
       }
       // Disable mouse tracking — unconditional because altScreenActive can be
       // stale if AlternateScreen's unmount (which flips the flag) raced a

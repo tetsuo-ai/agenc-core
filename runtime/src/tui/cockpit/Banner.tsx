@@ -15,7 +15,7 @@
  * chrome so the surface still feels native to this runtime.
  */
 
-import React from "react";
+import React, { useCallback, useRef, useSyncExternalStore } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
@@ -23,7 +23,7 @@ import { getSpinnerFrame } from "../components/Spinner.js";
 import type { Color } from "../ink/styles.js";
 import type { PermissionMode } from "../../permissions/types.js";
 import { theme } from "../theme.js";
-import { useAnimationTick } from "../hooks/useAnimationTick.js";
+import { useRawClock } from "../hooks/useAnimationTick.js";
 
 export interface BannerProps {
   readonly runId?: string;
@@ -193,6 +193,34 @@ function Segment({
   );
 }
 
+function useStreamingSpinnerFrame(
+  isStreaming: boolean | undefined,
+): string | undefined {
+  const clock = useRawClock();
+  const tickRef = useRef(0);
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void): (() => void) => {
+      if (!isStreaming || !clock) {
+        return () => undefined;
+      }
+      return clock.subscribe(() => {
+        tickRef.current += 1;
+        onStoreChange();
+      }, true);
+    },
+    [clock, isStreaming],
+  );
+
+  const getSnapshot = useCallback((): number => tickRef.current, []);
+  const tick = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+
+  if (!isStreaming) {
+    return undefined;
+  }
+  return getSpinnerFrame(tick);
+}
+
 export const Banner: React.FC<BannerProps> = ({
   runId,
   model,
@@ -202,19 +230,12 @@ export const Banner: React.FC<BannerProps> = ({
   isStreaming,
   hasPlanActive,
 }) => {
-  // Subscribe to the clock so the spinner advances on every frame we
-  // receive. The hook returns a sane idle snapshot when no ClockProvider
-  // is mounted (e.g. in unit tests), so calling it unconditionally is
-  // safe and keeps the hook invocation stable.
-  const { tick } = useAnimationTick();
   const indicator = theme.modeIndicatorChar[mode] ?? "›";
   const run = shortRunId(runId);
   const tools = typeof activeToolCount === "number" && activeToolCount > 0
     ? activeToolCount
     : undefined;
-  const spinnerFrame = isStreaming
-    ? getSpinnerFrame(tick)
-    : undefined;
+  const spinnerFrame = useStreamingSpinnerFrame(isStreaming);
   const modeAccent = modeColor(mode);
   const modelDisplay = resolveModelDisplay(model);
 

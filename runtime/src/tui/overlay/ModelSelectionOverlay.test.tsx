@@ -305,7 +305,7 @@ describe("ModelSelectionOverlay", () => {
     unmount();
   });
 
-  test("skips disabled rows during navigation and number-key jumps", async () => {
+  test("skips disabled rows during navigation", async () => {
     const emitter = new EventEmitter();
     const onSelect = vi.fn();
     const onSelectionChange = vi.fn();
@@ -335,16 +335,36 @@ describe("ModelSelectionOverlay", () => {
       expect.objectContaining({ id: "bypass" }),
     );
 
-    onSelect.mockClear();
-    emitter.emit("input", makeKeyEvent({ name: "1", sequence: "1" }));
-    await new Promise((r) => setTimeout(r, 20));
-    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    expect(onSelectionChange).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "plan" }),
+    );
+    unmount();
+  });
+
+  test("number keys select immediately when search is disabled", async () => {
+    const emitter = new EventEmitter();
+    const onSelect = vi.fn();
+    const { unmount } = await mount(
+      withProviders(
+        emitter,
+        <ModelSelectionOverlay
+          title="Permission Mode"
+          searchable={false}
+          items={[
+            { id: "default", label: "Default", disabled: true, disabledReason: "Current mode" },
+            { id: "plan", label: "Plan" },
+            { id: "auto", label: "Auto" },
+          ]}
+          onSelect={onSelect}
+          onClose={() => undefined}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "2", sequence: "2" }));
     await new Promise((r) => setTimeout(r, 20));
 
     expect(onSelect).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "plan" }),
-    );
-    expect(onSelectionChange).toHaveBeenCalledWith(
       expect.objectContaining({ id: "plan" }),
     );
     unmount();
@@ -402,7 +422,62 @@ describe("ModelSelectionOverlay", () => {
     await new Promise((r) => setTimeout(r, 20));
 
     expect(onTabChange).toHaveBeenNthCalledWith(1, "Model");
-    expect(onTabChange).toHaveBeenNthCalledWith(2, "Model");
+    expect(onTabChange).toHaveBeenNthCalledWith(2, "Provider");
+    unmount();
+  });
+
+  test("switching tabs clears the active search query", async () => {
+    const emitter = new EventEmitter();
+    function Wrapper(): React.ReactElement {
+      const [activeTab, setActiveTab] = React.useState("Provider");
+      return (
+        <ModelSelectionOverlay
+          title="Select Model Provider"
+          tabs={["Provider", "Model"]}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          items={items}
+          onSelect={() => undefined}
+          onClose={() => undefined}
+        />
+      );
+    }
+    const { stdout, unmount } = await mount(
+      withProviders(emitter, <Wrapper />),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "x", sequence: "x" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(collectText(getRoot(stdout))).toContain("Search: x");
+
+    emitter.emit("input", makeKeyEvent({ name: "tab" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(collectText(getRoot(stdout))).toContain("Search: type to filter");
+    unmount();
+  });
+
+  test("Enter dismisses the overlay when the current filter has no matches", async () => {
+    const emitter = new EventEmitter();
+    const onClose = vi.fn();
+    const { unmount } = await mount(
+      withProviders(
+        emitter,
+        <ModelSelectionOverlay
+          title="Select Provider"
+          items={items}
+          onSelect={() => undefined}
+          onClose={onClose}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "z", sequence: "z" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
     unmount();
   });
 });

@@ -16,6 +16,7 @@ import instances from "../ink/instances.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
   MessageList,
+  transcriptMutationKey,
   truncate,
   type TranscriptMessage,
 } from "./MessageList.js";
@@ -344,6 +345,29 @@ describe("MessageList", () => {
 });
 
 describe("truncate helper", () => {
+  test("mutation key changes when a streaming row mutates in place", () => {
+    const base = [
+      mkMsg({
+        id: "a1",
+        kind: "assistant",
+        content: "hel",
+        isComplete: false,
+      }),
+    ];
+    const next = [
+      mkMsg({
+        id: "a1",
+        kind: "assistant",
+        content: "hello",
+        isComplete: false,
+      }),
+    ];
+
+    expect(transcriptMutationKey(base, true)).not.toBe(
+      transcriptMutationKey(next, true),
+    );
+  });
+
   test("returns short strings unchanged and truncates long ones with ellipsis", () => {
     expect(truncate("abc", 10)).toBe("abc");
     const long = "x".repeat(200);

@@ -3,12 +3,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import React from 'react'
 
-import Ink, {
-  FRAME_INTERVAL_MS,
-  I70_IDLE_INTERVAL_MS,
-  I70_IDLE_THRESHOLD_MS,
-} from './ink.js'
-
+import Ink, { FRAME_INTERVAL_MS } from './ink.js'
 import { FRAME_INTERVAL_MS as FRAME_INTERVAL_FROM_CONSTANTS } from './constants.js'
 
 type TestStdout = PassThrough & {
@@ -43,7 +38,7 @@ function makeStreams(): { stdout: TestStdout; stderr: PassThrough; stdin: TestSt
   return { stdout, stderr, stdin }
 }
 
-describe('I-70: throttle to 1fps on idle unless alt-screen mode', () => {
+describe('render scheduling', () => {
   beforeEach(() => {
     vi.useFakeTimers()
   })
@@ -52,88 +47,42 @@ describe('I-70: throttle to 1fps on idle unless alt-screen mode', () => {
     vi.useRealTimers()
   })
 
-  test('exports the documented threshold + interval constants', () => {
+  test('still exports the shared frame interval constant', () => {
     expect(FRAME_INTERVAL_FROM_CONSTANTS).toBe(FRAME_INTERVAL_MS)
-    expect(I70_IDLE_THRESHOLD_MS).toBe(5000)
-    expect(I70_IDLE_INTERVAL_MS).toBe(1000)
   })
 
-  test('drops the render interval to 1fps after 5001ms without a keystroke', () => {
+  test('keeps the normal frame cadence after a long idle gap', async () => {
     const { stdout, stderr, stdin } = makeStreams()
+    const frames: number[] = []
     const ink = new Ink({
       stdout: stdout as unknown as NodeJS.WriteStream,
       stderr: stderr as unknown as NodeJS.WriteStream,
       stdin: stdin as unknown as NodeJS.ReadStream,
       exitOnCtrlC: false,
       patchConsole: false,
+      onFrame: () => {
+        frames.push(Date.now())
+      },
     })
     const probe = ink as unknown as {
-      i70LastStdinEventAt: number
-      i70CurrentInterval: number
-      altScreenActive: boolean
       scheduleRender: () => void
     }
 
     try {
-      ink.render(React.createElement('ink-text', {}, 'idle test'))
-      // Active path: timestamp is fresh, interval should reflect the active
-      // 60fps cadence.
-      probe.i70LastStdinEventAt = Date.now()
-      probe.altScreenActive = false
-      probe.scheduleRender()
-      expect(probe.i70CurrentInterval).toBe(FRAME_INTERVAL_MS)
+      ink.render(React.createElement('ink-text', {}, 'fixed cadence'))
+      await vi.runAllTimersAsync()
+      frames.length = 0
 
-      // Advance just past the 5s threshold without any stdin event.
-      vi.advanceTimersByTime(I70_IDLE_THRESHOLD_MS + 1)
-      probe.scheduleRender()
-      expect(probe.i70CurrentInterval).toBe(I70_IDLE_INTERVAL_MS)
+      await vi.advanceTimersByTimeAsync(5001)
 
-      // A keystroke restores the active cadence on the next schedule.
-      ink.dispatchKeyboardEvent({
-        kind: 'key',
-        name: 'a',
-        fn: false,
-        ctrl: false,
-        meta: false,
-        shift: false,
-        option: false,
-        super: false,
-        sequence: 'a',
-        raw: 'a',
-        isPasted: false,
-      } as unknown as Parameters<typeof ink.dispatchKeyboardEvent>[0])
       probe.scheduleRender()
-      expect(probe.i70CurrentInterval).toBe(FRAME_INTERVAL_MS)
-    } finally {
-      ink.unmount()
-    }
-  })
+      await vi.runAllTimersAsync()
+      expect(frames).toHaveLength(1)
 
-  test('keeps the active cadence in alt-screen mode even when idle', () => {
-    const { stdout, stderr, stdin } = makeStreams()
-    const ink = new Ink({
-      stdout: stdout as unknown as NodeJS.WriteStream,
-      stderr: stderr as unknown as NodeJS.WriteStream,
-      stdin: stdin as unknown as NodeJS.ReadStream,
-      exitOnCtrlC: false,
-      patchConsole: false,
-    })
-    const probe = ink as unknown as {
-      i70LastStdinEventAt: number
-      i70CurrentInterval: number
-      altScreenActive: boolean
-      scheduleRender: () => void
-    }
-
-    try {
-      ink.render(React.createElement('ink-text', {}, 'alt screen'))
-      probe.altScreenActive = true
-      probe.i70LastStdinEventAt = Date.now()
-      vi.advanceTimersByTime(I70_IDLE_THRESHOLD_MS + 1)
       probe.scheduleRender()
-      // Alt-screen apps (full-screen TUIs, video-driven content, animations)
-      // still need 60fps even when keyboard is idle.
-      expect(probe.i70CurrentInterval).toBe(FRAME_INTERVAL_MS)
+      await vi.advanceTimersByTimeAsync(FRAME_INTERVAL_MS + 1)
+      await vi.runAllTimersAsync()
+      expect(frames).toHaveLength(2)
     } finally {
       ink.unmount()
     }

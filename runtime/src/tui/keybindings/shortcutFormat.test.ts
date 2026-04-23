@@ -11,6 +11,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   formatKeySequence,
+  getDisplaysForCommand,
   getDisplayForCommand,
   getShortcutDisplay,
 } from "./shortcutFormat.js";
@@ -37,6 +38,13 @@ describe("formatKeySequence", () => {
 });
 
 describe("getDisplayForCommand", () => {
+  test("returns all bound displays for commands with multiple shortcuts", () => {
+    expect(getDisplaysForCommand("chat:newline", "chat")).toEqual([
+      "Shift+Enter",
+      "Ctrl+J",
+    ]);
+  });
+
   test("finds global commands from any context", () => {
     expect(getDisplayForCommand("history:search", "chat")).toBe("Ctrl+R");
     expect(getDisplayForCommand("app:interrupt", "modal")).toBe("Ctrl+C");

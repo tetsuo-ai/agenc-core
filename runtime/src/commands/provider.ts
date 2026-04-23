@@ -18,6 +18,11 @@
 
 import type { Session } from "../session/session.js";
 import {
+  configuredModelForProvider,
+  defaultModelForProvider,
+} from "../config/index.js";
+import { normalizeProviderName } from "../llm/provider.js";
+import {
   checkModelHistoryCompat,
   type HistoryCompatResult,
 } from "./model.js";
@@ -42,11 +47,13 @@ export type { HistoryCompatResult };
 export async function applyProviderSwitch(
   session: Session,
   targetProvider: string,
+  targetModel?: string,
 ): Promise<string> {
-  // Resolve the currently-active model so we can stage a complete
-  // `pendingProviderSwitch` record. The model slot is required by the
-  // I-13 consumer even when only provider is changing — the run-turn
-  // loop applies both fields atomically.
+  const normalizedProvider = normalizeProviderName(targetProvider);
+  if (normalizedProvider === null) {
+    return `Provider switch to "${targetProvider}" blocked: unknown provider`;
+  }
+
   const rawState = session.state.unsafePeek() as {
     sessionConfiguration?: {
       provider?: { slug?: string };
@@ -57,11 +64,18 @@ export async function applyProviderSwitch(
     rawState?.sessionConfiguration?.provider?.slug ?? "unknown";
   const currentModel =
     rawState?.sessionConfiguration?.collaborationMode?.model ?? "unknown";
+  const config = session.services.configStore?.current();
+  const resolvedModel =
+    targetModel?.trim() ||
+    (config
+      ? configuredModelForProvider(config, normalizedProvider)
+      : undefined) ||
+    defaultModelForProvider(normalizedProvider);
 
   const compat = checkModelHistoryCompat(
     session,
-    currentModel,
-    targetProvider,
+    resolvedModel,
+    normalizedProvider,
   );
   if (!compat.compatible) {
     return `Provider switch to "${targetProvider}" blocked: ${
@@ -72,8 +86,8 @@ export async function applyProviderSwitch(
   // T11 W3-A: use the typed mutator so the I-13 + I-57 staging site
   // has a single well-typed entry point.
   session.setPendingProviderSwitch({
-    provider: targetProvider,
-    model: currentModel,
+    provider: normalizedProvider,
+    model: resolvedModel,
   });
 
   const activeTurn = session.activeTurn.unsafePeek();
@@ -81,29 +95,41 @@ export async function applyProviderSwitch(
     // I-13: abort the current turn with reason `provider_switched`.
     session.abortTerminal("provider_switched");
     return (
-      `Provider switch staged: ${currentProvider} → ${targetProvider}. ` +
+      `Provider switch staged: ${currentProvider} → ${normalizedProvider}; ` +
+      `model ${currentModel} → ${resolvedModel}. ` +
       `Current turn aborted; the switch takes effect on the next turn.`
     );
   }
 
-  return `Provider switched to "${targetProvider}" (was "${currentProvider}").`;
+  return (
+    `Provider switched to "${normalizedProvider}" (was "${currentProvider}"); ` +
+    `model "${resolvedModel}" selected.`
+  );
 }
 
 export const providerCommand: SlashCommand = {
-  name: "provider",
+  name: "model-provider",
+  aliases: ["provider"],
   description: "Switch the LLM provider for subsequent turns",
   userInvocable: true,
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const target = ctx.argsRaw.trim();
-      if (target.length === 0) {
+      const trimmed = ctx.argsRaw.trim();
+      if (trimmed.length === 0) {
         return {
           kind: "error",
-          message: "Usage: /provider <name>",
+          message: "Usage: /model-provider <provider> [model]",
         };
       }
-      const summary = await applyProviderSwitch(ctx.session, target);
+      const [targetProvider = "", ...modelParts] = trimmed.split(/\s+/);
+      const targetModel =
+        modelParts.length > 0 ? modelParts.join(" ").trim() : undefined;
+      const summary = await applyProviderSwitch(
+        ctx.session,
+        targetProvider,
+        targetModel,
+      );
       return { kind: "text", text: summary };
     }),
 };

@@ -103,6 +103,21 @@ function makeKeyEvent(opts: {
   return new InputEvent(parsedKey as never);
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function typeText(
+  emitter: EventEmitter,
+  text: string,
+  delayMs = 15,
+): Promise<void> {
+  for (const ch of text) {
+    emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+    await sleep(delayMs);
+  }
+}
+
 function renderedTextOf(stdout: PassThrough): string {
   // The Ink root writes rendered frames to stdout. Collect whatever has
   // been flushed so tests can assert on the visible buffer.
@@ -234,14 +249,14 @@ describe("Composer", () => {
       ),
     );
 
-    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
-    emitter.emit("input", makeKeyEvent({ name: "i", sequence: "i" }));
+    await typeText(emitter, "hi");
     emitter.emit("input", makeKeyEvent({ name: "backspace" }));
+    await sleep(20);
     emitter.emit("input", makeKeyEvent({ name: "!", sequence: "!" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await sleep(25);
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await sleep(25);
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("h!");
@@ -263,25 +278,18 @@ describe("Composer", () => {
     );
 
     for (const text of ["first draft", "second draft"]) {
-      for (const ch of text) {
-        emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
-      }
-      await new Promise((r) => setTimeout(r, 20));
+      await typeText(emitter, text);
       emitter.emit("input", makeKeyEvent({ name: "return" }));
-      await new Promise((r) => setTimeout(r, 20));
+      await sleep(20);
     }
 
-    for (const ch of "scratch") {
-      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
-    }
+    await typeText(emitter, "scratch");
     emitter.emit("input", makeKeyEvent({ name: "r", sequence: "r", ctrl: true }));
-    await new Promise((r) => setTimeout(r, 20));
+    await sleep(20);
     expect(latestFrameText(stdout)).toContain("reverse-i-search:");
 
-    for (const ch of "first") {
-      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
-    }
-    await new Promise((r) => setTimeout(r, 20));
+    await typeText(emitter, "first");
+    await sleep(20);
     const searchingFrame = latestFrameText(stdout);
     expect(searchingFrame).toContain("reverse-i-search: first");
     expect(searchingFrame).toContain("first draft");
@@ -314,23 +322,16 @@ describe("Composer", () => {
     );
 
     for (const text of ["alpha note", "beta note"]) {
-      for (const ch of text) {
-        emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
-      }
-      await new Promise((r) => setTimeout(r, 20));
+      await typeText(emitter, text);
       emitter.emit("input", makeKeyEvent({ name: "return" }));
-      await new Promise((r) => setTimeout(r, 20));
+      await sleep(20);
     }
 
-    for (const ch of "live draft") {
-      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
-    }
+    await typeText(emitter, "live draft");
     emitter.emit("input", makeKeyEvent({ name: "r", sequence: "r", ctrl: true }));
-    await new Promise((r) => setTimeout(r, 20));
-    for (const ch of "beta") {
-      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
-    }
-    await new Promise((r) => setTimeout(r, 20));
+    await sleep(20);
+    await typeText(emitter, "beta");
+    await sleep(20);
     expect(latestFrameText(stdout)).toContain("beta note");
 
     emitter.emit("input", makeKeyEvent({ name: "escape" }));
@@ -365,9 +366,8 @@ describe("Composer", () => {
       ),
     );
 
-    emitter.emit("input", makeKeyEvent({ name: "c", sequence: "c" }));
-    emitter.emit("input", makeKeyEvent({ name: "t", sequence: "t" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await typeText(emitter, "ct");
+    await sleep(25);
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 25));
@@ -465,10 +465,8 @@ describe("Composer", () => {
       { columns: 30 },
     );
 
-    for (const char of "abcdefghijklmnopqrstuvwxyz123456") {
-      emitter.emit("input", makeKeyEvent({ name: char, sequence: char }));
-    }
-    await new Promise((r) => setTimeout(r, 25));
+    await typeText(emitter, "abcdefghijklmnopqrstuvwxyz123456");
+    await sleep(25);
 
     let frame = latestFrameText(stdout);
     expect(frame).toContain("abcdefghijklmnopqr");
@@ -500,10 +498,8 @@ describe("Composer", () => {
       { columns: 80 },
     );
 
-    for (const char of "cat") {
-      emitter.emit("input", makeKeyEvent({ name: char, sequence: char }));
-    }
-    await new Promise((r) => setTimeout(r, 25));
+    await typeText(emitter, "cat");
+    await sleep(25);
 
     const frame = latestFrameText(stdout);
     expect(frame).toContain("cat");
@@ -569,7 +565,7 @@ describe("Composer", () => {
     unmount();
   });
 
-  test("Enter submits an exact slash command on the first press", async () => {
+  test("Enter first accepts an exact slash command, then the next Enter submits it", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();
     const { unmount } = await mount(
@@ -583,15 +579,15 @@ describe("Composer", () => {
       ),
     );
 
-    emitter.emit("input", makeKeyEvent({ name: "/", sequence: "/" }));
-    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
-    emitter.emit("input", makeKeyEvent({ name: "e", sequence: "e" }));
-    emitter.emit("input", makeKeyEvent({ name: "l", sequence: "l" }));
-    emitter.emit("input", makeKeyEvent({ name: "p", sequence: "p" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await typeText(emitter, "/help");
+    await sleep(25);
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await sleep(25);
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await sleep(25);
     expect(onSubmit).toHaveBeenCalledWith("/help");
     unmount();
   });
@@ -610,9 +606,8 @@ describe("Composer", () => {
       ),
     );
 
-    emitter.emit("input", makeKeyEvent({ name: "/", sequence: "/" }));
-    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await typeText(emitter, "/h");
+    await sleep(25);
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 25));
@@ -676,9 +671,8 @@ describe("Composer", () => {
       </AgenCAppStateProvider>,
     );
 
-    emitter.emit("input", makeKeyEvent({ name: "h", sequence: "h" }));
-    emitter.emit("input", makeKeyEvent({ name: "i", sequence: "i" }));
-    await new Promise((r) => setTimeout(r, 25));
+    await typeText(emitter, "hi");
+    await sleep(25);
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 25));
@@ -721,5 +715,30 @@ describe("Composer", () => {
     if (result.ok) {
       expect(result.resolved).toBe("/var/log/foo.log");
     }
+  });
+
+  test("rapid non-bracketed printable bursts are routed through paste buffering", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "a", sequence: "a" }));
+    emitter.emit("input", makeKeyEvent({ name: "b", sequence: "b" }));
+    await sleep(25);
+    expect(latestFrameText(stdout)).toContain("Paste in progress");
+
+    await sleep(650);
+    expect(latestFrameText(stdout)).toContain("ab");
+    expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
   });
 });

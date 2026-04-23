@@ -27,6 +27,7 @@ import {
   __setActiveInkUnmountForTest,
   buildExtractMemoriesViaSubagent,
   bootTUIEntry,
+  formatCliHelpText,
   initializeCliRuntime,
   installInitSignalHandlers,
   installSignalHandlers,
@@ -1694,6 +1695,82 @@ describe("memory_write_contention routing (I-8)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("main() full-IIFE smoke", () => {
+  it("main() short-circuits --help before TUI/CLI routing", async () => {
+    const prevArgv = [...process.argv];
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    process.argv = ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--help"];
+
+    try {
+      const code = await main();
+      expect(code).toBe(0);
+      expect(
+        stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain(formatCliHelpText());
+      expect(stderrSpy).not.toHaveBeenCalled();
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("main() short-circuits --version before TUI/CLI routing", async () => {
+    const prevArgv = [...process.argv];
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    process.argv = ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--version"];
+
+    try {
+      const code = await main();
+      expect(code).toBe(0);
+      expect(
+        stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain("agenc 0.2.0");
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+    }
+  });
+
+  it("main() fails fast on startup --image instead of drifting into normal routing", async () => {
+    const prevArgv = [...process.argv];
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    process.argv = [
+      "/usr/bin/node",
+      "/opt/agenc/bin/agenc.js",
+      "--image",
+      "/tmp/example.png",
+      "describe this",
+    ];
+
+    try {
+      const code = await main();
+      expect(code).toBe(1);
+      expect(stdoutSpy).not.toHaveBeenCalled();
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain("startup --image attachments are not wired");
+    } finally {
+      process.argv = prevArgv;
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+  });
+
   it("oneShotCLI rejects malformed slash input through the canonical dispatcher path", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-cwd-"));

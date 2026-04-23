@@ -168,7 +168,33 @@ function createFakeSession(
   };
 }
 
-const FAKE_CONFIG_STORE: ConfigStoreLike = { snapshot: {} };
+function createConfigStore(
+  initialConfig: unknown = {},
+): ConfigStoreLike & {
+  readonly setConfig: (next: unknown) => void;
+  readonly subscriberCount: () => number;
+} {
+  let config = initialConfig;
+  const listeners = new Set<(next: unknown) => void>();
+  return {
+    current: () => config as never,
+    subscribe: (listener: (next: unknown) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    setConfig(next: unknown) {
+      config = next;
+      for (const listener of Array.from(listeners)) {
+        listener(next);
+      }
+    },
+    subscriberCount: () => listeners.size,
+  };
+}
+
+const FAKE_CONFIG_STORE: ConfigStoreLike = { current: () => ({}) as never };
 
 describe("App", () => {
   test("recognizes codex-style picker slash commands", () => {
@@ -377,12 +403,13 @@ describe("App", () => {
       ...createFakeSession("plan"),
       conversationId: "conv-1234567890",
     };
+    const configStore = createConfigStore({
+      statusLine: { items: ["model", "mode", "session"] },
+    });
     const { stdout, unmount } = await mount(
       <App
         session={session}
-        configStore={{
-          snapshot: { statusLine: { items: ["model", "mode", "session"] } },
-        }}
+        configStore={configStore}
         model="grok-code-fast-1"
       />,
     );
@@ -397,6 +424,77 @@ describe("App", () => {
     expect(text).toContain("34567890");
     expect(text).toContain("SESSION");
     expect(text).toContain("34567890");
+    unmount();
+  });
+
+  test("subscribes to live ConfigStore updates for footer status-line items", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      conversationId: "conv-footer-live",
+    };
+    const configStore = createConfigStore({});
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={configStore} />,
+    );
+
+    expect(configStore.subscriberCount()).toBe(1);
+    expect(collectText(getRoot(stdout))).not.toContain("SESSION");
+
+    configStore.setConfig({ statusLine: { items: ["session"] } });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("SESSION");
+    expect(text).toContain("ter-live");
+
+    unmount();
+    expect(configStore.subscriberCount()).toBe(0);
+  });
+
+  test("renders the configurable status line beneath the composer chrome", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      conversationId: "conv-footer-order",
+    };
+    const configStore = createConfigStore({
+      statusLine: { items: ["session"] },
+    });
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={configStore} />,
+    );
+
+    const text = collectText(getRoot(stdout));
+    expect(text.indexOf("commands.")).toBeLessThan(text.indexOf("SESSION"));
+    unmount();
+  });
+
+  test("surfaces active tool count and tool phase in the banner", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      activeTurn: { unsafePeek: () => ({ turnId: "turn-1" }) },
+      abortTerminal: () => undefined,
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-1" } },
+        {
+          type: "tool_call_started",
+          id: "tool-call-1",
+          payload: {
+            callId: "call-1",
+            toolName: "Bash",
+            args: "{\"cmd\":\"ls\"}",
+          },
+        },
+      ],
+    };
+
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("/ tool");
+    expect(text).toContain("tools");
+    expect(text).toContain("1");
     unmount();
   });
 

@@ -1,6 +1,8 @@
 import {
   buildMarkdownDisplayLines,
   buildStreamingMarkdownDisplayLines,
+  createMarkdownStreamCollector,
+  type BuildMarkdownOptions,
 } from "../_deps/markdown.js";
 import {
   renderHighlightedCodeLines,
@@ -20,6 +22,16 @@ export interface MarkdownRenderOptions {
   readonly maxPathChars?: number;
   readonly width?: number;
   readonly highlightCode?: boolean;
+}
+
+export interface MarkdownDisplayLineStream {
+  clear(): void;
+  pushDelta(delta: string): void;
+  syncToValue(value: string): void;
+  commitCompleteLines(): MarkdownDisplayLine[];
+  previewPendingLines(): MarkdownDisplayLine[];
+  snapshot(): MarkdownDisplayLine[];
+  finalizeAndDrain(): MarkdownDisplayLine[];
 }
 
 function normalizeDisplayLine(line: unknown): MarkdownDisplayLine {
@@ -114,15 +126,51 @@ function normalizeLines(lines: readonly unknown[]): MarkdownDisplayLine[] {
   return lines.map(normalizeDisplayLine);
 }
 
+function toBuildOptions(options: MarkdownRenderOptions): BuildMarkdownOptions {
+  return {
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.maxPathChars !== undefined
+      ? { maxPathChars: options.maxPathChars }
+      : {}),
+    ...(options.width !== undefined ? { width: options.width } : {}),
+  };
+}
+
+export function createMarkdownDisplayLineStream(
+  options: MarkdownRenderOptions = {},
+): MarkdownDisplayLineStream {
+  const collector = createMarkdownStreamCollector(toBuildOptions(options));
+  return {
+    clear() {
+      collector.clear();
+    },
+    pushDelta(delta: string) {
+      collector.pushDelta(delta);
+    },
+    syncToValue(value: string) {
+      collector.syncToValue(value);
+    },
+    commitCompleteLines() {
+      return normalizeLines(collector.commitCompleteLines());
+    },
+    previewPendingLines() {
+      return normalizeLines(collector.previewPendingLines());
+    },
+    snapshot() {
+      return normalizeLines(collector.snapshot());
+    },
+    finalizeAndDrain() {
+      return normalizeLines(collector.finalizeAndDrain());
+    },
+  };
+}
+
 export function renderMarkdownDisplayLinesSync(
   value: string,
   options: MarkdownRenderOptions = {},
 ): MarkdownDisplayLine[] {
   return normalizeLines(
-    buildMarkdownDisplayLines(value, {
-      cwd: options.cwd,
-      maxPathChars: options.maxPathChars,
-    }),
+    buildMarkdownDisplayLines(value, toBuildOptions(options)),
   );
 }
 
@@ -139,10 +187,7 @@ export function renderStreamingMarkdownDisplayLinesSync(
   options: MarkdownRenderOptions = {},
 ): MarkdownDisplayLine[] {
   return normalizeLines(
-    buildStreamingMarkdownDisplayLines(value, {
-      cwd: options.cwd,
-      maxPathChars: options.maxPathChars,
-    }),
+    buildStreamingMarkdownDisplayLines(value, toBuildOptions(options)),
   );
 }
 

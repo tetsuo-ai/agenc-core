@@ -104,6 +104,38 @@ export interface MessageListProps {
 
 const TOOL_ARGS_MAX = 80;
 
+function lengthOf(value: string | readonly unknown[] | undefined): number {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) return value.length;
+  return 0;
+}
+
+export function transcriptMutationKey(
+  messages: readonly TranscriptMessage[],
+  isStreaming: boolean = false,
+): string {
+  return messages
+    .map((message) =>
+      [
+        message.id,
+        message.kind,
+        message.timestamp,
+        message.isComplete === false ? "streaming" : "final",
+        lengthOf(message.content),
+        lengthOf(message.execStdout),
+        lengthOf(message.execStderr),
+        message.execExitCode ?? "",
+        message.execDurationMs ?? "",
+        message.execTimedOut === true ? "timeout" : "",
+        lengthOf(message.planEvents),
+        message.progressStream ?? "",
+        message.label ?? "",
+      ].join(":"),
+    )
+    .join("|")
+    .concat(isStreaming ? "|tail:1" : "|tail:0");
+}
+
 /**
  * Truncate a string to `max` chars with an ellipsis suffix. Exported
  * separately only so tests can assert its behavior; this is intentionally
@@ -318,6 +350,9 @@ export const MessageList: React.FC<MessageListProps> = ({
   // re-rendering the whole list on every scroll tick.
   const stickyRef = useRef<boolean>(true);
   const lastLengthRef = useRef<number>(messages.length);
+  const lastMutationKeyRef = useRef<string>(
+    transcriptMutationKey(messages, isStreaming),
+  );
 
   // Keep the sticky flag in sync with the real ScrollBox state. `subscribe`
   // fires for imperative scrollTo/scrollBy — exactly the operator-driven
@@ -335,20 +370,26 @@ export const MessageList: React.FC<MessageListProps> = ({
     };
   }, []);
 
-  // On new messages, follow-to-bottom iff we were sticky before the
-  // growth. Also refresh stickyRef afterwards so subsequent inserts
-  // reuse the latest state without waiting for the subscribe callback.
+  // Follow while sticky not only on appended rows but also when the live tail
+  // mutates in place (assistant streaming, exec stdout/stderr growth, plan
+  // updates). This mirrors codex's active-cell revision behavior: the bottom
+  // stays pinned until the user explicitly scrolls away.
   useEffect(() => {
     const handle = scrollRef.current;
     if (!handle) return;
-    const grew = messages.length > lastLengthRef.current;
+    const nextKey = transcriptMutationKey(messages, isStreaming);
+    const previousKey = lastMutationKeyRef.current;
+    const previousLength = lastLengthRef.current;
+    const grew = messages.length > previousLength;
+    const mutatedInPlace = previousKey !== nextKey && !grew;
     lastLengthRef.current = messages.length;
-    if (!grew) return;
-    if (stickyRef.current) {
+    lastMutationKeyRef.current = nextKey;
+    if (!grew && !mutatedInPlace) return;
+    if (stickyRef.current || handle.isSticky()) {
       handle.scrollToBottom();
       stickyRef.current = true;
     }
-  }, [messages.length]);
+  }, [isStreaming, messages]);
 
   const pageUp = (): void => {
     const handle = scrollRef.current;

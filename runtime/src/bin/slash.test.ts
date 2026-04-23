@@ -86,6 +86,16 @@ describe("runSlashCommand — bridge allowlist", () => {
     expect(isBridgeSafeCommand("help")).toBe(true);
   });
 
+  it("allows canonical /model-provider over the bridge", async () => {
+    const result = await runSlashCommand(
+      "/model-provider openai gpt-5",
+      stubCtx(),
+      { bridge: true },
+    );
+    expect(result.kind).not.toBe("blocked_by_bridge");
+    expect(isBridgeSafeCommand("model-provider")).toBe(true);
+  });
+
   it("ignores the bridge gate when opts.bridge is not set", async () => {
     // Local CLI path: the dispatcher is reached and `/help` runs.
     const result = await runSlashCommand("/help", stubCtx());
@@ -102,5 +112,13 @@ describe("runSlashCommand — real command dispatch smoke", () => {
     if (result.result.kind !== "text") throw new Error("unreachable");
     // Real /help text should mention the command surface.
     expect(result.result.text.length).toBeGreaterThan(0);
+  });
+
+  it("/provider dispatches through the canonical /model-provider command", async () => {
+    const result = await runSlashCommand("/provider openai gpt-5", stubCtx());
+    expect(result.kind).toBe("dispatched");
+    if (result.kind !== "dispatched") throw new Error("unreachable");
+    expect(result.outcome.trace.name).toBe("model-provider");
+    expect(result.outcome.trace.aliasUsed).toBe("provider");
   });
 });

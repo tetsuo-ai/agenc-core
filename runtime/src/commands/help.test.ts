@@ -28,7 +28,7 @@ describe("helpCommand", () => {
     if (res.kind === "text") expect(res.text).toBe("registry pending");
   });
 
-  it("formats a registry of commands alphabetically with aliases", async () => {
+  it("formats commands in registry order with aliases", async () => {
     const cmds: SlashCommand[] = [
       { name: "zeta", description: "last letter", execute: async () => ({ kind: "skip" }) },
       {
@@ -55,9 +55,9 @@ describe("helpCommand", () => {
       expect(res.text).toMatch(/\/alpha, \/a/);
       expect(res.text).toMatch(/\/zeta/);
       expect(res.text).not.toMatch(/\/middle/); // hidden
-      const idxAlpha = res.text.indexOf("/alpha");
       const idxZeta = res.text.indexOf("/zeta");
-      expect(idxAlpha).toBeLessThan(idxZeta);
+      const idxAlpha = res.text.indexOf("/alpha");
+      expect(idxZeta).toBeLessThan(idxAlpha);
     }
   });
 
@@ -79,5 +79,18 @@ describe("helpCommand", () => {
     ];
     const reg: CommandRegistry = { list: () => cmds, find: () => undefined };
     expect(formatHelp(reg)).toBe(formatHelp(reg));
+  });
+
+  it("surfaces canonical /model-provider and alias /provider together", () => {
+    const cmds: SlashCommand[] = [
+      {
+        name: "model-provider",
+        aliases: ["provider"],
+        description: "Switch provider",
+        execute: async () => ({ kind: "skip" }),
+      },
+    ];
+    const reg: CommandRegistry = { list: () => cmds, find: () => undefined };
+    expect(formatHelp(reg)).toContain("/model-provider, /provider");
   });
 });
