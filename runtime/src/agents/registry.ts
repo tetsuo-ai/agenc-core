@@ -18,7 +18,7 @@
  * @module
  */
 
-import { AsyncLock } from "../utils/async-lock.js";
+import { AsyncLock } from "./_deps/async-lock.js";
 import { formatNicknameWithSuffix, type AgentRole } from "./role.js";
 
 // ─────────────────────────────────────────────────────────────────────

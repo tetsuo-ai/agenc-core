@@ -35,9 +35,8 @@ import React, {
 } from "react";
 import { isAbsolute, relative, resolve } from "node:path";
 
-import { buildDefaultRegistry } from "../../commands/registry.js";
-import { getGlobalCommandRegistry } from "../../commands/types.js";
-import { Cursor } from "../../utils/Cursor.js";
+import { buildDefaultRegistry, getGlobalCommandRegistry } from "../_deps/commands.js";
+import { Cursor } from "../_deps/cursor.js";
 import { stringWidth } from "../ink/stringWidth.js";
 import Box from "../ink/components/Box.js";
 import StdinContext from "../ink/components/StdinContext.js";

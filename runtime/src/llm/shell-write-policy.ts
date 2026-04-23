@@ -3,7 +3,7 @@ import { basename, relative, resolve as resolvePath, sep } from "node:path";
 import {
   SHELL_COMMAND_SEPARATORS,
   tokenizeShellCommand,
-} from "../tools/system/command-line.js";
+} from "./_deps/command-line.js";
 
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "system.bash",

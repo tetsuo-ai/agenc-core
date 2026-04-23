@@ -41,7 +41,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { ConfigStore } from "../config/store.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { findProjectRootSync } from "../session/session-store.js";
-import { readTextFile } from "../utils/file-read.js";
+import { readTextFile } from "./_deps/file-read.js";
 import {
   applyPermissionRulesToPermissionContext,
   applyPermissionUpdate,

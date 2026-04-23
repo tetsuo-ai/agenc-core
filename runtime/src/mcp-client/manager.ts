@@ -12,9 +12,9 @@ import type {
   MCPServerConfig,
   MCPToolBridge,
 } from "./types.js";
-import type { Tool } from "../tools/types.js";
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { Tool } from "./_deps/tools-types.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tool-bridge.js";
 import { ResilientMCPBridge } from "./resilient-bridge.js";

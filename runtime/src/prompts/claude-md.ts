@@ -31,7 +31,7 @@ import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
-import { normalizeExternalText, readTextFile } from "../utils/file-read.js";
+import { normalizeExternalText, readTextFile } from "./_deps/file-read.js";
 import {
   DEFAULT_PROJECT_DOC_MAX_BYTES,
   DEFAULT_PROJECT_ROOT_MARKERS,

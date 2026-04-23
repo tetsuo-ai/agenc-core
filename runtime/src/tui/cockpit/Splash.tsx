@@ -25,7 +25,7 @@ import React, { useContext, useEffect, useRef } from "react";
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import StdinContext from "../ink/components/StdinContext.js";
-import { silentLogger } from "../../utils/logger.js";
+import { silentLogger } from "../_deps/logger.js";
 import { theme } from "../theme.js";
 
 export interface SplashProps {

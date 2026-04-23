@@ -51,7 +51,7 @@ import {
   resolveProfile,
   type AgenCConfig,
 } from "../config/index.js";
-import { normalizeExternalText } from "../utils/file-read.js";
+import { normalizeExternalText } from "./_deps/file-read.js";
 
 export type AgentReasoningEffort = "none" | "low" | "medium" | "high";
 

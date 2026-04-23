@@ -10,8 +10,8 @@
  */
 
 import type { MCPServerConfig } from "./types.js";
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
 import { createSseMCPConnection } from "./transports/sse.js";
 import { createHttpMCPConnection } from "./transports/http.js";
 

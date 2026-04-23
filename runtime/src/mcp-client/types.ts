@@ -7,7 +7,7 @@
  * @module
  */
 
-import type { Tool } from "../tools/types.js";
+import type { Tool } from "./_deps/tools-types.js";
 
 /**
  * Configuration for an external MCP server.

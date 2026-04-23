@@ -7,8 +7,8 @@ import type {
   LLMXaiCapabilitySurface,
   LLMWebSearchConfig,
 } from "./types.js";
-import type { GatewayLLMConfig as ContextGatewayLLMConfig } from "../gateway/context-window.js";
-import { normalizeGrokModel } from "../gateway/context-window.js";
+import type { GatewayLLMConfig as ContextGatewayLLMConfig } from "./_deps/context-window.js";
+import { normalizeGrokModel } from "./_deps/context-window.js";
 
 // Lean-rebuild alias: provider-native-search was written against the
 // full gateway/types.ts GatewayLLMConfig. The rebuilt gateway stub

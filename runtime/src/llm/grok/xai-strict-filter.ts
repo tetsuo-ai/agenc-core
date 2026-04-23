@@ -52,7 +52,7 @@
 
 import { LLMProviderError } from "../errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "../policy.js";
-import { canonicalizeProviderModel } from "../../gateway/model-route.js";
+import { canonicalizeProviderModel } from "../_deps/model-route.js";
 
 // ---------------------------------------------------------------------------
 // Section A — documented xAI Responses API contract

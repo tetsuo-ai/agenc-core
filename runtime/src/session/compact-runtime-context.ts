@@ -1,12 +1,13 @@
-import { getSystemPrompt } from "../constants/prompts.js";
-import { getSystemContext, getUserContext } from "../context.js";
+import {
+  buildEffectiveSystemPrompt,
+  getSystemContext,
+  getSystemPrompt,
+  getUserContext,
+  type SystemPrompt,
+} from "./_deps/system-prompt.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Message } from "../types/message.js";
 import type { CacheSafeParams } from "../utils/forkedAgent.js";
-import {
-  buildEffectiveSystemPrompt,
-  type SystemPrompt,
-} from "../utils/systemPrompt.js";
 import type { Session } from "./session.js";
 import {
   toTurnContextItem,

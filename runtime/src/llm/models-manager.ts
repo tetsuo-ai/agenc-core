@@ -4,7 +4,7 @@ import {
   readProviderConfig,
   resolveDisambiguatedModelSelection,
   type AgenCConfig,
-} from "../config/index.js";
+} from "./_deps/config.js";
 import {
   resolveProviderCapabilityEntry,
   type ProviderCapabilityRegistryEntry,

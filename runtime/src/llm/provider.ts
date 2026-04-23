@@ -4,7 +4,7 @@
  * @module
  */
 
-import { resolveApiKey } from "../config/env.js";
+import { resolveApiKey } from "./_deps/env.js";
 import { GrokProvider } from "./grok/index.js";
 import type { GrokProviderConfig } from "./grok/index.js";
 import { OllamaProvider } from "./ollama/index.js";

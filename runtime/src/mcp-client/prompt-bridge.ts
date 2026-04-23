@@ -11,8 +11,8 @@
  * @module
  */
 
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
 
 const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
 

@@ -30,7 +30,7 @@
  * @module
  */
 
-import { BehaviorSubject } from "../utils/behavior-subject.js";
+import { BehaviorSubject } from "./_deps/behavior-subject.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants (I-16)

@@ -21,7 +21,7 @@
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
 import type { TurnContext } from "./turn-context.js";
-import { provisionContentReplacementState } from "../utils/toolResultStorage.js";
+import { provisionContentReplacementState } from "./_deps/tool-result-storage.js";
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each

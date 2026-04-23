@@ -44,7 +44,7 @@ import {
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 import { DegradedStore } from "./degraded-store.js";
 import type { Event } from "./event-log.js";
 import type { RolloutItem } from "./rollout-item.js";

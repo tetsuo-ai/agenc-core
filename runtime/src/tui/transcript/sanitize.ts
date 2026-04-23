@@ -1,4 +1,4 @@
-import { stripTerminalControlSequences } from "../../watch/agenc-watch-markdown-parse.mjs";
+import { stripTerminalControlSequences } from "../_deps/markdown.js";
 
 function toVisibleControlEscape(codePoint: number): string {
   if (codePoint === 0x1b) {

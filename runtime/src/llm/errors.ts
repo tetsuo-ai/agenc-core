@@ -4,7 +4,7 @@
  * @module
  */
 
-import { RuntimeError, RuntimeErrorCodes } from "../types/errors.js";
+import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
 
 export interface TlsValidationDetails {

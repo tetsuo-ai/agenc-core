@@ -64,12 +64,10 @@ import type {
   Terminal,
   TurnState,
 } from "../session/turn-state.js";
-import {
-  finalContextTokensFromLastResponse,
-  tokenCountWithEstimation,
-} from "../utils/tokens.js";
-import { applyToolResultBudget } from "../utils/toolResultStorage.js";
-import { recordContentReplacement } from "../utils/sessionStorage.js";
+import { finalContextTokensFromLastResponse } from "../recovery/_deps/tokens.js";
+import { tokenCountWithEstimation } from "../llm/compact/_deps/token-counts.js";
+import { applyToolResultBudget } from "./_deps/tool-result-storage.js";
+import { recordContentReplacement } from "./_deps/session-storage.js";
 
 /**
  * Dynamic loader for the compact/ subsystem. Each compact stage is

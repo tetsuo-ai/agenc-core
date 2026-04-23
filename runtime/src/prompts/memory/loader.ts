@@ -18,8 +18,8 @@
  * @module
  */
 
-import { readTextFile } from "../../utils/file-read.js";
-import { AsyncLock } from "../../utils/async-lock.js";
+import { readTextFile } from "../_deps/file-read.js";
+import { AsyncLock } from "../_deps/async-lock.js";
 import { scanMemoryIndex } from "./scan.js";
 import { parseFrontmatter, type MemoryEntry } from "./types.js";
 import { withFsLock, type FsLockOpts } from "./fs-lock.js";

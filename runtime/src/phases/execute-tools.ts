@@ -33,23 +33,23 @@
 
 import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { validateToolCallsForExecution } from "../llm/stream-parser.js";
-import { StreamingToolExecutor } from "../tools/streaming-executor.js";
-import { ToolCallRuntime } from "../tools/concurrency.js";
-import { routerFromRegistry } from "../tools/router.js";
+import {
+  StreamingToolExecutor,
+  ToolCallRuntime,
+  ToolHookRegistry,
+  routerFromRegistry,
+  type PermissionDecisionHook,
+  type PostToolUseFailureHook,
+  type PostToolUseHook,
+  type PreToolUseHook,
+} from "./_deps/tool-runtime.js";
 import {
   type ApprovalPolicy as OrchestratorApprovalPolicy,
   type ApprovalResolver,
   type PermissionRequestHook,
   type SandboxMode,
 } from "../tools/orchestrator.js";
-import { resolveMaxToolUseConcurrency } from "../tools/orchestration.js";
-import {
-  ToolHookRegistry,
-  type PermissionDecisionHook,
-  type PostToolUseFailureHook,
-  type PostToolUseHook,
-  type PreToolUseHook,
-} from "../tools/hooks.js";
+import { resolveMaxToolUseConcurrency } from "./_deps/orchestration.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
@@ -282,7 +282,7 @@ export function ensureStreamingToolExecutor(
               modeChangeRegistry: permissionModeRegistry,
             }
           : {}),
-        onHookError: (phase, err, idx) => {
+        onHookError: (phase: string, err: unknown, idx: number) => {
           session.emit({
             id: session.nextInternalSubId(),
             msg: {

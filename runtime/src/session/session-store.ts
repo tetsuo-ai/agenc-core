@@ -67,7 +67,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 import {
   ROLLOUT_SCHEMA_VERSION,
   type Event,

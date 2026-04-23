@@ -22,8 +22,8 @@ import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { delegate, type IsolationMode } from "../agents/delegate.js";
 import { AgentRegistry, type AgentPath } from "../agents/registry.js";
 import type { Session } from "../session/session.js";
-import type { Tool, ToolResult } from "../tools/types.js";
-import { safeStringify } from "../tools/types.js";
+import type { Tool, ToolResult } from "./_deps/tools-types.js";
+import { safeStringify } from "./_deps/tools-types.js";
 
 const DELEGATE_TOOL_NAME = "system.agent.delegate";
 const SESSION_AGENT_REGISTRY = Symbol("sessionAgentRegistry");

@@ -26,7 +26,7 @@
 
 import type { AgentControl } from "../agents/control.js";
 import type { MCPManager } from "../mcp-client/manager.js";
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 import { emitWarning } from "./event-log.js";
 import type { Session } from "./session.js";
 

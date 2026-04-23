@@ -22,7 +22,7 @@
 
 import { readdir, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
-import { readTextFile } from "../../utils/file-read.js";
+import { readTextFile } from "../_deps/file-read.js";
 import { parseFrontmatter, type MemoryEntry } from "./types.js";
 
 /** Maximum number of memory files surfaced per scan. */

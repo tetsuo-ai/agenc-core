@@ -16,7 +16,7 @@
 import { stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 
-import { readTextFile } from "../utils/file-read.js";
+import { readTextFile } from "./_deps/file-read.js";
 
 /**
  * Primary filename scanned for project instructions (OpenAI/Codex

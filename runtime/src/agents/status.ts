@@ -17,8 +17,8 @@
  * @module
  */
 
-import { BehaviorSubject } from "../utils/behavior-subject.js";
-import { monotonicMs } from "../utils/monotonic.js";
+import { BehaviorSubject } from "./_deps/behavior-subject.js";
+import { monotonicMs } from "./_deps/monotonic.js";
 
 export type AgentStatus =
   | { readonly status: "idle" }

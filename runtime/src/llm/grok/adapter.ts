@@ -59,8 +59,8 @@ import {
   type AuthRefreshCallbacks,
   type AuthRefreshOutcome,
 } from "./auth-refresh.js";
-import { monotonicMs } from "../../utils/monotonic.js";
-import { resolveContextWindowProfile } from "../../gateway/context-window.js";
+import { monotonicMs } from "../_deps/monotonic.js";
+import { resolveContextWindowProfile } from "../_deps/context-window.js";
 import {
   buildProviderTraceErrorPayload,
   isContinuationRetrievalFailure,

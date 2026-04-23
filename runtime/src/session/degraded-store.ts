@@ -24,7 +24,7 @@
  * @module
  */
 
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 
 export const DEFAULT_DEGRADED_CAPACITY = 1000;
 export const DEFAULT_DEGRADED_RETRY_MS = 30_000;

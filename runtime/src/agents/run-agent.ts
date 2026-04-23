@@ -24,12 +24,12 @@ import type {
   LLMProvider,
 } from "../llm/types.js";
 import { readProviderIdentity } from "../llm/provider.js";
-import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
-import { safeStringify, type Tool } from "../tools/types.js";
+import type { ToolRegistry, ToolDispatchResult } from "./_deps/tool-registry.js";
+import { safeStringify, type Tool } from "./_deps/tools-types.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
   SESSION_ID_ARG,
-} from "../tools/system/filesystem.js";
+} from "./_deps/filesystem-args.js";
 import { Session as ChildSession, type Session } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";

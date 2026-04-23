@@ -33,7 +33,7 @@ import {
 import {
   buildOpenAICompatibilityErrorMessage,
   classifyOpenAIHttpFailure,
-} from "../../../services/api/openaiErrorClassification.js";
+} from "../../_deps/openai-error-classification.js";
 import {
   buildChatCompletionsRequest,
   parseChatCompletionsResponse,
@@ -44,7 +44,7 @@ import {
 } from "../../wire/responses-openai.js";
 import type { OpenAIProviderConfig } from "./types.js";
 import { OpenAIAuthSession } from "./auth.js";
-import { parseSSEFrames } from "../../../transport/sse-post.js";
+import { parseSSEFrames } from "../../_deps/sse.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 

@@ -28,7 +28,7 @@
  * @module
  */
 
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/monotonic.js";
 
 /**
  * Default idle timeout. Matches openclaude `claude.ts:1898`. Override

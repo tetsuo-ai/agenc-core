@@ -5,20 +5,17 @@ import {
 } from "../llm/compact/compact.js";
 import { feature } from "bun:bundle";
 import chalk from "chalk";
-import { getUserContext } from "../context.js";
-import { getShortcutDisplay } from "../keybindings/shortcutFormat.js";
-import { notifyCompaction } from "../services/api/promptCacheBreakDetection.js";
-import { setLastSummarizedMessageId } from "../services/SessionMemory/sessionMemoryUtils.js";
+import { getUserContext } from "./_deps/system-prompt.js";
+import { getShortcutDisplay, getUpgradeMessage } from "./_deps/display.js";
+import { notifyCompaction, setLastSummarizedMessageId } from "./_deps/no-op.js";
 import type { Message } from "../types/message.js";
-import { hasExactErrorMessage } from "../utils/errors.js";
-import { logError } from "../utils/log.js";
+import { hasExactErrorMessage, logError } from "./_deps/utils.js";
 import {
   createSyntheticUserCaveatMessage,
   createUserMessage,
   formatCommandInputTags,
   getMessagesAfterCompactBoundary,
-} from "../utils/messages.js";
-import { getUpgradeMessage } from "../utils/model/contextWindowUpgradeCheck.js";
+} from "./_deps/messages.js";
 import {
   buildCompactCacheSafeParams,
   createSessionBackedCompactContext,

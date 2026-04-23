@@ -79,7 +79,7 @@ import {
 } from "../prompts/system-prompt.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
-import { enableConfigs } from "../utils/config.js";
+import { enableConfigs } from "./_deps/config-init.js";
 
 export {
   bootstrapLocalRuntimeSession,

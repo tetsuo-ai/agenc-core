@@ -22,7 +22,7 @@
 
 import { join } from "node:path";
 import { promises as fsp } from "node:fs";
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";

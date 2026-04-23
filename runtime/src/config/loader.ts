@@ -49,7 +49,7 @@ import {
   normalizeRawConfig,
 } from "./schema.js";
 import { resolveAgencHome } from "./env.js";
-import { readTextFile } from "../utils/file-read.js";
+import { readTextFile } from "./_deps/file-read.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Parser

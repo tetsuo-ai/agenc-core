@@ -17,7 +17,7 @@
  * @module
  */
 
-import { AsyncLock } from "../utils/async-lock.js";
+import { AsyncLock } from "./_deps/async-lock.js";
 import { emitError, emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { AssistantMessage, TurnState } from "../session/turn-state.js";

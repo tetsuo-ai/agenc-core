@@ -7,10 +7,10 @@
  * @module
  */
 
-import type { Tool, ToolResult, JSONSchema } from "../tools/types.js";
+import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
 import type { MCPToolBridge } from "./types.js";
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
 import {
   computeMCPToolCatalogSha256,
   catalogDigestMatches,

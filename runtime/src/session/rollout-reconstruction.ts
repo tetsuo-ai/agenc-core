@@ -49,7 +49,7 @@ import type { IndexSnapshot } from "./session-store.js";
 import {
   capToolResult,
   DEFAULT_MAX_TOOL_RESULT_BYTES,
-} from "../tools/execution.js";
+} from "./_deps/tool-execution.js";
 
 /**
  * Verbatim port of codex `core/templates/compact/summary_prefix.md`

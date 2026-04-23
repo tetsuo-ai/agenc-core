@@ -3,7 +3,7 @@ import { extname } from "node:path";
 import stripAnsi from "strip-ansi";
 import wrapAnsi from "wrap-ansi";
 
-import { getCliHighlightPromise } from "../../utils/cliHighlight.js";
+import { getCliHighlightPromise } from "../_deps/cli-highlight.js";
 
 export interface HighlightedCodeLine {
   readonly text: string;

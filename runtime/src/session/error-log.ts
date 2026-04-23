@@ -24,7 +24,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 import type { Event } from "./event-log.js";
 import { DegradedStore } from "./degraded-store.js";
 import { isDegradedErrno } from "./session-store.js";

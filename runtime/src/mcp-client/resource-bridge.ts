@@ -18,8 +18,8 @@
  * @module
  */
 
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
 
 /** Upper bound on a single resource read (I-76). */
 export const MAX_RESOURCE_BYTES = 5 * 1024 * 1024;

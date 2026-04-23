@@ -15,18 +15,14 @@ import {
   dispatchSlashCommand,
   isBridgeSafeCommand,
   parseSlashCommand as parseDispatcherInput,
-  type DispatchOutcome,
-} from "../commands/dispatcher.js";
-import {
   buildDefaultRegistry,
-  type CommandRegistry,
-} from "../commands/registry.js";
-import {
   getGlobalCommandRegistry,
   setGlobalCommandRegistry,
+  type DispatchOutcome,
+  type CommandRegistry,
   type SlashCommandContext,
   type SlashCommandResult,
-} from "../commands/types.js";
+} from "./_deps/commands.js";
 
 // ---------------------------------------------------------------------------
 // W3 thin-wrapper surface

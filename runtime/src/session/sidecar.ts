@@ -20,7 +20,7 @@
  */
 
 import type { Event, EventLog } from "./event-log.js";
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/utils.js";
 
 /** Events a sidecar can emit back into the manager for logging. */
 export interface SidecarDiagnostic {

@@ -31,7 +31,7 @@
  * @module
  */
 
-import { AsyncLock } from "../utils/async-lock.js";
+import { AsyncLock } from "./_deps/async-lock.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-declared enum ports (kept local to avoid an import cycle with

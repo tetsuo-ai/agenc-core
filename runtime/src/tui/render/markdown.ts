@@ -1,7 +1,7 @@
 import {
   buildMarkdownDisplayLines,
   buildStreamingMarkdownDisplayLines,
-} from "../../watch/agenc-watch-markdown-core.mjs";
+} from "../_deps/markdown.js";
 import {
   renderHighlightedCodeLines,
   type HighlightedCodeLine,

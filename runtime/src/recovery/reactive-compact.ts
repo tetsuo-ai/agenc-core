@@ -42,7 +42,7 @@ import type { AssistantMessage, TurnState } from "../session/turn-state.js";
 import { runPostCompactCleanup } from "../llm/compact/post-compact-cleanup.js";
 import type { CompactionResult } from "../llm/compact/compact.js";
 import type { CompactRuntimeContext } from "../session/compact-runtime-context.js";
-import { finalContextTokensFromLastResponse } from "../utils/tokens.js";
+import { finalContextTokensFromLastResponse } from "./_deps/tokens.js";
 import {
   isMediaTooLargeMessage,
   isPromptTooLongMessage,

@@ -10,7 +10,7 @@
  * @module
  */
 
-import { getBudgetContinuationMessage } from "../utils/tokenBudget.js";
+import { getBudgetContinuationMessage } from "./_deps/token-budget.js";
 
 export const DEFAULT_TOKEN_BUDGET_CHECK_INTERVAL = 1_000;
 const COMPLETION_THRESHOLD = 0.9;

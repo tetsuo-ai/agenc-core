@@ -70,21 +70,21 @@ import { AgentRegistry } from "../agents/registry.js";
 import {
   buildToolRegistry,
   type BuildToolRegistryOptions,
-} from "../tool-registry.js";
+} from "./_deps/tool-registry.js";
 import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
-} from "../utils/currentRuntimeSession.js";
+} from "./_deps/current-session.js";
 import {
   getClaudeConfigHomeDir,
   resolveClaudeConfigHomeDir,
-} from "../utils/envUtils.js";
+} from "./_deps/env-utils.js";
 import {
   loadTranscriptFile,
-} from "../utils/sessionStorage.js";
+} from "./_deps/session-storage.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
-import { toInfraSessionId } from "../bridge/sessionIdCompat.js";
-import { restoreFromEntries } from "../services/contextCollapse/persist.js";
+import { toInfraSessionId } from "./_deps/session-id-compat.js";
+import { restoreFromEntries } from "./_deps/context-collapse.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
@@ -471,8 +471,8 @@ async function registerStartupSessionIngress(params: {
     sessionIngressAuthMod,
     sessionStorageMod,
   ] = await Promise.all([
-    import("../utils/sessionIngressAuth.js"),
-    import("../utils/sessionStorage.js"),
+    import("./_deps/session-ingress-auth.js"),
+    import("./_deps/session-storage.js"),
   ]);
   const authHeaders = sessionIngressAuthMod.getSessionIngressAuthHeaders();
 

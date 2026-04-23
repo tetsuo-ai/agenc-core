@@ -30,8 +30,8 @@ import {
   parseAnthropicMessagesResponse,
 } from "../../wire/messages-anthropic.js";
 import type { AnthropicProviderConfig } from "./types.js";
-import { parseSSEFrames } from "../../../transport/sse-post.js";
-import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../../constants/betas.js";
+import { parseSSEFrames } from "../../_deps/sse.js";
+import { CONTEXT_MANAGEMENT_BETA_HEADER } from "../../_deps/betas.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";

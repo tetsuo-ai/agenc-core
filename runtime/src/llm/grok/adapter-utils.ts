@@ -11,7 +11,7 @@ import type {
   LLMTool,
   LLMToolChoice,
 } from "../types.js";
-import { safeStringify } from "../../tools/types.js";
+import { safeStringify } from "../_deps/safe-stringify.js";
 
 // Lean-rebuild stub: the original sanitizer lived in the deleted
 // chat-executor-tool-utils. The Grok adapter only uses it to strip

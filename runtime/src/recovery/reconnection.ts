@@ -17,7 +17,7 @@
  * @module
  */
 
-import { monotonicMs } from "../utils/monotonic.js";
+import { monotonicMs } from "./_deps/monotonic.js";
 import type { Session } from "../session/session.js";
 import { emitWarning } from "../session/event-log.js";
 

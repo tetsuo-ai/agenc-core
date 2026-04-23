@@ -40,7 +40,7 @@ import {
 } from "node:fs";
 import { spawn } from "node:child_process";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
-import { AsyncLock } from "../utils/async-lock.js";
+import { AsyncLock } from "./_deps/async-lock.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Global git-mutation lock

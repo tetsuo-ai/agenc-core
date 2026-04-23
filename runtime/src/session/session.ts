@@ -33,10 +33,12 @@
  * @module
  */
 
-import { AsyncLock } from "../utils/async-lock.js";
-import { AsyncQueue } from "../utils/async-queue.js";
-import { BehaviorSubject } from "../utils/behavior-subject.js";
-import { monotonicMs } from "../utils/monotonic.js";
+import {
+  AsyncLock,
+  AsyncQueue,
+  BehaviorSubject,
+  monotonicMs,
+} from "./_deps/utils.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import type { LLMMessage } from "../llm/types.js";
@@ -66,10 +68,8 @@ import type {
   ApprovalResolver,
   PermissionRequestHook,
 } from "../tools/orchestrator.js";
-import {
-  contextCollapseService,
-  type ContextCollapseRuntimeService,
-} from "../services/contextCollapse/index.js";
+import { contextCollapseService } from "./_deps/context-collapse.js";
+import type { ContextCollapseRuntimeService } from "../services/contextCollapse/index.js";
 import { startMcpManagerForSession } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
