@@ -272,6 +272,15 @@ export async function* queryModelWithStreaming(
     };
   }
 
+  function* closeTextBlockIfOpen(): Generator<CompactStreamEvent> {
+    if (!openedTextBlock) return;
+    openedTextBlock = false;
+    yield {
+      type: "stream_event",
+      event: { type: "content_block_stop", index: 0 },
+    };
+  }
+
   try {
     for await (const chunk of queue.drain()) {
       // Terminal callback — provider signals end of stream. We ignore
@@ -281,20 +290,48 @@ export async function* queryModelWithStreaming(
         continue;
       }
 
-      // Snapshot rewrite (Grok partial-reply mitigation). Replace
-      // the accumulator and emit the corrected snapshot as one
-      // text_delta so the compact consumer's response-length
-      // counter advances by the correct delta on the next chunk.
+      // Snapshot rewrite (Grok partial-reply mitigation). The chunk
+      // carries a full-so-far snapshot, not an incremental delta.
+      // Anthropic's stream-event protocol has no "replace buffer"
+      // primitive, so we close the current text block and open a new
+      // one (consumers that segment by content_block boundary will
+      // discard the old block; consumers that concatenate everything
+      // get the snapshot-as-delta path which is best-effort).
+      //
+      // Emit only the net-new suffix when the snapshot is a strict
+      // extension of the prior accumulator (the common case). When the
+      // snapshot diverges, restart the block so the new content is the
+      // authoritative buffer.
       if (chunk.resetBuffer === true) {
-        accumulated = chunk.content ?? "";
-        if (accumulated.length === 0) continue;
+        const next = chunk.content ?? "";
+        const prev = accumulated;
+        accumulated = next;
+        if (next.length === 0) continue;
+        if (next.startsWith(prev)) {
+          const suffix = next.slice(prev.length);
+          if (suffix.length === 0) continue;
+          yield* openTextBlockIfNeeded();
+          yield {
+            type: "stream_event",
+            event: {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: suffix },
+            },
+          };
+          continue;
+        }
+        // Divergent snapshot — close the current block (so consumers
+        // can drop accumulated state) and open a fresh one carrying
+        // the corrected snapshot.
+        yield* closeTextBlockIfOpen();
         yield* openTextBlockIfNeeded();
         yield {
           type: "stream_event",
           event: {
             type: "content_block_delta",
             index: 0,
-            delta: { type: "text_delta", text: accumulated },
+            delta: { type: "text_delta", text: next },
           },
         };
         continue;

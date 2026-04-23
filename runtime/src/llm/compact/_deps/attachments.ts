@@ -226,13 +226,16 @@ export async function generateFileAttachment(
   }
 
   // Pre-read size gate: if the on-disk file is bigger than
-  // `maxSizeBytes` we take the truncate-or-reference branch without
-  // attempting a full read. In `'compact'` mode upstream returns a
-  // lightweight reference attachment (path-only) instead of inlining a
-  // huge file; we mirror that. In `'at-mention'` mode upstream falls
-  // through to a truncated read; for the gut surface we return null
-  // since at-mention is not exercised by the compact pipeline today.
-  if (tooLargeOnDisk && mode !== "compact") {
+  // `maxSizeBytes`, take the reference branch in `'compact'` mode
+  // without attempting a full read (matches upstream behavior — return
+  // a lightweight `compact_file_reference` instead of inlining the
+  // file). For non-compact modes the gut surface is not exercised by
+  // the compact pipeline today, so we fail closed.
+  if (tooLargeOnDisk) {
+    if (mode === "compact") {
+      if (successEventName) logEvent(successEventName);
+      return buildCompactReference();
+    }
     if (errorEventName) logEvent(errorEventName);
     return null;
   }
@@ -257,7 +260,10 @@ export async function generateFileAttachment(
   const sliced = allLines.slice(startIndex, endIndex);
   let content = sliced.join("\n");
   let numLines = sliced.length;
-  let truncated = endIndex < totalLines || tooLargeOnDisk;
+  // `tooLargeOnDisk` is unreachable here — the pre-read gate above
+  // returns a compact reference (compact mode) or null (other modes)
+  // before we reach the slice. Keep the line count gate only.
+  let truncated = endIndex < totalLines;
 
   // Post-read token cap: if the read content is over the per-file
   // token budget, either return a compact reference (in `'compact'`

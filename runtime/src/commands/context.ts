@@ -3,8 +3,10 @@
  *
  * Uses the session's `BudgetTracker` (I-22) for token math plus the
  * history length from `SessionState` for message count. Last compaction
- * timestamp is read from `session.eventLog` if the compaction event was
- * recorded (falls back to "never").
+ * timestamp is derived by walking `state.history` backward for the most
+ * recent `compact_boundary` system marker; that marker's `timestamp` is
+ * the canonical record because every successful manual/auto compact
+ * inserts one (see `_deps/messages.ts::createCompactBoundaryMessage`).
  *
  * @module
  */
@@ -24,6 +26,29 @@ export interface ContextSnapshot {
   readonly lastCompactionMs: number | null;
 }
 
+interface CompactBoundaryLike {
+  readonly type?: string;
+  readonly subtype?: string;
+  readonly timestamp?: string;
+}
+
+function findLastCompactionMs(history: ReadonlyArray<unknown>): number | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i] as CompactBoundaryLike | null;
+    if (
+      msg !== null &&
+      typeof msg === "object" &&
+      msg.type === "system" &&
+      msg.subtype === "compact_boundary" &&
+      typeof msg.timestamp === "string"
+    ) {
+      const parsed = Date.parse(msg.timestamp);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+  }
+  return null;
+}
+
 /**
  * Collect the context snapshot. Returns null fields when the
  * corresponding subsystem is not wired.
@@ -41,17 +66,11 @@ export function collectContextSnapshot(session: Session): ContextSnapshot {
     }
   }
 
-  // Best-effort read of history length via the lock's unsafePeek.
+  // Best-effort read of history via the lock's unsafePeek.
   const rawState = session.state.unsafePeek() as { history?: unknown[] };
-  const messageCount = rawState?.history?.length ?? 0;
-
-  // Pull last compaction timestamp from the event log if tracked.
-  const eventLog = session.eventLog as unknown as {
-    lastCompactionMs?: number | null;
-  };
-  const lastCompactionMs = typeof eventLog.lastCompactionMs === "number"
-    ? eventLog.lastCompactionMs
-    : null;
+  const history = rawState?.history ?? [];
+  const messageCount = history.length;
+  const lastCompactionMs = findLastCompactionMs(history);
 
   return { tokensUsed, tokensLimit, messageCount, lastCompactionMs };
 }

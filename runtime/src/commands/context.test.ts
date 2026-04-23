@@ -9,7 +9,6 @@ function stubSession(opts: {
   history?: unknown[];
   emitted?: number;
   remaining?: number | null;
-  lastCompactionMs?: number | null;
 }) {
   return {
     state: { unsafePeek: () => ({ history: opts.history ?? [] }) },
@@ -17,28 +16,62 @@ function stubSession(opts: {
       opts.emitted === undefined
         ? null
         : { emitted: opts.emitted, remaining: opts.remaining ?? null },
-    eventLog: { lastCompactionMs: opts.lastCompactionMs ?? null },
+    eventLog: {},
   } as unknown as Session;
 }
 
+const compactBoundary = (timestamp: string) => ({
+  type: "system",
+  subtype: "compact_boundary",
+  timestamp,
+});
+
 describe("contextCommand", () => {
-  it("reports tokens, limit, message count, and last compaction", () => {
+  it("reports tokens, limit, message count, and last compaction from history", () => {
+    const ts = "2026-04-23T10:00:00.000Z";
     const snap = collectContextSnapshot(
       stubSession({
-        history: [1, 2, 3],
+        history: [{ role: "user" }, compactBoundary(ts), { role: "assistant" }],
         emitted: 500,
         remaining: 1500,
-        lastCompactionMs: 1_700_000_000_000,
       }),
     );
     expect(snap.tokensUsed).toBe(500);
     expect(snap.tokensLimit).toBe(2000);
     expect(snap.messageCount).toBe(3);
-    expect(snap.lastCompactionMs).toBe(1_700_000_000_000);
+    expect(snap.lastCompactionMs).toBe(Date.parse(ts));
     const text = formatContext(snap);
     expect(text).toMatch(/500 \/ 2000/);
     expect(text).toMatch(/Message count/);
     expect(text).toMatch(/Last compaction/);
+  });
+
+  it("returns the most-recent compact_boundary when multiple exist", () => {
+    const older = "2026-04-22T10:00:00.000Z";
+    const newer = "2026-04-23T10:00:00.000Z";
+    const snap = collectContextSnapshot(
+      stubSession({
+        history: [
+          compactBoundary(older),
+          { role: "user" },
+          compactBoundary(newer),
+          { role: "assistant" },
+        ],
+        emitted: 0,
+        remaining: 0,
+      }),
+    );
+    expect(snap.lastCompactionMs).toBe(Date.parse(newer));
+  });
+
+  it("returns null when no compact_boundary marker exists", () => {
+    const snap = collectContextSnapshot(
+      stubSession({
+        history: [{ role: "user" }, { role: "assistant" }],
+        emitted: 100,
+      }),
+    );
+    expect(snap.lastCompactionMs).toBeNull();
   });
 
   it("handles 'unlimited' when remaining is infinite", () => {
