@@ -1,10 +1,10 @@
 /**
  * Default keybindings for the AgenC TUI cockpit.
  *
- * Ported from the reference Ink runtime at openclaude/src/keybindings;
- * trimmed for T12 scope: chat + modal + global only. No voice, no vim-mode,
- * no autocomplete/scroll/tabs etc. — those contexts are out of scope here
- * and will come back when later waves wire them in.
+ * Ported from the reference Ink runtime at openclaude/src/keybindings.
+ * AgenC only exposes the contexts that are live in this shell today, but
+ * those contexts should match upstream behavior instead of carrying local
+ * narrowed-scope shortcuts.
  *
  * Public contract:
  *   - `DEFAULT_BINDINGS` is a `Record<BindingContext, BindingMap>`.
@@ -23,6 +23,12 @@ export type BindingCommand =
   | "app:interrupt"
   | "app:exit"
   | "app:redraw"
+  | "scroll:pageUp"
+  | "scroll:pageDown"
+  | "scroll:lineUp"
+  | "scroll:lineDown"
+  | "scroll:top"
+  | "scroll:bottom"
   | "history:search"
   | "history:prev"
   | "history:next"
@@ -171,6 +177,12 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
     [normalizeKeySequence("ctrl+d")]: "app:exit",
     [normalizeKeySequence("ctrl+l")]: "app:redraw",
     [normalizeKeySequence("ctrl+r")]: "history:search",
+    [normalizeKeySequence("pageup")]: "scroll:pageUp",
+    [normalizeKeySequence("pagedown")]: "scroll:pageDown",
+    [normalizeKeySequence("wheelup")]: "scroll:lineUp",
+    [normalizeKeySequence("wheeldown")]: "scroll:lineDown",
+    [normalizeKeySequence("ctrl+home")]: "scroll:top",
+    [normalizeKeySequence("ctrl+end")]: "scroll:bottom",
   },
   chat: {
     [normalizeKeySequence(MODE_CYCLE_KEY)]: "chat:cycleMode",
@@ -204,6 +216,12 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "app:interrupt",
   "app:exit",
   "app:redraw",
+  "scroll:pageUp",
+  "scroll:pageDown",
+  "scroll:lineUp",
+  "scroll:lineDown",
+  "scroll:top",
+  "scroll:bottom",
   "history:search",
   "history:prev",
   "history:next",

@@ -131,6 +131,8 @@ export function keyToChord(input: string, key: Key): string {
   else if (key.rightArrow) name = "right";
   else if (key.pageUp) name = "pageup";
   else if (key.pageDown) name = "pagedown";
+  else if (key.wheelUp) name = "wheelup";
+  else if (key.wheelDown) name = "wheeldown";
   else if (key.home) name = "home";
   else if (key.end) name = "end";
   else if (key.tab) name = "tab";
@@ -499,6 +501,16 @@ export function useSetKeybindingContext(): (ctx: BindingContext) => void {
     );
   }
   return ctx.setActiveContext;
+}
+
+export function useActiveKeybindingContext(): BindingContext {
+  const ctx = useContext(KeybindingReactContext);
+  if (!ctx) {
+    throw new Error(
+      "useActiveKeybindingContext must be used inside a <KeybindingProvider>.",
+    );
+  }
+  return ctx.activeContext;
 }
 
 /**

@@ -492,9 +492,7 @@ export async function loadTieredInstructions(
   const projectChain = await loadProjectInstructionChain({
     cwd: opts.cwd,
     projectRootMarkers:
-      opts.projectRootMarkers && opts.projectRootMarkers.length > 0
-        ? opts.projectRootMarkers
-        : DEFAULT_PROJECT_ROOT_MARKERS,
+      opts.projectRootMarkers ?? DEFAULT_PROJECT_ROOT_MARKERS,
     projectDocMaxBytes: opts.projectDocMaxBytes ?? DEFAULT_PROJECT_DOC_MAX_BYTES,
   });
   let projectTier: TierEntry | null = null;

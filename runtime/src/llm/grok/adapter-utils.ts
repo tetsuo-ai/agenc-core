@@ -215,12 +215,12 @@ export function buildProviderTraceErrorPayload(
     const headers = (error as { headers?: unknown }).headers;
     if (headers && typeof headers === "object") {
       try {
-        if (typeof (headers as { entries?: unknown }).entries === "function") {
+        if (
+          typeof (headers as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
+            "function"
+        ) {
           payload.headers = Object.fromEntries(
-            Array.from(
-              (headers as Headers).entries(),
-              ([key, value]) => [key, value],
-            ),
+            Array.from(headers as Iterable<readonly [string, string]>),
           );
         } else if (!Array.isArray(headers)) {
           payload.headers = cloneProviderTracePayload(headers);

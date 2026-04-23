@@ -140,7 +140,7 @@ export async function delegate(
   // Build the fork context.
   const fork = await forkSubagent({
     parent: opts.parent,
-    parentMessages: [],
+    parentMessages: opts.parent.snapshotHistoryMessages(),
     mode: forkMode,
     taskPrompt: opts.taskPrompt,
     ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),

@@ -18,6 +18,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
+import { charInCellAt } from "../ink/screen.js";
 import {
   StreamingMessage,
   scanForUISpoof,
@@ -71,6 +72,25 @@ async function captureFrame(stdout: PassThrough): Promise<string> {
   stdout.on("data", (b: Buffer) => chunks.push(b));
   await new Promise((r) => setTimeout(r, 40));
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function latestFrameText(stdout: PassThrough): string {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) {
+    return "";
+  }
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen as never, x, y) ?? " ";
+    }
+    rows.push(row.replace(/\s+$/u, ""));
+  }
+  return rows.join("\n");
 }
 
 describe("scanForUISpoof", () => {
@@ -145,6 +165,45 @@ describe("StreamingMessage component", () => {
     unmount();
   });
 
+  test("renders headings and list items through the markdown display path", async () => {
+    const { unmount, stdout } = await mount(
+      <StreamingMessage content={"# Heading\n\n- item"} isComplete />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Heading");
+    expect(frame).not.toContain("# Heading");
+    expect(frame).toContain("• item");
+    unmount();
+  });
+
+  test("renders fenced code blocks without showing raw fences", async () => {
+    const { unmount, stdout } = await mount(
+      <StreamingMessage
+        content={"```ts\nconst answer = 42;\n```"}
+        isComplete
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("code · ts");
+    expect(frame).toContain("const answer = 42;");
+    expect(frame).not.toContain("```");
+    unmount();
+  });
+
+  test("renders markdown tables through the structured display path", async () => {
+    const { unmount, stdout } = await mount(
+      <StreamingMessage
+        content={"| name | value |\n| --- | --- |\n| alpha | beta |"}
+        isComplete
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("┌");
+    expect(frame).toContain("alpha");
+    expect(frame).toContain("beta");
+    unmount();
+  });
+
   test("spoof pattern renders inside a [MODEL OUTPUT] frame", async () => {
     const emitEvent = vi.fn();
     const session = { emitEvent };
@@ -172,6 +231,17 @@ describe("StreamingMessage component", () => {
         patterns: expect.any(Array),
       }),
     );
+    unmount();
+  });
+
+  test("renders literal escape bytes safely inside the spoof frame", async () => {
+    const { unmount, stdout } = await mount(
+      <StreamingMessage content={"unsafe \x1b[31mred\x1b[0m"} isComplete />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("[MODEL");
+    expect(frame).toContain("OUTPUT]");
+    expect(frame).toContain("\\x1b[31m");
     unmount();
   });
 });

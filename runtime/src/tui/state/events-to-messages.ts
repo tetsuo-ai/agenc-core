@@ -13,12 +13,10 @@
  *
  * Resume / hydration contract
  * ---------------------------
- * Full resumed-session transcript hydration is not wired by bootstrap yet,
- * but the reducer already accepts a preloaded `TranscriptSourceEvent[]`.
- * Once bootstrap reconstructs transcript-relevant rollout items, it only
- * needs to expose them through `session.initialTranscriptEvents` (or the
- * equivalent hook contract in `useQuery`) and the TUI will render them
- * without further App changes.
+ * Bootstrap reconstructs transcript-relevant rollout items and exposes
+ * them through `session.initialTranscriptEvents`. The reducer accepts that
+ * preloaded `TranscriptSourceEvent[]` directly, so resumed sessions and
+ * live event-log updates share the same rendering path.
  *
  * @module
  */
@@ -27,6 +25,7 @@ import type { SlashCommandResult } from "../../commands/types.js";
 import type { PhaseEvent } from "../../phases/events.js";
 import type { EventMsg } from "../../session/event-log.js";
 import type { TranscriptMessage } from "../transcript/MessageList.js";
+import type { PlanEvent } from "../transcript/PlanProgress.js";
 
 type TranscriptEventMsg = Extract<
   EventMsg,
@@ -55,12 +54,25 @@ type TranscriptEventMsg = Extract<
   }
 >;
 
-export interface TranscriptEventEnvelope {
-  readonly id?: string;
-  readonly seq?: number;
-  readonly type: TranscriptEventMsg["type"];
-  readonly payload: TranscriptEventMsg["payload"];
-}
+type TranscriptPlanEventMsg = Extract<
+  TranscriptEventMsg,
+  {
+    readonly type:
+      | "plan_started"
+      | "plan_delta"
+      | "plan_item_completed"
+      | "plan_exited";
+  }
+>;
+
+export type TranscriptEventEnvelope = {
+  [K in TranscriptEventMsg["type"]]: {
+    readonly id?: string;
+    readonly seq?: number;
+    readonly type: K;
+    readonly payload: Extract<TranscriptEventMsg, { readonly type: K }>["payload"];
+  };
+}[TranscriptEventMsg["type"]];
 
 export interface TranscriptSlashResultEvent {
   readonly id?: string;
@@ -105,6 +117,40 @@ function eventTimestamp(event: TranscriptSourceEvent, index: number): number {
 function nextFallbackTurnId(counter: { value: number }): string {
   counter.value += 1;
   return `${FALLBACK_TURN_PREFIX}${counter.value}`;
+}
+
+function toPlanEvent(
+  event: TranscriptPlanEventMsg,
+  timestamp: number,
+): PlanEvent {
+  switch (event.type) {
+    case "plan_started":
+      return {
+        kind: "plan_started",
+        planItemId: event.payload.planItemId,
+        title: event.payload.title,
+        timestamp,
+      };
+    case "plan_delta":
+      return {
+        kind: "plan_delta",
+        planItemId: event.payload.planItemId,
+        delta: event.payload.delta,
+        timestamp,
+      };
+    case "plan_item_completed":
+      return {
+        kind: "plan_item_completed",
+        planItemId: event.payload.planItemId,
+        finalText: event.payload.finalText,
+        timestamp,
+      };
+    case "plan_exited":
+      return {
+        kind: "plan_exited",
+        timestamp,
+      };
+  }
 }
 
 function safeJsonParse(input: string): unknown {
@@ -207,7 +253,7 @@ export function eventsToMessages(
   const messages: TranscriptMessage[] = [];
   const toolMessageIndexByCallId = new Map<string, number>();
   const activityIndexById = new Map<string, number>();
-  const planIndexById = new Map<string, number>();
+  const planIndexByTurnId = new Map<string, number>();
   const pendingExecOutputByCallId = new Map<string, PendingExecOutput>();
 
   const fallbackTurnCounter = { value: 0 };
@@ -660,73 +706,90 @@ export function eventsToMessages(
         break;
       }
       case "plan_started": {
+        const turnId = ensureTurnId(event.payload.turnId);
         messages.push({
-          id: event.id ?? `plan-start-${event.payload.planItemId}`,
-          turnId: ensureTurnId(event.payload.turnId),
-          kind: "meta",
-          label: "plan",
-          content: event.payload.title,
+          id: event.id ?? `plan-progress-${turnId}`,
+          turnId,
+          kind: "plan_progress",
+          content: "",
+          planEvents: [toPlanEvent(event, timestamp)],
           timestamp,
         });
+        planIndexByTurnId.set(turnId, messages.length - 1);
         break;
       }
       case "plan_delta": {
-        const planId = `plan:${event.payload.planItemId}`;
-        const existingIndex = planIndexById.get(planId);
+        const turnId = ensureTurnId(event.payload.turnId);
+        const existingIndex = planIndexByTurnId.get(turnId);
         if (existingIndex === undefined) {
           messages.push({
-            id: planId,
-            turnId: ensureTurnId(event.payload.turnId),
-            kind: "activity",
-            label: "plan",
-            content: event.payload.delta,
+            id: `plan-progress-${turnId}`,
+            turnId,
+            kind: "plan_progress",
+            content: "",
+            planEvents: [toPlanEvent(event, timestamp)],
             timestamp,
-            isComplete: false,
           });
-          planIndexById.set(planId, messages.length - 1);
+          planIndexByTurnId.set(turnId, messages.length - 1);
         } else {
           const prev = messages[existingIndex]!;
           messages[existingIndex] = {
             ...prev,
-            content: `${prev.content}${event.payload.delta}`,
+            planEvents: [...(prev.planEvents ?? []), toPlanEvent(event, timestamp)],
             timestamp,
           };
         }
         break;
       }
       case "plan_item_completed": {
-        const planId = `plan:${event.payload.planItemId}`;
-        const existingIndex = planIndexById.get(planId);
+        const turnId = ensureTurnId(event.payload.turnId);
+        const existingIndex = planIndexByTurnId.get(turnId);
         if (existingIndex === undefined) {
           messages.push({
-            id: planId,
-            turnId: ensureTurnId(event.payload.turnId),
-            kind: "activity",
-            label: "plan",
-            content: event.payload.finalText,
+            id: `plan-progress-${turnId}`,
+            turnId,
+            kind: "plan_progress",
+            content: "",
+            planEvents: [toPlanEvent(event, timestamp)],
             timestamp,
-            isComplete: true,
           });
-          planIndexById.set(planId, messages.length - 1);
+          planIndexByTurnId.set(turnId, messages.length - 1);
         } else {
           messages[existingIndex] = {
             ...messages[existingIndex]!,
-            content: event.payload.finalText,
+            planEvents: [
+              ...(messages[existingIndex]!.planEvents ?? []),
+              toPlanEvent(event, timestamp),
+            ],
             timestamp,
-            isComplete: true,
           };
         }
         break;
       }
       case "plan_exited": {
-        messages.push({
-          id: event.id ?? `plan-exited-${timestamp}`,
-          turnId: ensureTurnId(event.payload.turnId),
-          kind: "meta",
-          label: "plan",
-          content: "mode exited",
-          timestamp,
-        });
+        const turnId = ensureTurnId(event.payload.turnId);
+        const existingIndex = planIndexByTurnId.get(turnId);
+        if (existingIndex === undefined) {
+          messages.push({
+            id: event.id ?? `plan-progress-${turnId}`,
+            turnId,
+            kind: "plan_progress",
+            content: "",
+            planEvents: [toPlanEvent(event, timestamp)],
+            timestamp,
+          });
+          planIndexByTurnId.set(turnId, messages.length - 1);
+        } else {
+          const previous = messages[existingIndex]!;
+          messages[existingIndex] = {
+            ...previous,
+            planEvents: [
+              ...(previous.planEvents ?? []),
+              toPlanEvent(event, timestamp),
+            ],
+            timestamp,
+          };
+        }
         break;
       }
     }

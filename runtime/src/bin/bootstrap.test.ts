@@ -14,6 +14,7 @@ vi.mock("../services/api/sessionIngress.js", () => ({
 
 import {
   bootstrapLocalRuntimeSession,
+  readStartupCliFlags,
   resolveStartupSelection,
 } from "./bootstrap.js";
 import { defaultConfig, mergeConfigs } from "../config/index.js";
@@ -115,6 +116,43 @@ describe("resolveStartupSelection", () => {
 
     expect(resolved.provider).toBe("openai");
     expect(resolved.model).toBe("gpt-5");
+  });
+});
+
+describe("readStartupCliFlags", () => {
+  it("parses permission startup flags, including the yolo aliases", () => {
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--permission-mode",
+        "plan",
+        "--yolo",
+      ]),
+    ).toMatchObject({
+      permissionMode: "plan",
+      allowDangerouslySkipPermissions: true,
+    });
+
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--dangerously-bypass-approvals-and-sandbox",
+      ]),
+    ).toMatchObject({
+      allowDangerouslySkipPermissions: true,
+    });
+
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--allow-dangerously-skip-permissions",
+      ]),
+    ).toMatchObject({
+      allowDangerouslySkipPermissions: true,
+    });
   });
 });
 
@@ -912,6 +950,110 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = null;
 
       expect(shutdownAllSpy).toHaveBeenCalledWith("session_shutdown");
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("boots in bypassPermissions when started with --yolo", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+        argv: ["node", "agenc", "--yolo"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.session.permissionModeRegistry.current().mode).toBe(
+        "bypassPermissions",
+      );
+      expect(
+        boot.session.permissionModeRegistry.current()
+          .isBypassPermissionsModeAvailable,
+      ).toBe(true);
+      expect(boot.initialState.sessionConfiguration.approvalPolicy.value).toBe(
+        "never",
+      );
+      expect(boot.initialState.sessionConfiguration.sandboxPolicy.value).toBe(
+        "danger_full_access",
+      );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("boots in the requested mode when started with --permission-mode", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+        argv: ["node", "agenc", "--permission-mode", "plan"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.session.permissionModeRegistry.current().mode).toBe("plan");
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

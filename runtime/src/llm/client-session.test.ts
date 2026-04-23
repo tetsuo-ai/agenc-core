@@ -277,8 +277,9 @@ describe("ProviderHttpClientSession", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  test("caps HTTP-date Retry-After delays at the documented T13 ceiling", async () => {
+  test("aborts retry when an HTTP-date Retry-After exceeds the documented T13 ceiling", async () => {
     vi.setSystemTime(new Date("2026-04-21T12:00:00Z"));
+    const warnings: Array<{ cause: string; message: string }> = [];
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(
@@ -305,20 +306,110 @@ describe("ProviderHttpClientSession", () => {
         retry429: true,
       },
       fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    await expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject<Partial<ProviderHttpError>>({
+      status: 429,
+      providerName: "openai",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        cause: "rate_limit_exceeds_max_wait",
+      }),
+    );
+  });
+
+  test("emits warning and aborts retry when Retry-After exceeds the documented max wait", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": "600",
+        },
+      }),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 1,
+        retry429: true,
+      },
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    await expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject<Partial<ProviderHttpError>>({
+      status: 429,
+      providerName: "openai",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        cause: "rate_limit_exceeds_max_wait",
+      }),
+    );
+  });
+
+  test("emits warning on ambiguous Retry-After headers and falls back to exponential backoff", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: "slow down" } }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "soon-ish",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      requestRetry: {
+        maxRetries: 1,
+        retry429: true,
+        baseDelayMs: 200,
+      },
+      fetchImpl,
+      emitWarning: (warning) => warnings.push(warning),
     });
 
     const pending = session.requestJson<{ ok: boolean }>({
       body: { ping: "pong" },
     });
-
-    await vi.advanceTimersByTimeAsync(299_999);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.runOnlyPendingTimersAsync();
     const response = await pending;
 
     expect(response.data.ok).toBe(true);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        cause: "retry_after_ambiguous",
+      }),
+    );
   });
 
   test("classifies HTML JSON responses as captive portal / proxy intercept failures", async () => {
@@ -692,5 +783,273 @@ describe("ProviderHttpClientSession", () => {
         content: [{ type: "input_text", text: "follow up" }],
       },
     ]);
+  });
+
+  test("I-14: requestJson retries once with full history when previous_response_id expires", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const sharedState = {
+      conversationId: "conv-123",
+      lastRequest: {
+        model: "gpt-5",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        ],
+        stream: false,
+        prompt_cache_key: "conv-123",
+      },
+      lastResponseId: "resp_expired",
+      lastResponseOutput: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "hi" }],
+        },
+      ],
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "previous_response_id expired",
+            },
+          }),
+          {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "resp_2",
+            output: [],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+      responsesContinuationState: sharedState,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    await session.requestJson({
+      body: {
+        model: "gpt-5",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "hi" }],
+          },
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "follow up" }],
+          },
+        ],
+        stream: false,
+      },
+    });
+
+    const retryBody = JSON.parse(
+      String((fetchImpl.mock.calls[1]?.[1] as RequestInit | undefined)?.body),
+    ) as Record<string, unknown>;
+    expect(retryBody.previous_response_id).toBeUndefined();
+    expect(retryBody.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "hi" }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "follow up" }],
+      },
+    ]);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        cause: "previous_response_id_expired",
+      }),
+    );
+  });
+
+  test("I-14: requestStream retries once with full history when previous_response_id expires", async () => {
+    const warnings: Array<{ cause: string; message: string }> = [];
+    const sharedState = {
+      conversationId: "conv-123",
+      lastRequest: {
+        model: "gpt-5",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        ],
+        stream: true,
+        prompt_cache_key: "conv-123",
+      },
+      lastResponseId: "resp_stream_expired",
+      lastResponseOutput: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "stream hi" }],
+        },
+      ],
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "previous response not found",
+            },
+          }),
+          {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          streamFromChunks([
+            'event: response.completed\n',
+            'data: {"type":"response.completed","response":{"id":"resp_stream_retry","output":[]}}\n\n',
+          ]),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+      responsesContinuationState: sharedState,
+      emitWarning: (warning) => warnings.push(warning),
+    });
+
+    const stream = await session.requestStream({
+      body: {
+        model: "gpt-5",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "stream hi" }],
+          },
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "follow up" }],
+          },
+        ],
+        stream: true,
+      },
+    });
+    for await (const _chunk of stream) {
+      // consume retried stream
+    }
+
+    const retryBody = JSON.parse(
+      String((fetchImpl.mock.calls[1]?.[1] as RequestInit | undefined)?.body),
+    ) as Record<string, unknown>;
+    expect(retryBody.previous_response_id).toBeUndefined();
+    expect(retryBody.input).toEqual([
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "stream hi" }],
+      },
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "follow up" }],
+      },
+    ]);
+    expect(warnings).toContainEqual(
+      expect.objectContaining({
+        cause: "previous_response_id_expired",
+      }),
+    );
+  });
+
+  test("flags capability drift when the provider rejects an advertised feature", async () => {
+    const capabilityWarnings: Array<{ message: string; status?: number }> = [];
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      model: "gpt-5",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              message: "reasoning is not supported for this model",
+            },
+          }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      ),
+      onCapabilityDrift: (warning) => capabilityWarnings.push(warning),
+    });
+
+    await expect(
+      session.requestJson({
+        body: { ping: "pong" },
+      }),
+    ).rejects.toMatchObject<Partial<ProviderHttpError>>({
+      status: 400,
+      providerName: "openai",
+    });
+
+    expect(capabilityWarnings).toContainEqual(
+      expect.objectContaining({
+        status: 400,
+      }),
+    );
   });
 });

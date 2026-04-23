@@ -252,6 +252,51 @@ describe("buildOpenAIResponsesRequest", () => {
     expect(request.prompt_cache_key).toBe("conv-123");
   });
 
+  test("forwards service_tier and text verbosity controls", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        serviceTier: "flex",
+        modelVerbosity: "high",
+      },
+    });
+
+    expect(request.service_tier).toBe("flex");
+    expect(request.text).toEqual({ verbosity: "high" });
+  });
+
+  test("forwards reasoning summary for reasoning-capable OpenAI responses models", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        reasoningEffort: "high",
+        reasoningSummary: "concise",
+      },
+    });
+
+    expect(request.reasoning).toEqual({
+      effort: "high",
+      summary: "concise",
+    });
+  });
+
+  test("omits reasoning summary when explicitly disabled", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        reasoningSummary: "none",
+      },
+    });
+
+    expect(request.reasoning).toBeUndefined();
+  });
+
   test("preserves mixed text and image tool outputs as function_call_output content items", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",

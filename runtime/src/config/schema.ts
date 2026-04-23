@@ -34,6 +34,10 @@ export type Personality = "default" | "concise" | "careful" | "fast";
 
 export type WebSearchMode = "auto" | "always" | "never";
 
+export type ModelVerbosity = "low" | "medium" | "high";
+
+export type ServiceTier = "fast" | "flex";
+
 /**
  * Permission mode variants accepted by the runtime. Mirrors the
  * `PermissionMode` union in `src/permissions/types.ts` — kept inline here
@@ -94,6 +98,8 @@ export interface ProfileOverride {
   readonly sandbox_mode?: SandboxMode;
   readonly reasoning_effort?: ReasoningEffort;
   readonly reasoning_summary?: ReasoningSummary;
+  readonly model_verbosity?: ModelVerbosity;
+  readonly service_tier?: ServiceTier;
   readonly personality?: Personality;
   readonly web_search?: WebSearchMode | boolean;
   readonly tools?: ToolsConfig;
@@ -216,6 +222,26 @@ export interface PermissionsConfig {
   readonly defaultMode?: PermissionMode;
 }
 
+export interface ProviderCapabilityOverrides {
+  readonly supportsPromptCaching?: boolean;
+  readonly supportsContextEdits?: boolean;
+  readonly supportsImageInput?: boolean;
+  readonly supportsAudioInput?: boolean;
+  readonly supportsAudioOutput?: boolean;
+  readonly supportsExtendedThinking?: boolean;
+  readonly acceptsImageHistory?: boolean;
+  readonly acceptsAudioHistory?: boolean;
+  readonly acceptsThinkingHistory?: boolean;
+  readonly acceptsReasoningEffort?: boolean;
+}
+
+export interface ProviderConfig {
+  readonly api_key_env?: string;
+  readonly base_url?: string;
+  readonly default_model?: string;
+  readonly capability_overrides?: ProviderCapabilityOverrides;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -230,9 +256,13 @@ export interface AgenCConfig {
   readonly shell_environment_policy?: ShellEnvironmentPolicy;
   readonly reasoning_effort?: ReasoningEffort;
   readonly reasoning_summary?: ReasoningSummary;
+  readonly review_model?: string;
+  readonly model_verbosity?: ModelVerbosity;
+  readonly service_tier?: ServiceTier;
   readonly personality?: Personality;
   readonly agent_max_depth?: number;
   readonly profiles?: Readonly<Record<string, ProfileOverride>>;
+  readonly providers?: Readonly<Record<string, ProviderConfig>>;
   readonly project_root_markers?: readonly string[];
   readonly project_doc_max_bytes?: number;
   readonly tools_config?: ToolsConfig;
@@ -284,9 +314,6 @@ export interface AgenCConfig {
  *   - history          → T11 (rollout/history retention policy)
  *   - log_dir          → T11 (operator-overridable log root)
  *   - file_opener      → T11 (editor integration)
- *   - review_model     → T13 (review-lane model override)
- *   - model_verbosity  → T13 (provider-facing verbosity knob)
- *   - service_tier     → T13 (OpenAI service-tier passthrough)
  *   - analytics        → T12 (analytics opt-in knobs)
  *
  * Openclaude-rooted, deferred:
@@ -315,9 +342,6 @@ export const DEFERRED_CODEX_KEYS: readonly string[] = Object.freeze([
   "history",
   "log_dir",
   "file_opener",
-  "review_model",
-  "model_verbosity",
-  "service_tier",
   "analytics",
 ]);
 
@@ -342,9 +366,13 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "shell_environment_policy",
   "reasoning_effort",
   "reasoning_summary",
+  "review_model",
+  "model_verbosity",
+  "service_tier",
   "personality",
   "agent_max_depth",
   "profiles",
+  "providers",
   "project_root_markers",
   "project_doc_max_bytes",
   "tools_config",

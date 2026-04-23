@@ -33,6 +33,7 @@ import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import { safeStringify } from "../../tools/types.js";
 import { resolveContextWindowProfile } from "../../gateway/context-window.js";
+import { withOllamaHealthSidecar } from "../providers/ollama/health.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3";
@@ -339,12 +340,18 @@ export class OllamaProvider implements LLMProvider {
           { error: "provider_request_trace_unavailable" },
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
-      const stream = await withTimeout(
-        async (signal) => (client as any).chat(params, { signal }),
-        requestTimeoutMs,
-        this.name,
-        options?.signal,
-      );
+      const stream = await withOllamaHealthSidecar({
+        signal: options?.signal,
+        healthCheck: async () => await this.healthCheck(),
+        operation: async (signal) =>
+          await withTimeout(
+            async (activeSignal) =>
+              (client as any).chat(params, { signal: activeSignal }),
+            requestTimeoutMs,
+            this.name,
+            signal,
+          ),
+      });
 
       for await (const chunk of stream as AsyncIterable<any>) {
         if (chunk.message?.content) {

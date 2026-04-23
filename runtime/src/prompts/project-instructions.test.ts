@@ -111,15 +111,20 @@ describe("project-instructions (T10-B)", () => {
     expect(res!.content).toContain("truncated by project_doc_max_bytes");
   });
 
-  test("loadProjectInstructions returns null when no marker found", async () => {
-    const empty = join(root, "no-markers");
-    mkdirSync(empty, { recursive: true });
+  test("loadProjectInstructions falls back to cwd when no marker is found", async () => {
+    const cwd = join(root, "no-markers");
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(cwd, "AGENTS.md"), "cwd-doc");
     const res = await loadProjectInstructions({
-      cwd: empty,
-      // Use a marker that doesn't exist anywhere from `empty` up to `/`.
+      cwd,
+      // Use a marker that doesn't exist anywhere from `cwd` up to `/`.
       projectRootMarkers: ["nonexistent-marker-abc-xyz-123"],
     });
-    expect(res).toBeNull();
+    expect(res).not.toBeNull();
+    expect(res!.path).toBe(join(cwd, "AGENTS.md"));
+    expect(res!.content).toBe("cwd-doc");
+    expect(res!.rootMarkerFound).toBe("<cwd>");
+    expect(res!.rootDir).toBe(cwd);
   });
 
   test("loadProjectInstructions respects zero byte budget", async () => {
@@ -190,5 +195,24 @@ describe("project-instructions (T10-B)", () => {
     expect(chain[0]!.truncated).toBe(false);
     expect(chain[1]!.truncated).toBe(true);
     expect(chain[1]!.content).toContain("truncated by project_doc_max_bytes");
+  });
+
+  test("loadProjectInstructionChain treats an explicit empty marker list as cwd-only discovery", async () => {
+    const repoRoot = join(root, "proj");
+    const leafDir = join(repoRoot, "nested");
+    mkdirSync(leafDir, { recursive: true });
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
+    writeFileSync(join(leafDir, "AGENTS.md"), "LEAF");
+
+    const chain = await loadProjectInstructionChain({
+      cwd: leafDir,
+      projectRootMarkers: [],
+    });
+    expect(chain).toHaveLength(1);
+    expect(chain[0]!.path).toBe(join(leafDir, "AGENTS.md"));
+    expect(chain[0]!.content).toBe("LEAF");
+    expect(chain[0]!.rootMarkerFound).toBe("<cwd>");
+    expect(chain[0]!.rootDir).toBe(leafDir);
   });
 });

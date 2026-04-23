@@ -12,6 +12,7 @@ import {
   isPathAllowed,
 } from "./filesystem.js";
 import type { Tool } from "../types.js";
+import { addLineNumbers } from "../../utils/file.js";
 
 // ============================================================================
 // Mock node:fs/promises
@@ -92,6 +93,13 @@ function findTool(tools: Tool[], name: string): Tool {
 function parseResult(result: { content: string }) {
   return JSON.parse(result.content);
 }
+
+function formatTextReadResult(content: string, startLine = 1): string {
+  return addLineNumbers({ content, startLine });
+}
+
+const EMPTY_TEXT_FILE_WARNING =
+  "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>";
 
 function walkJsonFiles(root: string): string[] {
   const entries: string[] = [];
@@ -386,15 +394,8 @@ describe("system.readFile", () => {
     mockReadFile.mockResolvedValueOnce(Buffer.from(content));
 
     const result = await tool.execute({ path: "/workspace/test.txt" });
-    const parsed = parseResult(result);
-
     expect(result.isError).toBeUndefined();
-    expect(parsed.encoding).toBe("utf-8");
-    expect(parsed.content).toBe("hello world");
-    expect(parsed.size).toBe(11);
-    expect(parsed.startLine).toBe(1);
-    expect(parsed.totalLines).toBe(1);
-    expect(parsed.lineCount).toBe(1);
+    expect(result.content).toBe(formatTextReadResult("hello world"));
   });
 
   it("reads a targeted text window via offset and limit", async () => {
@@ -413,14 +414,8 @@ describe("system.readFile", () => {
       limit: 2,
       __agencSessionId: "session-read-window",
     });
-    const parsed = parseResult(result);
-
     expect(result.isError).toBeUndefined();
-    expect(parsed.content).toBe("line 2\nline 3");
-    expect(parsed.startLine).toBe(2);
-    expect(parsed.endLine).toBe(3);
-    expect(parsed.totalLines).toBe(4);
-    expect(parsed.lineCount).toBe(2);
+    expect(result.content).toBe(formatTextReadResult("line 2\nline 3", 2));
     expect(hasSessionRead("session-read-window", "/workspace/test.txt")).toBe(false);
     clearSessionReadState("session-read-window");
   });
@@ -439,13 +434,43 @@ describe("system.readFile", () => {
       startLine: 3,
       endLine: 4,
     });
-    const parsed = parseResult(result);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe(formatTextReadResult("gamma\ndelta", 3));
+  });
+
+  it("returns an explicit warning for empty text files", async () => {
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: 0,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from(""));
+
+    const result = await tool.execute({ path: "/workspace/empty.txt" });
 
     expect(result.isError).toBeUndefined();
-    expect(parsed.content).toBe("gamma\ndelta");
-    expect(parsed.startLine).toBe(3);
-    expect(parsed.endLine).toBe(4);
-    expect(parsed.lineCount).toBe(2);
+    expect(result.content).toBe(EMPTY_TEXT_FILE_WARNING);
+  });
+
+  it("returns an offset-beyond-eof warning instead of escaped empty JSON", async () => {
+    const content = "alpha\nbeta";
+    mockStat.mockResolvedValueOnce({
+      isFile: () => true,
+      isDirectory: () => false,
+      size: content.length,
+    } as never);
+    mockReadFile.mockResolvedValueOnce(Buffer.from(content));
+
+    const result = await tool.execute({
+      path: "/workspace/test.txt",
+      offset: 5,
+      limit: 2,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe(
+      "<system-reminder>Warning: the file exists but is shorter than the provided offset (5). The file has 2 lines.</system-reminder>",
+    );
   });
 
   it("auto-detects binary content", async () => {
@@ -2365,8 +2390,7 @@ describe("system.readFile FILE_UNCHANGED_STUB", () => {
       __agencSessionId: sessionId,
     });
     expect(first.isError).toBeUndefined();
-    const firstParsed = JSON.parse(first.content as string);
-    expect(firstParsed.content).toBe(content);
+    expect(first.content).toBe(formatTextReadResult(content));
 
     // Second read — same mtime, stub expected, no readFile call.
     mockStat.mockResolvedValueOnce({
@@ -2403,7 +2427,7 @@ describe("system.readFile FILE_UNCHANGED_STUB", () => {
       path: filePath,
       __agencSessionId: sessionId,
     });
-    expect(JSON.parse(first.content as string).content).toBe(original);
+    expect(first.content).toBe(formatTextReadResult(original));
 
     mockStat.mockResolvedValueOnce({
       isFile: () => true,
@@ -2418,7 +2442,7 @@ describe("system.readFile FILE_UNCHANGED_STUB", () => {
     });
     expect(second.isError).toBeUndefined();
     expect(second.content).not.toContain("File unchanged");
-    expect(JSON.parse(second.content as string).content).toBe(modified);
+    expect(second.content).toBe(formatTextReadResult(modified));
 
     clearSessionReadState(sessionId);
   });
@@ -2453,7 +2477,7 @@ describe("system.readFile FILE_UNCHANGED_STUB", () => {
     });
     expect(partial.isError).toBeUndefined();
     expect(partial.content).not.toContain("File unchanged");
-    expect(JSON.parse(partial.content as string).content).toBe("line-2");
+    expect(partial.content).toBe(formatTextReadResult("line-2", 2));
 
     clearSessionReadState(sessionId);
   });
@@ -2470,7 +2494,7 @@ describe("system.readFile FILE_UNCHANGED_STUB", () => {
     const result = await readTool.execute({ path: filePath });
     expect(result.isError).toBeUndefined();
     expect(result.content).not.toContain("File unchanged");
-    expect(JSON.parse(result.content as string).content).toBe(content);
+    expect(result.content).toBe(formatTextReadResult(content));
   });
 });
 

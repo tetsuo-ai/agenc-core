@@ -6,6 +6,7 @@ import { buildInitialTurnState } from "../session/turn-state.js";
 import { BudgetTracker } from "../llm/token-budget.js";
 import type {
   LLMMessage,
+  LLMChatOptions,
   LLMProvider,
   LLMResponse,
   LLMTool,
@@ -168,6 +169,7 @@ function mkProvider(
   impl: (
     messages: LLMMessage[],
     onChunk: StreamProgressCallback,
+    options?: LLMChatOptions,
   ) => Promise<LLMResponse>,
 ): LLMProvider {
   return {
@@ -213,6 +215,44 @@ function mkRegistry(tools: Tool[]): ToolRegistry {
 }
 
 describe("streamModel — live assistant text sanitization", () => {
+  test("forwards reasoning summary and session-scoped transport hints to the provider", async () => {
+    const ctx = mkCtx("chat");
+    (ctx as TurnContext & { reasoningEffort?: "high" }).reasoningEffort = "high";
+    (ctx as TurnContext & { reasoningSummary: "detailed" }).reasoningSummary =
+      "detailed";
+    (ctx as TurnContext & { modelVerbosity?: "high" }).modelVerbosity = "high";
+    (ctx as TurnContext & { serviceTier?: "flex" }).serviceTier = "flex";
+
+    const seenOptions: Array<Record<string, unknown> | undefined> = [];
+    const provider = mkProvider(async (_messages, _onChunk, options) => {
+      seenOptions.push(options as Record<string, unknown> | undefined);
+      return {
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+    const state = mkState(ctx);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+    );
+
+    expect(seenOptions[0]).toMatchObject({
+      reasoningEffort: "high",
+      reasoningSummary: "detailed",
+      modelVerbosity: "high",
+      serviceTier: "flex",
+      parallelToolCalls: false,
+    });
+  });
+
   test("dispatches streamed tool calls before chatStream resolves", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

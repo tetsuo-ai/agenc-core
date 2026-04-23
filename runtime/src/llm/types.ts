@@ -227,6 +227,9 @@ interface LLMChatToolRoutingOptions {
 }
 
 type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
+type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
+type LLMModelVerbosity = "low" | "medium" | "high";
+type LLMServiceTier = "fast" | "flex";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -454,6 +457,12 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
+  /** Provider-facing reasoning-summary hint for APIs that expose it. */
+  readonly reasoningSummary?: LLMReasoningSummary;
+  /** Provider-facing output verbosity hint for APIs that expose it. */
+  readonly modelVerbosity?: LLMModelVerbosity;
+  /** Provider-facing service-tier hint for APIs that expose it. */
+  readonly serviceTier?: LLMServiceTier;
   readonly trace?: LLMChatTraceOptions;
   /** Upper bound for this individual provider call. */
   readonly timeoutMs?: number;
@@ -618,6 +627,10 @@ export interface LLMProviderConfig {
   maxRetries?: number;
   /** Base delay between retries in milliseconds */
   retryDelayMs?: number;
+  /** Best-effort warning sink for provider/transport contract events. */
+  emitWarning?: (warning: { cause: string; message: string }) => void;
+  /** Capability-drift hook fired when the provider rejects a claimed feature. */
+  onCapabilityDrift?: (warning: { message: string; status?: number }) => void;
 }
 
 /**

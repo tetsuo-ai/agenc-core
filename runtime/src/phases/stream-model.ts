@@ -156,6 +156,12 @@ function buildProviderOptions(
       ctx.reasoningEffort && ctx.reasoningEffort !== "none"
         ? ctx.reasoningEffort
         : undefined,
+    reasoningSummary: ctx.reasoningSummary,
+    modelVerbosity: ctx.modelVerbosity,
+    serviceTier:
+      ctx.serviceTier === "fast" || ctx.serviceTier === "flex"
+        ? ctx.serviceTier
+        : undefined,
   };
 }
 

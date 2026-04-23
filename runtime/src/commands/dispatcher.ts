@@ -52,8 +52,18 @@ export interface ParsedSlashCommand {
 
 /** Command-name shape per openclaude `looksLikeCommand`. */
 const COMMAND_NAME_RE = /^[a-z][a-z0-9_-]*$/;
-/** First-line command shape: `/name(MCP)? [args]`. */
-const FIRST_LINE_RE = /^\/([a-z][a-z0-9_-]*)(\(MCP\))?(?:\s+(.*))?$/;
+/**
+ * First-line slash-intent shape: `/token(MCP)? [args]`.
+ *
+ * The parser admits canonical command names plus obvious filesystem-like
+ * fragments (for the mistyped-path fallback). Upper/mixed-case command
+ * tokens remain rejected so `/Model` does not silently dispatch `/model`.
+ */
+const FIRST_LINE_RE = /^\/([^\s]+?)(\(MCP\))?(?:\s+(.*))?$/;
+
+function looksLikeFilesystemFragment(name: string): boolean {
+  return /[./\\~]/.test(name);
+}
 
 /**
  * Extract the first line of `input` (everything up to the first `\n`).
@@ -78,6 +88,7 @@ export function extractFirstLine(input: string): string {
  *   parseSlashCommand("/mcp(MCP) list")      // => { name: "mcp",   argsRaw: "list",  isMcp: true }
  *   parseSlashCommand("/model\ngpt-5")       // => null  (I-68)
  *   parseSlashCommand("/")                   // => null  (empty name)
+ *   parseSlashCommand("/notes.txt")          // => { name: "notes.txt", argsRaw: "", isMcp: false }
  *   parseSlashCommand("/Model")              // => null  (uppercase rejected)
  */
 export function parseSlashCommand(input: string): ParsedSlashCommand | null {
@@ -102,6 +113,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
   if (!match) return null;
 
   const name = match[1]!;
+  if (!COMMAND_NAME_RE.test(name) && !looksLikeFilesystemFragment(name)) {
+    return null;
+  }
   const isMcp = match[2] === "(MCP)";
   const argsRaw = (match[3] ?? "").trim();
 
@@ -136,6 +150,11 @@ export interface DispatchOutcome {
   readonly immediate: boolean;
   /** Trace record with args masked when `sensitive: true`. */
   readonly trace: DispatchTraceRecord;
+  /**
+   * Present when the dispatcher concluded the slash-looking input should be
+   * treated as a normal user prompt rather than a command error.
+   */
+  readonly passthroughInput?: string;
   /** The resolved command, when found. */
   readonly command?: SlashCommand;
 }
@@ -164,16 +183,15 @@ export async function dispatchSlashCommand(
   if (!command) {
     const hint = await buildMistypedPathHint(ctx.cwd, parsed.name);
     if (hint !== null) {
+      const passthroughInput = `/${parsed.name}${
+        parsed.argsRaw.length > 0 ? ` ${parsed.argsRaw}` : ""
+      }`;
       return {
         result: {
           kind: "skip",
-          // `skip` has no payload in the SlashCommandResult union, but
-          // we still want to surface a hint in the trace. The dispatcher
-          // does not read `text` from a `skip` — callers rely solely on
-          // the TraceRecord for the hint. We capture the hint in the
-          // trace's aliasUsed slot via a synthetic marker.
         },
         immediate: false,
+        passthroughInput,
         trace: {
           name: parsed.name,
           aliasUsed: parsed.name,
@@ -269,9 +287,9 @@ async function buildMistypedPathHint(
   cwd: string,
   name: string,
 ): Promise<string | null> {
-  // Only check when the name LOOKS like a filesystem fragment — names
-  // that match the command-name shape are treated as real command names
-  // (openclaude does the inverse check; we keep the same fence).
+  // Only check when the name looks like a filesystem fragment — names
+  // that match the canonical command-name shape are treated as real
+  // command identifiers rather than paths.
   if (COMMAND_NAME_RE.test(name)) return null;
   try {
     const target = path.resolve(cwd, name);

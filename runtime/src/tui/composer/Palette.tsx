@@ -394,7 +394,6 @@ export const Palette: React.FC<PaletteProps> = ({
 
   const totalMatches = ranked.length;
   const visibleCount = Math.min(maxRows, totalMatches);
-  const overflowCount = Math.max(0, totalMatches - visibleCount);
 
   const [selectedIdx, setSelectedIdx] = useState(0);
 
@@ -403,34 +402,34 @@ export const Palette: React.FC<PaletteProps> = ({
   // top when the list is empty so the next render after a type doesn't
   // briefly flash an out-of-bounds highlight.
   useEffect(() => {
-    if (visibleCount === 0) {
+    if (totalMatches === 0) {
       if (selectedIdx !== 0) setSelectedIdx(0);
       return;
     }
-    if (selectedIdx >= visibleCount) {
-      setSelectedIdx(visibleCount - 1);
+    if (selectedIdx >= totalMatches) {
+      setSelectedIdx(totalMatches - 1);
     }
-  }, [visibleCount, selectedIdx]);
+  }, [selectedIdx, totalMatches]);
 
   const moveUp = useCallback(() => {
-    if (visibleCount === 0) return;
-    setSelectedIdx((prev) => (prev <= 0 ? visibleCount - 1 : prev - 1));
-  }, [visibleCount]);
+    if (totalMatches === 0) return;
+    setSelectedIdx((prev) => (prev <= 0 ? totalMatches - 1 : prev - 1));
+  }, [totalMatches]);
 
   const moveDown = useCallback(() => {
-    if (visibleCount === 0) return;
-    setSelectedIdx((prev) => (prev >= visibleCount - 1 ? 0 : prev + 1));
-  }, [visibleCount]);
+    if (totalMatches === 0) return;
+    setSelectedIdx((prev) => (prev >= totalMatches - 1 ? 0 : prev + 1));
+  }, [totalMatches]);
 
   const confirm = useCallback(() => {
-    if (visibleCount === 0) {
+    if (totalMatches === 0) {
       onClose();
       return;
     }
     const chosen = ranked[selectedIdx]?.item;
     if (chosen === undefined) return;
     onSelect(chosen);
-  }, [ranked, selectedIdx, visibleCount, onSelect, onClose]);
+  }, [onClose, onSelect, ranked, selectedIdx, totalMatches]);
 
   const dismiss = useCallback(() => {
     onClose();
@@ -468,7 +467,17 @@ export const Palette: React.FC<PaletteProps> = ({
     );
   }
 
-  const visible = ranked.slice(0, visibleCount);
+  const visibleStart = Math.max(
+    0,
+    Math.min(
+      selectedIdx - Math.floor(visibleCount / 2),
+      Math.max(0, totalMatches - visibleCount),
+    ),
+  );
+  const visibleEnd = Math.min(totalMatches, visibleStart + visibleCount);
+  const overflowAbove = visibleStart;
+  const overflowBelow = Math.max(0, totalMatches - visibleEnd);
+  const visible = ranked.slice(visibleStart, visibleEnd);
 
   return (
     <Box
@@ -482,8 +491,12 @@ export const Palette: React.FC<PaletteProps> = ({
           ? "Commands  Tab/Enter accept  Up/Down move"
           : "Mentions  Tab/Enter accept  Up/Down move"}
       </Text>
+      {overflowAbove > 0 ? (
+        <Text color={dimColor}>… {overflowAbove} above</Text>
+      ) : null}
       {visible.map((entry, idx) => {
-        const isSelected = idx === selectedIdx;
+        const absoluteIdx = visibleStart + idx;
+        const isSelected = absoluteIdx === selectedIdx;
         const labelNodes = renderLabelSegments(
           entry.item.label,
           entry.matches,
@@ -507,8 +520,8 @@ export const Palette: React.FC<PaletteProps> = ({
           </Box>
         );
       })}
-      {overflowCount > 0 ? (
-        <Text color={dimColor}>… {overflowCount} more</Text>
+      {overflowBelow > 0 ? (
+        <Text color={dimColor}>… {overflowBelow} below</Text>
       ) : null}
     </Box>
   );

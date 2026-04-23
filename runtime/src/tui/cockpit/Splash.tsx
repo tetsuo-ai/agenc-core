@@ -20,7 +20,7 @@
  * visually balanced regardless of terminal height.
  */
 
-import React, { useContext, useEffect, useRef, useState } from "react";
+import React, { useContext, useEffect, useRef } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
@@ -94,7 +94,6 @@ export const Splash: React.FC<SplashProps> = ({
   }, [onDismiss]);
 
   const stdin = useContext(StdinContext);
-  const [dismissed, setDismissed] = useState<boolean>(false);
 
   // Trigger the one-shot dynamic import so the log line fires at most
   // once per process, mirroring ArtPanel's warn-once behaviour.
@@ -107,36 +106,29 @@ export const Splash: React.FC<SplashProps> = ({
   // `useInput` hook is wired to the keybinding registry, and Splash
   // wants to dismiss on literally any key — not just bound chords.
   useEffect(() => {
-    if (dismissed) return undefined;
     const emitter = stdin?.internal_eventEmitter;
     if (!emitter) return undefined;
     const onAnyInput = () => {
-      if (dismissed) return;
-      setDismissed(true);
       onDismissRef.current?.();
     };
     emitter.on("input", onAnyInput);
     return () => {
       emitter.off("input", onAnyInput);
     };
-  }, [stdin, dismissed]);
+  }, [stdin]);
 
   // Auto-dismiss timer. Cleaned up on unmount.
   useEffect(() => {
-    if (dismissed) return undefined;
     if (typeof autoDismissMs !== "number" || autoDismissMs <= 0) {
       return undefined;
     }
     const handle = setTimeout(() => {
-      setDismissed(true);
       onDismissRef.current?.();
     }, autoDismissMs);
     return () => {
       clearTimeout(handle);
     };
-  }, [autoDismissMs, dismissed]);
-
-  if (dismissed) return null;
+  }, [autoDismissMs]);
 
   const titleText = title ?? "AgenC";
   const statusText = status ?? "Starting runtime...";

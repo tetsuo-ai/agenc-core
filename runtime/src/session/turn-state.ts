@@ -21,6 +21,7 @@
 
 import type { LLMMessage, LLMToolCall, LLMUsage } from "../llm/types.js";
 import type { TurnContext } from "./turn-context.js";
+import { provisionContentReplacementState } from "../utils/toolResultStorage.js";
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each
@@ -414,7 +415,9 @@ export function buildInitialTurnState(
     snipTokensFreed: 0,
     pendingMemoryPrefetch: undefined,
     pendingSkillPrefetch: undefined,
-    contentReplacementState: undefined,
+    contentReplacementState: provisionContentReplacementState(
+      opts?.priorMessages as never,
+    ),
     // Phase 2
     assistantMessages: [],
     toolUseBlocks: [],

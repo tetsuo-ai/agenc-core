@@ -9,6 +9,9 @@ import type { OpenAIProviderConfig } from "../openai/types.js";
 
 export type GeminiProviderConfig = OpenAIProviderConfig;
 
+const DEFAULT_GEMINI_BASE_URL =
+  "https://generativelanguage.googleapis.com/v1beta";
+
 function normalizeGeminiBaseURL(baseURL: string | undefined): string | undefined {
   const normalized = baseURL?.trim();
   if (!normalized) {
@@ -25,7 +28,7 @@ export class GeminiProvider extends OpenAIProvider {
       apiKeyEnvLabel: "GEMINI_API_KEY",
       authStrategy: config.authStrategy ?? "google_api_key",
       useResponsesApi: false,
-      baseURL: normalizeGeminiBaseURL(config.baseURL),
+      baseURL: normalizeGeminiBaseURL(config.baseURL) ?? DEFAULT_GEMINI_BASE_URL,
       basePath: config.basePath ?? "/openai",
     });
   }

@@ -351,6 +351,27 @@ describe("hasPermissionsToUseTool — step 1g safetyCheck", () => {
   });
 });
 
+describe("hasPermissionsToUseTool — generic tool asks still flow through the mode gate", () => {
+  it("does not treat a plain tool ask as bypass-immune", async () => {
+    const tool = makeTool({
+      name: "Bash",
+      checkPermissions: () => ({
+        behavior: "ask" as const,
+        message: "generic ask",
+      }),
+    });
+    const { context } = buildHarness({ mode: "bypassPermissions" });
+    const result = await hasPermissionsToUseTool(tool, {}, context);
+    expect(result.behavior).toBe("allow");
+    if (result.behavior === "allow") {
+      expect(result.decisionReason).toMatchObject({
+        type: "mode",
+        mode: "bypassPermissions",
+      });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Step 2 — mode gate
 // ---------------------------------------------------------------------------
@@ -727,6 +748,22 @@ describe("checkRuleBasedPermissions", () => {
     const { context } = buildHarness();
     const result = await checkRuleBasedPermissions(
       makeTool({ name: "X" }),
+      {},
+      context,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("returns null for generic tool asks so step 2 can still run", async () => {
+    const { context } = buildHarness({ mode: "bypassPermissions" });
+    const result = await checkRuleBasedPermissions(
+      makeTool({
+        name: "Bash",
+        checkPermissions: () => ({
+          behavior: "ask" as const,
+          message: "generic ask",
+        }),
+      }),
       {},
       context,
     );

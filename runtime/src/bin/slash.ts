@@ -51,6 +51,7 @@ export type SlashCommandRunContext = Omit<SlashCommandContext, "argsRaw">;
  */
 export type SlashCommandRunResult =
   | { readonly kind: "skip" }
+  | { readonly kind: "passthrough"; readonly input: string }
   | {
       readonly kind: "dispatched";
       readonly outcome: DispatchOutcome;
@@ -93,6 +94,7 @@ function getOrBuildRegistry(): CommandRegistry {
  *   - I-68 fence violation → `{ kind: "skip" }` (same as non-slash).
  *   - Bridge-gated call to a non-bridge-safe command →
  *     `{ kind: "blocked_by_bridge" }`.
+ *   - Mistyped filesystem path fallback → `{ kind: "passthrough" }`.
  *   - Unknown command (dispatcher returned `error` for unknown) →
  *     `{ kind: "unknown" }` for readable CLI routing.
  *   - Anything else → `{ kind: "dispatched", outcome, result }`.
@@ -120,6 +122,9 @@ export async function runSlashCommand(
     argsRaw: parsed.argsRaw,
   };
   const outcome = await dispatchSlashCommand(parsed, fullCtx, registry);
+  if (outcome.passthroughInput !== undefined) {
+    return { kind: "passthrough", input: outcome.passthroughInput };
+  }
 
   // Distinguish unknown-command errors from other error kinds so the CLI
   // can render them differently (unknown commands are usually user typos,

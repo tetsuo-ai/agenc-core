@@ -120,6 +120,14 @@ describe("parseSlashCommand — happy paths", () => {
       isMcp: false,
     });
   });
+
+  it("parses filesystem-like slash tokens for unknown-command fallback", () => {
+    expect(parseSlashCommand("/notes.txt")).toEqual({
+      name: "notes.txt",
+      argsRaw: "",
+      isMcp: false,
+    });
+  });
 });
 
 describe("parseSlashCommand — rejections", () => {
@@ -305,18 +313,19 @@ describe("dispatchSlashCommand", () => {
     });
   });
 
-  it("returns { kind: 'skip' } when the cwd has a file matching the unknown name", async () => {
+  it("returns { kind: 'skip' } with passthrough input when the cwd has a file matching the unknown name", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "agenc-dispatcher-"));
     try {
-      // The mistyped-path heuristic only fires when the name fails the
-      // command-name regex (contains filesystem characters).
       writeFileSync(path.join(dir, "notes.txt"), "data");
+      const parsed = parseSlashCommand("/notes.txt");
+      expect(parsed).not.toBeNull();
       const out = await dispatchSlashCommand(
-        { name: "notes.txt", argsRaw: "", isMcp: false },
+        parsed!,
         stubCtx({ cwd: dir }),
         registry,
       );
       expect(out.result).toEqual({ kind: "skip" });
+      expect(out.passthroughInput).toBe("/notes.txt");
       expect(out.trace.resultKind).toBe("skip");
     } finally {
       rmSync(dir, { recursive: true, force: true });

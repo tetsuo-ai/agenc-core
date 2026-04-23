@@ -17,6 +17,33 @@ export interface ProviderModelCapabilities {
   readonly acceptsReasoningEffort: boolean;
 }
 
+export interface ProviderCapabilityOverrides {
+  readonly supportsPromptCaching?: boolean;
+  readonly supportsContextEdits?: boolean;
+  readonly supportsImageInput?: boolean;
+  readonly supportsAudioInput?: boolean;
+  readonly supportsAudioOutput?: boolean;
+  readonly supportsExtendedThinking?: boolean;
+  readonly acceptsImageHistory?: boolean;
+  readonly acceptsAudioHistory?: boolean;
+  readonly acceptsThinkingHistory?: boolean;
+  readonly acceptsReasoningEffort?: boolean;
+}
+
+export interface ProviderCapabilityRegistryEntry
+  extends ProviderModelCapabilities {
+  readonly lastVerifiedAt: number;
+  readonly stale: boolean;
+  readonly warning?: "capability_drift_detected";
+}
+
+const CAPABILITY_REGISTRY_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_CAPABILITY_VERIFIED_AT = Date.UTC(2026, 3, 22);
+const registryState = new Map<
+  string,
+  { lastVerifiedAt: number; stale: boolean }
+>();
+
 export function normalizeProviderSlug(provider: string | undefined): string {
   const normalized = provider?.trim().toLowerCase() ?? "";
   if (normalized === "xai") {
@@ -110,6 +137,50 @@ function buildCapabilities(
       definition.acceptsReasoningEffort,
       trimmedModel,
     ),
+  };
+}
+
+function capabilityRegistryKey(provider: string, model: string): string {
+  return `${normalizeProviderSlug(provider)}:${model.trim().toLowerCase()}`;
+}
+
+function applyCapabilityOverrides(
+  caps: ProviderModelCapabilities,
+  overrides: ProviderCapabilityOverrides | undefined,
+): ProviderModelCapabilities {
+  if (!overrides) return caps;
+  return {
+    ...caps,
+    ...(overrides.supportsPromptCaching !== undefined
+      ? { supportsPromptCaching: overrides.supportsPromptCaching }
+      : {}),
+    ...(overrides.supportsContextEdits !== undefined
+      ? { supportsContextEdits: overrides.supportsContextEdits }
+      : {}),
+    ...(overrides.supportsImageInput !== undefined
+      ? { supportsImageInput: overrides.supportsImageInput }
+      : {}),
+    ...(overrides.supportsAudioInput !== undefined
+      ? { supportsAudioInput: overrides.supportsAudioInput }
+      : {}),
+    ...(overrides.supportsAudioOutput !== undefined
+      ? { supportsAudioOutput: overrides.supportsAudioOutput }
+      : {}),
+    ...(overrides.supportsExtendedThinking !== undefined
+      ? { supportsExtendedThinking: overrides.supportsExtendedThinking }
+      : {}),
+    ...(overrides.acceptsImageHistory !== undefined
+      ? { acceptsImageHistory: overrides.acceptsImageHistory }
+      : {}),
+    ...(overrides.acceptsAudioHistory !== undefined
+      ? { acceptsAudioHistory: overrides.acceptsAudioHistory }
+      : {}),
+    ...(overrides.acceptsThinkingHistory !== undefined
+      ? { acceptsThinkingHistory: overrides.acceptsThinkingHistory }
+      : {}),
+    ...(overrides.acceptsReasoningEffort !== undefined
+      ? { acceptsReasoningEffort: overrides.acceptsReasoningEffort }
+      : {}),
   };
 }
 
@@ -312,13 +383,127 @@ function buildDefaultCapabilities(
 export function resolveProviderModelCapabilities(input: {
   readonly provider: string | undefined;
   readonly model: string | undefined;
+  readonly overrides?: ProviderCapabilityOverrides;
 }): ProviderModelCapabilities {
   const provider = normalizeProviderSlug(input.provider);
   const model = input.model?.trim() ?? "";
   const definition = PROVIDER_CAPABILITIES[provider];
 
   if (definition) {
-    return buildCapabilities(provider, model, definition);
+    return applyCapabilityOverrides(
+      buildCapabilities(provider, model, definition),
+      input.overrides,
+    );
   }
-  return buildDefaultCapabilities(provider, model);
+  return applyCapabilityOverrides(
+    buildDefaultCapabilities(provider, model),
+    input.overrides,
+  );
+}
+
+export function resolveProviderCapabilityEntry(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+  readonly overrides?: ProviderCapabilityOverrides;
+  readonly nowMs?: number;
+}): ProviderCapabilityRegistryEntry {
+  const caps = resolveProviderModelCapabilities(input);
+  const key = capabilityRegistryKey(caps.provider, caps.model);
+  const state = registryState.get(key) ?? {
+    lastVerifiedAt: DEFAULT_CAPABILITY_VERIFIED_AT,
+    stale: false,
+  };
+  const nowMs = input.nowMs ?? Date.now();
+  const stale =
+    state.stale || nowMs - state.lastVerifiedAt >= CAPABILITY_REGISTRY_TTL_MS;
+  return {
+    ...caps,
+    lastVerifiedAt: state.lastVerifiedAt,
+    stale,
+    ...(stale ? { warning: "capability_drift_detected" as const } : {}),
+  };
+}
+
+export function shouldProbeCapabilityEntry(
+  entry: Pick<ProviderCapabilityRegistryEntry, "lastVerifiedAt" | "stale">,
+  nowMs = Date.now(),
+): boolean {
+  return (
+    entry.stale || nowMs - entry.lastVerifiedAt >= CAPABILITY_REGISTRY_TTL_MS
+  );
+}
+
+export function markCapabilityVerified(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+  readonly verifiedAt?: number;
+}): ProviderCapabilityRegistryEntry {
+  const provider = normalizeProviderSlug(input.provider);
+  const model = input.model?.trim() ?? "";
+  registryState.set(capabilityRegistryKey(provider, model), {
+    lastVerifiedAt: input.verifiedAt ?? Date.now(),
+    stale: false,
+  });
+  return resolveProviderCapabilityEntry({ provider, model });
+}
+
+export function markCapabilityDrift(input: {
+  readonly provider: string | undefined;
+  readonly model: string | undefined;
+  readonly detectedAt?: number;
+  readonly overrides?: ProviderCapabilityOverrides;
+}): ProviderCapabilityRegistryEntry {
+  const provider = normalizeProviderSlug(input.provider);
+  const model = input.model?.trim() ?? "";
+  registryState.set(capabilityRegistryKey(provider, model), {
+    lastVerifiedAt: input.detectedAt ?? Date.now(),
+    stale: true,
+  });
+  return resolveProviderCapabilityEntry({
+    provider,
+    model,
+    overrides: input.overrides,
+    nowMs: input.detectedAt,
+  });
+}
+
+export function isProviderCapabilityMismatch(input: {
+  readonly status?: number;
+  readonly message: string;
+}): boolean {
+  const status = input.status;
+  if (
+    status !== undefined &&
+    status !== 400 &&
+    status !== 404 &&
+    status !== 409 &&
+    status !== 422
+  ) {
+    return false;
+  }
+
+  const message = input.message.trim().toLowerCase();
+  if (message.length === 0) {
+    return false;
+  }
+
+  return [
+    /\bunsupported\b/,
+    /\bnot supported\b/,
+    /\bdoes not support\b/,
+    /\bnot available for\b/,
+    /\bunknown parameter\b/,
+    /\bunrecognized request argument\b/,
+    /\binvalid parameter\b/,
+    /\bincompatible with\b/,
+    /\brequires .* support\b/,
+    /\bimage .* not supported\b/,
+    /\baudio .* not supported\b/,
+    /\breasoning .* not supported\b/,
+    /\bthinking .* not supported\b/,
+    /\btool .* not supported\b/,
+    /\bstructured output .* not supported\b/,
+    /\bcache_control\b/,
+    /\bcontext edits?\b/,
+  ].some((pattern) => pattern.test(message));
 }

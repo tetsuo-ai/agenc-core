@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   buildToolCall,
   createDiffConsumer,
@@ -8,6 +8,7 @@ import {
 import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
 import type { Tool } from "./types.js";
+import { EventLog } from "../session/event-log.js";
 
 const readTool: Tool = {
   name: "system.readFile",
@@ -429,6 +430,61 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
       "direct",
     );
     expect(result.content).toBe("ok");
+  });
+
+  test("dispatchModelToolCall forwards approvalResolver into legacy requestApproval asks", async () => {
+    const router = new ToolRouter([
+      {
+        tool: {
+          name: "system.listDir",
+          description: "",
+          inputSchema: {},
+          execute: async () => ({ content: "listed" }),
+        },
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const resolver = {
+      request: vi.fn(async () => ({ kind: "approved" as const })),
+    };
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-list-dir",
+        name: "system.listDir",
+        arguments: '{"path":"."}',
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {},
+        } as never,
+        turn: { subId: "turn-approval-1" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        approvalResolver: resolver,
+        canUseTool: async () => ({
+          behavior: "ask",
+          message: "Permission required to use system.listDir",
+        }),
+        permissionContext: {} as never,
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toBe("listed");
+    expect(resolver.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "call-list-dir",
+        toolName: "system.listDir",
+        turnId: "turn-approval-1",
+      }),
+    );
   });
 });
 

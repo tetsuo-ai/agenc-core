@@ -1,5 +1,5 @@
 /**
- * `/provider <name>` — switch the LLM provider for subsequent turns
+ * `/model-provider <name> [model]` — switch the LLM provider for subsequent turns
  *
  * @module
  */
@@ -38,6 +38,7 @@ export type { HistoryCompatResult };
 export async function applyProviderSwitch(
   session: Session,
   targetProvider: string,
+  targetModel?: string,
 ): Promise<string> {
   // Resolve the currently-active model so we can stage a complete
   // `pendingProviderSwitch` record. The model slot is required by the
@@ -87,7 +88,11 @@ export async function applyProviderSwitch(
       snapshotProviderIdentity === targetNormalizedProvider;
     preparedSwitch = prepareProviderSwitch(targetProvider, {
       ...(reuseLiveProviderOptions ? liveProviderOptions : {}),
-      ...(reuseSnapshotModel ? { model: currentModel } : {}),
+      ...(targetModel?.trim()
+        ? { model: targetModel.trim() }
+        : reuseSnapshotModel
+          ? { model: currentModel }
+          : {}),
       tools: session.services.registry.toLLMTools(),
     });
   } catch (error) {
@@ -136,20 +141,29 @@ export async function applyProviderSwitch(
 }
 
 export const providerCommand: SlashCommand = {
-  name: "provider",
-  description: "Switch the LLM provider for subsequent turns",
+  name: "model-provider",
+  aliases: ["provider"],
+  description: "Switch the model provider for subsequent turns",
   userInvocable: true,
   immediate: true,
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const target = ctx.argsRaw.trim();
-      if (target.length === 0) {
+      const parts = ctx.argsRaw
+        .split(/\s+/)
+        .map((part) => part.trim())
+        .filter((part) => part.length > 0);
+      if (parts.length === 0 || parts.length > 2) {
         return {
           kind: "error",
-          message: "Usage: /provider <name>",
+          message: "Usage: /model-provider <provider> [model]",
         };
       }
-      const summary = await applyProviderSwitch(ctx.session, target);
+      const [targetProvider, targetModel] = parts;
+      const summary = await applyProviderSwitch(
+        ctx.session,
+        targetProvider!,
+        targetModel,
+      );
       return { kind: "text", text: summary };
     }),
 };

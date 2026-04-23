@@ -13,11 +13,13 @@ import { describe, expect, test } from "vitest";
 
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
+import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
   MessageList,
   truncate,
   type TranscriptMessage,
 } from "./MessageList.js";
+import type { PlanEvent } from "./PlanProgress.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -50,11 +52,12 @@ async function mount(element: React.ReactElement): Promise<{
     stdin: stdin as unknown as NodeJS.ReadStream,
     patchConsole: false,
   });
-  root.render(element);
+  root.render(<KeybindingProvider>{element}</KeybindingProvider>);
   await new Promise((r) => setTimeout(r, 40));
   return {
     stdout,
-    rerender: (el) => root.render(el),
+    rerender: (el) =>
+      root.render(<KeybindingProvider>{el}</KeybindingProvider>),
     unmount: () => {
       root.unmount();
       instances.delete(stdout as unknown as NodeJS.WriteStream);
@@ -153,6 +156,43 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("renders system.readFile tool_result without head-tail elision", async () => {
+    const content = [
+      "1→# AgenC Shell Implementation Plan",
+      "2→",
+      "3→This document is the normative implementation spec for AgenC.",
+      "4→It replaces the earlier pseudocode-heavy draft.",
+      "5→This line should stay visible too.",
+      "6→And this one.",
+      "7→No transcript elision marker should appear.",
+    ].join("\n");
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "read-1",
+            kind: "tool_result",
+            toolName: "system.readFile",
+            content,
+            isError: false,
+          }),
+        ]}
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("system.readFile");
+    expect(frame).toContain("1→#");
+    expect(frame).toContain("AgenC");
+    expect(frame).toContain("Implementation");
+    expect(frame).toContain("Plan");
+    expect(frame).toContain("7→No");
+    expect(frame).toContain("transcript");
+    expect(frame).toContain("elision");
+    expect(frame).toContain("appear.");
+    expect(frame).not.toContain("lines elided");
+    unmount();
+  });
+
   test("renders a warning with the ⚠ glyph", async () => {
     const { unmount, stdout } = await mount(
       <MessageList
@@ -208,6 +248,43 @@ describe("MessageList", () => {
     expect(frame).toContain("compact");
     expect(frame).toContain("900");
     expect(frame).toContain("300");
+    unmount();
+  });
+
+  test("renders plan progress rows through the dedicated renderer", async () => {
+    const planEvents: PlanEvent[] = [
+      {
+        kind: "plan_started",
+        planItemId: "plan-1",
+        title: "audit chrome",
+        timestamp: 1,
+      },
+      {
+        kind: "plan_item_completed",
+        planItemId: "plan-1",
+        finalText: "mount banner and status line",
+        timestamp: 2,
+      },
+    ];
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "plan-1",
+            kind: "plan_progress",
+            planEvents,
+          }),
+        ]}
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("audit");
+    expect(frame).toContain("chrome");
+    expect(frame).toContain("mount");
+    expect(frame).toContain("banner");
+    expect(frame).toContain("status");
+    expect(frame).toContain("line");
+    expect(frame).toContain("complete");
     unmount();
   });
 

@@ -16,6 +16,9 @@ import { AnthropicProvider } from "./providers/anthropic/index.js";
 import type { AnthropicProviderConfig } from "./providers/anthropic/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
+import { OpenRouterProvider } from "./providers/openrouter/index.js";
+import { GroqProvider } from "./providers/groq/index.js";
+import { DeepSeekProvider } from "./providers/deepseek/index.js";
 
 export type ProviderName =
   | "grok"
@@ -105,6 +108,8 @@ type ProviderRuntimeExtra = Partial<
   readonly keepAlive?: string;
   readonly numCtx?: number;
   readonly numGpu?: number;
+  readonly emitWarning?: LLMProviderConfig["emitWarning"];
+  readonly onCapabilityDrift?: LLMProviderConfig["onCapabilityDrift"];
 };
 
 const PROVIDER_RUNTIME_EXTRA_KEYS = [
@@ -140,6 +145,8 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "keepAlive",
   "numCtx",
   "numGpu",
+  "emitWarning",
+  "onCapabilityDrift",
 ] as const satisfies readonly (keyof ProviderRuntimeExtra)[];
 
 export function isFactoryProvider(provider: LLMProvider): boolean {
@@ -467,6 +474,15 @@ function readRuntimeExtra(
     ...(readNumber(extra, "numGpu") !== undefined
       ? { numGpu: readNumber(extra, "numGpu") }
       : {}),
+    ...(typeof extra?.emitWarning === "function"
+      ? { emitWarning: extra.emitWarning as LLMProviderConfig["emitWarning"] }
+      : {}),
+    ...(typeof extra?.onCapabilityDrift === "function"
+      ? {
+        onCapabilityDrift:
+          extra.onCapabilityDrift as LLMProviderConfig["onCapabilityDrift"],
+      }
+      : {}),
   };
 }
 
@@ -490,6 +506,12 @@ function buildCommonConfig(
       : {}),
     ...(extra.toolHandler !== undefined
       ? { toolHandler: extra.toolHandler }
+      : {}),
+    ...(extra.emitWarning !== undefined
+      ? { emitWarning: extra.emitWarning }
+      : {}),
+    ...(extra.onCapabilityDrift !== undefined
+      ? { onCapabilityDrift: extra.onCapabilityDrift }
       : {}),
   };
 }
@@ -827,6 +849,7 @@ export function createProvider(
         apiKeyMode: "required",
         apiKeyEnvLabel: "OPENROUTER_API_KEY",
         useResponsesApi: false,
+        providerCtor: OpenRouterProvider,
       });
     case "groq":
       return buildOpenAICompatibleProvider("groq", opts, {
@@ -839,6 +862,7 @@ export function createProvider(
         apiKeyMode: "required",
         apiKeyEnvLabel: "GROQ_API_KEY",
         useResponsesApi: false,
+        providerCtor: GroqProvider,
       });
     case "deepseek":
       return buildOpenAICompatibleProvider("deepseek", opts, {
@@ -851,6 +875,7 @@ export function createProvider(
         apiKeyMode: "required",
         apiKeyEnvLabel: "DEEPSEEK_API_KEY",
         useResponsesApi: false,
+        providerCtor: DeepSeekProvider,
       });
     case "gemini": {
       const apiKey = requireApiKey(

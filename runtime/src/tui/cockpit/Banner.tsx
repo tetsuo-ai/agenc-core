@@ -19,6 +19,8 @@ import React from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
+import { getSpinnerFrame } from "../components/Spinner.js";
+import type { Color } from "../ink/styles.js";
 import type { PermissionMode } from "../../permissions/types.js";
 import { theme } from "../theme.js";
 import { useAnimationTick } from "../hooks/useAnimationTick.js";
@@ -36,34 +38,27 @@ export interface BannerProps {
 }
 
 /**
- * Frame sequence for the streaming spinner. Kept short so the rotation
- * is noticeable even at low tick rates. The frame index is driven off
- * `useAnimationTick().tick` rather than a locally owned counter.
- */
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
-
-/**
  * Resolve the palette colour for the active mode. The theme exposes
  * dedicated colour slots per mode so operators can re-skin the palette
  * without touching this file.
  */
-function modeColor(mode: PermissionMode): string {
+function modeColor(mode: PermissionMode): Color {
   switch (mode) {
     case "acceptEdits":
-      return theme.colors.modeAcceptEdits;
+      return theme.colors.modeAcceptEdits as Color;
     case "plan":
-      return theme.colors.modePlan;
+      return theme.colors.modePlan as Color;
     case "bypassPermissions":
-      return theme.colors.modeBypass;
+      return theme.colors.modeBypass as Color;
     case "auto":
-      return theme.colors.modeAuto;
+      return theme.colors.modeAuto as Color;
     case "dontAsk":
-      return theme.colors.modeBypass;
+      return theme.colors.modeBypass as Color;
     case "bubble":
-      return theme.colors.dim;
+      return theme.colors.dim as Color;
     case "default":
     default:
-      return theme.colors.modeDefault;
+      return theme.colors.modeDefault as Color;
   }
 }
 
@@ -80,16 +75,16 @@ function modeLabel(mode: PermissionMode): string {
   }
 }
 
-function phaseColor(phase: string | undefined): string {
+function phaseColor(phase: string | undefined): Color {
   if (typeof phase !== "string" || phase.length === 0) {
-    return theme.colors.muted;
+    return theme.colors.muted as Color;
   }
   const normalized = phase.toLowerCase();
-  if (/(error|fail|blocked|cancel)/.test(normalized)) return theme.colors.error;
-  if (/(tool|exec)/.test(normalized)) return theme.colors.accent;
-  if (/plan/.test(normalized)) return theme.colors.modePlan;
-  if (/(stream|model|token)/.test(normalized)) return theme.colors.primary;
-  return theme.colors.info;
+  if (/(error|fail|blocked|cancel)/.test(normalized)) return theme.colors.error as Color;
+  if (/(tool|exec)/.test(normalized)) return theme.colors.accent as Color;
+  if (/plan/.test(normalized)) return theme.colors.modePlan as Color;
+  if (/(stream|model|token)/.test(normalized)) return theme.colors.primary as Color;
+  return theme.colors.info as Color;
 }
 
 /**
@@ -108,22 +103,25 @@ function shortRunId(runId: string | undefined): string | undefined {
 function Chip({
   label,
   value,
-  valueColor = theme.colors.ink,
+  valueColor = theme.colors.ink as Color,
   compact = false,
 }: {
   readonly label: string;
   readonly value: React.ReactNode;
-  readonly valueColor?: string;
+  readonly valueColor?: Color;
   readonly compact?: boolean;
 }): React.ReactElement {
   const labelText = compact ? label : label.toUpperCase();
   return (
     <Box flexDirection="row" marginRight={1}>
-      <Text backgroundColor={theme.colors.surface} color={theme.colors.muted}>
+      <Text
+        backgroundColor={theme.colors.surface as Color}
+        color={theme.colors.muted as Color}
+      >
         {` ${labelText} `}
       </Text>
       <Text
-        backgroundColor={theme.colors.surfaceAlt}
+        backgroundColor={theme.colors.surfaceAlt as Color}
         color={valueColor}
         bold
         wrap="truncate"
@@ -145,20 +143,20 @@ function LeadStatus({
   readonly spinnerFrame?: string;
   readonly phase?: string;
 }): React.ReactElement {
-  const liveColor = isStreaming ? theme.colors.primary : theme.colors.muted;
+  const liveColor = (isStreaming ? theme.colors.primary : theme.colors.muted) as Color;
   const liveLabel = isStreaming ? "LIVE" : "READY";
-  const glyph = isStreaming ? (spinnerFrame ?? SPINNER_FRAMES[0]) : "•";
+  const glyph = isStreaming ? (spinnerFrame ?? getSpinnerFrame(0)) : "•";
 
   return (
     <Box flexDirection="row" alignItems="center" marginRight={1}>
       <Text color={liveColor}>{glyph}</Text>
       <Text> </Text>
-      <Text color={theme.colors.ink} bold>
+      <Text color={theme.colors.ink as Color} bold>
         {liveLabel}
       </Text>
       {phase !== undefined && phase.length > 0 ? (
         <>
-          <Text color={theme.colors.dim}> / </Text>
+          <Text color={theme.colors.dim as Color}> / </Text>
           <Text color={phaseColor(phase)}>{phase}</Text>
         </>
       ) : null}
@@ -198,18 +196,19 @@ export const Banner: React.FC<BannerProps> = ({
     ? activeToolCount
     : undefined;
   const spinnerFrame = isStreaming
-    ? SPINNER_FRAMES[tick % SPINNER_FRAMES.length]
+    ? getSpinnerFrame(tick)
     : undefined;
   const modeAccent = modeColor(mode);
 
   return (
     <Box
       borderStyle="round"
-      borderColor={theme.colors.lineStrong}
+      borderColor={theme.colors.lineStrong as Color}
       borderText={{ content: " AgenC cockpit ", position: "top", align: "start", offset: 1 }}
       paddingX={1}
       flexDirection="row"
       flexWrap="wrap"
+      width="100%"
     >
       <LeadStatus
         isStreaming={isStreaming}
@@ -221,7 +220,7 @@ export const Banner: React.FC<BannerProps> = ({
         <Chip
           label="plan"
           value="ready"
-          valueColor={theme.colors.warning}
+          valueColor={theme.colors.warning as Color}
         />
       ) : null}
 
@@ -234,14 +233,14 @@ export const Banner: React.FC<BannerProps> = ({
       <Chip
         label="model"
         value={model ?? "grok"}
-        valueColor={theme.colors.ink}
+        valueColor={theme.colors.ink as Color}
       />
 
       {tools !== undefined ? (
         <Chip
           label="tools"
           value={String(tools)}
-          valueColor={theme.colors.accent}
+          valueColor={theme.colors.accent as Color}
           compact
         />
       ) : null}
@@ -250,14 +249,14 @@ export const Banner: React.FC<BannerProps> = ({
         <Chip
           label="run"
           value={run}
-          valueColor={theme.colors.secondary}
+          valueColor={theme.colors.secondary as Color}
           compact
         />
       ) : null}
 
       <Segment>
-        <Text color={theme.colors.dim}>⇧Tab</Text>
-        <Text color={theme.colors.muted}> cycle</Text>
+        <Text color={theme.colors.dim as Color}>⇧Tab</Text>
+        <Text color={theme.colors.muted as Color}> cycle</Text>
       </Segment>
     </Box>
   );

@@ -657,6 +657,9 @@ function installTuiSessionContract(params: {
                 : "slash command rejected (invalid syntax)",
             });
             return;
+          case "passthrough":
+            await runPromptTurn(slash.input);
+            return;
           case "unknown":
           case "blocked_by_bridge":
             emitSlashResult(message, {
@@ -752,7 +755,7 @@ export async function oneShotCLI(
     // Step 2: resolve user message. The router may have pre-resolved
     // the prompt from argv; fall through to stdin when nothing was
     // passed (preserves the legacy piped-only path).
-    const resolvedUserMessage =
+    let resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
         ? userMessage
         : await resolveUserMessage(initAbort.signal);
@@ -812,10 +815,11 @@ export async function oneShotCLI(
     // Slash-command short-circuit. `runSlashCommand` is the only entry
     // path now, including the session-backed worktree commands.
     if (resolvedUserMessage.trimStart().startsWith("/")) {
+      let shouldShutdownAfterSlash = true;
       try {
         const runResult = await runSlashCommand(resolvedUserMessage, {
           session,
-          cwd: processCwd(),
+          cwd: session.sessionConfiguration.cwd ?? workspaceRoot ?? processCwd(),
           home: agencHome,
           configStore,
         });
@@ -827,6 +831,10 @@ export async function oneShotCLI(
                 : "agenc: slash command rejected (invalid syntax)\n",
             );
             return 1;
+          case "passthrough":
+            resolvedUserMessage = runResult.input;
+            shouldShutdownAfterSlash = false;
+            break;
           case "unknown":
             process.stderr.write(`agenc: ${runResult.message}\n`);
             return 1;
@@ -857,12 +865,14 @@ export async function oneShotCLI(
           }
         }
       } finally {
-        sessionRef = null;
-        sessionSlot.current = null;
-        delegateSessionHolder.current = null;
-        await shutdown().catch(() => {
-          /* best effort */
-        });
+        if (shouldShutdownAfterSlash) {
+          sessionRef = null;
+          sessionSlot.current = null;
+          delegateSessionHolder.current = null;
+          await shutdown().catch(() => {
+            /* best effort */
+          });
+        }
       }
     }
 

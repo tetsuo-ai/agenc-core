@@ -12,6 +12,7 @@ import {
   type SessionLike,
 } from "./AppState.js";
 import type { PermissionQueueOps } from "../../permissions/context.js";
+import type { ApprovalResolver } from "../../tools/orchestrator.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -159,6 +160,60 @@ describe("AgenCAppStateProvider", () => {
 
     await new Promise((r) => setTimeout(r, 20));
     expect(snapshots).toContain(1);
+    unmount();
+  });
+
+  test("installs a live approval resolver that queues requests and resolves user decisions", async () => {
+    const session = createFakeSession() as SessionLike & {
+      services: SessionLike["services"] & {
+        approvalResolver?: ApprovalResolver;
+      };
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    let latestQueue: readonly Record<string, unknown>[] = [];
+
+    function Consumer(): null {
+      const { permissionQueue } = useAgenCAppState();
+      latestQueue = permissionQueue as readonly Record<string, unknown>[];
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    expect(session.services.approvalResolver).toBeDefined();
+    const pendingDecision = session.services.approvalResolver?.request({
+      invocation: {
+        payload: {
+          kind: "function",
+          arguments: '{"path":".","recursive":true}',
+        },
+      } as never,
+      callId: "call-approval-1",
+      toolName: "system.listDir",
+      turnId: "turn-1",
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latestQueue).toHaveLength(1);
+    expect(latestQueue[0]?.toolInput).toEqual({
+      path: ".",
+      recursive: true,
+    });
+    const resolver = latestQueue[0]?.resolveOnce as
+      | { claim(payload: { behavior: "allow-session" }): boolean }
+      | undefined;
+    expect(
+      resolver?.claim({
+        behavior: "allow-session",
+      }),
+    ).toBe(true);
+    await expect(pendingDecision).resolves.toEqual({
+      kind: "approved_for_session",
+    });
     unmount();
   });
 });

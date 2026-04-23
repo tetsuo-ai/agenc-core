@@ -138,9 +138,9 @@ describe("Splash", () => {
     // Give React a microtask to flush the state update.
     await new Promise((r) => setTimeout(r, 20));
     expect(onDismiss).toHaveBeenCalledTimes(1);
-    // After dismiss the splash is unmounted; its content should no
-    // longer be in the rendered tree.
-    expect(collectText(getRoot(stdout))).not.toContain("press any key to continue");
+    // The parent owns unmounting. Splash itself should remain rendered
+    // until its owner removes it from the tree.
+    expect(collectText(getRoot(stdout))).toContain("press any key to continue");
     unmount();
   });
 

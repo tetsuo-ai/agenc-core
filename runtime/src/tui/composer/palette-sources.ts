@@ -20,6 +20,12 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import {
+  buildProviderModelCatalog,
+  type AgenCConfig,
+} from "../../config/index.js";
+import { listProfiles } from "../../config/profiles.js";
+import { USER_ADDRESSABLE_PERMISSION_MODES } from "../../permissions/types.js";
 import type { PaletteItem } from "./Palette.js";
 
 /** Minimal shape of a registry entry the palette consumes. */
@@ -75,6 +81,238 @@ export function getSlashCommandItems(
     });
   }
   return out;
+}
+
+const PROVIDER_DISPLAY_ORDER = [
+  "xai",
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "ollama",
+  "lmstudio",
+] as const;
+
+const PROVIDER_RUNTIME_SLUGS = Object.freeze({
+  xai: "grok",
+  openai: "openai",
+  anthropic: "anthropic",
+  gemini: "gemini",
+  openrouter: "openrouter",
+  groq: "groq",
+  deepseek: "deepseek",
+  ollama: "ollama",
+  lmstudio: "lmstudio",
+} as const);
+
+const PROVIDER_DISPLAY_LABELS = Object.freeze({
+  xai: "xAI",
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Google Gemini",
+  openrouter: "OpenRouter",
+  groq: "Groq",
+  deepseek: "DeepSeek",
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+} as const);
+
+const PROVIDER_KEYWORDS = Object.freeze({
+  xai: ["grok"],
+  openai: ["gpt"],
+  anthropic: ["claude"],
+  gemini: ["google"],
+  openrouter: ["router"],
+  groq: ["llama"],
+  deepseek: ["reasoner"],
+  ollama: ["local"],
+  lmstudio: ["local", "studio"],
+} as const);
+
+// Sourced from the official xAI docs MCP page `developers/models` on
+// April 22, 2026. We keep this list local to slash-palette discovery so
+// the UI can offer current Grok models without perturbing broader config
+// defaults or transport behavior.
+export const XAI_CURRENT_TEXT_MODELS = Object.freeze([
+  "grok-4.20-0309-reasoning",
+  "grok-4.20-0309-non-reasoning",
+  "grok-4-1-fast-reasoning",
+  "grok-4-1-fast-non-reasoning",
+  "grok-4.20-multi-agent-0309",
+] as const);
+
+function normalizeProviderChoice(
+  provider: string | undefined,
+): keyof typeof PROVIDER_RUNTIME_SLUGS | undefined {
+  const normalized = provider?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "grok" || normalized === "xai") return "xai";
+  if (normalized in PROVIDER_RUNTIME_SLUGS) {
+    return normalized as keyof typeof PROVIDER_RUNTIME_SLUGS;
+  }
+  return undefined;
+}
+
+function decorateCatalogWithCurrentXaiModels(
+  config?: AgenCConfig,
+): Readonly<Record<string, readonly string[]>> {
+  const base = buildProviderModelCatalog(config);
+  const grokCatalog = base.grok ?? [];
+  const currentXaiModels = new Set<string>(XAI_CURRENT_TEXT_MODELS);
+  const grokModels = [
+    ...XAI_CURRENT_TEXT_MODELS,
+    ...grokCatalog.filter((model) => !currentXaiModels.has(model)),
+  ];
+  return Object.freeze({
+    ...base,
+    grok: Object.freeze(grokModels),
+  });
+}
+
+export function getProviderPaletteItems(): PaletteItem[] {
+  return PROVIDER_DISPLAY_ORDER.map((provider) => ({
+    id: provider,
+    label: PROVIDER_DISPLAY_LABELS[provider],
+    description: `Use ${PROVIDER_DISPLAY_LABELS[provider]} as the active model provider`,
+    keywords: [provider, ...PROVIDER_KEYWORDS[provider]],
+    value: provider,
+  }));
+}
+
+export function getModelPaletteItems(options: {
+  readonly provider?: string;
+  readonly config?: AgenCConfig;
+}): PaletteItem[] {
+  const provider = normalizeProviderChoice(options.provider);
+  if (!provider) return [];
+  const runtimeProvider = PROVIDER_RUNTIME_SLUGS[provider];
+  const catalog = decorateCatalogWithCurrentXaiModels(options.config);
+  const models = catalog[runtimeProvider] ?? [];
+  return models.map((model) => ({
+    id: `${provider}:${model}`,
+    label: model,
+    description: `${PROVIDER_DISPLAY_LABELS[provider]} model`,
+    keywords: [model, PROVIDER_DISPLAY_LABELS[provider]],
+    value: model,
+  }));
+}
+
+const PERMISSION_MODE_DESCRIPTIONS = Object.freeze({
+  default: "Ask before running non-allowlisted tools",
+  acceptEdits: "Auto-approve edit/write operations, ask for other tools",
+  plan: "Read-only planning mode with write actions blocked",
+  auto: "Use the runtime classifier to decide when to ask",
+  bypassPermissions: "Run without approval prompts for this workspace",
+  dontAsk: "Never prompt; deny tools unless already pre-approved",
+} as const);
+
+export function getPermissionsActionPaletteItems(): PaletteItem[] {
+  return [
+    {
+      id: "permissions:list",
+      label: "Show current permissions",
+      description: "Display the current rules and active permission mode",
+      value: "list",
+    },
+    {
+      id: "permissions:mode",
+      label: "Change permission mode",
+      description: "Pick a new approval mode for this session",
+      value: "mode",
+    },
+    {
+      id: "permissions:export",
+      label: "Export permission rules",
+      description: "Render the current permissions block as JSON",
+      value: "export",
+    },
+    {
+      id: "permissions:accept-bypass",
+      label: "Accept bypassPermissions for this workspace",
+      description: "Record explicit bypass consent for the current workspace",
+      value: "accept-bypass",
+    },
+  ];
+}
+
+export function getPermissionModePaletteItems(): PaletteItem[] {
+  return USER_ADDRESSABLE_PERMISSION_MODES.map((mode) => ({
+    id: `permissions:mode:${mode}`,
+    label: mode,
+    description: PERMISSION_MODE_DESCRIPTIONS[mode],
+    value: mode,
+  }));
+}
+
+export function getConfigActionPaletteItems(): PaletteItem[] {
+  return [
+    {
+      id: "config:show",
+      label: "Show config snapshot",
+      description: "Print the effective runtime configuration",
+      value: "show",
+    },
+    {
+      id: "config:reload",
+      label: "Reload config",
+      description: "Re-read config.toml and environment overrides",
+      value: "reload",
+    },
+    {
+      id: "config:profile",
+      label: "Switch config profile",
+      description: "Pick a declared profile for the next turn",
+      value: "profile",
+    },
+    {
+      id: "config:edit",
+      label: "Edit config.toml",
+      description: "Open the config file in $EDITOR",
+      value: "edit",
+    },
+    {
+      id: "config:path",
+      label: "Show config path",
+      description: "Print the resolved config.toml path",
+      value: "path",
+    },
+  ];
+}
+
+export function getConfigProfilePaletteItems(
+  config?: AgenCConfig,
+): PaletteItem[] {
+  return listProfiles(config ?? {}).map((profileName) => ({
+    id: `config:profile:${profileName}`,
+    label: profileName,
+    description: "Stage this profile for the next turn",
+    value: profileName,
+  }));
+}
+
+export function getExitWorktreePaletteItems(): PaletteItem[] {
+  return [
+    {
+      id: "exit-worktree:keep",
+      label: "Keep worktree and return",
+      description: "Leave the worktree on disk and restore the original cwd",
+      value: "keep",
+    },
+    {
+      id: "exit-worktree:remove",
+      label: "Remove worktree",
+      description: "Delete the worktree after leaving it",
+      value: "remove",
+    },
+    {
+      id: "exit-worktree:discard",
+      label: "Remove worktree and discard changes",
+      description: "Force-remove the worktree and drop uncommitted changes",
+      value: "remove --discard-changes",
+    },
+  ];
 }
 
 /** Directories we never descend into during a mention walk. */

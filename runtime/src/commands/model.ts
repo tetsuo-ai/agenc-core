@@ -99,6 +99,14 @@ export function checkModelHistoryCompat(
     };
     history?: unknown[];
   };
+  const sessionConfig = (session as unknown as {
+    config?: {
+      providers?: Record<
+        string,
+        { capability_overrides?: Parameters<typeof resolveProviderModelCapabilities>[0]["overrides"] }
+      >;
+    };
+  }).config;
   const targetProvider =
     opts?.targetProvider ??
     rawState?.sessionConfiguration?.provider?.slug ??
@@ -106,6 +114,8 @@ export function checkModelHistoryCompat(
   const caps = resolveProviderModelCapabilities({
     provider: targetProvider,
     model: targetModel,
+    overrides:
+      sessionConfig?.providers?.[targetProvider]?.capability_overrides,
   });
   const compat = validateHistoryCompatibility(
     caps,

@@ -21,10 +21,14 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
+import { charInCellAt } from "../ink/screen.js";
 import StdinContext from "../ink/components/StdinContext.js";
 import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
-import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
+import {
+  KeybindingProvider,
+  useSetKeybindingContext,
+} from "../keybindings/KeybindingContext.js";
 import { AgenCAppStateProvider, useAgenCAppState } from "../state/AppState.js";
 import { Composer, validateMentionPath } from "./Composer.js";
 import { PasteStore } from "./paste-store.js";
@@ -36,24 +40,27 @@ type TestStdin = PassThrough & {
   unref: () => void;
 };
 
-function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
+function createStreams(columns = 80): { stdout: PassThrough; stdin: TestStdin } {
   const stdout = new PassThrough();
   const stdin = new PassThrough() as TestStdin;
   stdin.isTTY = true;
   stdin.setRawMode = () => undefined;
   stdin.ref = () => undefined;
   stdin.unref = () => undefined;
-  (stdout as unknown as { columns: number }).columns = 80;
+  (stdout as unknown as { columns: number }).columns = columns;
   (stdout as unknown as { rows: number }).rows = 24;
   (stdout as unknown as { isTTY: boolean }).isTTY = true;
   return { stdout, stdin };
 }
 
-async function mount(element: React.ReactElement): Promise<{
+async function mount(
+  element: React.ReactElement,
+  options: { readonly columns?: number } = {},
+): Promise<{
   unmount: () => void;
   stdout: PassThrough;
 }> {
-  const { stdout, stdin } = createStreams();
+  const { stdout, stdin } = createStreams(options.columns);
   const root = await createRoot({
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
@@ -78,6 +85,7 @@ function makeKeyEvent(opts: {
   ctrl?: boolean;
   meta?: boolean;
   shift?: boolean;
+  isPasted?: boolean;
 }): InputEvent {
   const parsedKey = {
     kind: "key" as const,
@@ -90,6 +98,7 @@ function makeKeyEvent(opts: {
     super: false,
     sequence: opts.sequence ?? "",
     raw: opts.sequence ?? "",
+    isPasted: opts.isPasted ?? false,
   };
   return new InputEvent(parsedKey as never);
 }
@@ -100,6 +109,25 @@ function renderedTextOf(stdout: PassThrough): string {
   const chunks: Buffer[] = [];
   stdout.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function latestFrameText(stdout: PassThrough): string {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) {
+    return "";
+  }
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen as never, x, y) ?? " ";
+    }
+    rows.push(row.replace(/\s+$/u, ""));
+  }
+  return rows.join("\n");
 }
 
 function createAppStateSession() {
@@ -146,6 +174,19 @@ function withInputProviders(
       </KeybindingProvider>
     </StdinContext.Provider>
   );
+}
+
+function ModalContextProbe({
+  onReady,
+}: {
+  readonly onReady: (setContext: (ctx: "chat" | "modal") => void) => void;
+}): null {
+  const setContext = useSetKeybindingContext();
+  React.useEffect(() => {
+    setContext("modal");
+    onReady((ctx) => setContext(ctx));
+  }, [onReady, setContext]);
+  return null;
 }
 
 describe("Composer", () => {
@@ -204,6 +245,33 @@ describe("Composer", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("h!");
+    unmount();
+  });
+
+  test("ignores printable input while inputLocked is true", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { stdout, unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          inputLocked
+          pasteStore={new PasteStore()}
+        />
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "c", sequence: "c" }));
+    emitter.emit("input", makeKeyEvent({ name: "t", sequence: "t" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(latestFrameText(stdout)).not.toContain("ct");
     unmount();
   });
 
@@ -280,6 +348,125 @@ describe("Composer", () => {
     unmount();
   });
 
+  test("renders wrapped input cleanly after backspacing a long draft", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+      { columns: 30 },
+    );
+
+    for (const char of "abcdefghijklmnopqrstuvwxyz123456") {
+      emitter.emit("input", makeKeyEvent({ name: char, sequence: char }));
+    }
+    await new Promise((r) => setTimeout(r, 25));
+
+    let frame = latestFrameText(stdout);
+    expect(frame).toContain("abcdefghijklmnopqr");
+    expect(frame).toContain("xyz123456");
+
+    for (let i = 0; i < 18; i += 1) {
+      emitter.emit("input", makeKeyEvent({ name: "backspace" }));
+    }
+    await new Promise((r) => setTimeout(r, 25));
+
+    frame = latestFrameText(stdout);
+    expect(frame).toContain("abcdefghijklmn");
+    expect(frame).not.toContain("uvwxyz123456");
+    unmount();
+  });
+
+  test("renders early typed characters as a single contiguous draft line", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+      { columns: 80 },
+    );
+
+    for (const char of "cat") {
+      emitter.emit("input", makeKeyEvent({ name: char, sequence: char }));
+    }
+    await new Promise((r) => setTimeout(r, 25));
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("cat");
+    expect(frame.match(/cat/g)).toHaveLength(1);
+    unmount();
+  });
+
+  test("does not classify ordinary multi-character input chunks as paste", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    emitter.emit(
+      "input",
+      makeKeyEvent({ sequence: "it's not empty at all", isPasted: false }),
+    );
+    await new Promise((r) => setTimeout(r, 25));
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("it's not empty at all");
+    expect(frame).not.toContain("Paste in progress");
+    unmount();
+  });
+
+  test("honors bracketed paste events without misclassifying normal typing", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    emitter.emit(
+      "input",
+      makeKeyEvent({ sequence: "alpha\nbeta", isPasted: true }),
+    );
+    await new Promise((r) => setTimeout(r, 25));
+    expect(latestFrameText(stdout)).toContain("Paste in progress");
+
+    await new Promise((r) => setTimeout(r, 650));
+    await new Promise((r) => setTimeout(r, 25));
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("alpha");
+    expect(frame).toContain("beta");
+    expect(frame).not.toContain("Paste in progress");
+    expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
   test("Enter submits an exact slash command on the first press", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();
@@ -327,6 +514,41 @@ describe("Composer", () => {
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 25));
+    expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("ignores printable input while a modal owns the keybinding context", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    let setContext: ((ctx: "chat" | "modal") => void) | null = null;
+    const { unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <>
+          <ModalContextProbe
+            onReady={(next) => {
+              setContext = next;
+            }}
+          />
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={onSubmit}
+            pasteStore={new PasteStore()}
+          />
+        </>,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "x", sequence: "x" }));
+    await new Promise((r) => setTimeout(r, 25));
+
+    setContext?.("chat");
+    await new Promise((r) => setTimeout(r, 25));
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 25));
+
     expect(onSubmit).not.toHaveBeenCalled();
     unmount();
   });

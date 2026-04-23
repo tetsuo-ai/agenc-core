@@ -81,10 +81,10 @@ export function coerceUsage(usage: {
   readonly completionTokens?: unknown;
   readonly totalTokens?: unknown;
 }): LLMUsage {
-  const promptTokens = toNumber(usage.promptTokens);
-  const completionTokens = toNumber(usage.completionTokens);
+  const promptTokens = toOptionalNumber(usage.promptTokens) ?? 0;
+  const completionTokens = toOptionalNumber(usage.completionTokens) ?? 0;
   const totalTokens =
-    toNumber(usage.totalTokens) ?? promptTokens + completionTokens;
+    toOptionalNumber(usage.totalTokens) ?? promptTokens + completionTokens;
   return {
     promptTokens,
     completionTokens,
@@ -455,8 +455,8 @@ export function assistantTextFromContentBlocks(
   return pieces.join("");
 }
 
-function toNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+function toOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 export function withSerializedMetrics(

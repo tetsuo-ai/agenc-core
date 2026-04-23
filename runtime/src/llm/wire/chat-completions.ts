@@ -40,7 +40,6 @@ export function buildChatCompletionsRequest(
   const body: Record<string, unknown> = {
     model: input.model,
     stream: false,
-    store: false,
     messages: messages.map((message) => {
       if (message.role === "tool") {
         return {
@@ -79,6 +78,9 @@ export function buildChatCompletionsRequest(
   }
   if (input.options?.reasoningEffort !== undefined) {
     body.reasoning_effort = input.options.reasoningEffort;
+  }
+  if (input.options?.serviceTier !== undefined) {
+    body.service_tier = input.options.serviceTier;
   }
   return body;
 }
@@ -120,7 +122,9 @@ export function parseChatCompletionsResponse(
       ? message.content
       : Array.isArray(message.content)
         ? assistantTextFromContentBlocks(message.content)
-        : "";
+        : typeof message.reasoning_content === "string"
+          ? message.reasoning_content
+          : "";
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),

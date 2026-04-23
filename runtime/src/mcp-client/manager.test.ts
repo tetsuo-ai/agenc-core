@@ -373,6 +373,42 @@ describe("MCPManager", () => {
     expect(manager.getConnectedServers()).toContain("fast");
   });
 
+  it("I-50: aborted slow connects do not register late after start() returns", async () => {
+    let resolveSlowClient: ((value: unknown) => void) | undefined;
+    const slowClient = {
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const controller = new AbortController();
+    const fastBridge = makeMockBridge("fast", ["t"]);
+
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("fast-client")
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSlowClient = resolve;
+          }),
+      );
+    mockCreateToolBridge.mockResolvedValueOnce(fastBridge);
+
+    const manager = new MCPManager([makeConfig("fast"), makeConfig("slow")]);
+    const started = manager.start({ signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    controller.abort("user_cancelled");
+    await started;
+
+    expect(manager.getConnectedServers()).toEqual(["fast"]);
+    expect(mockCreateToolBridge).toHaveBeenCalledTimes(1);
+
+    resolveSlowClient?.(slowClient);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(manager.getConnectedServers()).toEqual(["fast"]);
+    expect(mockCreateToolBridge).toHaveBeenCalledTimes(1);
+    expect(slowClient.close).toHaveBeenCalledTimes(1);
+  });
+
   it("I-73: rejects a bridge with a tool name already registered", async () => {
     const b1 = makeMockBridge("srv1", ["duplicate"]);
     // Give srv2 a tool that produces the SAME namespaced name (unusual but

@@ -57,6 +57,7 @@ import {
 import { resolve, dirname, basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveSessionWorkspaceRoot } from "../../gateway/host-workspace.js";
+import { addLineNumbers } from "../../utils/file.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { normalizeOverescapedToolText } from "../../utils/overescaped-text.js";
@@ -523,8 +524,8 @@ export function resolveSessionId(args: Record<string, unknown>): string | undefi
  * For adversarial environments, use OS-level sandboxing (chroot, namespaces).
  *
  * **Memory note:** `readFile` loads the entire file into memory. With the
- * default 10 MB limit, peak memory per read can reach ~40 MB (buffer +
- * string encoding + JSON serialization). Adjust limits accordingly.
+ * default 10 MB limit, peak memory per read can reach ~30 MB (buffer +
+ * string encoding + line-number formatting). Adjust limits accordingly.
  */
 export interface FilesystemToolConfig {
   /** Allowed path prefixes (required — no default to force explicit opt-in). */
@@ -1124,7 +1125,8 @@ function sliceTextByLines(params: {
   readonly lineCount: number;
   readonly viewKind: SessionReadViewKind;
 } {
-  const lines = params.text.split(/\r?\n/);
+  const lines =
+    params.text.length === 0 ? [] : params.text.split(/\r?\n/);
   const totalLines = lines.length;
   const boundedStartLine = Math.max(1, params.startLine);
   const boundedEndLine =
@@ -1146,6 +1148,25 @@ function sliceTextByLines(params: {
         ? "full"
         : "partial",
   };
+}
+
+function formatTextReadResult(params: {
+  readonly content: string;
+  readonly startLine: number;
+  readonly totalLines: number;
+}): string {
+  if (params.content.length > 0) {
+    return addLineNumbers({
+      content: params.content,
+      startLine: params.startLine,
+    });
+  }
+
+  if (params.totalLines === 0) {
+    return "<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>";
+  }
+
+  return `<system-reminder>Warning: the file exists but is shorter than the provided offset (${params.startLine}). The file has ${params.totalLines} lines.</system-reminder>`;
 }
 
 // ============================================================================
@@ -1326,15 +1347,10 @@ function createReadFileTool(
               : {}),
           });
           return {
-            content: safeStringify({
-              path: args.path,
-              size: buffer.length,
-              encoding: "utf-8",
+            content: formatTextReadResult({
               content: sliced.content,
               startLine: sliced.startLine,
-              endLine: sliced.endLine,
               totalLines: sliced.totalLines,
-              lineCount: sliced.lineCount,
             }),
           };
         }
@@ -1359,22 +1375,18 @@ function createReadFileTool(
         });
 
         return {
-          content: safeStringify({
-            path: args.path,
-            size: buffer.length,
-            encoding: binary ? "base64" : "utf-8",
-            content: binary
-              ? buffer.toString("base64")
-              : textContent ?? "",
-            ...(fullTextMetadata
-              ? {
-                  startLine: 1,
-                  endLine: fullTextMetadata.endLine,
-                  totalLines: fullTextMetadata.totalLines,
-                  lineCount: fullTextMetadata.lineCount,
-                }
-              : {}),
-          }),
+          content: binary
+            ? safeStringify({
+                path: args.path,
+                size: buffer.length,
+                encoding: "base64",
+                content: buffer.toString("base64"),
+              })
+            : formatTextReadResult({
+                content: textContent ?? "",
+                startLine: 1,
+                totalLines: fullTextMetadata?.totalLines ?? 0,
+              }),
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -17,6 +17,9 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 
 import {
   isBridgeSafeCommand,
@@ -78,6 +81,17 @@ describe("runSlashCommand — skip / parse gating", () => {
     // `/help\n` with no follow-up content must parse + dispatch.
     const result = await runSlashCommand("/help\n", stubCtx());
     expect(result.kind).toBe("dispatched");
+  });
+
+  it("returns { kind: 'passthrough' } for slash-prefixed filesystem paths in cwd", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "agenc-slash-"));
+    try {
+      writeFileSync(path.join(dir, "notes.txt"), "data");
+      const result = await runSlashCommand("/notes.txt", stubCtx({ cwd: dir }));
+      expect(result).toEqual({ kind: "passthrough", input: "/notes.txt" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -153,6 +167,7 @@ describe("buildDefaultRegistry — W3 coverage spot-check", () => {
     "permissions",
     "config",
     "model",
+    "model-provider",
     "provider",
     "compact",
     "enter-worktree",

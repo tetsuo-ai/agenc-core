@@ -8,6 +8,13 @@ import {
   type ProviderName,
 } from "../llm/provider.js";
 import type { LLMProvider } from "../llm/types.js";
+import { StaticModelsManager } from "../llm/models-manager.js";
+import {
+  markCapabilityDrift,
+  markCapabilityVerified,
+  resolveProviderCapabilityEntry,
+  shouldProbeCapabilityEntry,
+} from "../llm/capabilities.js";
 import { MCPManager } from "../mcp-client/manager.js";
 import {
   registerAutoSaveSidecar,
@@ -16,6 +23,10 @@ import {
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
+import {
+  isPermissionMode,
+  type PermissionMode,
+} from "../permissions/types.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import {
@@ -75,13 +86,18 @@ import { resolveTransportMode } from "../transport/fallback-ladder.js";
 import { toInfraSessionId } from "../bridge/sessionIdCompat.js";
 import { restoreFromEntries } from "../services/contextCollapse/persist.js";
 import {
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+  buildProviderModelCatalog,
+  configuredModelForProvider,
+  defaultModelForProvider,
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
   resolveProfile,
   resolveProfileName,
-  resolveProvider,
-  resolveProviderApiKey,
-  resolveModelDisambiguated,
+  resolveProviderSelection,
+  resolveProviderSettings,
+  resolveDisambiguatedModelSelection,
   resolveWorkspace as resolveWorkspaceFromEnv,
   AmbiguousModelError,
   UnknownModelError,
@@ -92,43 +108,18 @@ import { extractFlagValue } from "./route.js";
 
 export const DEFAULT_MODEL = "grok-4-fast";
 
-export const PROVIDER_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> =
-  Object.freeze({
-    grok: Object.freeze([
-      "grok-4-fast",
-      "grok-4",
-      "grok-3",
-      "grok-2",
-      "grok-2-mini",
-      "grok-beta",
-      "grok-code-fast-1",
-    ]) as readonly string[],
-    openai: Object.freeze(["gpt-5", "o3"]) as readonly string[],
-    anthropic: Object.freeze(["claude-opus-4-7"]) as readonly string[],
-    ollama: Object.freeze(["llama3.3"]) as readonly string[],
-    deepseek: Object.freeze(["deepseek-reasoner"]) as readonly string[],
-    gemini: Object.freeze(["gemini-2.5-pro"]) as readonly string[],
-  });
+export const PROVIDER_MODEL_CATALOG = BUILT_IN_PROVIDER_MODEL_CATALOG;
 
 const DEFAULT_PROVIDER: ProviderName = "grok";
 
-const DEFAULT_MODEL_BY_PROVIDER: Readonly<Record<ProviderName, string>> =
-  Object.freeze({
-    grok: "grok-4-fast",
-    openai: "gpt-5",
-    anthropic: "claude-opus-4-7",
-    ollama: "llama3.3",
-    lmstudio: "gpt-4o-mini",
-    openrouter: "openai/gpt-5",
-    groq: "llama-3.3-70b-versatile",
-    deepseek: "deepseek-reasoner",
-    gemini: "gemini-2.5-pro",
-  });
+const DEFAULT_MODEL_BY_PROVIDER = BUILT_IN_PROVIDER_DEFAULT_MODELS;
 
 export interface StartupCliFlags {
   readonly provider?: string;
   readonly model?: string;
   readonly profile?: string;
+  readonly permissionMode?: PermissionMode;
+  readonly allowDangerouslySkipPermissions?: boolean;
 }
 
 export interface StartupSelection {
@@ -217,25 +208,25 @@ export function readStartupCliFlags(
   const provider = extractFlagValue(userArgv, "--provider") ?? undefined;
   const model = extractFlagValue(userArgv, "--model") ?? undefined;
   const profile = extractFlagValue(userArgv, "--profile") ?? undefined;
+  const rawPermissionMode =
+    extractFlagValue(userArgv, "--permission-mode") ?? undefined;
+  const permissionMode =
+    rawPermissionMode && isPermissionMode(rawPermissionMode)
+      ? rawPermissionMode
+      : undefined;
+  const allowDangerouslySkipPermissions =
+    userArgv.includes("--yolo") ||
+    userArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
+    userArgv.includes("--allow-dangerously-skip-permissions");
   return Object.freeze({
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
     ...(profile ? { profile } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(allowDangerouslySkipPermissions
+      ? { allowDangerouslySkipPermissions: true }
+      : {}),
   });
-}
-
-function defaultModelForProvider(provider: ProviderName): string {
-  return DEFAULT_MODEL_BY_PROVIDER[provider] ?? DEFAULT_MODEL;
-}
-
-function configuredModelForProvider(
-  config: AgenCConfig,
-  provider: ProviderName,
-): string | undefined {
-  const model = config.model?.trim();
-  if (!model) return undefined;
-  if (provider === DEFAULT_PROVIDER) return model;
-  return model === DEFAULT_MODEL ? undefined : model;
 }
 
 function resolveProviderNameOrThrow(raw: string): ProviderName {
@@ -259,24 +250,39 @@ export function resolveStartupSelection(params: {
   const configWithProfile =
     profileName !== undefined ? resolveProfile(params.config, profileName) : params.config;
 
-  const providerOverride = cli.provider ?? resolveProvider(env);
+  const providerOverride = resolveProviderSelection({
+    cliProvider: cli.provider,
+    config: configWithProfile,
+    env,
+  });
   const modelOverride = cli.model ?? undefined;
+  const providerCatalog = buildProviderModelCatalog(configWithProfile);
 
   if (typeof modelOverride === "string" && modelOverride.includes(":")) {
-    const resolved = resolveModelOrExit(modelOverride);
+    const resolved = resolveModelOrExit(modelOverride, providerCatalog);
+    const providerSettings = resolveProviderSettings(
+      resolved.provider,
+      configWithProfile,
+      env,
+    );
     return {
       config: configWithProfile,
       ...(profileName !== undefined ? { profileName } : {}),
       provider: resolved.provider as ProviderName,
       model: resolved.model,
-      ...(resolveProviderApiKey(resolved.provider, env)
-        ? { apiKey: resolveProviderApiKey(resolved.provider, env) }
+      ...(providerSettings?.apiKey
+        ? { apiKey: providerSettings.apiKey }
         : {}),
     };
   }
 
   if (providerOverride) {
     const provider = resolveProviderNameOrThrow(providerOverride);
+    const providerSettings = resolveProviderSettings(
+      provider,
+      configWithProfile,
+      env,
+    );
     const model =
       modelOverride ??
       configuredModelForProvider(configWithProfile, provider) ??
@@ -286,8 +292,8 @@ export function resolveStartupSelection(params: {
       ...(profileName !== undefined ? { profileName } : {}),
       provider,
       model,
-      ...(resolveProviderApiKey(provider, env)
-        ? { apiKey: resolveProviderApiKey(provider, env) }
+      ...(providerSettings?.apiKey
+        ? { apiKey: providerSettings.apiKey }
         : {}),
     };
   }
@@ -295,6 +301,11 @@ export function resolveStartupSelection(params: {
   const configProvider = configWithProfile.model_provider;
   if (configProvider && configProvider.length > 0) {
     const provider = resolveProviderNameOrThrow(configProvider);
+    const providerSettings = resolveProviderSettings(
+      provider,
+      configWithProfile,
+      env,
+    );
     const model =
       modelOverride ??
       configuredModelForProvider(configWithProfile, provider) ??
@@ -304,32 +315,41 @@ export function resolveStartupSelection(params: {
       ...(profileName !== undefined ? { profileName } : {}),
       provider,
       model,
-      ...(resolveProviderApiKey(provider, env)
-        ? { apiKey: resolveProviderApiKey(provider, env) }
+      ...(providerSettings?.apiKey
+        ? { apiKey: providerSettings.apiKey }
         : {}),
     };
   }
 
   if (modelOverride ?? configWithProfile.model) {
-    const resolved = resolveModelOrExit(modelOverride ?? configWithProfile.model ?? DEFAULT_MODEL);
+    const resolved = resolveModelOrExit(
+      modelOverride ?? configWithProfile.model ?? DEFAULT_MODEL,
+      providerCatalog,
+    );
+    const providerSettings = resolveProviderSettings(
+      resolved.provider,
+      configWithProfile,
+      env,
+    );
     return {
       config: configWithProfile,
       ...(profileName !== undefined ? { profileName } : {}),
       provider: resolved.provider as ProviderName,
       model: resolved.model,
-      ...(resolveProviderApiKey(resolved.provider, env)
-        ? { apiKey: resolveProviderApiKey(resolved.provider, env) }
+      ...(providerSettings?.apiKey
+        ? { apiKey: providerSettings.apiKey }
         : {}),
     };
   }
 
+  const defaultSettings = resolveProviderSettings(DEFAULT_PROVIDER, configWithProfile, env);
   return {
     config: configWithProfile,
     ...(profileName !== undefined ? { profileName } : {}),
     provider: DEFAULT_PROVIDER,
     model: DEFAULT_MODEL,
-    ...(resolveProviderApiKey(DEFAULT_PROVIDER, env)
-      ? { apiKey: resolveProviderApiKey(DEFAULT_PROVIDER, env) }
+    ...(defaultSettings?.apiKey
+      ? { apiKey: defaultSettings.apiKey }
       : {}),
   };
 }
@@ -608,6 +628,7 @@ function buildDeferredServices(
   configStore: ConfigStore,
   toolApprovals: RuntimeApprovalStore<unknown>,
   networkApproval: RuntimeNetworkApprovalService,
+  modelsManager: SessionServices["modelsManager"],
 ): SessionServices {
   const noopAsync = async () => {
     /* deferred structural stub — replaced when the owning tranche lands */
@@ -688,18 +709,7 @@ function buildDeferredServices(
      * for a model we know nothing about, which keeps `modelContextWindow` from
      * shrinking the live context to 1% of the real window).
      */
-    modelsManager: {
-      getModelInfo: async (slug: string) => ({
-        slug,
-        effectiveContextWindowPercent: 100,
-        supportedReasoningLevels: [],
-        defaultReasoningSummary: "auto",
-        truncationPolicy: "off",
-        usedFallbackModelMetadata: false,
-      }),
-      tryListModels: () => undefined,
-      listModels: async () => [],
-    },
+    modelsManager,
     /** T11 live: per-session approval cache backed by `RuntimeApprovalStore`. */
     toolApprovals: {
       hasApproval: (key: string) => toolApprovals.get(key) !== undefined,
@@ -778,9 +788,35 @@ function buildDeferredServices(
  * are still deferred to later tranches that own the corresponding subsystems
  * (see per-field comments). Used as the `Session.config` snapshot source.
  */
-function buildDeferredConfig(cwd: string, model: string): Config {
+function buildDeferredConfig(
+  cwd: string,
+  model: string,
+  config: AgenCConfig,
+): Config {
+  const modelReasoningEffort =
+    config.reasoning_effort === "minimal"
+      ? "low"
+      : config.reasoning_effort;
   return {
     model,
+    ...(config.review_model !== undefined
+      ? { reviewModel: config.review_model }
+      : {}),
+    ...(config.model_verbosity !== undefined
+      ? { modelVerbosity: config.model_verbosity }
+      : {}),
+    ...(modelReasoningEffort !== undefined
+      ? { modelReasoningEffort }
+      : {}),
+    ...(config.reasoning_summary !== undefined
+      ? { modelReasoningSummary: config.reasoning_summary }
+      : {}),
+    ...(config.service_tier !== undefined
+      ? { serviceTier: config.service_tier }
+      : {}),
+    ...(config.personality !== undefined
+      ? { personality: config.personality }
+      : {}),
     cwd,
     /**
      * T10: real feature-flag source. Today both flags are hard-false so the
@@ -816,30 +852,6 @@ function buildDeferredConfig(cwd: string, model: string): Config {
     ghostSnapshot: { enabled: false },
     /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
     agentRoles: [],
-  };
-}
-
-/**
- * Structural `ModelInfo` fallback for the live local-runtime session. Used
- * as `Session.modelInfo` when the T13 `ModelsManager` is not available to
- * return real per-model metadata.
- *
- * `effectiveContextWindowPercent: 100` matches codex's "no reduction"
- * meaning. Codex's backend default is 95; we use 100 here because we have
- * no authoritative per-model metadata to justify any reduction, and using
- * the previous `1` value meant the live context window was silently
- * truncated to 1% of the real window by `modelContextWindow()`.
- * `supportedReasoningLevels: []` silently disables reasoning-level routing
- * until T13 wires the real per-model capability registry.
- */
-function buildDeferredModelInfo(slug: string): ModelInfo {
-  return {
-    slug,
-    effectiveContextWindowPercent: 100,
-    supportedReasoningLevels: [],
-    defaultReasoningSummary: "auto",
-    truncationPolicy: "off",
-    usedFallbackModelMetadata: false,
   };
 }
 
@@ -912,11 +924,20 @@ export function sessionConfigurationFromAgenCConfig(params: {
   };
   return {
     ...base,
+    ...(params.config.review_model !== undefined
+      ? { reviewModel: params.config.review_model }
+      : {}),
+    ...(params.config.model_verbosity !== undefined
+      ? { modelVerbosity: params.config.model_verbosity }
+      : {}),
     ...(params.config.personality !== undefined
       ? { personality: params.config.personality }
       : {}),
     ...(params.config.reasoning_summary !== undefined
       ? { modelReasoningSummary: params.config.reasoning_summary }
+      : {}),
+    ...(params.config.service_tier !== undefined
+      ? { serviceTier: params.config.service_tier }
       : {}),
     ...(params.config.compact_prompt !== undefined
       ? { compactPrompt: params.config.compact_prompt }
@@ -933,7 +954,7 @@ export function resolveModelOrExit(
   errSink: (line: string) => void = (line) => process.stderr.write(line),
 ): { provider: string; model: string } {
   try {
-    return resolveModelDisambiguated(slug, catalog);
+    return resolveDisambiguatedModelSelection({ slug, catalog });
   } catch (err) {
     if (err instanceof AmbiguousModelError) {
       const candidates = err.candidates
@@ -1223,6 +1244,7 @@ export async function bootstrapLocalRuntimeSession(
     env,
     argv,
   });
+  const cli = readStartupCliFlags(argv);
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
@@ -1232,6 +1254,10 @@ export async function bootstrapLocalRuntimeSession(
       cwd: workspaceRoot,
       configStore,
     },
+    ...(cli.permissionMode ? { permissionMode: cli.permissionMode } : {}),
+    ...(cli.allowDangerouslySkipPermissions
+      ? { allowDangerouslySkipPermissions: true }
+      : {}),
   });
   const autoModeEnabled = isAutoModeGateEnabled();
   const toolPermissionContext = {
@@ -1248,7 +1274,43 @@ export async function bootstrapLocalRuntimeSession(
   const networkApproval = new RuntimeNetworkApprovalService();
   const resolvedProvider = startup.provider;
   const model = startup.model;
+  const providerSettings = resolveProviderSettings(
+    resolvedProvider,
+    startup.config,
+    env,
+  );
   const mcpManager = createSessionMcpManagerFromEnv(env);
+  let sessionRef: Session | null = null;
+  const emitProviderWarning = (warning: {
+    cause: string;
+    message: string;
+  }): void => {
+    if (sessionRef === null) return;
+    sessionRef.emit({
+      id: sessionRef.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: warning,
+      },
+    });
+  };
+  const handleCapabilityDrift = (warning: {
+    message: string;
+    status?: number;
+  }): void => {
+    markCapabilityDrift({
+      provider: resolvedProvider,
+      model,
+      overrides: providerSettings?.capabilityOverrides,
+    });
+    emitProviderWarning({
+      cause: "capability_drift_detected",
+      message:
+        warning.status !== undefined
+          ? `${resolvedProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
+          : `${resolvedProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
+    });
+  };
 
   const registry = buildToolRegistry({
     workspaceRoot,
@@ -1258,22 +1320,66 @@ export async function bootstrapLocalRuntimeSession(
     resolvedProvider as ProviderName,
     {
       apiKey: options.apiKey ?? startup.apiKey,
+      ...(providerSettings?.baseURL ? { baseURL: providerSettings.baseURL } : {}),
       model,
       tools: registry.toLLMTools(),
+      extra: {
+        emitWarning: emitProviderWarning,
+        onCapabilityDrift: handleCapabilityDrift,
+      },
     },
   );
+  const capabilityEntry = resolveProviderCapabilityEntry({
+    provider: resolvedProvider,
+    model,
+    overrides: providerSettings?.capabilityOverrides,
+  });
+  if (shouldProbeCapabilityEntry(capabilityEntry)) {
+    queueMicrotask(() => {
+      void provider
+        .healthCheck()
+        .then((healthy) => {
+          if (!healthy) return;
+          markCapabilityVerified({
+            provider: resolvedProvider,
+            model,
+          });
+        })
+        .catch(() => {
+          // Best-effort T13 capability revalidation probe.
+        });
+    });
+  }
   const conversationId =
     options.conversationId ?? `conv-${Date.now().toString(36)}`;
-  const config = buildDeferredConfig(workspaceRoot, model);
-  const modelInfo = buildDeferredModelInfo(model);
+  const config = buildDeferredConfig(workspaceRoot, model, startup.config);
+  const modelsManager = new StaticModelsManager({
+    config: startup.config,
+    fallbackProvider: resolvedProvider,
+  });
+  const modelInfo = await modelsManager.getModelInfo(model);
+  const baseSessionConfiguration = sessionConfigurationFromAgenCConfig({
+    config: startup.config,
+    workspaceRoot,
+    model,
+    provider: resolvedProvider,
+  });
+  const sessionConfiguration = cli.allowDangerouslySkipPermissions
+    ? ({
+        ...baseSessionConfiguration,
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "danger_full_access" },
+        fileSystemSandboxPolicy: {
+          allowWrite: [],
+          denyWrite: [],
+          allowRead: [],
+          denyRead: [],
+        },
+      } satisfies SessionConfiguration)
+    : baseSessionConfiguration;
   let initialState: SessionState = {
     sessionConfiguration: {
-      ...sessionConfigurationFromAgenCConfig({
-        config: startup.config,
-        workspaceRoot,
-        model,
-        provider: resolvedProvider,
-      }),
+      ...sessionConfiguration,
       permissionContext: {
         mode: toolPermissionContext.mode,
       },
@@ -1297,10 +1403,12 @@ export async function bootstrapLocalRuntimeSession(
       configStore,
       toolApprovals,
       networkApproval,
+      modelsManager,
     ),
     jsRepl: { id: `repl-${conversationId}` },
     initialTranscriptEvents,
   });
+  sessionRef = session;
   const agentRegistry = new AgentRegistry();
   const agentControl = new AgentControl({
     session,

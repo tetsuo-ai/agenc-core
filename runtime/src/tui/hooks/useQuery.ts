@@ -34,6 +34,7 @@ import type { PhaseEvent } from "../../phases/events.js";
 import type { Event } from "../../session/event-log.js";
 import type {
   TranscriptEventEnvelope,
+  TranscriptSlashResultEvent,
   TranscriptSourceEvent,
 } from "../state/events-to-messages.js";
 
@@ -46,7 +47,9 @@ export interface SessionLike {
   readonly activeTurn: {
     unsafePeek(): { readonly turnId: string } | null;
   } | null;
-  subscribeToEvents?(cb: (event: PhaseEvent) => void): () => void;
+  subscribeToEvents?(
+    cb: (event: PhaseEvent | TranscriptSlashResultEvent) => void,
+  ): () => void;
   readonly eventLog?: {
     subscribe(cb: (event: Event) => void): () => void;
   };
@@ -174,40 +177,70 @@ function resolveInitialTranscriptEvents(
   return session.initialTranscriptEvents ?? [];
 }
 
+function makeTranscriptEnvelope<K extends TranscriptEventEnvelope["type"]>(
+  id: string | undefined,
+  seq: number | undefined,
+  type: K,
+  payload: Extract<TranscriptEventEnvelope, { readonly type: K }>["payload"],
+): Extract<TranscriptEventEnvelope, { readonly type: K }> {
+  return {
+    id,
+    seq,
+    type,
+    payload,
+  } as Extract<TranscriptEventEnvelope, { readonly type: K }>;
+}
+
 function toTranscriptEvent(event: Event): TranscriptEventEnvelope | null {
   switch (event.msg.type) {
     case "turn_started":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "turn_complete":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "turn_aborted":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "user_message":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "agent_message":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "agent_message_delta":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "tool_call_started":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "tool_call_completed":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "tool_progress":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "exec_command_begin":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "exec_command_end":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "context_compacted":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "warning":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "error":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "stream_error":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "deprecation_notice":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_started":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_delta":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_item_completed":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_exited":
-      return {
-        id: event.id,
-        seq: event.seq,
-        type: event.msg.type,
-        payload: event.msg.payload,
-      };
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     default:
       return null;
   }
 }
 
-function isPhaseOnlyTranscriptEvent(event: PhaseEvent): boolean {
+function isPhaseOnlyTranscriptEvent(
+  event: PhaseEvent | TranscriptSlashResultEvent,
+): event is TranscriptSlashResultEvent {
   return event.type === "slash_result";
 }
 
@@ -296,7 +329,7 @@ export function useQuery(session: SessionLike): UseQueryResult {
     if (typeof subscribeToEvents === "function") {
       try {
         unsubscribers.push(
-          subscribeToEvents.call(session, (event: PhaseEvent) => {
+          subscribeToEvents.call(session, (event) => {
             if (
               isPhaseOnlyTranscriptEvent(event) ||
               typeof eventLogSubscribe !== "function"

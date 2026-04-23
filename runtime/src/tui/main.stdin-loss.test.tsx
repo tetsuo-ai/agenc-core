@@ -75,7 +75,8 @@ async function bootAndFire(event: "close" | "end" | "error") {
   const { stdout, stdin } = createStreams();
   const abortTerminal = vi.fn();
   const emit = vi.fn();
-  const session = makeSession({ abortTerminal, emit });
+  const flushEventLog = vi.fn(async () => undefined);
+  const session = makeSession({ abortTerminal, emit, flushEventLog });
 
   // process.exit(130) MUST not kill the test runner. Stub it; the
   // handler returns normally after the stubbed exit call.
@@ -98,6 +99,8 @@ async function bootAndFire(event: "close" | "end" | "error") {
     // synchronous call site has a chance to fire.
     await Promise.resolve();
     await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
+    expect(exitSpy).toHaveBeenCalledWith(130);
 
     return { session, exitSpy, unmount: handle.unmount };
   } catch (err) {
@@ -145,6 +148,27 @@ describe("bootTUI stdin-loss wiring (I-19)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(session.submit).toHaveBeenCalledTimes(1);
     expect(session.submit).toHaveBeenCalledWith("queue this");
+
+    handle.unmount();
+    instances.delete(stdout as unknown as NodeJS.WriteStream);
+    stdin.end();
+    stdout.end();
+  });
+
+  test("claims raw mode before the first render so startup typing does not echo", async () => {
+    const { stdout, stdin } = createStreams();
+    const setRawMode = vi.fn(() => undefined);
+    stdin.setRawMode = setRawMode;
+    const session = makeSession();
+
+    const handle = await bootTUI({
+      session,
+      configStore: configStore(),
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+    });
+
+    expect(setRawMode).toHaveBeenCalledWith(true);
 
     handle.unmount();
     instances.delete(stdout as unknown as NodeJS.WriteStream);

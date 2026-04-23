@@ -222,10 +222,13 @@ export class OpenAIProvider implements LLMProvider {
     this.client = new ProviderHttpClient({
       providerName: this.name,
       baseURL: config.baseURL ?? DEFAULT_BASE_URL,
+      model: config.model,
       defaultHeaders: config.defaultHeaders,
       resolveAuthHeaders: (context) => this.auth.resolveHeaders(context),
       timeoutMs: config.timeoutMs,
       fetchImpl: config.fetchImpl,
+      emitWarning: config.emitWarning,
+      onCapabilityDrift: config.onCapabilityDrift,
     });
   }
 

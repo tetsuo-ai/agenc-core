@@ -16,9 +16,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
+  getConfigActionPaletteItems,
+  getConfigProfilePaletteItems,
+  getExitWorktreePaletteItems,
   getMentionItems,
+  getModelPaletteItems,
+  getPermissionModePaletteItems,
+  getPermissionsActionPaletteItems,
+  getProviderPaletteItems,
   getSlashCommandItems,
   MENTION_RESULT_CAP,
+  XAI_CURRENT_TEXT_MODELS,
   type SlashCommandLike,
   type SlashCommandRegistryLike,
 } from "./palette-sources.js";
@@ -73,6 +81,71 @@ describe("getSlashCommandItems", () => {
     expect(item?.keywords).toContain("ctx");
     expect(item?.description).toContain("local");
     expect(item?.description).toContain("/ctx");
+  });
+
+  test("surfaces model-provider under its canonical renamed slash command", () => {
+    const registry = makeRegistry([
+      {
+        name: "model-provider",
+        aliases: ["provider"],
+        description: "switch provider",
+      },
+    ]);
+    const item = getSlashCommandItems(registry)[0];
+    expect(item?.label).toBe("/model-provider");
+    expect(item?.keywords).toContain("provider");
+  });
+});
+
+describe("provider/model picker items", () => {
+  test("lists human-friendly provider choices with xAI first", () => {
+    const items = getProviderPaletteItems();
+    expect(items[0]?.id).toBe("xai");
+    expect(items[0]?.label).toBe("xAI");
+  });
+
+  test("uses the current xAI Grok model list from the docs-backed constant", () => {
+    const items = getModelPaletteItems({ provider: "xai" });
+    expect(
+      items
+        .slice(0, XAI_CURRENT_TEXT_MODELS.length)
+        .map((item) => item.label),
+    ).toEqual(Array.from(XAI_CURRENT_TEXT_MODELS));
+  });
+
+  test("lists bounded permission picker actions and modes", () => {
+    expect(getPermissionsActionPaletteItems().map((item) => item.value)).toEqual([
+      "list",
+      "mode",
+      "export",
+      "accept-bypass",
+    ]);
+    expect(getPermissionModePaletteItems().map((item) => item.value)).toContain(
+      "plan",
+    );
+  });
+
+  test("lists config actions, config profiles, and exit-worktree actions", () => {
+    expect(getConfigActionPaletteItems().map((item) => item.value)).toEqual([
+      "show",
+      "reload",
+      "profile",
+      "edit",
+      "path",
+    ]);
+    expect(
+      getConfigProfilePaletteItems({
+        profiles: {
+          fast: { model: "grok-4-fast" },
+          safe: { model: "gpt-5" },
+        },
+      }).map((item) => item.value),
+    ).toEqual(["fast", "safe"]);
+    expect(getExitWorktreePaletteItems().map((item) => item.value)).toEqual([
+      "keep",
+      "remove",
+      "remove --discard-changes",
+    ]);
   });
 });
 

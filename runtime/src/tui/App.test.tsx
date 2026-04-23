@@ -9,9 +9,11 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import { describe, expect, test, vi } from "vitest";
 
+import type { DOMElement } from "./ink/dom.js";
 import { createRoot } from "./ink/root.js";
 import instances from "./ink/instances.js";
-import { App } from "./App.js";
+import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ink/termio/dec.js";
+import { App, readPickerCommandIntent } from "./App.js";
 import type { ConfigStoreLike, SessionLike } from "./state/AppState.js";
 import {
   AgenCAppStateProvider,
@@ -45,7 +47,7 @@ function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
 
 async function mount(
   element: React.ReactElement,
-): Promise<{ unmount: () => void; stdin: TestStdin }> {
+): Promise<{ unmount: () => void; stdin: TestStdin; stdout: PassThrough }> {
   const { stdout, stdin } = createStreams();
   const root = await createRoot({
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -56,6 +58,7 @@ async function mount(
   await new Promise((r) => setTimeout(r, 20));
   return {
     stdin,
+    stdout,
     unmount: () => {
       root.unmount();
       instances.delete(stdout as unknown as NodeJS.WriteStream);
@@ -63,6 +66,33 @@ async function mount(
       stdout.end();
     },
   };
+}
+
+function getRoot(stdout: PassThrough): DOMElement {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { rootNode?: DOMElement }
+    | undefined;
+  if (!instance?.rootNode) throw new Error("Ink instance root missing");
+  return instance.rootNode;
+}
+
+function collectText(node: DOMElement): string {
+  const parts: string[] = [];
+  const walk = (n: DOMElement): void => {
+    for (const child of n.childNodes) {
+      if (child.nodeName === "#text") {
+        parts.push((child as unknown as { nodeValue: string }).nodeValue ?? "");
+      } else {
+        walk(child as DOMElement);
+      }
+    }
+  };
+  walk(node);
+  return parts.join("");
+}
+
+function collectStream(stream: PassThrough): string {
+  return stream.read()?.toString("utf8") ?? "";
 }
 
 /** Minimum structural shape the App needs from a Session. */
@@ -96,6 +126,36 @@ function createFakeSession(
 const FAKE_CONFIG_STORE: ConfigStoreLike = { snapshot: {} };
 
 describe("App", () => {
+  test("recognizes codex-style picker slash commands", () => {
+    expect(readPickerCommandIntent("/model")).toEqual({ kind: "model" });
+    expect(readPickerCommandIntent("/model-provider")).toEqual({
+      kind: "model-provider",
+    });
+    expect(readPickerCommandIntent("/provider")).toEqual({
+      kind: "model-provider",
+    });
+    expect(readPickerCommandIntent("/permissions")).toEqual({
+      kind: "permissions",
+      stage: "root",
+    });
+    expect(readPickerCommandIntent("/permissions mode")).toEqual({
+      kind: "permissions",
+      stage: "mode",
+    });
+    expect(readPickerCommandIntent("/config")).toEqual({
+      kind: "config",
+      stage: "root",
+    });
+    expect(readPickerCommandIntent("/config profile")).toEqual({
+      kind: "config",
+      stage: "profile",
+    });
+    expect(readPickerCommandIntent("/exit-worktree")).toEqual({
+      kind: "exit-worktree",
+    });
+    expect(readPickerCommandIntent("/model gpt-5")).toBeNull();
+  });
+
   test("renders through createRoot without throwing", async () => {
     const session = createFakeSession("default");
     const { unmount } = await mount(
@@ -122,6 +182,24 @@ describe("App", () => {
 
     unmount();
     expect(setRawMode).toHaveBeenCalledWith(false);
+  });
+
+  test("mounts into the alternate screen and restores the main screen on unmount", async () => {
+    const session = createFakeSession("default");
+    const { stdout, unmount } = await mount(
+      <App
+        session={session}
+        configStore={FAKE_CONFIG_STORE}
+        model="grok-code-fast-1"
+      />,
+    );
+
+    const mountedOutput = collectStream(stdout);
+    expect(mountedOutput).toContain(ENTER_ALT_SCREEN);
+
+    unmount();
+    const unmountedOutput = collectStream(stdout);
+    expect(unmountedOutput).toContain(EXIT_ALT_SCREEN);
   });
 
   test("AgenCAppStateProvider propagates mode changes to consumers", async () => {
@@ -230,6 +308,121 @@ describe("App", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(submit).toHaveBeenCalledTimes(1);
     expect(submit).toHaveBeenCalledWith("build a game");
+    unmount();
+  });
+
+  test("renders the mounted T12 cockpit chrome from the live App tree", async () => {
+    const session = {
+      ...createFakeSession("plan"),
+      conversationId: "conv-1234567890",
+    };
+    const { stdout, unmount } = await mount(
+      <App
+        session={session}
+        configStore={{
+          snapshot: { statusLine: { items: ["model", "mode", "session"] } },
+        }}
+        model="grok-code-fast-1"
+      />,
+    );
+
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("AgenC");
+    expect(text).toContain("press any key to continue");
+    expect(text).toContain("MODEL");
+    expect(text).toContain("grok-code-fast-1");
+    expect(text).toContain("MODE");
+    expect(text).toContain("plan");
+    expect(text).toContain("SESSION");
+    expect(text).toContain("34567890");
+    unmount();
+  });
+
+  test("renders plan progress through the dedicated transcript block", async () => {
+    const session = {
+      ...createFakeSession("plan"),
+      activeTurn: { unsafePeek: () => ({ turnId: "turn-1" }) },
+      abortTerminal: () => undefined,
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-1" } },
+        {
+          type: "plan_started",
+          payload: {
+            turnId: "turn-1",
+            planItemId: "plan-1",
+            title: "audit tranche",
+          },
+        },
+        {
+          type: "plan_delta",
+          payload: {
+            turnId: "turn-1",
+            planItemId: "plan-1",
+            delta: "trace event flow",
+          },
+        },
+        {
+          type: "plan_item_completed",
+          payload: {
+            turnId: "turn-1",
+            planItemId: "plan-1",
+            finalText: "1. inspect\n2. patch",
+          },
+        },
+        {
+          type: "plan_exited",
+          payload: {
+            turnId: "turn-1",
+          },
+        },
+      ],
+    };
+
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("audit tranche");
+    expect(text).toContain("1. inspect");
+    expect(text).toContain("✓ complete");
+    expect(text).toContain("plan mode ended");
+    expect(text).not.toContain("[plan]");
+    unmount();
+  });
+
+  test("keeps the transcript pinned inside the fullscreen viewport", async () => {
+    const transcript = Array.from({ length: 36 }, (_, index) => ({
+      type: "agent_message" as const,
+      payload: {
+        message:
+          index === 35
+            ? "tail-marker-visible-in-viewport"
+            : `history-line-${index + 1}`,
+      },
+    }));
+    const session = {
+      ...createFakeSession("default"),
+      activeTurn: { unsafePeek: () => ({ turnId: "turn-1" }) },
+      abortTerminal: () => undefined,
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-1" } },
+        ...transcript,
+      ],
+    };
+
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    // Let the splash auto-dismiss so the steady-state fullscreen layout paints.
+    await new Promise((r) => setTimeout(r, 1_300));
+    const frame = collectStream(stdout);
+
+    expect(frame).toContain("tail-marker-visible-in-viewport");
+    expect(frame).toContain("Type");
+    expect(frame).toContain("prompt");
+    expect(frame).toContain("commands.");
     unmount();
   });
 

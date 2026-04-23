@@ -86,7 +86,8 @@ describe("providerCommand", () => {
   it("is userInvocable and immediate", () => {
     expect(providerCommand.userInvocable).toBe(true);
     expect(providerCommand.immediate).toBe(true);
-    expect(providerCommand.name).toBe("provider");
+    expect(providerCommand.name).toBe("model-provider");
+    expect(providerCommand.aliases).toContain("provider");
   });
 
   it("re-exports the I-57 stub so callers can reach it without model.js", () => {
@@ -275,7 +276,30 @@ describe("providerCommand", () => {
     const res = await providerCommand.execute(mkctx(session, ""));
     expect(res.kind).toBe("error");
     if (res.kind === "error") {
-      expect(res.message).toMatch(/Usage: \/provider/);
+      expect(res.message).toMatch(/Usage: \/model-provider/);
+    }
+  });
+
+  it("accepts an optional model argument when switching providers", async () => {
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "sk-test";
+    try {
+      const session = stubSession({
+        provider: "xai",
+        model: "grok-4",
+        activeTurn: null,
+      });
+      const res = await providerCommand.execute(
+        mkctx(session, "openai gpt-5"),
+      );
+      expect(res.kind).toBe("text");
+      if (res.kind === "text") {
+        expect(res.text).toMatch(/switched to "openai"/);
+        expect(res.text).toMatch(/model "gpt-5"/);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previous;
     }
   });
 

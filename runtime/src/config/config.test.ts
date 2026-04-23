@@ -38,6 +38,11 @@ import {
   resolveSimpleMode,
   applyEnvOverrides,
 } from "./env.js";
+import {
+  buildProviderModelCatalog,
+  configuredModelForProvider,
+  resolveProviderSettings,
+} from "./index.js";
 import { ConfigStore } from "./store.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -104,6 +109,37 @@ describe("schema: normalizeRawConfig", () => {
     const out = normalizeRawConfig({ model: "x" });
     expect(out._unknown).toBeUndefined();
   });
+
+  test("preserves T13 provider config + model knobs on the typed path", () => {
+    const out = normalizeRawConfig({
+      review_model: "gpt-5",
+      model_verbosity: "high",
+      service_tier: "flex",
+      providers: {
+        openrouter: {
+          api_key_env: "OPENROUTER_TOKEN",
+          base_url: "https://router.example/v1",
+          default_model: "openai/gpt-5-mini",
+          capability_overrides: {
+            acceptsThinkingHistory: true,
+          },
+        },
+      },
+    });
+
+    expect(out.review_model).toBe("gpt-5");
+    expect(out.model_verbosity).toBe("high");
+    expect(out.service_tier).toBe("flex");
+    expect(out.providers?.openrouter).toEqual({
+      api_key_env: "OPENROUTER_TOKEN",
+      base_url: "https://router.example/v1",
+      default_model: "openai/gpt-5-mini",
+      capability_overrides: {
+        acceptsThinkingHistory: true,
+      },
+    });
+    expect(out._unknown).toBeUndefined();
+  });
 });
 
 describe("schema: defaultConfig independence", () => {
@@ -161,6 +197,60 @@ describe("schema: normalizeCodexKeyAliases", () => {
     });
     expect(out.tools_config).toEqual({ web_search: false });
     expect(out.tools).toBeUndefined();
+  });
+});
+
+describe("provider resolution (T13)", () => {
+  test("resolveProviderSettings honors [providers.<name>] overrides", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      providers: {
+        openrouter: {
+          api_key_env: "CUSTOM_OPENROUTER_KEY",
+          base_url: "https://router.example/v1",
+          default_model: "openai/gpt-5-mini",
+        },
+      },
+    });
+
+    const settings = resolveProviderSettings("openrouter", config, {
+      CUSTOM_OPENROUTER_KEY: "or-custom",
+    });
+
+    expect(settings).toMatchObject({
+      provider: "openrouter",
+      apiKeyEnvVar: "CUSTOM_OPENROUTER_KEY",
+      apiKey: "or-custom",
+      baseURL: "https://router.example/v1",
+      defaultModel: "openai/gpt-5-mini",
+    });
+  });
+
+  test("configuredModelForProvider prefers provider-specific default_model", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      providers: {
+        groq: {
+          default_model: "llama-3.1-8b-instant",
+        },
+      },
+    });
+
+    expect(configuredModelForProvider(config, "groq")).toBe(
+      "llama-3.1-8b-instant",
+    );
+  });
+
+  test("buildProviderModelCatalog includes configured provider defaults", () => {
+    const config = mergeConfigs(defaultConfig(), {
+      providers: {
+        openrouter: {
+          default_model: "anthropic/claude-3.7-sonnet",
+        },
+      },
+    });
+
+    expect(buildProviderModelCatalog(config).openrouter).toContain(
+      "anthropic/claude-3.7-sonnet",
+    );
   });
 });
 

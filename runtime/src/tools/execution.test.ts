@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   capToolResult,
   classifyToolError,
@@ -929,6 +929,10 @@ describe("T11 W3-B — permission evaluator integration", () => {
   test("bypassPermissions mode skips prompts and allows execute()", async () => {
     const { context } = buildEvaluatorContext("bypassPermissions");
     let executed = 0;
+    const requestApproval = vi.fn(async () => ({
+      behavior: "allow" as const,
+      decisionAtTurnId: "t1",
+    }));
     const tool: Tool = {
       name: "system.writeFile",
       description: "",
@@ -944,10 +948,12 @@ describe("T11 W3-B — permission evaluator integration", () => {
       invocation: makeInvocation("c1", "system.writeFile"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
+      requestApproval,
     });
     expect(out.isError).toBe(false);
     expect(out.content).toBe("wrote");
     expect(executed).toBe(1);
+    expect(requestApproval).not.toHaveBeenCalled();
   });
 
   test("default mode with no matching rules returns ask → deny when no prompt wired", async () => {

@@ -446,6 +446,18 @@ async function handleModeSubcommand(
   if (target === current.mode) {
     return { kind: "text", text: `Mode already: ${current.mode}` };
   }
+  if (
+    target === "bypassPermissions" &&
+    current.isBypassPermissionsModeAvailable !== true
+  ) {
+    return {
+      kind: "error",
+      message:
+        "Cannot set permission mode to bypassPermissions. " +
+        "Enable it with --allow-dangerously-skip-permissions or set " +
+        "permissions.allowBypassPermissionsMode in settings.json",
+    };
+  }
 
   let transitioned: ReturnType<typeof transitionPermissionMode>;
   try {
@@ -544,8 +556,9 @@ async function handleAcceptBypassSubcommand(
   const alreadyInSession = existing.includes(workspacePath);
 
   // Session-level update (always — the command is idempotent).
+  let nextCtx: ToolPermissionContext = current;
   if (!alreadyInSession) {
-    const nextCtx: ToolPermissionContext = {
+    nextCtx = {
       ...current,
       bypassPermissionsAcceptedIn: [...existing, workspacePath],
     };
@@ -588,9 +601,56 @@ async function handleAcceptBypassSubcommand(
   const sessionNote = alreadyInSession
     ? "already accepted in this session"
     : "accepted for this session";
+
+  if (current.isBypassPermissionsModeAvailable !== true) {
+    return {
+      kind: "text",
+      text:
+        `bypassPermissions ${sessionNote} for ${workspacePath}${persistNote}. ` +
+        "The mode was not activated because bypassPermissions is not currently available.",
+    };
+  }
+
+  if (current.mode !== "bypassPermissions") {
+    const transitioned = transitionPermissionMode(
+      current.mode,
+      "bypassPermissions",
+      nextCtx,
+      {
+        requireBypassConsent: false,
+        workspacePath,
+      },
+    );
+    if (!("error" in transitioned)) {
+      nextCtx = { ...transitioned, mode: "bypassPermissions" };
+      await registry.update(nextCtx);
+      if (
+        typeof (
+          ctx.session as Session & {
+            syncPermissionContextFromRegistry?: (
+              nextCtx: ToolPermissionContext,
+            ) => Promise<void>;
+          }
+        ).syncPermissionContextFromRegistry === "function"
+      ) {
+        await (
+          ctx.session as Session & {
+            syncPermissionContextFromRegistry: (
+              nextCtx: ToolPermissionContext,
+            ) => Promise<void>;
+          }
+        ).syncPermissionContextFromRegistry(nextCtx);
+      }
+    }
+  }
+
   return {
     kind: "text",
-    text: `bypassPermissions ${sessionNote} for ${workspacePath}${persistNote}`,
+    text:
+      `bypassPermissions ${sessionNote} for ${workspacePath}${persistNote}. ` +
+      (nextCtx.mode === "bypassPermissions"
+        ? "Mode activated for this session."
+        : "Consent recorded; run /permissions mode bypassPermissions to activate it."),
   };
 }
 

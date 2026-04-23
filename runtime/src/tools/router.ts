@@ -41,6 +41,7 @@ import type {
   ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
+import { reviewDecisionIsAllow } from "../permissions/review-decision.js";
 import type { Tool } from "./types.js";
 import {
   parseToolName,
@@ -62,6 +63,8 @@ import {
 } from "./orchestrator.js";
 import {
   executeToolDispatch,
+  type ApprovalRequestFn,
+  type ModalDecision,
   parseToolArgsWithBigInt,
   type ToolProgressCallback,
 } from "./execution.js";
@@ -631,8 +634,43 @@ function rawDispatchOptions(
     ...(opts.modeChangeRegistry !== undefined
       ? { modeChangeRegistry: opts.modeChangeRegistry }
       : {}),
+    ...(opts.approvalResolver !== undefined
+      ? {
+          requestApproval: approvalRequestFromResolver(
+            opts.invocation,
+            opts.approvalResolver,
+          ),
+        }
+      : {}),
     abortController: opts.abortController,
     ...(opts.onHookError !== undefined ? { onHookError: opts.onHookError } : {}),
+  };
+}
+
+function approvalRequestFromResolver(
+  invocation: ToolInvocation,
+  resolver: ApprovalResolver,
+): ApprovalRequestFn {
+  return async ({
+    currentTurnId,
+    signal,
+  }): Promise<ModalDecision> => {
+    const reviewDecision = await resolver.request({
+      invocation,
+      callId: invocation.callId,
+      toolName: nameDisplay(invocation.toolName),
+      turnId: currentTurnId,
+      signal,
+    });
+    return {
+      behavior: reviewDecisionIsAllow(reviewDecision)
+        ? "allow"
+        : reviewDecision.kind === "abort"
+          ? "abort"
+          : "deny",
+      decisionAtTurnId: currentTurnId,
+      reviewDecision,
+    };
   };
 }
 

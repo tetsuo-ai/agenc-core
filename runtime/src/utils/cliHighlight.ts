@@ -22,6 +22,10 @@ let cliHighlightPromise: Promise<CliHighlight | null> | undefined
 let loadedGetLanguage: typeof import('highlight.js').getLanguage | undefined
 
 async function loadCliHighlight(): Promise<CliHighlight | null> {
+  const previousForceColor = process.env.FORCE_COLOR
+  if (previousForceColor === undefined || previousForceColor.length === 0) {
+    process.env.FORCE_COLOR = '1'
+  }
   try {
     const cliHighlight = await import('cli-highlight')
     // cache hit — cli-highlight already loaded highlight.js
@@ -33,6 +37,12 @@ async function loadCliHighlight(): Promise<CliHighlight | null> {
     }
   } catch {
     return null
+  } finally {
+    if (previousForceColor === undefined) {
+      delete process.env.FORCE_COLOR
+    } else {
+      process.env.FORCE_COLOR = previousForceColor
+    }
   }
 }
 

@@ -20,7 +20,8 @@
  *   4. Permission gate: `mergeHookPermissionDecision` merges the hook
  *      decision with rule-based checks. inc-4788: hook `allow` does
  *      NOT bypass rule `deny` / `ask`.
- *   5. Legacy approval-modal fallback.
+ *   5. Legacy approval-modal fallback (only when the evaluator path is
+ *      unavailable).
  *   6. Execute under timeout + abort race (I-9 / I-21).
  *   7. PostToolUse hooks; emit the six hook-attachment kinds on the
  *      live path (`hook_cancelled`, `hook_blocking_error`,
@@ -1443,7 +1444,15 @@ export async function runToolUse(
   }
 
   // Step 4b: legacy approval-modal fallback.
-  if (opts.requestApproval) {
+  //
+  // If the evaluator path is wired, it already decided allow/deny/ask.
+  // Falling through to the legacy modal after an evaluator-side allow
+  // defeats bypassPermissions / acceptEdits semantics by prompting a
+  // second time on an already-approved call.
+  const shouldUseLegacyApprovalFallback =
+    opts.requestApproval &&
+    (!opts.canUseTool || !opts.permissionContext);
+  if (shouldUseLegacyApprovalFallback) {
     const approvalCache = resolveApprovalCache(invocation);
     const decision = await requestApprovalWithAbortRace(opts.requestApproval, {
       tool,

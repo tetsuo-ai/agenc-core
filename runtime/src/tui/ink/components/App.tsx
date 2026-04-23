@@ -21,6 +21,7 @@ import { ClockProvider } from './ClockContext.js';
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js';
 import ErrorOverview from './ErrorOverview.js';
 import StdinContext from './StdinContext.js';
+import StdoutContext from './StdoutContext.js';
 import { TerminalFocusProvider } from './TerminalFocusContext.js';
 import { TerminalSizeContext } from './TerminalSizeContext.js';
 
@@ -123,6 +124,7 @@ export default class App extends PureComponent<Props, State> {
   // Timeout durations for incomplete sequences (ms)
   readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations
+  xtversionProbeHandle: NodeJS.Immediate | null = null;
 
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
   // out by parse-keypress) and are routed to pending promise resolvers.
@@ -163,6 +165,7 @@ export default class App extends PureComponent<Props, State> {
         <AppContext.Provider value={{
         exit: this.handleExit
       }}>
+          <StdoutContext.Provider value={this.props.stdout}>
           <StdinContext.Provider value={{
           stdin: this.props.stdin,
           setRawMode: this.handleSetRawMode,
@@ -179,13 +182,15 @@ export default class App extends PureComponent<Props, State> {
               </ClockProvider>
             </TerminalFocusProvider>
           </StdinContext.Provider>
+          </StdoutContext.Provider>
         </AppContext.Provider>
       </TerminalSizeContext.Provider>;
   }
   override componentDidMount() {
-    // In accessibility mode, keep the native cursor visible for screen magnifiers and other tools
-    if (this.props.stdout.isTTY && !isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
-      this.props.stdout.write(HIDE_CURSOR);
+    // Composer cursor placement now uses the native terminal cursor, so keep
+    // it visible instead of relying on an inverted glyph rendered in-band.
+    if (this.props.stdout.isTTY) {
+      this.props.stdout.write(SHOW_CURSOR);
     }
   }
   override componentWillUnmount() {
@@ -201,6 +206,10 @@ export default class App extends PureComponent<Props, State> {
     if (this.pendingHyperlinkTimer) {
       clearTimeout(this.pendingHyperlinkTimer);
       this.pendingHyperlinkTimer = null;
+    }
+    if (this.xtversionProbeHandle) {
+      clearImmediate(this.xtversionProbeHandle);
+      this.xtversionProbeHandle = null;
     }
     // ignore calling setRawMode on an handle stdin it cannot be called
     if (this.isRawModeSupported()) {
@@ -260,7 +269,8 @@ export default class App extends PureComponent<Props, State> {
         // Deferred to next tick so it fires AFTER the current synchronous
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
-        setImmediate(() => {
+        this.xtversionProbeHandle = setImmediate(() => {
+          this.xtversionProbeHandle = null;
           void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
             if (r) {
               setXtversionName(r.name);
@@ -456,9 +466,7 @@ export default class App extends PureComponent<Props, State> {
 
       // Hide cursor (unless in accessibility mode) and re-enable focus reporting after resuming
       if (this.props.stdout.isTTY) {
-        if (!isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
-          this.props.stdout.write(HIDE_CURSOR);
-        }
+        this.props.stdout.write(SHOW_CURSOR);
         // Re-enable focus reporting to restore terminal state
         this.props.stdout.write(EFE);
       }

@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  markCapabilityDrift,
+  markCapabilityVerified,
   normalizeProviderSlug,
+  resolveProviderCapabilityEntry,
   resolveProviderModelCapabilities,
+  shouldProbeCapabilityEntry,
 } from "./capabilities.js";
 
 describe("normalizeProviderSlug", () => {
@@ -259,5 +263,60 @@ describe("resolveProviderModelCapabilities", () => {
       acceptsThinkingHistory: false,
       acceptsReasoningEffort: false,
     });
+  });
+
+  it("applies provider capability overrides from config-driven settings", () => {
+    const caps = resolveProviderModelCapabilities({
+      provider: "openrouter",
+      model: "openai/gpt-5",
+      overrides: {
+        acceptsThinkingHistory: true,
+        acceptsReasoningEffort: true,
+      },
+    });
+
+    expect(caps.acceptsThinkingHistory).toBe(true);
+    expect(caps.acceptsReasoningEffort).toBe(true);
+  });
+});
+
+describe("capability registry drift state (I-53)", () => {
+  it("marks entries stale when drift is detected", () => {
+    const entry = markCapabilityDrift({
+      provider: "openai",
+      model: "gpt-5",
+      detectedAt: Date.UTC(2026, 3, 22),
+    });
+
+    expect(entry.stale).toBe(true);
+    expect(entry.warning).toBe("capability_drift_detected");
+    expect(shouldProbeCapabilityEntry(entry, Date.UTC(2026, 3, 23))).toBe(true);
+  });
+
+  it("clears stale drift state after verification", () => {
+    markCapabilityDrift({
+      provider: "deepseek",
+      model: "deepseek-reasoner",
+      detectedAt: Date.UTC(2026, 2, 1),
+    });
+    const verified = markCapabilityVerified({
+      provider: "deepseek",
+      model: "deepseek-reasoner",
+      verifiedAt: Date.UTC(2026, 3, 22),
+    });
+
+    expect(verified.stale).toBe(false);
+    expect(verified.warning).toBeUndefined();
+  });
+
+  it("treats old registry entries as probe candidates", () => {
+    const entry = resolveProviderCapabilityEntry({
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      nowMs: Date.UTC(2026, 5, 30),
+    });
+
+    expect(entry.stale).toBe(true);
+    expect(shouldProbeCapabilityEntry(entry, Date.UTC(2026, 5, 30))).toBe(true);
   });
 });

@@ -33,15 +33,20 @@
  */
 
 import React, {
+  useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 
 import Box from "./ink/components/Box.js";
+import { AlternateScreen } from "./ink/components/AlternateScreen.js";
 import StdinContext from "./ink/components/StdinContext.js";
+import StdoutContext from "./ink/components/StdoutContext.js";
+import instances from "./ink/instances.js";
 
 import {
   AgenCAppStateProvider,
@@ -55,9 +60,28 @@ import type {
   BindingMap,
 } from "./keybindings/defaultBindings.js";
 import { OverlayProvider, useOverlayStack } from "./overlay/OverlayProvider.js";
+import {
+  ModelSelectionOverlay,
+  type ModelSelectionItem,
+} from "./overlay/ModelSelectionOverlay.js";
 import { Banner } from "./cockpit/Banner.js";
+import {
+  DEFAULT_STATUS_LINE_ITEMS,
+  StatusLineConfig,
+  type SessionLike as StatusLineSessionLike,
+} from "./cockpit/StatusLineConfig.js";
+import { Splash } from "./cockpit/Splash.js";
 import { MessageList } from "./transcript/MessageList.js";
 import { Composer, type ComposerSession } from "./composer/Composer.js";
+import {
+  getConfigActionPaletteItems,
+  getConfigProfilePaletteItems,
+  getExitWorktreePaletteItems,
+  getModelPaletteItems,
+  getPermissionModePaletteItems,
+  getPermissionsActionPaletteItems,
+  getProviderPaletteItems,
+} from "./composer/palette-sources.js";
 import {
   InteractiveHandler,
   type InteractivePermissionRequest,
@@ -67,6 +91,10 @@ import {
 import { useQuery, type SessionLike as QuerySessionLike } from "./hooks/useQuery.js";
 import { eventsToMessages } from "./state/events-to-messages.js";
 import { isPlanActive, type PlanEvent } from "./state/plan-state.js";
+import {
+  readPickerCommandIntent,
+  type PickerCommandIntent,
+} from "./picker-intents.js";
 import type { PendingPermissionRequest } from "../permissions/context.js";
 
 // ────────────────────────────────────────────────────────────────────────
@@ -168,6 +196,99 @@ function emitSessionWarning(
   });
 }
 
+function readStatusLineItems(configStore: ConfigStoreLike): readonly string[] {
+  const snapshot = configStore.snapshot;
+  if (!snapshot || typeof snapshot !== "object") {
+    return DEFAULT_STATUS_LINE_ITEMS;
+  }
+  const statusLine = (
+    snapshot as {
+      readonly statusLine?: { readonly items?: unknown };
+    }
+  ).statusLine;
+  if (!Array.isArray(statusLine?.items)) {
+    return DEFAULT_STATUS_LINE_ITEMS;
+  }
+  const items = statusLine.items.filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  return items.length > 0 ? items : DEFAULT_STATUS_LINE_ITEMS;
+}
+
+function readInitialTokenTotal(session: AppSessionLike): number | undefined {
+  const state = (
+    session as {
+      readonly state?: { unsafePeek?: () => unknown };
+    }
+  ).state;
+  if (typeof state?.unsafePeek !== "function") {
+    return undefined;
+  }
+  try {
+    const snapshot = state.unsafePeek() as {
+      readonly initialTokenUsage?: { readonly totalTokens?: unknown };
+    } | null;
+    return typeof snapshot?.initialTokenUsage?.totalTokens === "number"
+      ? snapshot.initialTokenUsage.totalTokens
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildStatusLineSession(
+  session: AppSessionLike,
+  mode: string,
+  model: string | undefined,
+): StatusLineSessionLike {
+  const raw = session as {
+    readonly conversationId?: unknown;
+    readonly model?: unknown;
+  };
+  return {
+    model:
+      model ??
+      (typeof raw.model === "string" && raw.model.length > 0 ? raw.model : undefined),
+    mode,
+    sessionId:
+      typeof raw.conversationId === "string" && raw.conversationId.length > 0
+        ? raw.conversationId
+        : undefined,
+    tokensUsed: readInitialTokenTotal(session),
+  };
+}
+
+function normalizePickerProvider(provider: string | undefined): string {
+  const normalized = provider?.trim().toLowerCase();
+  if (!normalized) return "xai";
+  return normalized === "grok" ? "xai" : normalized;
+}
+
+function formatPickerProviderLabel(provider: string): string {
+  switch (provider) {
+    case "xai":
+      return "xAI";
+    case "openai":
+      return "OpenAI";
+    case "anthropic":
+      return "Anthropic";
+    case "gemini":
+      return "Google Gemini";
+    case "openrouter":
+      return "OpenRouter";
+    case "groq":
+      return "Groq";
+    case "deepseek":
+      return "DeepSeek";
+    case "ollama":
+      return "Ollama";
+    case "lmstudio":
+      return "LM Studio";
+    default:
+      return provider;
+  }
+}
+
 function toHandlerRequest(
   request: PendingPermissionRequest & {
     readonly resolveOnce: InteractiveResolver;
@@ -194,7 +315,9 @@ function TUIRoot({
   readonly model?: string;
   readonly initialPrompt?: string;
 }): React.ReactElement {
-  const { mode, session, pendingRequests, permissionQueueOps } = useAgenCAppState();
+  const stdout = useContext(StdoutContext);
+  const { mode, session, configStore, pendingRequests, permissionQueueOps } =
+    useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
   // hook-only field is optional) so tests can pass a tiny stub. useQuery
   // wants `activeTurn` and `abortTerminal` as required fields; we cast
@@ -206,6 +329,25 @@ function TUIRoot({
     session as unknown as QuerySessionLike,
   );
   const initialPromptSubmittedRef = useRef(false);
+  const [showSplash, setShowSplash] = useState(true);
+  const splashWasVisibleRef = useRef(true);
+  const dismissSplash = useCallback(() => {
+    instances.get(stdout)?.invalidatePrevFrame();
+    setShowSplash(false);
+  }, [stdout]);
+  useEffect(() => {
+    if (showSplash) {
+      splashWasVisibleRef.current = true;
+      return;
+    }
+    if (!splashWasVisibleRef.current) {
+      return;
+    }
+    splashWasVisibleRef.current = false;
+    queueMicrotask(() => {
+      instances.get(stdout)?.forceRedraw();
+    });
+  }, [showSplash, stdout]);
   const overlay = useOverlayStack();
 
   // Derive transcript messages from phase events on every render. The
@@ -214,10 +356,9 @@ function TUIRoot({
   // bookkeeping.
   const messages = useMemo(() => eventsToMessages(events), [events]);
 
-  // Plan events live on the broader EventMsg stream, not PhaseEvent. The
-  // session will surface them through a parallel subscription once T13
-  // lands; for now we filter defensively so a future addition to
-  // PhaseEvent picks up automatically.
+  // Plan events ride the event-log transcript stream rather than the
+  // PhaseEvent-only path. Filter them out here so the banner can light up
+  // plan mode while MessageList renders the dedicated PlanProgress row.
   const planEvents = useMemo<readonly PlanEvent[]>(() => {
     const out: PlanEvent[] = [];
     for (const ev of events as readonly { readonly type?: unknown }[]) {
@@ -234,6 +375,10 @@ function TUIRoot({
     return out;
   }, [events]);
   const hasPlanActive = isPlanActive(planEvents);
+  const statusLineItems = useMemo(
+    () => readStatusLineItems(configStore),
+    [configStore],
+  );
 
   // Overlay context adapter. `InteractiveHandler` wants a minimal
   // `push(node) => dispose` surface; the OverlayProvider exposes
@@ -266,11 +411,352 @@ function TUIRoot({
     }),
     [session],
   );
+  const statusLineSession = useMemo<StatusLineSessionLike>(
+    () => buildStatusLineSession(session, mode, model),
+    [mode, model, session],
+  );
 
   const validPendingRequests = useMemo(
     () => pendingRequests.filter(hasInteractiveResolver),
     [pendingRequests],
   );
+
+  const openPickerIntent = useCallback((intent: PickerCommandIntent): void => {
+    const config = configStore.current?.();
+    const currentProvider = normalizePickerProvider(
+      session.sessionConfiguration?.provider?.slug,
+    );
+
+    let overlayId = "";
+    const closeOverlay = (): void => {
+      if (overlayId.length > 0) {
+        overlay.popOverlay(overlayId);
+      }
+    };
+
+    const submitSlashSelection = (command: string): void => {
+      closeOverlay();
+      void submit(command).catch(() => {
+        // Slash-command failures surface through the normal session event path.
+      });
+    };
+
+    if (intent.kind === "model") {
+      const items = getModelPaletteItems({
+        provider: currentProvider,
+        config,
+      }).map<ModelSelectionItem>((item) => ({
+        id: item.id,
+        label: item.label,
+        description: item.description,
+        value: item.value,
+      }));
+
+      overlayId = overlay.pushOverlay(
+        <ModelSelectionOverlay
+          title="Select Model"
+          subtitle={`Choose a model for ${formatPickerProviderLabel(currentProvider)}.`}
+          items={items}
+          onSelect={(item) => submitSlashSelection(`/model ${item.label}`)}
+          onClose={closeOverlay}
+        />,
+      );
+      return;
+    }
+
+    if (intent.kind === "model-provider") {
+      const providerItems = getProviderPaletteItems().map<ModelSelectionItem>(
+        (item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.description,
+          value: item.value,
+        }),
+      );
+
+      const ProviderStepper = (): React.ReactElement => {
+        const [selectedProvider, setSelectedProvider] = useState(currentProvider);
+        const [tab, setTab] = useState<"Provider" | "Model">("Provider");
+
+        const providerModels = useMemo(() => {
+          const defaults: ModelSelectionItem[] = [
+            {
+              id: `${selectedProvider}:default`,
+              label: "Default recommended",
+              description: `Use ${formatPickerProviderLabel(selectedProvider)} default model`,
+            },
+          ];
+          return defaults.concat(
+            getModelPaletteItems({
+              provider: selectedProvider,
+              config,
+            }).map((item) => ({
+              id: item.id,
+              label: item.label,
+              description: item.description,
+              value: item.value,
+            })),
+          );
+        }, [config, selectedProvider]);
+
+        if (tab === "Provider") {
+          return (
+            <ModelSelectionOverlay
+              title="Select Model Provider"
+              subtitle="Choose a provider, then pick a model for it."
+              tabs={["Provider", "Model"]}
+              activeTab="Provider"
+              onTabChange={(nextTab) => {
+                if (nextTab === "Model") {
+                  setTab("Model");
+                }
+              }}
+              items={providerItems}
+              onSelect={(item) => {
+                setSelectedProvider(item.id);
+                setTab("Model");
+              }}
+              onClose={closeOverlay}
+            />
+          );
+        }
+
+        return (
+          <ModelSelectionOverlay
+            title="Select Model Provider"
+            subtitle={`Choose a model for ${formatPickerProviderLabel(selectedProvider)}.`}
+            tabs={["Provider", "Model"]}
+            activeTab="Model"
+            onTabChange={(nextTab) => {
+              if (nextTab === "Provider") {
+                setTab("Provider");
+              }
+            }}
+            items={providerModels}
+            onSelect={(item) => {
+              const command =
+                item.id === `${selectedProvider}:default`
+                  ? `/model-provider ${selectedProvider}`
+                  : `/model-provider ${selectedProvider} ${item.label}`;
+              submitSlashSelection(command);
+            }}
+            onClose={closeOverlay}
+            onBack={() => setTab("Provider")}
+          />
+        );
+      };
+
+      overlayId = overlay.pushOverlay(<ProviderStepper />);
+      return;
+    }
+
+    if (intent.kind === "permissions") {
+      const modeItems = getPermissionModePaletteItems().map<ModelSelectionItem>(
+        (item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.description,
+          value: item.value,
+        }),
+      );
+
+      if (intent.stage === "mode") {
+        overlayId = overlay.pushOverlay(
+          <ModelSelectionOverlay
+            title="Permission Mode"
+            subtitle="Choose the approval mode for this session."
+            items={modeItems}
+            onSelect={(item) =>
+              submitSlashSelection(`/permissions mode ${item.label}`)}
+            onClose={closeOverlay}
+          />,
+        );
+        return;
+      }
+
+      const actionItems = getPermissionsActionPaletteItems().map<ModelSelectionItem>(
+        (item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.description,
+          value: item.value,
+        }),
+      );
+
+      const PermissionsStepper = (): React.ReactElement => {
+        const [tab, setTab] = useState<"Action" | "Mode">("Action");
+
+        if (tab === "Action") {
+          return (
+            <ModelSelectionOverlay
+              title="Permissions"
+              subtitle="Inspect permissions, export rules, or change the approval mode."
+              tabs={["Action", "Mode"]}
+              activeTab="Action"
+              onTabChange={(nextTab) => {
+                if (nextTab === "Mode") {
+                  setTab("Mode");
+                }
+              }}
+              items={actionItems}
+              onSelect={(item) => {
+                if (item.id === "permissions:mode") {
+                  setTab("Mode");
+                  return;
+                }
+                submitSlashSelection(`/permissions ${item.value ?? item.label}`);
+              }}
+              onClose={closeOverlay}
+            />
+          );
+        }
+
+        return (
+          <ModelSelectionOverlay
+            title="Permissions"
+            subtitle="Choose the approval mode for this session."
+            tabs={["Action", "Mode"]}
+            activeTab="Mode"
+            onTabChange={(nextTab) => {
+              if (nextTab === "Action") {
+                setTab("Action");
+              }
+            }}
+            items={modeItems}
+            onSelect={(item) =>
+              submitSlashSelection(`/permissions mode ${item.label}`)}
+            onClose={closeOverlay}
+            onBack={() => setTab("Action")}
+          />
+        );
+      };
+
+      overlayId = overlay.pushOverlay(<PermissionsStepper />);
+      return;
+    }
+
+    if (intent.kind === "config") {
+      const rootItems = getConfigActionPaletteItems().map<ModelSelectionItem>(
+        (item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.description,
+          value: item.value,
+        }),
+      );
+      const profileItems = [
+        {
+          id: "config:profile:show",
+          label: "Show active profile",
+          description: "Display the current active profile and available profiles",
+          value: "profile",
+        },
+        ...getConfigProfilePaletteItems(config).map<ModelSelectionItem>((item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.description,
+          value: item.value,
+        })),
+      ];
+
+      if (intent.stage === "profile") {
+        overlayId = overlay.pushOverlay(
+          <ModelSelectionOverlay
+            title="Config Profile"
+            subtitle="Choose a declared config profile for the next turn."
+            items={profileItems}
+            onSelect={(item) => {
+              const command =
+                item.id === "config:profile:show"
+                  ? "/config profile"
+                  : `/config profile ${item.label}`;
+              submitSlashSelection(command);
+            }}
+            onClose={closeOverlay}
+          />,
+        );
+        return;
+      }
+
+      const ConfigStepper = (): React.ReactElement => {
+        const [tab, setTab] = useState<"Action" | "Profile">("Action");
+
+        if (tab === "Action") {
+          return (
+            <ModelSelectionOverlay
+              title="Config"
+              subtitle="Inspect runtime config, reload it, or switch profiles."
+              tabs={["Action", "Profile"]}
+              activeTab="Action"
+              onTabChange={(nextTab) => {
+                if (nextTab === "Profile") {
+                  setTab("Profile");
+                }
+              }}
+              items={rootItems}
+              onSelect={(item) => {
+                if (item.id === "config:profile") {
+                  setTab("Profile");
+                  return;
+                }
+                submitSlashSelection(`/config ${item.value ?? item.label}`);
+              }}
+              onClose={closeOverlay}
+            />
+          );
+        }
+
+        return (
+          <ModelSelectionOverlay
+            title="Config"
+            subtitle="Choose a declared config profile for the next turn."
+            tabs={["Action", "Profile"]}
+            activeTab="Profile"
+            onTabChange={(nextTab) => {
+              if (nextTab === "Action") {
+                setTab("Action");
+              }
+            }}
+            items={profileItems}
+            onSelect={(item) => {
+              const command =
+                item.id === "config:profile:show"
+                  ? "/config profile"
+                  : `/config profile ${item.label}`;
+              submitSlashSelection(command);
+            }}
+            onClose={closeOverlay}
+            onBack={() => setTab("Action")}
+          />
+        );
+      };
+
+      overlayId = overlay.pushOverlay(<ConfigStepper />);
+      return;
+    }
+
+    if (intent.kind === "exit-worktree") {
+      const items = getExitWorktreePaletteItems().map<ModelSelectionItem>(
+        (item) => ({
+          id: item.id,
+          label: item.label,
+          description: item.description,
+          value: item.value,
+        }),
+      );
+      overlayId = overlay.pushOverlay(
+        <ModelSelectionOverlay
+          title="Exit Worktree"
+          subtitle="Choose how to leave the current worktree."
+          items={items}
+          onSelect={(item) =>
+            submitSlashSelection(`/exit-worktree ${item.value ?? item.label}`)}
+          onClose={closeOverlay}
+        />,
+      );
+      return;
+    }
+  }, [configStore, overlay, session.sessionConfiguration?.provider?.slug, submit]);
 
   useEffect(() => {
     for (const request of pendingRequests) {
@@ -302,6 +788,11 @@ function TUIRoot({
   ));
 
   const handleSubmit = (text: string): void => {
+    const pickerIntent = readPickerCommandIntent(text);
+    if (pickerIntent) {
+      openPickerIntent(pickerIntent);
+      return;
+    }
     // `useQuery.submit` is a terminal-safe wrapper that logs if the
     // underlying session doesn't expose a submit hook; dropped input
     // is an observability signal, not a crash.
@@ -333,28 +824,45 @@ function TUIRoot({
   }, [initialPrompt, submit]);
 
   return (
-    <Box flexDirection="column">
+    <Box
+      flexDirection="column"
+      flexGrow={1}
+      flexShrink={1}
+      height="100%"
+      width="100%"
+    >
+      {showSplash ? (
+        <Splash onDismiss={dismissSplash} autoDismissMs={1_200} />
+      ) : null}
+
       {/* cockpit region (top) */}
-      <Box flexDirection="column">
+      <Box flexDirection="column" flexShrink={0}>
         <Banner
           mode={mode}
           model={model}
           isStreaming={isStreaming}
           hasPlanActive={hasPlanActive}
         />
+        <StatusLineConfig
+          items={statusLineItems}
+          session={statusLineSession}
+          configStore={configStore}
+          cwd={composerSession.cwd}
+        />
       </Box>
 
       {/* transcript region (middle, flex:1) */}
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
         <MessageList messages={messages} isStreaming={isStreaming} />
       </Box>
 
       {/* composer region (bottom) */}
-      <Box flexDirection="column">
+      <Box flexDirection="column" flexShrink={0}>
         <Composer
           session={composerSession}
           onSubmit={handleSubmit}
           onCancel={handleCancel}
+          inputLocked={showSplash}
         />
       </Box>
 
@@ -414,27 +922,28 @@ export const App: React.FC<AppProps> = ({
   initialPrompt,
 }) => {
   return (
-    <AgenCAppStateProvider session={session} configStore={configStore}>
-      <KeybindingsFromStdin {...(bindings ? { bindings } : {})}>
-        <OverlayProvider>
-          <TUIRoot model={model} initialPrompt={initialPrompt} />
-        </OverlayProvider>
-      </KeybindingsFromStdin>
-    </AgenCAppStateProvider>
+    <AlternateScreen>
+      <AgenCAppStateProvider session={session} configStore={configStore}>
+        <KeybindingsFromStdin {...(bindings ? { bindings } : {})}>
+          <OverlayProvider>
+            <TUIRoot model={model} initialPrompt={initialPrompt} />
+          </OverlayProvider>
+        </KeybindingsFromStdin>
+      </AgenCAppStateProvider>
+    </AlternateScreen>
   );
 };
 
 export default App;
 
-// Re-exported so tests that want to poke at the placeholder renderer
-// (or extend it with extra decorations like an ArtPanel) have a clean
-// import path.
+// Re-exported so tests can mount the live root composition directly.
 export { TUIRoot };
+export { readPickerCommandIntent };
 
 /**
  * The remaining evaluator-side work is limited to producing queued
  * requests with a live `resolveOnce: InteractiveResolver`. The TUI now
  * consumes those requests directly, rejects resolver-less entries
- * safely, and already consumes `plan_*` entries from `session.eventLog`
- * via `useQuery`.
+ * safely, and routes `plan_*` entries from `session.eventLog` through
+ * the dedicated transcript renderer via `useQuery`.
  */

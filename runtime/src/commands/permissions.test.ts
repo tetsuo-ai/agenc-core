@@ -391,7 +391,11 @@ describe("permissionsCommand — mode", () => {
 
 describe("permissionsCommand — bypassPermissions consent gate", () => {
   it("'/permissions mode bypassPermissions' prompts for consent on first activation", async () => {
-    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
     const ctx = stubCtx({
       registry,
       argsRaw: "mode bypassPermissions",
@@ -405,10 +409,28 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
     expect(registry.current().mode).toBe("default");
   });
 
-  it("'/permissions accept-bypass' sets the session and persisted flag", async () => {
+  it("'/permissions mode bypassPermissions' rejects when bypass mode is unavailable", async () => {
+    const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const ctx = stubCtx({
+      registry,
+      argsRaw: "mode bypassPermissions",
+      cwd: "/workspace/new",
+    });
+    const r = await permissionsCommand.execute(ctx);
+    expect(r.kind).toBe("error");
+    if (r.kind !== "error") return;
+    expect(r.message).toMatch(/Cannot set permission mode to bypassPermissions/);
+    expect(registry.current().mode).toBe("default");
+  });
+
+  it("'/permissions accept-bypass' sets the session and persisted flag and activates bypass mode", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-"));
     try {
-      const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
       const ctx = stubCtx({
         registry,
         argsRaw: "accept-bypass",
@@ -428,6 +450,7 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
       expect(registry.current().bypassPermissionsAcceptedIn).toContain(
         "/workspace/trusted",
       );
+      expect(registry.current().mode).toBe("bypassPermissions");
       // Persisted to user settings file.
       const file = join(tmp, ".agenc", "settings.json");
       expect(existsSync(file)).toBe(true);
@@ -442,11 +465,14 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
     }
   });
 
-  it("second '/permissions mode bypassPermissions' succeeds after accept-bypass", async () => {
+  it("mode bypassPermissions stays active after accept-bypass", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-"));
     try {
-      const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
-      // Step 1: accept-bypass.
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
       const acceptRes = await permissionsCommand.execute(
         stubCtx({
           registry,
@@ -456,24 +482,6 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
         }),
       );
       expect(acceptRes.kind).toBe("text");
-
-      // Step 2: switch to bypassPermissions — should now succeed.
-      const modeRes = await permissionsCommand.execute(
-        stubCtx({
-          registry,
-          argsRaw: "mode bypassPermissions",
-          home: tmp,
-          cwd: "/workspace/trusted",
-        }),
-      );
-      if (modeRes.kind !== "text") {
-        throw new Error(
-          `expected text, got ${modeRes.kind}: ${
-            modeRes.kind === "error" ? modeRes.message : ""
-          }`,
-        );
-      }
-      expect(modeRes.text).toContain("bypassPermissions");
       expect(registry.current().mode).toBe("bypassPermissions");
     } finally {
       rmSync(tmp, { recursive: true, force: true });

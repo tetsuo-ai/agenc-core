@@ -7,6 +7,8 @@
 //   - approval_policy
 //   - sandbox_mode
 //   - reasoning_effort
+//   - model_verbosity
+//   - service_tier
 //   - personality
 //   - web_search
 //   - tools (→ tools_config)
@@ -48,6 +50,8 @@ export const OVERRIDABLE_PROFILE_KEYS: readonly (keyof ProfileOverride)[] =
     "approval_policy",
     "sandbox_mode",
     "reasoning_effort",
+    "model_verbosity",
+    "service_tier",
     "personality",
     "web_search",
     "tools",
@@ -82,6 +86,12 @@ export function resolveProfile(
     override.sandbox_mode = profile.sandbox_mode;
   if (profile.reasoning_effort !== undefined)
     override.reasoning_effort = profile.reasoning_effort;
+  if (profile.model_verbosity !== undefined) {
+    override.model_verbosity = profile.model_verbosity;
+  }
+  if (profile.service_tier !== undefined) {
+    override.service_tier = profile.service_tier;
+  }
   if (profile.personality !== undefined)
     override.personality = profile.personality;
   if (profile.web_search !== undefined) {

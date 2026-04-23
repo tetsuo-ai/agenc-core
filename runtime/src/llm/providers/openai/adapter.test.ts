@@ -492,5 +492,7 @@ describe("OpenAIProvider", () => {
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBeNull();
     expect(headers.get("x-goog-api-key")).toBe("gemini-test");
+    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect("store" in requestBody).toBe(false);
   });
 });

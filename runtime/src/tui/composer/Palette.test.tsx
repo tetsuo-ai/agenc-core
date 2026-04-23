@@ -317,6 +317,44 @@ describe("<Palette>", () => {
     unmount();
   });
 
+  test("moves the visible window so items past maxRows remain reachable", async () => {
+    const emitter = new EventEmitter();
+    const onSelect = vi.fn();
+    const items: PaletteItem[] = Array.from({ length: 10 }, (_, index) => ({
+      id: `item-${index}`,
+      label: `/item-${index}`,
+      value: `/item-${index}`,
+    }));
+    const { stdout, unmount } = await mount(
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        <Palette
+          trigger="/"
+          query=""
+          items={items}
+          maxRows={4}
+          placement="above"
+          onSelect={onSelect}
+          onClose={() => undefined}
+        />
+      </KeybindingProvider>,
+    );
+
+    for (let i = 0; i < 6; i += 1) {
+      emitter.emit("input", makeParsedKeyEvent({ name: "down" }));
+    }
+    await new Promise((r) => setTimeout(r, 20));
+
+    const text = collectText(getRootNode(stdout));
+    expect(text).toContain("/item-6");
+    expect(text).toContain("above");
+    expect(text).toContain("below");
+
+    emitter.emit("input", makeParsedKeyEvent({ name: "return" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect.mock.calls[0]?.[0].id).toBe("item-6");
+    unmount();
+  });
+
   test("Escape fires onClose", async () => {
     const emitter = new EventEmitter();
     const onClose = vi.fn();

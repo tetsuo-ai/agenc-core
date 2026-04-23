@@ -24,6 +24,7 @@ import React, { useMemo } from "react";
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import { theme } from "../theme.js";
+import { sanitizeTranscriptText } from "./sanitize.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
 /* Pure helpers                                                            */
@@ -45,11 +46,12 @@ export function collapseOutput(
   keepTail: number = DEFAULT_KEEP_TAIL,
 ): string {
   if (typeof text !== "string" || text.length === 0) return text;
+  const sanitized = sanitizeTranscriptText(text);
   // Use `split('\n')` instead of a regex so we preserve the exact
   // per-line content (blank lines included).
-  const lines = text.split("\n");
+  const lines = sanitized.split("\n");
   if (lines.length <= MAX_LINES_BEFORE_COLLAPSE) {
-    return text;
+    return sanitized;
   }
   const head = lines.slice(0, keepHead);
   const tail = lines.slice(lines.length - keepTail);
@@ -121,6 +123,10 @@ function computeStatus(props: ExecCellProps): StatusBadge {
 
 export const ExecCell: React.FC<ExecCellProps> = (props) => {
   const status = useMemo(() => computeStatus(props), [props]);
+  const displayCommand = useMemo(
+    () => sanitizeTranscriptText(props.command ?? ""),
+    [props.command],
+  );
   const collapsedStdout = useMemo(
     () => collapseOutput(props.stdout ?? ""),
     [props.stdout],
@@ -142,7 +148,7 @@ export const ExecCell: React.FC<ExecCellProps> = (props) => {
       {/* command row */}
       <Box flexDirection="row">
         <Text color={theme.colors.primary}>{"$ "}</Text>
-        <Text>{props.command}</Text>
+        <Text>{displayCommand}</Text>
       </Box>
 
       {hasStdout ? (

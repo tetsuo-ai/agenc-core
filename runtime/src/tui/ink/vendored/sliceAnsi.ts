@@ -47,7 +47,11 @@ export default function sliceAnsi(
     // pass start/end in display cells (via stringWidth), so position must
     // track the same units.
     const width =
-      token.type === 'ansi' ? 0 : token.fullWidth ? 2 : stringWidth(token.value)
+      token.type === 'char'
+        ? token.fullWidth
+          ? 2
+          : stringWidth(token.value)
+        : 0
 
     // Break AFTER trailing zero-width marks — a combining mark attaches to
     // the preceding base char, so "भा" (भ + ा, 1 display cell) sliced at
@@ -67,7 +71,7 @@ export default function sliceAnsi(
         // Emit all ANSI codes during the slice
         result += token.code
       }
-    } else {
+    } else if (token.type === 'char') {
       if (!include && position >= start) {
         // Skip leading zero-width marks at the start boundary — they belong
         // to the preceding base char in the left half. Without this, the

@@ -37,11 +37,14 @@ import React, {
 import type { PermissionMode } from "../../permissions/types.js";
 import type { PhaseEvent } from "../../phases/events.js";
 import type { Event } from "../../session/event-log.js";
+import type { AgenCConfig } from "../../config/index.js";
+import type { ReviewDecision } from "../../permissions/review-decision.js";
 import {
   createPermissionQueueOps,
   type PendingPermissionRequest,
   type PermissionQueueOps,
 } from "../../permissions/context.js";
+import type { ApprovalResolver } from "../../tools/orchestrator.js";
 
 /**
  * Minimum shape the TUI cares about from the runtime session. Using a
@@ -90,6 +93,11 @@ export interface SessionLike {
   readonly cwd?: string;
   /** Home directory — Composer falls back to `process.env.HOME` if absent. */
   readonly home?: string;
+  /** Live session config snapshot used by slash palette provider/model discovery. */
+  readonly sessionConfiguration?: {
+    readonly provider?: { readonly slug?: string };
+    readonly collaborationMode?: { readonly model?: string };
+  };
   /** Session-owned event emission path used by the TUI warning flow. */
   readonly emit?: (event: Event | { readonly kind: string; readonly [key: string]: unknown }) => void;
   /** Event id allocator for session-owned warning/event envelopes. */
@@ -113,6 +121,141 @@ export interface SessionLike {
  */
 export interface ConfigStoreLike {
   readonly snapshot?: unknown;
+  current?(): AgenCConfig;
+}
+
+type InteractiveResolverPayload =
+  | { readonly behavior: "allow"; readonly source?: string }
+  | {
+      readonly behavior: "allow-session";
+      readonly addRule?: boolean;
+      readonly source?: string;
+    }
+  | { readonly behavior: "deny"; readonly source?: string }
+  | { readonly behavior: "abort"; readonly source?: string };
+
+interface InteractiveResolverLike {
+  claim(payload: InteractiveResolverPayload): boolean;
+  isResolved(): boolean;
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> {
+  if (raw.trim().length === 0) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function deriveApprovalToolInput(ctx: {
+  readonly invocation?: { readonly payload?: unknown };
+}): unknown {
+  const payload = (
+    ctx.invocation?.payload ?? null
+  ) as
+    | {
+        readonly kind?: string;
+        readonly arguments?: string;
+        readonly rawArguments?: string;
+        readonly input?: string;
+        readonly params?: Record<string, unknown>;
+      }
+    | null;
+  if (!payload || typeof payload.kind !== "string") return {};
+  switch (payload.kind) {
+    case "function":
+      return parseJsonObject(payload.arguments ?? "");
+    case "mcp":
+      return parseJsonObject(payload.rawArguments ?? "");
+    case "custom":
+      return { input: payload.input ?? "" };
+    case "tool_search":
+      return payload.arguments ?? {};
+    case "local_shell":
+      return payload.params ?? {};
+    default:
+      return {};
+  }
+}
+
+function reviewDecisionFromPayload(
+  payload: InteractiveResolverPayload,
+): ReviewDecision {
+  switch (payload.behavior) {
+    case "allow":
+      return { kind: "approved" };
+    case "allow-session":
+      return { kind: "approved_for_session" };
+    case "deny":
+      return { kind: "denied" };
+    case "abort":
+      return { kind: "abort" };
+  }
+}
+
+function createTuiApprovalResolver(
+  queueOps: PermissionQueueOps,
+): ApprovalResolver {
+  return {
+    request(ctx) {
+      return new Promise<ReviewDecision>((resolve) => {
+        const requestId = ctx.callId;
+        let settled = false;
+
+        const cleanupAbort = (): void => {
+          ctx.signal?.removeEventListener("abort", onAbort);
+        };
+
+        const settle = (
+          decision: ReviewDecision,
+          opts: { readonly removeFromQueue?: boolean } = {},
+        ): boolean => {
+          if (settled) return false;
+          settled = true;
+          cleanupAbort();
+          if (opts.removeFromQueue === true) {
+            queueOps.remove(requestId);
+          }
+          resolve(decision);
+          return true;
+        };
+
+        const onAbort = (): void => {
+          settle({ kind: "abort" }, { removeFromQueue: true });
+        };
+
+        if (ctx.signal?.aborted) {
+          settle({ kind: "abort" });
+          return;
+        }
+
+        const resolveOnce: InteractiveResolverLike = {
+          claim(payload) {
+            return settle(reviewDecisionFromPayload(payload));
+          },
+          isResolved() {
+            return settled;
+          },
+        };
+
+        queueOps.push({
+          requestId,
+          toolName: ctx.toolName,
+          toolInput: deriveApprovalToolInput(ctx),
+          message: `Permission required to use ${ctx.toolName}`,
+          submittedAt: Date.now(),
+          turnId: ctx.turnId,
+          resolveOnce,
+        } as PendingPermissionRequest);
+
+        ctx.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  };
 }
 
 export interface AgenCAppStateValue {
@@ -197,13 +340,27 @@ export function AgenCAppStateProvider({
     // ops onto the session for the lifetime of this mount so every
     // external push lands back in the React queue the TUI renders.
     const sessionWithQueueOps = session as SessionLike & {
+      services: SessionLike["services"] & {
+        approvalResolver?: ApprovalResolver;
+      };
       permissionQueueOps?: PermissionQueueOps;
     };
     const previous = sessionWithQueueOps.permissionQueueOps;
+    const previousApprovalResolver =
+      sessionWithQueueOps.services.approvalResolver;
     sessionWithQueueOps.permissionQueueOps = exposedOps;
+    sessionWithQueueOps.services.approvalResolver =
+      createTuiApprovalResolver(exposedOps);
     return () => {
       if (sessionWithQueueOps.permissionQueueOps === exposedOps) {
         sessionWithQueueOps.permissionQueueOps = previous;
+      }
+      if (
+        sessionWithQueueOps.services.approvalResolver !==
+        previousApprovalResolver
+      ) {
+        sessionWithQueueOps.services.approvalResolver =
+          previousApprovalResolver;
       }
     };
   }, [session, exposedOps]);

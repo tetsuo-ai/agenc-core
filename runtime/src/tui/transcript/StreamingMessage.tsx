@@ -29,7 +29,8 @@ import React, { useEffect, useMemo, useRef } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
-import { useMarkdownStream } from "../hooks/useMarkdownStream.js";
+import { MarkdownBlock } from "./MarkdownBlock.js";
+import { neutralizeControlCharsForDisplay } from "./sanitize.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
 /* Pure scanner                                                            */
@@ -264,21 +265,11 @@ export const StreamingMessage: React.FC<StreamingMessageProps> = ({
   isComplete = false,
   session,
 }) => {
-  // Feed the current snapshot into useMarkdownStream as a single-chunk
-  // stream. When the caller flips `isComplete` true, append the sentinel
-  // so the collector drains its preview window.
-  const chunks = useMemo<readonly string[]>(() => {
-    if (content.length === 0) return isComplete ? [""] : [];
-    return isComplete ? [content, ""] : [content];
-  }, [content, isComplete]);
-  const { rendered } = useMarkdownStream(chunks);
-
-  // Prefer the markdown-rendered output when available. While the
-  // collector is still loading its lazy .mjs module the rendered string
-  // will be empty for the first tick — fall back to the raw content so
-  // the I-77 scan still fires on the very first frame.
-  const display = rendered.length > 0 ? rendered : content;
-  const scan = useMemo(() => scanForUISpoof(display), [display]);
+  const scan = useMemo(() => scanForUISpoof(content), [content]);
+  const safeSanitizedDisplay = useMemo(
+    () => neutralizeControlCharsForDisplay(scan.sanitized),
+    [scan.sanitized],
+  );
 
   // One-shot warning emit per distinct matched-pattern set. A snapshot of
   // the set joined by `|` gives us a stable dedupe key so repeated
@@ -312,7 +303,7 @@ export const StreamingMessage: React.FC<StreamingMessageProps> = ({
   if (!scan.hasSpoof) {
     return (
       <Box flexDirection="column">
-        <Text>{display}</Text>
+        <MarkdownBlock content={content} isComplete={isComplete} />
         {showStreamingMarker ? <Text dim>{"\u2026"}</Text> : null}
       </Box>
     );
@@ -328,7 +319,7 @@ export const StreamingMessage: React.FC<StreamingMessageProps> = ({
         <Text color="yellow">[MODEL OUTPUT]</Text>
       </Box>
       <Box flexDirection="column">
-        <Text>{renderSanitized(scan.sanitized)}</Text>
+        <Text>{renderSanitized(safeSanitizedDisplay)}</Text>
         {showStreamingMarker ? <Text dim>{"\u2026"}</Text> : null}
       </Box>
     </Box>

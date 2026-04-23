@@ -52,6 +52,12 @@ export interface MCPManagerStartOpts {
   readonly requiredServers?: ReadonlyArray<string>;
 }
 
+interface StartupGate {
+  cancel(reason: string): void;
+  isCancelled(): boolean;
+  reason(): string | undefined;
+}
+
 function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
@@ -142,15 +148,19 @@ export class MCPManager {
     // I-50: race each per-server connect against the external signal.
     const results = await Promise.all(
       enabledConfigs.map((config) =>
-        raceWithSignal(
-          this.connectServer(config),
+        {
+          const gate = createStartupGate();
+          return raceWithSignal(
+            this.connectServer(config, gate),
           signal,
           timeoutMs,
           `MCP server "${config.name}" connect`,
-        ).then(
+          gate,
+          ).then(
           (bridge) => ({ status: "fulfilled" as const, value: bridge }),
           (err: unknown) => ({ status: "rejected" as const, reason: err }),
-        ),
+          );
+        },
       ),
     );
 
@@ -469,9 +479,17 @@ export class MCPManager {
     return bridge.renderPrompt(parsed.rest, args);
   }
 
-  private async connectServer(config: MCPServerConfig): Promise<MCPToolBridge> {
+  private async connectServer(
+    config: MCPServerConfig,
+    startupGate?: StartupGate,
+  ): Promise<MCPToolBridge> {
     const client = await createMCPConnection(config, this.logger);
     try {
+      if (startupGate?.isCancelled()) {
+        throw new Error(
+          `MCP server "${config.name}" connect abandoned (${startupGate.reason() ?? "cancelled"})`,
+        );
+      }
       const rawBridge = await createToolBridge(
         client,
         config.name,
@@ -485,6 +503,11 @@ export class MCPManager {
             : {}),
         },
       );
+      if (startupGate?.isCancelled()) {
+        throw new Error(
+          `MCP server "${config.name}" bridge abandoned (${startupGate.reason() ?? "cancelled"})`,
+        );
+      }
       // I-73: reject MCP tools whose namespaced names collide with
       // already-registered tools (from earlier servers). Bail the
       // whole bridge — the caller can re-configure the namespace.
@@ -602,6 +625,7 @@ function raceWithSignal<T>(
   signal: AbortSignal | undefined,
   timeoutMs: number,
   label: string,
+  startupGate?: StartupGate,
 ): Promise<T> {
   const contenders: Promise<T>[] = [task];
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -611,11 +635,15 @@ function raceWithSignal<T>(
     contenders.push(
       new Promise<T>((_, reject) => {
         if (signal.aborted) {
-          reject(new Error(`${label} aborted (${signal.reason ?? "signal"})`));
+          const reason = `${label} aborted (${signal.reason ?? "signal"})`;
+          startupGate?.cancel(reason);
+          reject(new Error(reason));
           return;
         }
         onAbort = () => {
-          reject(new Error(`${label} aborted (${signal.reason ?? "signal"})`));
+          const reason = `${label} aborted (${signal.reason ?? "signal"})`;
+          startupGate?.cancel(reason);
+          reject(new Error(reason));
         };
         signal.addEventListener("abort", onAbort, { once: true });
       }),
@@ -624,7 +652,9 @@ function raceWithSignal<T>(
   contenders.push(
     new Promise<T>((_, reject) => {
       timer = setTimeout(() => {
-        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        const reason = `${label} timed out after ${timeoutMs}ms`;
+        startupGate?.cancel(reason);
+        reject(new Error(reason));
       }, timeoutMs);
     }),
   );
@@ -635,4 +665,21 @@ function raceWithSignal<T>(
       signal.removeEventListener("abort", onAbort);
     }
   });
+}
+
+function createStartupGate(): StartupGate {
+  let cancelled = false;
+  let cancelReason: string | undefined;
+  return {
+    cancel(reason: string) {
+      cancelled = true;
+      cancelReason = reason;
+    },
+    isCancelled() {
+      return cancelled;
+    },
+    reason() {
+      return cancelReason;
+    },
+  };
 }

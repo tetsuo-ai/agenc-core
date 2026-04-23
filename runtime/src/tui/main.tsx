@@ -70,8 +70,9 @@ export interface BootTUIOptions {
   readonly bindings?: AppProps["bindings"];
   /**
    * Optional pre-populated composer text. Wave 5-B accepts the prop so
-   * `bin/agenc.ts` can forward an argv-provided prompt into the TUI;
-   * actual wiring into `<Composer>` lands in a follow-up (TODO T12b).
+   * `bin/agenc.ts` can forward an argv-provided prompt into the TUI. The
+   * live App tree auto-submits it once on boot so CLI/TUI routing shares
+   * the same first-turn behavior.
    */
   readonly initialPrompt?: string;
 }
@@ -116,6 +117,31 @@ function restoreTerminal(stdout: NodeJS.WriteStream): void {
   } catch {
     // stdout is gone — nothing useful we can do here.
   }
+}
+
+type RawCapableStdin = NodeJS.ReadStream & {
+  setRawMode?: (mode: boolean) => void;
+};
+
+function claimStartupRawMode(stdin: NodeJS.ReadStream): (() => void) | null {
+  const rawStdin = stdin as RawCapableStdin;
+  if (!stdin.isTTY || typeof rawStdin.setRawMode !== "function") {
+    return null;
+  }
+
+  try {
+    rawStdin.setRawMode(true);
+  } catch {
+    return null;
+  }
+
+  return () => {
+    try {
+      rawStdin.setRawMode?.(false);
+    } catch {
+      // Best-effort boot cleanup.
+    }
+  };
 }
 
 function emitSessionWarning(
@@ -244,6 +270,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
+  const releaseStartupRawMode = claimStartupRawMode(stdin);
 
   // signal-exit restores the terminal on any exit route (SIGINT,
   // SIGTERM, normal exit, etc.). Wave 5-B uses this alongside the
@@ -292,6 +319,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
       { stdin, stdout, stderr, patchConsole: true, exitOnCtrlC: false },
     );
   } catch (err) {
+    releaseStartupRawMode?.();
     stdin.removeListener("close", onStdinLoss);
     stdin.removeListener("end", onStdinLoss);
     stdin.removeListener("error", onStdinLoss);

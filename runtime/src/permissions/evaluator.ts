@@ -233,10 +233,12 @@ function readClassifierTranscriptMessages(
 
 /**
  * Ports openclaude's `checkRuleBasedPermissions` — runs steps 1a–1g and
- * returns the first decision that fires, or `null` when nothing rule-
- * based objects to the invocation. Does NOT run the mode gate or the
- * classifier. Step 1e is enforced so the caller receives the ask before
- * bypassPermissions has a chance to override it.
+ * returns the first bypass-immune rule-based decision that fires, or
+ * `null` when nothing in steps 1a–1g blocks the mode gate from running.
+ * Does NOT run the mode gate or the classifier. Generic tool asks from
+ * `tool.checkPermissions()` deliberately do NOT return here: they must
+ * continue into step 2 so `bypassPermissions` / `acceptEdits` semantics
+ * remain intact.
  */
 export async function checkRuleBasedPermissions(
   tool: ToolLike,
@@ -343,13 +345,11 @@ export async function checkRuleBasedPermissions(
     return toolResult as PermissionAskDecision;
   }
 
-  // Pass-through / ask-without-special-flag / allow: return as-is so
-  // the caller can thread it through step 2/3.
+  // Tool-level allow can still feed step 2 so the mode gate can stamp
+  // the final reason / updated input. Generic ask and passthrough do not
+  // return here — they must continue into step 2/3.
   if (toolResult.behavior === "allow") {
     return toolResult as PermissionAllowDecision;
-  }
-  if (toolResult.behavior === "ask") {
-    return toolResult as PermissionAskDecision;
   }
   return null;
 }

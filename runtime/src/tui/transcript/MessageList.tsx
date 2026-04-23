@@ -27,12 +27,15 @@ import Text from "../ink/components/Text.js";
 import ScrollBox, {
   type ScrollBoxHandle,
 } from "../ink/components/ScrollBox.js";
+import { useKeybinding } from "../keybindings/KeybindingContext.js";
 import { theme } from "../theme.js";
 
 import { StreamingMessage } from "./StreamingMessage.js";
 import { ExecCell, collapseOutput } from "./ExecCell.js";
+import { PlanProgress, type PlanEvent } from "./PlanProgress.js";
 import { SlashResultRenderer } from "./SlashResultRenderer.js";
 import type { SlashCommandResult } from "../../commands/types.js";
+import { sanitizeTranscriptText } from "./sanitize.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
 /* Types                                                                   */
@@ -41,6 +44,7 @@ import type { SlashCommandResult } from "../../commands/types.js";
 export type TranscriptMessageKind =
   | "user"
   | "assistant"
+  | "plan_progress"
   | "tool_call"
   | "tool_result"
   | "activity"
@@ -70,6 +74,7 @@ export interface TranscriptMessage {
   readonly timestamp: number;
   readonly slashInput?: string;
   readonly slashResult?: SlashCommandResult;
+  readonly planEvents?: readonly PlanEvent[];
 
   /**
    * When the message is a `tool_call` for a shell-exec tool, these
@@ -111,14 +116,18 @@ export function truncate(input: string, max: number = TOOL_ARGS_MAX): string {
 
 function safeStringify(value: unknown): string {
   if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return sanitizeTranscriptText(value);
   try {
-    return JSON.stringify(value);
+    return sanitizeTranscriptText(JSON.stringify(value));
   } catch {
     // Circular refs, BigInts, etc. Fall through to a String() cast so we
     // still show *something* instead of crashing the transcript.
-    return String(value);
+    return sanitizeTranscriptText(String(value));
   }
+}
+
+function shouldCollapseToolResult(message: TranscriptMessage): boolean {
+  return message.toolName !== "system.readFile";
 }
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -146,6 +155,9 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
           isComplete={message.isComplete !== false}
         />
       );
+
+    case "plan_progress":
+      return <PlanProgress events={message.planEvents ?? []} />;
 
     case "tool_call": {
       // When the tool call carries exec fields we prefer the full ExecCell
@@ -221,15 +233,35 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       );
 
     case "tool_result":
+      if (shouldCollapseToolResult(message)) {
+        return (
+          <Box flexDirection="row">
+            <Text
+              color={message.isError ? theme.colors.error : theme.colors.success}
+            >
+              {message.isError ? "\u2717" : "\u2713"}
+            </Text>
+            <Text> </Text>
+            <Text dim>{collapseOutput(message.content, 4, 2)}</Text>
+          </Box>
+        );
+      }
       return (
-        <Box flexDirection="row">
-          <Text
-            color={message.isError ? theme.colors.error : theme.colors.success}
-          >
-            {message.isError ? "\u2717" : "\u2713"}
-          </Text>
-          <Text> </Text>
-          <Text dim>{collapseOutput(message.content, 4, 2)}</Text>
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text
+              color={message.isError ? theme.colors.error : theme.colors.success}
+            >
+              {message.isError ? "\u2717" : "\u2713"}
+            </Text>
+            {message.toolName ? (
+              <>
+                <Text> </Text>
+                <Text dim>{message.toolName}</Text>
+              </>
+            ) : null}
+          </Box>
+          <Text dim>{sanitizeTranscriptText(message.content)}</Text>
         </Box>
       );
 
@@ -317,14 +349,87 @@ export const MessageList: React.FC<MessageListProps> = ({
     }
   }, [messages.length]);
 
+  const pageUp = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const delta = -Math.max(1, Math.floor(handle.getViewportHeight() / 2));
+    handle.scrollTo(Math.max(0, handle.getScrollTop() + handle.getPendingDelta() + delta));
+  };
+
+  const pageDown = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const max = Math.max(0, handle.getScrollHeight() - handle.getViewportHeight());
+    const target =
+      handle.getScrollTop() + handle.getPendingDelta() + Math.max(1, Math.floor(handle.getViewportHeight() / 2));
+    if (target >= max) {
+      handle.scrollTo(max);
+      handle.scrollToBottom();
+      stickyRef.current = true;
+      return;
+    }
+    handle.scrollTo(target);
+  };
+
+  const lineUp = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const target = handle.getScrollTop() + handle.getPendingDelta() - 1;
+    handle.scrollTo(Math.max(0, target));
+  };
+
+  const lineDown = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const max = Math.max(0, handle.getScrollHeight() - handle.getViewportHeight());
+    const target = handle.getScrollTop() + handle.getPendingDelta() + 1;
+    if (target >= max) {
+      handle.scrollTo(max);
+      handle.scrollToBottom();
+      stickyRef.current = true;
+      return;
+    }
+    handle.scrollTo(target);
+  };
+
+  const scrollTop = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    handle.scrollTo(0);
+  };
+
+  const scrollBottom = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    const max = Math.max(0, handle.getScrollHeight() - handle.getViewportHeight());
+    handle.scrollTo(max);
+    handle.scrollToBottom();
+    stickyRef.current = true;
+  };
+
+  useKeybinding("scroll:pageUp", pageUp, "global");
+  useKeybinding("scroll:pageDown", pageDown, "global");
+  useKeybinding("scroll:lineUp", lineUp, "global");
+  useKeybinding("scroll:lineDown", lineDown, "global");
+  useKeybinding("scroll:top", scrollTop, "global");
+  useKeybinding("scroll:bottom", scrollBottom, "global");
+
   const hasInlineStreamingAssistant =
     messages.length > 0 &&
     messages[messages.length - 1]?.kind === "assistant" &&
     messages[messages.length - 1]?.isComplete === false;
 
   return (
-    <ScrollBox ref={scrollRef} flexDirection="column" flexGrow={1} stickyScroll>
-      <Box flexDirection="column">
+    <ScrollBox
+      ref={scrollRef}
+      flexDirection="column"
+      flexGrow={1}
+      flexShrink={1}
+      minHeight={0}
+      width="100%"
+      stickyScroll
+    >
+      <Box flexDirection="column" width="100%">
         {messages.map((message) => (
           <Box key={message.id} flexDirection="column">
             <MessageRow message={message} />

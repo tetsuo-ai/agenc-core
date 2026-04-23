@@ -228,11 +228,38 @@ export function buildOpenAIResponsesRequest(
   if (input.options?.promptCacheKey) {
     body.prompt_cache_key = input.options.promptCacheKey;
   }
+  if (input.options?.serviceTier !== undefined) {
+    body.service_tier = input.options.serviceTier;
+  }
   if (input.options?.includeEncryptedReasoning) {
     body.include = ["reasoning.encrypted_content"];
   }
   if (input.options?.reasoningEffort !== undefined) {
-    body.reasoning = { effort: input.options.reasoningEffort };
+    body.reasoning = {
+      ...(body.reasoning && typeof body.reasoning === "object"
+        ? (body.reasoning as Record<string, unknown>)
+        : {}),
+      effort: input.options.reasoningEffort,
+    };
+  }
+  if (
+    input.options?.reasoningSummary !== undefined &&
+    input.options.reasoningSummary !== "none"
+  ) {
+    body.reasoning = {
+      ...(body.reasoning && typeof body.reasoning === "object"
+        ? (body.reasoning as Record<string, unknown>)
+        : {}),
+      summary: input.options.reasoningSummary,
+    };
+  }
+  if (input.options?.modelVerbosity !== undefined) {
+    body.text = {
+      ...(body.text && typeof body.text === "object"
+        ? (body.text as Record<string, unknown>)
+        : {}),
+      verbosity: input.options.modelVerbosity,
+    };
   }
   return body;
 }

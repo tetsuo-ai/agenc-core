@@ -121,4 +121,40 @@ describe("eventsToMessages", () => {
       slashInput: "/compact",
     });
   });
+
+  test("collapses plan event-log variants into a dedicated plan_progress row", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-plan" } },
+      {
+        type: "plan_started",
+        payload: {
+          turnId: "turn-plan",
+          planItemId: "plan-1",
+          title: "trace runtime",
+        },
+      },
+      {
+        type: "plan_delta",
+        payload: {
+          turnId: "turn-plan",
+          planItemId: "plan-1",
+          delta: "inspect transport",
+        },
+      },
+      {
+        type: "plan_exited",
+        payload: {
+          turnId: "turn-plan",
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "plan_progress",
+      turnId: "turn-plan",
+    });
+    expect(messages[0]?.planEvents).toHaveLength(3);
+  });
 });

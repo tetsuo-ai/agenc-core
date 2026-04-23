@@ -63,6 +63,7 @@ import { monotonicMs } from "../../utils/monotonic.js";
 import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 import {
   buildProviderTraceErrorPayload,
+  isContinuationRetrievalFailure,
   buildToolSelectionTraceContext,
   cloneProviderTracePayload,
   extractTraceToolNames,
@@ -72,14 +73,12 @@ import {
   truncate,
   type ToolSelectionDiagnostics,
 } from "./adapter-utils.js";
+import { isProviderCapabilityMismatch } from "../capabilities.js";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
 const DEFAULT_VISION_MODEL = "grok-4-0709";
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_MESSAGES_PAYLOAD_CHARS = 80_000;
-const MAX_SYSTEM_MESSAGE_CHARS = 16_000;
-const MAX_MESSAGE_CHARS_PER_ENTRY = 4_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
@@ -306,15 +305,6 @@ function closeAsyncIterator(iterator: AsyncIterator<unknown>): void {
   } catch {
     // best-effort stream cleanup
   }
-}
-
-function sanitizeLargeText(value: string): string {
-  return value
-    .replace(
-      /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
-      "(image omitted)",
-    )
-    .replace(/[A-Za-z0-9+/=\r\n]{400,}/g, "(base64 omitted)");
 }
 
 function normalizeResponsesToolChoice(
@@ -580,7 +570,9 @@ function serializeResponseHeaders(
   response: Response | undefined,
 ): Record<string, string> | undefined {
   if (!response) return undefined;
-  const entries = Array.from(response.headers.entries());
+  const entries = Array.from(
+    response.headers as unknown as Iterable<readonly [string, string]>,
+  );
   if (entries.length === 0) return undefined;
   return Object.fromEntries(entries);
 }
@@ -671,85 +663,6 @@ function hasImageContent(content: unknown): boolean {
     const p = part as Record<string, unknown>;
     return p.type === "image_url";
   });
-}
-
-function compactOpenAIMessage(
-  msg: Record<string, unknown>,
-  maxChars: number,
-): Record<string, unknown> {
-  const role = String(msg.role ?? "user");
-  const compact = { ...msg };
-  const content = msg.content;
-
-  if (typeof content === "string") {
-    compact.content = truncate(sanitizeLargeText(content), maxChars);
-    return compact;
-  }
-
-  if (Array.isArray(content)) {
-    // In hard-cap mode we collapse multimodal payloads to compact text.
-    const text = content
-      .map((part) => {
-        if (!part || typeof part !== "object") return "";
-        const p = part as Record<string, unknown>;
-        if (p.type === "text") return String(p.text ?? "");
-        if (p.type === "image_url") return "[image omitted]";
-        return "";
-      })
-      .filter((s) => s.length > 0)
-      .join("\n");
-    compact.content = truncate(sanitizeLargeText(text || "[content omitted]"), maxChars);
-    return compact;
-  }
-
-  compact.content = role === "tool" ? "Tool executed." : "";
-  return compact;
-}
-
-function enforceMessageBudget(
-  messages: Record<string, unknown>[],
-  maxChars: number,
-): Record<string, unknown>[] {
-  const total = messages.reduce(
-    (sum, m) => sum + estimateOpenAIContentChars(m.content) + 48,
-    0,
-  );
-  if (total <= maxChars) return messages;
-
-  const firstSystemIndex = messages.findIndex((m) => m.role === "system");
-  const firstSystem =
-    firstSystemIndex >= 0
-      ? compactOpenAIMessage(messages[firstSystemIndex], MAX_SYSTEM_MESSAGE_CHARS)
-      : undefined;
-  const systemChars = firstSystem
-    ? estimateOpenAIContentChars(firstSystem.content) + 48
-    : 0;
-  const nonSystemBudget = Math.max(4_000, maxChars - systemChars);
-
-  const nonSystem = messages.filter((_, idx) => idx !== firstSystemIndex);
-  const selected: Record<string, unknown>[] = [];
-  let used = 0;
-
-  for (let i = nonSystem.length - 1; i >= 0; i--) {
-    const compact = compactOpenAIMessage(
-      nonSystem[i],
-      MAX_MESSAGE_CHARS_PER_ENTRY,
-    );
-    const chars = estimateOpenAIContentChars(compact.content) + 48;
-    if (used + chars <= nonSystemBudget) {
-      selected.push(compact);
-      used += chars;
-      continue;
-    }
-    if (selected.length === 0) {
-      const remaining = Math.max(256, nonSystemBudget - used - 48);
-      selected.push(compactOpenAIMessage(nonSystem[i], remaining));
-    }
-    break;
-  }
-
-  selected.reverse();
-  return firstSystem ? [firstSystem, ...selected] : selected;
 }
 
 export class GrokProvider implements LLMProvider {
@@ -861,18 +774,10 @@ export class GrokProvider implements LLMProvider {
    * book-keeping slot exposed to the I-2 cleanup path.
    */
   private noteIncrementalRequest(
-    messages: LLMMessage[],
+    messages: readonly LLMMessage[],
     params: Record<string, unknown>,
   ): void {
-    const shape: IncrementalRequestShape = {
-      model: String(params.model ?? this.config.model),
-      instructions:
-        typeof params["instructions"] === "string"
-          ? (params["instructions"] as string)
-          : undefined,
-      tools: params["tools"],
-      parallelToolCalls: this.config.parallelToolCalls ?? false,
-    };
+    const shape = this.buildIncrementalRequestShape(params);
     this.incrementalTracker.recordRequest(shape, messages);
   }
 
@@ -908,6 +813,60 @@ export class GrokProvider implements LLMProvider {
       `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
       anomaly.evidence,
     );
+  }
+
+  private emitRuntimeWarning(cause: string, message: string): void {
+    this.config.emitWarning?.({ cause, message });
+  }
+
+  private notifyCapabilityDrift(error: unknown): void {
+    if (!this.config.onCapabilityDrift) return;
+    const candidate = error as {
+      readonly status?: number;
+      readonly statusCode?: number;
+      readonly message?: string;
+    };
+    const status =
+      typeof candidate.status === "number"
+        ? candidate.status
+        : typeof candidate.statusCode === "number"
+          ? candidate.statusCode
+          : undefined;
+    const message = String(candidate.message ?? "");
+    if (!isProviderCapabilityMismatch({ status, message })) {
+      return;
+    }
+    this.config.onCapabilityDrift({ message, status });
+  }
+
+  private buildIncrementalRequestShape(
+    params: Record<string, unknown>,
+  ): IncrementalRequestShape {
+    return {
+      model: String(params.model ?? this.config.model),
+      instructions:
+        typeof params.instructions === "string" ? params.instructions : undefined,
+      tools: params.tools,
+      parallelToolCalls:
+        typeof params.parallel_tool_calls === "boolean"
+          ? params.parallel_tool_calls
+          : Boolean(this.config.parallelToolCalls),
+      extra: {
+        ...(params.prompt_cache_key !== undefined
+          ? { prompt_cache_key: params.prompt_cache_key }
+          : {}),
+        ...(params.temperature !== undefined
+          ? { temperature: params.temperature }
+          : {}),
+        ...(params.max_turns !== undefined ? { max_turns: params.max_turns } : {}),
+        ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
+        ...(params.include !== undefined ? { include: params.include } : {}),
+        ...(params.text !== undefined ? { text: params.text } : {}),
+        ...(params.tool_choice !== undefined
+          ? { tool_choice: params.tool_choice }
+          : {}),
+      },
+    };
   }
 
   async chat(
@@ -1027,7 +986,10 @@ export class GrokProvider implements LLMProvider {
       // incremental tracker before the HTTP call. clearAllResponseIds
       // (called from post-compact-cleanup) zeros this on every
       // compaction.
-      this.noteIncrementalRequest(messages, plan.params as Record<string, unknown>);
+      this.noteIncrementalRequest(
+        plan.requestMessages ?? messages,
+        plan.params as Record<string, unknown>,
+      );
 
       // I-14: retry-on-401 wrapper. Bearer-key mode's refresh callback
       // returns `skipped`, so the original 401 bubbles up unchanged.
@@ -1058,9 +1020,50 @@ export class GrokProvider implements LLMProvider {
       }
       return parsed;
     } catch (err: unknown) {
+      if (
+        isContinuationRetrievalFailure(err) &&
+        "previous_response_id" in plan.params
+      ) {
+        this.incrementalTracker.clearResponseId();
+        this.emitRuntimeWarning(
+          "previous_response_id_expired",
+          `${this.name} rejected previous_response_id; clearing continuation state and retrying once with full history`,
+        );
+        try {
+          const retryPlan = this.buildRequestPlan(messages, options, {
+            disableIncremental: true,
+          });
+          this.noteIncrementalRequest(
+            retryPlan.requestMessages ?? messages,
+            retryPlan.params as Record<string, unknown>,
+          );
+          const parsed = await retryWithAuthRefresh(
+            String(this.config.apiKey),
+            async () => run(retryPlan),
+            this.authRefreshCallbacks,
+          );
+          const respId = (parsed as { requestMetrics?: { responseId?: string } })
+            ?.requestMetrics?.responseId;
+          if (respId) {
+            this.noteIncrementalResponse(respId, [
+              {
+                role: "assistant",
+                content: parsed.content,
+                ...(parsed.toolCalls.length > 0
+                  ? { toolCalls: parsed.toolCalls }
+                  : {}),
+              },
+            ]);
+          }
+          return parsed;
+        } catch (retryErr) {
+          err = retryErr;
+        }
+      }
       // 401s that propagated past the refresh wrapper classify through
       // the normal mapper so callers see `LLMProviderError` rather
       // than the raw transport.
+      this.notifyCapabilityDrift(err);
       if (isUnauthorizedError(err)) {
         const mapped = this.mapError(
           err,
@@ -1085,6 +1088,10 @@ export class GrokProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
     let plan = this.buildRequestPlan(messages, options);
+    this.noteIncrementalRequest(
+      plan.requestMessages ?? messages,
+      plan.params as Record<string, unknown>,
+    );
     let params: Record<string, unknown> = { ...plan.params, stream: true };
     const requestMetrics = {
       ...plan.requestMetrics,
@@ -1135,17 +1142,52 @@ export class GrokProvider implements LLMProvider {
           requestAttemptTimeout,
         ),
       });
-      const result = await withTimeout(
-        async (signal) =>
-          createWithResponseMetadata<AsyncIterable<any>>(
-            client,
-            params,
-            signal,
-          ),
-        requestAttemptTimeout.timeoutMs,
-        this.name,
-        options?.signal,
-      );
+      let result;
+      try {
+        result = await withTimeout(
+          async (signal) =>
+            createWithResponseMetadata<AsyncIterable<any>>(
+              client,
+              params,
+              signal,
+            ),
+          requestAttemptTimeout.timeoutMs,
+          this.name,
+          options?.signal,
+        );
+      } catch (err) {
+        if (
+          isContinuationRetrievalFailure(err) &&
+          "previous_response_id" in params
+        ) {
+          this.incrementalTracker.clearResponseId();
+          this.emitRuntimeWarning(
+            "previous_response_id_expired",
+            `${this.name} rejected previous_response_id; clearing continuation state and retrying once with full history`,
+          );
+          plan = this.buildRequestPlan(messages, options, {
+            disableIncremental: true,
+          });
+          this.noteIncrementalRequest(
+            plan.requestMessages ?? messages,
+            plan.params as Record<string, unknown>,
+          );
+          params = { ...plan.params, stream: true };
+          result = await withTimeout(
+            async (signal) =>
+              createWithResponseMetadata<AsyncIterable<any>>(
+                client,
+                params,
+                signal,
+              ),
+            requestAttemptTimeout.timeoutMs,
+            this.name,
+            options?.signal,
+          );
+        } else {
+          throw err;
+        }
+      }
       const stream = result.data;
       streamResponseMeta = buildProviderResponseMeta({
         response: result.response,
@@ -1169,6 +1211,9 @@ export class GrokProvider implements LLMProvider {
       });
 
       streamIterator = stream[Symbol.asyncIterator]();
+      if (streamIterator === null) {
+        throw new LLMProviderError(this.name, "provider stream did not open");
+      }
       let streamEventIndex = 0;
       const streamOpenedAt = Date.now();
       let receivedTerminalEvent = false;
@@ -1444,6 +1489,7 @@ export class GrokProvider implements LLMProvider {
         model,
         payload: buildProviderTraceErrorPayload(err),
       });
+      this.notifyCapabilityDrift(err);
       const mappedError = this.mapError(err, streamTimeout.timeoutMs);
       this.logPromptOverflowDiagnostics(mappedError, params);
       if (content.length > 0) {
@@ -1565,6 +1611,9 @@ export class GrokProvider implements LLMProvider {
   private buildRequestPlan(
     messages: readonly LLMMessage[],
     options?: LLMChatOptions,
+    overrides?: {
+      disableIncremental?: boolean;
+    },
   ): {
     params: Record<string, unknown>;
     requestMetrics: LLMRequestMetrics;
@@ -1587,6 +1636,7 @@ export class GrokProvider implements LLMProvider {
       structuredOutput: options?.structuredOutput,
       toolSelection,
       promptCacheKey: options?.promptCacheKey?.trim() || undefined,
+      disableIncremental: overrides?.disableIncremental,
     });
     return {
       params: built.params,
@@ -1596,7 +1646,7 @@ export class GrokProvider implements LLMProvider {
       ),
       toolSelection: built.toolSelection,
       compactionDiagnostics,
-      requestMessages: messages,
+      requestMessages: built.requestMessages,
     };
   }
 
@@ -1627,10 +1677,12 @@ export class GrokProvider implements LLMProvider {
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
       promptCacheKey?: string;
+      disableIncremental?: boolean;
     },
   ): {
     params: Record<string, unknown>;
     toolSelection: ToolSelectionDiagnostics;
+    requestMessages: readonly LLMMessage[];
   } {
     const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
     const repairedMessages = repairToolTurnSequence(messages);
@@ -1689,13 +1741,9 @@ export class GrokProvider implements LLMProvider {
       }
     }
 
-    const boundedMessages = enforceMessageBudget(
-      mapped,
-      MAX_MESSAGES_PAYLOAD_CHARS,
-    );
-    const hasImages = boundedMessages.some((m) => hasImageContent(m.content));
+    const hasImages = mapped.some((m) => hasImageContent(m.content));
     const model = hasImages ? visionModel : this.config.model;
-    const input = boundedMessages.flatMap((message) =>
+    const input = mapped.flatMap((message) =>
       this.toResponseInputItems(message),
     );
 
@@ -1850,11 +1898,28 @@ export class GrokProvider implements LLMProvider {
     // sanitizeToDocumentedXaiResponsesParams() so the validator sees the
     // params as the runtime intends to send them, including any field
     // that the sanitize step would silently strip.
+    if (!options?.disableIncremental) {
+      const previousResponseId = this.incrementalTracker.previousResponseId();
+      const decision = this.incrementalTracker.decide({
+        currentShape: this.buildIncrementalRequestShape(params),
+        currentInput: repairedMessages,
+      });
+      if (decision.kind === "reuse" && previousResponseId) {
+        const deltaBuilt = this.buildParams(decision.delta, {
+          ...options,
+          disableIncremental: true,
+        });
+        params.input = deltaBuilt.params.input;
+        params.previous_response_id = previousResponseId;
+      }
+    }
+
     validateXaiRequestPreFlight(params);
 
     return {
       params: sanitizeToDocumentedXaiResponsesParams(params),
       toolSelection: selectedTools,
+      requestMessages: repairedMessages,
     };
   }
 

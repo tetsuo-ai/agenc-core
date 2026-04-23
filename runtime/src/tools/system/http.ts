@@ -17,6 +17,7 @@ import { silentLogger } from "../../utils/logger.js";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Agent, interceptors } from "undici";
+import type { Dispatcher } from "undici";
 
 // ============================================================================
 // Types
@@ -69,7 +70,8 @@ const SSRF_BLOCKED_HOSTNAMES: readonly string[] = [
 const SSRF_BLOCKED_WILDCARDS: readonly string[] = ["*.localhost", "*.internal"];
 const RESOLVED_ADDRESS_TTL_MS = 60_000;
 
-export type SafeFetchDispatcher = NonNullable<RequestInit["dispatcher"]>;
+export type SafeFetchDispatcher = Dispatcher;
+type SafeFetchInit = RequestInit & { dispatcher?: SafeFetchDispatcher };
 type DnsInterceptorOptions = NonNullable<Parameters<typeof interceptors.dns>[0]>;
 type DnsLookup = NonNullable<DnsInterceptorOptions["lookup"]>;
 type DnsLookupCallback = Parameters<DnsLookup>[2];
@@ -480,7 +482,7 @@ async function doFetch(
       signal: AbortSignal.timeout(timeoutMs),
       redirect: "manual",
       dispatcher,
-    });
+    } as SafeFetchInit);
 
     // Manual redirect handling
     if (response.status >= 300 && response.status < 400) {

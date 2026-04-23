@@ -1919,6 +1919,71 @@ describe("main() full-IIFE smoke", () => {
     }
   });
 
+  it("oneShotCLI treats slash-prefixed filesystem paths as normal prompt input", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-slash-path-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-slash-path-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    await writeFile(join(tmpCwd, "notes.txt"), "hello\n", "utf8");
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+    const runTurnMod = await import("../session/run-turn.js");
+    const runTurnSpy = vi
+      .spyOn(runTurnMod, "runTurn")
+      .mockImplementation(async function* (): AsyncGenerator<unknown, unknown> {
+        yield {
+          type: "turn_complete",
+          content: "ok",
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          stopReason: "completed",
+        };
+        return { reason: "completed" };
+      } as never);
+
+    try {
+      const code = await oneShotCLI("/notes.txt");
+      expect(code).toBe(0);
+      expect(createProviderSpy).toHaveBeenCalledTimes(1);
+      expect(startMcpSpy).toHaveBeenCalledTimes(1);
+      expect(runTurnSpy).toHaveBeenCalledTimes(1);
+      expect(runTurnSpy.mock.calls[0]?.[2]).toBe("/notes.txt");
+    } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      runTurnSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("bootTUIEntry executes slash commands through the TUI submit path without entering runTurn", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));

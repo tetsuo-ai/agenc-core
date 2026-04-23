@@ -25,6 +25,7 @@ import {
   extractTlsValidationDetails,
   type TlsValidationDetails,
 } from "./errors.js";
+import { isProviderCapabilityMismatch } from "./capabilities.js";
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
@@ -80,6 +81,7 @@ export interface ProviderHttpResolvedRequest {
 export interface ProviderHttpClientSessionConfig {
   readonly providerName: string;
   readonly baseURL: string;
+  readonly model?: string;
   readonly wireApi?: ProviderWireApi;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly defaultQuery?: Readonly<
@@ -100,6 +102,14 @@ export interface ProviderHttpClientSessionConfig {
   readonly supportsWebsockets?: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly responsesContinuationState?: ResponsesContinuationState;
+  readonly emitWarning?: (warning: {
+    cause: string;
+    message: string;
+  }) => void;
+  readonly onCapabilityDrift?: (warning: {
+    message: string;
+    status?: number;
+  }) => void;
 }
 
 export interface ProviderHttpRequestOptions {
@@ -384,19 +394,38 @@ function errorMessageFromBody(status: number, body: unknown): string {
 
 function parseRetryAfterMs(
   headers: Headers,
+  emitWarning?: (warning: { cause: string; message: string }) => void,
   nowMs = Date.now(),
-): number | undefined {
+): { delayMs?: number; exceedsMaxWait: boolean } {
   const retryAfter = headers.get("retry-after")?.trim();
-  if (!retryAfter) return undefined;
+  if (!retryAfter) return { exceedsMaxWait: false };
 
   const seconds = Number.parseInt(retryAfter, 10);
   if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(seconds * 1000, MAX_RETRY_AFTER_MS);
+    const delayMs = seconds * 1000;
+    if (delayMs > MAX_RETRY_AFTER_MS) {
+      return { exceedsMaxWait: true };
+    }
+    return {
+      delayMs: Math.max(100, delayMs),
+      exceedsMaxWait: false,
+    };
   }
 
   const absoluteMs = Date.parse(retryAfter);
-  if (!Number.isFinite(absoluteMs)) return undefined;
-  return Math.min(Math.max(0, absoluteMs - nowMs), MAX_RETRY_AFTER_MS);
+  if (!Number.isFinite(absoluteMs)) {
+    emitWarning?.({
+      cause: "retry_after_ambiguous",
+      message: `provider returned an ambiguous Retry-After header (${retryAfter}); falling back to exponential backoff`,
+    });
+    return { exceedsMaxWait: false };
+  }
+
+  const delayMs = Math.max(100, absoluteMs - nowMs);
+  if (delayMs > MAX_RETRY_AFTER_MS) {
+    return { exceedsMaxWait: true };
+  }
+  return { delayMs, exceedsMaxWait: false };
 }
 
 function buildRequestUrl(baseURL: string, path: string): URL {
@@ -476,13 +505,41 @@ function shouldRetryTlsCertificateError(
 }
 
 function resolveRetryDelayMs(
+  providerName: string,
   retryBudget: NormalizedRetryBudget,
   retryCount: number,
+  emitWarning: ((warning: { cause: string; message: string }) => void) | undefined,
   headers?: Headers,
-): number {
-  const retryAfterMs = headers ? parseRetryAfterMs(headers) : undefined;
-  if (retryAfterMs !== undefined) return retryAfterMs;
-  return backoffWithJitter(retryBudget.baseDelayMs, retryCount);
+): { delayMs: number; exceedsMaxWait: boolean } {
+  const fallbackDelayMs = Math.max(
+    100,
+    backoffWithJitter(retryBudget.baseDelayMs, retryCount),
+  );
+  if (!headers) {
+    return {
+      delayMs: fallbackDelayMs,
+      exceedsMaxWait: false,
+    };
+  }
+
+  const parsed = parseRetryAfterMs(headers, emitWarning);
+  if (parsed.exceedsMaxWait) {
+    emitWarning?.({
+      cause: "rate_limit_exceeds_max_wait",
+      message: `${providerName} requested a Retry-After longer than ${MAX_RETRY_AFTER_MS}ms; aborting retry instead of sleeping unbounded`,
+    });
+    return {
+      delayMs: fallbackDelayMs,
+      exceedsMaxWait: true,
+    };
+  }
+
+  return {
+    delayMs: parsed.delayMs !== undefined
+      ? Math.max(parsed.delayMs, fallbackDelayMs)
+      : fallbackDelayMs,
+    exceedsMaxWait: false,
+  };
 }
 
 function abortReasonToError(reason: unknown): Error {
@@ -548,6 +605,72 @@ function resolveApiPath(api: ProviderWireApi): string {
   }
 }
 
+function isContinuationExpiryError(error: unknown): boolean {
+  if (!(error instanceof ProviderHttpError)) return false;
+  if (error.status !== 404 && error.status !== 400) return false;
+  const bodyMessage =
+    typeof error.body === "string"
+      ? error.body
+      : error.body && typeof error.body === "object"
+        ? JSON.stringify(error.body)
+        : "";
+  const message = `${error.message} ${bodyMessage}`.toLowerCase();
+  if (!message.includes("response")) return false;
+  return (
+    message.includes("previous_response_id") ||
+    message.includes("previous response") ||
+    message.includes("not found") ||
+    message.includes("expired")
+  );
+}
+
+function maybeEmitCapabilityDriftWarning(
+  config: ProviderHttpClientSessionConfig,
+  error: ProviderHttpError,
+): void {
+  if (!config.onCapabilityDrift) return;
+  const bodyMessage =
+    typeof error.body === "string"
+      ? error.body
+      : error.body && typeof error.body === "object"
+        ? JSON.stringify(error.body)
+        : "";
+  const message = `${error.message} ${bodyMessage}`.trim();
+  if (!isProviderCapabilityMismatch({ status: error.status, message })) {
+    return;
+  }
+  config.onCapabilityDrift({
+    message,
+    status: error.status,
+  });
+}
+
+function clearContinuationState(
+  state: ResponsesContinuationState | undefined,
+): void {
+  if (!state) return;
+  delete state.lastResponseId;
+  delete state.lastResponseOutput;
+}
+
+function buildContinuationFallbackOptions(
+  prepared: PreparedProviderHttpRequest,
+): ProviderHttpRequestOptions {
+  return {
+    ...prepared.options,
+    body: prepared.continuation?.snapshot ?? prepared.options.body,
+  };
+}
+
+function warnContinuationExpiry(
+  config: ProviderHttpClientSessionConfig,
+): void {
+  config.emitWarning?.({
+    cause: "previous_response_id_expired",
+    message: `${config.providerName} rejected previous_response_id; clearing continuation state and retrying once with full history`,
+  });
+}
+
 function normalizeHeaders(
   headers: Headers,
   additions?: Readonly<Record<string, string>>,
@@ -569,7 +692,7 @@ async function createProviderHttpError(
     url: response.url,
     body: errorBody,
     message: errorMessageFromBody(response.status, errorBody),
-    retryAfterMs: parseRetryAfterMs(response.headers),
+    retryAfterMs: parseRetryAfterMs(response.headers).delayMs,
   });
 }
 
@@ -723,7 +846,20 @@ export class ProviderHttpClientSession {
     options: ProviderHttpRequestOptions,
   ): Promise<ProviderHttpJsonResponse<T>> {
     const prepared = this.prepareRequest(options);
-    const response = await this.requestWithRetry(prepared.options, "request");
+    let response: Response;
+    try {
+      response = await this.requestWithRetry(prepared.options, "request");
+    } catch (error) {
+      if (!prepared.continuation || !isContinuationExpiryError(error)) {
+        throw error;
+      }
+      warnContinuationExpiry(this.config);
+      clearContinuationState(this.config.responsesContinuationState);
+      response = await this.requestWithRetry(
+        buildContinuationFallbackOptions(prepared),
+        "request",
+      );
+    }
     const contentType = response.headers.get("content-type") ?? "";
     if (isHtmlContentType(contentType)) {
       throwCaptivePortalError({
@@ -786,11 +922,25 @@ export class ProviderHttpClientSession {
     const idleTimeoutMs =
       resolveTimeoutMs(this.config.streamIdleTimeoutMs, prepared.options.timeoutMs) ??
       resolveStreamIdleTimeoutMs();
-    const initialAttempt = await this.acquireStreamAttempt(
-      prepared.options,
-      retryBudget,
-      0,
-    );
+    let initialAttempt: PreparedStreamAttempt;
+    try {
+      initialAttempt = await this.acquireStreamAttempt(
+        prepared.options,
+        retryBudget,
+        0,
+      );
+    } catch (error) {
+      if (!prepared.continuation || !isContinuationExpiryError(error)) {
+        throw error;
+      }
+      warnContinuationExpiry(this.config);
+      clearContinuationState(this.config.responsesContinuationState);
+      initialAttempt = await this.acquireStreamAttempt(
+        buildContinuationFallbackOptions(prepared),
+        retryBudget,
+        0,
+      );
+    }
     const initialContentType =
       initialAttempt.response.headers.get("content-type") ?? "";
     if (isHtmlContentType(initialContentType)) {
@@ -922,8 +1072,18 @@ export class ProviderHttpClientSession {
             attempt < retryBudget.maxRetries &&
             shouldRetryHttpStatus(response.status, retryBudget)
           ) {
+            const retryDelay = resolveRetryDelayMs(
+              this.config.providerName,
+              retryBudget,
+              attempt + 1,
+              this.config.emitWarning,
+              error.headers,
+            );
+            if (retryDelay.exceedsMaxWait) {
+              throw error;
+            }
             await sleep(
-              resolveRetryDelayMs(retryBudget, attempt + 1, error.headers),
+              retryDelay.delayMs,
               options.signal,
             );
             continue;
@@ -934,6 +1094,7 @@ export class ProviderHttpClientSession {
       } catch (error) {
         attemptState.cleanup();
         if (error instanceof ProviderHttpError) {
+          maybeEmitCapabilityDriftWarning(this.config, error);
           throw error;
         }
         const transport = normalizeTransportError(error);
@@ -942,8 +1103,14 @@ export class ProviderHttpClientSession {
             shouldRetryTransportError(transport, retryBudget)) ||
           shouldRetryTlsCertificateError(transport, attempt)
         ) {
+          const retryDelay = resolveRetryDelayMs(
+            this.config.providerName,
+            retryBudget,
+            attempt + 1,
+            this.config.emitWarning,
+          );
           await sleep(
-            resolveRetryDelayMs(retryBudget, attempt + 1),
+            retryDelay.delayMs,
             options.signal,
           );
           continue;
@@ -982,8 +1149,18 @@ export class ProviderHttpClientSession {
             shouldRetryHttpStatus(response.status, retryBudget)
           ) {
             attemptState.cleanup();
+            const retryDelay = resolveRetryDelayMs(
+              this.config.providerName,
+              retryBudget,
+              attempt + 1,
+              this.config.emitWarning,
+              error.headers,
+            );
+            if (retryDelay.exceedsMaxWait) {
+              throw error;
+            }
             await sleep(
-              resolveRetryDelayMs(retryBudget, attempt + 1, error.headers),
+              retryDelay.delayMs,
               options.signal,
             );
             continue;
@@ -1001,6 +1178,7 @@ export class ProviderHttpClientSession {
       } catch (error) {
         attemptState.cleanup();
         if (error instanceof ProviderHttpError) {
+          maybeEmitCapabilityDriftWarning(this.config, error);
           throw error;
         }
         const transport = normalizeTransportError(error);
@@ -1009,8 +1187,14 @@ export class ProviderHttpClientSession {
             shouldRetryTransportError(transport, retryBudget)) ||
           shouldRetryTlsCertificateError(transport, attempt)
         ) {
+          const retryDelay = resolveRetryDelayMs(
+            this.config.providerName,
+            retryBudget,
+            attempt + 1,
+            this.config.emitWarning,
+          );
           await sleep(
-            resolveRetryDelayMs(retryBudget, attempt + 1),
+            retryDelay.delayMs,
             options.signal,
           );
           continue;

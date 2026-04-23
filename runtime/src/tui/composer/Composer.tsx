@@ -18,11 +18,11 @@
  *      `session.emit?.` or `console.warn`, and render a footer note so
  *      the user sees why an attachment was dropped.
  *
- * The React tree is intentionally tiny — a `<Box>` wrapping a single
- * `<Text>` for the live buffer and an optional warning footer. Actual
- * visual polish (prompt glyph, multiline padding, wrapped-line counter)
- * is layered by later waves; the contract here is limited to keystroke
- * → state plumbing + validation.
+ * The React tree stays intentionally small, but the live buffer now uses
+ * the shared wrapped-cursor model (`Cursor` + `useDeclaredCursor`) rather
+ * than the original placeholder caret renderer. The contract here covers
+ * both keystroke → state plumbing and stable terminal-safe composer
+ * rendering for wrapped/multiline drafts.
  */
 
 import React, {
@@ -37,12 +37,20 @@ import { isAbsolute, relative, resolve } from "node:path";
 
 import { buildDefaultRegistry } from "../../commands/registry.js";
 import { getGlobalCommandRegistry } from "../../commands/types.js";
+import { Cursor } from "../../utils/Cursor.js";
+import { stringWidth } from "../ink/stringWidth.js";
 import Box from "../ink/components/Box.js";
 import StdinContext from "../ink/components/StdinContext.js";
+import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import type { InputEvent } from "../ink/events/input-event.js";
+import { useDeclaredCursor } from "../ink/hooks/use-declared-cursor.js";
 import type { Color } from "../ink/styles.js";
-import { useKeybinding } from "../keybindings/KeybindingContext.js";
+import {
+  useActiveKeybindingContext,
+  useKeybinding,
+} from "../keybindings/KeybindingContext.js";
+import { slashCommandOpensPicker } from "../picker-intents.js";
 import { useAgenCAppState } from "../state/AppState.js";
 import { theme } from "../theme.js";
 import {
@@ -85,6 +93,8 @@ export interface ComposerProps {
   readonly onSubmit: (value: string) => void;
   /** Fired on `chat:cancel` (Escape). */
   readonly onCancel?: () => void;
+  /** When true, ignore draft input and hide the declared text cursor. */
+  readonly inputLocked?: boolean;
   /** Optional paste-store seam for tests. Defaults to the process singleton. */
   readonly pasteStore?: PasteStore;
 }
@@ -180,39 +190,53 @@ function scanMentions(
 // Visual cursor rendering
 // ────────────────────────────────────────────────────────────────────────
 
-/**
- * Render the buffer with a visual caret. When `cursor === value.length`
- * the caret is appended as a trailing `▌` glyph; otherwise the
- * character at `cursor` is rendered in inverse to simulate a terminal
- * caret highlight.
- */
-function RenderedBuffer({
+const COMPOSER_FRAME_CHROME_COLUMNS = 4;
+const MIN_BUFFER_COLUMNS = 4;
+// Match openclaude's fallback threshold: regular typing can occasionally
+// arrive in small multi-char chunks, so only treat very large unbracketed
+// chunks as paste when the parser did not mark them as bracketed paste.
+const PASTE_THRESHOLD = 800;
+
+function ComposerBuffer({
   value,
   cursor,
+  promptPrefix,
+  cursorActive,
 }: {
   readonly value: string;
   readonly cursor: number;
+  readonly promptPrefix: string;
+  readonly cursorActive: boolean;
 }): React.ReactElement {
-  if (value.length === 0) {
-    return <Text>{"\u258C"}</Text>;
-  }
-  if (cursor >= value.length) {
-    return (
-      <Text>
-        {value}
-        {"\u258C"}
-      </Text>
-    );
-  }
-  const before = value.slice(0, cursor);
-  const at = value.slice(cursor, cursor + 1);
-  const after = value.slice(cursor + 1);
+  const terminalSize = useContext(TerminalSizeContext);
+  const prefixWidth = Math.max(1, stringWidth(promptPrefix));
+  const availableColumns = Math.max(
+    MIN_BUFFER_COLUMNS,
+    (terminalSize?.columns ?? 80) - COMPOSER_FRAME_CHROME_COLUMNS - prefixWidth,
+  );
+  const cursorModel = useMemo(
+    () => Cursor.fromText(value, availableColumns, cursor),
+    [availableColumns, cursor, value],
+  );
+  const renderedValue = useMemo(
+    // Let the native declared cursor be the only visible caret. Rendering
+    // an inverted-space cursor here fights Ink's real cursor parking and
+    // leaves stale blocks/glyphs behind on some terminals.
+    () => cursorModel.render("", "", (text) => text),
+    [cursorModel],
+  );
+  const cursorPosition = cursorModel.getPosition();
+  const viewportStartLine = cursorModel.getViewportStartLine();
+  const cursorRef = useDeclaredCursor({
+    line: cursorPosition.line - viewportStartLine,
+    column: cursorPosition.column,
+    active: cursorActive,
+  });
+
   return (
-    <Text>
-      {before}
-      <Text inverse>{at}</Text>
-      {after}
-    </Text>
+    <Box ref={cursorRef}>
+      <Text>{renderedValue}</Text>
+    </Box>
   );
 }
 
@@ -313,6 +337,7 @@ export const Composer: React.FC<ComposerProps> = ({
   config,
   onSubmit,
   onCancel,
+  inputLocked = false,
   pasteStore,
 }) => {
   const store = pasteStore ?? getPasteStore();
@@ -336,6 +361,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const { state, dispatch } = useComposerState({ initialHistory });
   const stdin = useContext(StdinContext);
+  const activeKeybindingContext = useActiveKeybindingContext();
 
   let appState:
     | ReturnType<typeof useAgenCAppState>
@@ -419,7 +445,19 @@ export const Composer: React.FC<ComposerProps> = ({
   useEffect(() => {
     const emitter = stdin.internal_eventEmitter;
     const onInput = (event: InputEvent): void => {
-      if (isPrintableInputEvent(event) && event.input.length > 1) {
+      if (inputLocked) {
+        return;
+      }
+      if (activeKeybindingContext === "modal") {
+        return;
+      }
+      const isFromBracketedPaste = event.keypress.isPasted === true;
+      const shouldTreatAsPaste =
+        isPrintableInputEvent(event) &&
+        (isFromBracketedPaste ||
+          store.isInFlight() ||
+          event.input.length > PASTE_THRESHOLD);
+      if (shouldTreatAsPaste) {
         store.pushChunk(event.input);
         return;
       }
@@ -456,7 +494,7 @@ export const Composer: React.FC<ComposerProps> = ({
     return () => {
       emitter.removeListener("input", onInput);
     };
-  }, [dispatch, stdin, store]);
+  }, [activeKeybindingContext, dispatch, inputLocked, stdin, store]);
 
   // ── keybindings ────────────────────────────────────────────────────
   const onSubmitRef = useRef(onSubmit);
@@ -467,6 +505,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const home = session.home ?? process.env.HOME ?? "";
 
   const handleSubmit = useCallback((): void => {
+    if (inputLocked) return;
     if (showSlashPalette || hasPendingTurn) return;
     if (store.isInFlight() || valueRef.current.length === 0) {
       // While a paste is mid-stream, forward the press to the reducer
@@ -494,12 +533,14 @@ export const Composer: React.FC<ComposerProps> = ({
     dispatch,
     hasPendingTurn,
     home,
+    inputLocked,
     session.cwd,
     showSlashPalette,
     store,
   ]);
 
   const handleCancel = useCallback((): void => {
+    if (inputLocked) return;
     if (showSlashPalette) return;
     if (valueRef.current.length > 0) {
       dispatch({ type: "CLEAR" });
@@ -508,21 +549,24 @@ export const Composer: React.FC<ComposerProps> = ({
     if (!hasPendingTurn) return;
     dispatch({ type: "CLEAR" });
     if (onCancel) onCancel();
-  }, [dispatch, hasPendingTurn, onCancel, showSlashPalette]);
+  }, [dispatch, hasPendingTurn, inputLocked, onCancel, showSlashPalette]);
 
   const handleNewline = useCallback((): void => {
+    if (inputLocked) return;
     dispatch({ type: "NEWLINE" });
-  }, [dispatch]);
+  }, [dispatch, inputLocked]);
 
   const handleHistoryPrev = useCallback((): void => {
+    if (inputLocked) return;
     if (showSlashPalette) return;
     dispatch({ type: "HISTORY_PREV" });
-  }, [dispatch, showSlashPalette]);
+  }, [dispatch, inputLocked, showSlashPalette]);
 
   const handleHistoryNext = useCallback((): void => {
+    if (inputLocked) return;
     if (showSlashPalette) return;
     dispatch({ type: "HISTORY_NEXT" });
-  }, [dispatch, showSlashPalette]);
+  }, [dispatch, inputLocked, showSlashPalette]);
 
   useKeybinding("chat:submit", handleSubmit, "chat");
   useKeybinding("chat:cancel", handleCancel, "chat");
@@ -572,6 +616,7 @@ export const Composer: React.FC<ComposerProps> = ({
     theme.modeIndicatorChar[
       mode as keyof typeof theme.modeIndicatorChar
     ] ?? theme.modeIndicatorChar.default;
+  const promptPrefix = `${promptGlyph} `;
   const accentColor = (
     pendingRequestCount > 0
       ? colors.warning
@@ -632,10 +677,14 @@ export const Composer: React.FC<ComposerProps> = ({
       };
     }
     if (slashDraft && slashPreviewItem) {
+      const opensPicker =
+        exactSlashSelection && slashCommandOpensPicker(slashPreviewItem.value);
       return {
         color: colors.primary,
-        text: exactSlashSelection
-          ? `Enter runs ${slashPreviewItem.label}. Tab inserts it without submitting.`
+        text: opensPicker
+          ? `Enter opens the ${slashPreviewItem.label} picker. Tab inserts it without submitting.`
+          : exactSlashSelection
+            ? `Enter runs ${slashPreviewItem.label}. Tab inserts it without submitting.`
           : (slashPreviewItem.description ??
             `${slashPreviewItem.label} is available.`),
       };
@@ -677,12 +726,18 @@ export const Composer: React.FC<ComposerProps> = ({
         borderStyle="round"
         borderColor={accentColor}
         paddingX={1}
+        width="100%"
       >
         <Box>
           <Text color={accentColor}>
-            {`${promptGlyph} `}
+            {promptPrefix}
           </Text>
-          <RenderedBuffer value={state.value} cursor={state.cursor} />
+          <ComposerBuffer
+            value={state.value}
+            cursor={state.cursor}
+            promptPrefix={promptPrefix}
+            cursorActive={!inputLocked}
+          />
         </Box>
         <Box>
           <Text color={statusLine.color as Color}>{statusLine.text}</Text>

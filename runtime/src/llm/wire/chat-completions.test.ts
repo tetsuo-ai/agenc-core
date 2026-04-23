@@ -28,7 +28,7 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
-  test("preserves mixed text and image tool results and disables store", () => {
+  test("preserves mixed text and image tool results without forcing store", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-4.1",
       messages: [
@@ -60,7 +60,7 @@ describe("buildChatCompletionsRequest", () => {
       tools: [],
     });
 
-    expect(request.store).toBe(false);
+    expect("store" in request).toBe(false);
     expect(request.stream).toBe(false);
     expect(request.messages).toEqual([
       {
@@ -159,5 +159,44 @@ describe("buildChatCompletionsRequest", () => {
       endpoint: "/chat/completions",
       responseId: "chatcmpl_123",
     });
+  });
+
+  test("forwards service_tier to OpenAI-compatible chat completions providers", () => {
+    const request = buildChatCompletionsRequest({
+      model: "gpt-4.1",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      options: {
+        serviceTier: "fast",
+      },
+    });
+
+    expect(request.service_tier).toBe("fast");
+  });
+
+  test("falls back to DeepSeek reasoning_content when content is absent", () => {
+    const response = parseChatCompletionsResponse(
+      "deepseek-reasoner",
+      {
+        id: "chatcmpl_deepseek",
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              reasoning_content: "reasoning trace",
+            },
+            finish_reason: "stop",
+          },
+        ],
+      },
+      {
+        model: "deepseek-reasoner",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+      },
+    );
+
+    expect(response.content).toBe("reasoning trace");
   });
 });

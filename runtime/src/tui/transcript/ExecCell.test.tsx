@@ -142,4 +142,21 @@ describe("ExecCell status badge", () => {
     expect(frame).toContain("timeout");
     unmount();
   });
+
+  test("sanitizes terminal control sequences before rendering", async () => {
+    const { unmount, stdout } = await mount(
+      <ExecCell
+        command={"printf 'x\\x1b[2J'"}
+        stdout={"line1\x1b[2Jline2"}
+        stderr={"\x1b[31mboom\x1b[0m"}
+        exitCode={1}
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("printf");
+    expect(frame).toContain("line1");
+    expect(frame).toContain("line2");
+    expect(frame).toContain("boom");
+    unmount();
+  });
 });

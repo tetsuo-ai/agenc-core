@@ -18,11 +18,13 @@ import { AgentStatusTracker } from "./status.js";
 import { Mailbox } from "./mailbox.js";
 import { resolveAgentRole } from "./role.js";
 import { delegate } from "./delegate.js";
+import { forkSubagent } from "./fork-context.js";
 import { runAgent } from "./run-agent.js";
 import type { LiveAgent } from "./control.js";
 import type { AgentMetadata } from "./registry.js";
 
 const mockRunAgent = vi.mocked(runAgent);
+const mockForkSubagent = vi.mocked(forkSubagent);
 
 function makeLive(
   agentId: string,
@@ -56,6 +58,7 @@ function makeParentSession() {
     abortController: new AbortController(),
     eventLog: {},
     nextInternalSubId: () => "sub-1",
+    snapshotHistoryMessages: () => [],
     sessionConfiguration: { cwd: "/repo" },
     config: { cwd: "/repo" },
   };
@@ -74,6 +77,91 @@ function runResult(result: {
 }
 
 describe("delegate lifecycle recovery", () => {
+  it("passes normalized parent history into forkSubagent for inherited fork modes", async () => {
+    const live = makeLive("thread-1", "/root/alpha");
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const history = [
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+    ];
+
+    mockRunAgent.mockImplementationOnce(() =>
+      runResult({
+        threadId: "thread-1",
+        durationMs: 5,
+        outcome: "completed",
+        finalMessage: "done",
+      }),
+    );
+
+    await delegate({
+      parent: {
+        ...makeParentSession(),
+        snapshotHistoryMessages: () => history,
+      } as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "inspect history",
+      forkMode: { kind: "full_history" },
+    });
+
+    expect(mockForkSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentMessages: history,
+        mode: { kind: "full_history" },
+      }),
+    );
+  });
+
+  it("passes parent history into last_n_turns forks", async () => {
+    const live = makeLive("thread-2", "/root/bravo");
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const history = [
+      { role: "user", content: "u1" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+      { role: "assistant", content: "a2" },
+    ];
+
+    mockRunAgent.mockImplementationOnce(() =>
+      runResult({
+        threadId: "thread-2",
+        durationMs: 5,
+        outcome: "completed",
+        finalMessage: "done",
+      }),
+    );
+
+    await delegate({
+      parent: {
+        ...makeParentSession(),
+        snapshotHistoryMessages: () => history,
+      } as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "slice history",
+      forkMode: { kind: "last_n_turns", n: 2 },
+    });
+
+    expect(mockForkSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parentMessages: history,
+        mode: { kind: "last_n_turns", n: 2 },
+      }),
+    );
+  });
+
   it("rejects worktree isolation without a slug", async () => {
     const control = {
       spawn: vi.fn(),

@@ -233,6 +233,8 @@ export interface SessionConfiguration {
   readonly windowsSandboxLevel: WindowsSandboxLevel;
   readonly collaborationMode: CollaborationMode;
   readonly personality?: Personality;
+  readonly reviewModel?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly approvalsReviewer?: string;
@@ -297,6 +299,8 @@ export interface SessionSettingsUpdate {
   readonly sandboxPolicy?: SandboxPolicy;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly collaborationMode?: CollaborationMode;
+  readonly reviewModel?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high";
   readonly reasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly personality?: Personality;
@@ -335,6 +339,8 @@ export interface ConfigToolBudget {
 /** Codex `Config`. The original config blob (large). T10 lands real shape. */
 export interface Config {
   readonly model: string;
+  readonly reviewModel?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
@@ -444,6 +450,12 @@ export interface TurnContext {
 
   /** Reasoning summary mode. */
   readonly reasoningSummary: ReasoningSummary;
+
+  /** Provider-facing output verbosity hint. */
+  readonly modelVerbosity?: "low" | "medium" | "high";
+
+  /** Provider-facing service-tier hint. */
+  readonly serviceTier?: string;
 
   /** Where the session originated (CLI, IDE, SDK, …). */
   readonly sessionSource: SessionSource;
@@ -790,6 +802,8 @@ export function codexHome(sc: SessionConfiguration): string | undefined {
  */
 export interface ThreadConfigSnapshot {
   readonly model: string;
+  readonly reviewModel?: string;
+  readonly modelVerbosity?: "low" | "medium" | "high";
   readonly serviceTier?: string;
   readonly approvalPolicy: ApprovalPolicy;
   readonly approvalsReviewer?: string;
@@ -805,6 +819,10 @@ export function threadConfigSnapshot(
 ): ThreadConfigSnapshot {
   const snap: ThreadConfigSnapshot = {
     model: sc.collaborationMode.model,
+    ...(sc.reviewModel !== undefined ? { reviewModel: sc.reviewModel } : {}),
+    ...(sc.modelVerbosity !== undefined
+      ? { modelVerbosity: sc.modelVerbosity }
+      : {}),
     ...(sc.serviceTier !== undefined ? { serviceTier: sc.serviceTier } : {}),
     approvalPolicy: sc.approvalPolicy.value,
     ...(sc.approvalsReviewer !== undefined
@@ -848,6 +866,12 @@ export function applySessionConfiguration(
 
   if (updates.collaborationMode !== undefined) {
     next.collaborationMode = updates.collaborationMode;
+  }
+  if (updates.reviewModel !== undefined) {
+    next.reviewModel = updates.reviewModel;
+  }
+  if (updates.modelVerbosity !== undefined) {
+    next.modelVerbosity = updates.modelVerbosity;
   }
   if (updates.reasoningSummary !== undefined) {
     next.modelReasoningSummary = updates.reasoningSummary;
@@ -1095,6 +1119,8 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     provider: opts.provider,
     reasoningEffort,
     reasoningSummary,
+    modelVerbosity: sc.modelVerbosity,
+    serviceTier: sc.serviceTier,
     sessionSource: sc.sessionSource,
     environment: opts.environment,
     cwd: effectiveCwd,
@@ -1199,6 +1225,8 @@ export function buildPerTurnConfig(
   mutableCloned.features = sourceConfig.features;
   mutableCloned.model = session.sessionConfiguration.collaborationMode.model;
   mutableCloned.cwd = effectiveCwd;
+  mutableCloned.reviewModel = session.sessionConfiguration.reviewModel;
+  mutableCloned.modelVerbosity = session.sessionConfiguration.modelVerbosity;
   mutableCloned.modelReasoningEffort =
     session.sessionConfiguration.collaborationMode.reasoningEffort;
   mutableCloned.modelReasoningSummary =

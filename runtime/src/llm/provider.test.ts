@@ -2,10 +2,13 @@ import { describe, expect, test } from "vitest";
 import { GrokProvider } from "./grok/index.js";
 import { OllamaProvider } from "./ollama/index.js";
 import { AnthropicProvider } from "./providers/anthropic/index.js";
+import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
+import { GroqProvider } from "./providers/groq/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
 import { OpenAIProvider } from "./providers/openai/index.js";
 import type { OpenAIProviderConfig } from "./providers/openai/index.js";
+import { OpenRouterProvider } from "./providers/openrouter/index.js";
 import {
   createProvider,
   isFactoryProvider,
@@ -71,6 +74,40 @@ describe("createProvider", () => {
 
     expect(provider.name).toBe("openrouter");
     expect(readProviderIdentity(provider)).toBe("openrouter");
+  });
+
+  test("routes openrouter/groq/deepseek through dedicated adapter classes", () => {
+    const openrouter = withEnv(
+      { OPENROUTER_API_KEY: "or-test" },
+      () => createProvider("openrouter", { model: "openai/gpt-5" }),
+    );
+    const groq = withEnv(
+      { GROQ_API_KEY: "groq-test" },
+      () => createProvider("groq", { model: "llama-3.3-70b-versatile" }),
+    );
+    const deepseek = withEnv(
+      { DEEPSEEK_API_KEY: "deepseek-test" },
+      () => createProvider("deepseek", { model: "deepseek-reasoner" }),
+    );
+
+    expect(openrouter).toBeInstanceOf(OpenRouterProvider);
+    expect(groq).toBeInstanceOf(GroqProvider);
+    expect(deepseek).toBeInstanceOf(DeepSeekProvider);
+  });
+
+  test("adds the required OpenRouter routing headers", () => {
+    const provider = withEnv(
+      { OPENROUTER_API_KEY: "or-test" },
+      () => createProvider("openrouter", { model: "openai/gpt-5" }),
+    );
+
+    expect(
+      (provider as unknown as { config: OpenAIProviderConfig }).config
+        .defaultHeaders,
+    ).toMatchObject({
+      "HTTP-Referer": "https://github.com/tetsuo-ai/agenc-core",
+      "X-Title": "AgenC",
+    });
   });
 
   test("uses the documented OpenAI default model when no model override is supplied", () => {

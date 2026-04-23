@@ -874,6 +874,10 @@ export class Session {
     return this.state.unsafePeek().sessionConfiguration;
   }
 
+  snapshotHistoryMessages(): LLMMessage[] {
+    return normalizeHistoryMessages(this.state.unsafePeek().history);
+  }
+
   /**
    * Session-scoped provider accessor for the canonical turn builder path.
    * Throws when a loose-cast test fixture omitted the provider and then

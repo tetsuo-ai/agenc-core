@@ -16,9 +16,13 @@ export type {
   ShellEnvironmentPolicy,
   ReasoningEffort,
   ReasoningSummary,
+  ModelVerbosity,
   Personality,
   PermissionMode,
   PermissionsConfig,
+  ProviderCapabilityOverrides,
+  ProviderConfig,
+  ServiceTier,
   WebSearchMode,
   ProfileOverride,
   ToolsConfig,
@@ -48,6 +52,24 @@ export {
   UnknownModelError,
   KNOWN_CONFIG_KEYS,
 } from "./schema.js";
+
+export {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+  buildProviderModelCatalog,
+  normalizeProviderSlug,
+  readProviderConfig,
+  resolveProviderSelection,
+  resolveProviderSettings,
+} from "./resolve-provider.js";
+
+export {
+  configuredModelForProvider,
+  defaultModelForProvider,
+  resolveDisambiguatedModelSelection,
+  resolveModelSelection,
+} from "./resolve-model.js";
 
 export type {
   LoadConfigOptions,

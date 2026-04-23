@@ -50,6 +50,9 @@ export const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
 export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
   "--version",
+  "--yolo",
+  "--dangerously-bypass-approvals-and-sandbox",
+  "--allow-dangerously-skip-permissions",
 ] as const);
 
 export const STARTUP_VALUE_FLAGS = Object.freeze([
@@ -58,6 +61,7 @@ export const STARTUP_VALUE_FLAGS = Object.freeze([
   "--provider",
   "--model",
   "--profile",
+  "--permission-mode",
   "--config",
   "--sandbox",
   "--approval-policy",

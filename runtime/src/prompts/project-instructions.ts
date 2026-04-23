@@ -90,7 +90,11 @@ export interface ProjectInstructions {
   readonly content: string;
   /** True when truncation occurred at {@link projectDocMaxBytes}. */
   readonly truncated: boolean;
-  /** Marker filename (or directory) that identified the project root. */
+  /**
+   * Marker filename (or directory) that identified the project root.
+   * Falls back to `"<cwd>"` when no marker was found and discovery is
+   * scoped to the working directory only.
+   */
   readonly rootMarkerFound: string;
   /** Directory where the root marker was located. */
   readonly rootDir: string;
@@ -238,7 +242,7 @@ export async function loadProjectInstructionChain(
   opts: LoadProjectInstructionsOptions,
 ): Promise<readonly ProjectInstructionChainEntry[]> {
   const markers =
-    opts.projectRootMarkers && opts.projectRootMarkers.length > 0
+    opts.projectRootMarkers !== undefined
       ? opts.projectRootMarkers
       : DEFAULT_PROJECT_ROOT_MARKERS;
   const maxBytes =
@@ -251,13 +255,14 @@ export async function loadProjectInstructionChain(
   }
 
   const root = await findProjectRoot(opts.cwd, markers);
-  if (!root) {
-    return [];
-  }
+  const effectiveRoot = root ?? {
+    rootDir: resolve(opts.cwd),
+    marker: "<cwd>",
+  };
   const chain: ProjectInstructionChainEntry[] = [];
   let remainingBytes = maxBytes;
 
-  for (const dir of directoriesFromRoot(root.rootDir, opts.cwd)) {
+  for (const dir of directoriesFromRoot(effectiveRoot.rootDir, opts.cwd)) {
     const filePath = await resolveInstructionFile(dir);
     if (!filePath) {
       continue;
@@ -275,8 +280,8 @@ export async function loadProjectInstructionChain(
       path: filePath,
       content: truncated.content,
       truncated: truncated.truncated,
-      rootMarkerFound: root.marker,
-      rootDir: root.rootDir,
+      rootMarkerFound: effectiveRoot.marker,
+      rootDir: effectiveRoot.rootDir,
     });
 
     remainingBytes -= Math.min(
