@@ -72,6 +72,7 @@ function createFakeSession(options?: {
   withSubmit?: boolean;
   withEventLog?: boolean;
   initialTranscriptEvents?: readonly TranscriptSourceEvent[];
+  activeTurnId?: string | null;
 }): FakeSession {
   const withSubscribe = options?.withSubscribe ?? true;
   const withSubmit = options?.withSubmit ?? true;
@@ -79,7 +80,12 @@ function createFakeSession(options?: {
   const listeners = new Set<(e: PhaseEvent) => void>();
   const eventLogListeners = new Set<(event: Event) => void>();
   return {
-    activeTurn: null,
+    activeTurn:
+      options?.activeTurnId === undefined || options.activeTurnId === null
+        ? null
+        : {
+            unsafePeek: () => ({ turnId: options.activeTurnId! }),
+          },
     ...(withSubscribe
       ? {
           subscribeToEvents(cb: (e: PhaseEvent) => void) {
@@ -192,6 +198,45 @@ describe("useQuery", () => {
     expect(latest).not.toBeNull();
     expect(latest!.events).toHaveLength(2);
     expect(latest!.currentTurnId).toBe("turn-resume");
+    expect(latest!.isStreaming).toBe(false);
+    unmount();
+  });
+
+  test("keeps hydrated replay non-streaming until a live active turn exists", async () => {
+    const session = createFakeSession({
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-replay" } },
+        { type: "agent_message_delta", payload: { delta: "partial" } },
+      ],
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    expect(latest).not.toBeNull();
+    expect(latest!.currentTurnId).toBe("turn-replay");
+    expect(latest!.isStreaming).toBe(false);
+    unmount();
+  });
+
+  test("hydrates an active resumed turn as streaming when the session still owns it", async () => {
+    const session = createFakeSession({
+      activeTurnId: "turn-live",
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-live" } },
+      ],
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    expect(latest).not.toBeNull();
+    expect(latest!.currentTurnId).toBe("turn-live");
+    expect(latest!.isStreaming).toBe(true);
     unmount();
   });
 
@@ -209,21 +254,42 @@ describe("useQuery", () => {
     session.emitEventLog({
       id: "evt-1",
       msg: {
-        type: "turn_started",
-        payload: { turnId: "turn-eventlog" },
+        type: "session_configured",
+        payload: {
+          sessionId: "sess-1",
+          forkedFromId: "sess-0",
+          model: "gpt",
+          modelProviderId: "openai",
+          cwd: "/tmp",
+          historyLogId: 1,
+          historyEntryCount: 2,
+          initialMessages: [],
+        },
       },
       seq: 1,
     });
     session.emitEventLog({
       id: "evt-2",
       msg: {
-        type: "user_message",
-        payload: { message: "hello from event log" },
+        type: "turn_started",
+        payload: { turnId: "turn-eventlog" },
       },
       seq: 2,
     });
+    session.emitEventLog({
+      id: "evt-3",
+      msg: {
+        type: "user_message",
+        payload: { message: "hello from event log" },
+      },
+      seq: 3,
+    });
     await new Promise((r) => setTimeout(r, 20));
-    expect(latest!.events).toHaveLength(2);
+    expect(latest!.events).toHaveLength(3);
+    expect(latest!.events[0]).toMatchObject({
+      type: "session_configured",
+      payload: { forkedFromId: "sess-0" },
+    });
     expect(latest!.isStreaming).toBe(true);
     expect(latest!.currentTurnId).toBe("turn-eventlog");
     unmount();

@@ -90,7 +90,7 @@ describe("<PlanProgress>", () => {
     unmount();
   });
 
-  test("one plan_started renders the title header", async () => {
+  test("one plan_started renders an Updated Plan header and checklist row", async () => {
     const events: PlanEvent[] = [
       {
         kind: "plan_started",
@@ -101,11 +101,12 @@ describe("<PlanProgress>", () => {
     ];
     const { stdout, unmount } = await mount(<PlanProgress events={events} />);
     const text = collectText(getRootNode(stdout));
+    expect(text).toContain("Updated Plan");
     expect(text).toContain("explore and fix");
     unmount();
   });
 
-  test("plan_delta appends to the streamed body for matching planItemId", async () => {
+  test("plan_delta appends detail lines for the matching planItemId", async () => {
     const events: PlanEvent[] = [
       {
         kind: "plan_started",
@@ -128,11 +129,13 @@ describe("<PlanProgress>", () => {
     ];
     const { stdout, unmount } = await mount(<PlanProgress events={events} />);
     const text = collectText(getRootNode(stdout));
+    expect(text).toContain("Updated Plan");
+    expect(text).toContain("build");
     expect(text).toContain("step A step B");
     unmount();
   });
 
-  test("plan_item_completed adds the complete footer", async () => {
+  test("plan_item_completed keeps the checklist and shows the final text", async () => {
     const events: PlanEvent[] = [
       {
         kind: "plan_started",
@@ -149,13 +152,14 @@ describe("<PlanProgress>", () => {
     ];
     const { stdout, unmount } = await mount(<PlanProgress events={events} />);
     const text = collectText(getRootNode(stdout));
-    expect(text).toContain("\u2713 complete");
+    expect(text).toContain("Updated Plan");
+    expect(text).toContain("\u2714");
     expect(text).toContain("1. do X");
     expect(text).toContain("2. do Y");
     unmount();
   });
 
-  test("plan_exited renders the dimmed end marker", async () => {
+  test("plan_exited keeps the history cell instead of a terminal marker widget", async () => {
     const events: PlanEvent[] = [
       {
         kind: "plan_started",
@@ -167,7 +171,9 @@ describe("<PlanProgress>", () => {
     ];
     const { stdout, unmount } = await mount(<PlanProgress events={events} />);
     const text = collectText(getRootNode(stdout));
-    expect(text).toContain("plan mode ended");
+    expect(text).toContain("Updated Plan");
+    expect(text).toContain("draft");
+    expect(text).not.toContain("plan mode ended");
     unmount();
   });
 });

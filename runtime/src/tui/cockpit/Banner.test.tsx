@@ -128,7 +128,16 @@ describe("Banner", () => {
     expect(text).toContain("MODE");
     expect(text).toContain("default");
     expect(text).toContain("MODEL");
+    expect(text).toContain("loading");
     expect(text).toContain("READY");
+    unmount();
+  });
+
+  test("does not fake a provider/model default when model is absent", async () => {
+    const { stdout, unmount } = await mount(<Banner mode="default" />);
+    const text = collectText(getRoot(stdout));
+    expect(text).not.toContain("grok");
+    expect(text).toContain("loading");
     unmount();
   });
 

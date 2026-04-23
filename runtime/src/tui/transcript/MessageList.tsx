@@ -160,10 +160,7 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       return <PlanProgress events={message.planEvents ?? []} />;
 
     case "tool_call": {
-      // When the tool call carries exec fields we prefer the full ExecCell
-      // rendering — matches Codex/Claude Code's approach where shell
-      // commands get their own framed block. Otherwise fall back to the
-      // compact one-liner.
+      // Shell execution calls get a dedicated history-cell style renderer.
       if (typeof message.execCommand === "string") {
         return (
           <ExecCell
@@ -221,16 +218,20 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
     }
 
     case "meta":
-      return (
-        <Box flexDirection="row">
-          <Text color={theme.colors.accent}>
-            {"["}
-            {message.label ?? "meta"}
-            {"] "}
-          </Text>
-          <Text dim>{message.content}</Text>
-        </Box>
-      );
+      {
+        const color =
+          message.label === "deprecated"
+            ? theme.colors.warning
+            : theme.colors.dim;
+        return (
+          <Box flexDirection="row">
+            <Text color={color}>{"\u2022 "}</Text>
+            <Text color={color} dim={message.label !== "deprecated"}>
+              {message.content}
+            </Text>
+          </Box>
+        );
+      }
 
     case "tool_result":
       if (shouldCollapseToolResult(message)) {

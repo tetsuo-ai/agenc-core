@@ -23,6 +23,10 @@ export interface ModelSelectionItem {
   readonly label: string;
   readonly description?: string;
   readonly value?: string;
+  readonly keywords?: readonly string[];
+  readonly searchValue?: string;
+  readonly disabled?: boolean;
+  readonly disabledReason?: string;
 }
 
 export interface ModelSelectionOverlayProps {
@@ -32,7 +36,10 @@ export interface ModelSelectionOverlayProps {
   readonly activeTab?: string;
   readonly onTabChange?: (tab: string) => void;
   readonly items: readonly ModelSelectionItem[];
+  readonly searchable?: boolean;
+  readonly searchPlaceholder?: string;
   readonly onSelect: (item: ModelSelectionItem) => void;
+  readonly onSelectionChange?: (item: ModelSelectionItem) => void;
   readonly onClose: () => void;
   readonly onBack?: () => void;
 }
@@ -87,6 +94,81 @@ function visibleWindow(
   };
 }
 
+function isPrintableSearchInput(event: InputEvent): boolean {
+  if (typeof event.input !== "string" || event.input.length === 0) return false;
+  if (event.key.ctrl || event.key.meta || event.key.super) return false;
+  if (
+    event.key.return ||
+    event.key.escape ||
+    event.key.tab ||
+    event.key.upArrow ||
+    event.key.downArrow ||
+    event.key.leftArrow ||
+    event.key.rightArrow ||
+    event.key.home ||
+    event.key.end ||
+    event.key.backspace ||
+    event.key.delete
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function itemSearchValue(item: ModelSelectionItem): string {
+  return [
+    item.searchValue,
+    item.label,
+    item.description,
+    item.value,
+    ...(item.keywords ?? []),
+  ]
+    .filter((part): part is string => typeof part === "string" && part.length > 0)
+    .join("\n")
+    .toLocaleLowerCase();
+}
+
+function filterItems(
+  items: readonly ModelSelectionItem[],
+  query: string,
+): readonly ModelSelectionItem[] {
+  const foldedQuery = query.trim().toLocaleLowerCase();
+  if (foldedQuery.length === 0) return items;
+  return items.filter((item) => itemSearchValue(item).includes(foldedQuery));
+}
+
+function isItemDisabled(item: ModelSelectionItem | undefined): boolean {
+  if (!item) return true;
+  return (
+    item.disabled === true ||
+    (typeof item.disabledReason === "string" && item.disabledReason.length > 0)
+  );
+}
+
+function findSelectableIndex(
+  items: readonly ModelSelectionItem[],
+  start: number,
+  delta: number,
+): number {
+  if (items.length === 0) return 0;
+  for (let offset = 0; offset < items.length; offset += 1) {
+    const index =
+      ((start + delta * offset) % items.length + items.length) % items.length;
+    if (!isItemDisabled(items[index])) return index;
+  }
+  return Math.max(0, Math.min(start, items.length - 1));
+}
+
+function normalizeSelectedIndex(
+  items: readonly ModelSelectionItem[],
+  requested: number,
+): number {
+  if (items.length === 0) return 0;
+  const clamped = Math.max(0, Math.min(requested, items.length - 1));
+  if (!isItemDisabled(items[clamped])) return clamped;
+  return findSelectableIndex(items, clamped, +1);
+}
+
 export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
   title,
   subtitle,
@@ -94,31 +176,44 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
   activeTab,
   onTabChange,
   items,
+  searchable = true,
+  searchPlaceholder,
   onSelect,
+  onSelectionChange,
   onClose,
   onBack,
 }) => {
   const stdin = useContext(StdinContext);
   const terminalSize = useContext(TerminalSizeContext);
   const setActiveContext = useSetKeybindingContext();
+  const [searchQuery, setSearchQuery] = useState("");
+  const filteredItems = useMemo(
+    () => filterItems(items, searchable ? searchQuery : ""),
+    [items, searchQuery, searchable],
+  );
   const [selectedIndex, setSelectedIndex] = useState(0);
   const accent = theme.colors.primary as Color;
   const secondary = theme.colors.secondary as Color;
   const dim = theme.colors.dim as Color;
+  const warning = theme.colors.warning as Color;
   const visibleRows = useMemo(
     () => readVisibleRows(terminalSize?.rows, Boolean(subtitle)),
     [subtitle, terminalSize?.rows],
   );
   const windowedItems = useMemo(() => {
-    const { start, end } = visibleWindow(selectedIndex, items.length, visibleRows);
+    const { start, end } = visibleWindow(
+      selectedIndex,
+      filteredItems.length,
+      visibleRows,
+    );
     return {
       start,
       end,
       beforeCount: start,
-      afterCount: Math.max(0, items.length - end),
-      items: items.slice(start, end),
+      afterCount: Math.max(0, filteredItems.length - end),
+      items: filteredItems.slice(start, end),
     };
-  }, [items, selectedIndex, visibleRows]);
+  }, [filteredItems, selectedIndex, visibleRows]);
 
   useEffect(() => {
     setActiveContext("modal");
@@ -128,10 +223,8 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
   }, [setActiveContext]);
 
   useEffect(() => {
-    setSelectedIndex((current) =>
-      items.length === 0 ? 0 : Math.min(current, items.length - 1),
-    );
-  }, [items]);
+    setSelectedIndex((current) => normalizeSelectedIndex(filteredItems, current));
+  }, [filteredItems]);
 
   const activeTabIndex = useMemo(() => {
     if (!tabs || tabs.length === 0) return -1;
@@ -149,10 +242,15 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
     [activeTabIndex, onTabChange, tabs],
   );
 
-  const selectedItem = items[selectedIndex] ?? null;
+  const selectedItem = filteredItems[selectedIndex] ?? null;
+
+  useEffect(() => {
+    if (!selectedItem || typeof onSelectionChange !== "function") return;
+    onSelectionChange(selectedItem);
+  }, [onSelectionChange, selectedItem]);
 
   const handleConfirm = useCallback(() => {
-    if (selectedItem) {
+    if (selectedItem && !isItemDisabled(selectedItem)) {
       onSelect(selectedItem);
     }
   }, [onSelect, selectedItem]);
@@ -191,19 +289,55 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
         handleTabCycle(1);
         return;
       }
-      if (event.key.upArrow || (!event.key.ctrl && event.input === "k")) {
-        setSelectedIndex((current) => cycleIndex(current, -1, items.length));
+      if (searchable && event.key.ctrl && event.input.toLowerCase() === "u") {
+        setSearchQuery("");
         return;
       }
-      if (event.key.downArrow || (!event.key.ctrl && event.input === "j")) {
-        setSelectedIndex((current) => cycleIndex(current, 1, items.length));
+      if (searchable && event.key.backspace) {
+        setSearchQuery((current) =>
+          current.slice(0, Math.max(0, current.length - 1)),
+        );
+        return;
+      }
+      if (event.key.upArrow) {
+        setSelectedIndex((current) =>
+          findSelectableIndex(filteredItems, current - 1, -1),
+        );
+        return;
+      }
+      if (event.key.downArrow) {
+        setSelectedIndex((current) =>
+          findSelectableIndex(filteredItems, current + 1, +1),
+        );
+        return;
+      }
+      if (
+        searchable &&
+        !event.key.ctrl &&
+        !event.key.meta &&
+        searchQuery.length === 0 &&
+        /^[1-9]$/.test(event.input)
+      ) {
+        const target = Number.parseInt(event.input, 10) - 1;
+        setSelectedIndex(normalizeSelectedIndex(filteredItems, target));
+        return;
+      }
+      if (searchable && isPrintableSearchInput(event)) {
+        setSearchQuery((current) => current + event.input);
       }
     };
     emitter.on("input", listener);
     return () => {
       emitter.removeListener("input", listener);
     };
-  }, [handleTabCycle, items.length, stdin, tabs]);
+  }, [
+    filteredItems,
+    handleTabCycle,
+    searchQuery.length,
+    searchable,
+    stdin,
+    tabs,
+  ]);
 
   const tabLine = useMemo(() => {
     if (!tabs || tabs.length === 0) return null;
@@ -218,11 +352,18 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
         <Text bold color={accent}>{title}</Text>
         {subtitle ? <Text color={dim}>{subtitle}</Text> : null}
         {tabLine ? <Text color={secondary}>{tabLine}</Text> : null}
+        {searchable ? (
+          <Text color={dim}>
+            {`Search: ${searchQuery.length > 0 ? searchQuery : searchPlaceholder ?? "type to filter"}`}
+          </Text>
+        ) : null}
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
-        {items.length === 0 ? (
-          <Text color={dim}>No options available.</Text>
+        {filteredItems.length === 0 ? (
+          <Text color={dim}>
+            {searchQuery.length > 0 ? "No matches." : "No options available."}
+          </Text>
         ) : (
           <>
             {windowedItems.beforeCount > 0 ? (
@@ -242,6 +383,11 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
                   {item.description ? (
                     <Text color={dim}>{item.description}</Text>
                   ) : null}
+                  {isItemDisabled(item) ? (
+                    <Text color={warning}>
+                      {item.disabledReason ?? "Unavailable"}
+                    </Text>
+                  ) : null}
                 </Box>
               );
             })}
@@ -258,6 +404,7 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
             ? "Enter selects · Esc goes back"
             : "Enter selects · Esc closes"}
           {tabs && tabs.length > 1 ? " · Tab / ← → switches tabs" : ""}
+          {searchable ? " · type to filter · Ctrl+U clears · 1-9 jumps" : ""}
         </Text>
       </Box>
     </Box>

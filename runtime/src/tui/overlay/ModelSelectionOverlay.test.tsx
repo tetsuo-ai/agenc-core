@@ -114,14 +114,16 @@ function getRoot(stdout: PassThrough): DOMElement {
 function makeKeyEvent(opts: {
   name?: string;
   sequence?: string;
+  ctrl?: boolean;
+  shift?: boolean;
 }): InputEvent {
   return new InputEvent({
     kind: "key" as const,
     name: opts.name ?? "",
     fn: false,
-    ctrl: false,
+    ctrl: opts.ctrl ?? false,
     meta: false,
-    shift: false,
+    shift: opts.shift ?? false,
     option: false,
     super: false,
     sequence: opts.sequence ?? "",
@@ -263,6 +265,116 @@ describe("ModelSelectionOverlay", () => {
     expect(text).toContain("↓ 3 more");
     expect(text).toContain("Item 6");
     expect(text).not.toContain("Item 1");
+    unmount();
+  });
+
+  test("filters items as the user types and confirms the filtered selection", async () => {
+    const emitter = new EventEmitter();
+    const onSelect = vi.fn();
+    const { stdout, unmount } = await mount(
+      withProviders(
+        emitter,
+        <ModelSelectionOverlay
+          title="Select Provider"
+          items={[
+            { id: "xai", label: "xAI" },
+            { id: "openai", label: "OpenAI" },
+            { id: "anthropic", label: "Anthropic" },
+          ]}
+          onSelect={onSelect}
+          onClose={() => undefined}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "o", sequence: "o" }));
+    emitter.emit("input", makeKeyEvent({ name: "p", sequence: "p" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("Search: op");
+    expect(text).toContain("OpenAI");
+    expect(text).not.toContain("xAI");
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "openai" }),
+    );
+    unmount();
+  });
+
+  test("skips disabled rows during navigation and number-key jumps", async () => {
+    const emitter = new EventEmitter();
+    const onSelect = vi.fn();
+    const onSelectionChange = vi.fn();
+    const { unmount } = await mount(
+      withProviders(
+        emitter,
+        <ModelSelectionOverlay
+          title="Permission Mode"
+          items={[
+            { id: "default", label: "Default", disabled: true, disabledReason: "Current mode" },
+            { id: "plan", label: "Plan" },
+            { id: "auto", label: "Auto", disabled: true, disabledReason: "Unavailable" },
+            { id: "bypass", label: "Bypass" },
+          ]}
+          onSelectionChange={onSelectionChange}
+          onSelect={onSelect}
+          onClose={() => undefined}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "down" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "bypass" }),
+    );
+
+    onSelect.mockClear();
+    emitter.emit("input", makeKeyEvent({ name: "1", sequence: "1" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "plan" }),
+    );
+    expect(onSelectionChange).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "plan" }),
+    );
+    unmount();
+  });
+
+  test("Ctrl+U clears the active search query", async () => {
+    const emitter = new EventEmitter();
+    const { stdout, unmount } = await mount(
+      withProviders(
+        emitter,
+        <ModelSelectionOverlay
+          title="Select Model"
+          items={[
+            { id: "grok", label: "grok-4.20" },
+            { id: "gpt", label: "gpt-5" },
+          ]}
+          onSelect={() => undefined}
+          onClose={() => undefined}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "g", sequence: "g" }));
+    emitter.emit("input", makeKeyEvent({ name: "r", sequence: "r" }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(collectText(getRoot(stdout))).toContain("Search: gr");
+
+    emitter.emit("input", makeKeyEvent({ name: "u", sequence: "u", ctrl: true }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(collectText(getRoot(stdout))).toContain("Search: type to filter");
     unmount();
   });
 

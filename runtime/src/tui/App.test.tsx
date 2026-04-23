@@ -10,6 +10,7 @@ import React from "react";
 import { describe, expect, test, vi } from "vitest";
 
 import type { DOMElement } from "./ink/dom.js";
+import { InputEvent } from "./ink/events/input-event.js";
 import { createRoot } from "./ink/root.js";
 import instances from "./ink/instances.js";
 import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ink/termio/dec.js";
@@ -24,12 +25,16 @@ import {
   useOverlayStack,
 } from "./overlay/OverlayProvider.js";
 import type { PermissionMode } from "../permissions/types.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
   setRawMode: (mode: boolean) => void;
   ref: () => void;
   unref: () => void;
+  internal_eventEmitter: {
+    emit: (eventName: string, payload: InputEvent) => void;
+  };
 };
 
 function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
@@ -95,6 +100,41 @@ function collectStream(stream: PassThrough): string {
   return stream.read()?.toString("utf8") ?? "";
 }
 
+function makePermissionContext(mode: PermissionMode): ToolPermissionContext {
+  return {
+    mode,
+    additionalWorkingDirectories: new Map(),
+    alwaysAllowRules: {},
+    alwaysDenyRules: {},
+    alwaysAskRules: {},
+    isBypassPermissionsModeAvailable: false,
+    isAutoModeAvailable: false,
+    autoModeActive: false,
+    hasExitedPlanModeInSession: false,
+    bypassPermissionsAcceptedIn: [],
+  };
+}
+
+function makeKeyEvent(opts: {
+  sequence: string;
+  name?: string;
+  shift?: boolean;
+}): InputEvent {
+  return new InputEvent({
+    kind: "key" as const,
+    name: opts.name ?? opts.sequence,
+    fn: false,
+    ctrl: false,
+    meta: false,
+    sequence: opts.sequence,
+    raw: opts.sequence,
+    shift: opts.shift ?? false,
+    option: false,
+    super: false,
+    isPasted: false,
+  });
+}
+
 /** Minimum structural shape the App needs from a Session. */
 function createFakeSession(
   initialMode: PermissionMode = "default",
@@ -104,11 +144,16 @@ function createFakeSession(
   const listeners = new Set<
     (next: PermissionMode, previous: PermissionMode) => void
   >();
-  let mode: PermissionMode = initialMode;
+  let ctx: ToolPermissionContext = makePermissionContext(initialMode);
   return {
     services: {
       permissionModeRegistry: {
-        current: () => ({ mode }),
+        current: () => ctx,
+        update: async (next: ToolPermissionContext) => {
+          const prev = ctx.mode;
+          ctx = next;
+          for (const cb of Array.from(listeners)) cb(next.mode, prev);
+        },
         subscribeToModeChange: (cb) => {
           listeners.add(cb);
           return () => listeners.delete(cb);
@@ -116,8 +161,8 @@ function createFakeSession(
       },
     },
     __setMode(next: PermissionMode) {
-      const prev = mode;
-      mode = next;
+      const prev = ctx.mode;
+      ctx = makePermissionContext(next);
       for (const cb of Array.from(listeners)) cb(next, prev);
     },
   };
@@ -228,6 +273,22 @@ describe("App", () => {
     unmount();
   });
 
+  test("Shift+Tab cycles permission mode through the live registry", async () => {
+    const session = createFakeSession("default");
+    const { stdin, stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    stdin.write("\u001B[Z");
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(session.services.permissionModeRegistry.current().mode).toBe(
+      "acceptEdits",
+    );
+    expect(collectText(getRoot(stdout))).toContain("accept");
+    unmount();
+  });
+
   test("permissionQueueOps.push re-renders consumers with the queued request", async () => {
     const session = createFakeSession("default");
     const queueSnapshots: number[] = [];
@@ -327,14 +388,32 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("AgenC");
-    expect(text).toContain("press any key to continue");
+    expect(text).toContain("READY");
     expect(text).toContain("MODEL");
     expect(text).toContain("grok-code-fast-1");
     expect(text).toContain("MODE");
     expect(text).toContain("plan");
+    expect(text).toContain("run");
+    expect(text).toContain("34567890");
     expect(text).toContain("SESSION");
     expect(text).toContain("34567890");
+    unmount();
+  });
+
+  test("does not render the status-line row unless config explicitly provides items", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      model: "session-model-live",
+    };
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("MODEL");
+    expect(text).toContain("session-model-live");
+    expect(text).not.toContain("CWD");
+    expect(text).not.toContain("SESSION");
     unmount();
   });
 
@@ -385,8 +464,8 @@ describe("App", () => {
     const text = collectText(getRoot(stdout));
     expect(text).toContain("audit tranche");
     expect(text).toContain("1. inspect");
-    expect(text).toContain("✓ complete");
-    expect(text).toContain("plan mode ended");
+    expect(text).toContain("✔");
+    expect(text).not.toContain("plan mode ended");
     expect(text).not.toContain("[plan]");
     unmount();
   });
@@ -415,8 +494,7 @@ describe("App", () => {
       <App session={session} configStore={FAKE_CONFIG_STORE} />,
     );
 
-    // Let the splash auto-dismiss so the steady-state fullscreen layout paints.
-    await new Promise((r) => setTimeout(r, 1_300));
+    await new Promise((r) => setTimeout(r, 50));
     const frame = collectStream(stdout);
 
     expect(frame).toContain("tail-marker-visible-in-viewport");

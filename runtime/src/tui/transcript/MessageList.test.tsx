@@ -239,13 +239,14 @@ describe("MessageList", () => {
             id: "meta-1",
             kind: "meta",
             label: "compact",
-            content: "summary 900 -> 300 tokens",
+            content: "Context compacted: summary (900 -> 300 tokens)",
           }),
         ]}
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("compact");
+    expect(frame).toContain("Context");
+    expect(frame).toContain("compacted");
     expect(frame).toContain("900");
     expect(frame).toContain("300");
     unmount();
@@ -278,13 +279,42 @@ describe("MessageList", () => {
       />,
     );
     const frame = await captureFrame(stdout);
+    expect(frame).toContain("Updated");
+    expect(frame).toContain("Plan");
     expect(frame).toContain("audit");
     expect(frame).toContain("chrome");
     expect(frame).toContain("mount");
     expect(frame).toContain("banner");
     expect(frame).toContain("status");
     expect(frame).toContain("line");
-    expect(frame).toContain("complete");
+    expect(frame).toContain("\u2714");
+    unmount();
+  });
+
+  test("renders fork/resume meta rows without generic brackets", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "meta-fork",
+            kind: "meta",
+            label: "fork",
+            content: "Thread forked from sess-1",
+          }),
+          mkMsg({
+            id: "meta-resume",
+            kind: "meta",
+            label: "resume",
+            content: "Resumed after 12.3s pause",
+          }),
+        ]}
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("Thread");
+    expect(frame).toContain("forked");
+    expect(frame).toContain("Resumed");
+    expect(frame).not.toContain("[fork]");
     unmount();
   });
 

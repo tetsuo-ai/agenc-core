@@ -72,16 +72,25 @@ interface QueryState {
   currentTurnId: string | null;
 }
 
+interface ResetPayload {
+  readonly initialEvents: readonly TranscriptSourceEvent[];
+  readonly liveTurnId: string | null;
+}
+
 type QueryAction =
   | {
       readonly kind: "reset";
-      readonly initialEvents: readonly TranscriptSourceEvent[];
+      readonly payload: ResetPayload;
     }
   | { readonly kind: "event"; readonly event: TranscriptSourceEvent };
 
 function createInitialState(
-  initialEvents: readonly TranscriptSourceEvent[] = [],
+  payload: ResetPayload = {
+    initialEvents: [],
+    liveTurnId: null,
+  },
 ): QueryState {
+  const { initialEvents, liveTurnId } = payload;
   let isStreaming = false;
   let currentTurnId: string | null = null;
   for (const event of initialEvents) {
@@ -108,8 +117,10 @@ function createInitialState(
   }
   return {
     events: [...initialEvents],
-    isStreaming,
-    currentTurnId,
+    // Resume / history hydration should not look like a live tail unless the
+    // session still reports an active turn at mount/reset time.
+    isStreaming: liveTurnId !== null ? true : false,
+    currentTurnId: liveTurnId ?? currentTurnId,
   };
 }
 
@@ -136,7 +147,7 @@ function reduceCurrentTurnId(
 function reducer(state: QueryState, action: QueryAction): QueryState {
   switch (action.kind) {
     case "reset":
-      return createInitialState(action.initialEvents);
+      return createInitialState(action.payload);
     case "event": {
       const { event } = action;
       if (event.type === "turn_start" || event.type === "turn_started") {
@@ -193,6 +204,8 @@ function makeTranscriptEnvelope<K extends TranscriptEventEnvelope["type"]>(
 
 function toTranscriptEvent(event: Event): TranscriptEventEnvelope | null {
   switch (event.msg.type) {
+    case "session_configured":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "turn_started":
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "turn_complete":
@@ -279,9 +292,13 @@ function peekTurnId(session: SessionLike): string | null {
 }
 
 export function useQuery(session: SessionLike): UseQueryResult {
+  const buildResetPayload = (): ResetPayload => ({
+    initialEvents: resolveInitialTranscriptEvents(session),
+    liveTurnId: peekTurnId(session),
+  });
   const [state, dispatch] = useReducer(
     reducer,
-    resolveInitialTranscriptEvents(session),
+    buildResetPayload(),
     createInitialState,
   );
   // Keep a ref to the session so the callback identity is stable even
@@ -292,7 +309,7 @@ export function useQuery(session: SessionLike): UseQueryResult {
   useEffect(() => {
     dispatch({
       kind: "reset",
-      initialEvents: resolveInitialTranscriptEvents(session),
+      payload: buildResetPayload(),
     });
   }, [session]);
 

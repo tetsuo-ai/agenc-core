@@ -285,6 +285,36 @@ describe("ApprovalOverlay", () => {
     unmount();
   });
 
+  test("renders queue message context when it differs from the request reason", async () => {
+    const queue: PendingPermissionRequest[] = [
+      {
+        requestId: "req-1",
+        toolName: "Bash",
+        toolInput: { command: "git status" },
+        turnId: "turn-1",
+        message: "needs approval because the command can modify git state",
+        submittedAt: Date.now() - 1_500,
+      },
+    ];
+    const { unmount, getText } = await mount(
+      withProviders(
+        <ApprovalOverlay
+          request={makeRequest({
+            requestId: "req-1",
+            reason: "workspace mutation",
+          })}
+          onResolve={() => undefined}
+          abortSignal={new AbortController().signal}
+        />,
+        { queue },
+      ),
+    );
+    expect(getText()).toContain(
+      "needs approval because the command can modify git state",
+    );
+    unmount();
+  });
+
   test("BashRequest renders `command` arg verbatim", async () => {
     const text = await renderSubcomponent(
       <BashRequest args={{ command: "rm -rf /nope" }} />,
@@ -436,6 +466,28 @@ describe("ApprovalOverlay", () => {
     );
 
     abortController.abort();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0]).toEqual({ behavior: "abort" });
+    unmount();
+  });
+
+  test("'C' aborts without approving", async () => {
+    const emitter = new EventEmitter();
+    const onResolve = vi.fn<[ApprovalDecision], void>();
+    const { unmount } = await mount(
+      withProviders(
+        <ApprovalOverlay
+          request={makeRequest()}
+          onResolve={onResolve}
+          abortSignal={new AbortController().signal}
+        />,
+        { emitter },
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ sequence: "c" }));
     await new Promise((r) => setTimeout(r, 20));
 
     expect(onResolve).toHaveBeenCalledTimes(1);

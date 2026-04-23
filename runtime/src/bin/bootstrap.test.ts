@@ -616,6 +616,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
+            type: "session_configured",
+            payload: expect.objectContaining({
+              sessionId: resumed.conversationId,
+            }),
+          }),
+          expect.objectContaining({
             type: "user_message",
             payload: expect.objectContaining({ message: "hello" }),
           }),

@@ -31,6 +31,7 @@ type TranscriptEventMsg = Extract<
   EventMsg,
   {
     readonly type:
+      | "session_configured"
       | "turn_started"
       | "turn_complete"
       | "turn_aborted"
@@ -202,13 +203,36 @@ function formatCompactBoundary(
   const tokens =
     typeof payload.preCompactTokens === "number" &&
     typeof payload.postCompactTokens === "number"
-      ? ` ${payload.preCompactTokens} -> ${payload.postCompactTokens} tokens`
+      ? ` (${payload.preCompactTokens} -> ${payload.postCompactTokens} tokens)`
       : "";
   const summary =
     typeof payload.summary === "string" && payload.summary.trim().length > 0
       ? payload.summary.trim()
-      : "context compacted";
-  return `${summary}${tokens}`;
+      : "";
+  if (summary.length > 0) {
+    return `Context compacted: ${summary}${tokens}`;
+  }
+  return `Context compacted${tokens}`;
+}
+
+function formatDurationMs(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs < 1000) {
+    return `${Math.max(0, Math.round(durationMs))}ms`;
+  }
+  if (durationMs < 60_000) {
+    return `${(durationMs / 1000).toFixed(1)}s`;
+  }
+  const minutes = Math.floor(durationMs / 60_000);
+  const seconds = Math.round((durationMs % 60_000) / 1000);
+  return `${minutes}m${seconds}s`;
+}
+
+function formatResumeSentinel(message: string): string {
+  const parsed = Number(message);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return `Resumed after ${formatDurationMs(parsed)} pause`;
+  }
+  return "Resumed after pause";
 }
 
 function formatWarning(
@@ -218,6 +242,16 @@ function formatWarning(
     return {
       kind: "meta",
       label: "resume",
+      content: formatResumeSentinel(payload.message),
+    };
+  }
+  if (
+    payload.cause === "snapshot_behind_rollout" ||
+    payload.cause === "orphaned_turn_recovered"
+  ) {
+    return {
+      kind: "meta",
+      label: "history",
       content: payload.message,
     };
   }
@@ -244,7 +278,34 @@ function formatDeprecation(
     typeof payload.replacement === "string" && payload.replacement.length > 0
       ? ` -> ${payload.replacement}`
       : "";
-  return `${payload.subject}${replacement}: ${payload.reason}`;
+  return `Deprecated ${payload.subject}${replacement}: ${payload.reason}`;
+}
+
+function formatSessionConfigured(
+  payload: Extract<
+    TranscriptEventMsg,
+    { readonly type: "session_configured" }
+  >["payload"],
+): { kind: TranscriptMessage["kind"]; label?: string; content: string } | null {
+  if (
+    typeof payload.forkedFromId === "string" &&
+    payload.forkedFromId.trim().length > 0
+  ) {
+    return {
+      kind: "meta",
+      label: "fork",
+      content: `Thread forked from ${payload.forkedFromId.trim()}`,
+    };
+  }
+  if (payload.historyEntryCount > 0) {
+    const noun = payload.historyEntryCount === 1 ? "entry" : "entries";
+    return {
+      kind: "meta",
+      label: "history",
+      content: `Resumed with ${payload.historyEntryCount} prior history ${noun}`,
+    };
+  }
+  return null;
 }
 
 export function eventsToMessages(
@@ -438,6 +499,20 @@ export function eventsToMessages(
     }
 
     switch (event.type) {
+      case "session_configured": {
+        const configured = formatSessionConfigured(event.payload);
+        if (configured) {
+          messages.push({
+            id: event.id ?? `session-configured-${timestamp}`,
+            turnId: ensureTurnId(currentTurnId),
+            kind: configured.kind,
+            ...(configured.label ? { label: configured.label } : {}),
+            content: configured.content,
+            timestamp,
+          });
+        }
+        break;
+      }
       case "turn_started": {
         markAssistantComplete();
         currentTurnId =

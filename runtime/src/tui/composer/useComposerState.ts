@@ -18,12 +18,24 @@
 
 import { useMemo, useReducer, type Dispatch } from "react";
 
+export type HistorySearchStatus = "idle" | "match" | "no-match";
+
+export interface ComposerHistorySearchState {
+  originalValue: string;
+  originalCursor: number;
+  query: string;
+  matches: string[];
+  matchIndex: number | null;
+  status: HistorySearchStatus;
+}
+
 export interface ComposerState {
   value: string;
   cursor: number;
   history: string[];
   historyIdx: number | null;
   draftBeforeHistory: string | null;
+  historySearch: ComposerHistorySearchState | null;
   pasteInFlight: boolean;
   pendingEnters: number;
 }
@@ -42,7 +54,15 @@ export type ComposerAction =
   | { type: "NEWLINE" }
   | { type: "PASTE_START" }
   | { type: "PASTE_COMPLETE" }
-  | { type: "CLEAR" };
+  | { type: "CLEAR" }
+  | { type: "HISTORY_SEARCH_START" }
+  | { type: "HISTORY_SEARCH_APPEND"; text: string }
+  | { type: "HISTORY_SEARCH_BACKSPACE" }
+  | { type: "HISTORY_SEARCH_CLEAR_QUERY" }
+  | { type: "HISTORY_SEARCH_OLDER" }
+  | { type: "HISTORY_SEARCH_NEWER" }
+  | { type: "HISTORY_SEARCH_ACCEPT" }
+  | { type: "HISTORY_SEARCH_CANCEL" };
 
 /**
  * Clamp a cursor position to `[0, value.length]` so every reducer
@@ -74,6 +94,124 @@ function lineEnd(value: string, cursor: number): number {
   return next === -1 ? value.length : next;
 }
 
+function createHistorySearchState(
+  state: ComposerState,
+): ComposerHistorySearchState {
+  return {
+    originalValue: state.value,
+    originalCursor: state.cursor,
+    query: "",
+    matches: [],
+    matchIndex: null,
+    status: "idle",
+  };
+}
+
+function restoreHistorySearchOriginal(
+  state: ComposerState,
+  search: ComposerHistorySearchState,
+): ComposerState {
+  return {
+    ...state,
+    value: search.originalValue,
+    cursor: clampCursor(search.originalCursor, search.originalValue.length),
+    historySearch: search,
+  };
+}
+
+function findHistorySearchMatches(
+  history: readonly string[],
+  query: string,
+): string[] {
+  const foldedQuery = query.toLocaleLowerCase();
+  if (foldedQuery.length === 0) return [];
+
+  const seen = new Set<string>();
+  const matches: string[] = [];
+  for (const entry of history) {
+    if (typeof entry !== "string" || entry.length === 0) continue;
+    if (!entry.toLocaleLowerCase().includes(foldedQuery)) continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    matches.push(entry);
+  }
+  return matches;
+}
+
+function applyHistorySearchQuery(
+  state: ComposerState,
+  search: ComposerHistorySearchState,
+  query: string,
+): ComposerState {
+  if (query.length === 0) {
+    return restoreHistorySearchOriginal(state, {
+      ...search,
+      query,
+      matches: [],
+      matchIndex: null,
+      status: "idle",
+    });
+  }
+
+  const matches = findHistorySearchMatches(state.history, query);
+  if (matches.length === 0) {
+    return restoreHistorySearchOriginal(state, {
+      ...search,
+      query,
+      matches: [],
+      matchIndex: null,
+      status: "no-match",
+    });
+  }
+
+  const match = matches[0]!;
+  return {
+    ...state,
+    value: match,
+    cursor: match.length,
+    historySearch: {
+      ...search,
+      query,
+      matches,
+      matchIndex: 0,
+      status: "match",
+    },
+  };
+}
+
+function stepHistorySearch(
+  state: ComposerState,
+  delta: number,
+): ComposerState {
+  const search = state.historySearch;
+  if (
+    search === null ||
+    search.query.length === 0 ||
+    search.matches.length === 0 ||
+    search.matchIndex === null
+  ) {
+    return state;
+  }
+
+  const nextIndex = Math.max(
+    0,
+    Math.min(search.matches.length - 1, search.matchIndex + delta),
+  );
+  const match = search.matches[nextIndex];
+  if (match === undefined) return state;
+
+  return {
+    ...state,
+    value: match,
+    cursor: match.length,
+    historySearch: {
+      ...search,
+      matchIndex: nextIndex,
+      status: "match",
+    },
+  };
+}
+
 function commitToHistory(state: ComposerState): ComposerState {
   const value = state.value;
   if (value.length === 0) {
@@ -85,6 +223,7 @@ function commitToHistory(state: ComposerState): ComposerState {
       cursor: 0,
       historyIdx: null,
       draftBeforeHistory: null,
+      historySearch: null,
     };
   }
   // De-dupe consecutive identical submissions — same policy as bash's
@@ -102,6 +241,7 @@ function commitToHistory(state: ComposerState): ComposerState {
     history,
     historyIdx: null,
     draftBeforeHistory: null,
+    historySearch: null,
   };
 }
 
@@ -210,9 +350,76 @@ export function composerReducer(
         cursor: 0,
         historyIdx: null,
         draftBeforeHistory: null,
+        historySearch: null,
+      };
+    }
+    case "HISTORY_SEARCH_START": {
+      if (state.historySearch !== null) {
+        return stepHistorySearch(state, +1);
+      }
+      return {
+        ...state,
+        historyIdx: null,
+        draftBeforeHistory: null,
+        historySearch: createHistorySearchState(state),
+      };
+    }
+    case "HISTORY_SEARCH_APPEND": {
+      const search = state.historySearch;
+      if (search === null || action.text.length === 0) return state;
+      return applyHistorySearchQuery(state, search, search.query + action.text);
+    }
+    case "HISTORY_SEARCH_BACKSPACE": {
+      const search = state.historySearch;
+      if (search === null) return state;
+      return applyHistorySearchQuery(
+        state,
+        search,
+        search.query.slice(0, Math.max(0, search.query.length - 1)),
+      );
+    }
+    case "HISTORY_SEARCH_CLEAR_QUERY": {
+      const search = state.historySearch;
+      if (search === null) return state;
+      return applyHistorySearchQuery(state, search, "");
+    }
+    case "HISTORY_SEARCH_OLDER": {
+      return stepHistorySearch(state, +1);
+    }
+    case "HISTORY_SEARCH_NEWER": {
+      return stepHistorySearch(state, -1);
+    }
+    case "HISTORY_SEARCH_ACCEPT": {
+      const search = state.historySearch;
+      if (
+        search === null ||
+        search.status !== "match" ||
+        search.matchIndex === null
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        cursor: state.value.length,
+        historyIdx: null,
+        draftBeforeHistory: null,
+        historySearch: null,
+      };
+    }
+    case "HISTORY_SEARCH_CANCEL": {
+      const search = state.historySearch;
+      if (search === null) return state;
+      return {
+        ...restoreHistorySearchOriginal(state, search),
+        historyIdx: null,
+        draftBeforeHistory: null,
+        historySearch: null,
       };
     }
     case "HISTORY_PREV": {
+      if (state.historySearch !== null) {
+        return stepHistorySearch(state, +1);
+      }
       if (state.history.length === 0) return state;
       if (state.historyIdx === null) {
         // First PREV press: stash whatever the user was drafting and
@@ -241,6 +448,9 @@ export function composerReducer(
       };
     }
     case "HISTORY_NEXT": {
+      if (state.historySearch !== null) {
+        return stepHistorySearch(state, -1);
+      }
       if (state.historyIdx === null) return state;
       if (state.historyIdx === 0) {
         // Step off the top of history back into the draft stash.
@@ -317,6 +527,7 @@ export function useComposerState(
       history: [...opts.initialHistory],
       historyIdx: null,
       draftBeforeHistory: null,
+      historySearch: null,
       pasteInFlight: false,
       pendingEnters: 0,
     }),

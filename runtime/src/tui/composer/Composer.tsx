@@ -65,7 +65,10 @@ import {
   readHistory,
   type HistoryEntry,
 } from "./history.js";
-import { useComposerState } from "./useComposerState.js";
+import {
+  useComposerState,
+  type ComposerHistorySearchState,
+} from "./useComposerState.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public types
@@ -327,6 +330,28 @@ function isPrintableInputEvent(event: InputEvent): boolean {
   return true;
 }
 
+function buildHistorySearchStatusLine(
+  search: ComposerHistorySearchState | null,
+): { readonly color: Color; readonly text: string } | null {
+  if (search === null) return null;
+
+  let suffix = "";
+  if (search.status === "match") {
+    const currentIndex = (search.matchIndex ?? 0) + 1;
+    suffix = `  ${currentIndex}/${search.matches.length}  Enter accept  Esc cancel`;
+  } else if (search.status === "no-match") {
+    suffix = "  no match";
+  }
+
+  return {
+    color:
+      search.status === "no-match"
+        ? (theme.colors.warning as Color)
+        : (theme.colors.primary as Color),
+    text: `reverse-i-search: ${search.query}${suffix}`,
+  };
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Main component
 // ────────────────────────────────────────────────────────────────────────
@@ -403,7 +428,8 @@ export const Composer: React.FC<ComposerProps> = ({
   const showSlashPalette =
     Boolean(slashDraft?.cursorInsideToken) &&
     slashTokenKey !== dismissedSlashToken &&
-    !exactSlashSelection;
+    !exactSlashSelection &&
+    state.historySearch === null;
   const slashConflict = hasSlashMultilineConflict(state.value);
   useEffect(() => {
     if (slashTokenKey === null && dismissedSlashToken !== null) {
@@ -450,6 +476,24 @@ export const Composer: React.FC<ComposerProps> = ({
       if (activeKeybindingContext === "modal") {
         return;
       }
+      if (state.historySearch !== null) {
+        if (event.key.ctrl && event.input.toLowerCase() === "s") {
+          dispatch({ type: "HISTORY_SEARCH_NEWER" });
+          return;
+        }
+        if (event.key.backspace) {
+          dispatch({ type: "HISTORY_SEARCH_BACKSPACE" });
+          return;
+        }
+        if (event.key.ctrl && event.input.toLowerCase() === "u") {
+          dispatch({ type: "HISTORY_SEARCH_CLEAR_QUERY" });
+          return;
+        }
+        if (isPrintableInputEvent(event)) {
+          dispatch({ type: "HISTORY_SEARCH_APPEND", text: event.input });
+        }
+        return;
+      }
       const isFromBracketedPaste = event.keypress.isPasted === true;
       const shouldTreatAsPaste =
         isPrintableInputEvent(event) &&
@@ -493,7 +537,14 @@ export const Composer: React.FC<ComposerProps> = ({
     return () => {
       emitter.removeListener("input", onInput);
     };
-  }, [activeKeybindingContext, dispatch, inputLocked, stdin, store]);
+  }, [
+    activeKeybindingContext,
+    dispatch,
+    inputLocked,
+    state.historySearch,
+    stdin,
+    store,
+  ]);
 
   // ── keybindings ────────────────────────────────────────────────────
   const onSubmitRef = useRef(onSubmit);
@@ -505,6 +556,10 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleSubmit = useCallback((): void => {
     if (inputLocked) return;
+    if (state.historySearch !== null) {
+      dispatch({ type: "HISTORY_SEARCH_ACCEPT" });
+      return;
+    }
     if (showSlashPalette || hasPendingTurn) return;
     if (store.isInFlight() || valueRef.current.length === 0) {
       // While a paste is mid-stream, forward the press to the reducer
@@ -535,11 +590,16 @@ export const Composer: React.FC<ComposerProps> = ({
     inputLocked,
     session.cwd,
     showSlashPalette,
+    state.historySearch,
     store,
   ]);
 
   const handleCancel = useCallback((): void => {
     if (inputLocked) return;
+    if (state.historySearch !== null) {
+      dispatch({ type: "HISTORY_SEARCH_CANCEL" });
+      return;
+    }
     if (showSlashPalette) return;
     if (valueRef.current.length > 0) {
       dispatch({ type: "CLEAR" });
@@ -548,30 +608,54 @@ export const Composer: React.FC<ComposerProps> = ({
     if (!hasPendingTurn) return;
     dispatch({ type: "CLEAR" });
     if (onCancel) onCancel();
-  }, [dispatch, hasPendingTurn, inputLocked, onCancel, showSlashPalette]);
+  }, [
+    dispatch,
+    hasPendingTurn,
+    inputLocked,
+    onCancel,
+    showSlashPalette,
+    state.historySearch,
+  ]);
 
   const handleNewline = useCallback((): void => {
     if (inputLocked) return;
+    if (state.historySearch !== null) return;
     dispatch({ type: "NEWLINE" });
-  }, [dispatch, inputLocked]);
+  }, [dispatch, inputLocked, state.historySearch]);
 
   const handleHistoryPrev = useCallback((): void => {
     if (inputLocked) return;
     if (showSlashPalette) return;
+    if (state.historySearch !== null) {
+      dispatch({ type: "HISTORY_SEARCH_OLDER" });
+      return;
+    }
     dispatch({ type: "HISTORY_PREV" });
-  }, [dispatch, inputLocked, showSlashPalette]);
+  }, [dispatch, inputLocked, showSlashPalette, state.historySearch]);
 
   const handleHistoryNext = useCallback((): void => {
     if (inputLocked) return;
     if (showSlashPalette) return;
+    if (state.historySearch !== null) {
+      dispatch({ type: "HISTORY_SEARCH_NEWER" });
+      return;
+    }
     dispatch({ type: "HISTORY_NEXT" });
-  }, [dispatch, inputLocked, showSlashPalette]);
+  }, [dispatch, inputLocked, showSlashPalette, state.historySearch]);
+
+  const handleHistorySearch = useCallback((): void => {
+    if (inputLocked) return;
+    if (activeKeybindingContext !== "chat") return;
+    if (showSlashPalette) return;
+    dispatch({ type: "HISTORY_SEARCH_START" });
+  }, [activeKeybindingContext, dispatch, inputLocked, showSlashPalette]);
 
   useKeybinding("chat:submit", handleSubmit, "chat");
   useKeybinding("chat:cancel", handleCancel, "chat");
   useKeybinding("chat:newline", handleNewline, "chat");
   useKeybinding("history:prev", handleHistoryPrev, "chat");
   useKeybinding("history:next", handleHistoryNext, "chat");
+  useKeybinding("history:search", handleHistorySearch, "global");
 
   // ── mention scanning + warning emission ────────────────────────────
   const allowedRoots = config?.attachments?.allowedRoots;
@@ -641,6 +725,10 @@ export const Composer: React.FC<ComposerProps> = ({
   );
 
   const statusLine = useMemo(() => {
+    const historySearchLine = buildHistorySearchStatusLine(state.historySearch);
+    if (historySearchLine) {
+      return historySearchLine;
+    }
     if (pendingRequestCount > 0) {
       return {
         color: colors.warning,
@@ -700,6 +788,7 @@ export const Composer: React.FC<ComposerProps> = ({
     slashPreviewItem,
     state.pasteInFlight,
     state.pendingEnters,
+    state.historySearch,
     exactSlashSelection,
   ]);
 

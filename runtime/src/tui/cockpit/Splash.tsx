@@ -1,8 +1,7 @@
 /**
  * Cockpit Splash — boot-time welcome screen.
  *
- * Shown once when the TUI starts and dismissed on the first keystroke
- * (or after `autoDismissMs` if provided). The rich variant wraps the
+ * Dismissed on the first keystroke. The rich variant still wraps the
  * watch splash logic module (`runtime/src/watch/agenc-watch-splash.mjs`)
  * which consumes live session / transport state to pick a greeting.
  * That module needs a big bag of dependencies that are only available
@@ -30,8 +29,6 @@ import { theme } from "../theme.js";
 
 export interface SplashProps {
   readonly onDismiss?: () => void;
-  /** Optional auto-dismiss after N ms. Defaults to never. */
-  readonly autoDismissMs?: number;
   /** Optional custom title line. Defaults to the product name. */
   readonly title?: string;
   /** Optional status text shown beneath the title. */
@@ -81,7 +78,6 @@ export function __resetSplashForTests(): void {
 
 export const Splash: React.FC<SplashProps> = ({
   onDismiss,
-  autoDismissMs,
   title,
   status,
 }) => {
@@ -116,19 +112,6 @@ export const Splash: React.FC<SplashProps> = ({
       emitter.off("input", onAnyInput);
     };
   }, [stdin]);
-
-  // Auto-dismiss timer. Cleaned up on unmount.
-  useEffect(() => {
-    if (typeof autoDismissMs !== "number" || autoDismissMs <= 0) {
-      return undefined;
-    }
-    const handle = setTimeout(() => {
-      onDismissRef.current?.();
-    }, autoDismissMs);
-    return () => {
-      clearTimeout(handle);
-    };
-  }, [autoDismissMs]);
 
   const titleText = title ?? "AgenC";
   const statusText = status ?? "Starting runtime...";

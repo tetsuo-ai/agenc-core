@@ -356,6 +356,10 @@ export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
   session,
   cwd,
 }) => {
+  if (items.length === 0) {
+    return <></>;
+  }
+
   const [resolved, setResolved] = useState<readonly ResolvedItem[]>(() =>
     items.map((key) => ({
       key,

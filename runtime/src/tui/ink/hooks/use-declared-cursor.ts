@@ -33,6 +33,7 @@ export function useDeclaredCursor({
 }): (element: DOMElement | null) => void {
   const setCursorDeclaration = useContext(CursorDeclarationContext)
   const nodeRef = useRef<DOMElement | null>(null)
+  const committedNodeRef = useRef<DOMElement | null>(null)
 
   const setNode = useCallback((node: DOMElement | null) => {
     nodeRef.current = node
@@ -53,6 +54,7 @@ export function useDeclaredCursor({
   // sibling handoff nulls it.
   useLayoutEffect(() => {
     const node = nodeRef.current
+    committedNodeRef.current = node
     if (active && node) {
       setCursorDeclaration({ relativeX: column, relativeY: line, node })
     } else {
@@ -65,7 +67,7 @@ export function useDeclaredCursor({
   // every line/column change, which would transiently null between commits.
   useLayoutEffect(() => {
     return () => {
-      setCursorDeclaration(null, nodeRef.current)
+      setCursorDeclaration(null, committedNodeRef.current)
     }
   }, [setCursorDeclaration])
 

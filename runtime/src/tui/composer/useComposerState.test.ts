@@ -18,6 +18,7 @@ function freshState(overrides: Partial<ComposerState> = {}): ComposerState {
     history: [],
     historyIdx: null,
     draftBeforeHistory: null,
+    historySearch: null,
     pasteInFlight: false,
     pendingEnters: 0,
     ...overrides,
@@ -143,6 +144,107 @@ describe("composerReducer", () => {
     state = composerReducer(state, { type: "HISTORY_PREV" });
     expect(state.historyIdx).toBe(2);
     expect(state.value).toBe("oldest");
+  });
+
+  test("HISTORY_SEARCH_START snapshots the current draft without previewing history yet", () => {
+    const start = freshState({
+      value: "draft",
+      cursor: 3,
+      history: ["second", "first"],
+    });
+    const next = composerReducer(start, { type: "HISTORY_SEARCH_START" });
+    expect(next.value).toBe("draft");
+    expect(next.cursor).toBe(3);
+    expect(next.historySearch).toMatchObject({
+      originalValue: "draft",
+      originalCursor: 3,
+      query: "",
+      status: "idle",
+    });
+  });
+
+  test("HISTORY_SEARCH_APPEND previews the newest unique match and older/newer walk matches", () => {
+    let state = freshState({
+      value: "draft",
+      cursor: 5,
+      history: ["alpha two", "alpha one", "alpha one", "beta"],
+    });
+    state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
+    state = composerReducer(state, {
+      type: "HISTORY_SEARCH_APPEND",
+      text: "alpha",
+    });
+    expect(state.value).toBe("alpha two");
+    expect(state.historySearch).toMatchObject({
+      query: "alpha",
+      matchIndex: 0,
+      status: "match",
+    });
+    expect(state.historySearch?.matches).toEqual(["alpha two", "alpha one"]);
+
+    state = composerReducer(state, { type: "HISTORY_SEARCH_OLDER" });
+    expect(state.value).toBe("alpha one");
+    expect(state.historySearch?.matchIndex).toBe(1);
+
+    state = composerReducer(state, { type: "HISTORY_SEARCH_NEWER" });
+    expect(state.value).toBe("alpha two");
+    expect(state.historySearch?.matchIndex).toBe(0);
+  });
+
+  test("HISTORY_SEARCH_CANCEL restores the original draft", () => {
+    let state = freshState({
+      value: "draft",
+      cursor: 2,
+      history: ["alpha one"],
+    });
+    state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
+    state = composerReducer(state, {
+      type: "HISTORY_SEARCH_APPEND",
+      text: "alpha",
+    });
+    expect(state.value).toBe("alpha one");
+
+    state = composerReducer(state, { type: "HISTORY_SEARCH_CANCEL" });
+    expect(state.value).toBe("draft");
+    expect(state.cursor).toBe(2);
+    expect(state.historySearch).toBeNull();
+  });
+
+  test("HISTORY_SEARCH_ACCEPT keeps the previewed match as the draft", () => {
+    let state = freshState({
+      value: "draft",
+      cursor: 5,
+      history: ["alpha one"],
+    });
+    state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
+    state = composerReducer(state, {
+      type: "HISTORY_SEARCH_APPEND",
+      text: "alpha",
+    });
+    state = composerReducer(state, { type: "HISTORY_SEARCH_ACCEPT" });
+    expect(state.value).toBe("alpha one");
+    expect(state.cursor).toBe("alpha one".length);
+    expect(state.historySearch).toBeNull();
+  });
+
+  test("HISTORY_SEARCH with no match restores the draft but stays active for further edits", () => {
+    let state = freshState({
+      value: "draft",
+      cursor: 5,
+      history: ["alpha one"],
+    });
+    state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
+    state = composerReducer(state, {
+      type: "HISTORY_SEARCH_APPEND",
+      text: "zzz",
+    });
+    expect(state.value).toBe("draft");
+    expect(state.cursor).toBe(5);
+    expect(state.historySearch).toMatchObject({
+      query: "zzz",
+      status: "no-match",
+      matchIndex: null,
+    });
   });
 
   test("MOVE_CURSOR clamps to [0, value.length]", () => {

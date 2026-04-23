@@ -100,6 +100,23 @@ function shortRunId(runId: string | undefined): string | undefined {
   return trimmed.slice(-8);
 }
 
+function resolveModelDisplay(model: string | undefined): {
+  readonly text: string;
+  readonly color: Color;
+} {
+  const trimmed = model?.trim();
+  if (!trimmed) {
+    return {
+      text: "loading",
+      color: theme.colors.muted as Color,
+    };
+  }
+  return {
+    text: trimmed,
+    color: theme.colors.ink as Color,
+  };
+}
+
 function Chip({
   label,
   value,
@@ -199,6 +216,7 @@ export const Banner: React.FC<BannerProps> = ({
     ? getSpinnerFrame(tick)
     : undefined;
   const modeAccent = modeColor(mode);
+  const modelDisplay = resolveModelDisplay(model);
 
   return (
     <Box
@@ -232,8 +250,8 @@ export const Banner: React.FC<BannerProps> = ({
 
       <Chip
         label="model"
-        value={model ?? "grok"}
-        valueColor={theme.colors.ink as Color}
+        value={modelDisplay.text}
+        valueColor={modelDisplay.color}
       />
 
       {tools !== undefined ? (

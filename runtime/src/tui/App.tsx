@@ -45,8 +45,6 @@ import React, {
 import Box from "./ink/components/Box.js";
 import { AlternateScreen } from "./ink/components/AlternateScreen.js";
 import StdinContext from "./ink/components/StdinContext.js";
-import StdoutContext from "./ink/components/StdoutContext.js";
-import instances from "./ink/instances.js";
 
 import {
   AgenCAppStateProvider,
@@ -54,7 +52,10 @@ import {
   type ConfigStoreLike,
   type SessionLike as AppStateSessionLike,
 } from "./state/AppState.js";
-import { KeybindingProvider } from "./keybindings/KeybindingContext.js";
+import {
+  KeybindingProvider,
+  useKeybinding,
+} from "./keybindings/KeybindingContext.js";
 import type {
   BindingContext,
   BindingMap,
@@ -66,11 +67,9 @@ import {
 } from "./overlay/ModelSelectionOverlay.js";
 import { Banner } from "./cockpit/Banner.js";
 import {
-  DEFAULT_STATUS_LINE_ITEMS,
   StatusLineConfig,
   type SessionLike as StatusLineSessionLike,
 } from "./cockpit/StatusLineConfig.js";
-import { Splash } from "./cockpit/Splash.js";
 import { MessageList } from "./transcript/MessageList.js";
 import { Composer, type ComposerSession } from "./composer/Composer.js";
 import {
@@ -96,6 +95,12 @@ import {
   type PickerCommandIntent,
 } from "./picker-intents.js";
 import type { PendingPermissionRequest } from "../permissions/context.js";
+import {
+  getNextPermissionMode,
+  transitionPermissionMode,
+  type BypassConsentRequiredError,
+} from "../permissions/mode.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public surface
@@ -196,10 +201,12 @@ function emitSessionWarning(
   });
 }
 
-function readStatusLineItems(configStore: ConfigStoreLike): readonly string[] {
+function readStatusLineItems(
+  configStore: ConfigStoreLike,
+): readonly string[] | undefined {
   const snapshot = configStore.snapshot;
   if (!snapshot || typeof snapshot !== "object") {
-    return DEFAULT_STATUS_LINE_ITEMS;
+    return undefined;
   }
   const statusLine = (
     snapshot as {
@@ -207,12 +214,12 @@ function readStatusLineItems(configStore: ConfigStoreLike): readonly string[] {
     }
   ).statusLine;
   if (!Array.isArray(statusLine?.items)) {
-    return DEFAULT_STATUS_LINE_ITEMS;
+    return undefined;
   }
   const items = statusLine.items.filter(
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
-  return items.length > 0 ? items : DEFAULT_STATUS_LINE_ITEMS;
+  return items.length > 0 ? items : undefined;
 }
 
 function readInitialTokenTotal(session: AppSessionLike): number | undefined {
@@ -304,6 +311,25 @@ function toHandlerRequest(
   };
 }
 
+function hasPermissionModeRegistryUpdate(
+  registry: AppStateSessionLike["services"]["permissionModeRegistry"],
+): registry is AppStateSessionLike["services"]["permissionModeRegistry"] & {
+  update(next: ToolPermissionContext): Promise<void> | void;
+} {
+  return typeof (registry as { readonly update?: unknown }).update === "function";
+}
+
+function isBypassConsentRequiredError(
+  value: unknown,
+): value is BypassConsentRequiredError {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    "error" in value &&
+    (value as { readonly error?: unknown }).error === "bypass_consent_required"
+  );
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // TUIRoot — the real composition
 // ────────────────────────────────────────────────────────────────────────
@@ -315,7 +341,6 @@ function TUIRoot({
   readonly model?: string;
   readonly initialPrompt?: string;
 }): React.ReactElement {
-  const stdout = useContext(StdoutContext);
   const { mode, session, configStore, pendingRequests, permissionQueueOps } =
     useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
@@ -329,25 +354,6 @@ function TUIRoot({
     session as unknown as QuerySessionLike,
   );
   const initialPromptSubmittedRef = useRef(false);
-  const [showSplash, setShowSplash] = useState(true);
-  const splashWasVisibleRef = useRef(true);
-  const dismissSplash = useCallback(() => {
-    instances.get(stdout)?.invalidatePrevFrame();
-    setShowSplash(false);
-  }, [stdout]);
-  useEffect(() => {
-    if (showSplash) {
-      splashWasVisibleRef.current = true;
-      return;
-    }
-    if (!splashWasVisibleRef.current) {
-      return;
-    }
-    splashWasVisibleRef.current = false;
-    queueMicrotask(() => {
-      instances.get(stdout)?.forceRedraw();
-    });
-  }, [showSplash, stdout]);
   const overlay = useOverlayStack();
 
   // Derive transcript messages from phase events on every render. The
@@ -375,7 +381,7 @@ function TUIRoot({
     return out;
   }, [events]);
   const hasPlanActive = isPlanActive(planEvents);
-  const statusLineItems = useMemo(
+  const statusLineItems = useMemo<readonly string[] | undefined>(
     () => readStatusLineItems(configStore),
     [configStore],
   );
@@ -415,6 +421,50 @@ function TUIRoot({
     () => buildStatusLineSession(session, mode, model),
     [mode, model, session],
   );
+  const handleCycleMode = useCallback((): void => {
+    const registry = session.services.permissionModeRegistry;
+    if (!hasPermissionModeRegistryUpdate(registry)) {
+      return;
+    }
+    const current = registry.current() as ToolPermissionContext;
+    const nextMode = getNextPermissionMode(current.mode, current);
+    let transitioned: ToolPermissionContext | BypassConsentRequiredError;
+    try {
+      transitioned = transitionPermissionMode(current.mode, nextMode, current, {
+        requireBypassConsent: true,
+        workspacePath: composerSession.cwd,
+      });
+    } catch (error) {
+      emitSessionWarning(
+        session,
+        "permission_mode_cycle_failed",
+        error instanceof Error ? error.message : String(error),
+      );
+      return;
+    }
+    if (isBypassConsentRequiredError(transitioned)) {
+      emitSessionWarning(
+        session,
+        "bypass_consent_required",
+        "Switching to bypassPermissions requires explicit consent. Run /permissions accept-bypass to confirm this workspace will use bypassPermissions mode.",
+        {
+          workspacePath:
+            transitioned.workspacePath ?? composerSession.cwd,
+        },
+      );
+      return;
+    }
+    void Promise.resolve(registry.update({ ...transitioned, mode: nextMode })).catch(
+      (error: unknown) => {
+        emitSessionWarning(
+          session,
+          "permission_mode_cycle_failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      },
+    );
+  }, [composerSession.cwd, session]);
+  useKeybinding("chat:cycleMode", handleCycleMode, "chat");
 
   const validPendingRequests = useMemo(
     () => pendingRequests.filter(hasInteractiveResolver),
@@ -831,24 +881,23 @@ function TUIRoot({
       height="100%"
       width="100%"
     >
-      {showSplash ? (
-        <Splash onDismiss={dismissSplash} autoDismissMs={1_200} />
-      ) : null}
-
       {/* cockpit region (top) */}
       <Box flexDirection="column" flexShrink={0}>
         <Banner
           mode={mode}
-          model={model}
+          model={statusLineSession.model}
+          runId={statusLineSession.sessionId}
           isStreaming={isStreaming}
           hasPlanActive={hasPlanActive}
         />
-        <StatusLineConfig
-          items={statusLineItems}
-          session={statusLineSession}
-          configStore={configStore}
-          cwd={composerSession.cwd}
-        />
+        {statusLineItems !== undefined ? (
+          <StatusLineConfig
+            items={statusLineItems}
+            session={statusLineSession}
+            configStore={configStore}
+            cwd={composerSession.cwd}
+          />
+        ) : null}
       </Box>
 
       {/* transcript region (middle, flex:1) */}
@@ -862,7 +911,6 @@ function TUIRoot({
           session={composerSession}
           onSubmit={handleSubmit}
           onCancel={handleCancel}
-          inputLocked={showSplash}
         />
       </Box>
 

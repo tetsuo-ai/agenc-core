@@ -224,6 +224,10 @@ function queuePositionLabel(index: number, total: number): string {
   return `Queue ${index + 1}/${total}`;
 }
 
+function sanitizeMessage(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 export const BashRequest: React.FC<{ args: unknown }> = ({ args }) => {
   const command = extractCommand(args);
   const preview = truncateLines(command, MAX_PREVIEW_LINES);
@@ -350,6 +354,12 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     () => queue.slice(queuePosition, queuePosition + 4),
     [queue, queuePosition],
   );
+  const requestMessage = useMemo(() => {
+    const message = sanitizeMessage(activeQueueEntry.message);
+    if (message.length === 0) return "";
+    if (message === sanitizeMessage(request.reason)) return "";
+    return message;
+  }, [activeQueueEntry.message, request.reason]);
 
   const resolveOnce = useCallback(
     (decision: ApprovalDecision) => {
@@ -401,6 +411,10 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     resolveOnce({ behavior: "deny" });
   }, [focusZone, resolveOnce]);
 
+  const onAbort = useCallback(() => {
+    resolveOnce({ behavior: "abort" });
+  }, [resolveOnce]);
+
   useKeybinding("modal:confirm", onAllow, "modal");
   useKeybinding("modal:yes", onAllow, "modal");
   useKeybinding("modal:allowSession", onAllowSession, "modal");
@@ -422,6 +436,10 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     if (!emitter) return;
     const listener = (event: InputEvent): void => {
       if (resolvedRef.current) return;
+      if (!event.key.ctrl && !event.key.meta && event.input === "c") {
+        onAbort();
+        return;
+      }
       if (event.key.tab) {
         setFocusZone((current) =>
           current === "decision" ? "details" : "decision",
@@ -453,7 +471,7 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
     return () => {
       emitter.removeListener("input", listener);
     };
-  }, [cycleDetailTab, focusZone, stdin]);
+  }, [cycleDetailTab, focusZone, onAbort, stdin]);
 
   const body = renderToolBody(request.tool, request.args);
 
@@ -476,6 +494,7 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
       <Text dim>{`workspace · ${request.workspacePath}`}</Text>
       <Text dim>{`scope · ${summarizeScope(request.tool, request.args)}`}</Text>
       {request.reason ? <Text dim>{`reason · ${request.reason}`}</Text> : null}
+      {requestMessage ? <Text dim>{`message · ${requestMessage}`}</Text> : null}
       {activeQueueEntry.blockedPath ? (
         <Text dim>{`blocked path · ${activeQueueEntry.blockedPath}`}</Text>
       ) : null}
@@ -497,7 +516,7 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
         <Text dim>
           {focusZone === "details"
             ? "Details focused · Tab/Esc returns to actions · arrows or H/J/K/L switch tabs"
-            : "Actions focused · Tab moves into details"}
+            : "Actions focused · Tab moves into details · C aborts"}
         </Text>
       </Box>
 
@@ -515,6 +534,10 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
             <Text>{`request id · ${request.requestId}`}</Text>
             <Text>{`cwd · ${request.workspacePath}`}</Text>
             <Text>{`age · ${humanizeAge(activeQueueEntry.submittedAt)}`}</Text>
+            {requestMessage ? <Text>{`message · ${requestMessage}`}</Text> : null}
+            {activeQueueEntry.blockedPath ? (
+              <Text>{`blocked path · ${activeQueueEntry.blockedPath}`}</Text>
+            ) : null}
           </Box>
         ) : null}
         {detailTab === "preview" ? body : null}
@@ -553,7 +576,7 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
         <Text>{`[Y] Allow once${focusZone === "decision" ? "  <Enter>" : ""}`}</Text>
         <Text>[A] Allow this session</Text>
         <Text>{`[D] Deny${focusZone === "decision" ? "  <N / Esc>" : "  <Esc returns to actions>"}`}</Text>
-        <Text dim>Ctrl+C aborts the pending request</Text>
+        <Text>[C] Abort without approving</Text>
       </Box>
     </Box>
   );

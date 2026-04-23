@@ -1,14 +1,9 @@
 /**
- * PlanProgress — transcript renderer for the T12 plan EventMsgs.
+ * PlanProgress — transcript renderer for plan history cells.
  *
- * Scope (T12 Wave 4-C):
- *   - Consumes the `plan_started` / `plan_delta` / `plan_item_completed`
- *     / `plan_exited` events that `src/session/plan-mode.ts` now emits,
- *     groups them by `planItemId`, and renders each group as a single
- *     framed transcript entry.
- *   - `plan_exited` is a terminal marker rendered as a dimmed line
- *     separator so the operator can see plan mode left without waiting
- *     for the next transcript entry.
+ * Consumes the `plan_started` / `plan_delta` / `plan_item_completed` /
+ * `plan_exited` stream and renders a codex-style "Updated Plan" cell with a
+ * checklist instead of the older bordered per-item widget.
  *
  * Design notes:
  *   - The component is pure — the caller passes the current event slice
@@ -28,6 +23,7 @@ import React, { useMemo } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
+import { theme } from "../theme.js";
 
 /** Discriminated plan-event union accepted by `<PlanProgress>`. */
 export type PlanEvent =
@@ -74,18 +70,22 @@ interface PlanItemFrame {
 function reduceEvents(events: ReadonlyArray<PlanEvent>): {
   readonly frames: ReadonlyArray<PlanItemFrame>;
   readonly exited: boolean;
+  readonly activePlanItemId: string | null;
 } {
   const order: string[] = [];
   const map = new Map<string, PlanItemFrame>();
   let exited = false;
+  let activePlanItemId: string | null = null;
 
   for (const ev of events) {
     if (ev.kind === "plan_exited") {
       exited = true;
+      activePlanItemId = null;
       continue;
     }
     const existing = map.get(ev.planItemId);
     if (ev.kind === "plan_started") {
+      activePlanItemId = ev.planItemId;
       if (!existing) {
         order.push(ev.planItemId);
         map.set(ev.planItemId, {
@@ -103,6 +103,7 @@ function reduceEvents(events: ReadonlyArray<PlanEvent>): {
       continue;
     }
     if (ev.kind === "plan_delta") {
+      activePlanItemId = ev.planItemId;
       const frame =
         existing ??
         (() => {
@@ -123,6 +124,7 @@ function reduceEvents(events: ReadonlyArray<PlanEvent>): {
       continue;
     }
     if (ev.kind === "plan_item_completed") {
+      activePlanItemId = null;
       const frame =
         existing ??
         (() => {
@@ -148,33 +150,73 @@ function reduceEvents(events: ReadonlyArray<PlanEvent>): {
     const f = map.get(id);
     if (f) frames.push(f);
   }
-  return { frames, exited };
+  return { frames, exited, activePlanItemId };
 }
 
-/** Sigil prefix for the plan header row. */
-const PLAN_SIGIL = "\uD83D\uDCCB"; // 📋
+function detailText(frame: PlanItemFrame): string {
+  const detail = (frame.finalText ?? frame.body).trim();
+  if (detail.length === 0) return "";
+  if (frame.title.trim().length > 0 && detail === frame.title.trim()) {
+    return "";
+  }
+  return detail;
+}
 
-/**
- * Render a single plan-item frame as a bordered block with a header,
- * body, and completion footer.
- */
-const PlanItemBlock: React.FC<{ readonly frame: PlanItemFrame }> = ({
+const PlanItemLine: React.FC<{
+  readonly frame: PlanItemFrame;
+  readonly activePlanItemId: string | null;
+  readonly exited: boolean;
+}> = ({
   frame,
+  activePlanItemId,
+  exited,
 }) => {
-  const header =
-    frame.title.length > 0 ? `${PLAN_SIGIL} ${frame.title}` : "[PLAN]";
-  const body = frame.finalText ?? frame.body;
+  const summary =
+    frame.title.trim() ||
+    detailText(frame).split("\n").find((line) => line.trim().length > 0)?.trim() ||
+    "(plan step)";
+  const detail = detailText(frame);
+  const status: "completed" | "in_progress" | "pending" = frame.completed
+    ? "completed"
+    : !exited && activePlanItemId === frame.planItemId
+      ? "in_progress"
+      : "pending";
+  const icon =
+    status === "completed" ? "\u2714" : "\u25A1";
+  const color =
+    status === "completed"
+      ? theme.colors.success
+      : status === "in_progress"
+        ? theme.colors.primary
+        : theme.colors.dim;
+
   return (
-    <Box borderStyle="single" paddingX={1} flexDirection="column">
-      <Text bold>{header}</Text>
-      {body.length > 0 ? <Text>{body}</Text> : null}
-      {frame.completed ? <Text color="green">{"\u2713 complete"}</Text> : null}
+    <Box flexDirection="column">
+      <Box flexDirection="row">
+        <Text dim>{"  \u2514 "}</Text>
+        <Text color={color}>{icon}</Text>
+        <Text> </Text>
+        <Text {...(status === "completed" ? { dim: true } : {})}>{summary}</Text>
+      </Box>
+      {detail.length > 0 && detail !== summary ? (
+        <Box flexDirection="column">
+          {detail.split("\n").map((line, index) => (
+            <Box key={`${frame.planItemId}-detail-${index}`} flexDirection="row">
+              <Text dim>{"    "}</Text>
+              <Text dim>{line.length > 0 ? line : " "}</Text>
+            </Box>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
 };
 
 export const PlanProgress: React.FC<PlanProgressProps> = ({ events }) => {
-  const { frames, exited } = useMemo(() => reduceEvents(events), [events]);
+  const { frames, exited, activePlanItemId } = useMemo(
+    () => reduceEvents(events),
+    [events],
+  );
 
   if (frames.length === 0 && !exited) {
     return null;
@@ -182,10 +224,24 @@ export const PlanProgress: React.FC<PlanProgressProps> = ({ events }) => {
 
   return (
     <Box flexDirection="column">
-      {frames.map((frame) => (
-        <PlanItemBlock key={frame.planItemId} frame={frame} />
-      ))}
-      {exited ? <Text dim>{"— plan mode ended —"}</Text> : null}
+      <Box flexDirection="row">
+        <Text dim>{"\u2022 "}</Text>
+        <Text bold>Updated Plan</Text>
+      </Box>
+      {frames.length === 0 ? (
+        <Box flexDirection="row">
+          <Text dim>{"  \u2514 (no steps provided)"}</Text>
+        </Box>
+      ) : (
+        frames.map((frame) => (
+          <PlanItemLine
+            key={frame.planItemId}
+            frame={frame}
+            activePlanItemId={activePlanItemId}
+            exited={exited}
+          />
+        ))
+      )}
     </Box>
   );
 };

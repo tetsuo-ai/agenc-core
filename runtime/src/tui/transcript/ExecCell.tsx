@@ -1,20 +1,13 @@
 /**
- * ExecCell — Codex-style shell execution cell.
+ * ExecCell — shell execution history cell.
  *
- * Renders a single `$ command` line and its captured stdout / stderr
- * below, followed by a compact status badge:
+ * Mirrors codex's history-cell shape more closely than the older boxed
+ * `$ command` widget: a single inline "Running/Ran <command>" header,
+ * optional indented stdout / stderr lines, and a compact completion note.
  *
- *     $ npm run build
- *     > …stdout / stderr (dimmed)…
- *     · running        (undefined exit)
- *     ✓ 0  in 12.3s    (exit 0)
- *     ✗ 1  in 4.1s     (non-zero exit)
- *     ⚠ timeout        (timedOut=true)
- *
- * When the combined stdout + stderr exceeds 20 lines, the middle is
- * collapsed to a "… (N lines elided) …" marker so a runaway build log
- * doesn't blow out the transcript. The collapse helper is exported so
- * `MessageList` can invoke it directly for inline tool_result rendering.
+ * When stdout/stderr exceed the head/tail budget, the middle is collapsed to
+ * an "… (N lines elided) …" marker so long logs do not dominate the
+ * transcript.
  *
  * @module
  */
@@ -121,6 +114,20 @@ function computeStatus(props: ExecCellProps): StatusBadge {
   };
 }
 
+function renderIndentedLines(
+  lines: readonly string[],
+  color?: string,
+): React.ReactElement[] {
+  return lines.map((line, index) => (
+    <Box key={`${color ?? "default"}-${index}`} flexDirection="row">
+      <Text dim>{index === 0 ? "  \u2514 " : "    "}</Text>
+      <Text {...(color ? { color } : {})} dim>
+        {line.length > 0 ? line : " "}
+      </Text>
+    </Box>
+  ));
+}
+
 export const ExecCell: React.FC<ExecCellProps> = (props) => {
   const status = useMemo(() => computeStatus(props), [props]);
   const displayCommand = useMemo(
@@ -142,40 +149,36 @@ export const ExecCell: React.FC<ExecCellProps> = (props) => {
     typeof props.durationMs === "number" && props.durationMs >= 0
       ? ` in ${formatDuration(props.durationMs)}`
       : "";
+  const statusDetail = props.timedOut
+    ? `Timed out${durationLabel}`
+    : props.exitCode === undefined
+      ? null
+      : props.exitCode === 0
+        ? `Completed${durationLabel}`
+        : `Exited ${props.exitCode}${durationLabel}`;
+  const stdoutLines = hasStdout ? collapsedStdout.split("\n") : [];
+  const stderrLines = hasStderr ? collapsedStderr.split("\n") : [];
+  const verb = props.exitCode === undefined && !props.timedOut ? "Running" : "Ran";
 
   return (
-    <Box flexDirection="column" borderStyle="round" paddingX={1}>
-      {/* command row */}
+    <Box flexDirection="column">
       <Box flexDirection="row">
-        <Text color={theme.colors.primary}>{"$ "}</Text>
+        <Text color={status.color}>{status.glyph}</Text>
+        <Text> </Text>
+        <Text bold>{verb}</Text>
+        <Text> </Text>
         <Text>{displayCommand}</Text>
       </Box>
-
-      {hasStdout ? (
-        <Box flexDirection="column">
-          <Text dim>{collapsedStdout}</Text>
-        </Box>
-      ) : null}
-
-      {hasStderr ? (
-        <Box flexDirection="column">
-          <Text color={theme.colors.error} dim>
-            {collapsedStderr}
+      {renderIndentedLines(stdoutLines)}
+      {renderIndentedLines(stderrLines, theme.colors.error)}
+      {statusDetail ? (
+        <Box flexDirection="row">
+          <Text dim>{"  \u2514 "}</Text>
+          <Text dim color={props.exitCode && props.exitCode !== 0 ? theme.colors.error : theme.colors.dim}>
+            {statusDetail}
           </Text>
         </Box>
       ) : null}
-
-      {/* status row */}
-      <Box flexDirection="row">
-        <Text color={status.color}>
-          {status.glyph}
-          {" "}
-          {status.label}
-        </Text>
-        {durationLabel.length > 0 ? (
-          <Text dim>{durationLabel}</Text>
-        ) : null}
-      </Box>
     </Box>
   );
 };

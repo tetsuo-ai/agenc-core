@@ -12,7 +12,7 @@ import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, pars
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
-import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js';
+import { getTerminalFocused, resetTerminalFocusState, setTerminalFocused } from '../terminal-focus-state.js';
 import { TerminalQuerier, xtversion } from '../terminal-querier.js';
 import { DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, FOCUS_IN, FOCUS_OUT } from '../termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js';
@@ -105,6 +105,12 @@ export default class App extends PureComponent<Props, State> {
     return {
       error
     };
+  }
+  constructor(props: Props) {
+    super(props);
+    // Terminal focus is module-global, so clear any stale blurred state
+    // before this mount's first render reads from the external store.
+    resetTerminalFocusState();
   }
   override state = {
     error: undefined

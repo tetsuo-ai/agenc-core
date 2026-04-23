@@ -86,16 +86,18 @@ describe("collapseOutput", () => {
 });
 
 describe("ExecCell status badge", () => {
-  test("running state shows the ·  glyph", async () => {
+  test("running state renders an inline Running header", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell command="npm run build" stdout="" stderr="" />,
     );
     const frame = await captureFrame(stdout);
     expect(frame).toContain("\u00B7");
+    expect(frame).toContain("Running");
+    expect(frame).toContain("npm");
     unmount();
   });
 
-  test("exit 0 shows ✓ 0", async () => {
+  test("exit 0 renders a completion note", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell
         command="echo hi"
@@ -107,11 +109,13 @@ describe("ExecCell status badge", () => {
     );
     const frame = await captureFrame(stdout);
     expect(frame).toContain("\u2713");
-    expect(frame).toContain("0");
+    expect(frame).toContain("Ran");
+    expect(frame).toContain("Completed");
+    expect(frame).toContain("hi");
     unmount();
   });
 
-  test("exit 1 shows ✗ 1", async () => {
+  test("exit 1 renders an exit note", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell
         command="false"
@@ -123,11 +127,12 @@ describe("ExecCell status badge", () => {
     );
     const frame = await captureFrame(stdout);
     expect(frame).toContain("\u2717");
+    expect(frame).toContain("Exited");
     expect(frame).toContain("1");
     unmount();
   });
 
-  test("timed out shows ⚠ timeout", async () => {
+  test("timed out shows an inline timeout note", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell
         command="sleep 99"
@@ -139,7 +144,8 @@ describe("ExecCell status badge", () => {
     );
     const frame = await captureFrame(stdout);
     expect(frame).toContain("\u26A0");
-    expect(frame).toContain("timeout");
+    expect(frame).toContain("Timed");
+    expect(frame).toContain("out");
     unmount();
   });
 

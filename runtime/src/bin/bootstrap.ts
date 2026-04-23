@@ -1684,22 +1684,30 @@ export async function bootstrapLocalRuntimeSession(
       sessionConfiguration: initialState.sessionConfiguration,
     });
 
+    const sessionConfiguredPayload = {
+      sessionId: conversationId,
+      model,
+      modelProviderId: resolvedProvider,
+      cwd: workspaceRoot,
+      historyLogId: 0,
+      historyEntryCount: initialState.history.length,
+      initialMessages,
+      rolloutPath: rolloutStore.rolloutPath,
+    };
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
         type: "session_configured",
-        payload: {
-          sessionId: conversationId,
-          model,
-          modelProviderId: resolvedProvider,
-          cwd: workspaceRoot,
-          historyLogId: 0,
-          historyEntryCount: initialState.history.length,
-          initialMessages,
-          rolloutPath: rolloutStore.rolloutPath,
-        },
+        payload: sessionConfiguredPayload,
       },
     });
+    session.setInitialTranscriptEvents([
+      ...initialTranscriptEvents,
+      {
+        type: "session_configured",
+        payload: sessionConfiguredPayload,
+      },
+    ]);
 
     // Start sidecars AFTER session_configured so they cannot emit earlier
     // events. Mirrors codex `session.rs:750-751`: "Start the watcher after

@@ -115,6 +115,7 @@ describe("eventsToMessages", () => {
       kind: "meta",
       label: "compact",
     });
+    expect(messages[0]?.content).toContain("Context compacted");
     expect(messages[0]?.content).toContain("1200 -> 420");
     expect(messages[1]).toMatchObject({
       kind: "slash_result",
@@ -156,5 +157,55 @@ describe("eventsToMessages", () => {
       turnId: "turn-plan",
     });
     expect(messages[0]?.planEvents).toHaveLength(3);
+  });
+
+  test("surfaces fork + replay metadata as meta rows instead of generic warnings", () => {
+    const events: TranscriptSourceEvent[] = [
+      {
+        type: "session_configured",
+        payload: {
+          sessionId: "sess-2",
+          forkedFromId: "sess-1",
+          model: "gpt",
+          modelProviderId: "openai",
+          cwd: "/tmp",
+          historyLogId: 2,
+          historyEntryCount: 4,
+          initialMessages: [],
+        },
+      },
+      {
+        type: "warning",
+        payload: {
+          cause: "system_resumed_from",
+          message: "12345",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
+          cause: "snapshot_behind_rollout",
+          message: "snapshot replay ignored stale index",
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({
+      kind: "meta",
+      label: "fork",
+      content: "Thread forked from sess-1",
+    });
+    expect(messages[1]).toMatchObject({
+      kind: "meta",
+      label: "resume",
+    });
+    expect(messages[1]?.content).toContain("12.3s");
+    expect(messages[2]).toMatchObject({
+      kind: "meta",
+      label: "history",
+      content: "snapshot replay ignored stale index",
+    });
   });
 });

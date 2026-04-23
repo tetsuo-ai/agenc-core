@@ -248,6 +248,108 @@ describe("Composer", () => {
     unmount();
   });
 
+  test("Ctrl+R enters reverse history search and Enter accepts the previewed match", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { stdout, unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />
+      ),
+    );
+
+    for (const text of ["first draft", "second draft"]) {
+      for (const ch of text) {
+        emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+      }
+      await new Promise((r) => setTimeout(r, 20));
+      emitter.emit("input", makeKeyEvent({ name: "return" }));
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    for (const ch of "scratch") {
+      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+    }
+    emitter.emit("input", makeKeyEvent({ name: "r", sequence: "r", ctrl: true }));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latestFrameText(stdout)).toContain("reverse-i-search:");
+
+    for (const ch of "first") {
+      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    const searchingFrame = latestFrameText(stdout);
+    expect(searchingFrame).toContain("reverse-i-search: first");
+    expect(searchingFrame).toContain("first draft");
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSubmit.mock.calls.map((call) => call[0])).toEqual([
+      "first draft",
+      "second draft",
+      "first draft",
+    ]);
+    unmount();
+  });
+
+  test("Escape cancels reverse history search and restores the in-progress draft", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { stdout, unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />
+      ),
+    );
+
+    for (const text of ["alpha note", "beta note"]) {
+      for (const ch of text) {
+        emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+      }
+      await new Promise((r) => setTimeout(r, 20));
+      emitter.emit("input", makeKeyEvent({ name: "return" }));
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    for (const ch of "live draft") {
+      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+    }
+    emitter.emit("input", makeKeyEvent({ name: "r", sequence: "r", ctrl: true }));
+    await new Promise((r) => setTimeout(r, 20));
+    for (const ch of "beta") {
+      emitter.emit("input", makeKeyEvent({ name: ch, sequence: ch }));
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latestFrameText(stdout)).toContain("beta note");
+
+    emitter.emit("input", makeKeyEvent({ name: "escape" }));
+    await new Promise((r) => setTimeout(r, 20));
+    const canceledFrame = latestFrameText(stdout);
+    expect(canceledFrame).not.toContain("reverse-i-search:");
+    expect(canceledFrame).toContain("live draft");
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onSubmit.mock.calls.map((call) => call[0])).toEqual([
+      "alpha note",
+      "beta note",
+      "live draft",
+    ]);
+    unmount();
+  });
+
   test("ignores printable input while inputLocked is true", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();
@@ -539,6 +641,7 @@ describe("Composer", () => {
         </>,
       ),
     );
+    await new Promise((r) => setTimeout(r, 25));
 
     emitter.emit("input", makeKeyEvent({ name: "x", sequence: "x" }));
     await new Promise((r) => setTimeout(r, 25));

@@ -3,9 +3,7 @@
  *
  * We mount Splash inside a test Ink root so it can pick up the
  * StdinContext Ink provides, then fire synthetic input events through
- * the internal EventEmitter to drive the dismiss path. The auto-dismiss
- * timer is exercised against vi.useFakeTimers() and then advanced
- * deterministically.
+ * the internal EventEmitter to drive the dismiss path.
  */
 
 import { PassThrough } from "node:stream";
@@ -144,19 +142,4 @@ describe("Splash", () => {
     unmount();
   });
 
-  test("autoDismissMs triggers onDismiss after the timeout", async () => {
-    // Keep real timers here — Ink's reconciler schedules its own
-    // timers during render, so mocking setTimeout globally hangs the
-    // mount. A small real-time window keeps this test deterministic
-    // and fast.
-    const onDismiss = vi.fn();
-    const { unmount } = await mount(
-      <Splash onDismiss={onDismiss} autoDismissMs={30} />,
-    );
-    // Before the timer fires the callback has not been invoked.
-    expect(onDismiss).not.toHaveBeenCalled();
-    await new Promise((r) => setTimeout(r, 80));
-    expect(onDismiss).toHaveBeenCalledTimes(1);
-    unmount();
-  });
 });
