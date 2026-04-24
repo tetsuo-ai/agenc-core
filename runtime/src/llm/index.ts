@@ -136,3 +136,15 @@ export type {
 // Provider adapters
 export { GrokProvider, type GrokProviderConfig } from "./grok/index.js";
 export { OllamaProvider, type OllamaProviderConfig } from "./ollama/index.js";
+export {
+  OpenAICompatProvider,
+  type OpenAICompatProviderConfig,
+} from "./openai-compat/index.js";
+export {
+  CodexOAuthProvider,
+  DEFAULT_CODEX_CLIENT_VERSION,
+  DEFAULT_CODEX_OAUTH_BASE_URL,
+  DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_CODEX_OAUTH_MODEL,
+  type CodexOAuthProviderConfig,
+} from "./codex-oauth/index.js";

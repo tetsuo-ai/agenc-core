@@ -64,6 +64,7 @@ const program = createProgram(provider);
 | `llm/anthropic/` | `AnthropicProvider` | Anthropic adapter | `AnthropicProviderConfig` |
 | `llm/ollama/` | `OllamaProvider` | Ollama local adapter | `OllamaProviderConfig` |
 | `llm/openai-compat/` | `OpenAICompatProvider` | OpenAI-compatible local adapter (LM Studio, llama.cpp, vLLM) | `OpenAICompatProviderConfig` |
+| `llm/codex-oauth/` | `CodexOAuthProvider` | OpenAI Codex adapter using Codex CLI ChatGPT OAuth credentials | `CodexOAuthProviderConfig` |
 | `tools/` | `ToolRegistry` | MCP-compatible tool management | `ToolRegistryConfig` |
 | `memory/` | `InMemoryBackend` | Zero-dep memory storage | `InMemoryBackendConfig` |
 | `memory/sqlite/` | `SqliteBackend` | SQLite-backed storage | `SqliteBackendConfig` |
@@ -107,7 +108,7 @@ await runtime.stop();               // set Inactive + cleanup
 ### LLM Provider Selection
 
 ```typescript
-import { GrokProvider, AnthropicProvider, OllamaProvider } from '@tetsuo-ai/runtime';
+import { GrokProvider, AnthropicProvider, OllamaProvider, OpenAICompatProvider, CodexOAuthProvider } from '@tetsuo-ai/runtime';
 
 // Grok (requires: npm install openai)
 const grok = new GrokProvider({ apiKey: process.env.XAI_API_KEY!, model: 'grok-3', tools });
@@ -125,6 +126,12 @@ const local = new OpenAICompatProvider({
   baseUrl: 'http://127.0.0.1:1234/v1',
   apiKey: 'local',             // not validated by local servers
   contextWindowTokens: 32768,  // required — local servers don't expose this
+  tools,
+});
+
+// OpenAI Codex OAuth (requires Codex CLI signed in with ChatGPT)
+const codex = new CodexOAuthProvider({
+  model: 'gpt-5.4',
   tools,
 });
 ```
@@ -381,6 +388,33 @@ catalog: the server's `GET /v1/models` response is the authoritative source of t
 - When running untrusted models, set `workspace.hostPath` to a neutral directory to prevent autonomous file access during initial context loading.
 - LM Studio: set the context window in the model settings to match `contextWindowTokens`. The LM Studio default of 4096 is too small for most system prompts.
 - Use `provider: "ollama"` instead when using Ollama with its native SDK; `openai-compat` is the right choice when Ollama is running in OpenAI-compatibility mode or when using LM Studio / llama.cpp.
+
+### OpenAI Codex OAuth
+
+Use `provider: "codex"` to reuse the ChatGPT OAuth credentials created by the
+OpenAI Codex CLI. AgenC reads `$CODEX_HOME/auth.json` or `~/.codex/auth.json`,
+refreshes stale access tokens with the stored refresh token, and sends Responses
+API requests to the Codex backend.
+
+```json
+{
+  "llm": {
+    "provider": "codex",
+    "model": "gpt-5.4",
+    "timeoutMs": 0
+  }
+}
+```
+
+Optional overrides:
+- `codexHome`: directory containing `auth.json`
+- `codexAuthPath`: exact credential file path, taking precedence over `codexHome`
+- `baseUrl`: Codex backend override; defaults to `https://chatgpt.com/backend-api/codex`
+- `codexClientVersion`: value sent in the Codex `version` header
+
+Codex's backend request contract does not currently expose the generic
+`temperature` or `maxTokens` controls, so this provider omits them from outbound
+requests even if they are present in shared LLM config.
 
 ### LLMTaskExecutorConfig
 

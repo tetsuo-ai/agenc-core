@@ -82,6 +82,15 @@ describe("validateGatewayConfig desktop resource limits", () => {
     expect(result.valid).toBe(true);
   });
 
+  it("accepts Codex OAuth and OpenAI-compatible LLM providers", () => {
+    for (const provider of ["codex", "openai-compat"]) {
+      const config = makeConfig();
+      config.llm = { provider, model: "gpt-5.4" };
+      const result = validateGatewayConfig(config);
+      expect(result.valid).toBe(true);
+    }
+  });
+
   it("rejects invalid subagent open-question controls", () => {
     const config = makeConfig();
     config.llm = {
