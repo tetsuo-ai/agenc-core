@@ -85,30 +85,6 @@ function rowText(stdout: PassThrough, y: number): string {
 }
 
 describe("ComposerBuffer", () => {
-  test("renders one Text per visual row so wrapped lines diff independently", async () => {
-    const value = "abcdefghij klmnopqrst uvwxyz0123";
-    const { stdout, unmount } = await mount(
-      <Box width={20}>
-        <ComposerBuffer
-          value={value}
-          cursor={value.length}
-          promptPrefix="> "
-          cursorActive={true}
-        />
-      </Box>,
-      24,
-    );
-
-    const screen = getScreen(stdout);
-    const usedRows: number[] = [];
-    for (let y = 0; y < screen.height; y += 1) {
-      const text = rowText(stdout, y).replace(/\s+$/u, "");
-      if (text.length > 0) usedRows.push(y);
-    }
-    expect(usedRows.length).toBeGreaterThan(1);
-    unmount();
-  });
-
   test("clears trailing cells from the previous frame when the buffer shrinks", async () => {
     const longValue = "hello world!!!";
     const { stdout, rerender, unmount } = await mount(

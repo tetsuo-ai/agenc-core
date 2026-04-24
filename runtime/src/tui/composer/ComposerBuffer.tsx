@@ -70,26 +70,36 @@ export function ComposerBuffer({
         placeholder !== undefined &&
         placeholder.length > 0
       ) {
-        return `${renderCursorCell(CURSOR_CELL)}${dim(placeholder)}`;
+        // Match openclaude/src/hooks/renderPlaceholder.ts: invert the FIRST
+        // CHARACTER of the placeholder rather than prepending an extra
+        // inverted-space cell. Prepending a separate cell shifts the
+        // placeholder one column right of where the declared cursor lands,
+        // which the user sees as two adjacent highlighted blocks. Inverting
+        // the first char keeps the cursor cell co-located with that char so
+        // the in-band glyph and the native cursor overlap at column 0.
+        const head = placeholder[0] ?? CURSOR_CELL;
+        const tail = placeholder.slice(1);
+        return tail.length > 0
+          ? renderCursorCell(head) + dim(tail)
+          : renderCursorCell(head);
       }
       return cursorModel.render(CURSOR_CELL, "", renderCursorCell, ghostHint);
     },
     [cursorActive, cursorModel, ghostHint, placeholder, value.length],
   );
 
-  // Per-row Text children eliminate the cursor-artifact vector: the previous
-  // single <Text wrap="truncate-end"> blob held all wrapped lines as one
-  // string with embedded \n, so when a line shortened across frames Ink's
-  // reconciler did not always clear the trailing inverted-cursor cell.
-  // Splitting per row scopes the diff to one logical row at a time.
-  const rows = renderedValue.split("\n");
+  // Single <Text wrap="truncate-end"> blob, mirroring
+  // openclaude/src/components/BaseTextInput.tsx — the per-row split tried
+  // earlier did not eliminate the cursor artifact and broke the
+  // empty-placeholder layout. The artifact root cause was the placeholder
+  // rendering offsetting the in-band glyph by one column from the declared
+  // cursor; with that fixed above, a single Text matches upstream and
+  // diffs cleanly across frames.
   return (
-    <Box ref={cursorRef} flexDirection="column">
-      {rows.map((row, index) => (
-        <Text key={index} wrap="truncate-end">
-          <Ansi>{row}</Ansi>
-        </Text>
-      ))}
+    <Box ref={cursorRef}>
+      <Text wrap="truncate-end">
+        <Ansi>{renderedValue}</Ansi>
+      </Text>
     </Box>
   );
 }
