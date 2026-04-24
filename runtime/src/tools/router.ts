@@ -35,6 +35,7 @@ import type { LLMTool, LLMToolCall } from "../llm/types.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import { emitWarning as emitWarningEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import type { GuardianApprovalReviewer } from "../session/guardian-approval-review.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type {
   CanUseToolFn,
@@ -132,6 +133,7 @@ export interface LiveToolDispatchOptions {
   readonly granular?: GranularApprovalConfig;
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
   readonly preHooks?: ReadonlyArray<PreToolUseHook>;
   readonly postHooks?: ReadonlyArray<PostToolUseHook>;
@@ -558,6 +560,9 @@ export class ToolRouter {
           : {}),
         ...(opts.permissionDecisionHooks !== undefined
           ? { permissionDecisionHooks: opts.permissionDecisionHooks }
+          : {}),
+        ...(opts.guardianApprovalReviewer !== undefined
+          ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
           : {}),
         ...(opts.approvalResolver !== undefined
           ? { approvalResolver: opts.approvalResolver }

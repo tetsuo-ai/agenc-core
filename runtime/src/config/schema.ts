@@ -38,6 +38,8 @@ export type ModelVerbosity = "low" | "medium" | "high";
 
 export type ServiceTier = "fast" | "flex";
 
+export type ApprovalsReviewer = "user" | "auto_review" | "guardian_subagent";
+
 /**
  * Permission mode variants accepted by the runtime. Mirrors the
  * `PermissionMode` union in `src/permissions/types.ts` — kept inline here
@@ -98,6 +100,7 @@ export interface ProfileOverride {
   readonly sandbox_mode?: SandboxMode;
   readonly reasoning_effort?: ReasoningEffort;
   readonly reasoning_summary?: ReasoningSummary;
+  readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
   readonly service_tier?: ServiceTier;
   readonly personality?: Personality;
@@ -268,6 +271,7 @@ export interface AgenCConfig {
   readonly reasoning_effort?: ReasoningEffort;
   readonly reasoning_summary?: ReasoningSummary;
   readonly review_model?: string;
+  readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
   readonly service_tier?: ServiceTier;
   readonly personality?: Personality;
@@ -382,6 +386,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "reasoning_effort",
   "reasoning_summary",
   "review_model",
+  "approvals_reviewer",
   "model_verbosity",
   "service_tier",
   "personality",
@@ -420,6 +425,7 @@ export function defaultConfig(): AgenCConfig {
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,
+    approvals_reviewer: "user" as ApprovalsReviewer,
     personality: "default" as Personality,
     agent_max_depth: 1,
     project_root_markers: Object.freeze([

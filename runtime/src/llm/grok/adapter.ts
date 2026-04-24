@@ -1577,6 +1577,7 @@ export class GrokProvider implements LLMProvider {
       allowedToolNames: options?.toolRouting?.allowedToolNames,
       toolChoice: options?.toolChoice,
       maxTurns: options?.maxTurns,
+      model: options?.model?.trim() || undefined,
       reasoningEffort: options?.reasoningEffort,
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
       structuredOutput: options?.structuredOutput,
@@ -1622,6 +1623,7 @@ export class GrokProvider implements LLMProvider {
       includeEncryptedReasoning?: boolean;
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
+      model?: string;
       promptCacheKey?: string;
       disableIncremental?: boolean;
     },
@@ -1637,7 +1639,8 @@ export class GrokProvider implements LLMProvider {
     });
 
     const xaiInput = buildXaiResponsesInputItems(repairedMessages);
-    const model = xaiInput.hasImages ? visionModel : this.config.model;
+    const model =
+      options?.model ?? (xaiInput.hasImages ? visionModel : this.config.model);
 
     const params: Record<string, unknown> = {
       model,

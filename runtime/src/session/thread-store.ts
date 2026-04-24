@@ -68,24 +68,18 @@
  *                             threads). `includeArchived` is honoured
  *                             against the registry.
  *   update_thread_metadata    WIRED (partial) — persists `name` and
- *                             `memoryMode` to the registry. Upstream
- *                             additionally appends a
- *                             `ThreadNameUpdatedEvent` rollout row and
- *                             rewrites the `SessionMeta` row with the
- *                             new memory mode. Gut's `SessionMetaLine`
- *                             has no `memoryMode` field (see
- *                             `./event-log.ts:66`), so the memory mode
- *                             lives in the registry sidecar instead of
- *                             the rollout. Name updates go to the
- *                             registry; no rollout row is appended.
- *   archive_thread            WIRED (partial) — sets `archivedAt` in
- *                             the registry. Upstream moves the
- *                             rollout file to
- *                             `~/.agenc/<home>/archived_sessions/`;
- *                             gut does NOT move the file because the
- *                             `RolloutStore` session-dir resolver used
- *                             by the live writer does not understand
- *                             the archived dir. Flagged as a deviation.
+ *                             `memoryMode` to the registry and appends
+ *                             a fresh `session_meta` rollout row with
+ *                             the new mode, matching upstream's
+ *                             append-not-rewrite behavior. Name
+ *                             updates go to the registry; no rollout
+ *                             row is appended.
+ *   archive_thread            WIRED — sets `archivedAt` in the
+ *                             registry. Non-live rollouts move under
+ *                             `archived_sessions/`; live rollouts keep
+ *                             their current path until shutdown so the
+ *                             open writer never recreates the active
+ *                             file behind the store.
  *   unarchive_thread          WIRED — clears `archivedAt`.
  *   list_threads              WIRED (partial) — returns entries sorted
  *                             by the registry timestamps, honouring
@@ -94,29 +88,36 @@
  *                             filtering are NOT ported; they are listed
  *                             in `ListThreadsParams` for signature
  *                             parity but ignored by `FileThreadStore`.
- *   read_thread               RESERVED — upstream reconstructs the full
- *                             `StoredThread` by scanning the rollout
- *                             file's `SessionMeta` row, last observed
- *                             model, token usage, etc. Gut's
- *                             `SessionMetaLine` is missing several of
- *                             those fields, so a faithful port would
- *                             be misleading. The `readThread` method
- *                             on the store returns the registry entry
- *                             only.
+ *   read_thread               WIRED (partial) — returns registry
+ *                             metadata and, when requested, rollout
+ *                             history from live or non-live files.
+ *                             Upstream's SQLite-derived preview,
+ *                             token totals, and git metadata remain
+ *                             deferred.
  *
  * @module
  */
 
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ThreadId } from "../agents/registry.js";
-import type { RolloutItem } from "./rollout-item.js";
+import {
+  parseRolloutLine,
+  serializeRolloutItem,
+  type RolloutItem,
+} from "./rollout-item.js";
 import type { RolloutStore } from "./rollout-store.js";
+import {
+  ROLLOUT_SCHEMA_VERSION,
+  type SessionMetaLine,
+} from "./event-log.js";
 import {
   DEFAULT_SESSION_ROOT_MARKERS,
   getProjectDir,
@@ -362,6 +363,7 @@ interface RegistryEntry {
   readonly source?: ThreadSource;
   readonly forkedFromId?: ThreadId;
   readonly rolloutPath?: string;
+  readonly archivedRolloutPath?: string;
 }
 
 interface RegistrySnapshot {
@@ -394,20 +396,24 @@ export interface FileThreadStoreOpts {
  *
  * Wire-format deviations from upstream:
  *   - No `codex-state` SQLite db: metadata lives in the JSON registry.
- *   - No `archived_sessions/` dir move on archive: `archivedAt` is a
- *     registry flag only. The rollout file stays in place.
- *   - No on-disk `ThreadNameUpdated` or `SessionMeta`-rewrite rows:
- *     `updateThreadMetadata` only rewrites the registry.
+ *   - Live archives defer the `archived_sessions/` move until the writer is
+ *     no longer registered, preserving the open `RolloutStore` path.
+ *   - No on-disk `ThreadNameUpdated` rows: name updates only rewrite the
+ *     registry. Memory-mode updates append a new `session_meta` row.
  */
 export class FileThreadStore implements ThreadStore {
   private readonly registryPath: string;
+  private readonly projectDir: string;
+  private readonly archivedSessionsDir: string;
   private readonly liveRecorders = new Map<ThreadId, RolloutStore>();
 
   constructor(opts: FileThreadStoreOpts = {}) {
     const cwd = opts.cwd ?? process.cwd();
     const markers = opts.projectRootMarkers ?? DEFAULT_SESSION_ROOT_MARKERS;
     const projectDir = getProjectDir(cwd, markers);
+    this.projectDir = projectDir;
     this.registryPath = join(projectDir, REGISTRY_FILENAME);
+    this.archivedSessionsDir = join(projectDir, "archived_sessions");
   }
 
   /** The sidecar registry path used by this store. Exposed for tests. */
@@ -455,6 +461,9 @@ export class FileThreadStore implements ThreadStore {
         : existing?.forkedFromId !== undefined
           ? { forkedFromId: existing.forkedFromId }
           : {}),
+      ...(existing?.archivedRolloutPath !== undefined
+        ? { archivedRolloutPath: existing.archivedRolloutPath }
+        : {}),
       rolloutPath: params.rolloutStore.rolloutPath,
     };
     registry.set(threadId, entry);
@@ -497,6 +506,9 @@ export class FileThreadStore implements ThreadStore {
       ...(existing?.source !== undefined ? { source: existing.source } : {}),
       ...(existing?.forkedFromId !== undefined
         ? { forkedFromId: existing.forkedFromId }
+        : {}),
+      ...(existing?.archivedRolloutPath !== undefined
+        ? { archivedRolloutPath: existing.archivedRolloutPath }
         : {}),
       rolloutPath:
         params.rolloutPath ??
@@ -558,15 +570,16 @@ export class FileThreadStore implements ThreadStore {
     if (entry === undefined) {
       throw new ThreadNotFoundError(params.threadId);
     }
-    // Non-live thread: no way to read history without the
-    // RolloutStore open (schema-version check + flock). We could
-    // scan the file directly but that sidesteps the store's invariants.
-    // Keep it simple: require the thread to be live. Upstream is able
-    // to reopen because `RolloutRecorder::new(..., resume)` is cheap;
-    // gut's `SessionStore.open()` grabs a flock.
-    throw new ThreadStoreInvalidRequestError(
-      `thread ${params.threadId} is not live; resume it before loading history`,
-    );
+    const rolloutPath = this.readableRolloutPath(entry);
+    if (rolloutPath === undefined) {
+      throw new ThreadStoreInvalidRequestError(
+        `thread ${params.threadId} has no rollout path`,
+      );
+    }
+    return {
+      threadId: params.threadId,
+      items: this.readRolloutItems(rolloutPath),
+    };
   }
 
   readThread(params: ReadThreadParams): StoredThread {
@@ -578,13 +591,12 @@ export class FileThreadStore implements ThreadStore {
     if (entry.archivedAt !== undefined && !params.includeArchived) {
       throw new ThreadNotFoundError(params.threadId);
     }
-    const history =
-      params.includeHistory && this.liveRecorders.has(params.threadId)
-        ? {
-            threadId: params.threadId,
-            items: this.liveRecorders.get(params.threadId)!.readAll(),
-          }
-        : undefined;
+    const history = params.includeHistory
+      ? this.loadHistory({
+          threadId: params.threadId,
+          includeArchived: params.includeArchived,
+        })
+      : undefined;
     return toStoredThread(entry, history);
   }
 
@@ -647,6 +659,9 @@ export class FileThreadStore implements ThreadStore {
         ? { memoryMode: params.patch.memoryMode }
         : {}),
     };
+    if (params.patch.memoryMode !== undefined) {
+      this.appendMemoryModeSessionMeta(updated, params.patch.memoryMode);
+    }
     registry.set(params.threadId, updated);
     this.writeRegistry(registry);
     return toStoredThread(updated);
@@ -662,10 +677,14 @@ export class FileThreadStore implements ThreadStore {
       return; // already archived
     }
     const now = new Date().toISOString();
+    const archivedRolloutPath = this.liveRecorders.has(params.threadId)
+      ? existing.archivedRolloutPath
+      : this.archiveRolloutFile(existing);
     registry.set(params.threadId, {
       ...existing,
       updatedAt: now,
       archivedAt: now,
+      ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
     });
     this.writeRegistry(registry);
   }
@@ -677,11 +696,22 @@ export class FileThreadStore implements ThreadStore {
       throw new ThreadNotFoundError(params.threadId);
     }
     const now = new Date().toISOString();
-    const { archivedAt: _drop, ...rest } = existing;
+    const restoredRolloutPath = this.liveRecorders.has(params.threadId)
+      ? existing.rolloutPath
+      : this.unarchiveRolloutFile(existing);
+    const {
+      archivedAt: _drop,
+      archivedRolloutPath: _archivedRolloutPath,
+      ...rest
+    } = existing;
     void _drop;
+    void _archivedRolloutPath;
     const updated: RegistryEntry = {
       ...rest,
       updatedAt: now,
+      ...(restoredRolloutPath !== undefined
+        ? { rolloutPath: restoredRolloutPath }
+        : {}),
     };
     registry.set(params.threadId, updated);
     this.writeRegistry(registry);
@@ -689,6 +719,98 @@ export class FileThreadStore implements ThreadStore {
   }
 
   // ── internal helpers ────────────────────────────────────────────────
+
+  private readableRolloutPath(entry: RegistryEntry): string | undefined {
+    return entry.archivedRolloutPath ?? entry.rolloutPath;
+  }
+
+  private readRolloutItems(rolloutPath: string): RolloutItem[] {
+    if (!existsSync(rolloutPath)) {
+      throw new ThreadStoreInvalidRequestError(
+        `rollout file does not exist: ${rolloutPath}`,
+      );
+    }
+    const raw = readFileSync(rolloutPath, "utf8");
+    const items: RolloutItem[] = [];
+    for (const line of raw.split(/\r?\n/)) {
+      if (line.trim().length === 0) continue;
+      const parsed = parseRolloutLine(line);
+      if (parsed !== null) items.push(parsed);
+    }
+    return items;
+  }
+
+  private appendMemoryModeSessionMeta(
+    entry: RegistryEntry,
+    memoryMode: ThreadMemoryMode,
+  ): void {
+    const live = this.liveRecorders.get(entry.threadId);
+    if (live !== undefined) {
+      const latest = latestSessionMeta(live.readAll());
+      live.appendRollout(
+        {
+          type: "session_meta",
+          payload: {
+            ...buildFallbackSessionMeta(entry),
+            ...(latest ?? {}),
+            memoryMode,
+          },
+        },
+        { durable: true },
+      );
+      return;
+    }
+
+    const rolloutPath = this.readableRolloutPath(entry);
+    if (rolloutPath === undefined) {
+      throw new ThreadStoreInvalidRequestError(
+        `thread ${entry.threadId} has no rollout path`,
+      );
+    }
+    const latest = latestSessionMeta(this.readRolloutItems(rolloutPath));
+    appendFileSync(
+      rolloutPath,
+      serializeRolloutItem({
+        type: "session_meta",
+        payload: {
+          ...buildFallbackSessionMeta(entry),
+          ...(latest ?? {}),
+          memoryMode,
+        },
+      }),
+      "utf8",
+    );
+  }
+
+  private archiveRolloutFile(entry: RegistryEntry): string | undefined {
+    if (entry.rolloutPath === undefined || !existsSync(entry.rolloutPath)) {
+      return entry.archivedRolloutPath;
+    }
+    const targetDir = join(this.archivedSessionsDir, entry.threadId);
+    mkdirSync(targetDir, { recursive: true });
+    let targetPath = join(targetDir, basename(entry.rolloutPath));
+    if (existsSync(targetPath) && targetPath !== entry.rolloutPath) {
+      targetPath = join(
+        targetDir,
+        `${Date.now()}-${basename(entry.rolloutPath)}`,
+      );
+    }
+    renameSync(entry.rolloutPath, targetPath);
+    return targetPath;
+  }
+
+  private unarchiveRolloutFile(entry: RegistryEntry): string | undefined {
+    const archivedPath = entry.archivedRolloutPath;
+    if (archivedPath === undefined || !existsSync(archivedPath)) {
+      return entry.rolloutPath;
+    }
+    const restoredPath =
+      entry.rolloutPath ??
+      join(this.projectDir, "sessions", entry.threadId, basename(archivedPath));
+    mkdirSync(dirname(restoredPath), { recursive: true });
+    renameSync(archivedPath, restoredPath);
+    return restoredPath;
+  }
 
   private liveRecorderOrThrow(threadId: ThreadId): RolloutStore {
     const recorder = this.liveRecorders.get(threadId);
@@ -745,7 +867,11 @@ function toStoredThread(
     threadId: entry.threadId,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
-    ...(entry.rolloutPath !== undefined ? { rolloutPath: entry.rolloutPath } : {}),
+    ...(entry.archivedRolloutPath !== undefined
+      ? { rolloutPath: entry.archivedRolloutPath }
+      : entry.rolloutPath !== undefined
+        ? { rolloutPath: entry.rolloutPath }
+        : {}),
     ...(entry.forkedFromId !== undefined
       ? { forkedFromId: entry.forkedFromId }
       : {}),
@@ -755,5 +881,29 @@ function toStoredThread(
     ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}),
     ...(entry.source !== undefined ? { source: entry.source } : {}),
     ...(history !== undefined ? { history } : {}),
+  };
+}
+
+function latestSessionMeta(
+  items: ReadonlyArray<RolloutItem>,
+): SessionMetaLine | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item?.type === "session_meta") {
+      return item.payload;
+    }
+  }
+  return undefined;
+}
+
+function buildFallbackSessionMeta(entry: RegistryEntry): SessionMetaLine {
+  return {
+    sessionId: entry.threadId,
+    timestamp: entry.updatedAt,
+    cwd: entry.cwd ?? process.cwd(),
+    originator: entry.source ?? "thread-store",
+    agencVersion: "unknown",
+    rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
+    ...(entry.source !== undefined ? { source: entry.source } : {}),
   };
 }

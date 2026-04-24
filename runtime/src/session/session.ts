@@ -80,6 +80,7 @@ import {
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { GuardianRejectionCircuitBreaker } from "./guardian-rejection-circuit-breaker.js";
+import type { GuardianApprovalReviewer } from "./guardian-approval-review.js";
 import {
   EventLog,
   isDurableEvent,
@@ -524,6 +525,14 @@ export interface SessionServices {
    * See `./guardian-rejection-circuit-breaker.ts` for the full contract.
    */
   readonly guardianRejectionCircuitBreaker?: GuardianRejectionCircuitBreaker;
+  /**
+   * Approval-time automatic reviewer. When `approvalsReviewer` is
+   * configured to `auto_review`, the tool orchestrator routes approval
+   * prompts through this producer before falling back to the user
+   * resolver. Completed denial findings are the live writer for
+   * `guardianRejectionCircuitBreaker`.
+   */
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   /** T13 review-task port. codex `session/review.rs` manager analog. */
   readonly reviewManager?: import("./review.js").ReviewManager;
   readonly skillsManager: SkillsManager;

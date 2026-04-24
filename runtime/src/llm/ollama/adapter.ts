@@ -332,7 +332,7 @@ export class OllamaProvider implements LLMProvider {
       options?.timeoutMs,
     );
     let content = "";
-    let model = this.config.model;
+    let model = String(params.model ?? this.config.model);
     let toolCalls: LLMToolCall[] = [];
     let promptTokens = 0;
     let completionTokens = 0;
@@ -510,7 +510,7 @@ export class OllamaProvider implements LLMProvider {
     validateToolTurnSequence(repairedMessages, { providerName: this.name });
 
     const params: Record<string, unknown> = {
-      model: this.config.model,
+      model: options?.model?.trim() || this.config.model,
       messages: repairedMessages.map((m) => this.toOllamaMessage(m)),
     };
 
@@ -688,7 +688,7 @@ export class OllamaProvider implements LLMProvider {
       content,
       toolCalls,
       usage,
-      model: response.model ?? this.config.model,
+      model: response.model ?? options?.model?.trim() ?? this.config.model,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ...this.buildUnsupportedDiagnostics(options),
     };

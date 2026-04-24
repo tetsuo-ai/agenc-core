@@ -54,6 +54,7 @@ describe("schema: defaultConfig", () => {
     const cfg = defaultConfig();
     expect(cfg.model).toBe("grok-4-fast");
     expect(cfg.approval_policy).toBe("on-request");
+    expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
     expect(cfg.max_turns).toBeGreaterThan(0);
     expect(Object.isFrozen(cfg)).toBe(true);
@@ -113,6 +114,7 @@ describe("schema: normalizeRawConfig", () => {
   test("preserves T13 provider config + model knobs on the typed path", () => {
     const out = normalizeRawConfig({
       review_model: "gpt-5",
+      approvals_reviewer: "auto_review",
       model_verbosity: "high",
       service_tier: "flex",
       providers: {
@@ -128,6 +130,7 @@ describe("schema: normalizeRawConfig", () => {
     });
 
     expect(out.review_model).toBe("gpt-5");
+    expect(out.approvals_reviewer).toBe("auto_review");
     expect(out.model_verbosity).toBe("high");
     expect(out.service_tier).toBe("flex");
     expect(out.providers?.openrouter).toEqual({

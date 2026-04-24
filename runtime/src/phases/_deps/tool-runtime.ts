@@ -38,6 +38,7 @@ import {
   type PlanFileContext,
 } from "../../planning/plan-files.js";
 import { reviewDecisionOpaqueString } from "../../permissions/review-decision.js";
+import type { GuardianApprovalReviewer } from "../../session/guardian-approval-review.js";
 import {
   runPostToolUseHooks,
   runPreToolUseHooks,
@@ -217,6 +218,7 @@ interface LiveDispatchOptions {
   readonly sandboxMode?: SandboxMode;
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
   readonly agencHome?: string;
   readonly onHookError?: (phase: string, err: unknown, idx: number) => void;
@@ -694,6 +696,12 @@ export class StreamingToolExecutor {
               ? {
                   permissionDecisionHooks:
                     this.liveOptions.permissionDecisionHooks,
+                }
+              : {}),
+            ...(this.liveOptions?.guardianApprovalReviewer !== undefined
+              ? {
+                  guardianApprovalReviewer:
+                    this.liveOptions.guardianApprovalReviewer,
                 }
               : {}),
             ...(this.liveOptions?.approvalResolver !== undefined

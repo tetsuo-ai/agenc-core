@@ -58,6 +58,19 @@ describe("GrokProvider incremental continuation", () => {
     { role: "user", content: "follow up" },
   ];
 
+  test("honors request-scoped model overrides when building requests", () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+    });
+
+    const built = (provider as any).buildRequestPlan(previousMessages, {
+      model: "grok-4-0709",
+    });
+
+    expect(built.params.model).toBe("grok-4-0709");
+  });
+
   test("reuses previous_response_id and retries chat with full history on expiry", async () => {
     const warnings: Array<{ cause: string; message: string }> = [];
     const provider = new GrokProvider({

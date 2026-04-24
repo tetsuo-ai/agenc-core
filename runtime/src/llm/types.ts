@@ -495,6 +495,13 @@ export type LLMToolChoice =
  */
 export interface LLMChatOptions {
   /**
+   * Request-scoped model override. Providers default to their constructor
+   * model, but delegated turns such as reviewer/guardian sessions must be
+   * able to run a different model without rebuilding the whole parent
+   * session.
+   */
+  readonly model?: string;
+  /**
    * Optional stable session key passed to providers that expose a
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
    * optimization — has no effect on correctness. No server-side

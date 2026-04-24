@@ -10,4 +10,17 @@ describe("providers/ollama entrypoint", () => {
 
     expect(provider.name).toBe("ollama");
   });
+
+  test("honors request-scoped model overrides when building requests", () => {
+    const provider = new OllamaProvider({
+      model: "llama3.3",
+    });
+
+    const params = (provider as any).buildParams(
+      [{ role: "user", content: "review" }],
+      { model: "qwen-reviewer" },
+    );
+
+    expect(params.model).toBe("qwen-reviewer");
+  });
 });

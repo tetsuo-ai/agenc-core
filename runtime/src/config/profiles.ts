@@ -50,6 +50,7 @@ export const OVERRIDABLE_PROFILE_KEYS: readonly (keyof ProfileOverride)[] =
     "approval_policy",
     "sandbox_mode",
     "reasoning_effort",
+    "approvals_reviewer",
     "model_verbosity",
     "service_tier",
     "personality",
@@ -86,6 +87,8 @@ export function resolveProfile(
     override.sandbox_mode = profile.sandbox_mode;
   if (profile.reasoning_effort !== undefined)
     override.reasoning_effort = profile.reasoning_effort;
+  if (profile.approvals_reviewer !== undefined)
+    override.approvals_reviewer = profile.approvals_reviewer;
   if (profile.model_verbosity !== undefined) {
     override.model_verbosity = profile.model_verbosity;
   }

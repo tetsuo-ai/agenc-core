@@ -13,9 +13,10 @@
  *      selected sandbox; on a `SandboxDeniedError`, request approval
  *      and retry with sandbox disabled (codex orchestrator.rs:188-373).
  *   3. **`requestApproval()`** — consult the registered
- *      `permission-request` hooks first, then fall back to the
- *      session's approval resolver. If neither is wired, default
- *      deny with `cause: "no_approval_resolver"`.
+ *      `permission-request` hooks first, route auto-reviewed
+ *      approvals through the guardian reviewer when configured, then
+ *      fall back to the session's approval resolver. If neither is
+ *      wired, default deny with `cause: "no_approval_resolver"`.
  *   4. **`defaultToolRetryPolicy`** — classify errors into
  *      transient-retryable (one retry after 500ms), sandbox-denied
  *      (escalate via approval), hard (bubble).
@@ -31,9 +32,6 @@
  *   - OTEL `tool_decision` emission: T7 has no otel bridge yet; we
  *     emit a session event via the caller-supplied hook instead of
  *     spawning a SessionTelemetry call at this layer.
- *   - Guardian review ID + rejection reasons: the guardian subsystem
- *     lands in T11; this port ignores the `routes_approval_to_guardian`
- *     branch and uses plain "rejected by user" reasons.
  *   - Deferred network approval workflow (`DeferredNetworkApproval`)
  *     is out of scope — covered by the network-approval tranche.
  *
@@ -60,6 +58,11 @@ import {
   type ReviewDecision as PermissionsReviewDecision,
 } from "../permissions/review-decision.js";
 import { SandboxDeniedError } from "../permissions/sandbox.js";
+import {
+  newGuardianReviewId,
+  shouldRouteApprovalToGuardian,
+  type GuardianApprovalReviewer,
+} from "../session/guardian-approval-review.js";
 
 export { SandboxDeniedError };
 
@@ -395,6 +398,7 @@ export interface RequestApprovalOpts {
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
   /** Raw args fed to the decision hooks. Defaults to `{}` when absent. */
   readonly args?: Record<string, unknown>;
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly resolver?: ApprovalResolver;
   readonly signal?: AbortSignal;
   /** Logger for "no resolver" default-deny event. Optional. */
@@ -408,7 +412,9 @@ export interface RequestApprovalResult {
     | "resolver"
     | "default_deny"
     | "permission_hook"
+    | "guardian"
     | "aborted";
+  readonly reason?: string;
 }
 
 function alreadyAborted(signal: AbortSignal | undefined): boolean {
@@ -547,6 +553,37 @@ export async function requestApproval(
       return { decision: { kind: "denied" }, source: "permission_hook" };
     }
     // `ask` / `pass` → fall through to resolver.
+  }
+  if (
+    opts.guardianApprovalReviewer !== undefined &&
+    shouldRouteApprovalToGuardian(opts.ctx)
+  ) {
+    const reviewId = opts.ctx.guardianReviewId ?? newGuardianReviewId();
+    const guardianCtx: ApprovalCtx = {
+      ...opts.ctx,
+      guardianReviewId: reviewId,
+      ...(signal !== undefined ? { signal } : {}),
+    };
+    try {
+      const result = await awaitWithAbort(
+        opts.guardianApprovalReviewer.reviewApprovalRequest({
+          ctx: guardianCtx,
+          args: opts.args ?? {},
+          ...(signal !== undefined ? { signal } : {}),
+        }),
+        signal,
+      );
+      return {
+        decision: result.decision,
+        source: "guardian",
+        ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      };
+    } catch (err) {
+      if (alreadyAborted(signal) || isAbortError(err, signal)) {
+        return { decision: { kind: "abort" }, source: "aborted" };
+      }
+      throw err;
+    }
   }
   if (opts.resolver) {
     try {
@@ -698,6 +735,7 @@ export interface OrchestrateToolCallOpts<T> {
   /** Approval pipeline plumbing. */
   readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
+  readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
   readonly approvalResolver?: ApprovalResolver;
   /** Emitted when approval falls through to default-deny. */
   readonly onNoApprovalResolver?: (ctx: ApprovalCtx) => void;
@@ -811,6 +849,9 @@ function resolveApprovalSignal(
 function approvalRejectionMessage(
   result: RequestApprovalResult,
 ): string {
+  if (result.reason !== undefined && result.reason.trim().length > 0) {
+    return result.reason;
+  }
   if (result.source === "default_deny") {
     return "no_approval_resolver";
   }
@@ -897,6 +938,9 @@ export async function orchestrateToolCall<T>(
         ? { permissionDecisionHooks: opts.permissionDecisionHooks }
         : {}),
       ...(opts.approvalArgs !== undefined ? { args: opts.approvalArgs } : {}),
+      ...(opts.guardianApprovalReviewer !== undefined
+        ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
+        : {}),
       ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
       ...(opts.onNoApprovalResolver !== undefined
         ? { onNoResolver: opts.onNoApprovalResolver }
@@ -962,6 +1006,9 @@ export async function orchestrateToolCall<T>(
           ? { permissionDecisionHooks: opts.permissionDecisionHooks }
           : {}),
         ...(opts.approvalArgs !== undefined ? { args: opts.approvalArgs } : {}),
+        ...(opts.guardianApprovalReviewer !== undefined
+          ? { guardianApprovalReviewer: opts.guardianApprovalReviewer }
+          : {}),
         ...(opts.approvalResolver !== undefined ? { resolver: opts.approvalResolver } : {}),
         ...(opts.onNoApprovalResolver !== undefined
           ? { onNoResolver: opts.onNoApprovalResolver }

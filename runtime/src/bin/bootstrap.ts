@@ -32,6 +32,8 @@ import type { ReviewDecision } from "../permissions/review-decision.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionServices, type SessionState } from "../session/session.js";
 import { createGuardianRejectionCircuitBreaker } from "../session/guardian-rejection-circuit-breaker.js";
+import { createDefaultGuardianApprovalReviewer } from "../session/guardian-approval-review.js";
+import { ReviewManager } from "../session/review.js";
 import {
   createMcpStartupCancellationToken,
   createSessionMcpManagerFromConfig,
@@ -567,17 +569,13 @@ function buildDeferredServices(
     },
     guardianRejections: new Map(),
     /**
-     * Codex `GuardianRejectionCircuitBreaker` (upstream
-     * `core/src/state/service.rs::services::guardian_rejection_circuit_breaker`).
-     * Populated unconditionally so the turn kernel's turn-boundary
-     * `clearTurn` + `isOpen` checks always have a breaker to consult.
-     * Detection-site recorders remain unwired in gut (no guardian-
-     * reviewer subsystem yet; see `tools/orchestrator.ts` note on the
-     * deferred `routes_approval_to_guardian` branch), so `recordDenial`
-     * has no live writer today and `isOpen` is effectively always
-     * false unless an external caller records denials directly.
+     * Codex `GuardianRejectionCircuitBreaker` plus approval-review
+     * producer. The turn kernel owns clear/isOpen; the guardian
+     * reviewer owns recordDenial/recordNonDenial.
      */
     guardianRejectionCircuitBreaker: createGuardianRejectionCircuitBreaker(),
+    guardianApprovalReviewer: createDefaultGuardianApprovalReviewer(),
+    reviewManager: new ReviewManager(),
     /** T10: local `SKILL.md` discovery for user/project/plugin roots. */
     skillsManager: skillsServices.skillsManager,
     /** T10: local plugin skill-root discovery. */
@@ -664,6 +662,9 @@ function buildDeferredConfig(
       : {}),
     ...(config.personality !== undefined
       ? { personality: config.personality }
+      : {}),
+    ...(config.approvals_reviewer !== undefined
+      ? { approvalsReviewer: config.approvals_reviewer }
       : {}),
     cwd,
     /**
@@ -774,6 +775,9 @@ export function sessionConfigurationFromAgenCConfig(params: {
     ...base,
     ...(params.config.review_model !== undefined
       ? { reviewModel: params.config.review_model }
+      : {}),
+    ...(params.config.approvals_reviewer !== undefined
+      ? { approvalsReviewer: params.config.approvals_reviewer }
       : {}),
     ...(params.config.model_verbosity !== undefined
       ? { modelVerbosity: params.config.model_verbosity }

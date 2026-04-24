@@ -76,6 +76,8 @@ export interface SessionMetaLine {
   readonly source?: string;
   readonly model?: string;
   readonly modelProvider?: string;
+  /** Upstream thread memory mode persisted by metadata-update rows. */
+  readonly memoryMode?: string;
 }
 
 export interface TurnStartedEvent {
@@ -189,6 +191,29 @@ export interface StreamErrorEvent {
 export interface WarningEvent {
   readonly cause: string;
   readonly message: string;
+}
+
+export type GuardianAssessmentStatus =
+  | "in_progress"
+  | "approved"
+  | "denied"
+  | "timed_out"
+  | "aborted";
+
+export type GuardianAssessmentDecisionSource = "agent";
+export type GuardianRiskLevel = "low" | "medium" | "high" | "critical";
+export type GuardianUserAuthorization = "unknown" | "low" | "medium" | "high";
+
+export interface GuardianAssessmentEvent {
+  readonly id: string;
+  readonly targetItemId?: string;
+  readonly turnId: string;
+  readonly status: GuardianAssessmentStatus;
+  readonly riskLevel?: GuardianRiskLevel;
+  readonly userAuthorization?: GuardianUserAuthorization;
+  readonly rationale?: string;
+  readonly decisionSource?: GuardianAssessmentDecisionSource;
+  readonly action: string;
 }
 
 /**
@@ -328,6 +353,10 @@ export type EventMsg =
   | { readonly type: "stream_error"; readonly payload: StreamErrorEvent }
   | { readonly type: "warning"; readonly payload: WarningEvent }
   | {
+      readonly type: "guardian_assessment";
+      readonly payload: GuardianAssessmentEvent;
+    }
+  | {
       readonly type: "deprecation_notice";
       readonly payload: DeprecationNoticeEvent;
     }
@@ -440,6 +469,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "error",
     "stream_error",
     "warning",
+    "guardian_assessment",
     "deprecation_notice",
     "plan_started",
     "plan_delta",

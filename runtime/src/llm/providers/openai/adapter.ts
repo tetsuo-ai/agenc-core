@@ -237,6 +237,7 @@ export class OpenAIProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
+    const model = options?.model?.trim() || this.config.model;
     const requestTools = options?.tools
       ? [...options.tools]
       : this.config.tools ?? [];
@@ -248,7 +249,7 @@ export class OpenAIProvider implements LLMProvider {
             wireApi: "responses",
           });
           const request = buildOpenAIResponsesRequest({
-            model: this.config.model,
+            model,
             messages,
             tools: requestTools,
             options,
@@ -263,10 +264,10 @@ export class OpenAIProvider implements LLMProvider {
             signal: options?.signal,
           });
           return parseOpenAIResponsesResponse(
-            this.config.model,
+            model,
             response.data,
             {
-              model: this.config.model,
+              model,
               messages,
               tools: requestTools,
               options,
@@ -279,7 +280,7 @@ export class OpenAIProvider implements LLMProvider {
           wireApi: "chat_completions",
         });
         const request = buildChatCompletionsRequest({
-          model: this.config.model,
+          model,
           messages,
           tools: requestTools,
           options,
@@ -292,8 +293,8 @@ export class OpenAIProvider implements LLMProvider {
           timeoutMs,
           signal: options?.signal,
         });
-        return parseChatCompletionsResponse(this.config.model, response.data, {
-          model: this.config.model,
+        return parseChatCompletionsResponse(model, response.data, {
+          model,
           messages,
           tools: requestTools,
           options,
@@ -422,8 +423,9 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
     timeoutMs: number | undefined,
   ): Promise<LLMResponse> {
+    const model = options?.model?.trim() || this.config.model;
     const requestOptions = {
-      model: this.config.model,
+      model,
       messages,
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
@@ -524,7 +526,7 @@ export class OpenAIProvider implements LLMProvider {
 
     const parsed = withStreamingMetrics(
       parseOpenAIResponsesResponse(
-        this.config.model,
+        model,
         completedResponse,
         requestOptions,
       ),
@@ -558,8 +560,9 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
     timeoutMs: number | undefined,
   ): Promise<LLMResponse> {
+    const requestModel = options?.model?.trim() || this.config.model;
     const requestOptions = {
-      model: this.config.model,
+      model: requestModel,
       messages,
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
@@ -578,7 +581,7 @@ export class OpenAIProvider implements LLMProvider {
     });
 
     let content = "";
-    let model = this.config.model;
+    let model = requestModel;
     let finishReason: LLMResponse["finishReason"] = "stop";
     let usage: Record<string, number> = {};
     const toolCallAccumulator = new Map<
@@ -672,7 +675,7 @@ export class OpenAIProvider implements LLMProvider {
     );
     const parsed = withStreamingMetrics(
       parseChatCompletionsResponse(
-        this.config.model,
+        requestModel,
         {
           model,
           choices: [

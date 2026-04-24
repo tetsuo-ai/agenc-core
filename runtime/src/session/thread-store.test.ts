@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -174,6 +174,35 @@ describe("FileThreadStore.appendItems / loadHistory", () => {
     }
   });
 
+  it("loads rollout history from disk after the live writer is shut down", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "disk-history" });
+    try {
+      const store = new FileThreadStore({ cwd });
+      store.createThread({ threadId: "disk-history", rolloutStore: rollout });
+      store.appendItems({
+        threadId: "disk-history",
+        items: [responseItem("a", "alpha")],
+      });
+      store.shutdownThread("disk-history");
+
+      const history = store.loadHistory({
+        threadId: "disk-history",
+        includeArchived: false,
+      });
+
+      expect(
+        history.items.some(
+          (item) =>
+            item.type === "response_item" && item.payload.id === "a",
+        ),
+      ).toBe(true);
+    } finally {
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("appendItems on an unknown thread throws ThreadNotFoundError", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     try {
@@ -266,6 +295,47 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it("moves non-live archived rollouts under archived_sessions and can unarchive them", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "move-archived" });
+    const originalPath = rollout.rolloutPath;
+    try {
+      const store = new FileThreadStore({ cwd });
+      store.createThread({ threadId: "move-archived", rolloutStore: rollout });
+      store.appendItems({
+        threadId: "move-archived",
+        items: [responseItem("x", "x-ray")],
+      });
+      store.shutdownThread("move-archived");
+      rollout.close();
+
+      store.archiveThread({ threadId: "move-archived" });
+      const archived = store.readThread({
+        threadId: "move-archived",
+        includeArchived: true,
+        includeHistory: true,
+      });
+
+      expect(archived.rolloutPath).toContain("archived_sessions");
+      expect(existsSync(originalPath)).toBe(false);
+      expect(existsSync(archived.rolloutPath!)).toBe(true);
+      expect(
+        archived.history?.items.some(
+          (item) =>
+            item.type === "response_item" && item.payload.id === "x",
+        ),
+      ).toBe(true);
+
+      const restored = store.unarchiveThread({ threadId: "move-archived" });
+      expect(restored.rolloutPath).toBe(originalPath);
+      expect(existsSync(originalPath)).toBe(true);
+      expect(existsSync(archived.rolloutPath!)).toBe(false);
+    } finally {
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("FileThreadStore.updateThreadMetadata", () => {
@@ -288,6 +358,14 @@ describe("FileThreadStore.updateThreadMetadata", () => {
         includeHistory: false,
       });
       expect(readBack.memoryMode).toBe("disabled");
+      const sessionMetaLines = readFileSync(rollout.rolloutPath, "utf8")
+        .split(/\r?\n/)
+        .filter((line) => line.includes('"type":"session_meta"'));
+      expect(sessionMetaLines.length).toBeGreaterThanOrEqual(2);
+      const lastMeta = JSON.parse(sessionMetaLines.at(-1)!) as {
+        payload: { memoryMode?: string };
+      };
+      expect(lastMeta.payload.memoryMode).toBe("disabled");
     } finally {
       rollout.close();
       rmSync(cwd, { recursive: true, force: true });

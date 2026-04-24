@@ -48,12 +48,13 @@
  *     services are live references to singletons, not cloneable
  *     factories). So the gut delegate runs the one-shot turn in a
  *     *flat* shape: a single bounded provider call using the parent
- *     session's `services.provider`, with the review-scoped
- *     `TurnContext` + reviewer-prompt system message inlined at the
- *     call site. The *semantics* match upstream's one-shot contract
- *     (single sampling iteration, teardown on completion/abort), but
- *     the delegate does not currently provide a separate child-Session
- *     for the reviewer turn. This RESERVED surface covers:
+ *     session's provider transport with a request-scoped reviewer
+ *     model/tool envelope, plus the review-scoped `TurnContext` +
+ *     reviewer-prompt system message inlined at the call site. The
+ *     *semantics* match upstream's one-shot contract (single sampling
+ *     iteration, teardown on completion/abort), but the delegate does
+ *     not currently provide a separate child-Session for the reviewer
+ *     turn. This RESERVED surface covers:
  *       - `Codex.rx_event` / `Codex.tx_sub` sub-agent I/O channels
  *         (`codex_delegate.rs:230-236`). Callers today receive only
  *         the synthesized `CodexThreadOneShotOutcome`.
@@ -81,18 +82,19 @@
  *     approval-forwarding loop will need to land alongside the
  *     child-Session spawn.
  *
- *   - `ModelsManager` lookups. Upstream consults
- *     `services.models_manager.get_model_info` to resolve the
- *     reviewer model's capability bitmap. Gut's review-scoped
- *     TurnContext inherits the parent's `modelInfo` when the reviewer
- *     model is unchanged, and carries a lightweight override when
- *     the reviewer model differs. The full capability lookup is
- *     RESERVED for a later port.
+ *   - Fork-snapshot reuse / delta prompts from upstream
+ *     `guardian/review_session.rs`. Gut's review manager still starts
+ *     every review as a fresh flat one-shot provider call.
  *
  * @module
  */
 
-import type { LLMMessage, LLMProvider, LLMResponse } from "../llm/types.js";
+import type {
+  LLMChatOptions,
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+} from "../llm/types.js";
 import type {
   Config,
   ModelInfo,
@@ -150,6 +152,14 @@ export interface DelegateSessionLike extends DelegateEventSink {
   /** Upstream `sess.services.provider`. The provider to route the
    *  one-shot review call through. */
   readonly provider: LLMProvider;
+  /** Optional service bag present on live `Session`. The delegate uses
+   *  `modelsManager` when available to match upstream's reviewer-model
+   *  capability lookup before the provider call. */
+  readonly services?: {
+    readonly modelsManager?: {
+      getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
+    };
+  };
   /** Upstream codex `Session::spawn_task`. Used so the delegate's
    *  review turn participates in the Wave 2 task lifecycle (replace-
    *  on-new-turn, abort cascade, done promise). */
@@ -239,6 +249,21 @@ export interface CodexThreadOneShotRequest {
    *  the manager level; exposing it on the delegate as well lets
    *  callers without a `ReviewManager` bound still apply a budget. */
   readonly timeoutMs?: number;
+  /**
+   * Optional reviewer system prompt override. Generic `/review` uses
+   * `REVIEW_SYSTEM_PROMPT`; guardian approval review supplies the
+   * stricter approval-policy prompt while still reusing the same
+   * one-shot provider envelope.
+   */
+  readonly systemPrompt?: string;
+  /**
+   * Defaults to `true`. Guardian approval review runs inside an
+   * already-active main turn; spawning a Session task there would
+   * replace and abort that turn. `false` keeps the one-shot provider
+   * call inline while preserving timeout/abort/model/tool-disable
+   * semantics.
+   */
+  readonly registerTask?: boolean;
   // RESERVED: upstream codex `auth_manager`, `models_manager`,
   // `subagent_source`, `initial_history`. Left off the TS shape until
   // the child-Session spawn is wired; adding them later does not
@@ -495,6 +520,41 @@ function composeReviewerMessages(
   return [systemMessage, ...input];
 }
 
+async function resolveReviewerModelInfo(
+  session: DelegateSessionLike,
+  req: CodexThreadOneShotRequest,
+  reviewerModel: string,
+): Promise<ModelInfo> {
+  if (req.reviewerModelInfo !== undefined) {
+    return req.reviewerModelInfo;
+  }
+  const modelsManager = session.services?.modelsManager;
+  if (modelsManager !== undefined) {
+    try {
+      return await modelsManager.getModelInfo(reviewerModel, req.config);
+    } catch {
+      throw new ReviewerModelMismatchError(reviewerModel, session.provider.name);
+    }
+  }
+  return {
+    ...req.parentContext.modelInfo,
+    slug: reviewerModel,
+  };
+}
+
+function toProviderReasoningEffort(
+  effort: ModelInfo["defaultReasoningLevel"] | undefined,
+): LLMChatOptions["reasoningEffort"] | undefined {
+  switch (effort) {
+    case "low":
+    case "medium":
+    case "high":
+      return effort;
+    default:
+      return undefined;
+  }
+}
+
 /**
  * Upstream codex `run_codex_thread_one_shot`
  * (`codex_delegate.rs:156-237`) port. Runs a bounded single-turn
@@ -529,16 +589,22 @@ export async function runOneShot(
   session: DelegateSessionLike,
   req: CodexThreadOneShotRequest,
 ): Promise<CodexThreadOneShotOutcome> {
-  // Reviewer-model resolution. Upstream consults ModelsManager; gut
-  // delegates the check to the provider's capability hint (the
-  // provider exposes `getExecutionProfile` but not a model-list
-  // lookup, so the delegate accepts anything the caller specifies
-  // and trusts the provider to reject at the adapter boundary). The
-  // typed mismatch error exists so a future ModelsManager port can
-  // flip the trust model without changing the public surface.
+  // Reviewer-model resolution. Upstream consults ModelsManager before
+  // spawning the child review session; AgenC mirrors that when the
+  // live Session service bag is present and falls back to the parent
+  // metadata shape only for slim test fixtures.
   const reviewerModel =
-    req.reviewerModel ?? req.parentContext.modelInfo.slug;
+    (req.reviewerModel ?? req.parentContext.modelInfo.slug).trim();
   if (reviewerModel.length === 0) {
+    throw new ReviewerModelMismatchError(reviewerModel, session.provider.name);
+  }
+  const reviewerModelInfo = await resolveReviewerModelInfo(
+    session,
+    req,
+    reviewerModel,
+  );
+  const effectiveReviewerModel = reviewerModelInfo.slug.trim();
+  if (effectiveReviewerModel.length === 0) {
     throw new ReviewerModelMismatchError(reviewerModel, session.provider.name);
   }
 
@@ -561,15 +627,18 @@ export async function runOneShot(
   }
 
   // Upstream: `sess.spawn_task(tc, input, ReviewTask::new())` registers
-  // the review turn with `TaskKind::Review`. Gut's `spawnTask` returns
-  // the task handle; we pass our child controller so abort flows
-  // through the same cancellation surface.
-  const task = await session.spawnTask({
-    subId: req.subId,
-    kind: "review",
-    abortController: childController,
-    startedAtMs: Date.now(),
-  });
+  // the review turn with `TaskKind::Review`. Gut's default path keeps
+  // that task lifecycle. Guardian approval review is the one exception:
+  // it runs inside an active main turn, so registering a replacement
+  // task would abort the very turn whose approval is being reviewed.
+  const task = req.registerTask === false
+    ? undefined
+    : await session.spawnTask({
+        subId: req.subId,
+        kind: "review",
+        abortController: childController,
+        startedAtMs: Date.now(),
+      });
 
   // Timeout guard. Upstream applies deadlines at the manager level
   // (`run_before_review_deadline`, review_session.rs:899-914); gut
@@ -588,23 +657,19 @@ export async function runOneShot(
   let assistantText: string | null = null;
   let providerError: Error | null = null;
   try {
-    // Build the review-scoped TurnContext so the provider call runs
-    // under the reviewer-facing model/auth envelope. The context is
-    // built but consumed implicitly — gut's provider interface takes
-    // (messages, options) rather than (ctx, messages), so the ctx's
-    // role here is to carry the frozen review-scoped config for the
-    // runtime to observe (emitted events, telemetry, future turn-
-    // state writes). The provider call below reads `modelInfo.slug`
-    // from this ctx when the reviewer model differs from the parent.
-    void buildReviewTurnContext(
+    // Build the review-scoped TurnContext so the provider call uses
+    // the reviewer-facing model/reasoning envelope. Providers consume
+    // those fields through request-scoped chat options below because
+    // AgenC's flat delegate does not spawn a separate child Session yet.
+    const reviewCtx = buildReviewTurnContext(
       req.parentContext,
-      reviewerModel,
-      req.reviewerModelInfo,
+      effectiveReviewerModel,
+      reviewerModelInfo,
       req.subId,
     );
 
     const messages = composeReviewerMessages(
-      REVIEW_SYSTEM_PROMPT,
+      req.systemPrompt ?? REVIEW_SYSTEM_PROMPT,
       req.input,
     );
 
@@ -614,18 +679,29 @@ export async function runOneShot(
       // the microtask queue). Fall through to the termination block
       // with no assistantText.
     } else {
+      const reasoningEffort = toProviderReasoningEffort(
+        reviewCtx.collaborationMode.reasoningEffort ??
+          reviewCtx.modelInfo.defaultReasoningLevel,
+      );
+      const chatOptions: LLMChatOptions = {
+        signal: childController.signal,
+        model: reviewCtx.modelInfo.slug,
+        tools: [],
+        toolRouting: { allowedToolNames: [] },
+        toolChoice: "none",
+        parallelToolCalls: false,
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        ...(req.finalOutputJsonSchema !== undefined
+          ? {
+              structuredOutput: {
+                schema: req.finalOutputJsonSchema,
+              } as LLMChatOptions["structuredOutput"],
+            }
+          : {}),
+      };
       const response: LLMResponse = await session.provider.chat(
         messages as LLMMessage[],
-        {
-          signal: childController.signal,
-          ...(req.finalOutputJsonSchema !== undefined
-            ? {
-                structuredOutput: {
-                  schema: req.finalOutputJsonSchema,
-                } as unknown as import("../llm/types.js").LLMStructuredOutputRequest,
-              }
-            : {}),
-        },
+        chatOptions,
       );
       assistantText = response.content ?? null;
     }
@@ -695,7 +771,7 @@ export async function runOneShot(
           ? "aborted"
           : "completed",
     reviewOutput: output,
-    modelUsed: reviewerModel,
+    modelUsed: effectiveReviewerModel,
     request: req.request,
   };
   session.sendEvent(req.subId, {
@@ -709,13 +785,15 @@ export async function runOneShot(
   // slot when the task registry empties. `void`-await is fine because
   // the lifecycle awaits `task.done` elsewhere (graceful interruption
   // path); we resolve `done` here by explicitly finishing.
-  await session.onTaskFinished(task.subId);
+  if (task !== undefined) {
+    await session.onTaskFinished(task.subId);
+  }
 
   return {
     verdict,
     output,
     rawText: assistantText,
-    modelUsed: reviewerModel,
+    modelUsed: effectiveReviewerModel,
     error,
   };
 }

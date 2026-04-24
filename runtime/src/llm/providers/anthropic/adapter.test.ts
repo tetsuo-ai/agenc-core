@@ -18,6 +18,42 @@ function sseResponse(frames: string[]): Response {
 }
 
 describe("AnthropicProvider", () => {
+  test("honors request-scoped model overrides on chat calls", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "msg_1",
+          type: "message",
+          role: "assistant",
+          model: "claude-reviewer",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test",
+      model: "claude-3-7-sonnet",
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "review" }],
+      { model: "claude-reviewer" },
+    );
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.model).toBe("claude-reviewer");
+    expect(response.model).toBe("claude-reviewer");
+  });
+
   test("adds the context-management beta header when context management is configured", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

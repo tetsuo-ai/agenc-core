@@ -138,10 +138,11 @@ export class AnthropicProvider implements LLMProvider {
     const requestTools = options?.tools
       ? [...options.tools]
       : this.config.tools ?? [];
+    const model = options?.model?.trim() || this.config.model;
 
     try {
       const request = buildAnthropicMessagesRequest({
-        model: this.config.model,
+        model,
         messages,
         tools: requestTools,
         options,
@@ -155,8 +156,8 @@ export class AnthropicProvider implements LLMProvider {
         timeoutMs,
         signal: options?.signal,
       });
-      return parseAnthropicMessagesResponse(this.config.model, response.data, {
-        model: this.config.model,
+      return parseAnthropicMessagesResponse(model, response.data, {
+        model,
         messages,
         tools: requestTools,
         options,
@@ -175,8 +176,9 @@ export class AnthropicProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    const requestModel = options?.model?.trim() || this.config.model;
     const requestOptions = {
-      model: this.config.model,
+      model: requestModel,
       messages,
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
@@ -205,7 +207,7 @@ export class AnthropicProvider implements LLMProvider {
         retryBudget: { maxRetries: 0 },
       });
       let content = "";
-      let model = this.config.model;
+      let model = requestModel;
       let finishReason: LLMResponse["finishReason"] = "stop";
       let sawMessageStop = false;
       let usage = { input_tokens: 0, output_tokens: 0 };
@@ -353,7 +355,7 @@ export class AnthropicProvider implements LLMProvider {
 
       const parsed = withStreamingMetrics(
         parseAnthropicMessagesResponse(
-          this.config.model,
+          requestModel,
           {
             model,
             content: [

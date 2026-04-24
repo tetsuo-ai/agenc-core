@@ -28,7 +28,7 @@
  * session-kernel suites.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
@@ -138,7 +138,7 @@ function mkSessionConfiguration(): SessionConfiguration {
 interface ScriptedProviderOptions {
   readonly content?: string;
   readonly delayMs?: number;
-  readonly onChat?: (messages: LLMMessage[]) => void;
+  readonly onChat?: (messages: LLMMessage[], options?: LLMChatOptions) => void;
   readonly throwError?: Error;
 }
 
@@ -147,7 +147,7 @@ function mkScriptedProvider(opts: ScriptedProviderOptions = {}): LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> => {
-    opts.onChat?.(messages);
+    opts.onChat?.(messages, options);
     if (opts.throwError) throw opts.throwError;
     const signal = options?.signal;
     if (signal?.aborted) {
@@ -180,7 +180,7 @@ function mkScriptedProvider(opts: ScriptedProviderOptions = {}): LLMProvider {
       content: opts.content ?? "",
       toolCalls: [],
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      model: "test-model",
+      model: options?.model ?? "test-model",
       finishReason: "stop",
     };
   };
@@ -192,7 +192,10 @@ function mkScriptedProvider(opts: ScriptedProviderOptions = {}): LLMProvider {
   } as unknown as LLMProvider;
 }
 
-function mkSession(provider: LLMProvider): Session {
+function mkSession(
+  provider: LLMProvider,
+  serviceOverrides?: Partial<SessionServices>,
+): Session {
   const services = {
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -209,6 +212,7 @@ function mkSession(provider: LLMProvider): Session {
       toLLMTools: () => [],
       dispatch: async () => ({ content: "", isError: false }),
     },
+    ...serviceOverrides,
   } as unknown as SessionServices;
   const sessionOpts: SessionOpts = {
     conversationId: "conv-delegate-test",
@@ -363,6 +367,61 @@ describe("runOneShot happy-path review", () => {
     const session = mkSession(provider);
     await runOneShot(session, mkOneShotRequest(session));
     expect(observedFirst).toContain("# Review guidelines:");
+  });
+
+  it("passes the reviewer model, no-tool envelope, and reasoning effort to the provider", async () => {
+    let observedOptions: LLMChatOptions | undefined;
+    const provider = mkScriptedProvider({
+      content: "reviewer text",
+      onChat: (_messages, options) => {
+        observedOptions = options;
+      },
+    });
+    const session = mkSession(provider);
+
+    await runOneShot(session, {
+      ...mkOneShotRequest(session),
+      reviewerModel: "reviewer-5",
+      reviewerModelInfo: {
+        ...mkModelInfo("reviewer-5"),
+        defaultReasoningLevel: "high",
+      },
+    });
+
+    expect(observedOptions?.model).toBe("reviewer-5");
+    expect(observedOptions?.reasoningEffort).toBe("high");
+    expect(observedOptions?.tools).toEqual([]);
+    expect(observedOptions?.toolRouting?.allowedToolNames).toEqual([]);
+    expect(observedOptions?.toolChoice).toBe("none");
+  });
+
+  it("resolves reviewer aliases through the session ModelsManager before calling the provider", async () => {
+    let observedOptions: LLMChatOptions | undefined;
+    const provider = mkScriptedProvider({
+      content: "reviewer text",
+      onChat: (_messages, options) => {
+        observedOptions = options;
+      },
+    });
+    const getModelInfo = vi.fn().mockResolvedValue({
+      ...mkModelInfo("resolved-reviewer"),
+      defaultReasoningLevel: "low",
+    });
+    const session = mkSession(provider, {
+      modelsManager: {
+        getModelInfo,
+        tryListModels: () => undefined,
+        listModels: async () => [],
+      },
+    } as unknown as Partial<SessionServices>);
+    const req = mkOneShotRequest(session, { reviewerModel: "reviewer-alias" });
+
+    const outcome = await runOneShot(session, req);
+
+    expect(getModelInfo).toHaveBeenCalledWith("reviewer-alias", req.config);
+    expect(observedOptions?.model).toBe("resolved-reviewer");
+    expect(observedOptions?.reasoningEffort).toBe("low");
+    expect(outcome.modelUsed).toBe("resolved-reviewer");
   });
 });
 

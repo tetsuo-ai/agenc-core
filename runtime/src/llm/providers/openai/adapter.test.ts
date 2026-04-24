@@ -21,6 +21,48 @@ function sseResponse(frames: string[]): Response {
 }
 
 describe("OpenAIProvider", () => {
+  test("honors request-scoped model overrides on chat calls", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          model: "gpt-5-reviewer",
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "ok" }],
+            },
+          ],
+          usage: {
+            input_tokens: 3,
+            output_tokens: 1,
+            total_tokens: 4,
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      fetchImpl,
+    });
+
+    const response = await provider.chat(
+      [{ role: "user", content: "review" }],
+      { model: "gpt-5-reviewer" },
+    );
+
+    const request = JSON.parse(
+      String(fetchImpl.mock.calls[0]?.[1]?.body),
+    ) as Record<string, unknown>;
+    expect(request.model).toBe("gpt-5-reviewer");
+    expect(response.model).toBe("gpt-5-reviewer");
+  });
+
   test("refreshes oauth credentials after a 401 and retries once", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

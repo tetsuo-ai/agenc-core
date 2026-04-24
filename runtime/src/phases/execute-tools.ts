@@ -53,6 +53,7 @@ import { resolveMaxToolUseConcurrency } from "./_deps/orchestration.js";
 import type { ToolDispatchResult } from "./_deps/tool-registry.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import type { GuardianApprovalReviewer } from "../session/guardian-approval-review.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { ToolUseBlock, TurnState, UserMessage } from "../session/turn-state.js";
 import {
@@ -182,6 +183,7 @@ function resolveOrchestratorSessionPolicy(
   readonly approvalPolicy: OrchestratorApprovalPolicy;
   readonly sandboxMode: SandboxMode;
   readonly permissionHooks: ReadonlyArray<PermissionRequestHook> | undefined;
+  readonly guardianApprovalReviewer: GuardianApprovalReviewer | undefined;
   readonly approvalResolver: ApprovalResolver | undefined;
 } {
   const ctxApproval = ctx.approvalPolicy?.value;
@@ -189,6 +191,7 @@ function resolveOrchestratorSessionPolicy(
   const services = session.services as
     | (typeof session.services & {
         readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
+        readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
         readonly approvalResolver?: ApprovalResolver;
       })
     | undefined;
@@ -196,6 +199,7 @@ function resolveOrchestratorSessionPolicy(
     approvalPolicy: (ctxApproval ?? "never") as OrchestratorApprovalPolicy,
     sandboxMode: (ctxSandbox ?? "workspace_write") as SandboxMode,
     permissionHooks: services?.permissionRequestHooks,
+    guardianApprovalReviewer: services?.guardianApprovalReviewer,
     approvalResolver: services?.approvalResolver,
   };
 }
@@ -267,6 +271,12 @@ export function ensureStreamingToolExecutor(
         sandboxMode: orchestratorPolicy.sandboxMode,
         ...(orchestratorPolicy.permissionHooks !== undefined
           ? { permissionHooks: orchestratorPolicy.permissionHooks }
+          : {}),
+        ...(orchestratorPolicy.guardianApprovalReviewer !== undefined
+          ? {
+              guardianApprovalReviewer:
+                orchestratorPolicy.guardianApprovalReviewer,
+            }
           : {}),
         ...(orchestratorPolicy.approvalResolver !== undefined
           ? { approvalResolver: orchestratorPolicy.approvalResolver }

@@ -11,6 +11,7 @@
 export type {
   AgenCConfig,
   ApprovalPolicy,
+  ApprovalsReviewer,
   SandboxMode,
   SandboxPolicy,
   ShellEnvironmentPolicy,

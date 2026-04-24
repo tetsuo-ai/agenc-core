@@ -1345,10 +1345,9 @@ async function* runTurnKernelInner(
     // for that turn. We re-check here at the top of every phase
     // iteration so an interrupt raised during the just-finished
     // iteration's tool dispatch aborts the next iteration cleanly
-    // instead of issuing another sampling request. No detection-site
-    // caller is wired in gut yet (the guardian-reviewer subsystem is
-    // not ported), so in practice this branch only fires when a caller
-    // records denials directly against the breaker.
+    // instead of issuing another sampling request. The live writer is
+    // `guardian-approval-review.ts`, reached from the tool approval
+    // orchestrator when `approvalsReviewer` is `auto_review`.
     const breaker = session.services.guardianRejectionCircuitBreaker;
     if (breaker?.isOpen(ctx.subId) === true) {
       await drainInFlight(state, ctx, session);
