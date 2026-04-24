@@ -101,50 +101,124 @@ export interface RunningTask {
 /**
  * Upstream codex `state/turn.rs::TurnState`. Per-turn state held under
  * its own lock inside `ActiveTurn`. Gut exposes the 11 fields so later
- * waves can wire consumers without schema churn. Fields currently
- * consumed by gut code paths are noted inline; slot-only fields are
- * preserved for forward wiring.
+ * waves can wire consumers without schema churn. Each field below is
+ * classified per its current gut status:
  *
- * Currently consumed by gut:
- *   - `toolCalls` — incremented by tool-execute sites (future wiring;
- *     today the gut executor tracks this through a different path).
- *   - `tokenUsageAtTurnStart` — captured at `spawnTask` so
- *     `onTaskFinished` can compute per-turn delta telemetry (gut
- *     equivalent of codex `TurnTokenUsageFact`).
- *   - `hasMemoryCitation` — set by the memory-citation wiring when
- *     the first citation lands in a turn.
- *   - `pendingInput` — mirrors `session.mailbox` routing; the full
- *     wiring lands with T9's mailbox refactor.
+ *   WIRED-NOW — has a live gut producer/consumer that goes through
+ *     `session.withActiveTurnState(...)` (or is seeded under the lock
+ *     at `spawnTask` entry).
  *
- * Slot-only (schema present; no live consumer yet):
- *   - `pendingApprovals`, `pendingRequestPermissions`, `pendingUserInput`,
- *     `pendingElicitations`, `pendingDynamicTools`, `grantedPermissions`,
- *     `mailboxDeliveryPhase`, `strictAutoReviewEnabled`.
+ *   WIRED-EXTERNAL — has a gut consumer, but that consumer owns its
+ *     own serialization surface (e.g. `SimpleMailbox` for input
+ *     routing) and cannot be migrated to the `ActiveTurnState` lock
+ *     without reshaping the consumer's protocol. The field stays
+ *     present so a future refactor can bridge into the lock.
+ *
+ *   SLOT-ONLY — no gut consumer today. Field reserved so upstream
+ *     codex mutation sites can be ported without schema churn. Each
+ *     SLOT-ONLY field carries a `RESERVED:` breadcrumb citing the
+ *     upstream `session/mod.rs` lock site(s) it will connect to.
+ *
+ * Current classification (2026-04 Part 4):
+ *   WIRED-NOW:
+ *     - `toolCalls` — incremented inside
+ *       `tools/router.ts::dispatchModelToolCall` under the
+ *       `ActiveTurnState` lock; mirrors upstream
+ *       `tools/registry.rs:303-309`.
+ *     - `tokenUsageAtTurnStart` — seeded under the lock in
+ *       `Session.spawnTask`.
+ *
+ *   WIRED-EXTERNAL:
+ *     - `pendingInput` — gut routes pending input through
+ *       `SimpleMailbox` (see `session.ts::enqueueIdleInput` /
+ *       `hasPendingInput` / `drainIdleInput`). Migration would
+ *       require reshaping the mailbox envelope protocol and is out of
+ *       scope here.
+ *     - `mailboxDeliveryPhase` — tied to the same mailbox external
+ *       routing; upstream mutates it through
+ *       `session/mod.rs::defer_mailbox_delivery_to_next_turn` and
+ *       `accept_mailbox_delivery_for_current_turn`, which have no gut
+ *       counterpart independent of the mailbox consumer above.
+ *
+ *   SLOT-ONLY:
+ *     - `pendingApprovals`, `pendingRequestPermissions`,
+ *       `pendingUserInput`, `pendingElicitations`,
+ *       `pendingDynamicTools`, `grantedPermissions`,
+ *       `strictAutoReviewEnabled`, `hasMemoryCitation`.
+ *
+ * Abort-path cleanup still runs in `Session.abortAllTasksLocked`,
+ * clearing all pending-* maps under the same lock. That keeps the
+ * invariant "a replaced turn never surfaces stale responses" even
+ * for SLOT-ONLY fields, so a future consumer inheriting the slot does
+ * not need to re-implement the clear contract.
  */
 export interface ActiveTurnState {
-  /** Upstream `pending_approvals`. Slot-only pending T11 wiring. */
+  // RESERVED: upstream codex session/mod.rs:1812 (exec approval insert),
+  // mod.rs:1880 (apply-patch approval insert), mod.rs:2299 (notify_approval
+  // remove). Gut approval flow uses closure-based `ApprovalRequestFn`
+  // (tools/execution.ts:368) rather than a keyed registry; the slot is
+  // reserved for the T11 approval-RPC port.
+  /** Upstream `pending_approvals`. SLOT-ONLY. */
   pendingApprovals: Map<string, (decision: unknown) => void>;
-  /** Upstream `pending_request_permissions`. Slot-only pending T11 wiring. */
+  // RESERVED: upstream codex session/mod.rs:2036 (request_permissions
+  // insert), mod.rs:2067 (cancellation remove), mod.rs:2153
+  // (notify_request_permissions_response remove).
+  /** Upstream `pending_request_permissions`. SLOT-ONLY. */
   pendingRequestPermissions: Map<string, unknown>;
-  /** Upstream `pending_user_input`. Slot-only pending request-user-input wiring. */
+  // RESERVED: upstream codex session/mod.rs:2092 (request_user_input
+  // insert), mod.rs:2124 (notify_user_input_response remove).
+  /** Upstream `pending_user_input`. SLOT-ONLY. */
   pendingUserInput: Map<string, (response: unknown) => void>;
-  /** Upstream `pending_elicitations`. Slot-only pending MCP elicitation wiring. */
+  // RESERVED: upstream codex elicitation surface (MCP elicitation
+  // callback registry). Gut's `Session.outOfBandElicitationPaused`
+  // carries only the paused-state BehaviorSubject; no elicitation
+  // callback is kept in a keyed registry yet.
+  /** Upstream `pending_elicitations`. SLOT-ONLY. */
   pendingElicitations: Map<string, (response: unknown) => void>;
-  /** Upstream `pending_dynamic_tools`. Slot-only pending dynamic-tool wiring. */
+  // RESERVED: upstream codex session/mod.rs:2274 (notify_dynamic_tool_response
+  // remove). Gut has no dynamic-tool-response surface yet.
+  /** Upstream `pending_dynamic_tools`. SLOT-ONLY. */
   pendingDynamicTools: Map<string, (response: unknown) => void>;
-  /** Upstream `pending_input`. Currently consumed via session.mailbox. */
+  // WIRED-EXTERNAL: consumed via `session.ts::SimpleMailbox`
+  // (`enqueueIdleInput` / `hasPendingInput` / `drainIdleInput`).
+  // Upstream codex sites: session/mod.rs:2948 (steer_input push),
+  // mod.rs:3001 (inject_response_items), tasks/mod.rs:484
+  // (on_task_finished drain).
+  /** Upstream `pending_input`. WIRED-EXTERNAL (SimpleMailbox). */
   pendingInput: unknown[];
-  /** Upstream `mailbox_delivery_phase`. Slot-only pending mailbox phase wiring. */
+  // WIRED-EXTERNAL: tied to the same mailbox consumer above. Upstream
+  // codex sites: session/mod.rs:3018 (defer_mailbox_delivery_to_next_turn),
+  // mod.rs:3030 (accept_mailbox_delivery_for_current_turn).
+  /** Upstream `mailbox_delivery_phase`. WIRED-EXTERNAL (mailbox). */
   mailboxDeliveryPhase: MailboxDeliveryPhase;
-  /** Upstream `granted_permissions`. Slot-only pending permission-profile wiring. */
+  // RESERVED: upstream codex session/mod.rs:2244 (granted_turn_permissions
+  // read). Gut has no per-turn permission-grant storage yet; permissions
+  // are evaluated through `permissions/evaluator.ts` without a turn-scoped
+  // grant cache.
+  /** Upstream `granted_permissions`. SLOT-ONLY. */
   grantedPermissions: unknown | null;
-  /** Upstream `strict_auto_review_enabled`. Slot-only pending review wiring. */
+  // RESERVED: upstream codex session/mod.rs:2255
+  // (strict_auto_review_enabled_for_turn read). No review subsystem in gut.
+  /** Upstream `strict_auto_review_enabled`. SLOT-ONLY. */
   strictAutoReviewEnabled: boolean;
-  /** Upstream `tool_calls` counter. Incremented at tool-dispatch sites. */
+  // WIRED-NOW: incremented in `tools/router.ts::dispatchModelToolCall`
+  // via `session.withActiveTurnState(...)`. Mirrors upstream
+  // `tools/registry.rs:303-309` (saturating add before dispatch). No
+  // gut reader yet; upstream reads in `tasks/mod.rs:486` at
+  // `on_task_finished` for turn-complete telemetry.
+  /** Upstream `tool_calls` counter. WIRED-NOW (dispatchModelToolCall). */
   toolCalls: number;
-  /** Upstream `has_memory_citation`. Set when the turn records a citation. */
+  // RESERVED: upstream codex session/mod.rs:3046
+  // (record_memory_citation_for_turn write), tasks/mod.rs:485
+  // (on_task_finished read). Gut has no memory subsystem yet.
+  /** Upstream `has_memory_citation`. SLOT-ONLY. */
   hasMemoryCitation: boolean;
-  /** Upstream `token_usage_at_turn_start`. Captured at `spawnTask` entry. */
+  // WIRED-NOW: seeded under the lock in `Session.spawnTask`
+  // (session.ts:1528-1534) when the caller supplies
+  // `opts.tokenUsageAtTurnStart`. Upstream reads in `tasks/mod.rs:487`
+  // at `on_task_finished` to compute per-turn token-usage delta; the
+  // matching gut reader is future work (telemetry hook).
+  /** Upstream `token_usage_at_turn_start`. WIRED-NOW (seeded at spawn). */
   tokenUsageAtTurnStart: {
     promptTokens: number;
     completionTokens: number;
