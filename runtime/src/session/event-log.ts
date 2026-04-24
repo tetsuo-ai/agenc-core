@@ -216,6 +216,44 @@ export interface GuardianAssessmentEvent {
   readonly action: string;
 }
 
+export type ReviewDelegateVerdict =
+  | "pass"
+  | "fail"
+  | "partial"
+  | "aborted"
+  | "timeout";
+
+export type ReviewDelegateCompletionReason =
+  | "completed"
+  | "timeout"
+  | "aborted"
+  | "error";
+
+export interface ReviewDelegateStartedEvent {
+  readonly subId: string;
+  readonly target: string;
+  readonly modelUsed: string;
+  readonly reuseKey?: string;
+  readonly snapshot_reused: boolean;
+  readonly priorFindingCount: number;
+  readonly startedAt: number;
+}
+
+export interface ReviewDelegateCompletedEvent {
+  readonly subId: string;
+  readonly target: string;
+  readonly modelUsed: string;
+  readonly reuseKey?: string;
+  readonly snapshot_reused: boolean;
+  readonly priorFindingCount: number;
+  readonly newFindingCount: number;
+  readonly durationMs: number;
+  readonly verdict: ReviewDelegateVerdict;
+  readonly reason: ReviewDelegateCompletionReason;
+  readonly completedAt: number;
+  readonly error?: string;
+}
+
 /**
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
@@ -357,6 +395,14 @@ export type EventMsg =
       readonly payload: GuardianAssessmentEvent;
     }
   | {
+      readonly type: "review_delegate_started";
+      readonly payload: ReviewDelegateStartedEvent;
+    }
+  | {
+      readonly type: "review_delegate_completed";
+      readonly payload: ReviewDelegateCompletedEvent;
+    }
+  | {
       readonly type: "deprecation_notice";
       readonly payload: DeprecationNoticeEvent;
     }
@@ -470,6 +516,8 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "stream_error",
     "warning",
     "guardian_assessment",
+    "review_delegate_started",
+    "review_delegate_completed",
     "deprecation_notice",
     "plan_started",
     "plan_delta",

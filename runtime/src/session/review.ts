@@ -83,6 +83,7 @@ import type {
   AgenCReviewOneShotOutcome,
   AgenCReviewOneShotRequest,
 } from "./agenc-delegate.js";
+import type { ReviewDelegateCompletionReason } from "./event-log.js";
 import type { LLMMessage } from "../llm/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -467,10 +468,6 @@ export class ReviewManager {
    *     (emitted by the delegate) so consumers do not need to route
    *     around the manager.
    *
-   * Remaining difference vs upstream: prior-review-count analytics are
-   * not emitted yet. The child session, timeout/abort, exit event, and
-   * bounded snapshot reuse paths are live.
-   *
    * The delegate itself (`runAgenCReviewOneShot`) handles the actual review
    * provider call + `exit_review_mode` emission; `runReview` is the
    * manager-level wrapper that adds bookkeeping + abort merging.
@@ -511,7 +508,25 @@ export class ReviewManager {
       request: req.request,
     });
 
-    const preparedReq = this.prepareSnapshotReuse(req);
+    const startedAt = Date.now();
+    const prepared = this.prepareSnapshotReuse(req);
+    const modelUsed =
+      prepared.request.reviewerModel ??
+      prepared.request.parentContext.modelInfo.slug;
+    session.sendEvent(req.subId, {
+      type: "review_delegate_started",
+      payload: {
+        subId: req.subId,
+        target: req.request.target,
+        modelUsed,
+        ...(explicitReviewReuseKey(req) !== undefined
+          ? { reuseKey: explicitReviewReuseKey(req) }
+          : {}),
+        snapshot_reused: prepared.snapshotReused,
+        priorFindingCount: prepared.priorFindingCount,
+        startedAt,
+      },
+    });
 
     // Lazy-import the delegate to sidestep the circular-dep risk
     // (review.ts <-> agenc-delegate.ts). Only the types were
@@ -520,11 +535,34 @@ export class ReviewManager {
 
     try {
       const outcome = await runAgenCReviewOneShot(session, {
-        ...preparedReq,
+        ...prepared.request,
         signal: managerController.signal,
       });
-      this.recordSnapshot(preparedReq, outcome);
+      this.recordSnapshot(prepared.request, outcome);
+      this.emitReviewDelegateCompleted(session, {
+        req,
+        modelUsed: outcome.modelUsed,
+        startedAt,
+        snapshotReused: prepared.snapshotReused,
+        priorFindingCount: prepared.priorFindingCount,
+        newFindingCount: outcome.output.findings.length,
+        verdict: outcome.verdict,
+        reason: completionReasonFromVerdict(outcome.verdict),
+      });
       return outcome;
+    } catch (err) {
+      this.emitReviewDelegateCompleted(session, {
+        req,
+        modelUsed,
+        startedAt,
+        snapshotReused: prepared.snapshotReused,
+        priorFindingCount: prepared.priorFindingCount,
+        newFindingCount: 0,
+        verdict: "fail",
+        reason: "error",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
     } finally {
       // Remove the listener even on success paths so the caller's
       // AbortController doesn't keep a reference to us.
@@ -537,11 +575,23 @@ export class ReviewManager {
 
   private prepareSnapshotReuse(
     req: AgenCReviewOneShotRequest,
-  ): AgenCReviewOneShotRequest {
+  ): PreparedReviewRequest {
     const key = reviewSnapshotKey(req);
-    if (key === null) return req;
+    if (key === null) {
+      return {
+        request: req,
+        snapshotReused: false,
+        priorFindingCount: 0,
+      };
+    }
     const snapshot = this.snapshots.get(key);
-    if (snapshot === undefined) return { ...req, reuseKey: key };
+    if (snapshot === undefined) {
+      return {
+        request: req,
+        snapshotReused: false,
+        priorFindingCount: 0,
+      };
+    }
 
     const deltaPrompt: LLMMessage = {
       role: "user",
@@ -558,10 +608,16 @@ export class ReviewManager {
     };
 
     return {
-      ...req,
-      reuseKey: key,
-      initialHistory: snapshot.history,
-      input: [deltaPrompt, ...req.input],
+      request: {
+        ...req,
+        ...(explicitReviewReuseKey(req) !== undefined
+          ? { reuseKey: explicitReviewReuseKey(req) }
+          : {}),
+        initialHistory: snapshot.history,
+        input: [deltaPrompt, ...req.input],
+      },
+      snapshotReused: true,
+      priorFindingCount: snapshot.findingCount,
     };
   }
 
@@ -581,6 +637,47 @@ export class ReviewManager {
       overallExplanation: outcome.output.overallExplanation,
     });
   }
+
+  private emitReviewDelegateCompleted(
+    session: AgenCDelegateSessionLike,
+    opts: {
+      readonly req: AgenCReviewOneShotRequest;
+      readonly modelUsed: string;
+      readonly startedAt: number;
+      readonly snapshotReused: boolean;
+      readonly priorFindingCount: number;
+      readonly newFindingCount: number;
+      readonly verdict: AgenCReviewOneShotOutcome["verdict"];
+      readonly reason: ReviewDelegateCompletionReason;
+      readonly error?: string;
+    },
+  ): void {
+    const completedAt = Date.now();
+    const reuseKey = explicitReviewReuseKey(opts.req);
+    session.sendEvent(opts.req.subId, {
+      type: "review_delegate_completed",
+      payload: {
+        subId: opts.req.subId,
+        target: opts.req.request.target,
+        modelUsed: opts.modelUsed,
+        ...(reuseKey !== undefined ? { reuseKey } : {}),
+        snapshot_reused: opts.snapshotReused,
+        priorFindingCount: opts.priorFindingCount,
+        newFindingCount: opts.newFindingCount,
+        durationMs: Math.max(0, completedAt - opts.startedAt),
+        verdict: opts.verdict,
+        reason: opts.reason,
+        completedAt,
+        ...(opts.error !== undefined ? { error: opts.error } : {}),
+      },
+    });
+  }
+}
+
+interface PreparedReviewRequest {
+  readonly request: AgenCReviewOneShotRequest;
+  readonly snapshotReused: boolean;
+  readonly priorFindingCount: number;
 }
 
 interface ReviewConversationSnapshot {
@@ -599,6 +696,22 @@ function reviewSnapshotKey(req: AgenCReviewOneShotRequest): string | null {
     req.reviewerModel ?? req.parentContext.modelInfo.slug,
     req.config.cwd,
   ].join("\u0000");
+}
+
+function explicitReviewReuseKey(
+  req: AgenCReviewOneShotRequest,
+): string | undefined {
+  return typeof req.reuseKey === "string" && req.reuseKey.trim().length > 0
+    ? req.reuseKey.trim()
+    : undefined;
+}
+
+function completionReasonFromVerdict(
+  verdict: AgenCReviewOneShotOutcome["verdict"],
+): ReviewDelegateCompletionReason {
+  if (verdict === "timeout") return "timeout";
+  if (verdict === "aborted") return "aborted";
+  return "completed";
 }
 
 // ─────────────────────────────────────────────────────────────────────

@@ -762,6 +762,8 @@ describe("ReviewManager.runReview orchestrator", () => {
       content: "reviewer output",
     });
     const session = mkSession(provider);
+    const telemetry: EventMsg[] = [];
+    session.eventLog.subscribe((event) => telemetry.push(event.msg));
     const manager = new ReviewManager();
     const exitPromise = observeExitReviewMode(session);
     const outcome = await manager.runReview(session, {
@@ -771,25 +773,57 @@ describe("ReviewManager.runReview orchestrator", () => {
     expect(outcome.verdict).toBe("pass");
     const payload = await exitPromise;
     expect(payload.reason).toBe("completed");
+    const started = telemetry.find(
+      (event): event is Extract<EventMsg, { type: "review_delegate_started" }> =>
+        event.type === "review_delegate_started",
+    );
+    const completed = telemetry.find(
+      (event): event is Extract<EventMsg, { type: "review_delegate_completed" }> =>
+        event.type === "review_delegate_completed",
+    );
+    expect(started?.payload).toMatchObject({
+      subId: "review-run-happy",
+      target: "Diff between HEAD and main",
+      snapshot_reused: false,
+      priorFindingCount: 0,
+    });
+    expect(completed?.payload).toMatchObject({
+      subId: "review-run-happy",
+      target: "Diff between HEAD and main",
+      snapshot_reused: false,
+      priorFindingCount: 0,
+      newFindingCount: 0,
+      verdict: "pass",
+      reason: "completed",
+    });
+    expect(completed?.payload.durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("reuses the previous child review snapshot as initial history on matching reviews", async () => {
     let calls = 0;
     const observedMessages: LLMMessage[][] = [];
-    const provider = mkScriptedProvider({
-      onChat: (messages) => {
-        calls += 1;
-        observedMessages.push(messages);
-      },
-      content: "placeholder",
+    const firstReview = JSON.stringify({
+      findings: [
+        {
+          title: "first issue",
+          body: "first review snapshot",
+          confidence_score: 0.8,
+          priority: 1,
+          code_location: {
+            absolute_path: "/tmp/example.ts",
+            line_range: { start: 1, end: 1 },
+          },
+        },
+      ],
+      overall_explanation: "first review snapshot",
     });
     const scripted: LLMProvider = {
-      ...provider,
+      ...mkScriptedProvider(),
       chat: async (messages, options) => {
         calls += 1;
         observedMessages.push(messages);
         return {
-          content: calls === 1 ? "first review snapshot" : "second review",
+          content: calls === 1 ? firstReview : "second review",
           toolCalls: [],
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           model: options?.model ?? "test-model",
@@ -799,7 +833,7 @@ describe("ReviewManager.runReview orchestrator", () => {
       chatStream: async (messages, onChunk, options) => {
         calls += 1;
         observedMessages.push(messages);
-        const content = calls === 1 ? "first review snapshot" : "second review";
+        const content = calls === 1 ? firstReview : "second review";
         onChunk({ content, done: false });
         return {
           content,
@@ -811,6 +845,8 @@ describe("ReviewManager.runReview orchestrator", () => {
       },
     };
     const session = mkSession(scripted);
+    const telemetry: EventMsg[] = [];
+    session.eventLog.subscribe((event) => telemetry.push(event.msg));
     const manager = new ReviewManager();
     const req = {
       ...mkOneShotRequest(session),
@@ -829,6 +865,47 @@ describe("ReviewManager.runReview orchestrator", () => {
       .toBe(true);
     expect(secondMessages.some((message) => messageTextForTest(message).includes("previous review snapshot")))
       .toBe(true);
+
+    const started = telemetry.filter(
+      (event): event is Extract<EventMsg, { type: "review_delegate_started" }> =>
+        event.type === "review_delegate_started",
+    );
+    const completed = telemetry.filter(
+      (event): event is Extract<EventMsg, { type: "review_delegate_completed" }> =>
+        event.type === "review_delegate_completed",
+    );
+    expect(started).toHaveLength(2);
+    expect(completed).toHaveLength(2);
+    expect(started[0]?.payload).toMatchObject({
+      subId: "review-snapshot",
+      reuseKey: "same-review",
+      snapshot_reused: false,
+      priorFindingCount: 0,
+    });
+    expect(completed[0]?.payload).toMatchObject({
+      subId: "review-snapshot",
+      reuseKey: "same-review",
+      snapshot_reused: false,
+      priorFindingCount: 0,
+      newFindingCount: 1,
+      verdict: "fail",
+      reason: "completed",
+    });
+    expect(started[1]?.payload).toMatchObject({
+      subId: "review-snapshot-2",
+      reuseKey: "same-review",
+      snapshot_reused: true,
+      priorFindingCount: 1,
+    });
+    expect(completed[1]?.payload).toMatchObject({
+      subId: "review-snapshot-2",
+      reuseKey: "same-review",
+      snapshot_reused: true,
+      priorFindingCount: 1,
+      newFindingCount: 0,
+      verdict: "pass",
+      reason: "completed",
+    });
   });
 
   it("runReview propagates caller signal abort → verdict=aborted", async () => {
