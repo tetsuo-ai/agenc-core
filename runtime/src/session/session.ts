@@ -88,6 +88,7 @@ import {
   type TurnContextItem,
 } from "./event-log.js";
 import type { RolloutStore } from "./rollout-store.js";
+import type { LiveThread } from "./live-thread.js";
 import type { AppendOptions } from "./session-store.js";
 import {
   buildPerTurnConfig,
@@ -519,6 +520,15 @@ export interface SessionServices {
   readonly networkApproval: NetworkApprovalService;
   readonly stateDb?: StateDbContext;
   readonly threadStore: LocalThreadStore;
+  /**
+   * Upstream codex `services.live_thread: Option<LiveThread>`
+   * (core/src/state/service.rs:66). Optional because gut has no
+   * ThreadStore subsystem: the service is populated by callers that
+   * construct a `LiveThread` against the session's `RolloutStore`, and
+   * left unset in tests / ephemeral sessions. See `live-thread.ts` for
+   * the partial port's RESERVED-method list.
+   */
+  readonly liveThread?: LiveThread;
   readonly modelClient: ModelClient;
   readonly codeModeService: CodeModeService;
   readonly environment?: Environment;
