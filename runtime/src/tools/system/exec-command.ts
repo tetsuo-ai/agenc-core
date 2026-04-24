@@ -1,15 +1,20 @@
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import type { BashToolConfig } from "./types.js";
-import { createBashTool } from "./bash.js";
 import {
   createApplyPatchTool,
   type ApplyPatchRunner,
 } from "./apply-patch.js";
+import {
+  UnifiedExecError,
+  UnifiedExecProcessManager,
+  type UnifiedExecProcessManagerLike,
+} from "../../unified-exec/index.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
   readonly applyPatchRunner?: ApplyPatchRunner;
+  readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
 }
 
 const APPLY_PATCH_HEREDOC_RE =
@@ -32,8 +37,29 @@ function extractApplyPatchHeredoc(command: string): string | undefined {
   return match?.[2];
 }
 
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function errorResult(error: unknown): ToolResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    content: safeStringify({
+      error: message,
+      ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
+    }),
+    isError: true,
+  };
+}
+
 export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
-  const bash = createBashTool(config);
+  const manager =
+    config?.unifiedExecManager ??
+    new UnifiedExecProcessManager({
+      cwd: config?.cwd,
+      env: config?.env,
+      maxTimeoutMs: config?.maxTimeoutMs,
+    });
   const applyPatch = createApplyPatchTool({
     allowedPaths: config?.allowedPaths ?? [config?.cwd ?? process.cwd()],
     ...(config?.applyPatchRunner !== undefined
@@ -54,11 +80,11 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       deferred: false,
     },
     requiresApproval: true,
-    concurrencyClass: bash.concurrencyClass,
+    concurrencyClass: { kind: "background_terminal" },
     isReadOnly: false,
     supportsParallelToolCalls: false,
-    isConcurrencySafe: bash.isConcurrencySafe,
-    interruptBehavior: bash.interruptBehavior,
+    isConcurrencySafe: () => false,
+    interruptBehavior: () => "cancel",
     inputSchema: {
       type: "object",
       properties: {
@@ -82,32 +108,52 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         },
         timeoutMs: {
           type: "number",
-          description: "Optional command timeout in milliseconds.",
+          description:
+            "Optional hard command timeout in milliseconds. Prefer yield_time_ms for long-running commands you want to keep alive.",
         },
         yield_time_ms: {
           type: "number",
           description:
-            "Compatibility field accepted from Codex-style callers. AgenC currently runs the command to completion and ignores this value.",
+            "How long to wait for output before returning. If the process is still running, AgenC returns a session_id for write_stdin.",
         },
         max_output_tokens: {
           type: "number",
           description:
-            "Compatibility field accepted from Codex-style callers. AgenC output is capped by runtime byte limits.",
+            "Maximum output tokens to return. Long output is truncated head/tail.",
         },
         login: {
           type: "boolean",
           description:
-            "Compatibility field accepted from Codex-style callers. AgenC executes through its configured shell runtime.",
+            "Run the command through a login shell where supported.",
         },
         tty: {
           type: "boolean",
           description:
-            "Compatibility field accepted from Codex-style callers. AgenC captures stdout/stderr without allocating an interactive TTY.",
+            "Allocate an interactive PTY. Required for persistent shells and write_stdin.",
         },
         shell: {
           type: "string",
           description:
-            "Compatibility field accepted from Codex-style callers. AgenC uses its configured bash-compatible shell runtime.",
+            "Shell executable to run the command through. Defaults to the user's shell.",
+        },
+        sandbox_permissions: {
+          type: "object",
+          description:
+            "Codex-compatible permissions field accepted for request shape parity.",
+        },
+        additional_permissions: {
+          type: "object",
+          description:
+            "Codex-compatible additional permissions field accepted for request shape parity.",
+        },
+        justification: {
+          type: "string",
+          description: "Why elevated execution is needed, when applicable.",
+        },
+        prefix_rule: {
+          type: "array",
+          items: { type: "string" },
+          description: "Approval-cache command prefix rule, when applicable.",
         },
       },
       anyOf: [{ required: ["cmd"] }, { required: ["command"] }],
@@ -136,17 +182,48 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         });
       }
 
-      return bash.execute({
-        command: cmd,
-        ...(workdir !== undefined ? { cwd: workdir } : {}),
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-        ...(args.__abortSignal !== undefined
-          ? { __abortSignal: args.__abortSignal }
-          : {}),
-        ...(args.__onProgress !== undefined
-          ? { __onProgress: args.__onProgress }
-          : {}),
-      });
+      try {
+        const output = await manager.execCommand({
+          cmd,
+          callId: asString(args.__callId),
+          ...(workdir !== undefined ? { workdir } : {}),
+          ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
+          ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
+          ...(asBoolean(args.tty) !== undefined ? { tty: asBoolean(args.tty) } : {}),
+          ...(asNumber(args.yield_time_ms) !== undefined
+            ? { yield_time_ms: asNumber(args.yield_time_ms) }
+            : {}),
+          ...(asNumber(args.max_output_tokens) !== undefined
+            ? { max_output_tokens: asNumber(args.max_output_tokens) }
+            : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(args.__abortSignal !== undefined
+            ? { __abortSignal: args.__abortSignal }
+            : {}),
+          ...(args.__onProgress !== undefined
+            ? { __onProgress: args.__onProgress }
+            : {}),
+          ...(config?.execObserver !== undefined
+            ? { observer: config.execObserver }
+            : {}),
+        });
+        const isError = output.exitCode !== null && output.exitCode !== 0;
+        return {
+          content: safeStringify(output),
+          isError: isError || undefined,
+          metadata: {
+            command: cmd,
+            cwd: workdir ?? config?.cwd ?? process.cwd(),
+            tty: asBoolean(args.tty) ?? false,
+            ...(output.process_id !== undefined
+              ? { processId: output.process_id }
+              : {}),
+            durationMs: output.durationMs,
+          },
+        };
+      } catch (error) {
+        return errorResult(error);
+      }
     },
   };
 }

@@ -224,6 +224,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(providerToolNames).toEqual(
         expect.arrayContaining([
           "exec_command",
+          "write_stdin",
           "apply_patch",
           "update_plan",
           "TodoWrite",

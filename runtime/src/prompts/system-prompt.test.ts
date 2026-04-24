@@ -143,11 +143,18 @@ describe("static section emitters", () => {
   });
 
   test("using_your_tools surfaces Codex-primary exec/apply_patch guidance", () => {
-    const tools = new Set(["exec_command", "apply_patch", "system.searchTools"]);
+    const tools = new Set([
+      "exec_command",
+      "write_stdin",
+      "apply_patch",
+      "system.searchTools",
+    ]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
     expect(s).toContain("apply_patch as the primary editing tool");
     expect(s).toContain("Use exec_command for terminal work");
+    expect(s).toContain("exec_command with tty=true");
+    expect(s).toContain("use write_stdin with that session_id");
     expect(s).toContain("parallel");
   });
 

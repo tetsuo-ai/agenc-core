@@ -69,6 +69,7 @@ describe("grok adapter utils", () => {
       makeTool("system.bash"),
       makeTool("apply_patch"),
       makeTool("exec_command"),
+      makeTool("write_stdin"),
       makeTool("system.searchTools"),
     ]);
 
@@ -76,6 +77,7 @@ describe("grok adapter utils", () => {
       "apply_patch",
       "exec_command",
       "system.searchTools",
+      "write_stdin",
       "system.bash",
       "system.readFile",
     ]);

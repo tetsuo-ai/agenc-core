@@ -41,6 +41,7 @@ const TOOL_METADATA_KEYS = new Set([
 ]);
 const PRIORITY_TOOL_NAMES = new Set([
   "exec_command",
+  "write_stdin",
   "apply_patch",
   "update_plan",
   "TodoWrite",

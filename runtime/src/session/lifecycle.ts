@@ -46,9 +46,10 @@ export interface SessionLifecycleOpts {
  *   1. Quiesce the top-level abort controller (I-7) with a benign
  *      reason so phases see a shutdown signal.
  *   2. Cascade-shutdown every live subagent tree via `AgentControl.shutdownAll`.
- *   3. Delegate to `Session.shutdown()` (drain childInboxes + close
+ *   3. Close live unified exec processes.
+ *   4. Delegate to `Session.shutdown()` (drain childInboxes + close
  *      rollout + event log + txEvent).
- *   4. Stop the MCP manager (close all bridges + kill child procs).
+ *   5. Stop the MCP manager (close all bridges + kill child procs).
  *
  * The whole teardown is bounded by `shutdownBudgetMs`. Any step that
  * exceeds the budget emits a warning event + moves on — we prefer
@@ -77,7 +78,26 @@ export async function shutdownSessionLifecycle(
     );
   }
 
-  // Step 3: I-33 + I-87 mailbox drain via Session.shutdown().
+  const unifiedExecManager = (
+    opts.session as {
+      readonly services?: {
+        readonly unifiedExecManager?: {
+          readonly closeAll?: (reason?: string) => Promise<void>;
+        };
+      };
+    }
+  ).services?.unifiedExecManager;
+  if (unifiedExecManager?.closeAll) {
+    // Step 3: live terminal shutdown.
+    await raceBudget(
+      unifiedExecManager.closeAll("session_shutdown"),
+      deadlineMs,
+      "unified_exec_shutdown",
+      opts.session,
+    );
+  }
+
+  // Step 4: I-33 + I-87 mailbox drain via Session.shutdown().
   await raceBudget(
     opts.session.shutdown(),
     deadlineMs,
@@ -85,7 +105,7 @@ export async function shutdownSessionLifecycle(
     opts.session,
   );
 
-  // Step 4: MCP manager stop (best-effort; I-6 fail-soft).
+  // Step 5: MCP manager stop (best-effort; I-6 fail-soft).
   if (opts.mcpManager) {
     try {
       await raceBudget(

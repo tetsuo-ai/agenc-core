@@ -74,6 +74,10 @@ import {
 } from "../tool-registry.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
+  UnifiedExecProcessManager,
+  type UnifiedExecProcessManagerLike,
+} from "../unified-exec/index.js";
+import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "./_deps/current-session.js";
@@ -438,7 +442,6 @@ function transcriptMessagesFrom(
  * Deferred structural stubs (each documented inline with its tranche owner):
  *  - `mcpConnectionManager` (T9 — codex `McpConnectionManager`)
  *  - `mcpStartupCancellationToken` (T9)
- *  - `unifiedExecManager` (T7 — codex `UnifiedExecProcessManager`)
  *  - `analyticsEventsClient` (T-future — telemetry)
  *  - `hooks` (T4 compact hooks, T7 stop hooks, T10 lifecycle hooks)
  *  - `rollout` (T5 — `RolloutRecorder`; session attaches a live
@@ -462,6 +465,7 @@ function buildDeferredServices(
   provider: LLMProvider,
   registry: ToolRegistry,
   mcpManager: SessionServices["mcpManager"],
+  unifiedExecManager: UnifiedExecProcessManagerLike,
   permissionModeRegistry: PermissionModeRegistry,
   configStore: ConfigStore,
   toolApprovals: RuntimeApprovalStore<unknown>,
@@ -486,8 +490,7 @@ function buildDeferredServices(
     },
     /** T9: startup cancellation token for MCP server-list refresh races. */
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
-    /** T7: `UnifiedExecProcessManager` with real background-terminal timeout. */
-    unifiedExecManager: { maxTimeoutMs: 0 },
+    unifiedExecManager,
     /** T-future: analytics/telemetry client. */
     analyticsEventsClient: { emit: noopAsync },
     /**
@@ -869,6 +872,10 @@ export async function bootstrapLocalRuntimeSession(
     configStore.current(),
     env,
   );
+  const unifiedExecManager = new UnifiedExecProcessManager({
+    cwd: workspaceRoot,
+    maxTimeoutMs: 300_000,
+  });
   let sessionRef: Session | null = null;
   const emitProviderWarning = (warning: {
     cause: string;
@@ -907,7 +914,10 @@ export async function bootstrapLocalRuntimeSession(
     mcpManager,
     getSession: () => sessionRef,
     emitWarning: emitProviderWarning,
-    toolRegistryOptions: options.toolRegistryOptions,
+    toolRegistryOptions: {
+      ...(options.toolRegistryOptions ?? {}),
+      unifiedExecManager,
+    },
   });
   const provider: LLMProvider = createProvider(
     resolvedProvider as ProviderName,
@@ -1005,6 +1015,7 @@ export async function bootstrapLocalRuntimeSession(
         provider,
         registry,
         createSessionMcpService(mcpManager, { env }),
+        unifiedExecManager,
         permissionModeRegistry,
         configStore,
         toolApprovals,

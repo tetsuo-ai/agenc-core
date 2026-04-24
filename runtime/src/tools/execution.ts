@@ -1018,6 +1018,7 @@ function deepEq(a: unknown, b: unknown): boolean {
 export interface ToolProgressEvent {
   readonly chunk: string;
   readonly stream?: "stdout" | "stderr" | "status";
+  readonly processId?: number;
 }
 
 export type ToolProgressCallback = (event: ToolProgressEvent) => void;
@@ -1083,6 +1084,7 @@ export interface RunToolUseOptions {
 
 const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "exec_command",
+  "write_stdin",
   "system.bash",
   "apply_patch",
   "system.writeFile",
@@ -1145,12 +1147,21 @@ function buildApprovalCacheKeys(
               ? [args.cmd]
               : [];
     if (command.length > 0) {
+      const sandboxPermissions: string[] = [invocation.turn.sandboxPolicy.value];
+      if (args.sandbox_permissions !== undefined) {
+        sandboxPermissions.push(JSON.stringify(args.sandbox_permissions));
+      }
+      const additionalPermissions: string[] = [invocation.turn.approvalPolicy.value];
+      if (args.additional_permissions !== undefined) {
+        additionalPermissions.push(JSON.stringify(args.additional_permissions));
+      }
       return [
         buildShellApprovalKey({
           command,
           cwd,
-          sandbox_permissions: [invocation.turn.sandboxPolicy.value],
-          additional_permissions: [invocation.turn.approvalPolicy.value],
+          ...(typeof args.tty === "boolean" ? { tty: args.tty } : {}),
+          sandbox_permissions: sandboxPermissions,
+          additional_permissions: additionalPermissions,
         }),
       ];
     }
@@ -1524,6 +1535,9 @@ export async function runToolUse(
                   ...(event.stream !== undefined
                     ? { stream: event.stream }
                     : {}),
+                  ...(event.processId !== undefined
+                    ? { processId: event.processId }
+                    : {}),
                   at: Date.now(),
                 },
               },
@@ -1533,7 +1547,7 @@ export async function runToolUse(
       : undefined;
 
   let argsForTool: Record<string, unknown> = inputForTool;
-  if (progressCallback || effectiveSignal) {
+  if (progressCallback || effectiveSignal || invocation.callId.length > 0) {
     argsForTool = { ...inputForTool };
     if (progressCallback) {
       Object.defineProperty(argsForTool, "__onProgress", {
@@ -1551,6 +1565,12 @@ export async function runToolUse(
         configurable: true,
       });
     }
+    Object.defineProperty(argsForTool, "__callId", {
+      value: invocation.callId,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
   }
 
   // Step 5: I-9 timeout + abort race.

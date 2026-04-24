@@ -107,6 +107,7 @@ import {
 } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
+import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
 import {
   createActiveTurnState,
   createDoneHandle,
@@ -445,10 +446,8 @@ export interface UserShell {
   deriveExecArgs(input: string, useLoginShell: boolean): string[];
 }
 
-/** Codex `UnifiedExecProcessManager`. T7 wires. */
-export interface UnifiedExecProcessManager {
-  readonly maxTimeoutMs: number;
-}
+/** Codex `UnifiedExecProcessManager`. */
+export type UnifiedExecProcessManager = UnifiedExecProcessManagerLike;
 
 /** Codex `BehaviorSubject<unknown>` for shell snapshot tx. T9 wires. */
 export type ShellSnapshotTx = BehaviorSubject<unknown | null>;

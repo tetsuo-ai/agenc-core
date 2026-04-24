@@ -313,6 +313,8 @@ export function eventsToMessages(
 ): TranscriptMessage[] {
   const messages: TranscriptMessage[] = [];
   const toolMessageIndexByCallId = new Map<string, number>();
+  const toolCallIdByProcessId = new Map<number, string>();
+  const suppressedWriteStdinCallIds = new Set<string>();
   const activityIndexById = new Map<string, number>();
   const planIndexByTurnId = new Map<string, number>();
   const pendingExecOutputByCallId = new Map<string, PendingExecOutput>();
@@ -597,6 +599,21 @@ export function eventsToMessages(
       }
       case "tool_call_started": {
         markAssistantComplete();
+        if (event.payload.toolName === "write_stdin") {
+          const args = safeJsonParse(event.payload.args);
+          const processId =
+            args && typeof args === "object" && !Array.isArray(args)
+              ? (args as { session_id?: unknown; process_id?: unknown }).session_id ??
+                (args as { process_id?: unknown }).process_id
+              : undefined;
+          if (
+            typeof processId === "number" &&
+            toolCallIdByProcessId.has(processId)
+          ) {
+            suppressedWriteStdinCallIds.add(event.payload.callId);
+            break;
+          }
+        }
         ensureToolMessage(event.payload.callId, {
           turnId: ensureTurnId(currentTurnId),
           kind: "tool_call",
@@ -612,11 +629,16 @@ export function eventsToMessages(
       case "tool_progress": {
         const stream = event.payload.stream;
         const chunk = event.payload.chunk;
+        const targetCallId =
+          event.payload.processId !== undefined
+            ? toolCallIdByProcessId.get(event.payload.processId) ??
+              event.payload.callId
+            : event.payload.callId;
         if (
           (stream === "stdout" || stream === "stderr") &&
-          toolMessageIndexByCallId.has(event.payload.callId)
+          toolMessageIndexByCallId.has(targetCallId)
         ) {
-          const toolIndex = toolMessageIndexByCallId.get(event.payload.callId)!;
+          const toolIndex = toolMessageIndexByCallId.get(targetCallId)!;
           const prev = messages[toolIndex]!;
           messages[toolIndex] = {
             ...prev,
@@ -633,7 +655,7 @@ export function eventsToMessages(
         }
         if (stream === "stdout" || stream === "stderr") {
           const pending = pendingExecOutputByCallId.get(
-            event.payload.callId,
+            targetCallId,
           ) ?? {
             stdout: "",
             stderr: "",
@@ -643,7 +665,7 @@ export function eventsToMessages(
           } else {
             pending.stderr += chunk;
           }
-          pendingExecOutputByCallId.set(event.payload.callId, pending);
+          pendingExecOutputByCallId.set(targetCallId, pending);
           break;
         }
         upsertActivity(
@@ -657,12 +679,15 @@ export function eventsToMessages(
         break;
       }
       case "exec_command_begin": {
+        if (event.payload.processId !== undefined) {
+          toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
+        }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
         ensureToolMessage(event.payload.callId, {
           turnId: ensureTurnId(currentTurnId),
           kind: "tool_call",
           content: event.payload.command,
-          toolName: "system.bash",
+          toolName: "exec_command",
           callId: event.payload.callId,
           execCommand: event.payload.command,
           execStdout: buffered?.stdout ?? "",
@@ -673,12 +698,15 @@ export function eventsToMessages(
         break;
       }
       case "exec_command_end": {
+        if (event.payload.processId !== undefined) {
+          toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
+        }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
         ensureToolMessage(event.payload.callId, {
           turnId: ensureTurnId(currentTurnId),
           kind: "tool_call",
           content: event.payload.stdout ?? "",
-          toolName: "system.bash",
+          toolName: "exec_command",
           callId: event.payload.callId,
           execCommand:
             messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
@@ -695,7 +723,9 @@ export function eventsToMessages(
             messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
               ?.execStderr ??
             "",
-          execExitCode: event.payload.exitCode,
+          ...(event.payload.exitCode !== null
+            ? { execExitCode: event.payload.exitCode }
+            : {}),
           execDurationMs: event.payload.durationMs,
           timestamp,
           isComplete: true,
@@ -704,6 +734,10 @@ export function eventsToMessages(
         break;
       }
       case "tool_call_completed": {
+        if (suppressedWriteStdinCallIds.has(event.payload.callId)) {
+          suppressedWriteStdinCallIds.delete(event.payload.callId);
+          break;
+        }
         const toolIndex = toolMessageIndexByCallId.get(event.payload.callId);
         const toolMessage =
           toolIndex !== undefined ? messages[toolIndex] : undefined;

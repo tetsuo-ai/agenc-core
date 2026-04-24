@@ -132,14 +132,20 @@ export interface ExecCommandBeginEvent {
   readonly callId: string;
   readonly command: string;
   readonly cwd?: string;
+  readonly processId?: number;
+  readonly sessionId?: number;
+  readonly tty?: boolean;
 }
 
 export interface ExecCommandEndEvent {
   readonly callId: string;
-  readonly exitCode: number;
+  readonly exitCode: number | null;
   readonly stdout?: string;
   readonly stderr?: string;
   readonly durationMs?: number;
+  readonly processId?: number;
+  readonly sessionId?: number;
+  readonly tty?: boolean;
 }
 
 export interface ExecApprovalRequestEvent {
@@ -300,6 +306,7 @@ export type EventMsg =
         readonly toolName: string;
         readonly chunk: string;
         readonly stream?: "stdout" | "stderr" | "status";
+        readonly processId?: number;
         readonly at?: number;
       };
     }

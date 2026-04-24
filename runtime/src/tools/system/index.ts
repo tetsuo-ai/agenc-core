@@ -56,6 +56,11 @@ export {
 } from "./exec-command.js";
 
 export {
+  createWriteStdinTool,
+  type WriteStdinToolConfig,
+} from "./write-stdin.js";
+
+export {
   type BashToolConfig,
   type BashToolInput,
   type BashExecutionResult,

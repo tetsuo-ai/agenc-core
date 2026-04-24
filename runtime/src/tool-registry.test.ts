@@ -42,6 +42,13 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     expect(execCommand?.concurrencyClass?.kind).toBe("background_terminal");
     expect(execCommand?.requiresApproval).toBe(true);
   });
+
+  test("write_stdin gets BackgroundTerminal without a second approval prompt", () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const writeStdin = registry.tools.find((t) => t.name === "write_stdin");
+    expect(writeStdin?.concurrencyClass?.kind).toBe("background_terminal");
+    expect(writeStdin?.requiresApproval).toBe(false);
+  });
 });
 
 describe("tool-registry dynamic and deferred catalog", () => {
@@ -49,6 +56,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const registeredNames = registry.tools.map((tool) => tool.name);
     expect(registeredNames).toContain("exec_command");
+    expect(registeredNames).toContain("write_stdin");
     expect(registeredNames).toContain("system.bash");
     expect(registeredNames).toContain("system.readFile");
     expect(registeredNames).toContain("system.writeFile");
@@ -66,6 +74,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toContain("exec_command");
+    expect(visibleNames).toContain("write_stdin");
     expect(visibleNames).toContain("update_plan");
     expect(visibleNames).toContain("apply_patch");
     expect(visibleNames).toContain("TodoWrite");

@@ -117,18 +117,34 @@ export function createBashExecObserverForSlot(
   slot: SessionSlot,
 ): BashExecObserver {
   return {
-    onBegin: ({ callId, command, cwd }) => {
+    onBegin: ({ callId, command, cwd, processId, sessionId, tty }) => {
       const session = slot.current;
       if (!session) return;
       session.emit({
         id: session.nextInternalSubId(),
         msg: {
           type: "exec_command_begin",
-          payload: { callId, command, cwd },
+          payload: {
+            callId,
+            command,
+            cwd,
+            ...(processId !== undefined ? { processId } : {}),
+            ...(sessionId !== undefined ? { sessionId } : {}),
+            ...(tty !== undefined ? { tty } : {}),
+          },
         },
       });
     },
-    onEnd: ({ callId, exitCode, stdout, stderr, durationMs }) => {
+    onEnd: ({
+      callId,
+      exitCode,
+      stdout,
+      stderr,
+      durationMs,
+      processId,
+      sessionId,
+      tty,
+    }) => {
       const session = slot.current;
       if (!session) return;
       session.emit({
@@ -141,6 +157,9 @@ export function createBashExecObserverForSlot(
             ...(stdout !== undefined ? { stdout } : {}),
             ...(stderr !== undefined ? { stderr } : {}),
             durationMs,
+            ...(processId !== undefined ? { processId } : {}),
+            ...(sessionId !== undefined ? { sessionId } : {}),
+            ...(tty !== undefined ? { tty } : {}),
           },
         },
       });

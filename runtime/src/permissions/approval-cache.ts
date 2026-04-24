@@ -248,6 +248,7 @@ function basenameNoExt(p: string): string {
 export interface ShellApprovalKey {
   readonly command: readonly string[];
   readonly cwd: string;
+  readonly tty?: boolean;
   readonly sandbox_permissions: readonly string[];
   readonly additional_permissions: readonly string[];
 }
@@ -255,6 +256,7 @@ export interface ShellApprovalKey {
 export interface BuildShellApprovalKeyOptions {
   readonly command: readonly string[];
   readonly cwd: string;
+  readonly tty?: boolean;
   readonly sandbox_permissions?: readonly string[];
   readonly additional_permissions?: readonly string[];
 }
@@ -272,6 +274,7 @@ export function buildShellApprovalKey(
   return {
     command: canonicalizeCommandForApproval(opts.command),
     cwd: opts.cwd,
+    ...(opts.tty !== undefined ? { tty: opts.tty } : {}),
     sandbox_permissions: [...(opts.sandbox_permissions ?? [])].sort(),
     additional_permissions: [...(opts.additional_permissions ?? [])].sort(),
   };

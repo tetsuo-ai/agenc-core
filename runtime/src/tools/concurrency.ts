@@ -292,6 +292,7 @@ export function isNetworkTool(name: string): boolean {
 export function isBashTool(name: string): boolean {
   return (
     name === "exec_command" ||
+    name === "write_stdin" ||
     name === "system.bash" ||
     name === "system.background.bash" ||
     name === "bash"

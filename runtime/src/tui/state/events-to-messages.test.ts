@@ -82,12 +82,73 @@ describe("eventsToMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       kind: "tool_call",
-      toolName: "system.bash",
+      toolName: "exec_command",
       execCommand: "ls",
       execStdout: "README.md\n",
       execExitCode: 0,
       execDurationMs: 42,
       isComplete: true,
+    });
+  });
+
+  test("appends write_stdin progress to the original exec process row", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-pty" } },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-1",
+          command: "bash -i",
+          cwd: "/tmp",
+          processId: 7,
+          tty: true,
+        },
+      },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-1",
+          exitCode: null,
+          stdout: "$ ",
+          processId: 7,
+          tty: true,
+        },
+      },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "stdin-1",
+          toolName: "write_stdin",
+          args: '{"session_id":7,"chars":"echo ok\\n"}',
+        },
+      },
+      {
+        type: "tool_progress",
+        payload: {
+          callId: "stdin-1",
+          toolName: "write_stdin",
+          chunk: "ok\n",
+          stream: "stdout",
+          processId: 7,
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "stdin-1",
+          result: '{"stdout":"ok\\n","session_id":7}',
+          isError: false,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "exec_command",
+      execCommand: "bash -i",
+      execStdout: expect.stringContaining("ok"),
     });
   });
 

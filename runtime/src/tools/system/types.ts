@@ -53,13 +53,19 @@ export interface BashExecObserver {
     readonly callId: string;
     readonly command: string;
     readonly cwd: string;
+    readonly processId?: number;
+    readonly sessionId?: number;
+    readonly tty?: boolean;
   }) => void;
   readonly onEnd?: (end: {
     readonly callId: string;
-    readonly exitCode: number;
+    readonly exitCode: number | null;
     readonly stdout?: string;
     readonly stderr?: string;
     readonly durationMs: number;
+    readonly processId?: number;
+    readonly sessionId?: number;
+    readonly tty?: boolean;
   }) => void;
 }
 

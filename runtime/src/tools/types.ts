@@ -93,8 +93,13 @@ export interface ToolResult {
  * on them being present for correctness.
  */
 export interface ToolExecutionInjectedArgs {
-  readonly __onProgress?: (event: { readonly chunk: string; readonly stream?: "stdout" | "stderr" }) => void;
+  readonly __onProgress?: (event: {
+    readonly chunk: string;
+    readonly stream?: "stdout" | "stderr" | "status";
+    readonly processId?: number;
+  }) => void;
   readonly __abortSignal?: AbortSignal;
+  readonly __callId?: string;
 }
 
 /**

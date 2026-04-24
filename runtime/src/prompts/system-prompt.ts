@@ -144,6 +144,11 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
     items.push(
       `Use exec_command for terminal work: inspecting files, running rg/git/build/test commands, and validating changes. Keep commands focused and use the working directory that matches the repository you are editing.`,
     );
+    if (hasTool("write_stdin")) {
+      items.push(
+        `For interactive or long-running terminal sessions, call exec_command with tty=true. If it returns a session_id, use write_stdin with that session_id to send input or chars="" to poll for more output.`,
+      );
+    }
   } else if (hasTool("bash", "Bash", "system.bash", "shell")) {
     items.push(
       `Use the shell/bash tool for terminal work: inspecting files, running rg/git/build/test commands, and validating changes.`,

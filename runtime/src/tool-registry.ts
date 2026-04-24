@@ -26,12 +26,17 @@ import {
   createHttpTools,
   createBashTool,
   createExecCommandTool,
+  createWriteStdinTool,
   createPlanningTools,
   createApplyPatchTool,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/index.js";
+import {
+  UnifiedExecProcessManager,
+  type UnifiedExecProcessManagerLike,
+} from "./unified-exec/index.js";
 import {
   defaultConcurrencyClassFor,
   isBashTool,
@@ -216,6 +221,7 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
 
 const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "exec_command",
+  "write_stdin",
   "apply_patch",
   "update_plan",
   "TodoWrite",
@@ -270,6 +276,8 @@ export interface BuildToolRegistryOptions {
    * runs without a lifecycle observer.
    */
   readonly bashExecObserver?: BashExecObserver;
+  /** Shared Codex-style unified exec process manager for exec_command/write_stdin. */
+  readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   /**
    * Live MCP tool source. This is intentionally a provider instead of a
    * one-time array because MCP startup happens after SessionConfigured.
@@ -324,6 +332,9 @@ export interface BuildToolRegistryOptions {
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
 ): ToolRegistry {
+  const unifiedExecManager =
+    options.unifiedExecManager ??
+    new UnifiedExecProcessManager({ cwd: options.workspaceRoot });
   const discoveredToolNames = new Set<string>();
   const markDiscovered = (toolNames: readonly string[]): void => {
     for (const name of toolNames) {
@@ -354,9 +365,14 @@ export function buildToolRegistry(
     createExecCommandTool({
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
+      unifiedExecManager,
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
+    }),
+    createWriteStdinTool({
+      cwd: options.workspaceRoot,
+      unifiedExecManager,
     }),
     createBashTool({
       cwd: options.workspaceRoot,
