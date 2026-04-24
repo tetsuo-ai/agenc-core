@@ -110,6 +110,11 @@ function InterruptHandler({ onFire }: { onFire: () => void }): null {
   return null;
 }
 
+function ExitHandler({ onFire }: { onFire: () => void }): null {
+  useKeybinding("app:exit", onFire, "global");
+  return null;
+}
+
 describe("KeybindingProvider", () => {
   beforeEach(() => {
     // Ensure fake timers are off before each test so mount's setTimeout
@@ -167,7 +172,7 @@ describe("KeybindingProvider", () => {
     expect(fired).toHaveBeenCalledTimes(1);
   });
 
-  test("first Ctrl+C emits a warning but does not fire app:interrupt", async () => {
+  test("Ctrl+C fires app:interrupt immediately without a double-press warning", async () => {
     const emitter = new EventEmitter();
     const fired = vi.fn();
     const warned = vi.fn();
@@ -180,26 +185,47 @@ describe("KeybindingProvider", () => {
       "input",
       makeParsedKeyEvent({ name: "c", ctrl: true, sequence: "c" }),
     );
-    expect(fired).not.toHaveBeenCalled();
-    expect(warned).toHaveBeenCalledTimes(1);
+    expect(fired).toHaveBeenCalledTimes(1);
+    expect(warned).not.toHaveBeenCalled();
     unmount();
   });
 
-  test("double-press Ctrl+C within the window fires app:interrupt exactly once", async () => {
+  test("first Ctrl+D emits a warning but does not fire app:exit", async () => {
     const emitter = new EventEmitter();
     const fired = vi.fn();
+    const warned = vi.fn();
     const { unmount } = await mount(
-      <Harness emitter={emitter}>
-        <InterruptHandler onFire={fired} />
+      <Harness emitter={emitter} onWarning={warned}>
+        <ExitHandler onFire={fired} />
       </Harness>,
     );
     emitter.emit(
       "input",
-      makeParsedKeyEvent({ name: "c", ctrl: true, sequence: "c" }),
+      makeParsedKeyEvent({ name: "d", ctrl: true, sequence: "d" }),
+    );
+    expect(fired).not.toHaveBeenCalled();
+    expect(warned).toHaveBeenCalledTimes(1);
+    expect(warned).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "app:exit", keySequence: "ctrl+d" }),
+    );
+    unmount();
+  });
+
+  test("double-press Ctrl+D within the window fires app:exit exactly once", async () => {
+    const emitter = new EventEmitter();
+    const fired = vi.fn();
+    const { unmount } = await mount(
+      <Harness emitter={emitter}>
+        <ExitHandler onFire={fired} />
+      </Harness>,
     );
     emitter.emit(
       "input",
-      makeParsedKeyEvent({ name: "c", ctrl: true, sequence: "c" }),
+      makeParsedKeyEvent({ name: "d", ctrl: true, sequence: "d" }),
+    );
+    emitter.emit(
+      "input",
+      makeParsedKeyEvent({ name: "d", ctrl: true, sequence: "d" }),
     );
     expect(fired).toHaveBeenCalledTimes(1);
     unmount();

@@ -8,9 +8,10 @@
  * subscribers per command are supported).
  *
  * Three runtime behaviors live here and not in the binding definitions:
- *   1. Double-press gating for `ctrl+c` -> `app:interrupt` and
- *      `ctrl+d` -> `app:exit`. First press within the window emits a
- *      warning event; second press within 500 ms fires the real handler.
+ *   1. Double-press gating for `ctrl+d` -> `app:exit`. First press within
+ *      the window emits a warning event; second press within 500 ms fires
+ *      the real handler. `ctrl+c` is immediate so active work can be
+ *      interrupted like upstream.
  *   2. Multi-chord buffering for sequences like `ctrl+x ctrl+e`. The
  *      first chord is held for up to 1000 ms; any unrelated key resets
  *      the buffer.
@@ -44,7 +45,7 @@ import {
   type BindingMap,
 } from "./defaultBindings.js";
 
-/** Window in ms within which a second Ctrl+C / Ctrl+D fires the real handler. */
+/** Window in ms within which a second Ctrl+D fires the real handler. */
 export const DOUBLE_PRESS_WINDOW_MS = 500;
 
 /** Window in ms to wait for the second chord of a multi-chord sequence. */
@@ -52,14 +53,13 @@ export const CHORD_WINDOW_MS = 1000;
 
 /** Commands that require a double-press confirmation. */
 const DOUBLE_PRESS_COMMANDS: ReadonlySet<BindingCommand> = new Set<BindingCommand>([
-  "app:interrupt",
   "app:exit",
 ]);
 
 /**
  * Signal emitted when the user performs the first half of a double-press
  * gesture. UIs can subscribe via `useKeybindingWarning` to show a transient
- * hint ("Press Ctrl+C again to interrupt").
+ * hint ("Press Ctrl+D again to exit").
  */
 export interface KeybindingWarning {
   command: BindingCommand;
@@ -383,9 +383,8 @@ export const KeybindingProvider: React.FC<ProviderProps> = ({
       }
 
       // Any non-double-press keypress clears the pending double-press
-      // window; otherwise an idle Ctrl+C followed by an unrelated key
-      // followed by another Ctrl+C would be interpreted as a
-      // double-press.
+      // window; otherwise an idle Ctrl+D followed by an unrelated key
+      // followed by another Ctrl+D would be interpreted as a double-press.
       doublePressRef.current.clear();
 
       fireHandlers(context, command);
@@ -448,9 +447,6 @@ export const KeybindingProvider: React.FC<ProviderProps> = ({
 
 function doublePressMessage(command: BindingCommand, chord: string): string {
   const readable = chord.replace(/\+/g, "+");
-  if (command === "app:interrupt") {
-    return `Press ${readable} again within ${DOUBLE_PRESS_WINDOW_MS}ms to interrupt.`;
-  }
   if (command === "app:exit") {
     return `Press ${readable} again within ${DOUBLE_PRESS_WINDOW_MS}ms to exit.`;
   }

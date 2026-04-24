@@ -18,7 +18,8 @@
  *     stream through the `eventsToMessages` adapter.
  *   - <Composer> — multi-line prompt input; submit calls
  *     `session.submit?.(...)` when available, cancel calls
- *     `session.abortTerminal?.('user_cancel')`.
+ *     the turn-local `session.abortTurnIfActive?.(..., 'interrupted')`
+ *     path when a turn is active.
  *   - One <InteractiveHandler> per live pending permission request —
  *     these are invisible orchestrators; the visible overlay is
  *     pushed onto the overlay stack from inside the handler.
@@ -230,6 +231,45 @@ function isBypassConsentRequiredError(
   );
 }
 
+function peekActiveTurnId(
+  session: AppSessionLike,
+  fallbackTurnId: string | null,
+): string | null {
+  try {
+    return session.activeTurn?.unsafePeek()?.turnId ?? fallbackTurnId;
+  } catch {
+    return fallbackTurnId;
+  }
+}
+
+async function interruptActiveTurn(
+  session: AppSessionLike,
+  fallbackTurnId: string | null,
+): Promise<boolean> {
+  const activeTurnId = peekActiveTurnId(session, fallbackTurnId);
+  if (activeTurnId === null) {
+    return false;
+  }
+
+  const abortTurnIfActive = session.abortTurnIfActive;
+  if (typeof abortTurnIfActive === "function") {
+    try {
+      return await Promise.resolve(
+        abortTurnIfActive.call(session, activeTurnId, "interrupted"),
+      );
+    } catch {
+      // Fall through to the legacy terminal-level abort below.
+    }
+  }
+
+  try {
+    session.abortTerminal?.("user_interrupt");
+    return typeof session.abortTerminal === "function";
+  } catch {
+    return false;
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // TUIRoot — the real composition
 // ────────────────────────────────────────────────────────────────────────
@@ -241,7 +281,14 @@ function TUIRoot({
   readonly model?: string;
   readonly initialPrompt?: string;
 }): React.ReactElement {
-  const { mode, session, configStore, pendingRequests, permissionQueueOps } =
+  const {
+    mode,
+    session,
+    configStore,
+    pendingRequests,
+    permissionQueueOps,
+    setStreaming,
+  } =
     useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
   // hook-only field is optional) so tests can pass a tiny stub. useQuery
@@ -250,7 +297,7 @@ function TUIRoot({
   // test stub that implements useQuery's surface) is responsible for
   // providing them. When they're missing, useQuery's internal
   // `warnOnce` path no-ops gracefully.
-  const { events, isStreaming, submit } = useQuery(
+  const { events, isStreaming, currentTurnId, submit } = useQuery(
     session as unknown as QuerySessionLike,
   );
   const initialPromptSubmittedRef = useRef(false);
@@ -289,6 +336,10 @@ function TUIRoot({
     () => deriveActiveToolCount(events),
     [events],
   );
+
+  useEffect(() => {
+    setStreaming(isStreaming);
+  }, [isStreaming, setStreaming]);
 
   // Overlay context adapter. `InteractiveHandler` wants a minimal
   // `push(node) => dispose` surface; the OverlayProvider exposes
@@ -444,13 +495,13 @@ function TUIRoot({
     });
   };
 
+  const handleInterrupt = useCallback((): void => {
+    void interruptActiveTurn(session, currentTurnId);
+  }, [currentTurnId, session]);
+  useKeybinding("app:interrupt", handleInterrupt, "global");
+
   const handleCancel = (): void => {
-    try {
-      session.abortTerminal?.("user_cancel");
-    } catch {
-      // abortTerminal is best-effort; the composer already cleared
-      // its local buffer before calling us.
-    }
+    void interruptActiveTurn(session, currentTurnId);
   };
 
   useEffect(() => {

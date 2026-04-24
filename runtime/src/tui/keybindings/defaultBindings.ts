@@ -160,8 +160,9 @@ export const MODE_CYCLE_KEY: "shift+tab" | "meta+m" = detectShiftTabCapable()
  *
  * Notes on the shape:
  *   - `ctrl+c` and `ctrl+d` live in the `global` map so the provider can
- *     see them from every context. Their double-press semantics are
- *     implemented in `KeybindingContext.tsx`; they MUST NOT be rebound.
+ *     see them from every context. `ctrl+c` interrupts active work
+ *     immediately; `ctrl+d` keeps the double-press exit guard implemented
+ *     in `KeybindingContext.tsx`. They MUST NOT be rebound.
  *   - `enter` appears in both `chat` and `modal` so whichever context is
  *     active wins; `modal` takes priority when pushed on top.
  *   - `shift+enter` maps to `chat:newline`; the underlying key event must

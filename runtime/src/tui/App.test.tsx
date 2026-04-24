@@ -56,11 +56,13 @@ function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
 
 async function mount(
   element: React.ReactElement,
+  opts: { readonly exitOnCtrlC?: boolean } = {},
 ): Promise<{ unmount: () => void; stdin: TestStdin; stdout: PassThrough }> {
   const { stdout, stdin } = createStreams();
   const root = await createRoot({
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
+    exitOnCtrlC: opts.exitOnCtrlC ?? true,
     patchConsole: false,
   });
   root.render(element);
@@ -122,19 +124,23 @@ function makePermissionContext(mode: PermissionMode): ToolPermissionContext {
 function makeKeyEvent(opts: {
   sequence: string;
   name?: string;
+  ctrl?: boolean;
+  meta?: boolean;
   shift?: boolean;
+  option?: boolean;
+  super?: boolean;
 }): InputEvent {
   return new InputEvent({
     kind: "key" as const,
     name: opts.name ?? opts.sequence,
     fn: false,
-    ctrl: false,
-    meta: false,
+    ctrl: opts.ctrl ?? false,
+    meta: opts.meta ?? false,
     sequence: opts.sequence,
     raw: opts.sequence,
     shift: opts.shift ?? false,
-    option: false,
-    super: false,
+    option: opts.option ?? false,
+    super: opts.super ?? false,
     isPasted: false,
   });
 }
@@ -380,6 +386,56 @@ describe("App", () => {
       "acceptEdits",
     );
     expect(collectText(getRoot(stdout))).toContain("accept");
+    unmount();
+  });
+
+  test("Ctrl+C interrupts the active turn through the turn-local abort path", async () => {
+    const abortTurnIfActive = vi.fn(async () => true);
+    const abortTerminal = vi.fn();
+    const session = {
+      ...createFakeSession("default"),
+      activeTurn: { unsafePeek: () => ({ turnId: "turn-live" }) },
+      abortTurnIfActive,
+      abortTerminal,
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-live" } },
+      ],
+    };
+    const { stdin, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+      { exitOnCtrlC: false },
+    );
+
+    stdin.write("\x03");
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(abortTurnIfActive).toHaveBeenCalledWith("turn-live", "interrupted");
+    expect(abortTerminal).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("Esc on an empty composer interrupts the active turn", async () => {
+    const abortTurnIfActive = vi.fn(async () => true);
+    const abortTerminal = vi.fn();
+    const session = {
+      ...createFakeSession("default"),
+      activeTurn: { unsafePeek: () => ({ turnId: "turn-live" }) },
+      abortTurnIfActive,
+      abortTerminal,
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-live" } },
+      ],
+    };
+    const { stdin, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+    stdin.write("\x1b");
+    await new Promise((r) => setTimeout(r, 90));
+
+    expect(abortTurnIfActive).toHaveBeenCalledWith("turn-live", "interrupted");
+    expect(abortTerminal).not.toHaveBeenCalled();
     unmount();
   });
 

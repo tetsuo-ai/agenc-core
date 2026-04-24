@@ -110,6 +110,11 @@ export interface SessionLike {
   subscribeToEvents?(cb: (event: PhaseEvent) => void): () => void;
   /** Optional submit hook driven from the Composer. */
   submit?(message: string): Promise<void>;
+  /** Turn-local interrupt hook used by Ctrl+C / Esc while a turn is active. */
+  abortTurnIfActive?(
+    turnId: string,
+    reason: "interrupted",
+  ): Promise<boolean> | boolean;
   /** Required by `useQuery`. `InteractiveHandler` calls it on cancel. */
   abortTerminal?(reason: string): void;
 }
