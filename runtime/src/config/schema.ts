@@ -186,6 +186,17 @@ export interface PartialOutputStyleConfig {
 }
 
 /**
+ * Prompt attachment configuration for interactive `@file` mentions.
+ *
+ * By default, mentions may only resolve inside the current workspace.
+ * `allowedRoots` explicitly permits additional read roots for teams that keep
+ * shared specs or generated artifacts outside the repo checkout.
+ */
+export interface AttachmentsConfig {
+  readonly allowedRoots?: readonly string[];
+}
+
+/**
  * Permissions block as it appears in `~/.agenc/config.toml` (or any
  * settings.json the loader folds in). Mirrors the subset of
  * `SettingsPermissionsBlock` in `src/permissions/settings.ts` that is
@@ -280,6 +291,7 @@ export interface AgenCConfig {
   readonly privateStorage?: PrivateStorageConfig;
   readonly statusLine?: PartialStatusLineConfig;
   readonly outputStyle?: PartialOutputStyleConfig;
+  readonly attachments?: AttachmentsConfig;
   readonly telemetryOptIn?: boolean;
 
   // ── AgenC-specific additions ──────────────────────────────────────
@@ -328,6 +340,9 @@ export interface AgenCConfig {
  * Lit up by T12 Wave 4-B (no longer deferred):
  *   - statusLine       → see `PartialStatusLineConfig` above.
  *   - outputStyle      → see `PartialOutputStyleConfig` above.
+ *
+ * Lit up by T13 closeout:
+ *   - attachments      → see `AttachmentsConfig` above.
  *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
@@ -388,6 +403,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "privateStorage",
   "statusLine",
   "outputStyle",
+  "attachments",
   "telemetryOptIn",
   "toolBudget",
   "stream_watchdog_timeout_ms",

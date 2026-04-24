@@ -769,12 +769,16 @@ Rollback:
 These are the first places to stop treating as permanent:
 
 1. bootstrap-owned runtime logic
-- `bin/agenc.ts` still owns too much session/turn setup and command
-  dispatch.
+- `runtime/src/bin/bootstrap.ts` remains the declared `session_bootstrap`
+  owner in `runtime-owner-manifest.md`; keep thinning it only when an
+  equivalent session-owned API exists. The current ownership guard allows
+  its single `buildTurnContext` handoff and should fail any new fabricated
+  context seams.
 
 2. `/compact` bridge ownership
-- the current command bridge must not be refined into permanence.
-- it should be replaced by a runtime compaction call path.
+- `commands/compact.ts` now calls the runtime manual-compaction path.
+  Keep the command thin and do not reintroduce a UI/service compaction
+  owner.
 
 3. helper-owned runtime seams
 - helper modules that still preserve old query/runtime assumptions are a
@@ -783,6 +787,8 @@ These are the first places to stop treating as permanent:
 4. legacy tool/compaction service ownership
 - any live path that still enters runtime behavior through
   `services/compact/*` or `services/tools/*` as owners is temporary debt.
+- current source has no `runtime/src/services/*` tree; keep the structural
+  guard so this ownership shape cannot return unnoticed.
 
 ---
 

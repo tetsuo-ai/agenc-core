@@ -207,6 +207,13 @@ export interface TurnMetadataState {
 /** Codex `TurnSkillsContext`. T10 (memory + skills) wires. */
 export interface SkillLoadOutcome {
   readonly invokedSkills: ReadonlyArray<string>;
+  readonly availableSkills?: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string;
+    readonly path: string;
+    readonly root: string;
+    readonly scope: "user" | "project" | "plugin";
+  }>;
 }
 export class TurnSkillsContext {
   readonly outcome: SkillLoadOutcome;

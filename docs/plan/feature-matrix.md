@@ -192,14 +192,14 @@ owners.
 | `/exit` | oc | `commands/exit/` | — | take (WIRED T11) | T12 | `commands/exit.ts` |
 | `/status` | oc | `commands/status/` | — | take (WIRED T11) | T12 | `commands/status.ts` |
 | `/keybindings` | oc | `commands/keybindings/` | — | simplified (WIRED T11) | T12 | `commands/keybindings.ts` |
-| `/skills` | oc | `commands/skills/` | — | **partial** (registry only) | T12 | `commands/skills.ts` |
+| `/skills` | oc | `commands/skills/` | — | take (WIRED post-T13 status surface + local skills/plugin loader) | T12+ | `commands/skills.ts` + `skills/local-loader.ts` |
 | `/compact` | oc | manual compaction trigger | — | take (WIRED T11) | T4 | `commands/compact.ts` |
 | `/resume` | codex | picker + `--last` | — | take (WIRED T11) | T5 | `commands/resume.ts` |
 | `/fork` | codex | fork current session | — | take (WIRED T11) | T9 | `commands/fork.ts` |
 | `/init` | codex | create AGENTS.md | — | take (WIRED T11) | T10 | `commands/init.ts` |
 | `/diff` | codex | `slash_dispatch.rs` | — | take (WIRED T11) | T12 | `commands/diff.ts` |
-| `/copy` | codex | `slash_dispatch.rs` | — | deferred (T13+) | T13+ | `commands/copy.ts` |
-| `/mcp` | codex/oc | both | — | defer | T9 | `commands/mcp.ts` |
+| `/copy` | codex | `slash_dispatch.rs` | — | take (WIRED post-T13 transcript export) | T13+ | `commands/copy.ts` |
+| `/mcp` | codex/oc | both | — | take (WIRED post-T13 status surface over `SessionServices.mcpManager`) | T9+ | `commands/mcp.ts` |
 | `/enter-worktree` | agenc | pre-existing adapter | — | take (WIRED T11 via registry) | T9/T11 | `commands/enter-worktree.ts` |
 | `/exit-worktree` | agenc | pre-existing adapter | — | take (WIRED T11 via registry) | T9/T11 | `commands/exit-worktree.ts` |
 | `/side` (ephemeral fork) | codex | `slash_dispatch.rs` | — | defer | T9+ | — |
@@ -295,34 +295,34 @@ owners.
 | Feature | Source | File | LOC | Status | Tranche | Destination |
 |---|---|---|---|---|---|---|
 | `LLMProvider` interface | agenc | `runtime/src/llm/types.ts:578` | — | keep | — | existing |
-| `createProvider()` factory | new | — | — | build | T5 | `llm/provider.ts` |
-| Multi-provider dispatch (two-level Session + Turn client) | codex | `core/src/client.rs` | 1,978 | **port** (full, not cherry-pick) | T5+T13 | `llm/client.ts` + `llm/client-session.ts` |
-| Capability registry (per-provider × per-model) | new | — | — | build | T5 | `llm/capabilities.ts` |
-| Capability-driven request composer | new | — | — | build | T5 | `llm/shape-request.ts` |
-| Wire shim: xAI Responses API | agenc | existing Grok adapter internals | — | refactor | T5 | `llm/wire/responses-xai.ts` |
-| Wire shim: OpenAI Responses API | new | — | — | build | T13 | `llm/wire/responses-openai.ts` |
-| Wire shim: Anthropic Messages API | new | — | — | build | T13 | `llm/wire/messages-anthropic.ts` |
-| Wire shim: OpenAI Chat Completions | new | — | — | build | T13 | `llm/wire/chat-completions.ts` (used by OpenAI legacy + Ollama + LMStudio + OpenRouter + Groq + DeepSeek + Gemini-beta) |
-| OAuth refresh loop (shared) | codex | `client.rs:1154-1211, 1699-1961` | ~500 | port | T13 | `llm/oauth/refresh-loop.ts` |
+| `createProvider()` factory | new | — | — | built (WIRED) | T5+T13 | `llm/provider.ts` |
+| Multi-provider dispatch (two-level Session + Turn client) | codex | `core/src/client.rs` | 1,978 | port (WIRED) | T5+T13 | `llm/client.ts` + `llm/client-session.ts` |
+| Capability registry (per-provider × per-model) | new | — | — | built (WIRED) | T5+T13 | `llm/capabilities.ts` |
+| Capability-driven request composer | new | — | — | built (WIRED) | T5+T13 | `llm/shape-request.ts` |
+| Wire shim: xAI Responses API | agenc | existing Grok adapter internals | — | refactored (WIRED) | T5+T13 | `llm/wire/responses-xai.ts` |
+| Wire shim: OpenAI Responses API | new | — | — | built (WIRED) | T13 | `llm/wire/responses-openai.ts` |
+| Wire shim: Anthropic Messages API | new | — | — | built (WIRED) | T13 | `llm/wire/messages-anthropic.ts` |
+| Wire shim: OpenAI Chat Completions | new | — | — | built (WIRED) | T13 | `llm/wire/chat-completions.ts` (used by OpenAI legacy + Ollama + LMStudio + OpenRouter + Groq + DeepSeek + Gemini-beta) |
+| OAuth refresh loop (shared) | codex | `client.rs:1154-1211, 1699-1961` | ~500 | ported (WIRED) | T13 | `llm/oauth/refresh-loop.ts` |
 | Grok adapter (default provider) | agenc | `runtime/src/llm/grok/` → `llm/providers/grok/` | 8,144 | relocate, no changes | T5 | `llm/providers/grok/` |
-| OpenAI adapter | new | — | — | build | T13 | `llm/providers/openai/` |
-| Anthropic adapter | new | — | — | build | T13 | `llm/providers/anthropic/` |
+| OpenAI adapter | new | — | — | built (WIRED) | T13 | `llm/providers/openai/` |
+| Anthropic adapter | new | — | — | built (WIRED) | T13 | `llm/providers/anthropic/` |
 | Ollama adapter | agenc existing | `runtime/src/llm/ollama/` | — | relocate, no changes | T5 | `llm/providers/ollama/` |
-| LMStudio adapter | new | — | — | build | T13 | `llm/providers/lmstudio/` |
-| OpenRouter adapter | new | — | — | build | T13 | `llm/providers/openrouter/` |
-| Groq adapter | new | — | — | build | T13 | `llm/providers/groq/` |
-| DeepSeek adapter | new | — | — | build | T13 | `llm/providers/deepseek/` |
-| Gemini adapter | new | — | — | build | T13 | `llm/providers/gemini/` |
-| `previous_response_id` incremental reuse (per provider) | codex | `client.rs:909-946` | — | port | T5+T13 | `llm/providers/{grok,openai}/incremental.ts` — **invariant I-2: clear on compact** |
+| LMStudio adapter | new | — | — | built (WIRED) | T13 | `llm/providers/lmstudio/` |
+| OpenRouter adapter | new | — | — | built (WIRED) | T13 | `llm/providers/openrouter/` |
+| Groq adapter | new | — | — | built (WIRED) | T13 | `llm/providers/groq/` |
+| DeepSeek adapter | new | — | — | built (WIRED) | T13 | `llm/providers/deepseek/` |
+| Gemini adapter | new | — | — | built (WIRED) | T13 | `llm/providers/gemini/` |
+| `previous_response_id` incremental reuse (per provider) | codex | `client.rs:909-946` | — | ported (WIRED) | T5+T13 | `llm/providers/{grok,openai}/incremental.ts` — **invariant I-2: clear on compact** |
 | xAI mid-sentence truncation retry (`tool_choice=none`) | agenc | existing in Grok adapter | — | stays scoped | — | `llm/providers/grok/` internal |
 | xAI encrypted_reasoning handling | agenc | existing in Grok adapter | — | stays scoped | — | `llm/providers/grok/` internal |
-| Anthropic `cache_control` blocks | new | — | — | build | T13 | `llm/providers/anthropic/cache-control.ts` |
-| Anthropic extended thinking blocks | new | — | — | build | T13 | `llm/providers/anthropic/thinking.ts` |
-| OpenAI o-series `reasoning.effort` + reasoning summary | new | — | — | build | T13 | `llm/providers/openai/reasoning.ts` |
-| Gemini 2.5 thinking mode | new | — | — | build | T13 | `llm/providers/gemini/thinking.ts` |
-| Auth: bearer API key (Grok, Anthropic, Groq, DeepSeek, OpenRouter, LMStudio) | new | — | — | build | T5+T13 | `llm/auth/bearer.ts` — 401 = hard-fail |
-| Auth: OAuth (OpenAI ChatGPT, future) | codex | `client.rs:1154-1211` | — | port | T13 | `llm/oauth/refresh-loop.ts` |
-| Auth: Google API key (Gemini) | new | — | — | build | T13 | `llm/providers/gemini/auth.ts` |
+| Anthropic `cache_control` blocks | new | — | — | built (WIRED) | T13 | `llm/providers/anthropic/cache-control.ts` |
+| Anthropic extended thinking blocks | new | — | — | built (WIRED) | T13 | `llm/providers/anthropic/thinking.ts` |
+| OpenAI o-series `reasoning.effort` + reasoning summary | new | — | — | built (WIRED) | T13 | `llm/providers/openai/reasoning.ts` |
+| Gemini 2.5 thinking mode | new | — | — | built (WIRED) | T13 | `llm/providers/gemini/thinking.ts` |
+| Auth: bearer API key (Grok, Anthropic, Groq, DeepSeek, OpenRouter, LMStudio) | new | — | — | built (WIRED) | T5+T13 | `llm/auth/bearer.ts` — 401 = hard-fail |
+| Auth: OAuth (OpenAI ChatGPT, future) | codex | `client.rs:1154-1211` | — | ported (WIRED) | T13 | `llm/oauth/refresh-loop.ts` |
+| Auth: Google API key (Gemini) | new | — | — | built (WIRED) | T13 | `llm/providers/gemini/auth.ts` |
 | Auth: local no-auth (Ollama default, LMStudio default) | agenc | existing Ollama | — | keep | — | adapter internal |
 | Model resolution layering (CLI → env → profile → config → provider default → Grok) | new | — | — | build | T10 | `config/resolve-model.ts` |
 | Provider resolution layering (CLI → env → profile → config → default=grok) | new | — | — | build | T10 | `config/resolve-provider.ts` |
@@ -348,8 +348,8 @@ owners.
 | Shell output limits | oc | `utils/shell/outputLimits.ts` | 187 | take | T6 | `tools/shell-output.ts` |
 | Token + cost tracking | oc | `costHook.ts` + `utils/tokens.ts` + `cost-tracker.ts` | 300+ | take | T5 | `session/cost.ts` |
 | Clipboard paste store (SHA256 content-address) | oc | `utils/pasteStore.ts` | 104 | SHIPPED (T12) | T12 | `tui/composer/paste-store.ts` |
-| Shell config management (.bashrc/.zshrc/.fish detect) | oc | `utils/shellConfig.ts` | 167 | deferred (T13+) | T13+ | `utils/shell-config.ts` |
-| Auto updater (SemVer + GCS) | oc | `utils/autoUpdater.ts` | 568 | deferred (T13+) | T13+ | — |
+| Shell config management (.bashrc/.zshrc/.fish detect) | oc | `utils/shellConfig.ts` | 167 | utility WIRED (post-T13 alias detect/filter; install mutation still explicit) | T13+ | `utils/shell-config.ts` |
+| Auto updater (SemVer + GCS) | oc | `utils/autoUpdater.ts` | 568 | deferred until release endpoint/install-channel contract exists | T13+ | — |
 | Global pub/sub store | oc | `state/store.ts` + `AppStateStore.ts` | 500+ | defer — may not need with phases | — | — |
 | React hooks library (144+ hooks) | oc | `hooks/use*.ts[x]` | 1,500+ | take subset | T12 | `tui/hooks/` |
 | AsyncLock (translation helper) | new | — | — | build | T4b | `utils/async-lock.ts` |
@@ -375,7 +375,7 @@ T5 reviewers do not have to re-derive it from the source.
 | `mcpManager` (live facade over `MCPManager`) | live | T9 |
 | `agentControl` (rebound by `bindSessionAgentControl`) | live | T9 |
 | `mcpConnectionManager` | deferred | T9 |
-| `mcpStartupCancellationToken` | deferred | T9 |
+| `mcpStartupCancellationToken` | live (`AbortController`-backed token passed into MCP startup) | T9+ |
 | `unifiedExecManager` | deferred | T7 |
 | `userShell` | deferred | T7 |
 | `execPolicy` | deferred | T11 |
@@ -383,9 +383,10 @@ T5 reviewers do not have to re-derive it from the source.
 | `rollout` (codex `RolloutRecorder`) | deferred (separate `RolloutStore` is mounted live) | T5 |
 | `agentIdentityManager` / `shellSnapshotTx` | deferred | T9 |
 | `analyticsEventsClient` / `codeModeService` | deferred | T-future |
-| `authManager` / `modelClient` / `modelsManager` | deferred | T13 |
+| `modelsManager` | live | T13 |
+| `authManager` / `modelClient` | deferred structural facades; provider auth/client dispatch is live through `services.provider`, `llm/client.ts`, and adapter auth modules | T13+ |
 | `sessionTelemetry` / `threadStore` | deferred | T6 |
-| `skillsManager` / `pluginsManager` / `skillsWatcher` | deferred | T10 |
+| `skillsManager` / `pluginsManager` / `skillsWatcher` | live local filesystem loader; watcher currently cache invalidation only | T10 |
 
 Live-session `Config` / `ModelInfo` deferrals (built by
 `buildDeferredConfig` / `buildDeferredModelInfo`):

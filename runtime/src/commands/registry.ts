@@ -42,6 +42,9 @@ import configCommand from "./config.js";
 import modelCommand from "./model.js";
 import providerCommand from "./provider.js";
 import compactCommand from "./compact.js";
+import copyCommand from "./copy.js";
+import mcpCommand from "./mcp.js";
+import skillsCommand from "./skills.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
 
@@ -263,6 +266,9 @@ export function buildDefaultRegistry(): CommandRegistry {
     statusCommand,
     initCommand,
     compactCommand,
+    copyCommand,
+    mcpCommand,
+    skillsCommand,
     planCommand,
     resumeCommand,
     forkCommand,

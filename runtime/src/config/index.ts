@@ -19,6 +19,7 @@ export type {
   ModelVerbosity,
   Personality,
   PermissionMode,
+  AttachmentsConfig,
   PermissionsConfig,
   ProviderCapabilityOverrides,
   ProviderConfig,

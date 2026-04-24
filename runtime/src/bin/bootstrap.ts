@@ -4,7 +4,6 @@ import { join } from "node:path";
 
 import {
   createProvider,
-  normalizeProviderName,
   type ProviderName,
 } from "../llm/provider.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -19,15 +18,10 @@ import {
 import { MCPManager } from "../mcp-client/manager.js";
 import {
   registerAutoSaveSidecar,
-  type ExtractMemoriesFn,
-  type MemoryCandidate,
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
+import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
-import {
-  isPermissionMode,
-  type PermissionMode,
-} from "../permissions/types.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import {
@@ -38,6 +32,7 @@ import type { ReviewDecision } from "../permissions/review-decision.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionServices, type SessionState } from "../session/session.js";
 import {
+  createMcpStartupCancellationToken,
   createSessionMcpManagerFromEnv,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
@@ -60,7 +55,7 @@ import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
-import type { Event, EventMsg } from "../session/event-log.js";
+import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type {
   ContextCollapseCommitEntry,
@@ -87,49 +82,38 @@ import { resolveTransportMode } from "../transport/fallback-ladder.js";
 import { toInfraSessionId } from "./_deps/session-id-compat.js";
 import { restoreFromEntries } from "./_deps/context-collapse.js";
 import {
-  BUILT_IN_PROVIDER_DEFAULT_MODELS,
-  BUILT_IN_PROVIDER_MODEL_CATALOG,
-  buildProviderModelCatalog,
-  configuredModelForProvider,
-  defaultModelForProvider,
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
-  resolveProfile,
-  resolveProfileName,
-  resolveProviderSelection,
   resolveProviderSettings,
-  resolveDisambiguatedModelSelection,
   resolveWorkspace as resolveWorkspaceFromEnv,
-  AmbiguousModelError,
-  UnknownModelError,
   type AgenCConfig,
 } from "../config/index.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
-import { extractFlagValue } from "./route.js";
-
-export const DEFAULT_MODEL = "grok-4-fast";
-
-export const PROVIDER_MODEL_CATALOG = BUILT_IN_PROVIDER_MODEL_CATALOG;
-
-const DEFAULT_PROVIDER: ProviderName = "grok";
-
-const DEFAULT_MODEL_BY_PROVIDER = BUILT_IN_PROVIDER_DEFAULT_MODELS;
-
-export interface StartupCliFlags {
-  readonly provider?: string;
-  readonly model?: string;
-  readonly profile?: string;
-  readonly permissionMode?: PermissionMode;
-  readonly allowDangerouslySkipPermissions?: boolean;
-}
-
-export interface StartupSelection {
-  readonly config: AgenCConfig;
-  readonly profileName?: string;
-  readonly provider: ProviderName;
-  readonly model: string;
-  readonly apiKey?: string;
-}
+import {
+  readStartupCliFlags,
+  resolveStartupSelection,
+} from "./startup-selection.js";
+export {
+  DEFAULT_MODEL,
+  PROVIDER_MODEL_CATALOG,
+  readStartupCliFlags,
+  resolveModelOrExit,
+  resolveStartupSelection,
+} from "./startup-selection.js";
+export type {
+  StartupCliFlags,
+  StartupSelection,
+} from "./startup-selection.js";
+import {
+  buildExtractMemoriesViaSubagent,
+  TurnStateAccumulator,
+} from "./memory-bootstrap.js";
+export {
+  EXTRACT_MEMORIES_TIMEOUT_MS,
+  buildExtractMemoriesViaSubagent,
+  parseExtractedMemoryCandidates,
+  TurnStateAccumulator,
+} from "./memory-bootstrap.js";
 
 type StartupInternalEvent = {
   readonly payload: Record<string, unknown>;
@@ -200,159 +184,6 @@ async function loadPersistedContextCollapseState(params: {
   }
 
   return firstTranscript;
-}
-
-export function readStartupCliFlags(
-  argv: readonly string[],
-): StartupCliFlags {
-  const userArgv = argv.slice(2);
-  const provider = extractFlagValue(userArgv, "--provider") ?? undefined;
-  const model = extractFlagValue(userArgv, "--model") ?? undefined;
-  const profile = extractFlagValue(userArgv, "--profile") ?? undefined;
-  const rawPermissionMode =
-    extractFlagValue(userArgv, "--permission-mode") ?? undefined;
-  const permissionMode =
-    rawPermissionMode && isPermissionMode(rawPermissionMode)
-      ? rawPermissionMode
-      : undefined;
-  const allowDangerouslySkipPermissions =
-    userArgv.includes("--yolo") ||
-    userArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
-    userArgv.includes("--allow-dangerously-skip-permissions");
-  return Object.freeze({
-    ...(provider ? { provider } : {}),
-    ...(model ? { model } : {}),
-    ...(profile ? { profile } : {}),
-    ...(permissionMode ? { permissionMode } : {}),
-    ...(allowDangerouslySkipPermissions
-      ? { allowDangerouslySkipPermissions: true }
-      : {}),
-  });
-}
-
-function resolveProviderNameOrThrow(raw: string): ProviderName {
-  const normalized = normalizeProviderName(raw);
-  if (normalized === null) {
-    throw new Error(
-      `unknown provider '${raw}'. Expected one of: ${Object.keys(DEFAULT_MODEL_BY_PROVIDER).join(", ")}`,
-    );
-  }
-  return normalized;
-}
-
-export function resolveStartupSelection(params: {
-  readonly config: AgenCConfig;
-  readonly env?: NodeJS.ProcessEnv;
-  readonly argv?: readonly string[];
-}): StartupSelection {
-  const env = params.env ?? process.env;
-  const cli = readStartupCliFlags(params.argv ?? process.argv);
-  const profileName = cli.profile ?? resolveProfileName(env);
-  const configWithProfile =
-    profileName !== undefined ? resolveProfile(params.config, profileName) : params.config;
-
-  const providerOverride = resolveProviderSelection({
-    cliProvider: cli.provider,
-    config: configWithProfile,
-    env,
-  });
-  const modelOverride = cli.model ?? undefined;
-  const providerCatalog = buildProviderModelCatalog(configWithProfile);
-
-  if (typeof modelOverride === "string" && modelOverride.includes(":")) {
-    const resolved = resolveModelOrExit(modelOverride, providerCatalog);
-    const providerSettings = resolveProviderSettings(
-      resolved.provider,
-      configWithProfile,
-      env,
-    );
-    return {
-      config: configWithProfile,
-      ...(profileName !== undefined ? { profileName } : {}),
-      provider: resolved.provider as ProviderName,
-      model: resolved.model,
-      ...(providerSettings?.apiKey
-        ? { apiKey: providerSettings.apiKey }
-        : {}),
-    };
-  }
-
-  if (providerOverride) {
-    const provider = resolveProviderNameOrThrow(providerOverride);
-    const providerSettings = resolveProviderSettings(
-      provider,
-      configWithProfile,
-      env,
-    );
-    const model =
-      modelOverride ??
-      configuredModelForProvider(configWithProfile, provider) ??
-      defaultModelForProvider(provider);
-    return {
-      config: configWithProfile,
-      ...(profileName !== undefined ? { profileName } : {}),
-      provider,
-      model,
-      ...(providerSettings?.apiKey
-        ? { apiKey: providerSettings.apiKey }
-        : {}),
-    };
-  }
-
-  const configProvider = configWithProfile.model_provider;
-  if (configProvider && configProvider.length > 0) {
-    const provider = resolveProviderNameOrThrow(configProvider);
-    const providerSettings = resolveProviderSettings(
-      provider,
-      configWithProfile,
-      env,
-    );
-    const model =
-      modelOverride ??
-      configuredModelForProvider(configWithProfile, provider) ??
-      defaultModelForProvider(provider);
-    return {
-      config: configWithProfile,
-      ...(profileName !== undefined ? { profileName } : {}),
-      provider,
-      model,
-      ...(providerSettings?.apiKey
-        ? { apiKey: providerSettings.apiKey }
-        : {}),
-    };
-  }
-
-  if (modelOverride ?? configWithProfile.model) {
-    const resolved = resolveModelOrExit(
-      modelOverride ?? configWithProfile.model ?? DEFAULT_MODEL,
-      providerCatalog,
-    );
-    const providerSettings = resolveProviderSettings(
-      resolved.provider,
-      configWithProfile,
-      env,
-    );
-    return {
-      config: configWithProfile,
-      ...(profileName !== undefined ? { profileName } : {}),
-      provider: resolved.provider as ProviderName,
-      model: resolved.model,
-      ...(providerSettings?.apiKey
-        ? { apiKey: providerSettings.apiKey }
-        : {}),
-    };
-  }
-
-  const defaultSettings = resolveProviderSettings(DEFAULT_PROVIDER, configWithProfile, env);
-  return {
-    config: configWithProfile,
-    ...(profileName !== undefined ? { profileName } : {}),
-    provider: DEFAULT_PROVIDER,
-    model: DEFAULT_MODEL,
-    ...(defaultSettings?.apiKey
-      ? { apiKey: defaultSettings.apiKey }
-      : {}),
-  };
 }
 
 function trimTrailingSlash(value: string): string {
@@ -630,10 +461,16 @@ function buildDeferredServices(
   toolApprovals: RuntimeApprovalStore<unknown>,
   networkApproval: RuntimeNetworkApprovalService,
   modelsManager: SessionServices["modelsManager"],
+  skillsOptions: {
+    readonly agencHome: string;
+    readonly workspaceRoot: string;
+    readonly env: NodeJS.ProcessEnv;
+  },
 ): SessionServices {
   const noopAsync = async () => {
     /* deferred structural stub — replaced when the owning tranche lands */
   };
+  const skillsServices = createLocalSkillsServices(skillsOptions);
   return {
     /** T9: real `McpConnectionManager` (codex-rs mcp_connection_manager). */
     mcpConnectionManager: {
@@ -642,10 +479,7 @@ function buildDeferredServices(
       requiredStartupFailures: async () => [],
     },
     /** T9: startup cancellation token for MCP server-list refresh races. */
-    mcpStartupCancellationToken: {
-      cancel: () => {},
-      isCancelled: () => false,
-    },
+    mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     /** T7: `UnifiedExecProcessManager` with real background-terminal timeout. */
     unifiedExecManager: { maxTimeoutMs: 0 },
     /** T-future: analytics/telemetry client. */
@@ -723,18 +557,14 @@ function buildDeferredServices(
         }),
     },
     guardianRejections: new Map(),
-    /** T10: `SkillsManager` (real skills discovery + load outcome). */
-    skillsManager: {
-      skillsForConfig: async () => ({ invokedSkills: [] }),
-    },
-    /** T10: `PluginsManager` (plugin-kit integration). */
-    pluginsManager: {
-      pluginsForConfig: async () => ({ effectiveSkillRoots: () => null }),
-    },
+    /** T10: local `SKILL.md` discovery for user/project/plugin roots. */
+    skillsManager: skillsServices.skillsManager,
+    /** T10: local plugin skill-root discovery. */
+    pluginsManager: skillsServices.pluginsManager,
     /** T9 live facade — `createSessionMcpService(...)` wraps the real `MCPManager`. */
     mcpManager,
-    /** T10: `SkillsWatcher` (skills fs watcher). */
-    skillsWatcher: { start: () => {} },
+    /** T10: cache invalidation hook; a real fs watcher can replace this later. */
+    skillsWatcher: skillsServices.skillsWatcher,
     /**
      * T9 live: the real `AgentControl` + `AgentRegistry` pair is bound into
      * this slot by `bindSessionAgentControl(session, ...)` in the caller,
@@ -940,253 +770,6 @@ export function sessionConfigurationFromAgenCConfig(params: {
       ? { compactPrompt: params.config.compact_prompt }
       : {}),
   };
-}
-
-export function resolveModelOrExit(
-  slug: string,
-  catalog: Readonly<Record<string, readonly string[]>> = PROVIDER_MODEL_CATALOG,
-  exit: (code: number) => never = ((code: number) => {
-    process.exit(code);
-  }) as (code: number) => never,
-  errSink: (line: string) => void = (line) => process.stderr.write(line),
-): { provider: string; model: string } {
-  try {
-    return resolveDisambiguatedModelSelection({ slug, catalog });
-  } catch (err) {
-    if (err instanceof AmbiguousModelError) {
-      const candidates = err.candidates
-        .map((c) => `${c.provider}:${c.model}`)
-        .join(", ");
-      errSink(
-        `agenc: ambiguous model '${slug}' — matches ${err.candidates.length} providers. ` +
-          `Use 'provider:model' form. Candidates: ${candidates}\n`,
-      );
-      exit(1);
-    }
-    if (err instanceof UnknownModelError) {
-      errSink(`agenc: ${err.message}\n`);
-      exit(1);
-    }
-    throw err;
-  }
-  throw new Error("resolveModelOrExit: unreachable");
-}
-
-export const EXTRACT_MEMORIES_TIMEOUT_MS = 30_000;
-
-function buildExtractPrompt(transcript: string): string {
-  return [
-    "You are extracting durable memories from the current session. Input: the last N assistant+user messages. Output: JSON array of candidates with shape:",
-    "[ { \"name\": \"<slug>\", \"description\": \"<one-line>\", \"type\": \"user\"|\"feedback\"|\"project\"|\"reference\", \"body\": \"<the memory content>\" } ]",
-    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references. Output ONLY valid JSON, no prose.",
-    "",
-    "--- TRANSCRIPT ---",
-    transcript,
-  ].join("\n");
-}
-
-const EXTRACT_MEMORY_TYPES: ReadonlySet<string> = new Set([
-  "user",
-  "feedback",
-  "project",
-  "reference",
-]);
-
-export function parseExtractedMemoryCandidates(
-  raw: string,
-  memoryDir: string,
-): readonly MemoryCandidate[] {
-  const parsed = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error("extractor response was not a JSON array");
-  }
-  const out: MemoryCandidate[] = [];
-  for (const item of parsed) {
-    if (item === null || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const name = typeof rec.name === "string" ? rec.name.trim() : "";
-    const description =
-      typeof rec.description === "string" ? rec.description.trim() : "";
-    const type =
-      typeof rec.type === "string" && EXTRACT_MEMORY_TYPES.has(rec.type)
-        ? (rec.type as "user" | "feedback" | "project" | "reference")
-        : undefined;
-    const body = typeof rec.body === "string" ? rec.body : "";
-    if (name === "" || type === undefined || body.length === 0) continue;
-    const slug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-    if (slug.length === 0) continue;
-    out.push({
-      filePath: join(memoryDir, `${slug}.md`),
-      frontmatter: {
-        name,
-        description,
-        type,
-        extra: {},
-      },
-      body,
-    });
-  }
-  return out;
-}
-
-export function buildExtractMemoriesViaSubagent(params: {
-  readonly session: () => Session | null;
-  readonly memoryDir: string;
-  readonly delegateFn?: typeof import("../agents/delegate.js").delegate;
-  readonly timeoutMs?: number;
-}): ExtractMemoriesFn {
-  return async (transcript: string): Promise<readonly MemoryCandidate[]> => {
-    const session = params.session();
-    if (session === null) return [];
-    const timeoutMs = params.timeoutMs ?? EXTRACT_MEMORIES_TIMEOUT_MS;
-
-    const emitWarning = (cause: string, message: string): void => {
-      try {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: "warning",
-            payload: { cause, message },
-          },
-        });
-      } catch {
-        /* best effort */
-      }
-    };
-
-    let rawFinal: string;
-    try {
-      const delegateFn =
-        params.delegateFn ??
-        (await import("../agents/delegate.js")).delegate;
-      const { control, registry } = (
-        await import("./delegate-tool.js")
-      ).ensureAgentControl(session);
-
-      const deadline = new Promise<never>((_, reject) => {
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                `memory_extract_timeout: extraction did not finish within ${timeoutMs}ms`,
-              ),
-            ),
-          timeoutMs,
-        ).unref?.();
-      });
-
-      const dispatch = delegateFn({
-        parent: session,
-        parentPath: "/root",
-        control,
-        registry,
-        taskPrompt: buildExtractPrompt(transcript),
-        role: "explorer",
-      });
-
-      const outcome = await Promise.race([dispatch, deadline]);
-      if (outcome.kind !== "sync_completed") {
-        emitWarning(
-          "memory_extract_failed",
-          outcome.kind === "rejected"
-            ? `delegate rejected: ${outcome.reason}`
-            : `unexpected delegate outcome: ${outcome.kind}`,
-        );
-        return [];
-      }
-      rawFinal = outcome.result.finalMessage ?? "";
-      if (rawFinal.trim().length === 0) {
-        emitWarning(
-          "memory_extract_parse_failed",
-          "extractor returned an empty final message",
-        );
-        return [];
-      }
-    } catch (err) {
-      emitWarning(
-        "memory_extract_failed",
-        err instanceof Error ? err.message : String(err),
-      );
-      return [];
-    }
-
-    try {
-      return parseExtractedMemoryCandidates(rawFinal, params.memoryDir);
-    } catch (err) {
-      emitWarning(
-        "memory_extract_parse_failed",
-        err instanceof Error ? err.message : String(err),
-      );
-      return [];
-    }
-  };
-}
-
-export class TurnStateAccumulator {
-  private tokensConsumed = 0;
-  private toolCallsIssued = 0;
-  private currentTurnHadTools = false;
-  private lastTurnHadNoTools = false;
-  private unsubscribe: (() => void) | null = null;
-
-  subscribe(log: { subscribe: (fn: (e: Event) => void) => () => void }): void {
-    if (this.unsubscribe !== null) return;
-    this.unsubscribe = log.subscribe((event) => this.onEvent(event));
-  }
-
-  detach(): void {
-    if (this.unsubscribe !== null) {
-      this.unsubscribe();
-      this.unsubscribe = null;
-    }
-  }
-
-  onEvent(event: Event): void {
-    switch (event.msg.type) {
-      case "turn_started": {
-        this.currentTurnHadTools = false;
-        return;
-      }
-      case "tool_call_started": {
-        this.currentTurnHadTools = true;
-        return;
-      }
-      case "tool_call_completed": {
-        this.toolCallsIssued += 1;
-        this.currentTurnHadTools = true;
-        return;
-      }
-      case "token_count": {
-        const delta = event.msg.payload.totalTokens ?? 0;
-        if (delta > 0) this.tokensConsumed += delta;
-        return;
-      }
-      case "turn_complete": {
-        this.lastTurnHadNoTools = !this.currentTurnHadTools;
-        return;
-      }
-      default:
-        return;
-    }
-  }
-
-  snapshot(): MemoryTurnState {
-    return {
-      tokensConsumed: this.tokensConsumed,
-      toolCallsIssued: this.toolCallsIssued,
-      lastTurnHadNoTools: this.lastTurnHadNoTools,
-    };
-  }
-
-  reset(): void {
-    this.tokensConsumed = 0;
-    this.toolCallsIssued = 0;
-    this.currentTurnHadTools = false;
-    this.lastTurnHadNoTools = false;
-  }
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
@@ -1406,6 +989,7 @@ export async function bootstrapLocalRuntimeSession(
       toolApprovals,
       networkApproval,
       modelsManager,
+      { agencHome, workspaceRoot, env },
     ),
     jsRepl: { id: `repl-${conversationId}` },
     initialTranscriptEvents,
@@ -1714,7 +1298,9 @@ export async function bootstrapLocalRuntimeSession(
     // emitted + persisted to rollout. Mirrors codex ordering at
     // `codex-rs/core/src/session/session.rs:717-748, 766` where the
     // SessionConfiguredEvent is dispatched before McpConnectionManager::new.
-    await session.startMcpManager(mcpManager);
+    await session.startMcpManager(mcpManager, {
+      signal: session.services.mcpStartupCancellationToken.signal,
+    });
 
     return {
       agencHome,

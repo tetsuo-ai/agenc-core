@@ -33,17 +33,18 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { isAbsolute, relative, resolve } from "node:path";
 
 import { buildDefaultRegistry, getGlobalCommandRegistry } from "../_deps/commands.js";
-import { Cursor } from "../_deps/cursor.js";
-import { stringWidth } from "../ink/stringWidth.js";
+import {
+  scanMentions,
+  validateMentionPath,
+  type DetectedMention,
+  type MentionValidationResult,
+} from "../../prompts/file-mentions.js";
 import Box from "../ink/components/Box.js";
 import StdinContext from "../ink/components/StdinContext.js";
-import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import type { InputEvent } from "../ink/events/input-event.js";
-import { useDeclaredCursor } from "../ink/hooks/use-declared-cursor.js";
 import type { Color } from "../ink/styles.js";
 import {
   useActiveKeybindingContext,
@@ -62,17 +63,23 @@ import {
   type PasteStore,
 } from "./paste-store.js";
 import { Palette, fuzzyMatch, type PaletteItem } from "./Palette.js";
-import { getSlashCommandItems } from "./palette-sources.js";
+import { getMentionItems, getSlashCommandItems } from "./palette-sources.js";
 import {
   HISTORY_FILE_REL,
   appendHistory,
   readHistory,
   type HistoryEntry,
 } from "./history.js";
+import { useComposerState } from "./useComposerState.js";
+import { ComposerBuffer } from "./ComposerBuffer.js";
 import {
-  useComposerState,
-  type ComposerHistorySearchState,
-} from "./useComposerState.js";
+  hasSlashMultilineConflict,
+  isPrintableInputEvent,
+  isSingleAsciiPrintable,
+  readMentionDraft,
+  readSlashDraft,
+} from "./drafts.js";
+import { buildHistorySearchStatusLine } from "./status-line.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public types
@@ -106,155 +113,15 @@ export interface ComposerProps {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Mention validation (exported so unit tests can exercise it directly)
-// ────────────────────────────────────────────────────────────────────────
-
-export type MentionValidationResult =
-  | { ok: true; resolved: string }
-  | { ok: false; reason: "outside_workspace" | "unreadable" };
-
-/**
- * Decide whether a `@mention` should be accepted as an attachment:
- *   1. Resolve relative to `cwd`.
- *   2. Allow if the resolved path is inside `cwd` (via
- *      `path.relative(cwd, resolved)` — reject iff the result starts
- *      with `..` OR is absolute).
- *   3. Otherwise allow if it lives inside one of `allowedRoots`.
- *   4. Reject with `outside_workspace` in all other cases.
- *
- * Any thrown error (e.g. an invalid path string) maps to `unreadable`.
- */
-export function validateMentionPath(
-  raw: string,
-  cwd: string,
-  allowedRoots?: readonly string[],
-): MentionValidationResult {
-  try {
-    const resolved = isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
-
-    // Normalize cwd too so `/tmp/app/./` and `/tmp/app` compare equal.
-    const cwdResolved = resolve(cwd);
-
-    const rel = relative(cwdResolved, resolved);
-    const insideCwd =
-      rel === "" ||
-      (!rel.startsWith("..") && !isAbsolute(rel));
-    if (insideCwd) {
-      return { ok: true, resolved };
-    }
-
-    if (allowedRoots && allowedRoots.length > 0) {
-      for (const root of allowedRoots) {
-        if (typeof root !== "string" || root.length === 0) continue;
-        const rootAbs = resolve(root);
-        const rootRel = relative(rootAbs, resolved);
-        const insideRoot =
-          rootRel === "" ||
-          (!rootRel.startsWith("..") && !isAbsolute(rootRel));
-        if (insideRoot) {
-          return { ok: true, resolved };
-        }
-      }
-    }
-
-    return { ok: false, reason: "outside_workspace" };
-  } catch {
-    return { ok: false, reason: "unreadable" };
-  }
-}
-
-// ────────────────────────────────────────────────────────────────────────
-// Mention scanning
-// ────────────────────────────────────────────────────────────────────────
-
-interface DetectedMention {
-  readonly raw: string;
-  readonly validation: MentionValidationResult;
-}
-
-const MENTION_REGEX = /@([^\s]+)/g;
-const EMPTY_MENTIONS: readonly DetectedMention[] = Object.freeze([]);
-
-function scanMentions(
-  value: string,
-  cwd: string,
-  allowedRoots?: readonly string[],
-): DetectedMention[] {
-  if (!value.includes("@")) {
-    return EMPTY_MENTIONS as DetectedMention[];
-  }
-  const out: DetectedMention[] = [];
-  // Build a fresh RegExp per call — `g` regexes carry lastIndex state
-  // which would leak between renders if we reused the module-level one.
-  const rx = new RegExp(MENTION_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = rx.exec(value)) !== null) {
-    const raw = match[1];
-    if (typeof raw !== "string" || raw.length === 0) continue;
-    out.push({ raw, validation: validateMentionPath(raw, cwd, allowedRoots) });
-  }
-  return out;
-}
-
-// ────────────────────────────────────────────────────────────────────────
 // Visual cursor rendering
 // ────────────────────────────────────────────────────────────────────────
 
-const COMPOSER_FRAME_CHROME_COLUMNS = 4;
-const MIN_BUFFER_COLUMNS = 4;
 const PASTE_BURST_CHAR_INTERVAL_MS =
   process.platform === "win32" ? 30 : 8;
 // Match openclaude's fallback threshold: regular typing can occasionally
 // arrive in small multi-char chunks, so only treat very large unbracketed
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;
-
-function isSingleAsciiPrintable(text: string): boolean {
-  return text.length === 1 && text.charCodeAt(0) <= 0x7f;
-}
-
-function ComposerBuffer({
-  value,
-  cursor,
-  promptPrefix,
-  cursorActive,
-}: {
-  readonly value: string;
-  readonly cursor: number;
-  readonly promptPrefix: string;
-  readonly cursorActive: boolean;
-}): React.ReactElement {
-  const terminalSize = useContext(TerminalSizeContext);
-  const prefixWidth = Math.max(1, stringWidth(promptPrefix));
-  const availableColumns = Math.max(
-    MIN_BUFFER_COLUMNS,
-    (terminalSize?.columns ?? 80) - COMPOSER_FRAME_CHROME_COLUMNS - prefixWidth,
-  );
-  const cursorModel = useMemo(
-    () => Cursor.fromText(value, availableColumns, cursor),
-    [availableColumns, cursor, value],
-  );
-  const renderedValue = useMemo(
-    // Let the native declared cursor be the only visible caret. Rendering
-    // an inverted-space cursor here fights Ink's real cursor parking and
-    // leaves stale blocks/glyphs behind on some terminals.
-    () => cursorModel.render("", "", (text) => text),
-    [cursorModel],
-  );
-  const cursorPosition = cursorModel.getPosition();
-  const viewportStartLine = cursorModel.getViewportStartLine();
-  const cursorRef = useDeclaredCursor({
-    line: cursorPosition.line - viewportStartLine,
-    column: cursorPosition.column,
-    active: cursorActive,
-  });
-
-  return (
-    <Box ref={cursorRef}>
-      <Text>{renderedValue}</Text>
-    </Box>
-  );
-}
 
 let cachedFallbackSlashItems: readonly PaletteItem[] | null = null;
 
@@ -269,105 +136,6 @@ function getSlashPaletteItems(): readonly PaletteItem[] {
   return cachedFallbackSlashItems;
 }
 
-interface LineBounds {
-  readonly cursor: number;
-  readonly lineStart: number;
-  readonly lineEnd: number;
-}
-
-function getLineBounds(value: string, cursor: number): LineBounds {
-  const safeCursor = Math.max(0, Math.min(cursor, value.length));
-  const prevNewline = value.lastIndexOf("\n", Math.max(0, safeCursor - 1));
-  const lineStart = prevNewline === -1 ? 0 : prevNewline + 1;
-  const nextNewline = value.indexOf("\n", safeCursor);
-  const lineEnd = nextNewline === -1 ? value.length : nextNewline;
-  return { cursor: safeCursor, lineStart, lineEnd };
-}
-
-interface SlashDraft {
-  readonly query: string;
-  readonly replaceStart: number;
-  readonly replaceEnd: number;
-  readonly cursorInsideToken: boolean;
-}
-
-function readSlashDraft(value: string, cursor: number): SlashDraft | null {
-  const bounds = getLineBounds(value, cursor);
-  const line = value.slice(bounds.lineStart, bounds.lineEnd);
-  const leadingWhitespace = line.match(/^\s*/)?.[0].length ?? 0;
-  if ((line[leadingWhitespace] ?? "") !== "/") return null;
-
-  const replaceStart = bounds.lineStart + leadingWhitespace;
-  let replaceEnd = replaceStart;
-  while (replaceEnd < value.length) {
-    const next = value[replaceEnd];
-    if (next === undefined || next === "\n" || /\s/.test(next)) break;
-    replaceEnd += 1;
-  }
-
-  return {
-    query: value.slice(replaceStart + 1, replaceEnd),
-    replaceStart,
-    replaceEnd,
-    cursorInsideToken:
-      bounds.cursor >= replaceStart + 1 && bounds.cursor <= replaceEnd,
-  };
-}
-
-function hasSlashMultilineConflict(value: string): boolean {
-  const lines = value.split("\n");
-  if (lines.length <= 1) return false;
-  const first = lines[0]?.trimStart() ?? "";
-  if (!first.startsWith("/")) return false;
-  for (let i = 1; i < lines.length; i += 1) {
-    if ((lines[i] ?? "").trim().length > 0) return true;
-  }
-  return false;
-}
-
-function isPrintableInputEvent(event: InputEvent): boolean {
-  if (typeof event.input !== "string" || event.input.length === 0) return false;
-  if (event.key.return || event.key.escape || event.key.tab) return false;
-  if (
-    event.key.upArrow ||
-    event.key.downArrow ||
-    event.key.leftArrow ||
-    event.key.rightArrow ||
-    event.key.home ||
-    event.key.end ||
-    event.key.backspace ||
-    event.key.delete
-  ) {
-    return false;
-  }
-  if (event.key.ctrl || event.key.super) return false;
-  return true;
-}
-
-function buildHistorySearchStatusLine(
-  search: ComposerHistorySearchState | null,
-  keys: {
-    readonly accept: string;
-    readonly cancel: string;
-  },
-): { readonly color: Color; readonly text: string } | null {
-  if (search === null) return null;
-
-  let suffix = "";
-  if (search.status === "match") {
-    suffix = `  ${keys.accept} accept  ${keys.cancel} cancel`;
-  } else if (search.status === "no-match") {
-    suffix = "  no match";
-  }
-
-  return {
-    color:
-      search.status === "no-match"
-        ? (theme.colors.warning as Color)
-        : (theme.colors.primary as Color),
-    text: `reverse-i-search: ${search.query}${suffix}`,
-  };
-}
 
 // ────────────────────────────────────────────────────────────────────────
 // Main component
@@ -444,6 +212,46 @@ export const Composer: React.FC<ComposerProps> = ({
       setDismissedSlashToken(null);
     }
   }, [dismissedSlashToken, slashTokenKey]);
+
+  const [dismissedMentionToken, setDismissedMentionToken] = useState<
+    string | null
+  >(null);
+  const [mentionItems, setMentionItems] = useState<readonly PaletteItem[]>([]);
+  const mentionDraft = useMemo(
+    () => readMentionDraft(state.value, state.cursor),
+    [state.value, state.cursor],
+  );
+  const mentionTokenKey = mentionDraft
+    ? `${mentionDraft.replaceStart}:${mentionDraft.replaceEnd}:${mentionDraft.query}`
+    : null;
+  const mentionMatches = useMemo(
+    () => (mentionDraft ? fuzzyMatch(mentionItems, mentionDraft.query) : []),
+    [mentionDraft, mentionItems],
+  );
+  const mentionPreviewItem = mentionMatches[0] ?? null;
+  const showMentionPalette =
+    Boolean(mentionDraft?.cursorInsideToken) &&
+    mentionTokenKey !== dismissedMentionToken &&
+    state.historySearch === null &&
+    !showSlashPalette;
+  useEffect(() => {
+    if (mentionTokenKey === null && dismissedMentionToken !== null) {
+      setDismissedMentionToken(null);
+    }
+  }, [dismissedMentionToken, mentionTokenKey]);
+  useEffect(() => {
+    if (!mentionDraft?.cursorInsideToken) {
+      setMentionItems([]);
+      return undefined;
+    }
+    let alive = true;
+    void getMentionItems(session.cwd, mentionDraft.query).then((items) => {
+      if (alive) setMentionItems(items);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [mentionDraft?.cursorInsideToken, mentionDraft?.query, session.cwd]);
 
   // Hold the latest `state.value` in a ref so imperative callbacks
   // (paste-complete → appendHistory) can read the freshest buffer
@@ -645,7 +453,7 @@ export const Composer: React.FC<ComposerProps> = ({
       dispatch({ type: "HISTORY_SEARCH_ACCEPT" });
       return;
     }
-    if (showSlashPalette || hasPendingTurn) return;
+    if (showSlashPalette || showMentionPalette || hasPendingTurn) return;
     if (store.isInFlight() || valueRef.current.length === 0) {
       // While a paste is mid-stream, forward the press to the reducer
       // which will buffer it (I-69). Empty submits are quietly dropped.
@@ -675,6 +483,7 @@ export const Composer: React.FC<ComposerProps> = ({
     inputLocked,
     flushPendingPlainChar,
     session.cwd,
+    showMentionPalette,
     showSlashPalette,
     state.historySearch,
     store,
@@ -687,7 +496,7 @@ export const Composer: React.FC<ComposerProps> = ({
       dispatch({ type: "HISTORY_SEARCH_CANCEL" });
       return;
     }
-    if (showSlashPalette) return;
+    if (showSlashPalette || showMentionPalette) return;
     if (valueRef.current.length > 0) {
       dispatch({ type: "CLEAR" });
       return;
@@ -701,6 +510,7 @@ export const Composer: React.FC<ComposerProps> = ({
     hasPendingTurn,
     inputLocked,
     onCancel,
+    showMentionPalette,
     showSlashPalette,
     state.historySearch,
   ]);
@@ -715,7 +525,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const handleHistoryPrev = useCallback((): void => {
     if (inputLocked) return;
     flushPendingPlainChar();
-    if (showSlashPalette) return;
+    if (showSlashPalette || showMentionPalette) return;
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_OLDER" });
       return;
@@ -725,6 +535,7 @@ export const Composer: React.FC<ComposerProps> = ({
     dispatch,
     flushPendingPlainChar,
     inputLocked,
+    showMentionPalette,
     showSlashPalette,
     state.historySearch,
   ]);
@@ -732,7 +543,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const handleHistoryNext = useCallback((): void => {
     if (inputLocked) return;
     flushPendingPlainChar();
-    if (showSlashPalette) return;
+    if (showSlashPalette || showMentionPalette) return;
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_NEWER" });
       return;
@@ -742,6 +553,7 @@ export const Composer: React.FC<ComposerProps> = ({
     dispatch,
     flushPendingPlainChar,
     inputLocked,
+    showMentionPalette,
     showSlashPalette,
     state.historySearch,
   ]);
@@ -750,13 +562,14 @@ export const Composer: React.FC<ComposerProps> = ({
     if (inputLocked) return;
     flushPendingPlainChar();
     if (activeKeybindingContext !== "chat") return;
-    if (showSlashPalette) return;
+    if (showSlashPalette || showMentionPalette) return;
     dispatch({ type: "HISTORY_SEARCH_START" });
   }, [
     activeKeybindingContext,
     dispatch,
     flushPendingPlainChar,
     inputLocked,
+    showMentionPalette,
     showSlashPalette,
   ]);
 
@@ -856,6 +669,32 @@ export const Composer: React.FC<ComposerProps> = ({
     },
     [dispatch, slashDraft, slashTokenKey, state.value],
   );
+  const handleMentionSelect = useCallback(
+    (item: PaletteItem): void => {
+      if (!mentionDraft) return;
+      const activeToken = state.value.slice(
+        mentionDraft.replaceStart,
+        mentionDraft.replaceEnd,
+      );
+      if (activeToken === item.value) {
+        if (mentionTokenKey !== null) {
+          setDismissedMentionToken(mentionTokenKey);
+        }
+        return;
+      }
+      setDismissedMentionToken(null);
+      const trailing = state.value.slice(mentionDraft.replaceEnd);
+      const needsTrailingSpace =
+        trailing.length === 0 || !/^\s/.test(trailing);
+      dispatch({
+        type: "REPLACE_RANGE",
+        start: mentionDraft.replaceStart,
+        end: mentionDraft.replaceEnd,
+        text: `${item.value}${needsTrailingSpace ? " " : ""}`,
+      });
+    },
+    [dispatch, mentionDraft, mentionTokenKey, state.value],
+  );
 
   const statusLine = useMemo(() => {
     const historySearchLine = buildHistorySearchStatusLine(state.historySearch, {
@@ -909,9 +748,21 @@ export const Composer: React.FC<ComposerProps> = ({
             : `${slashPreviewItem.label} is available.`),
       };
     }
+    if (mentionDraft && mentionDraft.query.length === 0) {
+      return {
+        color: colors.primary,
+        text: `Browse files with Up/Down. ${acceptSuggestionKey} or ${submitKey} inserts the selected @file.`,
+      };
+    }
+    if (mentionDraft && mentionPreviewItem) {
+      return {
+        color: colors.primary,
+        text: `Attach ${mentionPreviewItem.label} to the next prompt.`,
+      };
+    }
     return {
       color: colors.dim,
-      text: `Type a prompt or / for commands. ${formattedNewlineKeys} adds a newline.`,
+      text: `Type prompt. / commands. @ files. ${formattedNewlineKeys} newline.`,
     };
   }, [
     acceptSuggestionKey,
@@ -920,6 +771,8 @@ export const Composer: React.FC<ComposerProps> = ({
     isStreaming,
     formattedNewlineKeys,
     pendingRequestCount,
+    mentionDraft,
+    mentionPreviewItem,
     slashConflict,
     slashDraft,
     slashPreviewItem,
@@ -942,6 +795,20 @@ export const Composer: React.FC<ComposerProps> = ({
           onClose={() => {
             if (slashTokenKey !== null) {
               setDismissedSlashToken(slashTokenKey);
+            }
+          }}
+        />
+      ) : null}
+      {showMentionPalette ? (
+        <Palette
+          trigger="@"
+          query={mentionDraft?.query ?? ""}
+          items={mentionItems}
+          placement="above"
+          onSelect={handleMentionSelect}
+          onClose={() => {
+            if (mentionTokenKey !== null) {
+              setDismissedMentionToken(mentionTokenKey);
             }
           }}
         />
@@ -988,3 +855,5 @@ export const Composer: React.FC<ComposerProps> = ({
 // Re-export a couple of helpers so callers can import everything from
 // this module instead of reaching into `./history.js` and friends.
 export { HISTORY_FILE_REL };
+export { validateMentionPath };
+export type { DetectedMention, MentionValidationResult };

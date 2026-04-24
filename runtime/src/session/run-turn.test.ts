@@ -381,6 +381,47 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
+  test("can emit a raw display user_message while running expanded prompt content", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const ctx = mkCtx();
+    const { session, events } = mkSession({
+      provider: {
+        ...mkProvider({ content: "hi" }),
+        chatStream: async (
+          messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          _options,
+        ): Promise<LLMResponse> => {
+          seenMessages.push(messages);
+          return {
+            content: "hi",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+    });
+
+    await drain(
+      session.runTurn("expanded model-visible prompt", {
+        ctx,
+        displayUserMessage: "raw @src/app.ts",
+      }),
+    );
+
+    const userMsg = events.find((e) => e.msg.type === "user_message");
+    if (userMsg?.msg.type === "user_message") {
+      expect(userMsg.msg.payload.message).toBe("raw @src/app.ts");
+    }
+    const firstUserContent = seenMessages[0]?.find(
+      (message) => message.role === "user",
+    )?.content;
+    expect(firstUserContent).toBe("expanded model-visible prompt");
+  });
+
   test("emits turn_complete on happy-path termination", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession({

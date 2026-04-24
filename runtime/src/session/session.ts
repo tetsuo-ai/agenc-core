@@ -73,7 +73,10 @@ import {
   contextCollapseService,
   type ContextCollapseRuntimeService,
 } from "./_deps/context-collapse.js";
-import { startMcpManagerForSession } from "./mcp-startup.js";
+import {
+  startMcpManagerForSession,
+  type McpStartupCancellationToken,
+} from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
   EventLog,
@@ -409,7 +412,7 @@ export type InitialHistory =
 /** Codex `SessionServices` — DI container of all session-scoped services. */
 export interface SessionServices {
   readonly mcpConnectionManager: McpConnectionManager;
-  readonly mcpStartupCancellationToken: { cancel(): void; isCancelled(): boolean };
+  readonly mcpStartupCancellationToken: McpStartupCancellationToken;
   readonly unifiedExecManager: UnifiedExecProcessManager;
   readonly shellZshPath?: string;
   readonly mainExecveWrapperExe?: string;

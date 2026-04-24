@@ -231,10 +231,14 @@ agenc-core/runtime/src/
     context.ts                   # codex-port: ToolPayload
     registry.ts                  # extend existing tool-registry.ts
   llm/
-    grok/                        # LOCKED — verbatim
-    openai.ts                    # stub for future adapter
-    anthropic.ts                 # stub for future adapter
+    grok/                        # historical Grok implementation retained
+    ollama/                      # historical Ollama implementation retained
+    providers/                   # canonical provider entrypoints
+    wire/                        # provider request/response shims
+    oauth/                       # shared OAuth refresh loop
     provider.ts                  # factory createProvider()
+    capabilities.ts              # provider/model capability registry
+    shape-request.ts             # capability-driven request composer
     types.ts                     # existing — keep
     compact/                     # openclaude-port wholesale (15 files)
     hooks/                       # existing — keep
@@ -491,14 +495,12 @@ Delete the dead AgenC chain, copy openclaude's `services/compact/`
 - **I-44** (turn-id-stamped modal decisions via
   `PendingPermissionRequest.turnId`)
 
-**Deferred:**
+**Completed in T13:**
 
-- **Classifier YOLO model** — `permissions/classifier.ts` ships the
-  2-stage pipeline and safe-tool allowlist; the real xAI call lands
-  in T13.
-- **Capability registry for I-57** — the history-compat check in
-  `commands/model.ts::checkModelHistoryCompat` is a stub until
-  T13's provider-capability registry replaces it.
+- **Classifier YOLO model** — `permissions/classifier.ts` now runs the
+  2-stage pipeline with the live xAI-backed classifier path.
+- **Capability registry for I-57** — `/model` and `/provider` switches
+  validate history compatibility against `llm/capabilities.ts`.
 
 ## Slash Commands (T11)
 
@@ -580,6 +582,9 @@ keybinding code.
 - `App.tsx` — root component wired to the AgenC context tree.
 - `main.tsx` — Ink bootstrap; owns the I-19 `handleStdinLoss`
   path and stdin/stdout/stderr wiring.
+- `diagnostics/` — opt-in frame/input latency monitor enabled by
+  `AGENC_TUI_FRAME_DEBUG`; reports slow frames, slow input, flicker,
+  and periodic frame summaries without adding another render buffer.
 - `theme.ts` — palette + border-style tokens shared by cockpit,
   transcript, composer, and permissions components.
 
@@ -623,16 +628,14 @@ provider-call path.
 - I-90 — Stale pending permission dropped on turn boundary
   (`permissions/InteractiveHandler.tsx`).
 
-### Deferred to T13+
+### Remaining Deferred / Product Follow-Ups
 
-The following surfaces are intentionally **not** in T12 and land
-later:
+The following surfaces are intentionally outside the completed T13 runtime
+provider tranche and should land as explicit follow-up work:
 
-- `/copy` command (transcript export).
-- Shell config auto-detect (zsh/bash integration probe).
+- Shell config install/update wiring on top of the live alias
+  auto-detect utility.
 - Auto-updater for the installed `@tetsuo-ai/agenc` wrapper.
-- Classifier YOLO real xAI call — T12 ships the stub which always
-  falls through to the modal; T13 replaces it with the live call.
-- I-57 provider capability registry (currently stubbed in
-  `commands/model.ts::checkModelHistoryCompat`).
+- Full plugin marketplace/watcher refresh beyond the live local
+  skills/plugin filesystem loader.
 - Voice input, vim mode, multi-pane.

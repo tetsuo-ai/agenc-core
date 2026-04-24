@@ -13,7 +13,7 @@
  */
 
 import { PassThrough } from "node:stream";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import React from "react";
@@ -636,6 +636,37 @@ describe("Composer", () => {
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 25));
     expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("shows @ file suggestions and inserts the selected mention", async () => {
+    mkdirSync(join(tmpHome, "src"));
+    writeFileSync(join(tmpHome, "src", "alpha.ts"), "export const alpha = 1;\n");
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { stdout, unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    await typeText(emitter, "@alp");
+    await sleep(150);
+
+    expect(latestFrameText(stdout)).toContain("src/alpha.ts");
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await sleep(40);
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await sleep(40);
+    expect(onSubmit).toHaveBeenCalledWith("@src/alpha.ts ");
     unmount();
   });
 

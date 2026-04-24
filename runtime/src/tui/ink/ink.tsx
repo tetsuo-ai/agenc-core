@@ -10,8 +10,8 @@ import { flushInteractionTime } from './vendored/state.js';
 import { getYogaCounters } from './vendored/yoga-layout/index.js';
 import { logForDebugging } from './vendored/debug.js';
 import { logError } from './vendored/log.js';
-import { format } from 'util';
 import { colorize } from './colorize.js';
+import { patchConsoleForInk, patchStderrForInk } from './console-patch.js';
 import App from './components/App.js';
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js';
 import { FRAME_INTERVAL_MS } from './constants.js';
@@ -74,6 +74,7 @@ export type Options = {
   patchConsole: boolean;
   waitUntilExit?: () => Promise<void>;
   onFrame?: (event: FrameEvent) => void;
+  onInputActivity?: () => void;
 };
 export default class Ink {
   private readonly log: LogUpdate;
@@ -1477,7 +1478,7 @@ export default class Ink {
   render(node: ReactNode): void {
     logForDebugging('[Ink:render] start');
     this.currentNode = node;
-    const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
+    const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent} onInputActivity={this.options.onInputActivity}>
         <TerminalWriteProvider value={this.writeRaw}>
           {node}
         </TerminalWriteProvider>
@@ -1608,24 +1609,7 @@ export default class Ink {
     this.backFrame.screen.hyperlinkPool = this.hyperlinkPool;
   }
   patchConsole(): () => void {
-    // biome-ignore lint/suspicious/noConsole: intentionally patching global console
-    const con = console;
-    const originals: Partial<Record<keyof Console, Console[keyof Console]>> = {};
-    const toDebug = (...args: unknown[]) => logForDebugging(`console.log: ${format(...args)}`);
-    const toError = (...args: unknown[]) => logError(new Error(`console.error: ${format(...args)}`));
-    for (const m of CONSOLE_STDOUT_METHODS) {
-      originals[m] = con[m];
-      con[m] = toDebug;
-    }
-    for (const m of CONSOLE_STDERR_METHODS) {
-      originals[m] = con[m];
-      con[m] = toError;
-    }
-    originals.assert = con.assert;
-    con.assert = (condition: unknown, ...args: unknown[]) => {
-      if (!condition) toError(...args);
-    };
-    return () => Object.assign(con, originals);
+    return patchConsoleForInk();
   }
 
   /**
@@ -1641,40 +1625,15 @@ export default class Ink {
    * process.stdout — Ink itself writes there.
    */
   private patchStderr(): () => void {
-    const stderr = process.stderr;
-    const originalWrite = stderr.write;
-    let reentered = false;
-    const intercept = (chunk: Uint8Array | string, encodingOrCb?: BufferEncoding | ((err?: Error) => void), cb?: (err?: Error) => void): boolean => {
-      const callback = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
-      // Reentrancy guard: logForDebugging → writeToStderr → here. Pass
-      // through to the original so --debug-to-stderr still works and we
-      // don't stack-overflow.
-      if (reentered) {
-        const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : undefined;
-        return originalWrite.call(stderr, chunk, encoding, callback as ((err?: Error | null | undefined) => void) | undefined);
-      }
-      reentered = true;
-      try {
-        const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
-        logForDebugging(`[stderr] ${text}`, {
-          level: 'warn'
-        });
-        if (this.altScreenActive && !this.isUnmounted && !this.isPaused) {
-          this.prevFrameContaminated = true;
-          this.scheduleRender();
-        }
-      } finally {
-        reentered = false;
-        callback?.();
-      }
-      return true;
-    };
-    stderr.write = intercept;
-    return () => {
-      if (stderr.write === intercept) {
-        stderr.write = originalWrite;
-      }
-    };
+    return patchStderrForInk({
+      isAltScreenActive: () => this.altScreenActive,
+      isUnmounted: () => this.isUnmounted,
+      isPaused: () => this.isPaused,
+      markContaminated: () => {
+        this.prevFrameContaminated = true;
+      },
+      scheduleRender: () => this.scheduleRender(),
+    });
   }
 }
 
@@ -1756,6 +1715,3 @@ export function drainStdin(stdin: NodeJS.ReadStream = process.stdin): void {
   }
 }
 /* eslint-enable custom-rules/no-sync-fs */
-
-const CONSOLE_STDOUT_METHODS = ['log', 'info', 'debug', 'dir', 'dirxml', 'count', 'countReset', 'group', 'groupCollapsed', 'groupEnd', 'table', 'time', 'timeEnd', 'timeLog'] as const;
-const CONSOLE_STDERR_METHODS = ['warn', 'error', 'trace'] as const;

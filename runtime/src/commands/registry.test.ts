@@ -190,6 +190,13 @@ describe("buildDefaultRegistry()", () => {
     expect(reg.has("exit-worktree")).toBe(true);
   });
 
+  it("includes the post-T13 command surfaces", () => {
+    const reg = buildDefaultRegistry();
+    expect(reg.has("copy")).toBe(true);
+    expect(reg.has("mcp")).toBe(true);
+    expect(reg.has("skills")).toBe(true);
+  });
+
   it("returns the curated presentation order", () => {
     const reg = buildDefaultRegistry();
     const names = reg.list().map((c) => c.name);

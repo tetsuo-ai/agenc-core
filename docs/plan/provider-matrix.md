@@ -194,7 +194,7 @@ from the earlier "Grok locked" framing:
 - **Existing Grok adapter (8,144 LOC)** — still ships unchanged as
   the *default* provider, but relocated from `runtime/src/llm/grok/`
   (implicit root) to `runtime/src/llm/providers/grok/`.
-- **New adapters to build in T13** (multi-provider tranche):
+- **Adapters completed in T13** (multi-provider tranche):
   - `providers/openai/` — Responses + Chat Completions
   - `providers/anthropic/` — Messages + thinking blocks + cache_control
   - `providers/ollama/` — native client, OpenAI-compat fallback

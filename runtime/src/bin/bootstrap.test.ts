@@ -220,7 +220,9 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.initialState.sessionConfiguration.sessionSource).toBe(
         "cli_main",
       );
-      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager);
+      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
+        signal: boot.session.services.mcpStartupCancellationToken.signal,
+      });
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -267,7 +269,9 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       shutdown = boot.shutdown;
       expect(boot.workspaceRoot).toBe(cwd);
-      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager);
+      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
+        signal: boot.session.services.mcpStartupCancellationToken.signal,
+      });
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -778,7 +782,9 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.mcpManager.getConfiguredServers()).toEqual([
         expect.objectContaining({ name: "github", command: "github-mcp" }),
       ]);
-      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager);
+      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
+        signal: boot.session.services.mcpStartupCancellationToken.signal,
+      });
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

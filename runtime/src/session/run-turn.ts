@@ -90,6 +90,8 @@ export interface RunTurnOptions {
   readonly systemPrompt?: string;
   readonly history?: readonly LLMMessage[];
   readonly signal?: AbortSignal;
+  /** Optional transcript-facing text when the model-visible prompt was expanded. */
+  readonly displayUserMessage?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1169,7 +1171,7 @@ export async function* runTurnKernel(
     id: session.nextInternalSubId(),
     msg: {
       type: "user_message",
-      payload: { message: userMessage },
+      payload: { message: opts.displayUserMessage ?? userMessage },
     },
   });
   persistNewResponseItems();
@@ -1586,6 +1588,7 @@ export function runTurn(
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         signal?: AbortSignal;
+        displayUserMessage?: string;
       },
     ) => AsyncGenerator<PhaseEvent, Terminal>;
   };
@@ -1595,6 +1598,7 @@ export function runTurn(
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       signal: opts.signal,
+      displayUserMessage: opts.displayUserMessage,
     });
   }
   return runTurnKernel(session, ctx, userMessage, opts);

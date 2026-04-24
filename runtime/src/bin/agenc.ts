@@ -75,6 +75,12 @@ import {
   injectAttachmentsIntoPrompt,
 } from "../prompts/memory/index.js";
 import {
+  expandFileMentions,
+  extractMentionAllowedRoots,
+  formatFileMentionRejection,
+  type FileMentionExpansion,
+} from "../prompts/file-mentions.js";
+import {
   assembleSystemPrompt,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
@@ -456,6 +462,8 @@ export interface RunSingleTurnOpts {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly input: string;
+  /** Transcript-facing prompt when `input` has model-only attachments injected. */
+  readonly displayInput?: string;
   /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
   readonly configStore: ConfigStore;
   readonly configReloadLatch: ConfigReloadLatch;
@@ -528,7 +536,7 @@ export async function* runSingleTurn(
 
   const selectedMemories = selectRelevantMemoriesForTurn(
     turnInputs.allMemories,
-    opts.input,
+    opts.displayInput ?? opts.input,
     opts.session,
   );
   const systemPrompt = injectAttachmentsIntoPrompt(
@@ -536,7 +544,10 @@ export async function* runSingleTurn(
     selectedMemories,
   );
 
-  const iter = drive(opts.session, opts.ctx, opts.input, { systemPrompt });
+  const iter = drive(opts.session, opts.ctx, opts.input, {
+    systemPrompt,
+    displayUserMessage: opts.displayInput,
+  });
   while (true) {
     const step = await iter.next();
     if (step.done) return step.value;
@@ -637,6 +648,49 @@ function resolveUserHome(
   return env.HOME ?? env.USERPROFILE ?? fallback;
 }
 
+function emitFileMentionWarnings(
+  session: Session,
+  expansion: FileMentionExpansion,
+): void {
+  for (const rejection of expansion.rejected) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "file_mention_attachment_dropped",
+          message: formatFileMentionRejection(rejection),
+          ...{
+            path: rejection.raw,
+            reason: rejection.reason,
+          },
+        },
+      },
+    });
+  }
+}
+
+async function expandPromptFileMentions(params: {
+  readonly session: Session;
+  readonly configStore: ConfigStore;
+  readonly input: string;
+}): Promise<{ readonly input: string; readonly displayInput?: string }> {
+  const cwd = params.session.sessionConfiguration.cwd ?? process.cwd();
+  const config = params.configStore.current();
+  const expansion = await expandFileMentions(params.input, {
+    cwd,
+    allowedRoots: extractMentionAllowedRoots(config),
+  });
+  emitFileMentionWarnings(params.session, expansion);
+  if (expansion.attachments.length === 0) {
+    return { input: params.input };
+  }
+  return {
+    input: expansion.prompt,
+    displayInput: params.input,
+  };
+}
+
 function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -651,6 +705,11 @@ function installTuiSessionContract(params: {
   params.session.installTurnDriverHooks({
     submit: async (message: string) => {
       const runPromptTurn = async (prompt: string): Promise<void> => {
+        const expanded = await expandPromptFileMentions({
+          session: params.session,
+          configStore: params.configStore,
+          input: prompt,
+        });
         const ctx = params.session.newDefaultTurn();
         const startedAtMs = Date.now();
         await params.session.activeTurn.swap({
@@ -662,7 +721,8 @@ function installTuiSessionContract(params: {
           for await (const event of runSingleTurn({
             session: params.session,
             ctx,
-            input: prompt,
+            input: expanded.input,
+            displayInput: expanded.displayInput,
             configStore: params.configStore,
             configReloadLatch,
             loadTurnInputsFn: params.loadTurnInputsFn,
@@ -951,6 +1011,12 @@ export async function oneShotCLI(
         registry,
       });
 
+    const expandedPrompt = await expandPromptFileMentions({
+      session,
+      configStore,
+      input: resolvedUserMessage,
+    });
+
     // R1 seam: one LLM turn runs through `runSingleTurn`, which owns
     // the between-turn reload + system-prompt assembly + runTurn loop.
     // A future multi-turn REPL iterates this helper in a while-loop;
@@ -959,7 +1025,8 @@ export async function oneShotCLI(
       for await (const event of runSingleTurn({
         session,
         ctx,
-        input: resolvedUserMessage,
+        input: expandedPrompt.input,
+        displayInput: expandedPrompt.displayInput,
         configStore,
         configReloadLatch,
         loadTurnInputsFn,

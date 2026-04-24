@@ -41,6 +41,12 @@ export type RenderOptions = {
    * Called after each frame render with timing and flicker information.
    */
   onFrame?: (event: FrameEvent) => void
+
+  /**
+   * Called after stdin input produces at least one parsed key. Intended for
+   * latency instrumentation without adding extra stdin listeners.
+   */
+  onInputActivity?: () => void
 }
 
 export type Instance = {
@@ -133,6 +139,7 @@ export async function createRoot({
   exitOnCtrlC = true,
   patchConsole = true,
   onFrame,
+  onInputActivity,
 }: RenderOptions = {}): Promise<Root> {
   // See wrappedRender — preserve microtask boundary from the old WASM await.
   await Promise.resolve()
@@ -143,6 +150,7 @@ export async function createRoot({
     exitOnCtrlC,
     patchConsole,
     onFrame,
+    onInputActivity,
   })
 
   // Register in the instances map so that code that looks up the Ink

@@ -347,7 +347,7 @@ else                               → WebSocketTransport
 | `/exit` | local-jsx | `commands/exit/exit.tsx` | **Core** |
 | `/status` | local | `commands/status/index.js` | **Core** |
 | `/keybindings` | local-jsx | `commands/keybindings/index.js` | Simplified |
-| `/skills` | prompt | `commands/skills/index.js` | Partial (registry only) |
+| `/skills` | prompt | `commands/skills/index.js` | WIRED status surface + local skills/plugin loader |
 
 ### /plan mode architecture
 
@@ -723,7 +723,7 @@ Features outside the main subsystems that are still worth porting.
 
 | Feature | File(s) | LOC | Status |
 |---|---|---|---|
-| Auto updater | `utils/autoUpdater.ts` | 568 | deferred (T13+) |
+| Auto updater | `utils/autoUpdater.ts` | 568 | deferred until release endpoint/install-channel contract exists |
 | Bash tool sandboxing | `utils/sandbox/sandbox-adapter.ts`, `components/sandbox/` | 997 | partial (T11 decision model wired) |
 | Shell output truncation | `utils/shell/outputLimits.ts`, `utils/truncate.ts` | 187 | wired in T6/T7 tranches |
 | Token + cost tracking | `costHook.ts`, `utils/tokens.ts`, `cost-tracker.ts` | 300+ | wired in T5 tranche |

@@ -703,11 +703,9 @@ Notes:
    request; the handler compares it against `session.activeTurn`
    at mount. A turn switch (provider change via I-13, new prompt,
    recovery re-entry) between enqueue and mount trips the drop.
-2. The 200 ms grace race runs **before** the modal mounts. T11
-   ships a stub classifier that always reports `unavailable:true`,
-   so the grace race currently always falls through to the modal;
-   T13 replaces the stub with a live xAI call and the auto-approve
-   path becomes reachable.
+2. The 200 ms grace race runs **before** the modal mounts. T13 wires the
+   live xAI-backed classifier path, so safe auto-approve decisions can now
+   win the grace race before the modal appears.
 3. Step 9's `setActiveContext('modal')` is the I-72 handoff: the
    underlying `Composer` stays mounted but stops consuming
    keystrokes until step 17 restores the `chat` context.

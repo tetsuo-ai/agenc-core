@@ -27,6 +27,12 @@ import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
 
+export interface McpStartupCancellationToken {
+  readonly signal: AbortSignal;
+  cancel(): void;
+  isCancelled(): boolean;
+}
+
 type ConfiguredServerWithExtras = MCPServerConfig & {
   readonly required?: boolean;
   readonly instructions?: string;
@@ -127,6 +133,19 @@ export function createSessionMcpManagerFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): MCPManager {
   return createSessionMcpManager(getMcpConfigFromEnv(env));
+}
+
+export function createMcpStartupCancellationToken(): McpStartupCancellationToken {
+  const controller = new AbortController();
+  return {
+    signal: controller.signal,
+    cancel: () => {
+      if (!controller.signal.aborted) {
+        controller.abort("mcp_startup_cancelled");
+      }
+    },
+    isCancelled: () => controller.signal.aborted,
+  };
 }
 
 /**
