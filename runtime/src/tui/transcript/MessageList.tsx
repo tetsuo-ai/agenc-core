@@ -34,8 +34,8 @@ import { StreamingMessage } from "./StreamingMessage.js";
 import { ExecCell, collapseOutput } from "./ExecCell.js";
 import { PlanProgress, type PlanEvent } from "./PlanProgress.js";
 import { SlashResultRenderer } from "./SlashResultRenderer.js";
+import { ToolCell } from "./ToolCell.js";
 import type { SlashCommandResult } from "../_deps/commands.js";
-import { sanitizeTranscriptText } from "./sanitize.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
 /* Types                                                                   */
@@ -71,6 +71,8 @@ export interface TranscriptMessage {
   readonly label?: string;
   readonly callId?: string;
   readonly progressStream?: "stdout" | "stderr" | "status";
+  readonly toolProgressContent?: string;
+  readonly toolResultContent?: string;
   readonly timestamp: number;
   readonly slashInput?: string;
   readonly slashResult?: SlashCommandResult;
@@ -127,9 +129,12 @@ export function transcriptMutationKey(
         message.execExitCode ?? "",
         message.execDurationMs ?? "",
         message.execTimedOut === true ? "timeout" : "",
+        lengthOf(message.toolProgressContent),
+        lengthOf(message.toolResultContent),
         lengthOf(message.planEvents),
         message.progressStream ?? "",
         message.label ?? "",
+        message.isError === true ? "error" : "",
       ].join(":"),
     )
     .join("|")
@@ -144,22 +149,6 @@ export function transcriptMutationKey(
 export function truncate(input: string, max: number = TOOL_ARGS_MAX): string {
   if (typeof input !== "string" || input.length <= max) return input;
   return `${input.slice(0, Math.max(0, max - 1))}\u2026`;
-}
-
-function safeStringify(value: unknown): string {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return sanitizeTranscriptText(value);
-  try {
-    return sanitizeTranscriptText(JSON.stringify(value));
-  } catch {
-    // Circular refs, BigInts, etc. Fall through to a String() cast so we
-    // still show *something* instead of crashing the transcript.
-    return sanitizeTranscriptText(String(value));
-  }
-}
-
-function shouldCollapseToolResult(message: TranscriptMessage): boolean {
-  return message.toolName !== "system.readFile";
 }
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -211,23 +200,15 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
           />
         );
       }
-      const argSummary = truncate(safeStringify(message.toolArgs));
       return (
-        <Box flexDirection="column">
-          <Box flexDirection="row">
-            <Text dim>
-              {"\u2192 "}
-              {message.toolName ?? "tool"}
-            </Text>
-            {argSummary.length > 0 ? (
-              <Text dim>{`(${argSummary})`}</Text>
-            ) : null}
-            {message.isComplete === false ? <Text dim>{" \u2026"}</Text> : null}
-          </Box>
-          {message.label ? (
-            <Text color={theme.colors.dim}>{message.label}</Text>
-          ) : null}
-        </Box>
+        <ToolCell
+          toolName={message.toolName}
+          toolArgs={message.toolArgs}
+          isComplete={message.isComplete !== false}
+          isError={message.isError === true}
+          result={message.toolResultContent}
+          progress={message.toolProgressContent ?? message.label}
+        />
       );
     }
 
@@ -266,36 +247,13 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       }
 
     case "tool_result":
-      if (shouldCollapseToolResult(message)) {
-        return (
-          <Box flexDirection="row">
-            <Text
-              color={message.isError ? theme.colors.error : theme.colors.success}
-            >
-              {message.isError ? "\u2717" : "\u2713"}
-            </Text>
-            <Text> </Text>
-            <Text dim>{collapseOutput(message.content, 4, 2)}</Text>
-          </Box>
-        );
-      }
       return (
-        <Box flexDirection="column">
-          <Box flexDirection="row">
-            <Text
-              color={message.isError ? theme.colors.error : theme.colors.success}
-            >
-              {message.isError ? "\u2717" : "\u2713"}
-            </Text>
-            {message.toolName ? (
-              <>
-                <Text> </Text>
-                <Text dim>{message.toolName}</Text>
-              </>
-            ) : null}
-          </Box>
-          <Text dim>{sanitizeTranscriptText(message.content)}</Text>
-        </Box>
+        <ToolCell
+          toolName={message.toolName}
+          isComplete
+          isError={message.isError === true}
+          result={message.toolResultContent ?? message.content}
+        />
       );
 
     case "warning":

@@ -186,6 +186,9 @@ describe("StreamingMessage component", () => {
     const frame = latestFrameText(stdout);
     expect(frame).toContain("code · ts");
     expect(frame).toContain("const answer = 42;");
+    expect(frame).toContain("╭─");
+    expect(frame).toContain("│");
+    expect(frame).toContain("╰");
     expect(frame).not.toContain("```");
     unmount();
   });

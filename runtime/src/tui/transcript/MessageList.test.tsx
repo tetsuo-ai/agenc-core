@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
+import { charInCellAt } from "../ink/screen.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
   MessageList,
@@ -73,6 +74,23 @@ async function captureFrame(stdout: PassThrough): Promise<string> {
   stdout.on("data", (b: Buffer) => chunks.push(b));
   await new Promise((r) => setTimeout(r, 40));
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function latestFrameText(stdout: PassThrough): string {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen as never, x, y) ?? " ";
+    }
+    rows.push(row.replace(/\s+$/u, ""));
+  }
+  return rows.join("\n");
 }
 
 function mkMsg(
@@ -289,6 +307,74 @@ describe("MessageList", () => {
     expect(frame).toContain("status");
     expect(frame).toContain("line");
     expect(frame).toContain("\u2714");
+    unmount();
+  });
+
+  test("renders read/write/edit/MCP tools as semantic cells", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "read",
+            kind: "tool_call",
+            toolName: "system.readFile",
+            toolArgs: { path: "src/App.tsx" },
+            toolResultContent: "1→export const App = () => null",
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "write",
+            kind: "tool_call",
+            toolName: "system.writeFile",
+            toolArgs: { path: "src/App.tsx" },
+            toolResultContent: "wrote 128 bytes",
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "edit",
+            kind: "tool_call",
+            toolName: "system.editFile",
+            toolArgs: { path: "src/App.tsx" },
+            toolResultContent: "replaced 1 occurrence",
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "mcp",
+            kind: "tool_call",
+            toolName: "mcp.github.listIssues",
+            toolArgs: { owner: "tetsuo-ai", repo: "agenc-core" },
+            toolResultContent: "Wall time: 0.0100 seconds\nOutput:\n2 issues",
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout).trim();
+    expect(frame).toMatchInlineSnapshot(`
+      "✓ Read src/App.tsx
+        └ 1→export const App = () => null
+      ✓ Wrote src/App.tsx
+        └ wrote 128 bytes
+      ✓ Edited src/App.tsx
+        └ replaced 1 occurrence
+      ✓ Called github.listIssues
+        └ 2 issues"
+    `);
+    unmount();
+  });
+
+  test("long transcript renders the scrollback tail without debug noise", async () => {
+    const messages = Array.from({ length: 260 }, (_, index) =>
+      mkMsg({
+        id: `m-${index}`,
+        kind: "user",
+        content: `turn ${index}`,
+      }),
+    );
+    const { unmount, stdout } = await mount(<MessageList messages={messages} />);
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("turn 259");
+    expect(frame).not.toContain("tool_routing_classified");
     unmount();
   });
 

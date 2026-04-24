@@ -55,7 +55,30 @@ function styleForMode(
   }
 }
 
-function renderLine(line: MarkdownDisplayLine, index: number): React.ReactElement {
+function renderTextContent(
+  line: MarkdownDisplayLine,
+  index: number,
+  style: ReturnType<typeof styleForMode>,
+): React.ReactElement {
+  if (line.text.includes("\u001b[")) {
+    return <Ansi key={`ansi-content-${index}`}>{line.text}</Ansi>;
+  }
+  return (
+    <Text
+      key={`text-content-${index}`}
+      {...(style.color ? { color: style.color } : {})}
+      {...(style.bold ? { bold: true } : {})}
+      {...(style.dim ? { dim: true } : {})}
+    >
+      {line.text}
+    </Text>
+  );
+}
+
+function renderLineElement(
+  line: MarkdownDisplayLine,
+  index: number,
+): React.ReactElement {
   if (line.mode === "blank" || line.text.length === 0) {
     return (
       <Box key={`blank-${index}`}>
@@ -64,10 +87,20 @@ function renderLine(line: MarkdownDisplayLine, index: number): React.ReactElemen
     );
   }
 
-  if (line.text.includes("\u001b[")) {
+  if (line.mode === "code-meta") {
     return (
-      <Box key={`ansi-${index}`}>
-        <Ansi>{line.text}</Ansi>
+      <Box key={`code-meta-${index}`} flexDirection="row">
+        <Text color="gray" dim>{"╭─ "}</Text>
+        <Text color="gray" dim>{line.text}</Text>
+      </Box>
+    );
+  }
+
+  if (line.mode === "code") {
+    return (
+      <Box key={`code-${index}`} flexDirection="row">
+        <Text color="gray" dim>{"│ "}</Text>
+        {renderTextContent(line, index, {})}
       </Box>
     );
   }
@@ -75,15 +108,40 @@ function renderLine(line: MarkdownDisplayLine, index: number): React.ReactElemen
   const style = styleForMode(line.mode);
   return (
     <Box key={`text-${index}`}>
-      <Text
-        {...(style.color ? { color: style.color } : {})}
-        {...(style.bold ? { bold: true } : {})}
-        {...(style.dim ? { dim: true } : {})}
-      >
-        {line.text}
-      </Text>
+      {renderTextContent(line, index, style)}
     </Box>
   );
+}
+
+function renderLines(lines: readonly MarkdownDisplayLine[]): React.ReactElement[] {
+  const rendered: React.ReactElement[] = [];
+  let inCodeBlock = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (inCodeBlock && line.mode !== "code") {
+      rendered.push(
+        <Box key={`code-close-${index}`} flexDirection="row">
+          <Text color="gray" dim>{"╰"}</Text>
+        </Box>,
+      );
+      inCodeBlock = false;
+    }
+    rendered.push(renderLineElement(line, index));
+    if (line.mode === "code-meta") {
+      inCodeBlock = true;
+    }
+  }
+
+  if (inCodeBlock) {
+    rendered.push(
+      <Box key="code-close-final" flexDirection="row">
+        <Text color="gray" dim>{"╰"}</Text>
+      </Box>,
+    );
+  }
+
+  return rendered;
 }
 
 interface StreamingCacheEntry {
@@ -220,7 +278,7 @@ export const MarkdownBlock: React.FC<MarkdownBlockProps> = ({
     };
   }, [content, isComplete, width]);
 
-  return <Box flexDirection="column">{lines.map(renderLine)}</Box>;
+  return <Box flexDirection="column">{renderLines(lines)}</Box>;
 };
 
 export default MarkdownBlock;

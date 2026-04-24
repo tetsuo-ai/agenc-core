@@ -215,47 +215,24 @@ function formatCompactBoundary(
   return `Context compacted${tokens}`;
 }
 
-function formatDurationMs(durationMs: number): string {
-  if (!Number.isFinite(durationMs) || durationMs < 1000) {
-    return `${Math.max(0, Math.round(durationMs))}ms`;
-  }
-  if (durationMs < 60_000) {
-    return `${(durationMs / 1000).toFixed(1)}s`;
-  }
-  const minutes = Math.floor(durationMs / 60_000);
-  const seconds = Math.round((durationMs % 60_000) / 1000);
-  return `${minutes}m${seconds}s`;
-}
-
-function formatResumeSentinel(message: string): string {
-  const parsed = Number(message);
-  if (Number.isFinite(parsed) && parsed >= 0) {
-    return `Resumed after ${formatDurationMs(parsed)} pause`;
-  }
-  return "Resumed after pause";
-}
+const HIDDEN_WARNING_CAUSES = new Set([
+  "model_ui_spoof_pattern",
+  "orphaned_turn_recovered",
+  "snapshot_behind_rollout",
+  "stream_chunk_reordered",
+  "system_resumed_from",
+  "tool_routing_classified",
+  "compact_prompt_build_slow",
+  "compact_tool_result_dropped",
+]);
 
 function formatWarning(
   payload: Extract<TranscriptEventMsg, { readonly type: "warning" }>["payload"],
-): { kind: TranscriptMessage["kind"]; label?: string; content: string } {
-  if (payload.cause === "system_resumed_from") {
-    return {
-      kind: "meta",
-      label: "resume",
-      content: formatResumeSentinel(payload.message),
-    };
+): { kind: TranscriptMessage["kind"]; label?: string; content: string } | null {
+  if (HIDDEN_WARNING_CAUSES.has(payload.cause)) {
+    return null;
   }
-  if (
-    payload.cause === "snapshot_behind_rollout" ||
-    payload.cause === "orphaned_turn_recovered"
-  ) {
-    return {
-      kind: "meta",
-      label: "history",
-      content: payload.message,
-    };
-  }
-  if (payload.cause.includes("compact")) {
+  if (payload.cause === "context_compacted" || payload.cause === "compact_completed") {
     return {
       kind: "meta",
       label: "compact",
@@ -298,12 +275,7 @@ function formatSessionConfigured(
     };
   }
   if (payload.historyEntryCount > 0) {
-    const noun = payload.historyEntryCount === 1 ? "entry" : "entries";
-    return {
-      kind: "meta",
-      label: "history",
-      content: `Resumed with ${payload.historyEntryCount} prior history ${noun}`,
-    };
+    return null;
   }
   return null;
 }
@@ -474,21 +446,26 @@ export function eventsToMessages(
         }
         case "tool_result": {
           markAssistantComplete();
-          messages.push({
-            id: `tool-result-${event.toolCall.id}-${timestamp}`,
-            turnId: ensureTurnId(currentTurnId),
-            kind: "tool_result",
-            content: event.result.content,
-            toolName: event.toolCall.name,
-            isError: event.result.isError === true,
-            timestamp,
-          });
           const callIndex = toolMessageIndexByCallId.get(event.toolCall.id);
           if (callIndex !== undefined) {
             messages[callIndex] = {
               ...messages[callIndex]!,
+              toolResultContent: event.result.content,
+              isError: event.result.isError === true,
               isComplete: true,
+              timestamp,
             };
+          } else {
+            messages.push({
+              id: `tool-result-${event.toolCall.id}-${timestamp}`,
+              turnId: ensureTurnId(currentTurnId),
+              kind: "tool_result",
+              content: event.result.content,
+              toolName: event.toolCall.name,
+              toolResultContent: event.result.content,
+              isError: event.result.isError === true,
+              timestamp,
+            });
           }
           break;
         }
@@ -668,6 +645,17 @@ export function eventsToMessages(
           pendingExecOutputByCallId.set(targetCallId, pending);
           break;
         }
+        if (toolMessageIndexByCallId.has(targetCallId)) {
+          const toolIndex = toolMessageIndexByCallId.get(targetCallId)!;
+          const prev = messages[toolIndex]!;
+          const prior = prev.toolProgressContent ?? "";
+          messages[toolIndex] = {
+            ...prev,
+            toolProgressContent: prior.length > 0 ? `${prior}\n${chunk}` : chunk,
+            timestamp,
+          };
+          break;
+        }
         upsertActivity(
           `activity:${event.payload.callId}`,
           ensureTurnId(currentTurnId),
@@ -751,16 +739,26 @@ export function eventsToMessages(
         if (toolMessage?.execCommand) {
           break;
         }
-        messages.push({
-          id: event.id ?? `tool-result-${event.payload.callId}-${timestamp}`,
-          turnId: ensureTurnId(currentTurnId),
-          kind: "tool_result",
-          content: event.payload.result,
-          toolName: toolMessage?.toolName,
-          callId: event.payload.callId,
-          isError: event.payload.isError,
-          timestamp,
-        });
+        if (toolMessage) {
+          messages[toolIndex!] = {
+            ...toolMessage,
+            toolResultContent: event.payload.result,
+            isError: event.payload.isError,
+            isComplete: true,
+            timestamp,
+          };
+        } else {
+          messages.push({
+            id: event.id ?? `tool-result-${event.payload.callId}-${timestamp}`,
+            turnId: ensureTurnId(currentTurnId),
+            kind: "tool_result",
+            content: event.payload.result,
+            callId: event.payload.callId,
+            toolResultContent: event.payload.result,
+            isError: event.payload.isError,
+            timestamp,
+          });
+        }
         break;
       }
       case "context_compacted": {
@@ -777,6 +775,9 @@ export function eventsToMessages(
       }
       case "warning": {
         const warning = formatWarning(event.payload);
+        if (warning === null) {
+          break;
+        }
         messages.push({
           id: event.id ?? `warning-${timestamp}`,
           turnId: ensureTurnId(currentTurnId),

@@ -220,13 +220,12 @@ describe("eventsToMessages", () => {
     expect(messages[0]?.planEvents).toHaveLength(3);
   });
 
-  test("surfaces fork + replay metadata as meta rows instead of generic warnings", () => {
+  test("filters internal lifecycle warnings out of the visible transcript", () => {
     const events: TranscriptSourceEvent[] = [
       {
         type: "session_configured",
         payload: {
           sessionId: "sess-2",
-          forkedFromId: "sess-1",
           model: "gpt",
           modelProviderId: "openai",
           cwd: "/tmp",
@@ -249,24 +248,70 @@ describe("eventsToMessages", () => {
           message: "snapshot replay ignored stale index",
         },
       },
+      {
+        type: "warning",
+        payload: {
+          cause: "tool_routing_classified",
+          message: "system.readFile -> readonly",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
+          cause: "mcp_auth_required",
+          message: "MCP server needs authentication",
+        },
+      },
     ];
 
     const messages = eventsToMessages(events);
-    expect(messages).toHaveLength(3);
+    expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
-      kind: "meta",
-      label: "fork",
-      content: "Thread forked from sess-1",
+      kind: "warning",
+      content: "MCP server needs authentication",
     });
-    expect(messages[1]).toMatchObject({
-      kind: "meta",
-      label: "resume",
-    });
-    expect(messages[1]?.content).toContain("12.3s");
-    expect(messages[2]).toMatchObject({
-      kind: "meta",
-      label: "history",
-      content: "snapshot replay ignored stale index",
+  });
+
+  test("collapses non-exec tool start/progress/result into one semantic row", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-tool" } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "read-1",
+          toolName: "system.readFile",
+          args: '{"path":"README.md"}',
+        },
+      },
+      {
+        type: "tool_progress",
+        payload: {
+          callId: "read-1",
+          toolName: "system.readFile",
+          chunk: "reading README.md",
+          stream: "status",
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "read-1",
+          result: "1→# AgenC\n2→runtime",
+          isError: false,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "system.readFile",
+      toolArgs: { path: "README.md" },
+      toolProgressContent: "reading README.md",
+      toolResultContent: "1→# AgenC\n2→runtime",
+      isComplete: true,
+      isError: false,
     });
   });
 });
