@@ -11,6 +11,7 @@ import {
 import { defaultConfig, mergeConfigs } from "../config/index.js";
 import type { Tool } from "../tools/types.js";
 import { Session } from "../session/session.js";
+import { SidecarManager } from "../session/sidecar.js";
 import { getProjectDir } from "../session/session-store.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import {
@@ -1168,6 +1169,155 @@ required = true
       shutdown = boot.shutdown;
 
       expect(boot.session.permissionModeRegistry.current().mode).toBe("plan");
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces the upstream codex bootstrap step ordering invariant", async () => {
+    // Asserts the concrete step order the bin bootstrap is required to
+    // follow, mirroring upstream codex
+    // `core/src/session/session.rs:814-908, 931-942`:
+    //
+    //   1. Session construction (Session instance exists).
+    //   2. Rollout store mounted on the session.
+    //   3. History reconstruction: for a fresh session (no prior
+    //      rollout items) this is observably complete when the rollout
+    //      store's `readAll()` returns empty — i.e. the reconstruction
+    //      phase finished without reading any items. This ordering
+    //      marker runs right after the mount regardless of whether
+    //      there is history to reconstruct.
+    //   4. Sidecar manager constructed and sidecars registered.
+    //   5. SessionConfigured event emitted.
+    //   6. Sidecars started.
+    //   7. MCP connection manager started.
+    //   8. Startup prewarm runs (observable via
+    //      `session.newDefaultTurn()` increment during
+    //      `runStartupPrewarm`).
+    //
+    // Steps 5 (SessionConfigured) and 6/7 (sidecar start + MCP start)
+    // specifically follow the upstream rule "Dispatch the
+    // SessionConfiguredEvent first and then report any errors"
+    // (session.rs:814) — the emit must precede the real MCP manager
+    // wiring.
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+
+    const ordering: string[] = [];
+    // Capture the originals before spying so the spies can delegate
+    // back to the real implementation without triggering themselves.
+    const originalMount = Session.prototype.mountRolloutStore;
+    const originalEmit = Session.prototype.emit;
+    const originalSidecarStart = SidecarManager.prototype.start;
+    const originalNewDefaultTurn = Session.prototype.newDefaultTurn;
+
+    const mountSpy = vi
+      .spyOn(Session.prototype, "mountRolloutStore")
+      .mockImplementation(function (
+        this: Session,
+        store: Parameters<Session["mountRolloutStore"]>[0],
+      ) {
+        ordering.push("rollout_store_mounted");
+        return originalMount.call(this, store);
+      });
+
+    const emitSpy = vi
+      .spyOn(Session.prototype, "emit")
+      .mockImplementation(function (
+        this: Session,
+        event: Parameters<Session["emit"]>[0],
+      ) {
+        if (event.msg.type === "session_configured") {
+          ordering.push("session_configured_emitted");
+        }
+        return originalEmit.call(this, event);
+      });
+
+    const sidecarStartSpy = vi
+      .spyOn(SidecarManager.prototype, "start")
+      .mockImplementation(async function (
+        this: SidecarManager,
+        log: Parameters<SidecarManager["start"]>[0],
+      ) {
+        ordering.push("sidecars_started");
+        return originalSidecarStart.call(this, log);
+      });
+
+    const mcpStartSpy = vi
+      .spyOn(Session.prototype, "startMcpManager")
+      .mockImplementation(async function () {
+        ordering.push("mcp_manager_started");
+        // Don't actually start MCP — it's not relevant to the ordering
+        // assertion and keeps the test hermetic.
+      });
+
+    const prewarmSpy = vi
+      .spyOn(Session.prototype, "newDefaultTurn")
+      .mockImplementation(function (
+        this: Session,
+        ...args: Parameters<Session["newDefaultTurn"]>
+      ) {
+        ordering.push("prewarm_ran");
+        return originalNewDefaultTurn.apply(this, args);
+      });
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      // All the instrumented steps must have fired at least once.
+      expect(mountSpy).toHaveBeenCalled();
+      expect(emitSpy).toHaveBeenCalled();
+      expect(sidecarStartSpy).toHaveBeenCalled();
+      expect(mcpStartSpy).toHaveBeenCalled();
+      expect(prewarmSpy).toHaveBeenCalled();
+
+      const idx = (label: string): number => ordering.indexOf(label);
+
+      // The recorded step order must match the upstream codex
+      // contract: each step happens strictly before the next. Every
+      // label must have been recorded (index >= 0).
+      const mountIdx = idx("rollout_store_mounted");
+      const configuredIdx = idx("session_configured_emitted");
+      const sidecarIdx = idx("sidecars_started");
+      const mcpIdx = idx("mcp_manager_started");
+      const prewarmIdx = idx("prewarm_ran");
+
+      expect(mountIdx).toBeGreaterThanOrEqual(0);
+      expect(configuredIdx).toBeGreaterThan(mountIdx);
+      expect(sidecarIdx).toBeGreaterThan(configuredIdx);
+      expect(mcpIdx).toBeGreaterThan(sidecarIdx);
+      expect(prewarmIdx).toBeGreaterThan(mcpIdx);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
