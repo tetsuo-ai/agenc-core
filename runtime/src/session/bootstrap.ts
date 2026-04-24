@@ -27,14 +27,17 @@
  *     exercise shell/MCP/prewarm. The legacy constructor path remains
  *     a no-op for bootstrap-only effects.
  *
- *   - **Staged caller hook.** Upstream does thread-persistence,
+ *   - **Staged caller hooks.** Upstream does thread-persistence,
  *     state_db lookup, live-thread init, and `record_initial_history`
  *     inline; gut's `bin/bootstrap.ts` already owns rollout-store
  *     mount + history reconstruction between session construction and
- *     `session_configured` emit. The helper calls
- *     `onBeforeSessionConfigured(session)` at that exact seam so the
- *     caller can mount the rollout store and rebuild history without
- *     forcing that orchestration into the bootstrap layer.
+ *     `session_configured` emit, and sidecar/MCP start between
+ *     session_configured and prewarm. The helper exposes two hooks —
+ *     `onBeforeSessionConfigured(session)` at the pre-emit seam and
+ *     `onAfterSessionConfigured(session)` at the post-emit seam — so
+ *     the caller can run rollout/history work before the emit and
+ *     sidecar/MCP-manager work after it, without forcing that
+ *     orchestration into the bootstrap layer.
  *
  *   - **No new abstractions.** `BootstrapManager`, `HealthCheckRunner`,
  *     and similar wrappers are intentionally absent. Each sub-step is
@@ -126,12 +129,25 @@ export interface BootstrapSessionConfiguredPayload {
  *     completes but before the `SessionConfigured` emit. Used by
  *     `bin/bootstrap.ts` to mount the rollout store and reconstruct
  *     resume history at the exact moment upstream does the same work.
+ *   - `onAfterSessionConfigured` — caller hook run AFTER the
+ *     `SessionConfigured` emit but BEFORE the startup prewarm. Used by
+ *     `bin/bootstrap.ts` to start sidecars and launch the live MCP
+ *     connection manager, mirroring the upstream codex ordering at
+ *     `session.rs:814-854, 857-908` where sidecar and MCP start happen
+ *     after the terminal SessionConfigured event.
  *   - `enablePrewarm` — opt-out for tests. Default `true`; the prewarm
  *     call is a no-op-safe `session.newDefaultTurn()` today so it is
  *     cheap, but unit tests still opt out when they don't want the
  *     extra TurnContext object.
  *   - `signal` — caller abort. Checked at every async boundary so the
  *     bootstrap rejects cleanly if the caller cancels mid-startup.
+ *
+ * `sessionConfigured` accepts either the payload directly OR a lazy
+ * thunk evaluated after `onBeforeSessionConfigured` runs. The thunk
+ * form exists because the bin path computes `rolloutPath`,
+ * `initialMessages`, and `historyEntryCount` inside the before-hook
+ * (when the rollout store mounts + resume-history reconstructs), so
+ * those fields are not available at `bootstrapSession` call time.
  */
 export interface BootstrapSessionOptions extends SessionOpts {
   readonly mcp?: {
@@ -141,8 +157,13 @@ export interface BootstrapSessionOptions extends SessionOpts {
   };
   readonly auth?: () => Promise<unknown>;
   readonly resume?: BootstrapResumePayload;
-  readonly sessionConfigured: BootstrapSessionConfiguredPayload;
+  readonly sessionConfigured:
+    | BootstrapSessionConfiguredPayload
+    | (() =>
+        | BootstrapSessionConfiguredPayload
+        | Promise<BootstrapSessionConfiguredPayload>);
   readonly onBeforeSessionConfigured?: (session: Session) => Promise<void>;
+  readonly onAfterSessionConfigured?: (session: Session) => Promise<void>;
   readonly enablePrewarm?: boolean;
   readonly signal?: AbortSignal;
 }
@@ -361,9 +382,13 @@ export async function runStartupPrewarm(
  *      and reconstruct resume history at the same point upstream
  *      does the thread-persistence future.
  *   5. Emit `SessionConfigured` — the terminal bootstrap event.
- *   6. Schedule the startup prewarm. Runs in the background; any
+ *   6. Call `onAfterSessionConfigured(session)` if provided. This is
+ *      where `bin/bootstrap.ts` starts sidecars and the live MCP
+ *      connection manager, matching upstream codex ordering at
+ *      `session.rs:856-908`.
+ *   7. Schedule the startup prewarm. Runs in the background; any
  *      error is swallowed.
- *   7. If `opts.resume` is set, call `recordInitialHistoryOnResume`
+ *   8. If `opts.resume` is set, call `recordInitialHistoryOnResume`
  *      so the model-change warning and token-info seed matches
  *      upstream's `Session::record_initial_history(Resumed(...))`
  *      arm. Per upstream comment
@@ -428,10 +453,30 @@ export async function bootstrapSession(
 
   throwIfAborted(opts.signal);
 
-  // 5. Terminal bootstrap event.
-  emitSessionConfigured(session, opts.sessionConfigured);
+  // 5. Terminal bootstrap event. Resolve the lazy payload thunk here
+  //    so callers that compute `rolloutPath` / `initialMessages` /
+  //    `historyEntryCount` inside `onBeforeSessionConfigured` can
+  //    thread them into the emit without reshaping the options.
+  const sessionConfiguredPayload =
+    typeof opts.sessionConfigured === "function"
+      ? await opts.sessionConfigured()
+      : opts.sessionConfigured;
+  emitSessionConfigured(session, sessionConfiguredPayload);
 
-  // 6. Startup prewarm. Awaited here for determinism in tests; upstream
+  // 6. Post-emit caller hook — sidecar start + live MCP connection
+  //    manager init. Upstream codex ordering
+  //    (`codex-rs/core/src/session/session.rs:856-908`) starts the
+  //    watcher/skills listener and the real `McpConnectionManager::new()`
+  //    AFTER the SessionConfigured dispatch; the gut bin path mirrors
+  //    that by doing its `sidecarManager.start()` and
+  //    `session.startMcpManager(mcpManager)` inside this hook.
+  if (opts.onAfterSessionConfigured) {
+    await opts.onAfterSessionConfigured(session);
+  }
+
+  throwIfAborted(opts.signal);
+
+  // 7. Startup prewarm. Awaited here for determinism in tests; upstream
   //    detaches via `tokio::spawn` but the gut body is cheap enough to
   //    run inline. Errors are swallowed inside the helper.
   if (opts.enablePrewarm !== false) {
@@ -440,7 +485,7 @@ export async function bootstrapSession(
     });
   }
 
-  // 7. Resume-only: record_initial_history after SessionConfigured.
+  // 8. Resume-only: record_initial_history after SessionConfigured.
   if (opts.resume) {
     await recordInitialHistoryOnResume(session, opts.resume.rolloutItems, {
       ...(opts.resume.previousModel !== undefined
