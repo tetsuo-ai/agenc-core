@@ -1240,6 +1240,15 @@ async function* runTurnKernelInner(
     });
   };
 
+  // Upstream codex resets per-turn guardian-denial counters at the top
+  // of every new turn (see `GuardianRejectionCircuitBreaker::clear_turn`
+  // usage around task start in `codex-rs/core/src/guardian/review.rs`).
+  // We run it here — after `spawnTask` installed the new `ActiveTurn`
+  // for `ctx.subId` and before any phase work that could record a
+  // denial — so a previous turn's leftover counters or interrupt flag
+  // cannot bleed into this turn's `isOpen(ctx.subId)` check below.
+  session.services.guardianRejectionCircuitBreaker?.clearTurn(ctx.subId);
+
   emitTurnStarted();
   persistTurnRolloutBaseline();
   session.budgetTracker?.resetForTurn();
@@ -1318,6 +1327,38 @@ async function* runTurnKernelInner(
       emitTurnAborted(
         String((signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled"),
       );
+      const terminal: Terminal = { reason: "cancelled" };
+      yield {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "cancelled",
+      };
+      return terminal;
+    }
+
+    // Guardian-rejection circuit-breaker interrupt (upstream codex
+    // `guardian/review.rs::record_guardian_denial` → `session.abort_turn_if_active(turn_id, Interrupted)`).
+    // Detection-site writers call `recordDenial(turnId)` on the breaker
+    // when a guardian review rejects an approval; the first crossing of
+    // the consecutive-or-total threshold flips `interruptTriggered=true`
+    // for that turn. We re-check here at the top of every phase
+    // iteration so an interrupt raised during the just-finished
+    // iteration's tool dispatch aborts the next iteration cleanly
+    // instead of issuing another sampling request. No detection-site
+    // caller is wired in gut yet (the guardian-reviewer subsystem is
+    // not ported), so in practice this branch only fires when a caller
+    // records denials directly against the breaker.
+    const breaker = session.services.guardianRejectionCircuitBreaker;
+    if (breaker?.isOpen(ctx.subId) === true) {
+      await drainInFlight(state, ctx, session);
+      await syncSessionState();
+      emitTurnAborted("guardian_breaker_open");
+      // Propagate the interrupt through the task dispatcher so in-flight
+      // tasks see their cancellation signal trip and pending approvals
+      // clear under the active-turn lock. Upstream invokes
+      // `session.abort_turn_if_active(turn_id, TurnAbortReason::Interrupted)`.
+      await session.abortTurnIfActive(ctx.subId, "interrupted");
       const terminal: Terminal = { reason: "cancelled" };
       yield {
         type: "turn_complete",

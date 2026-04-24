@@ -31,6 +31,7 @@ import { initializeToolPermissionContext } from "../permissions/settings.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionServices, type SessionState } from "../session/session.js";
+import { createGuardianRejectionCircuitBreaker } from "../session/guardian-rejection-circuit-breaker.js";
 import {
   createMcpStartupCancellationToken,
   createSessionMcpManagerFromConfig,
@@ -565,6 +566,18 @@ function buildDeferredServices(
         }),
     },
     guardianRejections: new Map(),
+    /**
+     * Codex `GuardianRejectionCircuitBreaker` (upstream
+     * `core/src/state/service.rs::services::guardian_rejection_circuit_breaker`).
+     * Populated unconditionally so the turn kernel's turn-boundary
+     * `clearTurn` + `isOpen` checks always have a breaker to consult.
+     * Detection-site recorders remain unwired in gut (no guardian-
+     * reviewer subsystem yet; see `tools/orchestrator.ts` note on the
+     * deferred `routes_approval_to_guardian` branch), so `recordDenial`
+     * has no live writer today and `isOpen` is effectively always
+     * false unless an external caller records denials directly.
+     */
+    guardianRejectionCircuitBreaker: createGuardianRejectionCircuitBreaker(),
     /** T10: local `SKILL.md` discovery for user/project/plugin roots. */
     skillsManager: skillsServices.skillsManager,
     /** T10: local plugin skill-root discovery. */
