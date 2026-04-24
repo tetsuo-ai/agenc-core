@@ -1,9 +1,9 @@
 /**
- * Palette — popover suggestion list for slash-command and @-mention
+ * Palette — popover suggestion list for slash-command, @file, and $skill
  * autocomplete.
  *
  * This component is rendered by the composer (Wave 3-A) whenever the user
- * types a `/` or `@` trigger. The caller controls mount/unmount; `<Palette>`
+ * types a `/`, `@`, or `$` trigger. The caller controls mount/unmount; `<Palette>`
  * assumes it is visible for the lifetime of the React element and does not
  * own the trigger detection logic itself.
  *
@@ -54,7 +54,7 @@ export interface PaletteItem {
 /** Props accepted by `<Palette>`. See component comment for details. */
 export interface PaletteProps {
   /** Which trigger opened this palette. Used for future trigger-specific UI. */
-  readonly trigger: "/" | "@";
+  readonly trigger: "/" | "@" | "$";
   /** Text the user has typed after the trigger. */
   readonly query: string;
   /** Candidate items. Pre-filtered or full; the ranker filters further. */

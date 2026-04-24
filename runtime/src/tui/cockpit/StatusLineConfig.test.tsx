@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
 import type { DOMElement } from "../ink/dom.js";
+import { charInCellAt } from "../ink/screen.js";
 import {
   StatusLineConfig,
   resolveStatusItem,
@@ -28,24 +29,27 @@ type TestStdin = PassThrough & {
   unref: () => void;
 };
 
-function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
+function createStreams(columns = 120): { stdout: PassThrough; stdin: TestStdin } {
   const stdout = new PassThrough();
   const stdin = new PassThrough() as TestStdin;
   stdin.isTTY = true;
   stdin.setRawMode = () => undefined;
   stdin.ref = () => undefined;
   stdin.unref = () => undefined;
-  (stdout as unknown as { columns: number }).columns = 120;
+  (stdout as unknown as { columns: number }).columns = columns;
   (stdout as unknown as { rows: number }).rows = 24;
   (stdout as unknown as { isTTY: boolean }).isTTY = true;
   return { stdout, stdin };
 }
 
-async function mount(element: React.ReactElement): Promise<{
+async function mount(
+  element: React.ReactElement,
+  options: { readonly columns?: number } = {},
+): Promise<{
   unmount: () => void;
   stdout: PassThrough;
 }> {
-  const { stdout, stdin } = createStreams();
+  const { stdout, stdin } = createStreams(options.columns);
   const root = await createRoot({
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
@@ -62,6 +66,23 @@ async function mount(element: React.ReactElement): Promise<{
       stdout.end();
     },
   };
+}
+
+function latestFrameRows(stdout: PassThrough): string[] {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return [];
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen as never, x, y) ?? " ";
+    }
+    rows.push(row.replace(/\s+$/u, ""));
+  }
+  return rows;
 }
 
 function collectText(node: DOMElement): string {
@@ -217,6 +238,29 @@ describe("StatusLineConfig", () => {
     expect(text).toContain("82% [####-]");
     expect(text).toContain("tokens");
     expect(text).toContain("12.3k");
+    unmount();
+  });
+
+  test("component remains a single clipped row on narrow terminals", async () => {
+    const { stdout, unmount } = await mount(
+      <StatusLineConfig
+        items={["model", "mode", "cwd", "context", "tokens"]}
+        session={{
+          model: "grok-4-fast-with-a-long-suffix",
+          mode: "bypassPermissions",
+          contextPercent: 92,
+          tokensUsed: 123_456,
+        }}
+        cwd="/home/user/agenc-shell-with-a-long-name"
+      />,
+      { columns: 36 },
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    const nonEmptyRows = latestFrameRows(stdout).filter(
+      (row) => row.trim().length > 0,
+    );
+    expect(nonEmptyRows).toHaveLength(1);
+    expect(nonEmptyRows[0]!.length).toBeLessThanOrEqual(36);
     unmount();
   });
 });

@@ -386,6 +386,11 @@ function TUIRoot({
           { path, reason },
         );
       },
+      skillsManager: (
+        session.services as {
+          readonly skillsManager?: ComposerSession["skillsManager"];
+        }
+      ).skillsManager,
     }),
     [session],
   );

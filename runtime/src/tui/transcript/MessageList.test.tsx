@@ -405,7 +405,10 @@ describe("MessageList", () => {
             id: "write",
             kind: "tool_call",
             toolName: "system.writeFile",
-            toolArgs: { path: "src/App.tsx" },
+            toolArgs: {
+              path: "src/App.tsx",
+              content: "export const App = () => <main />;\n",
+            },
             toolResultContent: "wrote 128 bytes",
             isComplete: true,
           }),
@@ -413,7 +416,11 @@ describe("MessageList", () => {
             id: "edit",
             kind: "tool_call",
             toolName: "system.editFile",
-            toolArgs: { path: "src/App.tsx" },
+            toolArgs: {
+              path: "src/App.tsx",
+              old_string: "export const App = () => null",
+              new_string: "export const App = () => <main />",
+            },
             toolResultContent: "replaced 1 occurrence",
             isComplete: true,
           }),
@@ -433,8 +440,18 @@ describe("MessageList", () => {
       "● Read(src/App.tsx)
         ⎿  1→export const App = () => null
       ● Write(src/App.tsx)
-        ⎿  wrote 128 bytes
+        write · src/App.tsx
+        @@ write @@
+        +++ after
+        + export const App = () => <main />;
+        +
       ● Edit(src/App.tsx)
+        replace · src/App.tsx
+        @@ replace @@
+        --- before
+        - export const App = () => null
+        +++ after
+        + export const App = () => <main />
         ⎿  replaced 1 occurrence
       ● MCP(github.listIssues)
         ⎿  2 issues"
@@ -513,7 +530,7 @@ describe("MessageList", () => {
     unmount();
   });
 
-  test("renders apply_patch failures without dumping raw patch payloads", async () => {
+  test("renders apply_patch failures as a colored diff preview without raw patch markers", async () => {
     const patch =
       "*** Begin Patch\n*** Add File: CMakeLists.txt\n+cmake_minimum_required(VERSION 3.16)\n+project(example)\n";
     const { unmount, stdout } = await mount(
@@ -536,9 +553,12 @@ describe("MessageList", () => {
     );
     const frame = latestFrameText(stdout);
     expect(frame).toContain("● Patch Failed(CMakeLists.txt)");
+    expect(frame).toContain("create · CMakeLists.txt");
+    expect(frame).toContain("+cmake_minimum_required");
+    expect(frame).toContain("+project(example)");
     expect(frame).toContain("Invalid patch hunk");
     expect(frame).not.toContain("*** Begin Patch");
-    expect(frame).not.toContain("project(example)");
+    expect(frame).not.toContain("*** Add File");
     unmount();
   });
 

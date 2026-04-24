@@ -7,7 +7,9 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  LARGE_PASTE_CHAR_THRESHOLD,
   composerReducer,
+  expandPendingPastes,
   type ComposerState,
 } from "./useComposerState.js";
 
@@ -19,6 +21,11 @@ function freshState(overrides: Partial<ComposerState> = {}): ComposerState {
     historyIdx: null,
     draftBeforeHistory: null,
     historySearch: null,
+    pendingPastes: [],
+    largePasteCounters: {},
+    localImages: [],
+    remoteImages: [],
+    selectedRemoteImageIndex: null,
     pasteInFlight: false,
     pendingEnters: 0,
     ...overrides,
@@ -66,6 +73,71 @@ describe("composerReducer", () => {
     expect(next.cursor).toBe(0);
     expect(next.history).toEqual(["hello"]);
     expect(next.historyIdx).toBeNull();
+  });
+
+  test("large paste inserts a placeholder and expands on submit", () => {
+    const pasted = "x".repeat(LARGE_PASTE_CHAR_THRESHOLD + 5);
+    let state = freshState();
+    state = composerReducer(state, { type: "INSERT_PASTE", text: pasted });
+
+    expect(state.value).toBe(
+      `[Pasted Content ${LARGE_PASTE_CHAR_THRESHOLD + 5} chars]`,
+    );
+    expect(state.pendingPastes).toEqual([
+      { placeholder: state.value, text: pasted },
+    ]);
+    expect(expandPendingPastes(state.value, state.pendingPastes)).toBe(pasted);
+
+    state = composerReducer(state, {
+      type: "SUBMIT",
+      historyValue: expandPendingPastes(state.value, state.pendingPastes),
+    });
+    expect(state.value).toBe("");
+    expect(state.history).toEqual([pasted]);
+    expect(state.pendingPastes).toEqual([]);
+  });
+
+  test("repeated same-size large pastes get unique placeholders", () => {
+    const pasted = "y".repeat(LARGE_PASTE_CHAR_THRESHOLD + 1);
+    let state = freshState();
+    state = composerReducer(state, { type: "INSERT_PASTE", text: pasted });
+    state = composerReducer(state, { type: "INSERT", text: "\n" });
+    state = composerReducer(state, { type: "INSERT_PASTE", text: pasted });
+
+    expect(state.pendingPastes.map((paste) => paste.placeholder)).toEqual([
+      `[Pasted Content ${LARGE_PASTE_CHAR_THRESHOLD + 1} chars]`,
+      `[Pasted Content ${LARGE_PASTE_CHAR_THRESHOLD + 1} chars] #2`,
+    ]);
+  });
+
+  test("remote image rows relabel existing local placeholders", () => {
+    let state = freshState();
+    state = composerReducer(state, {
+      type: "ATTACH_IMAGE",
+      kind: "local",
+      source: "/tmp/local.png",
+    });
+    expect(state.value).toBe("[Image #1]");
+
+    state = composerReducer(state, {
+      type: "ATTACH_IMAGE",
+      kind: "remote",
+      source: "https://example.com/cat.png",
+    });
+    expect(state.remoteImages.map((image) => image.placeholder)).toEqual([
+      "[Image #1]",
+    ]);
+    expect(state.value).toBe("[Image #2]");
+    expect(state.localImages.map((image) => image.placeholder)).toEqual([
+      "[Image #2]",
+    ]);
+
+    state = composerReducer(state, { type: "DELETE_SELECTED_REMOTE_IMAGE" });
+    expect(state.remoteImages).toEqual([]);
+    expect(state.value).toBe("[Image #1]");
+    expect(state.localImages.map((image) => image.placeholder)).toEqual([
+      "[Image #1]",
+    ]);
   });
 
   test("SUBMIT while paste is in flight buffers the Enter press", () => {

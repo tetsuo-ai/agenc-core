@@ -59,9 +59,10 @@ export function readSlashDraft(
   };
 }
 
-export function readMentionDraft(
+function readPrefixedDraft(
   value: string,
   cursor: number,
+  prefix: "@" | "$",
 ): MentionDraft | null {
   const bounds = getLineBounds(value, cursor);
   let replaceStart = bounds.cursor;
@@ -71,7 +72,7 @@ export function readMentionDraft(
     replaceStart -= 1;
   }
 
-  if (value[replaceStart] !== "@") return null;
+  if (value[replaceStart] !== prefix) return null;
 
   let replaceEnd = replaceStart;
   while (replaceEnd < bounds.lineEnd) {
@@ -87,6 +88,20 @@ export function readMentionDraft(
     cursorInsideToken:
       bounds.cursor >= replaceStart + 1 && bounds.cursor <= replaceEnd,
   };
+}
+
+export function readMentionDraft(
+  value: string,
+  cursor: number,
+): MentionDraft | null {
+  return readPrefixedDraft(value, cursor, "@");
+}
+
+export function readSkillMentionDraft(
+  value: string,
+  cursor: number,
+): MentionDraft | null {
+  return readPrefixedDraft(value, cursor, "$");
 }
 
 export function hasSlashMultilineConflict(value: string): boolean {

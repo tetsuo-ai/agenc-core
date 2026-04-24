@@ -107,6 +107,26 @@ describe("apply_patch tool", () => {
     await expect(stat(join(root, "old/name.txt"))).rejects.toThrow();
   });
 
+  test("inserts update-only hunks after their context marker", async () => {
+    await writeFile(join(root, "modify.txt"), "line1\nline3\n", "utf8");
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: modify.txt\n" +
+        "@@ line1\n" +
+        "+line2\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(join(root, "modify.txt"), "utf8")).resolves.toBe(
+      "line1\nline2\nline3\n",
+    );
+  });
+
   test("accepts the alternate JSON input key", async () => {
     const runner = vi.fn<ApplyPatchRunner>(async () => ({
       stdout: "Success. Updated the following files:\nA new.txt\n",
@@ -173,6 +193,7 @@ describe("apply_patch tool", () => {
         "*** Begin Patch\n" +
         "*** Add File: CMakeLists.txt\n" +
         "cmake_minimum_required(VERSION 3.16)\n" +
+        "@@ literal content, not an update hunk\n" +
         "project(agenc-shell)\n" +
         "*** End Patch",
       cwd: root,
@@ -185,9 +206,44 @@ describe("apply_patch tool", () => {
           "*** Begin Patch\n" +
           "*** Add File: CMakeLists.txt\n" +
           "+cmake_minimum_required(VERSION 3.16)\n" +
+          "+@@ literal content, not an update hunk\n" +
           "+project(agenc-shell)\n" +
           "*** End Patch",
       }),
+    );
+  });
+
+  test("repairs plus-prefixed patch markers after malformed Add File sections", async () => {
+    await writeFile(join(root, "modify.txt"), "old\n", "utf8");
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Add File: first.txt\n" +
+        "+one\n" +
+        "+*** Add File: second.txt\n" +
+        "+two\n" +
+        "+*** Update File: modify.txt\n" +
+        "+@@\n" +
+        "+-old\n" +
+        "++new\n" +
+        "+*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe(
+      "Success. Updated the following files:\nA first.txt\nA second.txt\nM modify.txt",
+    );
+    await expect(readFile(join(root, "first.txt"), "utf8")).resolves.toBe(
+      "one\n",
+    );
+    await expect(readFile(join(root, "second.txt"), "utf8")).resolves.toBe(
+      "two\n",
+    );
+    await expect(readFile(join(root, "modify.txt"), "utf8")).resolves.toBe(
+      "new\n",
     );
   });
 

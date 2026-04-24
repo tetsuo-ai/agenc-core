@@ -7,115 +7,18 @@ import React, {
   useState,
 } from "react";
 
-import { Ansi } from "../ink/Ansi.js";
-import Box from "../ink/components/Box.js";
 import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
-import Text from "../ink/components/Text.js";
 import type { MarkdownDisplayLine } from "../render/markdown.js";
 import {
   createMarkdownDisplayLineStream,
   renderMarkdownDisplayLines,
   renderMarkdownDisplayLinesSync,
 } from "../render/markdown.js";
+import { DisplayLineBlock } from "./DisplayLineBlock.js";
 
 export interface MarkdownBlockProps {
   readonly content: string;
   readonly isComplete?: boolean;
-}
-
-function styleForMode(
-  mode: string,
-): {
-  readonly color?: string;
-  readonly bold?: boolean;
-  readonly dim?: boolean;
-} {
-  switch (mode) {
-    case "heading":
-      return { color: "cyan", bold: true };
-    case "quote":
-    case "rule":
-    case "code-meta":
-    case "table-divider":
-    case "diff-meta":
-    case "stream-tail":
-      return { color: "gray", dim: true };
-    case "table-header":
-      return { bold: true };
-    case "diff-header":
-      return { color: "yellow", bold: true };
-    case "diff-hunk":
-      return { color: "cyan" };
-    case "diff-add":
-      return { color: "green" };
-    case "diff-remove":
-      return { color: "red" };
-    case "code":
-      return { color: "gray" };
-    default:
-      return {};
-  }
-}
-
-function renderTextContent(
-  line: MarkdownDisplayLine,
-  index: number,
-  style: ReturnType<typeof styleForMode>,
-): React.ReactElement {
-  if (line.text.includes("\u001b[")) {
-    return <Ansi key={`ansi-content-${index}`}>{line.text}</Ansi>;
-  }
-  return (
-    <Text
-      key={`text-content-${index}`}
-      {...(style.color ? { color: style.color } : {})}
-      {...(style.bold ? { bold: true } : {})}
-      {...(style.dim ? { dim: true } : {})}
-    >
-      {line.text}
-    </Text>
-  );
-}
-
-function renderLineElement(
-  line: MarkdownDisplayLine,
-  index: number,
-): React.ReactElement {
-  if (line.mode === "blank" || line.text.length === 0) {
-    return (
-      <Box key={`blank-${index}`}>
-        <Text>{" "}</Text>
-      </Box>
-    );
-  }
-
-  if (line.mode === "code-meta") {
-    return (
-      <Box key={`code-meta-${index}`} flexDirection="row">
-        <Text color="gray" dim>{line.text}</Text>
-      </Box>
-    );
-  }
-
-  if (line.mode === "code") {
-    const style = styleForMode(line.mode);
-    return (
-      <Box key={`code-${index}`} flexDirection="row">
-        {renderTextContent(line, index, style)}
-      </Box>
-    );
-  }
-
-  const style = styleForMode(line.mode);
-  return (
-    <Box key={`text-${index}`}>
-      {renderTextContent(line, index, style)}
-    </Box>
-  );
-}
-
-function renderLines(lines: readonly MarkdownDisplayLine[]): React.ReactElement[] {
-  return lines.map((line, index) => renderLineElement(line, index));
 }
 
 interface StreamingCacheEntry {
@@ -252,7 +155,7 @@ export const MarkdownBlock: React.FC<MarkdownBlockProps> = ({
     };
   }, [content, isComplete, width]);
 
-  return <Box flexDirection="column">{renderLines(lines)}</Box>;
+  return <DisplayLineBlock lines={lines} />;
 };
 
 export default MarkdownBlock;

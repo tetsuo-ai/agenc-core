@@ -439,14 +439,14 @@ describe("App", () => {
     );
 
     await new Promise((r) => setTimeout(r, 30));
-    expect(collectText(getRoot(stdout))).toContain("Type prompt");
+    expect(collectText(getRoot(stdout))).toContain("AgenC to do anything");
     expect(collectText(getRoot(stdout))).not.toContain("memory_extract_timeout");
 
     stdin.write("\x0f");
     await new Promise((r) => setTimeout(r, 30));
     let text = collectText(getRoot(stdout));
     expect(text).toContain("Transcript mode");
-    expect(text).not.toContain("Type prompt");
+    expect(text).not.toContain("AgenC to do anything");
     expect(text).not.toContain("memory_extract_timeout");
 
     stdin.write("\x05");
@@ -457,7 +457,7 @@ describe("App", () => {
     stdin.write("q");
     await new Promise((r) => setTimeout(r, 30));
     text = collectText(getRoot(stdout));
-    expect(text).toContain("Type prompt");
+    expect(text).toContain("AgenC to do anything");
     expect(text).not.toContain("Transcript mode");
     unmount();
   });
@@ -793,9 +793,8 @@ describe("App", () => {
     const frame = collectStream(stdout);
 
     expect(frame).toContain("tail-marker-visible-in-viewport");
-    expect(frame).toContain("Type");
-    expect(frame).toContain("prompt");
-    expect(frame).toContain("commands.");
+    expect(frame).toContain("AgenC");
+    expect(frame).toContain("anything");
     unmount();
   });
 

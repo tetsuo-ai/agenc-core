@@ -19,6 +19,18 @@
 import { useMemo, useReducer, type Dispatch } from "react";
 
 export type HistorySearchStatus = "idle" | "match" | "no-match";
+export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
+
+export interface PendingPaste {
+  readonly placeholder: string;
+  readonly text: string;
+}
+
+export interface ComposerImageAttachment {
+  readonly placeholder: string;
+  readonly source: string;
+  readonly kind: "local" | "remote";
+}
 
 export interface ComposerHistorySearchState {
   originalValue: string;
@@ -36,19 +48,29 @@ export interface ComposerState {
   historyIdx: number | null;
   draftBeforeHistory: string | null;
   historySearch: ComposerHistorySearchState | null;
+  pendingPastes: PendingPaste[];
+  largePasteCounters: Readonly<Record<string, number>>;
+  localImages: ComposerImageAttachment[];
+  remoteImages: ComposerImageAttachment[];
+  selectedRemoteImageIndex: number | null;
   pasteInFlight: boolean;
   pendingEnters: number;
 }
 
 export type ComposerAction =
   | { type: "INSERT"; text: string }
+  | { type: "INSERT_PASTE"; text: string }
+  | { type: "ATTACH_IMAGE"; kind: "local" | "remote"; source: string }
+  | { type: "MOVE_REMOTE_IMAGE_SELECTION"; delta: number }
+  | { type: "DELETE_SELECTED_REMOTE_IMAGE" }
+  | { type: "CLEAR_REMOTE_IMAGE_SELECTION" }
   | { type: "REPLACE_RANGE"; start: number; end: number; text: string }
   | { type: "DELETE_BACKWARD" }
   | { type: "DELETE_FORWARD" }
   | { type: "MOVE_CURSOR"; delta: number }
   | { type: "MOVE_CURSOR_HOME" }
   | { type: "MOVE_CURSOR_END" }
-  | { type: "SUBMIT" }
+  | { type: "SUBMIT"; historyValue?: string }
   | { type: "HISTORY_PREV" }
   | { type: "HISTORY_NEXT" }
   | { type: "NEWLINE" }
@@ -230,9 +252,16 @@ function stepHistorySearch(
   };
 }
 
-function commitToHistory(state: ComposerState): ComposerState {
+function commitToHistory(
+  state: ComposerState,
+  explicitHistoryValue?: string,
+): ComposerState {
   const value = state.value;
-  if (value.length === 0) {
+  const historyValue = expandPendingPastes(
+    explicitHistoryValue ?? value,
+    state.pendingPastes,
+  );
+  if (value.length === 0 && historyValue.length === 0) {
     // Empty submit clears draft stash/history pointers but does not
     // append a blank entry to history (matches typical shell behavior).
     return {
@@ -242,6 +271,11 @@ function commitToHistory(state: ComposerState): ComposerState {
       historyIdx: null,
       draftBeforeHistory: null,
       historySearch: null,
+      pendingPastes: [],
+      largePasteCounters: {},
+      localImages: [],
+      remoteImages: [],
+      selectedRemoteImageIndex: null,
     };
   }
   // De-dupe consecutive identical submissions — same policy as bash's
@@ -249,9 +283,9 @@ function commitToHistory(state: ComposerState): ComposerState {
   // user re-runs the same prompt.
   const newest = state.history[0];
   const history =
-    typeof newest === "string" && newest === value
+    typeof newest === "string" && newest === historyValue
       ? state.history
-      : [value, ...state.history];
+      : [historyValue, ...state.history];
   return {
     ...state,
     value: "",
@@ -260,6 +294,179 @@ function commitToHistory(state: ComposerState): ComposerState {
     historyIdx: null,
     draftBeforeHistory: null,
     historySearch: null,
+    pendingPastes: [],
+    largePasteCounters: {},
+    localImages: [],
+    remoteImages: [],
+    selectedRemoteImageIndex: null,
+  };
+}
+
+function nextLargePastePlaceholder(
+  state: ComposerState,
+  charCount: number,
+): {
+  readonly placeholder: string;
+  readonly counters: Readonly<Record<string, number>>;
+} {
+  const key = String(charCount);
+  const nextCount = (state.largePasteCounters[key] ?? 0) + 1;
+  const base = `[Pasted Content ${charCount} chars]`;
+  return {
+    placeholder: nextCount === 1 ? base : `${base} #${nextCount}`,
+    counters: {
+      ...state.largePasteCounters,
+      [key]: nextCount,
+    },
+  };
+}
+
+export function expandPendingPastes(
+  value: string,
+  pendingPastes: readonly PendingPaste[],
+): string {
+  let out = value;
+  for (const paste of pendingPastes) {
+    if (out.includes(paste.placeholder)) {
+      out = out.split(paste.placeholder).join(paste.text);
+    }
+  }
+  return out;
+}
+
+function imagePlaceholder(index: number): string {
+  return `[Image #${index}]`;
+}
+
+interface RelabeledImages {
+  readonly value: string;
+  readonly remoteImages: ComposerImageAttachment[];
+  readonly localImages: ComposerImageAttachment[];
+  readonly placeholderShift: number;
+}
+
+function relabelImages(
+  value: string,
+  remoteImages: readonly ComposerImageAttachment[],
+  localImages: readonly ComposerImageAttachment[],
+): RelabeledImages {
+  const nextRemoteImages = remoteImages.map((image, index) => ({
+    ...image,
+    placeholder: imagePlaceholder(index + 1),
+  }));
+  let nextValue = value;
+  const nextLocalImages = localImages.map((image, index) => {
+    const nextPlaceholder = imagePlaceholder(
+      nextRemoteImages.length + index + 1,
+    );
+    if (image.placeholder !== nextPlaceholder) {
+      nextValue = nextValue.split(image.placeholder).join(nextPlaceholder);
+    }
+    return {
+      ...image,
+      placeholder: nextPlaceholder,
+    };
+  });
+  return {
+    value: nextValue,
+    remoteImages: nextRemoteImages,
+    localImages: nextLocalImages,
+    placeholderShift: nextValue.length - value.length,
+  };
+}
+
+function attachImage(
+  state: ComposerState,
+  kind: "local" | "remote",
+  source: string,
+): ComposerState {
+  const trimmedSource = source.trim();
+  if (trimmedSource.length === 0) return state;
+
+  if (kind === "remote") {
+    const remoteImages = [
+      ...state.remoteImages,
+      {
+        kind,
+        source: trimmedSource,
+        placeholder: imagePlaceholder(state.remoteImages.length + 1),
+      },
+    ];
+    const relabeled = relabelImages(
+      state.value,
+      remoteImages,
+      state.localImages,
+    );
+    const cursor = clampCursor(
+      state.cursor + relabeled.placeholderShift,
+      relabeled.value.length,
+    );
+    return {
+      ...state,
+      value: relabeled.value,
+      cursor,
+      remoteImages: relabeled.remoteImages,
+      localImages: relabeled.localImages,
+      selectedRemoteImageIndex: remoteImages.length - 1,
+    };
+  }
+
+  const placeholder = imagePlaceholder(
+    state.remoteImages.length + state.localImages.length + 1,
+  );
+  const cursor = clampCursor(state.cursor, state.value.length);
+  const nextValue =
+    state.value.slice(0, cursor) + placeholder + state.value.slice(cursor);
+  return {
+    ...state,
+    value: nextValue,
+    cursor: cursor + placeholder.length,
+    localImages: [
+      ...state.localImages,
+      { kind, source: trimmedSource, placeholder },
+    ],
+    selectedRemoteImageIndex: null,
+  };
+}
+
+function moveRemoteSelection(
+  state: ComposerState,
+  delta: number,
+): ComposerState {
+  const count = state.remoteImages.length;
+  if (count === 0) return { ...state, selectedRemoteImageIndex: null };
+  const current =
+    state.selectedRemoteImageIndex === null
+      ? delta < 0
+        ? count
+        : -1
+      : state.selectedRemoteImageIndex;
+  const next = Math.max(0, Math.min(count - 1, current + delta));
+  return { ...state, selectedRemoteImageIndex: next };
+}
+
+function deleteSelectedRemoteImage(state: ComposerState): ComposerState {
+  const index = state.selectedRemoteImageIndex;
+  if (index === null || state.remoteImages[index] === undefined) return state;
+  const remoteImages = state.remoteImages.filter((_, i) => i !== index);
+  const relabeled = relabelImages(
+    state.value,
+    remoteImages,
+    state.localImages,
+  );
+  return {
+    ...state,
+    value: relabeled.value,
+    cursor: clampCursor(
+      state.cursor + relabeled.placeholderShift,
+      relabeled.value.length,
+    ),
+    remoteImages: relabeled.remoteImages,
+    localImages: relabeled.localImages,
+    selectedRemoteImageIndex:
+      remoteImages.length === 0
+        ? null
+        : Math.min(index, remoteImages.length - 1),
   };
 }
 
@@ -278,7 +485,47 @@ export function composerReducer(
         ...state,
         value: nextValue,
         cursor: cursor + text.length,
+        selectedRemoteImageIndex: null,
       };
+    }
+    case "INSERT_PASTE": {
+      const text = action.text.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n");
+      if (text.length === 0) return state;
+      const charCount = [...text].length;
+      if (charCount <= LARGE_PASTE_CHAR_THRESHOLD) {
+        return composerReducer(state, { type: "INSERT", text });
+      }
+      const { placeholder, counters } = nextLargePastePlaceholder(
+        state,
+        charCount,
+      );
+      const cursor = clampCursor(state.cursor, state.value.length);
+      const nextValue =
+        state.value.slice(0, cursor) + placeholder + state.value.slice(cursor);
+      return {
+        ...state,
+        value: nextValue,
+        cursor: cursor + placeholder.length,
+        largePasteCounters: counters,
+        pendingPastes: [
+          ...state.pendingPastes,
+          { placeholder, text },
+        ],
+        selectedRemoteImageIndex: null,
+      };
+    }
+    case "ATTACH_IMAGE": {
+      return attachImage(state, action.kind, action.source);
+    }
+    case "MOVE_REMOTE_IMAGE_SELECTION": {
+      return moveRemoteSelection(state, action.delta);
+    }
+    case "DELETE_SELECTED_REMOTE_IMAGE": {
+      return deleteSelectedRemoteImage(state);
+    }
+    case "CLEAR_REMOTE_IMAGE_SELECTION": {
+      if (state.selectedRemoteImageIndex === null) return state;
+      return { ...state, selectedRemoteImageIndex: null };
     }
     case "REPLACE_RANGE": {
       const start = clampCursor(
@@ -295,6 +542,7 @@ export function composerReducer(
         ...state,
         value: nextValue,
         cursor: start + action.text.length,
+        selectedRemoteImageIndex: null,
       };
     }
     case "NEWLINE": {
@@ -308,6 +556,7 @@ export function composerReducer(
         ...state,
         value: nextValue,
         cursor: cursor + 1,
+        selectedRemoteImageIndex: null,
       };
     }
     case "DELETE_BACKWARD": {
@@ -319,6 +568,7 @@ export function composerReducer(
         ...state,
         value: nextValue,
         cursor: cursor - 1,
+        selectedRemoteImageIndex: null,
       };
     }
     case "DELETE_FORWARD": {
@@ -330,6 +580,7 @@ export function composerReducer(
         ...state,
         value: nextValue,
         cursor,
+        selectedRemoteImageIndex: null,
       };
     }
     case "MOVE_CURSOR": {
@@ -359,7 +610,7 @@ export function composerReducer(
           pendingEnters: state.pendingEnters + 1,
         };
       }
-      return commitToHistory(state);
+      return commitToHistory(state, action.historyValue);
     }
     case "CLEAR": {
       return {
@@ -369,6 +620,11 @@ export function composerReducer(
         historyIdx: null,
         draftBeforeHistory: null,
         historySearch: null,
+        pendingPastes: [],
+        largePasteCounters: {},
+        localImages: [],
+        remoteImages: [],
+        selectedRemoteImageIndex: null,
       };
     }
     case "HISTORY_SEARCH_START": {
@@ -469,6 +725,11 @@ export function composerReducer(
           historyIdx: 0,
           value: entry,
           cursor: entry.length,
+          pendingPastes: [],
+          largePasteCounters: {},
+          localImages: [],
+          remoteImages: [],
+          selectedRemoteImageIndex: null,
         };
       }
       // Clamp at the oldest entry — once the user is at the end of
@@ -483,6 +744,11 @@ export function composerReducer(
         historyIdx: nextIdx,
         value: entry,
         cursor: entry.length,
+        pendingPastes: [],
+        largePasteCounters: {},
+        localImages: [],
+        remoteImages: [],
+        selectedRemoteImageIndex: null,
       };
     }
     case "HISTORY_NEXT": {
@@ -499,6 +765,11 @@ export function composerReducer(
           draftBeforeHistory: null,
           value: draft,
           cursor: draft.length,
+          pendingPastes: [],
+          largePasteCounters: {},
+          localImages: [],
+          remoteImages: [],
+          selectedRemoteImageIndex: null,
         };
       }
       const nextIdx = state.historyIdx - 1;
@@ -508,6 +779,11 @@ export function composerReducer(
         historyIdx: nextIdx,
         value: entry,
         cursor: entry.length,
+        pendingPastes: [],
+        largePasteCounters: {},
+        localImages: [],
+        remoteImages: [],
+        selectedRemoteImageIndex: null,
       };
     }
     case "PASTE_START": {
@@ -567,6 +843,11 @@ export function useComposerState(
       historyIdx: null,
       draftBeforeHistory: null,
       historySearch: null,
+      pendingPastes: [],
+      largePasteCounters: {},
+      localImages: [],
+      remoteImages: [],
+      selectedRemoteImageIndex: null,
       pasteInFlight: false,
       pendingEnters: 0,
     }),

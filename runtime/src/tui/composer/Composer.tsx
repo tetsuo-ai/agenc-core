@@ -18,14 +18,16 @@
  *      `session.emit?.` or `console.warn`, and render a footer note so
  *      the user sees why an attachment was dropped.
  *
- * The React tree stays intentionally small, but the live buffer now uses
- * the shared wrapped-cursor model and renders the caret in-band. Native
- * terminal cursor parking is deliberately avoided here because it can drift
- * over footer text when the renderer is recovering from scroll/resize frames.
- * The contract here covers both keystroke → state plumbing and stable
- * terminal-safe composer rendering for wrapped/multiline drafts.
+ * The React tree stays intentionally small, but the live buffer now follows
+ * the OpenClaude text-input contract: the wrapped-cursor model renders
+ * styled text through the ANSI parser while `useDeclaredCursor` tells Ink
+ * where to park the physical cursor for IME/accessibility. The contract
+ * here covers both keystroke → state plumbing and stable terminal-safe
+ * composer rendering for wrapped/multiline drafts.
  */
 
+import { existsSync, statSync } from "node:fs";
+import path from "node:path";
 import React, {
   useContext,
   useCallback,
@@ -44,7 +46,6 @@ import {
 } from "../../prompts/file-mentions.js";
 import Box from "../ink/components/Box.js";
 import StdinContext from "../ink/components/StdinContext.js";
-import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import type { InputEvent } from "../ink/events/input-event.js";
 import type { Color } from "../ink/styles.js";
@@ -65,20 +66,29 @@ import {
   type PasteStore,
 } from "./paste-store.js";
 import { Palette, fuzzyMatch, type PaletteItem } from "./Palette.js";
-import { getMentionItems, getSlashCommandItems } from "./palette-sources.js";
+import {
+  getMentionItems,
+  getSkillMentionItems,
+  getSlashCommandItems,
+  type SkillMentionServiceLike,
+} from "./palette-sources.js";
 import {
   HISTORY_FILE_REL,
   appendHistory,
   readHistory,
   type HistoryEntry,
 } from "./history.js";
-import { useComposerState } from "./useComposerState.js";
+import {
+  expandPendingPastes,
+  useComposerState,
+} from "./useComposerState.js";
 import { ComposerBuffer } from "./ComposerBuffer.js";
 import {
   hasSlashMultilineConflict,
   isPrintableInputEvent,
   isSingleAsciiPrintable,
   readMentionDraft,
+  readSkillMentionDraft,
   readSlashDraft,
 } from "./drafts.js";
 import { buildHistorySearchStatusLine } from "./status-line.js";
@@ -94,6 +104,8 @@ export interface ComposerSession {
   readonly home?: string;
   /** Optional observability hook — dropped mentions emit here. */
   readonly emit?: (event: string, payload?: unknown) => void;
+  /** Optional live skills service for Codex-style `$skill` mentions. */
+  readonly skillsManager?: SkillMentionServiceLike;
 }
 
 export interface ComposerAttachmentsConfig {
@@ -117,7 +129,7 @@ export interface ComposerProps {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Visual cursor rendering
+// Composer timing constants
 // ────────────────────────────────────────────────────────────────────────
 
 const PASTE_BURST_CHAR_INTERVAL_MS =
@@ -126,6 +138,79 @@ const PASTE_BURST_CHAR_INTERVAL_MS =
 // arrive in small multi-char chunks, so only treat very large unbracketed
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;
+const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/iu;
+const REMOTE_IMAGE_RE =
+  /^(?:https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:[?#]\S*)?|data:image\/[a-z0-9.+-]+;base64,\S+)$/iu;
+
+function stripPasteQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function normalizePastedImageSource(
+  input: string,
+  cwd: string,
+  home?: string,
+): { readonly kind: "local" | "remote"; readonly source: string } | null {
+  const normalized = stripPasteQuotes(
+    input.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n"),
+  );
+  if (normalized.length === 0 || /\n/u.test(normalized)) return null;
+  if (REMOTE_IMAGE_RE.test(normalized)) {
+    return { kind: "remote", source: normalized };
+  }
+
+  let candidate = normalized;
+  if (normalized.startsWith("file://")) {
+    try {
+      candidate = new URL(normalized).pathname;
+    } catch {
+      return null;
+    }
+  }
+  if (candidate.startsWith("~/") && home) {
+    candidate = path.join(home, candidate.slice(2));
+  }
+  const absolute = path.isAbsolute(candidate)
+    ? candidate
+    : path.resolve(cwd, candidate);
+  if (!IMAGE_FILE_RE.test(absolute)) return null;
+  try {
+    if (!existsSync(absolute) || !statSync(absolute).isFile()) return null;
+  } catch {
+    return null;
+  }
+  return { kind: "local", source: absolute };
+}
+
+function buildSubmittedText(
+  value: string,
+  state: {
+    readonly pendingPastes: Parameters<typeof expandPendingPastes>[1];
+    readonly remoteImages: readonly {
+      readonly placeholder: string;
+      readonly source: string;
+    }[];
+    readonly localImages: readonly {
+      readonly placeholder: string;
+      readonly source: string;
+    }[];
+  },
+): string {
+  const expanded = expandPendingPastes(value, state.pendingPastes);
+  const attachmentLines = [...state.remoteImages, ...state.localImages].map(
+    (image) => `${image.placeholder}: ${image.source}`,
+  );
+  return attachmentLines.length === 0
+    ? expanded
+    : `${attachmentLines.join("\n")}\n\n${expanded}`;
+}
 
 function formatElapsedDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -191,11 +276,6 @@ export const Composer: React.FC<ComposerProps> = ({
   pasteStore,
 }) => {
   const store = pasteStore ?? getPasteStore();
-  const terminalSize = useContext(TerminalSizeContext);
-  const chromeWidth =
-    terminalSize !== null && terminalSize.columns > 0
-      ? terminalSize.columns
-      : "100%";
 
   const { state, dispatch } = useComposerState({
     initialHistory: [],
@@ -306,6 +386,53 @@ export const Composer: React.FC<ComposerProps> = ({
     };
   }, [mentionDraft?.cursorInsideToken, mentionDraft?.query, session.cwd]);
 
+  const [dismissedSkillToken, setDismissedSkillToken] = useState<string | null>(
+    null,
+  );
+  const [skillMentionItems, setSkillMentionItems] = useState<
+    readonly PaletteItem[]
+  >([]);
+  const skillDraft = useMemo(
+    () => readSkillMentionDraft(state.value, state.cursor),
+    [state.value, state.cursor],
+  );
+  const skillTokenKey = skillDraft
+    ? `${skillDraft.replaceStart}:${skillDraft.replaceEnd}:${skillDraft.query}`
+    : null;
+  const skillMatches = useMemo(
+    () => (skillDraft ? fuzzyMatch(skillMentionItems, skillDraft.query) : []),
+    [skillDraft, skillMentionItems],
+  );
+  const skillPreviewItem = skillMatches[0] ?? null;
+  const showSkillPalette =
+    Boolean(skillDraft?.cursorInsideToken) &&
+    skillTokenKey !== dismissedSkillToken &&
+    state.historySearch === null &&
+    !showSlashPalette &&
+    !showMentionPalette &&
+    skillMentionItems.length > 0;
+  useEffect(() => {
+    if (skillTokenKey === null && dismissedSkillToken !== null) {
+      setDismissedSkillToken(null);
+    }
+  }, [dismissedSkillToken, skillTokenKey]);
+  useEffect(() => {
+    if (!skillDraft?.cursorInsideToken) {
+      setSkillMentionItems([]);
+      return undefined;
+    }
+    let alive = true;
+    const timeout = setTimeout(() => {
+      void getSkillMentionItems(session.skillsManager).then((items) => {
+        if (alive) setSkillMentionItems(items);
+      });
+    }, 80);
+    return () => {
+      alive = false;
+      clearTimeout(timeout);
+    };
+  }, [session.skillsManager, skillDraft?.cursorInsideToken, skillDraft?.query]);
+
   // Hold the latest `state.value` in a ref so imperative callbacks
   // (paste-complete → appendHistory) can read the freshest buffer
   // without being recreated on every render.
@@ -380,14 +507,27 @@ export const Composer: React.FC<ComposerProps> = ({
         // Composer resilient to alternative paste-store lifetimes.
         const buffered = store.consumeBuffer();
         if (buffered.length > 0) {
-          dispatch({ type: "INSERT", text: buffered });
+          const image = normalizePastedImageSource(
+            buffered,
+            session.cwd,
+            session.home,
+          );
+          if (image) {
+            dispatch({
+              type: "ATTACH_IMAGE",
+              kind: image.kind,
+              source: image.source,
+            });
+          } else {
+            dispatch({ type: "INSERT_PASTE", text: buffered });
+          }
         }
         dispatch({ type: "PASTE_COMPLETE" });
       }
     };
     const unsubscribe = store.subscribe(onPasteEvent);
     return unsubscribe;
-  }, [store, dispatch]);
+  }, [store, dispatch, session.cwd, session.home]);
 
   // ── raw stdin → reducer bridge ─────────────────────────────────────
   useEffect(() => {
@@ -418,6 +558,22 @@ export const Composer: React.FC<ComposerProps> = ({
         if (isPrintableInputEvent(event)) {
           dispatch({ type: "HISTORY_SEARCH_APPEND", text: event.input });
         }
+        return;
+      }
+      if (
+        state.remoteImages.length > 0 &&
+        (event.key.upArrow || event.key.downArrow)
+      ) {
+        flushPendingPlainChar();
+        dispatch({
+          type: "MOVE_REMOTE_IMAGE_SELECTION",
+          delta: event.key.upArrow ? -1 : 1,
+        });
+        return;
+      }
+      if (event.key.delete && state.selectedRemoteImageIndex !== null) {
+        flushPendingPlainChar();
+        dispatch({ type: "DELETE_SELECTED_REMOTE_IMAGE" });
         return;
       }
       const isFromBracketedPaste = event.keypress.isPasted === true;
@@ -497,6 +653,8 @@ export const Composer: React.FC<ComposerProps> = ({
     flushPendingPlainChar,
     inputLocked,
     state.historySearch,
+    state.remoteImages.length,
+    state.selectedRemoteImageIndex,
     stdin,
     store,
   ]);
@@ -516,16 +674,25 @@ export const Composer: React.FC<ComposerProps> = ({
       dispatch({ type: "HISTORY_SEARCH_ACCEPT" });
       return;
     }
-    if (showSlashPalette || showMentionPalette || hasPendingTurn) return;
-    if (store.isInFlight() || effectiveValue.length === 0) {
+    if (
+      showSlashPalette ||
+      showMentionPalette ||
+      showSkillPalette ||
+      hasPendingTurn
+    ) {
+      return;
+    }
+    const hasImages =
+      state.remoteImages.length > 0 || state.localImages.length > 0;
+    if (store.isInFlight() || (effectiveValue.length === 0 && !hasImages)) {
       // While a paste is mid-stream, forward the press to the reducer
       // which will buffer it (I-69). Empty submits are quietly dropped.
       dispatch({ type: "SUBMIT" });
       return;
     }
-    const snapshot = effectiveValue;
+    const snapshot = buildSubmittedText(effectiveValue, state);
     onSubmitRef.current(snapshot);
-    dispatch({ type: "SUBMIT" });
+    dispatch({ type: "SUBMIT", historyValue: snapshot });
     if (home.length > 0) {
       const entry: HistoryEntry = {
         timestamp: Date.now(),
@@ -547,7 +714,11 @@ export const Composer: React.FC<ComposerProps> = ({
     session.cwd,
     showMentionPalette,
     showSlashPalette,
+    showSkillPalette,
     state.historySearch,
+    state.localImages,
+    state.pendingPastes,
+    state.remoteImages,
     store,
     valueAfterFlushingPendingPlainChar,
   ]);
@@ -559,8 +730,12 @@ export const Composer: React.FC<ComposerProps> = ({
       dispatch({ type: "HISTORY_SEARCH_CANCEL" });
       return;
     }
-    if (showSlashPalette || showMentionPalette) return;
-    if (effectiveValue.length > 0) {
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
+    if (
+      effectiveValue.length > 0 ||
+      state.localImages.length > 0 ||
+      state.remoteImages.length > 0
+    ) {
       dispatch({ type: "CLEAR" });
       return;
     }
@@ -574,7 +749,10 @@ export const Composer: React.FC<ComposerProps> = ({
     onCancel,
     showMentionPalette,
     showSlashPalette,
+    showSkillPalette,
     state.historySearch,
+    state.localImages.length,
+    state.remoteImages.length,
     valueAfterFlushingPendingPlainChar,
   ]);
 
@@ -588,7 +766,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const handleHistoryPrev = useCallback((): void => {
     if (inputLocked) return;
     flushPendingPlainChar();
-    if (showSlashPalette || showMentionPalette) return;
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_OLDER" });
       return;
@@ -600,13 +778,14 @@ export const Composer: React.FC<ComposerProps> = ({
     inputLocked,
     showMentionPalette,
     showSlashPalette,
+    showSkillPalette,
     state.historySearch,
   ]);
 
   const handleHistoryNext = useCallback((): void => {
     if (inputLocked) return;
     flushPendingPlainChar();
-    if (showSlashPalette || showMentionPalette) return;
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_NEWER" });
       return;
@@ -618,6 +797,7 @@ export const Composer: React.FC<ComposerProps> = ({
     inputLocked,
     showMentionPalette,
     showSlashPalette,
+    showSkillPalette,
     state.historySearch,
   ]);
 
@@ -625,7 +805,7 @@ export const Composer: React.FC<ComposerProps> = ({
     if (inputLocked) return;
     flushPendingPlainChar();
     if (activeKeybindingContext !== "chat") return;
-    if (showSlashPalette || showMentionPalette) return;
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
     dispatch({ type: "HISTORY_SEARCH_START" });
   }, [
     activeKeybindingContext,
@@ -634,6 +814,7 @@ export const Composer: React.FC<ComposerProps> = ({
     inputLocked,
     showMentionPalette,
     showSlashPalette,
+    showSkillPalette,
   ]);
 
   useKeybinding("chat:submit", handleSubmit, "chat");
@@ -758,6 +939,32 @@ export const Composer: React.FC<ComposerProps> = ({
     },
     [dispatch, mentionDraft, mentionTokenKey, state.value],
   );
+  const handleSkillSelect = useCallback(
+    (item: PaletteItem): void => {
+      if (!skillDraft) return;
+      const activeToken = state.value.slice(
+        skillDraft.replaceStart,
+        skillDraft.replaceEnd,
+      );
+      if (activeToken === item.value) {
+        if (skillTokenKey !== null) {
+          setDismissedSkillToken(skillTokenKey);
+        }
+        return;
+      }
+      setDismissedSkillToken(null);
+      const trailing = state.value.slice(skillDraft.replaceEnd);
+      const needsTrailingSpace =
+        trailing.length === 0 || !/^\s/.test(trailing);
+      dispatch({
+        type: "REPLACE_RANGE",
+        start: skillDraft.replaceStart,
+        end: skillDraft.replaceEnd,
+        text: `${item.value}${needsTrailingSpace ? " " : ""}`,
+      });
+    },
+    [dispatch, skillDraft, skillTokenKey, state.value],
+  );
 
   const activityLine = useMemo(() => {
     if (pendingRequestCount > 0) {
@@ -791,6 +998,21 @@ export const Composer: React.FC<ComposerProps> = ({
     if (historySearchLine) {
       return historySearchLine;
     }
+    if (state.remoteImages.length > 0) {
+      return {
+        color: colors.secondary,
+        text:
+          state.selectedRemoteImageIndex === null
+            ? "Remote images attached. Up/Down selects a row; Delete removes it."
+            : `Remote image ${state.selectedRemoteImageIndex + 1} selected. Delete removes it.`,
+      };
+    }
+    if (state.localImages.length > 0) {
+      return {
+        color: colors.secondary,
+        text: `${state.localImages.length} local image${state.localImages.length === 1 ? "" : "s"} attached.`,
+      };
+    }
     if (state.pasteInFlight) {
       const suffix =
         state.pendingEnters > 0
@@ -799,6 +1021,12 @@ export const Composer: React.FC<ComposerProps> = ({
       return {
         color: colors.secondary,
         text: `Paste in progress.${suffix}`,
+      };
+    }
+    if (state.pendingPastes.length > 0) {
+      return {
+        color: colors.secondary,
+        text: `${state.pendingPastes.length} large paste${state.pendingPastes.length === 1 ? "" : "s"} staged. ${submitKey} expands on submit.`,
       };
     }
     if (slashConflict) {
@@ -835,9 +1063,23 @@ export const Composer: React.FC<ComposerProps> = ({
         text: `Attach ${mentionPreviewItem.label} to the next prompt.`,
       };
     }
+    if (skillDraft && skillDraft.query.length === 0) {
+      return {
+        color: colors.primary,
+        text: `Browse skills with Up/Down. ${acceptSuggestionKey} or ${submitKey} inserts the selected $skill.`,
+      };
+    }
+    if (skillDraft && skillPreviewItem) {
+      return {
+        color: colors.primary,
+        text:
+          skillPreviewItem.description ??
+          `Invoke ${skillPreviewItem.label} for this prompt.`,
+      };
+    }
     return {
       color: colors.dim,
-      text: `Type prompt. / commands. @ files. ${formattedNewlineKeys} newline.`,
+      text: `Type prompt. / commands. @ files. $ skills. ${formattedNewlineKeys} newline.`,
     };
   }, [
     acceptSuggestionKey,
@@ -845,23 +1087,32 @@ export const Composer: React.FC<ComposerProps> = ({
     formattedNewlineKeys,
     mentionDraft,
     mentionPreviewItem,
+    skillDraft,
+    skillPreviewItem,
     slashConflict,
     slashDraft,
     slashPreviewItem,
     state.pasteInFlight,
+    state.pendingPastes,
     state.pendingEnters,
+    state.localImages,
+    state.remoteImages,
+    state.selectedRemoteImageIndex,
     state.historySearch,
     submitKey,
   ]);
   const showInstructionLine =
     state.historySearch !== null ||
+    state.localImages.length > 0 ||
+    state.remoteImages.length > 0 ||
     state.pasteInFlight ||
     slashConflict ||
     slashDraft !== null ||
-    mentionDraft !== null;
+    mentionDraft !== null ||
+    skillDraft !== null;
   const placeholderText =
     state.value.length === 0 && !showInstructionLine
-      ? `Type prompt. / commands. @ files. ${formattedNewlineKeys} newline.`
+      ? "Ask AgenC to do anything"
       : "";
 
   // ── render ─────────────────────────────────────────────────────────
@@ -869,7 +1120,7 @@ export const Composer: React.FC<ComposerProps> = ({
     <Box
       flexDirection="column"
       flexShrink={0}
-      width={chromeWidth}
+      width="100%"
     >
       {showSlashPalette ? (
         <Palette
@@ -899,34 +1150,80 @@ export const Composer: React.FC<ComposerProps> = ({
           }}
         />
       ) : null}
+      {showSkillPalette ? (
+        <Palette
+          trigger="$"
+          query={skillDraft?.query ?? ""}
+          items={skillMentionItems}
+          placement="above"
+          onSelect={handleSkillSelect}
+          onClose={() => {
+            if (skillTokenKey !== null) {
+              setDismissedSkillToken(skillTokenKey);
+            }
+          }}
+        />
+      ) : null}
       <Box
         flexDirection="column"
         flexShrink={0}
         overflowX="hidden"
-        width={chromeWidth}
+        width="100%"
       >
         {activityLine !== null ? (
           <Box
             flexDirection="row"
             overflowX="hidden"
-            width={chromeWidth}
+            width="100%"
+            height={1}
             backgroundColor={colors.surface as Color}
           >
             <Text>{"  "}</Text>
             <Text color={activityLine.color as Color} bold>
               {"• "}
             </Text>
-            <Text color={activityLine.color as Color} wrap="truncate">
-              {activityLine.text}
-            </Text>
+            <Box flexGrow={1} flexShrink={1} overflowX="hidden">
+              <Text color={activityLine.color as Color} wrap="truncate">
+                {activityLine.text}
+              </Text>
+            </Box>
           </Box>
         ) : null}
+        {state.remoteImages.map((image, index) => {
+          const selected = state.selectedRemoteImageIndex === index;
+          return (
+            <Box
+              key={`${image.placeholder}:${image.source}`}
+              flexDirection="row"
+              overflowX="hidden"
+              width="100%"
+              height={1}
+              backgroundColor={
+                (selected ? colors.surface : colors.surfaceAlt) as Color
+              }
+            >
+              <Text>{"  "}</Text>
+              <Text color={selected ? colors.primary : colors.secondary}>
+                {selected ? "> " : "  "}
+              </Text>
+              <Text color={colors.primary} bold>
+                {image.placeholder}
+              </Text>
+              <Text color={colors.dim}>{" "}</Text>
+              <Box flexGrow={1} flexShrink={1} overflowX="hidden">
+                <Text color={colors.dim} wrap="truncate">
+                  {image.source}
+                </Text>
+              </Box>
+            </Box>
+          );
+        })}
         <Box
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
           overflowX="hidden"
-          width={chromeWidth}
+          width="100%"
           backgroundColor={colors.surfaceAlt as Color}
         >
           <Text>{"  "}</Text>
@@ -939,32 +1236,31 @@ export const Composer: React.FC<ComposerProps> = ({
               cursor={state.cursor}
               promptPrefix={promptPrefix}
               cursorActive={!inputLocked}
+              placeholder={placeholderText}
             />
-            {placeholderText.length > 0 ? (
-              <Text color={colors.dim as Color} wrap="truncate">
-                {placeholderText}
-              </Text>
-            ) : null}
           </Box>
         </Box>
         {showInstructionLine ? (
           <Box
             flexDirection="row"
             overflowX="hidden"
-            width={chromeWidth}
+            width="100%"
+            height={1}
             backgroundColor={colors.surface as Color}
           >
             <Text>{"  "}</Text>
-            <Text color={statusLine.color as Color} wrap="truncate">
-              {statusLine.text}
-            </Text>
+            <Box flexGrow={1} flexShrink={1} overflowX="hidden">
+              <Text color={statusLine.color as Color} wrap="truncate">
+                {statusLine.text}
+              </Text>
+            </Box>
           </Box>
         ) : null}
         {rejected.map((m) => (
           <Box
             key={m.raw}
             overflowX="hidden"
-            width={chromeWidth}
+            width="100%"
             backgroundColor={colors.surface as Color}
           >
             <Text>{"  "}</Text>
@@ -975,13 +1271,16 @@ export const Composer: React.FC<ComposerProps> = ({
         {state.value.length > 0 && hasPendingTurn ? (
           <Box
             overflowX="hidden"
-            width={chromeWidth}
+            width="100%"
+            height={1}
             backgroundColor={colors.surface as Color}
           >
             <Text>{"  "}</Text>
-            <Text color={colors.dim}>
-              {`${cancelKey} clears the draft first. Press ${cancelKey} again on an empty composer to interrupt the turn.`}
-            </Text>
+            <Box flexGrow={1} flexShrink={1} overflowX="hidden">
+              <Text color={colors.dim} wrap="truncate">
+                {`${cancelKey} clears the draft first. Press ${cancelKey} again on an empty composer to interrupt the turn.`}
+              </Text>
+            </Box>
           </Box>
         ) : null}
       </Box>

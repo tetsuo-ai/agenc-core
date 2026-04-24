@@ -1,10 +1,14 @@
 /**
- * Pure-TypeScript port of yoga-layout (Meta's flexbox engine).
+ * OpenClaude-native TypeScript Yoga compatibility layer.
  *
- * This matches the `yoga-layout/load` API surface used by src/ink/layout/yoga.ts.
- * The upstream C++ source is ~2500 lines in CalculateLayout.cpp alone; this port
- * is a simplified single-pass flexbox implementation that covers the subset of
- * features Ink actually uses:
+ * AgenC intentionally vendors the same synchronous Yoga implementation used by
+ * OpenClaude's TUI (`src/native-ts/yoga-layout`). This avoids native/WASM
+ * install failures while preserving the layout semantics the upstream Ink stack
+ * relies on. Treat this file as a ported renderer primitive, not an AgenC-local
+ * fallback: behavior changes here must be validated with layout-contract tests.
+ *
+ * The public API matches the `yoga-layout/load` surface used by
+ * `src/tui/ink/layout/yoga.ts` and supports the TUI-critical Yoga behaviors:
  *   - flex-direction (row/column + reverse)
  *   - flex-grow / flex-shrink / flex-basis
  *   - align-items / align-self (stretch, flex-start, center, flex-end)
@@ -30,7 +34,7 @@
  * Also implemented for spec parity (not used by Ink):
  *   - baseline alignment (align-items/align-self: baseline)
  *
- * Not implemented (not used by Ink):
+ * Official Yoga features intentionally not exposed by AgenC/OpenClaude Ink:
  *   - aspect-ratio
  *   - box-sizing: content-box
  *   - RTL direction (Ink always passes Direction.LTR)

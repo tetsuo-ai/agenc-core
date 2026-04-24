@@ -42,6 +42,20 @@ export interface SlashCommandRegistryLike {
   list(): ReadonlyArray<SlashCommandLike>;
 }
 
+export interface SkillMentionServiceLike {
+  skillsForConfig(
+    input: unknown,
+    fs?: unknown,
+  ): Promise<{
+    readonly availableSkills?: ReadonlyArray<{
+      readonly name: string;
+      readonly description?: string;
+      readonly path?: string;
+      readonly scope?: string;
+    }>;
+  }>;
+}
+
 /**
  * Produce palette items from a slash-command registry.
  *
@@ -80,6 +94,34 @@ export function getSlashCommandItems(
     });
   }
   return out;
+}
+
+export async function getSkillMentionItems(
+  skillsManager: SkillMentionServiceLike | undefined,
+): Promise<PaletteItem[]> {
+  if (skillsManager === undefined) return [];
+  let outcome;
+  try {
+    outcome = await skillsManager.skillsForConfig({}, null);
+  } catch {
+    return [];
+  }
+  const skills = outcome.availableSkills ?? [];
+  return skills
+    .filter((skill) => skill.name.trim().length > 0)
+    .map((skill) => ({
+      id: `skill:${skill.name}:${skill.path ?? ""}`,
+      label: `$${skill.name}`,
+      description:
+        skill.description ??
+        (skill.scope ? `${skill.scope} skill` : "AgenC skill"),
+      keywords: [
+        skill.name,
+        skill.scope ?? "",
+        skill.path ?? "",
+      ].filter((value) => value.length > 0),
+      value: `$${skill.name}`,
+    }));
 }
 
 const PROVIDER_DISPLAY_ORDER = [

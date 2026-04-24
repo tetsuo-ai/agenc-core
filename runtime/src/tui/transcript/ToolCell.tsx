@@ -6,12 +6,20 @@
  * tool-family aware labels, in-place progress, and compact result previews.
  */
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
+import { Ansi } from "../ink/Ansi.js";
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
+import { renderHighlightedCodeLines, type HighlightedCodeLine } from "../render/code-highlight.js";
+import {
+  looksLikeDiffText,
+  renderDiffDisplayLines,
+  renderSourceMutationDisplayLines,
+} from "../render/diff-display.js";
 import { theme } from "../theme.js";
 
+import { DisplayLineBlock } from "./DisplayLineBlock.js";
 import { collapseOutput } from "./ExecCell.js";
 import { sanitizeTranscriptText } from "./sanitize.js";
 
@@ -47,6 +55,12 @@ interface ShellWriteBlockSummary {
   readonly detail: string;
 }
 
+interface NumberedCodeLine {
+  readonly prefix: string;
+  readonly text: string;
+  readonly plainText: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -60,6 +74,21 @@ function readStringField(value: unknown, keys: readonly string[]): string | unde
     }
   }
   return undefined;
+}
+
+function readRawStringField(value: unknown, keys: readonly string[]): string | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of keys) {
+    const field = value[key];
+    if (typeof field === "string") {
+      return field;
+    }
+  }
+  return undefined;
+}
+
+function isApplyPatchToolName(toolName: string | undefined): boolean {
+  return toolName !== undefined && toolName.toLowerCase().replace(/_/gu, "") === "applypatch";
 }
 
 function extractPatchTarget(toolArgs: unknown): string | undefined {
@@ -241,7 +270,7 @@ function toolTarget(
   toolArgs: unknown,
 ): string {
   if (family === "mcp" && toolName) return displayMcpName(toolName);
-  if (toolName !== undefined && toolName.toLowerCase().replace(/_/gu, "") === "applypatch") {
+  if (isApplyPatchToolName(toolName)) {
     return extractPatchTarget(toolArgs) ?? "patch";
   }
   if (family === "exec") {
@@ -358,7 +387,7 @@ function toolTitle(
   shellWriteBlocked: boolean,
 ): string {
   if (shellWriteBlocked) return "Blocked";
-  if (toolName !== undefined && toolName.toLowerCase().replace(/_/gu, "") === "applypatch") {
+  if (isApplyPatchToolName(toolName)) {
     if (isError) return "Patch Failed";
     return isComplete ? "Applied Patch" : "Applying Patch";
   }
@@ -385,6 +414,119 @@ function toolTitle(
   }
 }
 
+function patchPreviewLines(toolName: string | undefined, toolArgs: unknown) {
+  if (!isApplyPatchToolName(toolName)) return [];
+  const patch = readStringField(toolArgs, ["patch"]);
+  return patch ? renderDiffDisplayLines(patch) : [];
+}
+
+function sourceMutationPreviewLines(
+  family: ToolFamily,
+  toolName: string | undefined,
+  toolArgs: unknown,
+): ReturnType<typeof renderSourceMutationDisplayLines> {
+  if (family !== "write" && family !== "edit") return [];
+  if (isApplyPatchToolName(toolName)) return [];
+  const filePath = readStringField(toolArgs, ["path", "file_path"]);
+  if (!filePath) return [];
+  const normalized = String(toolName ?? "").toLowerCase();
+
+  if (family === "write") {
+    const content = readRawStringField(toolArgs, ["content", "text", "body"]);
+    if (content === undefined) return [];
+    const mutationKind =
+      normalized.includes("append") ? "append" : "write";
+    return renderSourceMutationDisplayLines({
+      filePath,
+      mutationKind,
+      afterText: content,
+    });
+  }
+
+  const beforeText = readRawStringField(toolArgs, [
+    "old_string",
+    "oldString",
+    "before",
+  ]);
+  const afterText = readRawStringField(toolArgs, [
+    "new_string",
+    "newString",
+    "after",
+  ]);
+  if (beforeText === undefined || afterText === undefined) return [];
+  return renderSourceMutationDisplayLines({
+    filePath,
+    mutationKind: "replace",
+    beforeText,
+    afterText,
+  });
+}
+
+function resultDiffLines(value: string): ReturnType<typeof renderDiffDisplayLines> {
+  return looksLikeDiffText(value) ? renderDiffDisplayLines(value) : [];
+}
+
+function readFilePathForHighlight(
+  family: ToolFamily,
+  target: string,
+): string | null {
+  if (family !== "read" || target.length === 0) return null;
+  if (!/\.[A-Za-z0-9]+(?:$|[#?:])/u.test(target)) return null;
+  return target;
+}
+
+function splitNumberedCodeLine(line: string): NumberedCodeLine {
+  const match = /^(\s*\d+(?:→|:|\|)\s?)(.*)$/u.exec(line);
+  if (!match) {
+    return { prefix: "", text: line, plainText: line };
+  }
+  return {
+    prefix: match[1] ?? "",
+    text: match[2] ?? "",
+    plainText: match[2] ?? "",
+  };
+}
+
+function useHighlightedNumberedCode(
+  content: string,
+  filePath: string | null,
+): readonly NumberedCodeLine[] | null {
+  const [highlighted, setHighlighted] = useState<readonly NumberedCodeLine[] | null>(null);
+
+  useEffect(() => {
+    if (filePath === null || content.length === 0 || content.length > 50_000) {
+      setHighlighted(null);
+      return undefined;
+    }
+    let cancelled = false;
+    const parsed = content.split("\n").map(splitNumberedCodeLine);
+    const code = parsed.map((line) => line.plainText).join("\n");
+    void renderHighlightedCodeLines({
+      code,
+      filePath,
+      width: 10_000,
+    }).then((lines: readonly HighlightedCodeLine[] | null) => {
+      if (cancelled) return;
+      if (lines === null || lines.length !== parsed.length) {
+        setHighlighted(null);
+        return;
+      }
+      setHighlighted(
+        lines.map((line, index) => ({
+          prefix: parsed[index]?.prefix ?? "",
+          text: line.text,
+          plainText: line.plainText,
+        })),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [content, filePath]);
+
+  return highlighted;
+}
+
 export const ToolCell: React.FC<ToolCellProps> = ({
   toolName,
   toolArgs,
@@ -409,6 +551,36 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     () => summarizeShellWriteBlock(result),
     [result],
   );
+  const patchLines = useMemo(
+    () => patchPreviewLines(toolName, toolArgs),
+    [toolArgs, toolName],
+  );
+  const mutationLines = useMemo(
+    () =>
+      patchLines.length > 0
+        ? []
+        : sourceMutationPreviewLines(
+            presentation.family,
+            toolName,
+            toolArgs,
+          ),
+    [patchLines.length, presentation.family, toolArgs, toolName],
+  );
+  const diffDetailLines = useMemo(
+    () =>
+      shellWriteBlock === null && normalizedResult.length > 0
+        ? resultDiffLines(normalizedResult)
+        : [],
+    [normalizedResult, shellWriteBlock],
+  );
+  const highlightedReadFilePath = readFilePathForHighlight(
+    presentation.family,
+    presentation.target,
+  );
+  const highlightedReadLines = useHighlightedNumberedCode(
+    normalizedResult,
+    highlightedReadFilePath,
+  );
 
   const statusColor = isError
     ? theme.colors.error
@@ -426,7 +598,10 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   let detail = "";
   if (shellWriteBlock) {
     detail = shellWriteBlock.detail;
-  } else if (normalizedResult.length > 0) {
+  } else if (
+    normalizedResult.length > 0 &&
+    !(mutationLines.length > 0 && presentation.family === "write" && !isError)
+  ) {
     detail = normalizedResult;
   } else if (normalizedProgress.length > 0) {
     detail = normalizedProgress;
@@ -447,7 +622,31 @@ export const ToolCell: React.FC<ToolCellProps> = ({
         {target.length > 0 ? <Text dim>{`(${target})`}</Text> : null}
         {showArgs ? <Text dim>{` ${presentation.argsSummary}`}</Text> : null}
       </Box>
-      {detail.length > 0
+      {patchLines.length > 0 ? (
+        <Box flexDirection="column" marginLeft={2}>
+          <DisplayLineBlock lines={patchLines} />
+        </Box>
+      ) : null}
+      {mutationLines.length > 0 ? (
+        <Box flexDirection="column" marginLeft={2}>
+          <DisplayLineBlock lines={mutationLines} />
+        </Box>
+      ) : null}
+      {diffDetailLines.length > 0 ? (
+        <Box flexDirection="column" marginLeft={2}>
+          <DisplayLineBlock lines={diffDetailLines} />
+        </Box>
+      ) : highlightedReadLines !== null ? (
+        <Box flexDirection="column">
+          {highlightedReadLines.map((line, index) => (
+            <Box key={`read-code-${index}`} flexDirection="row">
+              <Text dim>{index === 0 ? "  ⎿  " : "     "}</Text>
+              {line.prefix.length > 0 ? <Text dim>{line.prefix}</Text> : null}
+              <Ansi>{line.text}</Ansi>
+            </Box>
+          ))}
+        </Box>
+      ) : detail.length > 0
         ? renderIndentedText(
             detail,
             presentation.preserveResultLines,

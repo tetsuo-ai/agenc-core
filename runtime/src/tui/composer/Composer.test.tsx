@@ -236,12 +236,128 @@ describe("Composer", () => {
       .filter((row) => row.trim().length > 0);
     const visible = rows.join("\n");
 
-    expect(visible).toContain("Type prompt");
+    expect(visible).toContain("Ask AgenC to do anything");
+    expect(visible).not.toContain("Ctrl+J");
     expect(visible).not.toContain("╮");
     expect(visible).not.toContain("╯");
     expect(visible).not.toContain("│");
     expect(Math.max(...rows.map((row) => row.length))).toBeLessThanOrEqual(32);
+    expect(rows.filter((row) => row.trim().length === 1)).toHaveLength(0);
 
+    unmount();
+  });
+
+  test("renders cursor through ANSI parser and declares its terminal position", async () => {
+    const emitter = new EventEmitter();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Box width="100%">
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={() => undefined}
+            pasteStore={new PasteStore()}
+          />
+        </Box>,
+      ),
+      { columns: 48 },
+    );
+
+    const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+      | {
+          cursorDeclaration?: {
+            readonly relativeX: number;
+            readonly relativeY: number;
+          } | null;
+        }
+      | undefined;
+
+    expect(latestFrameText(stdout)).toContain("Ask AgenC");
+    expect(latestFrameText(stdout)).not.toContain("\u258F");
+    expect(instance?.cursorDeclaration).toMatchObject({
+      relativeX: 0,
+      relativeY: 0,
+    });
+
+    await typeText(emitter, "A ");
+    await sleep(20);
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("A");
+    expect(frame).not.toContain("\u258F");
+    expect(instance?.cursorDeclaration).toMatchObject({
+      relativeX: 2,
+      relativeY: 0,
+    });
+    unmount();
+  });
+
+  test("opens Codex-style skill mention palette from live skills service", async () => {
+    const emitter = new EventEmitter();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Box width="100%">
+          <Composer
+            session={{
+              cwd: tmpHome,
+              home: tmpHome,
+              skillsManager: {
+                async skillsForConfig() {
+                  return {
+                    availableSkills: [
+                      {
+                        name: "debug-investigation",
+                        description: "Debug a regression",
+                        path: join(tmpHome, "skills/debug/SKILL.md"),
+                        scope: "project",
+                      },
+                    ],
+                  };
+                },
+              },
+            }}
+            onSubmit={() => undefined}
+            pasteStore={new PasteStore()}
+          />
+        </Box>,
+      ),
+      { columns: 72 },
+    );
+
+    await typeText(emitter, "$", 20);
+    await sleep(120);
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("$debug-investigation");
+    expect(frame).toContain("Debug a regression");
+    unmount();
+  });
+
+  test("renders pasted remote image URLs as attachment rows", async () => {
+    const emitter = new EventEmitter();
+    const store = new PasteStore();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Box width="100%">
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={() => undefined}
+            pasteStore={store}
+          />
+        </Box>,
+      ),
+      { columns: 84 },
+    );
+
+    store.pushChunk("https://example.com/cat.png");
+    await sleep(550);
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("[Image #1]");
+    expect(frame).toContain("https://example.com/cat.png");
+    expect(frame).toContain("Remote image 1 selected");
     unmount();
   });
 
@@ -276,7 +392,7 @@ describe("Composer", () => {
     const frame = latestFrameText(stdout);
     expect(frame).toContain("Working (");
     expect(frame).toContain("esc to interrupt");
-    expect(frame).toContain("Type prompt");
+    expect(frame).toContain("Ask AgenC to do anything");
     expect(frame).not.toContain("bypass on");
     unmount();
   });

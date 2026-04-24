@@ -152,6 +152,41 @@ function isOperationMarker(line: string): boolean {
   );
 }
 
+function isPatchBoundaryLine(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed.startsWith("*** Add File: ") ||
+    trimmed.startsWith("*** Delete File: ") ||
+    trimmed.startsWith("*** Update File: ") ||
+    trimmed === "*** End Patch"
+  );
+}
+
+function isPlusPrefixedPatchBoundary(line: string): boolean {
+  return isPatchBoundaryLine(line.startsWith("+") ? line.slice(1) : line);
+}
+
+function hasEndPatchLine(patch: string): boolean {
+  return patch.split("\n").some((line) => line.trim() === "*** End Patch");
+}
+
+function repairPlusPrefixedPatchRemainder(patch: string): string {
+  const lines = patch.split("\n");
+  if (!lines.some((line) => line.startsWith("+") && isPlusPrefixedPatchBoundary(line))) {
+    return patch;
+  }
+
+  const repaired: string[] = [];
+  let repairRemainder = false;
+  for (const line of lines) {
+    if (!repairRemainder && line.startsWith("+") && isPlusPrefixedPatchBoundary(line)) {
+      repairRemainder = true;
+    }
+    repaired.push(repairRemainder && line.startsWith("+") ? line.slice(1) : line);
+  }
+  return repaired.join("\n");
+}
+
 function normalizeAddFileLines(patch: string): string {
   const lines = patch.split("\n");
   const normalized: string[] = [];
@@ -180,10 +215,13 @@ function normalizeAddFileLines(patch: string): string {
 }
 
 function normalizePatchEnvelope(patch: string): string {
-  let normalized = patch.replace(/\r\n?/gu, "\n").trimEnd();
+  let normalized = repairPlusPrefixedPatchRemainder(
+    patch.replace(/\r\n?/gu, "\n").trimEnd(),
+  );
+  normalized = normalized.replace(/^\s*(?=\*\*\* Begin Patch(?:\n|$))/u, "");
   if (
-    !normalized.includes("*** End Patch") &&
-    normalized.startsWith("*** Begin Patch\n") &&
+    !hasEndPatchLine(normalized) &&
+    normalized.startsWith("*** Begin Patch") &&
     /^\*\*\* (Add File|Update File|Delete File): /mu.test(normalized)
   ) {
     normalized = `${normalized}\n*** End Patch`;
@@ -478,7 +516,7 @@ function computeReplacements(
     }
 
     if (chunk.oldLines.length === 0) {
-      replacements.push([originalLines.length, 0, [...chunk.newLines]]);
+      replacements.push([lineIndex, 0, [...chunk.newLines]]);
       continue;
     }
 

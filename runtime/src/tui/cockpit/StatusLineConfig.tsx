@@ -30,10 +30,9 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { promisify } from "node:util";
-import React, { useContext, useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 import Box from "../ink/components/Box.js";
-import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import type { Color } from "../ink/styles.js";
 import type { PermissionMode } from "../../permissions/types.js";
@@ -367,11 +366,6 @@ export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
       value: "",
     })),
   );
-  const terminalSize = useContext(TerminalSizeContext);
-  const chromeWidth =
-    terminalSize !== null && terminalSize.columns > 0
-      ? terminalSize.columns
-      : "100%";
 
   useEffect(() => {
     let cancelled = false;
@@ -396,9 +390,10 @@ export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
   return (
     <Box
       flexDirection="row"
-      flexWrap="wrap"
+      flexWrap="nowrap"
       overflowX="hidden"
-      width={chromeWidth}
+      width="100%"
+      height={1}
       backgroundColor={theme.colors.surface as Color}
     >
       <Text>{"  "}</Text>
