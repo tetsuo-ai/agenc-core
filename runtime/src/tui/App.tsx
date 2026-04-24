@@ -44,6 +44,7 @@ import React, {
 import Box from "./ink/components/Box.js";
 import { AlternateScreen } from "./ink/components/AlternateScreen.js";
 import StdinContext from "./ink/components/StdinContext.js";
+import { isMouseTrackingEnabled } from "./ink/vendored/fullscreen.js";
 
 import {
   AgenCAppStateProvider,
@@ -566,7 +567,7 @@ export const App: React.FC<AppProps> = ({
   initialPrompt,
 }) => {
   return (
-    <AlternateScreen>
+    <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
       <AgenCAppStateProvider session={session} configStore={configStore}>
         <KeybindingsFromStdin {...(bindings ? { bindings } : {})}>
           <OverlayProvider>

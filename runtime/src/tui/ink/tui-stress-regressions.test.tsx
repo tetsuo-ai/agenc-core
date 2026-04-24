@@ -423,6 +423,53 @@ describe("TUI stress regressions", () => {
     }
   });
 
+  test("selection dragging over long history coalesces repaint work", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-tui-selection-drag-"));
+    const emitter = new EventEmitter();
+    const frames: FrameEvent[] = [];
+    let controls: StressControls | null = null;
+
+    const { stdout, unmount } = await mount(
+      <StressSurface
+        cwd={cwd}
+        emitter={emitter}
+        initialRowCount={700}
+        onReady={(next) => {
+          controls = next;
+        }}
+      />,
+      {
+        rows: 24,
+        onFrame: (event) => frames.push(event),
+      },
+    );
+
+    try {
+      await waitFor(() => controls !== null);
+      await waitFor(() => latestFrameText(stdout).includes("stream"));
+
+      const ink = getInk(stdout);
+      ink.handleMultiClick(2, 4, 2);
+      await waitFor(() => ink.hasTextSelection());
+      frames.length = 0;
+
+      for (let i = 0; i < 160; i += 1) {
+        ink.handleSelectionDrag(4 + (i % 60), 5 + (i % 12));
+      }
+
+      expect(frames.length).toBe(0);
+      await sleep(80);
+
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.length).toBeLessThan(12);
+      expect(
+        Math.max(...frames.map((frame) => frame.durationMs)),
+      ).toBeLessThan(1_000);
+    } finally {
+      unmount();
+    }
+  });
+
   test("onInputActivity fires from the real stdin parser without extra stream listeners", async () => {
     function InputProbe(): React.ReactElement {
       const stdin = useContext(StdinContext);

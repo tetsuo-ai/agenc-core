@@ -76,6 +76,22 @@ export type Options = {
   onFrame?: (event: FrameEvent) => void;
   onInputActivity?: () => void;
 };
+
+type SelectionPointSnapshot = { col: number; row: number } | null;
+type SelectionSpanSnapshot = {
+  lo: { col: number; row: number };
+  hi: { col: number; row: number };
+  kind: 'word' | 'line';
+} | null;
+
+function sameSelectionEndpoints(previous: SelectionPointSnapshot, next: SelectionPointSnapshot): boolean {
+  return previous?.col === next?.col && previous?.row === next?.row && (previous === null) === (next === null);
+}
+
+function sameSelectionSpan(previous: SelectionSpanSnapshot, next: SelectionState['anchorSpan']): boolean {
+  return previous?.kind === next?.kind && previous?.lo.col === next?.lo.col && previous?.lo.row === next?.lo.row && previous?.hi.col === next?.hi.col && previous?.hi.row === next?.hi.row && (previous === null) === (next === null);
+}
+
 export default class Ink {
   private readonly log: LogUpdate;
   private readonly terminal: Terminal;
@@ -1269,8 +1285,12 @@ export default class Ink {
     this.selectionListeners.add(cb);
     return () => this.selectionListeners.delete(cb);
   }
-  private notifySelectionChange(): void {
-    this.onRender();
+  private notifySelectionChange(render: 'immediate' | 'scheduled' = 'immediate'): void {
+    if (render === 'immediate') {
+      this.onRender();
+    } else {
+      this.scheduleRender();
+    }
     for (const cb of this.selectionListeners) cb();
   }
 
@@ -1372,12 +1392,22 @@ export default class Ink {
   handleSelectionDrag(col: number, row: number): void {
     if (!this.altScreenActive) return;
     const sel = this.selection;
+    const beforeAnchor = sel.anchor ? { ...sel.anchor } : null;
+    const beforeFocus = sel.focus ? { ...sel.focus } : null;
+    const beforeSpan = sel.anchorSpan ? {
+      lo: { ...sel.anchorSpan.lo },
+      hi: { ...sel.anchorSpan.hi },
+      kind: sel.anchorSpan.kind
+    } : null;
     if (sel.anchorSpan) {
       extendSelection(sel, this.frontFrame.screen, col, row);
     } else {
       updateSelection(sel, col, row);
     }
-    this.notifySelectionChange();
+    if (sameSelectionEndpoints(beforeAnchor, sel.anchor) && sameSelectionEndpoints(beforeFocus, sel.focus) && sameSelectionSpan(beforeSpan, sel.anchorSpan)) {
+      return;
+    }
+    this.notifySelectionChange('scheduled');
   }
 
   // Methods to properly suspend stdin for external editor usage

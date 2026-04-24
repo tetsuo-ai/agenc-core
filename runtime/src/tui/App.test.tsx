@@ -13,7 +13,11 @@ import type { DOMElement } from "./ink/dom.js";
 import { InputEvent } from "./ink/events/input-event.js";
 import { createRoot } from "./ink/root.js";
 import instances from "./ink/instances.js";
-import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from "./ink/termio/dec.js";
+import {
+  ENABLE_MOUSE_TRACKING,
+  ENTER_ALT_SCREEN,
+  EXIT_ALT_SCREEN,
+} from "./ink/termio/dec.js";
 import { App, readPickerCommandIntent } from "./App.js";
 import type { ConfigStoreLike, SessionLike } from "./state/AppState.js";
 import {
@@ -307,6 +311,34 @@ describe("App", () => {
     unmount();
     const unmountedOutput = collectStream(stdout);
     expect(unmountedOutput).toContain(EXIT_ALT_SCREEN);
+  });
+
+  test("honors AGENC_DISABLE_MOUSE while keeping alternate screen active", async () => {
+    const previous = process.env.AGENC_DISABLE_MOUSE;
+    process.env.AGENC_DISABLE_MOUSE = "1";
+    const session = createFakeSession("default");
+
+    try {
+      const { stdout, unmount } = await mount(
+        <App
+          session={session}
+          configStore={FAKE_CONFIG_STORE}
+          model="grok-code-fast-1"
+        />,
+      );
+
+      const mountedOutput = collectStream(stdout);
+      expect(mountedOutput).toContain(ENTER_ALT_SCREEN);
+      expect(mountedOutput).not.toContain(ENABLE_MOUSE_TRACKING);
+
+      unmount();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.AGENC_DISABLE_MOUSE;
+      } else {
+        process.env.AGENC_DISABLE_MOUSE = previous;
+      }
+    }
   });
 
   test("AgenCAppStateProvider propagates mode changes to consumers", async () => {
