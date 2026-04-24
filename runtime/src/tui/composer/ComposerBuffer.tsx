@@ -70,16 +70,18 @@ export function ComposerBuffer({
         placeholder !== undefined &&
         placeholder.length > 0
       ) {
-        // Render only the dim placeholder — no in-band SGR-7 inverted cell.
-        // The native terminal cursor (declared above via useDeclaredCursor)
-        // already sits at column 0 on top of the placeholder's first char,
-        // so a second in-band glyph is redundant. More importantly, an
-        // inverted cell here gets stranded when the user types: the diff
-        // path between this frame and the next (cursorModel.render output)
-        // does not reliably clear column 0's inverted style in AgenC's Ink
-        // renderer, leaving a "ghost cursor" block at the start of the row.
-        // Dropping the in-band inversion eliminates that vector entirely.
-        return dim(placeholder);
+        // Match openclaude/src/hooks/renderPlaceholder.ts: invert the FIRST
+        // CHARACTER of the placeholder rather than prepending an extra
+        // inverted-space cell. Prepending a separate cell shifts the
+        // placeholder one column right of where the declared cursor lands,
+        // which the user sees as two adjacent highlighted blocks. Inverting
+        // the first char keeps the cursor cell co-located with that char so
+        // the in-band glyph and the native cursor overlap at column 0.
+        const head = placeholder[0] ?? CURSOR_CELL;
+        const tail = placeholder.slice(1);
+        return tail.length > 0
+          ? renderCursorCell(head) + dim(tail)
+          : renderCursorCell(head);
       }
       return cursorModel.render(CURSOR_CELL, "", renderCursorCell, ghostHint);
     },
