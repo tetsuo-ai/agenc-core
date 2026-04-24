@@ -479,9 +479,13 @@ async function runPreSamplingCompact(
 
 function getTotalTokenUsage(session: Session): number {
   const peek = (session.state as unknown as {
-    unsafePeek?: () => { totalTokenUsage?: number };
+    unsafePeek?: () => {
+      totalTokenUsage?: number | { totalTokens?: number };
+    };
   }).unsafePeek?.();
-  return peek?.totalTokenUsage ?? 0;
+  const field = peek?.totalTokenUsage;
+  if (typeof field === "number") return field;
+  return field?.totalTokens ?? 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1374,11 +1378,11 @@ export async function* runTurnKernel(
     //     when `toolUseBlocks.length > 0`; cleared by execute-tools after
     //     dispatch, so we must evaluate BEFORE execute-tools runs below).
     //   has_pending_input     ← `session.hasPendingInput()` (mailbox queue).
-    //   total_usage_tokens    ← `getTotalTokenUsage(session)` falling back
-    //     to this turn's cumulative `usage` when the session-level field
-    //     is not yet populated (AgenC's live writer is not yet wired for
-    //     every provider; the per-turn cumulative is the best available
-    //     proxy and matches codex's "post sampling token usage" read).
+    //   total_usage_tokens    ← `getTotalTokenUsage(session)` reads the
+    //     cross-turn cumulative `SessionState.totalTokenUsage` maintained
+    //     by the stream-model writer (phases/stream-model.ts) after every
+    //     provider response, mirroring codex
+    //     `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
     //   auto_compact_limit    ← `ctx.modelInfo.autoCompactTokenLimit`.
     //
     // Provider continuity reset (codex `client_session.reset_websocket_session()`):
@@ -1400,8 +1404,7 @@ export async function* runTurnKernel(
     const autoCompactLimit =
       (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
         .autoCompactTokenLimit ?? Number.POSITIVE_INFINITY;
-    const sessionTotalTokens = getTotalTokenUsage(session);
-    const totalUsageTokens = Math.max(sessionTotalTokens, usage.totalTokens);
+    const totalUsageTokens = getTotalTokenUsage(session);
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
     if (tokenLimitReached && needsFollowUpForCompact) {

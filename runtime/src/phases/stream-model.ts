@@ -521,6 +521,35 @@ export async function streamModel(
       completionTokens: response.usage.completionTokens,
       totalTokens: response.usage.totalTokens,
     };
+    // Cross-turn token accumulator — codex
+    // `Session::update_token_info_from_usage` (session/mod.rs:2739-2749)
+    // plus `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
+    // Runs under the session state lock so the mid-turn compact gate in
+    // run-turn.ts sees a consistent read even when a concurrent
+    // recovery path also touches state. Providers that don't surface
+    // cache/reasoning fields contribute 0 to those slots, so missing
+    // breakdowns don't leak as phantom tokens.
+    const last = response.usage;
+    const cached = (last as { cachedInputTokens?: number })
+      .cachedInputTokens ?? 0;
+    const reasoning = (last as { reasoningOutputTokens?: number })
+      .reasoningOutputTokens ?? 0;
+    await session.state.with((s) => {
+      const prev = s.totalTokenUsage ?? {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        cachedInputTokens: 0,
+        reasoningOutputTokens: 0,
+      };
+      s.totalTokenUsage = {
+        promptTokens: prev.promptTokens + last.promptTokens,
+        completionTokens: prev.completionTokens + last.completionTokens,
+        totalTokens: prev.totalTokens + last.totalTokens,
+        cachedInputTokens: prev.cachedInputTokens + cached,
+        reasoningOutputTokens: prev.reasoningOutputTokens + reasoning,
+      };
+    });
   }
 
   state.messages.push({

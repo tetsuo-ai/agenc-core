@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { EventLog, type Event } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import { AsyncLock } from "../utils/async-lock.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { buildInitialTurnState } from "../session/turn-state.js";
 import { BudgetTracker } from "../llm/token-budget.js";
@@ -154,6 +155,11 @@ function mkSession(
     emit: (event: Event) => {
       eventLog.emit(event);
     },
+    // Minimal SessionState for the cross-turn accumulator writer in
+    // streamModel. Only the fields the writer touches need to exist;
+    // the rest of the SessionState shape is irrelevant for these
+    // stream-level unit tests.
+    state: new AsyncLock<{ totalTokenUsage?: unknown }>({}),
   } as unknown as Session;
   return { session, events };
 }
@@ -539,5 +545,214 @@ describe("streamModel — token budget boundary semantics", () => {
     );
 
     expect(state.pendingBudgetDecision).toBeUndefined();
+  });
+});
+
+describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
+  // Regression guard. `run-turn.ts` reads `SessionState.totalTokenUsage`
+  // via `getTotalTokenUsage(session)` to drive the mid-turn compact gate
+  // (`total_usage_tokens >= auto_compact_limit`). Upstream codex
+  // maintains a real cross-turn accumulator
+  // (`Session::update_token_info_from_usage`,
+  // `TokenUsageInfo::append_last_usage` at protocol.rs:2294-2297); AgenC
+  // used to read an unwritten field and papered over the miss with
+  // `Math.max(sessionTotal, usage.totalTokens)` in the mid-turn arm. The
+  // writer now lives in `streamModel` right after the per-turn usage
+  // stash on TurnState — every provider-reported stream completion
+  // element-wise accumulates into `state.totalTokenUsage` under the
+  // session state lock.
+
+  type StatePeek = Readonly<{
+    totalTokenUsage?: {
+      readonly promptTokens: number;
+      readonly completionTokens: number;
+      readonly totalTokens: number;
+      readonly cachedInputTokens: number;
+      readonly reasoningOutputTokens: number;
+    };
+  }>;
+
+  function peek(session: Session): StatePeek {
+    return (
+      session as unknown as {
+        state: { unsafePeek: () => StatePeek };
+      }
+    ).state.unsafePeek();
+  }
+
+  test("compounds successive provider usage element-wise into session.state.totalTokenUsage", async () => {
+    const ctx = mkCtx("chat");
+    let call = 0;
+    const provider = mkProvider(async () => {
+      call += 1;
+      // Two distinct samples so every slot has to accumulate, not just
+      // totalTokens. Provider may surface cache/reasoning fields as
+      // structural extras alongside the LLMUsage base contract; the
+      // writer reads those optimistically so the accumulator stays
+      // aligned with codex's 5-field TokenUsage shape.
+      if (call === 1) {
+        return {
+          content: "first",
+          toolCalls: [],
+          usage: {
+            promptTokens: 100,
+            completionTokens: 200,
+            totalTokens: 300,
+            cachedInputTokens: 10,
+            reasoningOutputTokens: 5,
+          } as unknown as {
+            promptTokens: number;
+            completionTokens: number;
+            totalTokens: number;
+          },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      }
+      return {
+        content: "second",
+        toolCalls: [],
+        usage: {
+          promptTokens: 50,
+          completionTokens: 75,
+          totalTokens: 125,
+          cachedInputTokens: 3,
+          reasoningOutputTokens: 2,
+        } as unknown as {
+          promptTokens: number;
+          completionTokens: number;
+          totalTokens: number;
+        },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+
+    const state1 = mkState(ctx);
+    await streamModel(
+      state1,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "one" }]),
+    );
+    expect(peek(session).totalTokenUsage).toEqual({
+      promptTokens: 100,
+      completionTokens: 200,
+      totalTokens: 300,
+      cachedInputTokens: 10,
+      reasoningOutputTokens: 5,
+    });
+
+    // Second call — a distinct TurnState to model a continuation
+    // iteration that would otherwise reset per-turn counters. The
+    // session-level accumulator MUST keep adding, not reset.
+    const state2 = mkState(ctx);
+    await streamModel(
+      state2,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "two" }]),
+    );
+    expect(peek(session).totalTokenUsage).toEqual({
+      promptTokens: 150,
+      completionTokens: 275,
+      totalTokens: 425,
+      cachedInputTokens: 13,
+      reasoningOutputTokens: 7,
+    });
+  });
+
+  test("survives a non-compacting turn — a third call keeps adding onto the prior two", async () => {
+    // Regression guard against a naive reset-per-turn implementation.
+    // Codex's accumulator is additive across the whole session; the
+    // only codex reset paths are `recompute_token_usage` (after
+    // compaction) and `fill_to_context_window`, neither of which runs
+    // on a plain non-compacting turn.
+    const ctx = mkCtx("chat");
+    const provider = mkProvider(async () => {
+      return {
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+
+    for (let i = 0; i < 3; i += 1) {
+      const state = mkState(ctx);
+      // eslint-disable-next-line no-await-in-loop
+      await streamModel(
+        state,
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "turn" }]),
+      );
+    }
+
+    expect(peek(session).totalTokenUsage).toEqual({
+      promptTokens: 30,
+      completionTokens: 60,
+      totalTokens: 90,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+    });
+  });
+
+  test("provider omitting usage is a no-op, not a zero-write — accumulator stays intact", async () => {
+    // Task rule: "Providers either emit usage or they don't; handle the
+    // undefined case as a no-op write, not a zero write (zero would
+    // pollute the accumulator)." Guard that contract here — the first
+    // sample seeds, the second (no usage) leaves the accumulator alone.
+    const ctx = mkCtx("chat");
+    let call = 0;
+    const provider = mkProvider(async () => {
+      call += 1;
+      if (call === 1) {
+        return {
+          content: "first",
+          toolCalls: [],
+          usage: { promptTokens: 7, completionTokens: 11, totalTokens: 18 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      }
+      return {
+        content: "second",
+        toolCalls: [],
+        // No usage field — provider truly reported nothing.
+        model: "test-model",
+        finishReason: "stop",
+      } as unknown as {
+        content: string;
+        toolCalls: unknown[];
+        model: string;
+        finishReason: string;
+      };
+    });
+    const { session } = mkSession(provider);
+
+    await streamModel(
+      mkState(ctx),
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "one" }]),
+    );
+    await streamModel(
+      mkState(ctx),
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "two" }]),
+    );
+
+    expect(peek(session).totalTokenUsage).toEqual({
+      promptTokens: 7,
+      completionTokens: 11,
+      totalTokens: 18,
+      cachedInputTokens: 0,
+      reasoningOutputTokens: 0,
+    });
   });
 });

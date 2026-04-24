@@ -860,3 +860,234 @@ describe("runTurn — mid-turn compaction (codex turn.rs:493-508)", () => {
     expect(last.error?.message ?? "").toContain("mid_turn_compact_skipped");
   });
 });
+
+describe("runTurn — mid-turn compact fires on ACCUMULATED cross-turn usage", () => {
+  // Regression guard for the real bug. Pre-fix: the mid-turn gate read
+  // an unwritten `SessionState.totalTokenUsage` field, so it could only
+  // trigger when a single stream already overshot the limit; papered
+  // over by `Math.max(sessionTotal, usage.totalTokens)`. Post-fix: the
+  // stream-model writer element-wise accumulates provider-reported
+  // usage into the session state lock on every stream completion, so
+  // three sub-threshold turns in a row can push the accumulator past
+  // the limit and correctly fire the mid-turn compact dispatcher.
+
+  afterEach(() => {
+    setAutoCompactImplForTests(null);
+  });
+
+  function mkLiveStateSession(opts: {
+    readonly provider: LLMProvider;
+    readonly registry: ToolRegistry;
+  }): { session: Session; events: Event[] } {
+    // Same shape as the suite's `mkSession` fixture above, but WITHOUT
+    // the `session.state` override. The real `AsyncLock<SessionState>`
+    // that `new Session(...)` installs is kept intact so the writer in
+    // `streamModel` can actually compound token usage across turns.
+    const events: Event[] = [];
+    const state = {
+      sessionConfiguration: mkSessionConfiguration(),
+      history: [] as unknown[],
+    };
+    const services: SessionServices = {
+      mcpConnectionManager: {
+        setApprovalPolicy: () => {},
+        setSandboxPolicy: () => {},
+        requiredStartupFailures: async () => [],
+      },
+      mcpStartupCancellationToken: {
+        cancel: () => {},
+        isCancelled: () => false,
+      },
+      provider: opts.provider,
+      registry: opts.registry,
+      hooks: {
+        executeStop: async () => ({}),
+      },
+    } as unknown as SessionServices;
+    const session = new Session({
+      conversationId: "conv-mid-accum",
+      services,
+      initialState: state as unknown as SessionOpts["initialState"],
+      features: mkFeatures(),
+      jsRepl: { id: "repl-mid-accum" },
+      config: mkConfig(),
+      modelInfo: mkModelInfo(),
+      eventQueue: new AsyncQueue<Event>(),
+    });
+    session.eventLog.subscribe((event) => {
+      events.push(event);
+    });
+    return { session, events };
+  }
+
+  test("three sub-threshold turns push accumulator past the auto-compact limit; mid-turn dispatcher fires on the crossing turn", async () => {
+    const ctx = mkCtx();
+    // Each sample below reports 400 totalTokens. Limit = 1000.
+    // Turn 1 writes 400 (below). Turn 2 writes 400 → cumulative 800 (below).
+    // Turn 3 writes 400 → cumulative 1200 (>= 1000), fires mid-turn compact
+    // because the same stream also returned a tool call so
+    // needsFollowUp=true.
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
+      .autoCompactTokenLimit = 1000;
+
+    let callIdx = 0;
+    const provider: LLMProvider = {
+      name: "accum-provider",
+      chat: async () => ({
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async (
+        _messages: LLMMessage[],
+        _onChunk: StreamProgressCallback,
+      ): Promise<LLMResponse> => {
+        callIdx += 1;
+        if (callIdx < 3) {
+          // Turns 1 and 2: clean assistant completion, no tool calls —
+          // the turn ends without entering the mid-turn arm. Each
+          // stream writes 400 tokens into the accumulator.
+          return {
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 200, completionTokens: 200, totalTokens: 400 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        }
+        if (callIdx === 3) {
+          // Turn 3's FIRST stream: 400 more tokens (cumulative 1200),
+          // plus a tool call so `needsFollowUp=true`. This is the turn
+          // where the mid-turn gate must fire.
+          return {
+            content: "calling tool",
+            toolCalls: [mkToolCall()],
+            usage: { promptTokens: 200, completionTokens: 200, totalTokens: 400 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        // Post-compact continuation: clean stop so the turn can finish.
+        return {
+          content: "done",
+          toolCalls: [],
+          usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+      healthCheck: async () => true,
+    };
+
+    const dispatcherCalls: Array<unknown[]> = [];
+    const fakeImpl: AutoCompactImpl = async (...args) => {
+      dispatcherCalls.push(args);
+      return {
+        wasCompacted: true,
+        compactionResult: {
+          boundaryMarker: {
+            role: "system",
+            content: "<agenc-compact-boundary>",
+          },
+          summaryMessages: [{ role: "assistant", content: "SUMMARY" }],
+          messagesToKeep: [],
+          attachments: [],
+          hookResults: [],
+        },
+      };
+    };
+    setAutoCompactImplForTests(fakeImpl);
+
+    const { session } = mkLiveStateSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    // Turns 1 and 2: each completes cleanly under the limit. No mid-turn
+    // dispatcher call expected yet.
+    await drain(session.runTurn("turn-1", { ctx }));
+    const midTurnPhaseArg = 6 as const;
+    const midTurnAfterTurn1 = dispatcherCalls.filter(
+      (args) => args[midTurnPhaseArg] === "before_last_user_message",
+    );
+    expect(midTurnAfterTurn1.length).toBe(0);
+
+    await drain(session.runTurn("turn-2", { ctx }));
+    const midTurnAfterTurn2 = dispatcherCalls.filter(
+      (args) => args[midTurnPhaseArg] === "before_last_user_message",
+    );
+    expect(midTurnAfterTurn2.length).toBe(0);
+
+    // Sanity-check the accumulator directly — prove the writer landed.
+    const peek = (
+      session as unknown as {
+        state: {
+          unsafePeek: () => { totalTokenUsage?: { totalTokens?: number } };
+        };
+      }
+    ).state.unsafePeek();
+    expect(peek.totalTokenUsage?.totalTokens).toBe(800);
+
+    // Turn 3: the first sample crosses the limit AND reports a tool
+    // call, so the mid-turn gate must fire. Runs the dispatcher with
+    // phase=in_turn + initialContextInjection=before_last_user_message.
+    await drain(session.runTurn("turn-3", { ctx }));
+    const midTurnAfterTurn3 = dispatcherCalls.filter(
+      (args) => args[midTurnPhaseArg] === "before_last_user_message",
+    );
+    expect(midTurnAfterTurn3.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("bug-repro without accumulator: a single sub-threshold sample would NOT trigger mid-turn compact on its own", async () => {
+    // Pair-test for the fix. Same provider pattern but stop at turn 1's
+    // tool-call return (400 tokens, below the 1000-token limit). With
+    // only the per-turn sample to judge by, the mid-turn gate must stay
+    // silent. This confirms the earlier test's turn-3 dispatcher call
+    // came from ACCUMULATED usage and not from a single-sample overshoot.
+    const ctx = mkCtx();
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
+      .autoCompactTokenLimit = 1000;
+
+    const provider: LLMProvider = {
+      name: "accum-provider-single",
+      chat: async () => ({
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async (): Promise<LLMResponse> => {
+        return {
+          content: "done",
+          toolCalls: [],
+          usage: { promptTokens: 200, completionTokens: 200, totalTokens: 400 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+      healthCheck: async () => true,
+    };
+
+    const dispatcherCalls: Array<unknown[]> = [];
+    setAutoCompactImplForTests(async (...args) => {
+      dispatcherCalls.push(args);
+      return { wasCompacted: false };
+    });
+
+    const { session } = mkLiveStateSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("single turn", { ctx }));
+
+    const midTurnPhaseArg = 6 as const;
+    const midTurnCalls = dispatcherCalls.filter(
+      (args) => args[midTurnPhaseArg] === "before_last_user_message",
+    );
+    expect(midTurnCalls.length).toBe(0);
+  });
+});

@@ -162,6 +162,24 @@ export interface SessionState {
     readonly cachedInputTokens?: number;
     readonly reasoningOutputTokens?: number;
   };
+  /**
+   * Cross-turn cumulative token usage. Mirrors codex
+   * `TokenUsageInfo.total_token_usage` (protocol.rs:2259-2297) and is
+   * the authoritative source for the mid-turn compact gate's
+   * `total_usage_tokens >= auto_compact_limit` check. The writer in
+   * `stream-model.ts` element-wise accumulates every provider-reported
+   * `LLMUsage` under the session state lock after each stream
+   * completes, matching codex's `TokenUsageInfo::append_last_usage`
+   * (protocol.rs:2294-2297). Undefined until the first response with
+   * usage lands so an unpopulated session reports zero.
+   */
+  totalTokenUsage?: {
+    readonly promptTokens: number;
+    readonly completionTokens: number;
+    readonly totalTokens: number;
+    readonly cachedInputTokens: number;
+    readonly reasoningOutputTokens: number;
+  };
   /** Pending session-start hook source (codex line 841). T10 wires. */
   pendingSessionStartSource?: SessionStartSource;
 }
