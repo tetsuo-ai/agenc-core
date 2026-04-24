@@ -80,27 +80,13 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(tiers.local).toBeNull();
   });
 
-  test("loadTieredInstructions falls back to ~/.agenc/AGENTS.md when ~/.agenc/AGENC.md absent", async () => {
+  test("loadTieredInstructions ignores ~/.agenc/AGENTS.md and ~/.claude/CLAUDE.md", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");
     mkdirSync(join(home, ".agenc"), { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    writeFileSync(join(home, ".agenc", "AGENTS.md"), "AGENTS-COMPAT");
-    writeFileSync(join(repoRoot, "package.json"), "{}");
-
-    const tiers = await loadTieredInstructions({
-      cwd: repoRoot,
-      homeDir: home,
-      managedPath: join(tmp, "none"),
-    });
-    expect(tiers.user?.content).toBe("AGENTS-COMPAT");
-  });
-
-  test("loadTieredInstructions falls back to ~/.claude/CLAUDE.md when ~/.agenc instructions are absent", async () => {
-    const home = join(tmp, "home");
-    const repoRoot = join(tmp, "repo");
     mkdirSync(join(home, ".claude"), { recursive: true });
     mkdirSync(repoRoot, { recursive: true });
+    writeFileSync(join(home, ".agenc", "AGENTS.md"), "AGENTS-COMPAT");
     writeFileSync(join(home, ".claude", "CLAUDE.md"), "CLAUDE-COMPAT");
     writeFileSync(join(repoRoot, "package.json"), "{}");
 
@@ -109,7 +95,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
       homeDir: home,
       managedPath: join(tmp, "none"),
     });
-    expect(tiers.user?.content).toBe("CLAUDE-COMPAT");
+    expect(tiers.user).toBeNull();
   });
 
   // ---- assembly ----
@@ -579,7 +565,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
     mkdirSync(pkgDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
     writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
-    writeFileSync(join(pkgDir, "CLAUDE.md"), "PKG");
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
 
     const tiers = await loadTieredInstructions({
       cwd: pkgDir,
@@ -589,7 +575,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(tiers.project?.content).toContain("--- project-doc");
     expect(tiers.project?.content).toContain("ROOT");
     expect(tiers.project?.content).toContain("PKG");
-    expect(tiers.project?.path).toBe(join(pkgDir, "CLAUDE.md"));
+    expect(tiers.project?.path).toBe(join(pkgDir, "AGENC.md"));
   });
 
   test("loadTieredInstructions honors an explicit empty marker list as cwd-only", async () => {

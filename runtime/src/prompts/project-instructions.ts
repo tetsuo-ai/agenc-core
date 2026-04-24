@@ -2,10 +2,8 @@
  * Project instructions loader — ancestor-walk AGENC.md discovery with
  * configurable project-root markers and a byte-budget cap.
  *
- * Ports openclaude `utils/projectInstructions.ts` (primary/fallback filename
- * helpers, ancestor walk) and the codex `agents_md.rs` behavior (configurable
- * `project_root_markers`, `project_doc_max_bytes` budget, and legacy
- * AGENTS.md/CLAUDE.md compatibility).
+ * Ports the ancestor-walk behavior from upstream runtimes while keeping
+ * AgenC's product-specific instruction filenames.
  *
  * Returns the **single** closest project-root AGENC.md (plus its override
  * twin if present). Tiered discovery of multiple intermediate instruction files
@@ -28,21 +26,6 @@ export const PRIMARY_PROJECT_INSTRUCTION_FILE = "AGENC.md";
  * the same directory when present.
  */
 export const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
-
-/**
- * Legacy Codex/OpenAI instruction filename retained as a compatibility fallback.
- */
-export const LEGACY_PROJECT_INSTRUCTION_FILE = "AGENTS.md";
-
-/**
- * Legacy override filename retained as a compatibility fallback.
- */
-export const LEGACY_OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENTS.override.md";
-
-/**
- * Legacy fallback filename retained for Claude Code compatibility.
- */
-export const FALLBACK_PROJECT_INSTRUCTION_FILE = "CLAUDE.md";
 
 /**
  * Default project-root markers used when config does not specify any.
@@ -162,18 +145,12 @@ export async function findProjectRoot(
  * Resolve the preferred instruction file in a directory. Order:
  *   1. `AGENC.override.md`
  *   2. `AGENC.md`
- *   3. `AGENTS.override.md` (legacy)
- *   4. `AGENTS.md` (legacy)
- *   5. `CLAUDE.md` (legacy)
  * Returns `null` if none exist.
  */
 export async function resolveInstructionFile(dir: string): Promise<string | null> {
   const candidates = [
     OVERRIDE_PROJECT_INSTRUCTION_FILE,
     PRIMARY_PROJECT_INSTRUCTION_FILE,
-    LEGACY_OVERRIDE_PROJECT_INSTRUCTION_FILE,
-    LEGACY_PROJECT_INSTRUCTION_FILE,
-    FALLBACK_PROJECT_INSTRUCTION_FILE,
   ];
   for (const name of candidates) {
     const full = join(dir, name);
@@ -186,7 +163,7 @@ export async function resolveInstructionFile(dir: string): Promise<string | null
 
 /**
  * Walk upward from `cwd`, find the nearest project root marker, read the
- * AGENC.md/AGENC.override.md/AGENTS.md/CLAUDE.md file in that directory, and
+ * AGENC.md/AGENC.override.md file in that directory, and
  * return its normalized contents. Applies the byte budget (truncating
  * with an I-15 marker) and respects zero-budget disable.
  */

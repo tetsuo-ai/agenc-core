@@ -7,9 +7,8 @@
  *
  * Template source resolution order:
  *   1. If `AGENC_INIT_TEMPLATE_PATH` env is set and readable, use it.
- *   2. If legacy `CODEX_INIT_TEMPLATE_PATH` env is set and readable, use it
  *      (lets operators ship a customized template).
- *   3. Otherwise the inline default below.
+ *   2. Otherwise the inline default below.
  *
  * @module
  */
@@ -78,7 +77,6 @@ Commit & Pull Request Guidelines
 export function resolveInitTemplate(): string {
   const overridePaths = [
     process.env.AGENC_INIT_TEMPLATE_PATH,
-    process.env.CODEX_INIT_TEMPLATE_PATH,
   ].filter((path): path is string => typeof path === "string" && path.length > 0);
   for (const override of overridePaths) {
     try {

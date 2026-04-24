@@ -1,5 +1,5 @@
 /**
- * Tiered AGENC.md / legacy instruction loader with `@include` directive support.
+ * Tiered AGENC.md instruction loader with `@include` directive support.
  *
  * Ports the AgenC subset of openclaude `utils/claudemd.ts` (~400 LOC of
  * ~1500): the 4-tier precedence (Managed → User → Project → Local), the
@@ -9,9 +9,8 @@
  *
  * Tier sources:
  *   1. **Managed** — system override. `$AGENC_MANAGED_INSTRUCTIONS` if set,
- *      else `/etc/agenc/AGENC.md` with `/etc/agenc/AGENTS.md` as legacy fallback.
- *   2. **User** — per-user global. `~/.agenc/AGENC.md` with
- *      `~/.agenc/AGENTS.md` and `~/.claude/CLAUDE.md` as legacy fallbacks.
+ *      else `/etc/agenc/AGENC.md`.
+ *   2. **User** — per-user global. `~/.agenc/AGENC.md`.
  *   3. **Project** — the ancestor-walk result from
  *      {@link loadProjectInstructions}.
  *   4. **Local** — per-checkout gitignored. `<projectRoot>/AGENC.local.md`.
@@ -47,16 +46,10 @@ export const DEFAULT_INCLUDE_MAX_BYTES = 5 * 1024 * 1024;
 
 /** Filename convention for per-user global instructions. */
 export const USER_INSTRUCTION_FILENAME = "AGENC.md";
-/** Legacy per-user filename retained for compatibility. */
-export const LEGACY_USER_INSTRUCTION_FILENAME = "AGENTS.md";
 /** Filename convention for per-checkout local instructions. */
 export const LOCAL_INSTRUCTION_FILENAME = "AGENC.local.md";
-/** Legacy per-checkout local filename retained for compatibility. */
-export const LEGACY_LOCAL_INSTRUCTION_FILENAME = "AGENTS.local.md";
 /** Default system-wide managed instructions path. */
 export const DEFAULT_MANAGED_INSTRUCTION_PATH = "/etc/agenc/AGENC.md";
-/** Legacy system-wide managed instructions path retained for compatibility. */
-export const LEGACY_MANAGED_INSTRUCTION_PATH = "/etc/agenc/AGENTS.md";
 
 export type InstructionTier = "managed" | "user" | "project" | "local";
 
@@ -459,57 +452,26 @@ export async function loadTieredInstructions(
   const includeMaxDepth = opts.includeMaxDepth ?? DEFAULT_INCLUDE_MAX_DEPTH;
   const includeMaxBytes = opts.includeMaxBytes ?? DEFAULT_INCLUDE_MAX_BYTES;
   const home = opts.homeDir ?? homedir();
-  const configuredManagedPath =
-    opts.managedPath ?? process.env.AGENC_MANAGED_INSTRUCTIONS;
-  const managedPath = configuredManagedPath ?? DEFAULT_MANAGED_INSTRUCTION_PATH;
+  const managedPath =
+    opts.managedPath ??
+    process.env.AGENC_MANAGED_INSTRUCTIONS ??
+    DEFAULT_MANAGED_INSTRUCTION_PATH;
 
   // Managed tier — boundary is the managed file's directory.
-  let managed = await loadTier(
+  const managed = await loadTier(
     "managed",
     managedPath,
     pathDir(managedPath),
     includeMaxDepth,
     includeMaxBytes,
   );
-  if (managed === null && configuredManagedPath === undefined) {
-    managed = await loadTier(
-      "managed",
-      LEGACY_MANAGED_INSTRUCTION_PATH,
-      pathDir(LEGACY_MANAGED_INSTRUCTION_PATH),
-      includeMaxDepth,
-      includeMaxBytes,
-    );
-  }
 
-  // User tier — boundary is `~/.agenc`. Prefer `AGENC.md`; fall back to
-  // legacy `AGENTS.md`, then the Claude-Code convention `~/.claude/CLAUDE.md`.
+  // User tier — boundary is `~/.agenc`.
   const agencHome = join(home, ".agenc");
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
   let user: TierEntry | null = null;
   if (await pathExists(userPrimary)) {
     user = await loadTier("user", userPrimary, agencHome, includeMaxDepth, includeMaxBytes);
-  } else {
-    const legacyAgenCCompat = join(agencHome, LEGACY_USER_INSTRUCTION_FILENAME);
-    if (await pathExists(legacyAgenCCompat)) {
-      user = await loadTier(
-        "user",
-        legacyAgenCCompat,
-        agencHome,
-        includeMaxDepth,
-        includeMaxBytes,
-      );
-    } else {
-      const claudeCompat = join(home, ".claude", "CLAUDE.md");
-      if (await pathExists(claudeCompat)) {
-        user = await loadTier(
-          "user",
-          claudeCompat,
-          join(home, ".claude"),
-          includeMaxDepth,
-          includeMaxBytes,
-        );
-      }
-    }
   }
 
   // Project tier — ancestor-walk via project-instructions loader.
@@ -553,27 +515,17 @@ export async function loadTieredInstructions(
   }
 
   // Local tier — `<projectRoot>/AGENC.local.md` if a project root was
-  // found, otherwise `<cwd>/AGENC.local.md`. Legacy `AGENTS.local.md`
-  // remains a fallback.
+  // found, otherwise `<cwd>/AGENC.local.md`.
   const projectRootDir = projectChain[0]?.rootDir;
   const localBase = projectRootDir ?? opts.cwd;
   const localPath = join(localBase, LOCAL_INSTRUCTION_FILENAME);
-  let local = await loadTier(
+  const local = await loadTier(
     "local",
     localPath,
     localBase,
     includeMaxDepth,
     includeMaxBytes,
   );
-  if (local === null) {
-    local = await loadTier(
-      "local",
-      join(localBase, LEGACY_LOCAL_INSTRUCTION_FILENAME),
-      localBase,
-      includeMaxDepth,
-      includeMaxBytes,
-    );
-  }
 
   return { managed, user, project: projectTier, local };
 }

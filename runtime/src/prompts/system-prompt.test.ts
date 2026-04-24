@@ -379,7 +379,7 @@ describe("assembleSystemPrompt", () => {
     expect(sections.length).toBeGreaterThan(10);
   });
 
-  test("system prompt keeps legacy CLAUDE.md instructions under AgenC naming", async () => {
+  test("system prompt rejects implicit AGENTS.md and CLAUDE.md instruction updates", async () => {
     const { text } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
@@ -388,9 +388,8 @@ describe("assembleSystemPrompt", () => {
       envForSimpleMode: {},
     });
 
-    expect(text).toContain("AgenC uses AGENC.md as its primary instruction file");
-    expect(text).toContain("This supersedes imported project/user instructions");
-    expect(text).toContain("legacy references as compatibility references to AGENC.md");
+    expect(text).toContain("AgenC uses AGENC.md as its instruction file");
+    expect(text).toContain("Do not read, update, or claim to update AGENTS.md or CLAUDE.md");
     expect(text).toContain("Never claim you updated any instruction file");
     expect(text).toContain("update CLAUDE.md");
   });

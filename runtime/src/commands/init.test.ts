@@ -23,11 +23,9 @@ let workDir: string;
 beforeEach(() => {
   workDir = mkdtempSync(join(tmpdir(), "agenc-init-"));
   delete process.env.AGENC_INIT_TEMPLATE_PATH;
-  delete process.env.CODEX_INIT_TEMPLATE_PATH;
 });
 afterEach(() => {
   delete process.env.AGENC_INIT_TEMPLATE_PATH;
-  delete process.env.CODEX_INIT_TEMPLATE_PATH;
 });
 
 describe("initCommand", () => {
@@ -59,13 +57,6 @@ describe("initCommand", () => {
     expect(res.kind).toBe("text");
     const written = readFileSync(join(workDir, INIT_TARGET_FILENAME), "utf8");
     expect(written).toBe("CUSTOM-TEMPLATE");
-  });
-
-  it("keeps CODEX_INIT_TEMPLATE_PATH as a legacy template fallback", () => {
-    const override = join(workDir, "legacy-override.md");
-    writeFileSync(override, "LEGACY-TEMPLATE", "utf8");
-    process.env.CODEX_INIT_TEMPLATE_PATH = override;
-    expect(resolveInitTemplate()).toBe("LEGACY-TEMPLATE");
   });
 
   it("falls back to inline template if override path is unreadable", () => {

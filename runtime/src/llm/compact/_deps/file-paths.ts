@@ -7,8 +7,8 @@
  * session-scoped markdown plans under `<AGENC_HOME>/plans/<slug>.md`.
  *
  * Project-instruction discovery is implemented here so compact's prompt
- * assembly can still surface AGENC.md plus legacy AGENTS.md / CLAUDE.md /
- * .agenc/instructions.md for the cwd it was given.
+ * assembly can still surface AGENC.md / .agenc/instructions.md for the
+ * cwd it was given.
  *
  * AgenC adaptation from upstream OpenClaude (`src/utils/plans.ts`):
  *
@@ -78,9 +78,6 @@ export function getTaskOutputPath(taskId: string): string {
 const PROJECT_DOC_NAMES = [
   "AGENC.override.md",
   "AGENC.md",
-  "AGENTS.override.md",
-  "AGENTS.md",
-  "CLAUDE.md",
   ".agenc/instructions.md",
 ];
 

@@ -12,7 +12,7 @@
  *
  * Memories are constrained to four types capturing context NOT derivable
  * from the current project state. Code patterns, architecture, git
- * history, and file structure are derivable (via grep/git/CLAUDE.md)
+ * history, and file structure are derivable (via grep/git/AGENC.md)
  * and should NOT be saved as memories.
  *
  * @module

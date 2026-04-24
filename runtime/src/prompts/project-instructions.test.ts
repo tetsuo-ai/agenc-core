@@ -61,29 +61,13 @@ describe("project-instructions (T10-B)", () => {
     expect(p?.endsWith("AGENC.override.md")).toBe(true);
   });
 
-  test("resolveInstructionFile prefers AGENC.md over legacy AGENTS.override.md", async () => {
+  test("resolveInstructionFile ignores AGENTS.md and CLAUDE.md", async () => {
     const dir = join(root, "d");
     mkdirSync(dir);
-    writeFileSync(join(dir, "AGENC.md"), "primary");
-    writeFileSync(join(dir, "AGENTS.override.md"), "legacy-override");
+    writeFileSync(join(dir, "AGENTS.md"), "agents");
+    writeFileSync(join(dir, "CLAUDE.md"), "claude");
     const p = await resolveInstructionFile(dir);
-    expect(p?.endsWith("AGENC.md")).toBe(true);
-  });
-
-  test("resolveInstructionFile falls back to legacy AGENTS.md", async () => {
-    const dir = join(root, "d");
-    mkdirSync(dir);
-    writeFileSync(join(dir, "AGENTS.md"), "legacy");
-    const p = await resolveInstructionFile(dir);
-    expect(p?.endsWith("AGENTS.md")).toBe(true);
-  });
-
-  test("resolveInstructionFile falls back to CLAUDE.md when only CLAUDE.md exists", async () => {
-    const dir = join(root, "d");
-    mkdirSync(dir);
-    writeFileSync(join(dir, "CLAUDE.md"), "legacy");
-    const p = await resolveInstructionFile(dir);
-    expect(p?.endsWith("CLAUDE.md")).toBe(true);
+    expect(p).toBeNull();
   });
 
   test("loadProjectInstructions reads AGENC.md from the project root", async () => {
@@ -171,7 +155,7 @@ describe("project-instructions (T10-B)", () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    // No AGENC.md / legacy instruction file present.
+    // No AGENC.md instruction file present.
     const res = await loadProjectInstructions({ cwd: repoRoot });
     expect(res).toBeNull();
   });
@@ -183,13 +167,13 @@ describe("project-instructions (T10-B)", () => {
     mkdirSync(leafDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
     writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
-    writeFileSync(join(pkgDir, "CLAUDE.md"), "PKG");
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
     writeFileSync(join(leafDir, "AGENC.override.md"), "LEAF");
 
     const chain = await loadProjectInstructionChain({ cwd: leafDir });
     expect(chain.map((entry) => entry.path)).toEqual([
       join(repoRoot, "AGENC.md"),
-      join(pkgDir, "CLAUDE.md"),
+      join(pkgDir, "AGENC.md"),
       join(leafDir, "AGENC.override.md"),
     ]);
     expect(chain.map((entry) => entry.content)).toEqual(["ROOT", "PKG", "LEAF"]);
