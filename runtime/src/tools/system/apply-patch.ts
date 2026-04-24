@@ -147,11 +147,11 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
   return {
     name: "apply_patch",
     description:
-      "Apply a Codex-style patch to files in the current workspace. The patch must use the *** Begin Patch / *** End Patch format. Prefer this for multi-line code edits.",
+      "Apply an AgenC workspace patch using the Codex apply_patch grammar. The patch must use the *** Begin Patch / *** End Patch format. Prefer this for multi-line code edits.",
     metadata: {
       family: "filesystem",
       source: "builtin",
-      keywords: ["patch", "edit", "diff", "codex"],
+      keywords: ["patch", "edit", "diff", "codex", "agenc"],
       preferredProfiles: ["coding"],
       hiddenByDefault: false,
       mutating: true,
@@ -164,7 +164,7 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
         patch: {
           type: "string",
           description:
-            "Complete Codex patch body, starting with *** Begin Patch and ending with *** End Patch.",
+            "Complete AgenC/Codex patch body, starting with *** Begin Patch and ending with *** End Patch.",
         },
         cwd: {
           type: "string",

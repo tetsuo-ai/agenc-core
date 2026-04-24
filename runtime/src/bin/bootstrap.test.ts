@@ -221,15 +221,21 @@ describe("bootstrapLocalRuntimeSession", () => {
         | undefined;
       const providerToolNames =
         providerTools?.map((tool) => tool.function?.name).filter(Boolean) ?? [];
-      expect(providerToolNames.length).toBeGreaterThan(10);
       expect(providerToolNames).toEqual(
         expect.arrayContaining([
-          "system.readFile",
-          "system.writeFile",
-          "system.bash",
+          "exec_command",
+          "apply_patch",
+          "update_plan",
+          "TodoWrite",
+          "EnterPlanMode",
+          "ExitPlanMode",
+          "system.searchTools",
           extraTool.name,
         ]),
       );
+      expect(providerToolNames).not.toContain("system.readFile");
+      expect(providerToolNames).not.toContain("system.writeFile");
+      expect(providerToolNames).not.toContain("system.bash");
       expect(createProviderSpy).toHaveBeenCalledWith(
         "grok",
         expect.objectContaining({

@@ -40,7 +40,14 @@ const TOOL_METADATA_KEYS = new Set([
   "writeOnly",
 ]);
 const PRIORITY_TOOL_NAMES = new Set([
-  "system.bash",
+  "exec_command",
+  "apply_patch",
+  "update_plan",
+  "TodoWrite",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "system.searchTools",
+  "system.agent.delegate",
   "desktop.bash",
   "desktop.screenshot",
   "desktop.window_list",

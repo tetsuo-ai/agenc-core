@@ -105,6 +105,7 @@ interface ToolCallValidationResult {
 
 const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   apply_patch: "patch",
+  exec_command: "cmd",
   "system.bash": "command",
   "system.readFile": "path",
   "system.writeFile": "path",
@@ -137,7 +138,7 @@ function shouldTreatMalformedArgumentsAsStructuredLiteral(
   // File/path tools do not have that escape hatch: if their arguments start
   // with JSON-like delimiters but failed to parse, keep them as malformed
   // structured input instead of converting the entire blob into a fake path.
-  if (toolName === "system.bash") {
+  if (toolName === "system.bash" || toolName === "exec_command") {
     return false;
   }
   return /^\s*[\[{]/.test(value);

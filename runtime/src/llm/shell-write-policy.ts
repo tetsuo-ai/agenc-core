@@ -6,6 +6,7 @@ import {
 } from "./_deps/command-line.js";
 
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
+  "exec_command",
   "system.bash",
   "desktop.bash",
 ]);
@@ -431,8 +432,8 @@ function buildPolicyMessage(blockedTargets: readonly string[]): string {
   return (
     "shell_workspace_file_write_disallowed: Workflow implementation turns " +
     "must use structured file tools for project file authoring. Use " +
-    "`system.writeFile`, `system.editFile`, `system.appendFile`, " +
-    "`desktop.text_editor`, `system.mkdir`, or `system.move` instead of " +
+    "`apply_patch` for source edits, or `system.writeFile`, `system.editFile`, " +
+    "`system.appendFile`, `desktop.text_editor`, `system.mkdir`, or `system.move` instead of " +
     "shell redirection, heredocs, `tee`, `cp`, `mv`, `ln`, `touch`, `install`, " +
     "`rm`, `rmdir`, `truncate`, `dd`, `sed -i`, or `perl -i` for workspace files. " +
     "Shell writes are only allowed under generated output roots (`build`, `dist`, " +

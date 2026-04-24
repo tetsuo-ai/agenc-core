@@ -789,7 +789,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     );
   });
 
-  test("router classification emits tool_routing_classified warning", async () => {
+  test("router classification does not leak tool_routing_classified warnings", async () => {
     const tool: Tool = {
       name: "stub.ping",
       description: "ping",
@@ -818,7 +818,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const routed = seen.find(
       (e) => e.type === "warning" && e.cause === "tool_routing_classified",
     );
-    expect(routed).toBeDefined();
+    expect(routed).toBeUndefined();
   });
 
   test("aborted signals still drain terminal tool results for queued calls", async () => {

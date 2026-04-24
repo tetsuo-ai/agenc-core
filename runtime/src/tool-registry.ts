@@ -10,8 +10,9 @@
  *
  * Build once per session. The registry is intentionally flat — every
  * surviving tool registers into one router-backed list with no grouping.
- * The provider-visible catalog is request scoped: built-ins are visible
- * by default, while MCP/deferred tools become visible after discovery.
+ * The provider-visible catalog is request scoped: Codex-primary tools
+ * are visible by default, while compatibility built-ins, MCP, and
+ * explicitly deferred tools become visible after discovery.
  *
  * @module
  */
@@ -24,6 +25,7 @@ import {
   createCodingTools,
   createHttpTools,
   createBashTool,
+  createExecCommandTool,
   createPlanningTools,
   createApplyPatchTool,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
@@ -199,6 +201,7 @@ function specForTool(tool: Tool): ConfiguredToolSpec {
 
 const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   apply_patch: "patch",
+  exec_command: "cmd",
   "system.bash": "command",
   "system.readFile": "path",
   "system.writeFile": "path",
@@ -210,6 +213,24 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   "system.delete": "path",
   "system.glob": "pattern",
 };
+
+const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
+  "exec_command",
+  "apply_patch",
+  "update_plan",
+  "TodoWrite",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "system.agent.delegate",
+  "system.searchTools",
+]);
+
+function codexPrimarySurface(tool: Tool): Tool {
+  if (DEFAULT_VISIBLE_BUILTIN_TOOLS.has(tool.name)) return tool;
+  if (tool.metadata?.source && tool.metadata.source !== "builtin") return tool;
+  if (tool.metadata?.deferred === true) return tool;
+  return withMetadata(tool, { deferred: true });
+}
 
 function parseToolCallArguments(
   toolCall: LLMToolCall,
@@ -312,7 +333,7 @@ export function buildToolRegistry(
     }
   };
 
-  const staticTools: Tool[] = [
+  const defaultBuiltinTools: Tool[] = [
     ...createFilesystemTools({
       allowedPaths: [options.workspaceRoot],
       allowDelete: options.allowBashDelete ?? false,
@@ -330,6 +351,13 @@ export function buildToolRegistry(
     ...createHttpTools({
       allowedDomains: ["*"],
     }),
+    createExecCommandTool({
+      cwd: options.workspaceRoot,
+      allowedPaths: [options.workspaceRoot],
+      ...(options.bashExecObserver !== undefined
+        ? { execObserver: options.bashExecObserver }
+        : {}),
+    }),
     createBashTool({
       cwd: options.workspaceRoot,
       ...(options.bashExecObserver !== undefined
@@ -344,8 +372,11 @@ export function buildToolRegistry(
         ? { workflowController: options.workflowController }
         : {}),
     }),
-    ...(options.extraTools ?? []),
-  ].map((tool) => tagTool(tool));
+  ].map((tool) => tagTool(codexPrimarySurface(tool)));
+  const extraTools: Tool[] = (options.extraTools ?? []).map((tool) =>
+    tagTool(tool),
+  );
+  const staticTools: Tool[] = [...defaultBuiltinTools, ...extraTools];
 
   // T7: tag each registered tool with its ConcurrencyClass + flags.
   // Tools without explicit metadata get sensible defaults:

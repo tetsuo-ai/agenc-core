@@ -746,6 +746,7 @@ function abortMessage(toolName: ToolName, elapsedMs: number): string {
     "local_shell",
     "shell_command",
     "unified_exec",
+    "exec_command",
     "system.bash",
   ]);
   if (shellTools.has(toolName.name) || shellTools.has(toolNameDisplay(toolName))) {

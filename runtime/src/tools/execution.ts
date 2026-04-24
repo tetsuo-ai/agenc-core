@@ -1082,7 +1082,9 @@ export interface RunToolUseOptions {
 // ─────────────────────────────────────────────────────────────────────
 
 const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "exec_command",
   "system.bash",
+  "apply_patch",
   "system.writeFile",
   "system.editFile",
   "system.delete",
@@ -1121,8 +1123,11 @@ function buildApprovalCacheKeys(
   const cwd =
     typeof args.cwd === "string" && args.cwd.length > 0
       ? args.cwd
+      : typeof args.workdir === "string" && args.workdir.length > 0
+        ? args.workdir
       : invocation.turn.cwd;
   if (
+    tool.name === "exec_command" ||
     tool.name === "system.bash" ||
     tool.name === "Bash" ||
     invocation.payload.kind === "local_shell"
@@ -1134,9 +1139,11 @@ function buildApprovalCacheKeys(
         ].filter((part) => part.length > 0)
       : invocation.payload.kind === "local_shell"
         ? invocation.payload.params.command
-        : typeof args.command === "string"
-          ? [args.command]
-          : [];
+          : typeof args.command === "string"
+            ? [args.command]
+            : typeof args.cmd === "string"
+              ? [args.cmd]
+              : [];
     if (command.length > 0) {
       return [
         buildShellApprovalKey({

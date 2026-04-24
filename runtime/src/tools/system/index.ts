@@ -51,6 +51,11 @@ export {
 } from "./bash.js";
 
 export {
+  createExecCommandTool,
+  type ExecCommandToolConfig,
+} from "./exec-command.js";
+
+export {
   type BashToolConfig,
   type BashToolInput,
   type BashExecutionResult,

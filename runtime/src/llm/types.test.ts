@@ -33,6 +33,21 @@ describe("validateToolCallDetailed", () => {
     });
   });
 
+  test("normalizes JSON string exec_command arguments into the cmd field", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2b",
+      name: "exec_command",
+      arguments: JSON.stringify("pwd"),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2b",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
+  });
+
   test("keeps malformed structured file arguments from being rewrapped as a fake path", () => {
     const result = validateToolCallDetailed({
       id: "call-3",
@@ -45,6 +60,21 @@ describe("validateToolCallDetailed", () => {
       id: "call-3",
       name: "system.readFile",
       arguments: JSON.stringify({}),
+    });
+  });
+
+  test("preserves bracket-leading exec_command strings as shell commands", () => {
+    const result = validateToolCallDetailed({
+      id: "call-4",
+      name: "exec_command",
+      arguments: "[ -f package.json ] && pwd",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-4",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "[ -f package.json ] && pwd" }),
     });
   });
 });

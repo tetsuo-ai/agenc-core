@@ -101,6 +101,10 @@ describe("classify + defaultConcurrencyClassFor", () => {
       "background_terminal",
     );
     expect(isBashTool("system.bash")).toBe(true);
+    expect(defaultConcurrencyClassFor("exec_command").kind).toBe(
+      "background_terminal",
+    );
+    expect(isBashTool("exec_command")).toBe(true);
   });
 
   test("classify respects per-call isConcurrencySafe false → Exclusive", () => {

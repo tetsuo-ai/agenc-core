@@ -1412,10 +1412,8 @@ function createWriteFileTool(
     name: "system.writeFile",
     description:
       "Write content to a file. Creates parent directories if needed. Gated by path allowlist and size limits. " +
-      "If the file already exists, you MUST call system.readFile on it first in this session — the runtime will " +
-      "reject the write otherwise. For modifying existing files, prefer system.editFile (string-replace) over " +
-      "system.writeFile (full rewrite); editFile only sends the diff and is much less prone to JSON-escape bugs " +
-      "in nested string literals like #include directives or shell single-quotes.",
+      "If the file already exists, you MUST call system.readFile without offset/limit first in this session — the runtime will " +
+      "reject the write otherwise. For source-code edits, prefer apply_patch. Use this compatibility tool mainly for creating new files or complete rewrites.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1470,8 +1468,8 @@ function createWriteFileTool(
         if (targetExists && requiresFullReadSnapshot(readSnapshot)) {
           return errorResult(
             `File must be fully read before writing to it. ` +
-              `Call system.readFile on "${args.path}" before calling system.writeFile, ` +
-              `OR prefer system.editFile (str_replace semantics) for incremental edits.`,
+              `Call system.readFile on "${args.path}" without offset/limit before calling system.writeFile. ` +
+              `For source-code edits, use apply_patch instead of system.writeFile.`,
           );
         }
 
@@ -1703,8 +1701,8 @@ function createEditFileTool(
   return {
     name: "system.editFile",
     description:
-      "Perform an exact string replacement in an existing file. Prefer this over system.writeFile for ALL " +
-      "modifications to existing files — it only sends the diff (old_string → new_string), so it does not " +
+      "Compatibility exact string replacement in an existing file. For source-code edits, prefer apply_patch. " +
+      "This only sends the diff (old_string → new_string), so it does not " +
       "expose the model to JSON-escape mistakes in nested string literals like #include directives, shell " +
       "single-quotes, or printf format strings. The file must exist and must have been read in this session " +
       "(via system.readFile, or implicitly via a prior system.writeFile / system.editFile in the same session). " +
@@ -1810,7 +1808,8 @@ function createEditFileTool(
             `File has not been read in this session. ` +
               `Call system.readFile on "${args.path}" before calling system.editFile. ` +
               `A line-windowed read (via offset/limit) is sufficient — the Read-before-Edit rule ` +
-              `only requires that you have seen the current contents before generating the edit.`,
+              `only requires that you have seen the current contents before generating the edit. ` +
+              `For source-code edits, use apply_patch instead.`,
           );
         }
 

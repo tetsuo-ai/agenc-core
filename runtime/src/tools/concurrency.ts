@@ -291,6 +291,7 @@ export function isNetworkTool(name: string): boolean {
  *  owns its own subprocess lifecycle. */
 export function isBashTool(name: string): boolean {
   return (
+    name === "exec_command" ||
     name === "system.bash" ||
     name === "system.background.bash" ||
     name === "bash"

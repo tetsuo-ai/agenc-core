@@ -142,17 +142,18 @@ describe("static section emitters", () => {
     expect(s).toContain("force-push");
   });
 
-  test("using_your_tools surfaces dedicated-tool preference when Bash + named tools present", () => {
-    const tools = new Set(["Bash", "Read", "Edit", "Write", "Glob", "Grep"]);
+  test("using_your_tools surfaces Codex-primary exec/apply_patch guidance", () => {
+    const tools = new Set(["exec_command", "apply_patch", "system.searchTools"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    expect(s).toContain("file-read tool instead of cat");
+    expect(s).toContain("apply_patch as the primary editing tool");
+    expect(s).toContain("Use exec_command for terminal work");
     expect(s).toContain("parallel");
   });
 
-  test("using_your_tools recognizes AgenC system.* tool names", () => {
+  test("using_your_tools treats system.* file tools as compatibility tools", () => {
     const tools = new Set([
-      "system.bash",
+      "exec_command",
       "system.readFile",
       "system.editFile",
       "system.writeFile",
@@ -161,17 +162,25 @@ describe("static section emitters", () => {
       "apply_patch",
     ]);
     const s = getUsingYourToolsSection(tools);
-    expect(s).toContain("file-read tool instead of cat");
-    expect(s).toContain("file-edit tool instead of sed");
-    expect(s).toContain("apply_patch for multi-line code edits");
+    expect(s).toContain("Use system.writeFile/system.editFile only as AgenC compatibility tools");
+    expect(s).toContain("Normal code changes should go through apply_patch");
+    expect(s).toContain("Use exec_command for terminal work");
     expect(s).toContain("Do not answer with only proposed code or prose");
   });
 
-  test("using_your_tools omits dedicated guidance without Bash", () => {
+  test("using_your_tools falls back to shell guidance when exec_command is unavailable", () => {
+    const tools = new Set(["system.bash"]);
+    const s = getUsingYourToolsSection(tools);
+    expect(s).toContain("# Using your tools");
+    expect(s).toContain("Use the shell/bash tool for terminal work");
+    expect(s).not.toContain("Use exec_command for terminal work");
+  });
+
+  test("using_your_tools omits edit guidance without apply_patch", () => {
     const tools = new Set(["Read", "Edit"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    expect(s).not.toContain("file-read tool instead of cat");
+    expect(s).not.toContain("primary editing tool");
   });
 
   test("tone_and_style bans emojis + colons before tool calls", () => {

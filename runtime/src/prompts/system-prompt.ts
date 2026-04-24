@@ -131,38 +131,22 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   const hasTool = (...names: readonly string[]): boolean =>
     names.some((name) => enabledTools.has(name));
 
-  // Dedicated-tool preference (only if Bash is enabled alongside named
-  // dedicated tools — mirrors openclaude guidance).
-  const hasBash = hasTool("bash", "Bash", "system.bash", "shell", "exec_command");
-  const dedicated: string[] = [];
-  if (hasTool("read", "Read", "system.readFile")) {
-    dedicated.push(`Use the file-read tool instead of cat/head/tail/sed.`);
-  }
-  if (hasTool("edit", "Edit", "system.editFile", "apply_patch")) {
-    dedicated.push(`Use the file-edit tool instead of sed or awk.`);
-  }
-  if (hasTool("write", "Write", "system.writeFile")) {
-    dedicated.push(`Use the file-write tool instead of cat-with-heredoc or redirection.`);
-  }
-  if (hasTool("glob", "Glob", "system.glob")) {
-    dedicated.push(`Use the glob tool instead of find or ls.`);
-  }
-  if (hasTool("grep", "Grep", "system.grep")) {
-    dedicated.push(`Use the grep tool instead of shell grep or rg.`);
-  }
+  const hasExecCommand = hasTool("exec_command");
   if (hasTool("apply_patch")) {
-    dedicated.push(
-      `Use apply_patch for multi-line code edits; pass the full *** Begin Patch / *** End Patch body as the patch argument.`,
+    items.push(
+      `For source-code edits, use apply_patch as the primary editing tool. Pass the full *** Begin Patch / *** End Patch body as the patch argument. Do not use shell redirection, heredocs, sed -i, or perl -i for source edits.`,
+    );
+    items.push(
+      `Use system.writeFile/system.editFile only as AgenC compatibility tools when explicitly needed or after loading them through system.searchTools. Normal code changes should go through apply_patch.`,
     );
   }
-
-  if (hasBash && dedicated.length > 0) {
+  if (hasExecCommand) {
     items.push(
-      `Do not use the shell/bash tool when a dedicated tool is provided. Dedicated tools allow the user to better understand and review your work:`,
+      `Use exec_command for terminal work: inspecting files, running rg/git/build/test commands, and validating changes. Keep commands focused and use the working directory that matches the repository you are editing.`,
     );
-    items.push(dedicated);
+  } else if (hasTool("bash", "Bash", "system.bash", "shell")) {
     items.push(
-      `Reserve the shell/bash tool for system commands that require shell execution.`,
+      `Use the shell/bash tool for terminal work: inspecting files, running rg/git/build/test commands, and validating changes.`,
     );
   }
 

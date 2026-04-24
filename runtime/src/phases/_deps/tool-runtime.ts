@@ -22,7 +22,7 @@
  *   - Concurrency cap: parallel dispatch with a per-call worker pool
  *     so the env-cap loop in `execute-tools.ts` can observe in-flight
  *     count.
- *   - `tool_routing_classified` warning on every queued call.
+ *   - no user-visible routing-classification diagnostics.
  *
  * Anything beyond that — sibling-abort cascade and real router
  * classification — still belongs to the upstream stack the rebuild
@@ -432,16 +432,9 @@ export class StreamingToolExecutor {
 
     this.tools.push(tracked);
 
-    // Emit `tool_routing_classified` warning per call. The lean rebuild
-    // does not run a real classifier; we surface a deterministic
-    // routing record so downstream telemetry sees the seam fire.
-    const session = this.liveOptions?.session;
-    emitOn(session, "warning", {
-      cause: "tool_routing_classified",
-      message: `tool_routing_classified: ${toolCall.name}`,
-      toolName: toolCall.name,
-      callId: toolCall.id,
-    });
+    // Upstream Codex does not surface routing classification as transcript
+    // warnings. Keep this path quiet; real failures are emitted where they
+    // happen (permission denial, hook errors, dispatch errors).
   }
 
   close(): void {

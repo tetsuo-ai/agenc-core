@@ -477,16 +477,6 @@ export class ToolRouter {
     opts: LiveToolDispatchOptions,
   ): Promise<ToolDispatchResult> {
     const routed = toolCallFromLLMToolCall(toolCall, { session: opts.session });
-    emitWarningEvent(
-      opts.session.eventLog,
-      toolCall.id,
-      "tool_routing_classified",
-      JSON.stringify({
-        toolName: toolCall.name,
-        supportsParallel: this.toolSupportsParallel(routed),
-        hasSpec: this.findSpec(toolCall.name) !== undefined,
-      }),
-    );
 
     const spec = this.findSpec(toolCall.name);
     if (!spec) {

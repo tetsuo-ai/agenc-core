@@ -35,12 +35,26 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     expect(bash?.concurrencyClass?.kind).toBe("background_terminal");
     expect(bash?.requiresApproval).toBe(true);
   });
+
+  test("exec_command gets BackgroundTerminal + requiresApproval=true", () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const execCommand = registry.tools.find((t) => t.name === "exec_command");
+    expect(execCommand?.concurrencyClass?.kind).toBe("background_terminal");
+    expect(execCommand?.requiresApproval).toBe(true);
+  });
 });
 
 describe("tool-registry dynamic and deferred catalog", () => {
-  test("coding and planning tools are visible while heavy catalog entries stay deferred", () => {
+  test("Codex-primary tools are visible while compatibility entries stay deferred", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const registeredNames = registry.tools.map((tool) => tool.name);
+    expect(registeredNames).toContain("exec_command");
+    expect(registeredNames).toContain("system.bash");
+    expect(registeredNames).toContain("system.readFile");
+    expect(registeredNames).toContain("system.writeFile");
+    expect(registeredNames).toContain("system.editFile");
+    expect(registeredNames).toContain("system.grep");
+    expect(registeredNames).toContain("system.glob");
     expect(registeredNames).toContain("system.gitStatus");
     expect(registeredNames).toContain("system.symbolSearch");
     expect(registeredNames).toContain("system.repoInventory");
@@ -51,16 +65,39 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("workflow.exitPlan");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).toContain("exec_command");
     expect(visibleNames).toContain("update_plan");
     expect(visibleNames).toContain("apply_patch");
     expect(visibleNames).toContain("TodoWrite");
     expect(visibleNames).toContain("EnterPlanMode");
     expect(visibleNames).toContain("ExitPlanMode");
     expect(visibleNames).toContain("system.searchTools");
+    expect(visibleNames).not.toContain("system.bash");
+    expect(visibleNames).not.toContain("system.readFile");
+    expect(visibleNames).not.toContain("system.writeFile");
+    expect(visibleNames).not.toContain("system.editFile");
+    expect(visibleNames).not.toContain("system.grep");
+    expect(visibleNames).not.toContain("system.glob");
     expect(visibleNames).not.toContain("system.gitStatus");
     expect(visibleNames).not.toContain("system.symbolSearch");
     expect(visibleNames).not.toContain("system.repoInventory");
     expect(visibleNames).not.toContain("workflow.enterPlan");
+  });
+
+  test("exec_command dispatch accepts Codex-style cmd/workdir arguments", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+
+    const result = await registry.dispatch({
+      id: "exec-1",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "printf agenc-codex", workdir: "/tmp" }),
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content)).toMatchObject({
+      exitCode: 0,
+      stdout: "agenc-codex",
+    });
   });
 
   test("searchTools supports OpenClaude-style select:<tool> loading", async () => {
@@ -83,6 +120,33 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registry.getDiscoveredToolNames?.().has("system.gitStatus")).toBe(true);
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
       "system.gitStatus",
+    );
+  });
+
+  test("searchTools selection loads deferred AgenC compatibility file tools", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
+      "system.readFile",
+    );
+
+    const result = await registry.dispatch({
+      id: "search-select-read",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ query: "select:system.readFile" }),
+    });
+
+    const body = JSON.parse(result.content) as {
+      loaded: string[];
+      results: Array<{ name: string; selected: boolean }>;
+    };
+    expect(body.loaded).toContain("system.readFile");
+    expect(body.results).toContainEqual(
+      expect.objectContaining({ name: "system.readFile", selected: true }),
+    );
+    expect(registry.getDiscoveredToolNames?.().has("system.readFile")).toBe(true);
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
+      "system.readFile",
     );
   });
 
