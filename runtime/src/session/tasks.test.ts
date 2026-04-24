@@ -37,6 +37,8 @@ import {
   waitForDoneWithin,
 } from "./tasks.js";
 import type { LLMProvider } from "../llm/types.js";
+import { ToolRouter } from "../tools/router.js";
+import type { Tool } from "../tools/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers (mirror session.test.ts)
@@ -395,6 +397,90 @@ describe("ActiveTurnState lock", () => {
     });
     await session.onTaskFinished("turn-A");
   });
+
+  it("token_usage_at_turn_start seed goes through the lock (does not race with concurrent reads)", async () => {
+    // Regression for WIRED-NOW semantics on `tokenUsageAtTurnStart`.
+    // The spawn-time seed must be visible to any caller that acquires
+    // the lock after spawn returns — i.e. seeding and reads serialize.
+    const session = buildSession();
+    await session.spawnTask({
+      subId: "turn-A",
+      kind: "regular",
+      tokenUsageAtTurnStart: {
+        promptTokens: 100,
+        completionTokens: 200,
+        totalTokens: 300,
+      },
+    });
+    const reads = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        session.withActiveTurnState((s) => ({ ...s.tokenUsageAtTurnStart })),
+      ),
+    );
+    for (const r of reads) {
+      expect(r).toEqual({
+        promptTokens: 100,
+        completionTokens: 200,
+        totalTokens: 300,
+      });
+    }
+    await session.onTaskFinished("turn-A");
+  });
+
+  it("hasMemoryCitation round-trips through withActiveTurnState (SLOT-ONLY readiness)", async () => {
+    // Field is SLOT-ONLY in gut today (no live consumer), but the
+    // schema must still round-trip cleanly so the future memory
+    // subsystem can flip it through `withActiveTurnState`.
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    const before = await session.withActiveTurnState((s) => s.hasMemoryCitation);
+    expect(before).toBe(false);
+    await session.withActiveTurnState((s) => {
+      s.hasMemoryCitation = true;
+    });
+    const after = await session.withActiveTurnState((s) => s.hasMemoryCitation);
+    expect(after).toBe(true);
+    await session.onTaskFinished("turn-A");
+  });
+
+  it("abortAllTasks clears every pending-* map under the lock (SLOT-ONLY clear contract)", async () => {
+    // Sanity check that Session.abortAllTasksLocked() still clears
+    // every SLOT-ONLY pending map. Future consumers of those slots
+    // inherit this clear contract without re-implementing it.
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    await session.withActiveTurnState((s) => {
+      s.pendingApprovals.set("a1", () => {});
+      s.pendingRequestPermissions.set("r1", {});
+      s.pendingUserInput.set("u1", () => {});
+      s.pendingElicitations.set("e1", () => {});
+      s.pendingDynamicTools.set("d1", () => {});
+      s.pendingInput.push("queued");
+    });
+    await session.abortAllTasks("interrupted");
+    // The activeTurn slot is cleared too, so a probing read returns
+    // undefined — that itself is the proof the prior state is gone.
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+    // Spawn a fresh turn and confirm every pending-* map came up empty.
+    await session.spawnTask({ subId: "turn-B", kind: "regular" });
+    const cleared = await session.withActiveTurnState((s) => ({
+      approvals: s.pendingApprovals.size,
+      reqPerms: s.pendingRequestPermissions.size,
+      userInput: s.pendingUserInput.size,
+      elicit: s.pendingElicitations.size,
+      dynTools: s.pendingDynamicTools.size,
+      input: s.pendingInput.length,
+    }));
+    expect(cleared).toEqual({
+      approvals: 0,
+      reqPerms: 0,
+      userInput: 0,
+      elicit: 0,
+      dynTools: 0,
+      input: 0,
+    });
+    await session.onTaskFinished("turn-B");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -483,5 +569,104 @@ describe("constants", () => {
     // upstream; gut carries the corrected spelling). The ms value is
     // what matters for behavior parity.
     expect(GRACEFUL_INTERRUPTION_TIMEOUT_MS).toBe(100);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 7 — Router integration: toolCalls counter wiring through the
+// ActiveTurnState lock. Mirrors upstream codex tools/registry.rs:303-309.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("ToolRouter.dispatchModelToolCall toolCalls counter", () => {
+  const noopTool: Tool = {
+    name: "system.noop",
+    description: "",
+    inputSchema: {},
+    execute: async () => ({ content: "ok" }),
+  };
+
+  it("increments ActiveTurnState.toolCalls once per dispatch", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    const router = new ToolRouter([
+      { tool: noopTool, supportsParallelToolCalls: true },
+    ]);
+
+    const result = await router.dispatchModelToolCall(
+      { id: "call-1", name: "system.noop", arguments: "{}" },
+      {
+        session: session as never,
+        turn: { subId: "turn-A" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    const count = await session.withActiveTurnState((s) => s.toolCalls);
+    expect(count).toBe(1);
+    await session.onTaskFinished("turn-A");
+  });
+
+  it("serializes concurrent dispatches (no lost increments)", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    const router = new ToolRouter([
+      { tool: noopTool, supportsParallelToolCalls: true },
+    ]);
+    const N = 20;
+    const dispatches = Array.from({ length: N }, (_, i) =>
+      router.dispatchModelToolCall(
+        { id: `call-${i}`, name: "system.noop", arguments: "{}" },
+        {
+          session: session as never,
+          turn: { subId: "turn-A" } as never,
+          tracker: {
+            appendFileDiff: () => {},
+            snapshot: () => [],
+            clear: () => {},
+          },
+          approvalPolicy: "never",
+          sandboxMode: "workspace_write",
+        },
+      ),
+    );
+    await Promise.all(dispatches);
+    const count = await session.withActiveTurnState((s) => s.toolCalls);
+    expect(count).toBe(N);
+    await session.onTaskFinished("turn-A");
+  });
+
+  it("no-ops when there is no active turn (post-onTaskFinished)", async () => {
+    // After onTaskFinished clears the activeTurn slot, dispatching a
+    // tool still succeeds but the increment path is a no-op — the
+    // state itself is gone. Nothing throws.
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    await session.onTaskFinished("turn-A");
+    const router = new ToolRouter([
+      { tool: noopTool, supportsParallelToolCalls: true },
+    ]);
+    const result = await router.dispatchModelToolCall(
+      { id: "call-1", name: "system.noop", arguments: "{}" },
+      {
+        session: session as never,
+        turn: { subId: "turn-A" } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+      },
+    );
+    expect(result.isError).toBeFalsy();
+    expect(session.activeTurn.unsafePeek()).toBeNull();
   });
 });
