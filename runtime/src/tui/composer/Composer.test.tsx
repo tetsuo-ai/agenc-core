@@ -215,7 +215,7 @@ describe("Composer", () => {
     // Nothing to tear down — each test uses its own tmp HOME.
   });
 
-  test("keeps the right border flush with the rendered frame edge", async () => {
+  test("renders as a borderless composer strip without row-fill artifacts", async () => {
     const emitter = new EventEmitter();
     const { unmount, stdout } = await mount(
       withInputProviders(
@@ -230,11 +230,12 @@ describe("Composer", () => {
     const rows = latestFrameText(stdout)
       .split("\n")
       .filter((row) => row.trim().length > 0);
+    const visible = rows.join("\n");
 
-    expect(rows[0]?.trimEnd().endsWith("╮")).toBe(true);
-    expect(rows[1]?.trimEnd().endsWith("│")).toBe(true);
-    expect(rows[2]?.trimEnd().endsWith("│")).toBe(true);
-    expect(rows[3]?.trimEnd().endsWith("╯")).toBe(true);
+    expect(visible).toContain("Type prompt");
+    expect(visible).not.toContain("╮");
+    expect(visible).not.toContain("╯");
+    expect(visible).not.toContain("│");
 
     unmount();
   });

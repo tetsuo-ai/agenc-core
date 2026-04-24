@@ -142,6 +142,55 @@ function asNonEmptyString(value: unknown): string | undefined {
     : undefined;
 }
 
+function isOperationMarker(line: string): boolean {
+  const trimmed = line.trim();
+  return (
+    trimmed === "*** End Patch" ||
+    trimmed.startsWith("*** Add File: ") ||
+    trimmed.startsWith("*** Delete File: ") ||
+    trimmed.startsWith("*** Update File: ")
+  );
+}
+
+function normalizeAddFileLines(patch: string): string {
+  const lines = patch.split("\n");
+  const normalized: string[] = [];
+  let insideAddFile = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("*** Add File: ")) {
+      insideAddFile = true;
+      normalized.push(line);
+      continue;
+    }
+    if (isOperationMarker(line)) {
+      insideAddFile = false;
+      normalized.push(line);
+      continue;
+    }
+    if (insideAddFile && !line.startsWith("+")) {
+      normalized.push(`+${line}`);
+      continue;
+    }
+    normalized.push(line);
+  }
+
+  return normalized.join("\n");
+}
+
+function normalizePatchEnvelope(patch: string): string {
+  let normalized = patch.replace(/\r\n?/gu, "\n").trimEnd();
+  if (
+    !normalized.includes("*** End Patch") &&
+    normalized.startsWith("*** Begin Patch\n") &&
+    /^\*\*\* (Add File|Update File|Delete File): /mu.test(normalized)
+  ) {
+    normalized = `${normalized}\n*** End Patch`;
+  }
+  return normalizeAddFileLines(normalized);
+}
+
 function looksLikeGitUnifiedDiff(patch: string): boolean {
   return (
     /^diff --git /mu.test(patch) ||
@@ -652,8 +701,9 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const patch = asNonEmptyString(args.patch) ?? asNonEmptyString(args.input);
-      if (!patch) return errorResult("patch must be a non-empty string");
+      const rawPatch = asNonEmptyString(args.patch) ?? asNonEmptyString(args.input);
+      if (!rawPatch) return errorResult("patch must be a non-empty string");
+      const patch = normalizePatchEnvelope(rawPatch);
 
       const cwdArg = asNonEmptyString(args.cwd);
       const cwd = cwdArg ?? config.allowedPaths[0] ?? process.cwd();

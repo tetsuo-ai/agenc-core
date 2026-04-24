@@ -237,6 +237,41 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("renders structured write and exec results without raw JSON traces", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "write-json",
+            kind: "tool_call",
+            toolName: "system.writeFile",
+            toolArgs: { path: "include/agenc/exec.h" },
+            toolResultContent:
+              '{"path":"include/agenc/exec.h","bytesWritten":171}',
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "exec-json",
+            kind: "tool_call",
+            toolName: "exec_command",
+            toolArgs: { cmd: "cat PLAN.md | head -n 1" },
+            toolResultContent:
+              '{"stdout":"# AgenC Shell Implementation Plan\\n","stderr":"","exitCode":0,"durationMs":39,"original_token_count":7}',
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("✓ Wrote include/agenc/exec.h");
+    expect(frame).toContain("✓ Ran cat PLAN.md | head -n 1");
+    expect(frame).toContain("# AgenC Shell Implementation Plan");
+    expect(frame).not.toContain("bytesWritten");
+    expect(frame).not.toContain("original_token_count");
+    expect(frame).not.toContain('{"stdout"');
+    unmount();
+  });
+
   test("renders a warning with the ⚠ glyph", async () => {
     const { unmount, stdout } = await mount(
       <MessageList

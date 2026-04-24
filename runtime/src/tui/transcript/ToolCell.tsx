@@ -89,6 +89,59 @@ function parseJsonRecord(input: string): Record<string, unknown> | null {
   }
 }
 
+function formatNumberField(value: unknown): string | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : undefined;
+}
+
+function summarizeExecJsonResult(parsed: Record<string, unknown>): string {
+  const stdout =
+    typeof parsed.stdout === "string"
+      ? parsed.stdout
+      : typeof parsed.output === "string"
+        ? parsed.output
+        : "";
+  const stderr = typeof parsed.stderr === "string" ? parsed.stderr : "";
+  return [stdout.trimEnd(), stderr.trimEnd()]
+    .filter((entry) => entry.length > 0)
+    .join("\n");
+}
+
+function summarizeStructuredResult(
+  toolName: string | undefined,
+  family: ToolFamily,
+  value: string,
+): string | null {
+  const parsed = parseJsonRecord(value);
+  if (!parsed) return null;
+
+  if (typeof parsed.error === "string") {
+    return parsed.error;
+  }
+
+  if (family === "exec") {
+    return summarizeExecJsonResult(parsed);
+  }
+
+  if (
+    toolName === "system.writeFile" ||
+    toolName === "system.appendFile"
+  ) {
+    return "";
+  }
+
+  if (toolName === "system.editFile") {
+    const replacements = formatNumberField(parsed.replacements);
+    if (replacements !== undefined) {
+      return `${replacements} replacement${replacements === "1" ? "" : "s"}`;
+    }
+    return "";
+  }
+
+  return null;
+}
+
 function summarizeShellWriteBlock(
   value: string | undefined,
 ): ShellWriteBlockSummary | null {
@@ -231,9 +284,15 @@ function stripMcpEnvelope(input: string): string {
   return input.replace(/^Wall time: [^\n]*\nOutput:\n?/u, "").trimEnd();
 }
 
-function normalizeResult(family: ToolFamily, value: string | undefined): string {
+function normalizeResult(
+  toolName: string | undefined,
+  family: ToolFamily,
+  value: string | undefined,
+): string {
   if (!value) return "";
   const sanitized = sanitizeTranscriptText(value);
+  const structured = summarizeStructuredResult(toolName, family, sanitized);
+  if (structured !== null) return structured.trimEnd();
   if (family === "mcp") return stripMcpEnvelope(sanitized);
   return sanitized.trimEnd();
 }
@@ -267,8 +326,8 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     [toolName, toolArgs],
   );
   const normalizedResult = useMemo(
-    () => normalizeResult(presentation.family, result),
-    [presentation.family, result],
+    () => normalizeResult(toolName, presentation.family, result),
+    [toolName, presentation.family, result],
   );
   const normalizedProgress = useMemo(
     () => sanitizeTranscriptText(progress ?? "").trimEnd(),

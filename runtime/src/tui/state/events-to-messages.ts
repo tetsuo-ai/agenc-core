@@ -245,12 +245,18 @@ const SILENT_TOOL_NAMES = new Set([
   "system.searchTools",
 ]);
 
+const ASSISTANT_LIFECYCLE_CHATTER = new Set(["Calling tool."]);
+
 export function isHiddenTranscriptWarningCause(cause: string): boolean {
   return HIDDEN_WARNING_CAUSES.has(cause);
 }
 
 export function isSilentTranscriptToolName(toolName: string | undefined): boolean {
   return typeof toolName === "string" && SILENT_TOOL_NAMES.has(toolName);
+}
+
+function isAssistantLifecycleChatter(message: string): boolean {
+  return ASSISTANT_LIFECYCLE_CHATTER.has(message.trim());
 }
 
 function formatWarning(
@@ -435,6 +441,12 @@ export function eventsToMessages(
           break;
         }
         case "assistant_text": {
+          if (
+            isAssistantLifecycleChatter(event.content) &&
+            options.includeHidden !== true
+          ) {
+            break;
+          }
           const turnId = ensureTurnId(currentTurnId);
           if (
             activeAssistantIndex !== null &&
@@ -563,6 +575,12 @@ export function eventsToMessages(
         break;
       }
       case "agent_message_delta": {
+        if (
+          isAssistantLifecycleChatter(event.payload.delta) &&
+          options.includeHidden !== true
+        ) {
+          break;
+        }
         const turnId = ensureTurnId(currentTurnId);
         if (
           activeAssistantIndex === null ||
@@ -590,6 +608,12 @@ export function eventsToMessages(
         break;
       }
       case "agent_message": {
+        if (
+          isAssistantLifecycleChatter(event.payload.message) &&
+          options.includeHidden !== true
+        ) {
+          break;
+        }
         const turnId = ensureTurnId(currentTurnId);
         if (
           activeAssistantIndex !== null &&

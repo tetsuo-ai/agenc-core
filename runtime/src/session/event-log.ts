@@ -254,6 +254,32 @@ export interface ReviewDelegateCompletedEvent {
   readonly error?: string;
 }
 
+export interface PlanApprovalRequestedEvent {
+  readonly requestId: string;
+  readonly turnId: string;
+  readonly planFilePath?: string;
+  readonly planLengthChars: number;
+  readonly allowedPromptCount: number;
+  readonly requestedAt: number;
+}
+
+export type PlanApprovalOutcome =
+  | "approved"
+  | "approved_for_session"
+  | "denied"
+  | "aborted";
+
+export interface PlanApprovalCompletedEvent {
+  readonly requestId: string;
+  readonly turnId: string;
+  readonly planFilePath?: string;
+  readonly planLengthChars: number;
+  readonly allowedPromptCount: number;
+  readonly outcome: PlanApprovalOutcome;
+  readonly durationMs: number;
+  readonly completedAt: number;
+}
+
 /**
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
@@ -403,6 +429,14 @@ export type EventMsg =
       readonly payload: ReviewDelegateCompletedEvent;
     }
   | {
+      readonly type: "plan_approval_requested";
+      readonly payload: PlanApprovalRequestedEvent;
+    }
+  | {
+      readonly type: "plan_approval_completed";
+      readonly payload: PlanApprovalCompletedEvent;
+    }
+  | {
       readonly type: "entered_review_mode";
       readonly payload: import("./review.js").ReviewRequest;
     }
@@ -522,6 +556,8 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "guardian_assessment",
     "review_delegate_started",
     "review_delegate_completed",
+    "plan_approval_requested",
+    "plan_approval_completed",
     "entered_review_mode",
     "deprecation_notice",
     "plan_started",

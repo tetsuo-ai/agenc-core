@@ -145,13 +145,15 @@ function createControllableClock(): {
 }
 
 describe("Banner", () => {
-  test("keeps the right border flush with the rendered frame edge", async () => {
+  test("renders as a borderless status strip without row-fill artifacts", async () => {
     const { stdout, unmount } = await mount(<Banner mode="default" />);
     const rows = latestFrameRows(stdout).filter((row) => row.trim().length > 0);
+    const visible = rows.join("\n");
 
-    expect(rows[0]?.trimEnd().endsWith("╮")).toBe(true);
-    expect(rows[1]?.trimEnd().endsWith("│")).toBe(true);
-    expect(rows[2]?.trimEnd().endsWith("╯")).toBe(true);
+    expect(visible).toContain("AgenC cockpit");
+    expect(visible).not.toContain("╮");
+    expect(visible).not.toContain("╯");
+    expect(visible).not.toContain("│");
 
     unmount();
   });

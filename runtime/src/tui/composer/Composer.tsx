@@ -829,9 +829,8 @@ export const Composer: React.FC<ComposerProps> = ({
       ) : null}
       <Box
         flexDirection="column"
-        borderStyle="round"
-        borderColor={accentColor}
         paddingX={1}
+        paddingY={0}
         width="100%"
       >
         <Box>

@@ -36,7 +36,11 @@ import React, {
 
 import type { PermissionMode } from "../../permissions/types.js";
 import type { PhaseEvent } from "../../phases/events.js";
-import type { Event } from "../../session/event-log.js";
+import type {
+  Event,
+  EventMsg,
+  PlanApprovalOutcome,
+} from "../../session/event-log.js";
 import type { AgenCConfig } from "../../config/index.js";
 import type { ReviewDecision } from "../../permissions/review-decision.js";
 import {
@@ -187,6 +191,65 @@ function deriveApprovalToolInput(ctx: {
   }
 }
 
+function isExitPlanTool(toolName: string): boolean {
+  return toolName === "ExitPlanMode" || toolName === "workflow.exitPlan";
+}
+
+function planApprovalStats(input: unknown): {
+  readonly planFilePath?: string;
+  readonly planLengthChars: number;
+  readonly allowedPromptCount: number;
+} {
+  const record =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+  const plan = typeof record.plan === "string" ? record.plan : "";
+  const planFilePath =
+    typeof record.planFilePath === "string" ? record.planFilePath : undefined;
+  const allowedPromptCount = Array.isArray(record.allowedPrompts)
+    ? record.allowedPrompts.length
+    : 0;
+  return {
+    ...(planFilePath !== undefined ? { planFilePath } : {}),
+    planLengthChars: plan.length,
+    allowedPromptCount,
+  };
+}
+
+function reviewOutcome(decision: ReviewDecision): PlanApprovalOutcome {
+  switch (decision.kind) {
+    case "approved":
+      return "approved";
+    case "approved_for_session":
+    case "approved_execpolicy_amendment":
+    case "network_policy_amendment":
+      return decision.kind === "network_policy_amendment" &&
+        decision.amendment.action === "deny"
+        ? "denied"
+        : "approved_for_session";
+    case "denied":
+    case "timed_out":
+      return "denied";
+    case "abort":
+      return "aborted";
+  }
+}
+
+function emitSessionTelemetry(
+  session: SessionLike,
+  msg: EventMsg,
+): void {
+  if (typeof session.emit !== "function") return;
+  const id =
+    typeof session.nextInternalSubId === "function"
+      ? session.nextInternalSubId()
+      : `tui-${Date.now().toString(36)}-${Math.random()
+          .toString(36)
+          .slice(2, 8)}`;
+  session.emit({ id, msg });
+}
+
 function reviewDecisionFromPayload(
   payload: InteractiveResolverPayload,
 ): ReviewDecision {
@@ -204,12 +267,29 @@ function reviewDecisionFromPayload(
 
 function createTuiApprovalResolver(
   queueOps: PermissionQueueOps,
+  session: SessionLike,
 ): ApprovalResolver {
   return {
     request(ctx) {
       return new Promise<ReviewDecision>((resolve) => {
         const requestId = ctx.callId;
         let settled = false;
+        const submittedAt = Date.now();
+        const toolInput = deriveApprovalToolInput(ctx);
+        const planStats = planApprovalStats(toolInput);
+        const isPlanApproval = isExitPlanTool(ctx.toolName);
+
+        if (isPlanApproval) {
+          emitSessionTelemetry(session, {
+            type: "plan_approval_requested",
+            payload: {
+              requestId,
+              turnId: ctx.turnId,
+              ...planStats,
+              requestedAt: submittedAt,
+            },
+          });
+        }
 
         const cleanupAbort = (): void => {
           ctx.signal?.removeEventListener("abort", onAbort);
@@ -224,6 +304,20 @@ function createTuiApprovalResolver(
           cleanupAbort();
           if (opts.removeFromQueue === true) {
             queueOps.remove(requestId);
+          }
+          if (isPlanApproval) {
+            const completedAt = Date.now();
+            emitSessionTelemetry(session, {
+              type: "plan_approval_completed",
+              payload: {
+                requestId,
+                turnId: ctx.turnId,
+                ...planStats,
+                outcome: reviewOutcome(decision),
+                durationMs: completedAt - submittedAt,
+                completedAt,
+              },
+            });
           }
           resolve(decision);
           return true;
@@ -250,9 +344,9 @@ function createTuiApprovalResolver(
         queueOps.push({
           requestId,
           toolName: ctx.toolName,
-          toolInput: deriveApprovalToolInput(ctx),
+          toolInput,
           message: `Permission required to use ${ctx.toolName}`,
-          submittedAt: Date.now(),
+          submittedAt,
           turnId: ctx.turnId,
           resolveOnce,
         } as PendingPermissionRequest);
@@ -355,7 +449,7 @@ export function AgenCAppStateProvider({
       sessionWithQueueOps.services.approvalResolver;
     sessionWithQueueOps.permissionQueueOps = exposedOps;
     sessionWithQueueOps.services.approvalResolver =
-      createTuiApprovalResolver(exposedOps);
+      createTuiApprovalResolver(exposedOps, session);
     return () => {
       if (sessionWithQueueOps.permissionQueueOps === exposedOps) {
         sessionWithQueueOps.permissionQueueOps = previous;

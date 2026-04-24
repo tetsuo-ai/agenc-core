@@ -287,14 +287,15 @@ export const Banner: React.FC<BannerProps> = ({
 
   return (
     <Box
-      borderStyle="round"
-      borderColor={theme.colors.lineStrong as Color}
-      borderText={{ content: " AgenC cockpit ", position: "top", align: "start", offset: 1 }}
       paddingX={1}
+      paddingY={0}
       flexDirection="row"
       flexWrap="wrap"
       width="100%"
     >
+      <Segment>
+        <Text color={theme.colors.primary as Color}>AgenC cockpit</Text>
+      </Segment>
       <LeadStatus
         isStreaming={isStreaming}
         spinnerFrame={spinnerFrame}

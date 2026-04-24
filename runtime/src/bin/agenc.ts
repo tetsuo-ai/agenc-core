@@ -520,14 +520,18 @@ export interface RunSingleTurnOpts {
   readonly assembleSystemPromptFn?: typeof assembleSystemPrompt;
 }
 
-function buildPlanModeSystemReminder(opts: RunSingleTurnOpts): string | null {
-  let isPlanMode = false;
+async function buildPlanModeSystemReminder(
+  opts: RunSingleTurnOpts,
+): Promise<string | null> {
+  let planCtx = null as
+    | ReturnType<RunSingleTurnOpts["session"]["permissionModeRegistry"]["current"]>
+    | null;
   try {
-    isPlanMode = opts.session.permissionModeRegistry.current().mode === "plan";
+    planCtx = opts.session.permissionModeRegistry.current();
   } catch {
-    isPlanMode = false;
+    planCtx = null;
   }
-  if (!isPlanMode) return null;
+  if (planCtx?.mode !== "plan") return null;
 
   const fileCtx = {
     ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
@@ -535,8 +539,20 @@ function buildPlanModeSystemReminder(opts: RunSingleTurnOpts): string | null {
   };
   const planFilePath = getPlanFilePath(fileCtx);
   const planExists = getPlan(fileCtx) !== null;
+  const includeReentryReminder =
+    planCtx.hasExitedPlanModeInSession === true && planExists;
+  if (includeReentryReminder) {
+    await opts.session.permissionModeRegistry.update({
+      ...planCtx,
+      hasExitedPlanModeInSession: false,
+    });
+  }
   return `<system-reminder>
-${buildPlanModeInstructions({ planFilePath, planExists })}
+${buildPlanModeInstructions({
+  planFilePath,
+  planExists,
+  includeReentryReminder,
+})}
 </system-reminder>`;
 }
 
@@ -596,7 +612,7 @@ export async function* runSingleTurn(
     assembled.text,
     selectedMemories,
   );
-  const planModeReminder = buildPlanModeSystemReminder(opts);
+  const planModeReminder = await buildPlanModeSystemReminder(opts);
   if (planModeReminder !== null) {
     systemPrompt = `${systemPrompt}\n\n${planModeReminder}`;
   }

@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
 import type { PermissionMode } from "../../permissions/types.js";
+import type { Event } from "../../session/event-log.js";
 import {
   AgenCAppStateProvider,
   useAgenCAppState,
@@ -213,6 +214,85 @@ describe("AgenCAppStateProvider", () => {
     ).toBe(true);
     await expect(pendingDecision).resolves.toEqual({
       kind: "approved_for_session",
+    });
+    unmount();
+  });
+
+  test("emits plan approval telemetry for ExitPlanMode requests", async () => {
+    const events: Event[] = [];
+    let eventId = 0;
+    const session = {
+      ...createFakeSession("plan"),
+      nextInternalSubId: () => `telemetry-${++eventId}`,
+      emit: (event: Event) => {
+        events.push(event);
+      },
+    } as SessionLike & {
+      services: SessionLike["services"] & {
+        approvalResolver?: ApprovalResolver;
+      };
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    let latestQueue: readonly Record<string, unknown>[] = [];
+
+    function Consumer(): null {
+      const { permissionQueue } = useAgenCAppState();
+      latestQueue = permissionQueue as readonly Record<string, unknown>[];
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    const pendingDecision = session.services.approvalResolver?.request({
+      invocation: {
+        payload: {
+          kind: "function",
+          arguments: JSON.stringify({
+            plan: "# AgenC Plan\n\n- Ship richer plan mode",
+            planFilePath: "/tmp/agenc/plans/session.md",
+            allowedPrompts: [{ tool: "Bash", prompt: "run tests" }],
+          }),
+        },
+      } as never,
+      callId: "plan-approval-1",
+      toolName: "ExitPlanMode",
+      turnId: "turn-plan",
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latestQueue).toHaveLength(1);
+    expect(events.map((event) => event.msg.type)).toContain(
+      "plan_approval_requested",
+    );
+    const requested = events.find(
+      (event) => event.msg.type === "plan_approval_requested",
+    );
+    expect(requested?.msg.payload).toMatchObject({
+      requestId: "plan-approval-1",
+      turnId: "turn-plan",
+      planFilePath: "/tmp/agenc/plans/session.md",
+      allowedPromptCount: 1,
+    });
+
+    const resolver = latestQueue[0]?.resolveOnce as
+      | { claim(payload: { behavior: "allow" }): boolean }
+      | undefined;
+    expect(resolver?.claim({ behavior: "allow" })).toBe(true);
+
+    await expect(pendingDecision).resolves.toEqual({ kind: "approved" });
+    const completed = events.find(
+      (event) => event.msg.type === "plan_approval_completed",
+    );
+    expect(completed?.msg.payload).toMatchObject({
+      requestId: "plan-approval-1",
+      turnId: "turn-plan",
+      planFilePath: "/tmp/agenc/plans/session.md",
+      allowedPromptCount: 1,
+      outcome: "approved",
     });
     unmount();
   });

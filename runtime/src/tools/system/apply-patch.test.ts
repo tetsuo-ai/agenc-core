@@ -132,6 +132,65 @@ describe("apply_patch tool", () => {
     );
   });
 
+  test("normalizes a missing End Patch envelope marker", async () => {
+    const runner = vi.fn<ApplyPatchRunner>(async () => ({
+      stdout: "Success. Updated the following files:\nA new.txt\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const tool = createApplyPatchTool({ allowedPaths: [root], runner });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Add File: nested/new.txt\n" +
+        "+created\n",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(runner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Add File: nested/new.txt\n" +
+          "+created\n" +
+          "*** End Patch",
+      }),
+    );
+  });
+
+  test("normalizes unprefixed Add File body lines", async () => {
+    const runner = vi.fn<ApplyPatchRunner>(async () => ({
+      stdout: "Success. Updated the following files:\nA CMakeLists.txt\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const tool = createApplyPatchTool({ allowedPaths: [root], runner });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Add File: CMakeLists.txt\n" +
+        "cmake_minimum_required(VERSION 3.16)\n" +
+        "project(agenc-shell)\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(runner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Add File: CMakeLists.txt\n" +
+          "+cmake_minimum_required(VERSION 3.16)\n" +
+          "+project(agenc-shell)\n" +
+          "*** End Patch",
+      }),
+    );
+  });
+
   test("rejects git unified diffs with apply_patch grammar guidance", async () => {
     const runner = vi.fn<ApplyPatchRunner>();
     const tool = createApplyPatchTool({ allowedPaths: [root], runner });

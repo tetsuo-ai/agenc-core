@@ -35,6 +35,7 @@ import {
 } from "../keybindings/KeybindingContext.js";
 import { getDisplayForCommand } from "../keybindings/shortcutFormat.js";
 import type { PendingPermissionRequest } from "../../permissions/context.js";
+import { MarkdownBlock } from "../transcript/MarkdownBlock.js";
 
 export type ApprovalBehavior = "allow" | "allow-session" | "deny" | "abort";
 type FocusZone = "decision" | "details";
@@ -62,6 +63,7 @@ export interface ApprovalOverlayProps {
 }
 
 const MAX_PREVIEW_LINES = 8;
+const MAX_PLAN_PREVIEW_LINES = 30;
 const MAX_ARGS_LINES = 18;
 const DETAIL_TABS: readonly DetailTab[] = [
   "summary",
@@ -129,7 +131,48 @@ function extractCommand(args: unknown): string {
   return coerceString(record.command ?? record.cmd);
 }
 
+function isPlanApprovalTool(tool: string): boolean {
+  return tool === "ExitPlanMode" || tool === "workflow.exitPlan";
+}
+
+function extractAllowedPrompts(args: unknown): Array<{
+  readonly tool: string;
+  readonly prompt: string;
+}> {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return [];
+  const raw = (args as Record<string, unknown>).allowedPrompts;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const tool = coerceString(record.tool);
+    const prompt = coerceString(record.prompt);
+    if (!tool || !prompt) return [];
+    return [{ tool, prompt }];
+  });
+}
+
+function extractPlanApproval(args: unknown): {
+  readonly plan: string;
+  readonly planFilePath: string;
+  readonly allowedPrompts: readonly { readonly tool: string; readonly prompt: string }[];
+} {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return { plan: "", planFilePath: "", allowedPrompts: [] };
+  }
+  const record = args as Record<string, unknown>;
+  return {
+    plan: coerceString(record.plan),
+    planFilePath: coerceString(record.planFilePath),
+    allowedPrompts: extractAllowedPrompts(args),
+  };
+}
+
 function summarizeScope(tool: string, args: unknown): string {
+  if (isPlanApprovalTool(tool)) {
+    const { planFilePath } = extractPlanApproval(args);
+    return planFilePath ? truncateInline(planFilePath, 72) : "exit plan mode";
+  }
   const command = extractCommand(args);
   if (command.length > 0) {
     return truncateInline(command.split("\n")[0] ?? command, 72);
@@ -293,7 +336,39 @@ export const GenericRequest: React.FC<{ args: unknown }> = ({ args }) => {
   );
 };
 
+export const PlanApprovalRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const { plan, planFilePath, allowedPrompts } = extractPlanApproval(args);
+  const preview = truncateLines(
+    plan.trim().length > 0
+      ? plan
+      : "No plan content was supplied. The model should write the AgenC plan file before calling ExitPlanMode.",
+    MAX_PLAN_PREVIEW_LINES,
+  );
+  return (
+    <Box flexDirection="column">
+      <Text dim>{`plan file · ${planFilePath || "(unknown)"}`}</Text>
+      <Text dim>{`plan · ${countLines(plan)} lines · ${byteSize(plan)} bytes`}</Text>
+      {allowedPrompts.length > 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>Requested permissions:</Text>
+          {allowedPrompts.map((prompt, index) => (
+            <Text key={`${prompt.tool}-${index}`} dim>
+              {`  · ${prompt.tool}(prompt: ${prompt.prompt})`}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+      <Box borderStyle="round" paddingX={1} flexDirection="column" marginTop={1}>
+        <MarkdownBlock content={preview} isComplete />
+      </Box>
+    </Box>
+  );
+};
+
 function renderToolBody(tool: string, args: unknown): React.ReactElement {
+  if (isPlanApprovalTool(tool)) {
+    return <PlanApprovalRequest args={args} />;
+  }
   switch (tool) {
     case "Bash":
     case "system.bash":
@@ -316,8 +391,11 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
 }) => {
   const appState = useOptionalAgenCAppState();
   const stdin = useContext(StdinContext);
+  const isPlanApproval = isPlanApprovalTool(request.tool);
   const [focusZone, setFocusZone] = useState<FocusZone>("decision");
-  const [detailTab, setDetailTab] = useState<DetailTab>("summary");
+  const [detailTab, setDetailTab] = useState<DetailTab>(() =>
+    isPlanApproval ? "preview" : "summary",
+  );
   const resolvedRef = useRef(false);
 
   const queue = appState?.permissionQueue ?? [];
@@ -406,8 +484,12 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
 
   const onAllowSession = useCallback(() => {
     if (focusZone !== "decision") return;
-    resolveOnce({ behavior: "allow-session", addRule: true });
-  }, [focusZone, resolveOnce]);
+    resolveOnce(
+      isPlanApproval
+        ? { behavior: "allow" }
+        : { behavior: "allow-session", addRule: true },
+    );
+  }, [focusZone, isPlanApproval, resolveOnce]);
 
   const onDeny = useCallback(() => {
     if (focusZone !== "decision") {
@@ -489,7 +571,11 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
       borderColor={focusColor}
     >
       <Box justifyContent="space-between">
-        <Text color={warningColor}>{`Approval needed · ${request.tool}`}</Text>
+        <Text color={warningColor}>
+          {isPlanApproval
+            ? "Plan approval needed"
+            : `Approval needed · ${request.tool}`}
+        </Text>
         <Text color={riskColor(risk.level)}>{`${risk.label} RISK`}</Text>
       </Box>
       <Text dim>
@@ -522,7 +608,9 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
         <Text dim>
           {focusZone === "details"
             ? `Details focused · Tab/${cancelKey} returns to actions · arrows or H/J/K/L switch tabs`
-            : `Actions focused · ${confirmKey} allows · ${allowSessionKey} allows for session · ${denyKey} denies · C aborts`}
+            : isPlanApproval
+              ? `Actions focused · ${confirmKey} approves plan · ${allowSessionKey} approves plan · ${denyKey} keeps planning · C aborts`
+              : `Actions focused · ${confirmKey} allows · ${allowSessionKey} allows for session · ${denyKey} denies · C aborts`}
         </Text>
       </Box>
 
@@ -579,9 +667,19 @@ export const ApprovalOverlay: React.FC<ApprovalOverlayProps> = ({
         paddingX={1}
         flexDirection="column"
       >
-        <Text>{`[Y] Allow once${focusZone === "decision" ? "  <Enter>" : ""}`}</Text>
-        <Text>[A] Allow this session</Text>
-        <Text>{`[D] Deny${focusZone === "decision" ? "  <N / Esc>" : "  <Esc returns to actions>"}`}</Text>
+        <Text>
+          {isPlanApproval
+            ? `[Y] Approve plan${focusZone === "decision" ? "  <Enter>" : ""}`
+            : `[Y] Allow once${focusZone === "decision" ? "  <Enter>" : ""}`}
+        </Text>
+        <Text>
+          {isPlanApproval ? "[A] Approve plan" : "[A] Allow this session"}
+        </Text>
+        <Text>
+          {isPlanApproval
+            ? `[D] Keep planning${focusZone === "decision" ? "  <N / Esc>" : "  <Esc returns to actions>"}`
+            : `[D] Deny${focusZone === "decision" ? "  <N / Esc>" : "  <Esc returns to actions>"}`}
+        </Text>
         <Text>[C] Abort without approving</Text>
       </Box>
     </Box>

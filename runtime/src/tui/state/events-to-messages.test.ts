@@ -47,6 +47,36 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("hides provider lifecycle assistant chatter in the normal transcript", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-tools" } },
+      { type: "agent_message", payload: { message: "Calling tool." } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "call-1",
+          toolName: "system.writeFile",
+          args: '{"path":"note.txt"}',
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call-1",
+          result: '{"path":"note.txt","bytesWritten":2}',
+          isError: false,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "system.writeFile",
+    });
+  });
+
   test("hydrates bash activity into a single exec cell row", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-bash" } },

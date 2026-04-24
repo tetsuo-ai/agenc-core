@@ -34,6 +34,7 @@ import {
   BashRequest,
   WriteFileRequest,
   EditFileRequest,
+  PlanApprovalRequest,
   GenericRequest,
   type ApprovalOverlayProps,
   type ApprovalDecision,
@@ -354,6 +355,24 @@ describe("ApprovalOverlay", () => {
     expect(text).toContain("+4");
   });
 
+  test("PlanApprovalRequest renders the plan and requested permissions", async () => {
+    const text = await renderSubcomponent(
+      <PlanApprovalRequest
+        args={{
+          plan: "## Context\n\nImplement rich plan mode.",
+          planFilePath: "/tmp/agenc/plans/session.md",
+          allowedPrompts: [{ tool: "Bash", prompt: "run tests" }],
+        }}
+      />,
+    );
+
+    expect(text).toContain("/tmp/agenc/plans/session.md");
+    expect(text).toContain("Requested permissions");
+    expect(text).toContain("Bash(prompt: run tests)");
+    expect(text).toContain("Context");
+    expect(text).toContain("Implement rich plan mode.");
+  });
+
   test("Enter fires onResolve with {behavior: 'allow'}", async () => {
     const emitter = new EventEmitter();
     const onResolve = vi.fn<[ApprovalDecision], void>();
@@ -402,6 +421,40 @@ describe("ApprovalOverlay", () => {
       behavior: "allow-session",
       addRule: true,
     });
+    unmount();
+  });
+
+  test("ExitPlanMode renders plan approval copy and treats A as approve", async () => {
+    const emitter = new EventEmitter();
+    const onResolve = vi.fn<[ApprovalDecision], void>();
+    const { unmount, getText } = await mount(
+      withProviders(
+        <ApprovalOverlay
+          request={makeRequest({
+            tool: "ExitPlanMode",
+            args: {
+              plan: "# Plan\n\n- Port OpenClaude planning workflow",
+              planFilePath: "/tmp/agenc/plans/session.md",
+            },
+          })}
+          onResolve={onResolve}
+          abortSignal={new AbortController().signal}
+        />,
+        { emitter },
+      ),
+    );
+
+    const text = getText();
+    expect(text).toContain("Plan approval needed");
+    expect(text).toContain("Approve plan");
+    expect(text).toContain("Keep planning");
+    expect(text).toContain("Port OpenClaude planning workflow");
+
+    emitter.emit("input", makeKeyEvent({ sequence: "a" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onResolve).toHaveBeenCalledTimes(1);
+    expect(onResolve.mock.calls[0][0]).toEqual({ behavior: "allow" });
     unmount();
   });
 
