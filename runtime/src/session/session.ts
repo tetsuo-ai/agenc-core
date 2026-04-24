@@ -107,6 +107,16 @@ import {
 } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
+import {
+  createActiveTurnState,
+  createDoneHandle,
+  waitForDoneWithin,
+  GRACEFUL_INTERRUPTION_TIMEOUT_MS,
+  type ActiveTurnState,
+  type RunningTask,
+  type SpawnTaskOptions,
+  type TurnAbortReason,
+} from "./tasks.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Placeholder types for forward-dep subsystems.
@@ -122,6 +132,16 @@ export type ThreadId = string;
 // event-log.ts below. The T6 canonical shape lives there; session.ts
 // used to have a narrow local copy which caused type divergence.
 export type { Event, EventMsg, SessionConfiguredEvent };
+
+/** Re-exports for the task-dispatch subsystem. See `./tasks.ts` for details. */
+export type {
+  ActiveTurnState,
+  RunningTask,
+  SpawnTaskOptions,
+  TaskKind,
+  TurnAbortReason,
+  MailboxDeliveryPhase,
+} from "./tasks.js";
 
 /** Codex `AgentStatus` FSM. T9 (subagents) expands. */
 export type AgentStatus =
@@ -202,11 +222,27 @@ export type UserInput = unknown;
  */
 export const MAILBOX_SOURCE_IDLE_INPUT = "idle";
 
-/** Codex `ActiveTurn`. T7 (tool runtime) wires. */
+/**
+ * Upstream codex `state/turn.rs::ActiveTurn`. Holds the running-task
+ * registry and the per-turn lock-guarded state (`ActiveTurnState`).
+ *
+ * Gut originally exposed only `{turnId, startedAtMs, abortController}`
+ * as a forward slot; the T5 task-dispatch port (see `session/tasks.ts`)
+ * adds the `tasks` registry and the `turnState` lock so
+ * `Session.spawnTask` / `Session.onTaskFinished` can enforce the "one
+ * turn in flight at a time" invariant. Existing consumers read the
+ * original three fields via `session.activeTurn.unsafePeek()` and are
+ * unaffected.
+ */
 export interface ActiveTurn {
   readonly turnId: string;
   readonly startedAtMs: number;
   readonly abortController: AbortController;
+  /** Upstream `tasks: IndexMap<sub_id, RunningTask>`. JS Map preserves
+   *  insertion order, matching IndexMap semantics. */
+  readonly tasks: Map<string, RunningTask>;
+  /** Upstream `turn_state: Arc<Mutex<TurnState>>` per translation-conventions. */
+  readonly turnState: AsyncLock<ActiveTurnState>;
 }
 
 /** Codex `Mailbox` + `MailboxReceiver`. T9 (subagents) provides the
@@ -675,6 +711,17 @@ export class Session {
 
   /** codex: `agent_task_registration_lock: Mutex<()>` — serializes task registration. */
   readonly agentTaskRegistrationLock: AsyncLock<void>;
+
+  /**
+   * Serializes `spawnTask` + `abortAllTasks` so the "abort old then
+   * install new" sequence is atomic w.r.t. other spawn/abort callers.
+   * Upstream codex doesn't need this because `spawn_task` is always
+   * called from the single submit dispatcher; gut exposes `spawnTask`
+   * to `runTurnKernel`, slash-command adapters, and tests, so we add a
+   * dedicated mutex to keep the two-lock sequence race-free. See
+   * `session/tasks.ts` for design notes.
+   */
+  private readonly taskDispatchLock: AsyncLock<void> = new AsyncLock<void>(undefined);
 
   // ───────────────────────────────────────────────────────────
   // AgenC-specific additions (not in codex):
@@ -1435,6 +1482,184 @@ export class Session {
    */
   sendEventRaw(event: Event): void {
     this.emit(event);
+  }
+
+  // ───────────────────────────────────────────────────────────
+  // Task dispatch — port of upstream codex `tasks/mod.rs`.
+  // See `session/tasks.ts` for the rationale. These methods own the
+  // `activeTurn` lock so the outer "one turn in flight at a time"
+  // invariant is enforced at every spawn / finish / abort site.
+  // ───────────────────────────────────────────────────────────
+
+  /**
+   * Upstream codex `tasks/mod.rs::spawn_task`. Serializes the new-turn
+   * boundary: first aborts any in-flight task with `TurnAbortReason::Replaced`
+   * (matching upstream's `abort_all_tasks(TurnAbortReason::Replaced)`),
+   * then installs a fresh `ActiveTurn` for the new task keyed by `subId`.
+   *
+   * Returns the `RunningTask` so callers can pull its `.signal` for the
+   * kernel loop and hold onto `resolveDone` / `abortController` for the
+   * finish / cancel paths. Callers are expected to invoke
+   * `session.onTaskFinished(subId)` in a `finally` so the registry
+   * entry is cleaned up on every exit path.
+   */
+  async spawnTask(opts: SpawnTaskOptions): Promise<RunningTask> {
+    return this.taskDispatchLock.with(async () => {
+      // Upstream codex: `spawn_task` always calls
+      // `abort_all_tasks(TurnAbortReason::Replaced)` before installing
+      // the new task. This is the non-negotiable serialization point.
+      await this.abortAllTasksLocked("replaced");
+
+      const abortController = opts.abortController ?? new AbortController();
+      const { done, resolveDone } = createDoneHandle();
+      const task: RunningTask = {
+        subId: opts.subId,
+        kind: opts.kind,
+        abortController,
+        done,
+        resolveDone,
+        startedAtMs: opts.startedAtMs ?? Date.now(),
+      };
+
+      // Upstream codex installs the new `ActiveTurn` under the
+      // `active_turn` lock at the end of `start_task`. The
+      // `taskDispatchLock` above guarantees no concurrent spawn runs
+      // between abort-old-tasks and install-new-task.
+      const turnState = new AsyncLock<ActiveTurnState>(createActiveTurnState());
+      if (opts.tokenUsageAtTurnStart !== undefined) {
+        const seeded = opts.tokenUsageAtTurnStart;
+        await turnState.with((s) => {
+          s.tokenUsageAtTurnStart = { ...seeded };
+        });
+      }
+      await this.activeTurn.swap({
+        turnId: task.subId,
+        startedAtMs: task.startedAtMs,
+        abortController,
+        tasks: new Map([[task.subId, task]]),
+        turnState,
+      });
+
+      return task;
+    });
+  }
+
+  /**
+   * Upstream codex `tasks/mod.rs::on_task_finished`. Removes the task
+   * from the `tasks` registry. When the registry empties, clears the
+   * `activeTurn` slot so the next `spawnTask` sees a clean state.
+   *
+   * This is the normal-exit cleanup; the abort paths go through
+   * `abortAllTasks` / `abortTurnIfActive` which also trigger
+   * `resolveDone` so `handle_task_abort`'s awaiter unblocks.
+   */
+  async onTaskFinished(subId: string): Promise<void> {
+    await this.activeTurn.with(async (current) => {
+      if (current === null) return;
+      const task = current.tasks.get(subId);
+      if (task !== undefined) {
+        current.tasks.delete(subId);
+        task.resolveDone();
+      }
+      // Upstream: when the registry empties, `active` is cleared to
+      // None. The JS AsyncLock has no in-place setter, so swap to null
+      // AFTER draining this branch.
+    });
+    const current = this.activeTurn.unsafePeek();
+    if (current !== null && current.tasks.size === 0) {
+      await this.activeTurn.swap(null);
+    }
+  }
+
+  /**
+   * Upstream codex `tasks/mod.rs::abort_all_tasks`. Takes the
+   * `activeTurn` slot (upstream `take_active_turn`), drains every
+   * running task by firing its cancellation token and awaiting its
+   * `done` signal under the graceful-interruption budget, then
+   * clears pending state and releases.
+   */
+  async abortAllTasks(reason: TurnAbortReason): Promise<void> {
+    await this.taskDispatchLock.with(async () => {
+      await this.abortAllTasksLocked(reason);
+    });
+  }
+
+  /**
+   * Body of `abortAllTasks` without retaking `taskDispatchLock`. Callers
+   * MUST already hold it (e.g. `spawnTask` holds it for the full
+   * abort-then-install sequence).
+   */
+  private async abortAllTasksLocked(reason: TurnAbortReason): Promise<void> {
+    const taken = await this.activeTurn.swap(null);
+    if (taken === null) return;
+    const tasks = Array.from(taken.tasks.values());
+    await Promise.all(
+      tasks.map((task) => this.handleTaskAbort(task, reason)),
+    );
+    // Upstream: `active_turn.clear_pending().await` — release any
+    // dangling approvals / input pre-emptively so interrupted tasks
+    // don't surface stale responses. We reach into `turnState` here
+    // because the `ActiveTurn` object itself is already taken out.
+    await taken.turnState.with((ts) => {
+      ts.pendingApprovals.clear();
+      ts.pendingRequestPermissions.clear();
+      ts.pendingUserInput.clear();
+      ts.pendingElicitations.clear();
+      ts.pendingDynamicTools.clear();
+      ts.pendingInput.length = 0;
+    });
+  }
+
+  /**
+   * Upstream codex `tasks/mod.rs::abort_turn_if_active`. If the
+   * currently-active turn's registry contains `turnId`, aborts it;
+   * otherwise returns false.
+   */
+  async abortTurnIfActive(
+    turnId: string,
+    reason: TurnAbortReason,
+  ): Promise<boolean> {
+    const current = this.activeTurn.unsafePeek();
+    if (current === null || !current.tasks.has(turnId)) return false;
+    await this.abortAllTasks(reason);
+    return true;
+  }
+
+  /**
+   * Upstream codex `tasks/mod.rs::handle_task_abort`. Fires the task's
+   * cancellation signal, awaits `done` up to `GRACEFUL_INTERRUPTION_TIMEOUT_MS`,
+   * then returns even if the task did not signal done in time. We do
+   * not call `handle.abort()` like upstream does because JS has no
+   * force-kill primitive for a pending Promise; the bounded wait + the
+   * task's own cancellation-signal check are the gut equivalents.
+   */
+  private async handleTaskAbort(
+    task: RunningTask,
+    reason: TurnAbortReason,
+  ): Promise<void> {
+    void reason; // kept for parity / future telemetry emission
+    if (task.abortController.signal.aborted) {
+      task.resolveDone();
+      return;
+    }
+    task.abortController.abort(reason);
+    await waitForDoneWithin(task.done, GRACEFUL_INTERRUPTION_TIMEOUT_MS);
+    // Ensure `done` settles even if the task never flipped it on its
+    // own — callers awaiting `task.done` must progress after abort.
+    task.resolveDone();
+  }
+
+  /**
+   * Helpers for callers that want to check / mutate the per-turn
+   * lock-guarded state. These proxy to `activeTurn.turnState` and
+   * are no-ops when no turn is active.
+   */
+  async withActiveTurnState<R>(
+    fn: (state: ActiveTurnState) => Promise<R> | R,
+  ): Promise<R | undefined> {
+    const current = this.activeTurn.unsafePeek();
+    if (current === null) return undefined;
+    return current.turnState.with(fn);
   }
 
   /**
