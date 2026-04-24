@@ -20,6 +20,7 @@ import {
   createClock,
   type Clock,
 } from "../ink/components/ClockContext.js";
+import { updateLastInteractionTime } from "../ink/vendored/state.js";
 import { useAnimationTick } from "./useAnimationTick.js";
 
 type TestStdin = PassThrough & {
@@ -61,6 +62,19 @@ async function mount(element: React.ReactElement): Promise<{
       stdout.end();
     },
   };
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  timeoutMs = 500,
+): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > timeoutMs) {
+      throw new Error("condition was not met before timeout");
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 /**
@@ -131,9 +145,9 @@ describe("useAnimationTick", () => {
       </ClockContext.Provider>,
     );
     tick();
-    await new Promise((r) => setTimeout(r, 20));
+    await waitForCondition(() => Math.max(...ticks) >= 1);
     tick();
-    await new Promise((r) => setTimeout(r, 20));
+    await waitForCondition(() => Math.max(...ticks) >= 2);
     // After two ticks the consumer should have re-rendered with
     // monotonically increasing tick counts.
     expect(Math.max(...ticks)).toBeGreaterThanOrEqual(2);
@@ -152,8 +166,9 @@ describe("useAnimationTick", () => {
         <Consumer />
       </ClockContext.Provider>,
     );
+    updateLastInteractionTime(true);
     tick();
-    await new Promise((r) => setTimeout(r, 20));
+    await waitForCondition(() => latest?.isIdle === false);
     expect(latest!.isIdle).toBe(false);
     unmount();
   });

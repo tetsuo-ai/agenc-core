@@ -191,9 +191,12 @@ describe("StatusLineConfig", () => {
     const modelIdx = text.indexOf("grok-4");
     const modeIdx = text.indexOf("plan");
     const cwdIdx = text.indexOf("myproject");
-    expect(text).toContain("MODEL");
-    expect(text).toContain("MODE");
-    expect(text).toContain("CWD");
+    expect(text).toContain("model");
+    expect(text).toContain("mode");
+    expect(text).toContain("cwd");
+    expect(text).not.toContain("MODEL");
+    expect(text).not.toContain("MODE");
+    expect(text).not.toContain("CWD");
     expect(modelIdx).toBeGreaterThan(-1);
     expect(modeIdx).toBeGreaterThan(modelIdx);
     expect(cwdIdx).toBeGreaterThan(modeIdx);
@@ -210,9 +213,9 @@ describe("StatusLineConfig", () => {
     );
     await new Promise((r) => setTimeout(r, 60));
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("CONTEXT");
+    expect(text).toContain("context");
     expect(text).toContain("82% [####-]");
-    expect(text).toContain("TOKENS");
+    expect(text).toContain("tokens");
     expect(text).toContain("12.3k");
     unmount();
   });

@@ -19,10 +19,11 @@
  *      the user sees why an attachment was dropped.
  *
  * The React tree stays intentionally small, but the live buffer now uses
- * the shared wrapped-cursor model (`Cursor` + `useDeclaredCursor`) rather
- * than the original placeholder caret renderer. The contract here covers
- * both keystroke → state plumbing and stable terminal-safe composer
- * rendering for wrapped/multiline drafts.
+ * the shared wrapped-cursor model and renders the caret in-band. Native
+ * terminal cursor parking is deliberately avoided here because it can drift
+ * over footer text when the renderer is recovering from scroll/resize frames.
+ * The contract here covers both keystroke → state plumbing and stable
+ * terminal-safe composer rendering for wrapped/multiline drafts.
  */
 
 import React, {
@@ -43,6 +44,7 @@ import {
 } from "../../prompts/file-mentions.js";
 import Box from "../ink/components/Box.js";
 import StdinContext from "../ink/components/StdinContext.js";
+import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import type { InputEvent } from "../ink/events/input-event.js";
 import type { Color } from "../ink/styles.js";
@@ -125,6 +127,48 @@ const PASTE_BURST_CHAR_INTERVAL_MS =
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;
 
+function formatElapsedDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
+}
+
+function useActiveTurnElapsedMs(active: boolean): number {
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!active) {
+      setStartedAt(null);
+      setNow(Date.now());
+      return;
+    }
+    const current = Date.now();
+    setStartedAt((previous) => previous ?? current);
+    setNow(current);
+  }, [active]);
+
+  useEffect(() => {
+    if (!active) return undefined;
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [active]);
+
+  return startedAt === null ? 0 : Math.max(0, now - startedAt);
+}
+
 function getSlashPaletteItems(): readonly PaletteItem[] {
   const registry = getGlobalCommandRegistry();
   if (registry) {
@@ -132,7 +176,6 @@ function getSlashPaletteItems(): readonly PaletteItem[] {
   }
   return getSlashCommandItems(buildDefaultRegistry());
 }
-
 
 // ────────────────────────────────────────────────────────────────────────
 // Main component
@@ -148,6 +191,11 @@ export const Composer: React.FC<ComposerProps> = ({
   pasteStore,
 }) => {
   const store = pasteStore ?? getPasteStore();
+  const terminalSize = useContext(TerminalSizeContext);
+  const chromeWidth =
+    terminalSize !== null && terminalSize.columns > 0
+      ? terminalSize.columns
+      : "100%";
 
   const { state, dispatch } = useComposerState({
     initialHistory: [],
@@ -184,6 +232,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const isStreaming = appState?.isStreaming ?? false;
   const pendingRequestCount = appState?.pendingRequests.length ?? 0;
   const hasPendingTurn = isStreaming || pendingRequestCount > 0;
+  const activeTurnElapsedMs = useActiveTurnElapsedMs(hasPendingTurn);
 
   const slashItems = useMemo(() => getSlashPaletteItems(), []);
   const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(
@@ -710,6 +759,30 @@ export const Composer: React.FC<ComposerProps> = ({
     [dispatch, mentionDraft, mentionTokenKey, state.value],
   );
 
+  const activityLine = useMemo(() => {
+    if (pendingRequestCount > 0) {
+      return {
+        color: colors.warning,
+        text: `Approval pending (${approvalDecisionKeys})`,
+      };
+    }
+    if (isStreaming) {
+      return {
+        color: colors.muted,
+        text: `Working (${formatElapsedDuration(activeTurnElapsedMs)} · ${cancelKey.toLowerCase()} to interrupt)`,
+      };
+    }
+    return null;
+  }, [
+    activeTurnElapsedMs,
+    approvalDecisionKeys,
+    cancelKey,
+    colors.muted,
+    colors.warning,
+    isStreaming,
+    pendingRequestCount,
+  ]);
+
   const statusLine = useMemo(() => {
     const historySearchLine = buildHistorySearchStatusLine(state.historySearch, {
       accept: submitKey,
@@ -717,18 +790,6 @@ export const Composer: React.FC<ComposerProps> = ({
     });
     if (historySearchLine) {
       return historySearchLine;
-    }
-    if (pendingRequestCount > 0) {
-      return {
-        color: colors.warning,
-        text: `Approval pending. Resolve the modal with ${approvalDecisionKeys} before sending the next turn.`,
-      };
-    }
-    if (isStreaming) {
-      return {
-        color: colors.accent,
-        text: `Turn active. Keep drafting; ${submitKey} waits until the current turn is done.`,
-      };
     }
     if (state.pasteInFlight) {
       const suffix =
@@ -780,11 +841,8 @@ export const Composer: React.FC<ComposerProps> = ({
     };
   }, [
     acceptSuggestionKey,
-    approvalDecisionKeys,
     cancelKey,
-    isStreaming,
     formattedNewlineKeys,
-    pendingRequestCount,
     mentionDraft,
     mentionPreviewItem,
     slashConflict,
@@ -795,10 +853,24 @@ export const Composer: React.FC<ComposerProps> = ({
     state.historySearch,
     submitKey,
   ]);
+  const showInstructionLine =
+    state.historySearch !== null ||
+    state.pasteInFlight ||
+    slashConflict ||
+    slashDraft !== null ||
+    mentionDraft !== null;
+  const placeholderText =
+    state.value.length === 0 && !showInstructionLine
+      ? `Type prompt. / commands. @ files. ${formattedNewlineKeys} newline.`
+      : "";
 
   // ── render ─────────────────────────────────────────────────────────
   return (
-    <Box flexDirection="column">
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      width={chromeWidth}
+    >
       {showSlashPalette ? (
         <Palette
           trigger="/"
@@ -829,32 +901,84 @@ export const Composer: React.FC<ComposerProps> = ({
       ) : null}
       <Box
         flexDirection="column"
-        paddingX={1}
-        paddingY={0}
-        width="100%"
+        flexShrink={0}
+        overflowX="hidden"
+        width={chromeWidth}
       >
-        <Box>
+        {activityLine !== null ? (
+          <Box
+            flexDirection="row"
+            overflowX="hidden"
+            width={chromeWidth}
+            backgroundColor={colors.surface as Color}
+          >
+            <Text>{"  "}</Text>
+            <Text color={activityLine.color as Color} bold>
+              {"• "}
+            </Text>
+            <Text color={activityLine.color as Color} wrap="truncate">
+              {activityLine.text}
+            </Text>
+          </Box>
+        ) : null}
+        <Box
+          flexDirection="row"
+          alignItems="flex-start"
+          justifyContent="flex-start"
+          overflowX="hidden"
+          width={chromeWidth}
+          backgroundColor={colors.surfaceAlt as Color}
+        >
+          <Text>{"  "}</Text>
           <Text color={accentColor}>
             {promptPrefix}
           </Text>
-          <ComposerBuffer
-            value={state.value}
-            cursor={state.cursor}
-            promptPrefix={promptPrefix}
-            cursorActive={!inputLocked}
-          />
+          <Box flexDirection="row" flexGrow={1} flexShrink={1} overflowX="hidden">
+            <ComposerBuffer
+              value={state.value}
+              cursor={state.cursor}
+              promptPrefix={promptPrefix}
+              cursorActive={!inputLocked}
+            />
+            {placeholderText.length > 0 ? (
+              <Text color={colors.dim as Color} wrap="truncate">
+                {placeholderText}
+              </Text>
+            ) : null}
+          </Box>
         </Box>
-        <Box>
-          <Text color={statusLine.color as Color}>{statusLine.text}</Text>
-        </Box>
+        {showInstructionLine ? (
+          <Box
+            flexDirection="row"
+            overflowX="hidden"
+            width={chromeWidth}
+            backgroundColor={colors.surface as Color}
+          >
+            <Text>{"  "}</Text>
+            <Text color={statusLine.color as Color} wrap="truncate">
+              {statusLine.text}
+            </Text>
+          </Box>
+        ) : null}
         {rejected.map((m) => (
-          <Box key={m.raw}>
+          <Box
+            key={m.raw}
+            overflowX="hidden"
+            width={chromeWidth}
+            backgroundColor={colors.surface as Color}
+          >
+            <Text>{"  "}</Text>
             <Text color={colors.warning}>{"\u26A0 outside workspace: "}</Text>
             <Text color={colors.error}>{m.raw}</Text>
           </Box>
         ))}
         {state.value.length > 0 && hasPendingTurn ? (
-          <Box>
+          <Box
+            overflowX="hidden"
+            width={chromeWidth}
+            backgroundColor={colors.surface as Color}
+          >
+            <Text>{"  "}</Text>
             <Text color={colors.dim}>
               {`${cancelKey} clears the draft first. Press ${cancelKey} again on an empty composer to interrupt the turn.`}
             </Text>

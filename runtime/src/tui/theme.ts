@@ -57,11 +57,20 @@ export type Theme = {
  * the running process (stripped CI artifact, unusual install layout,
  * etc.) and when primitives loading throws.
  */
+const AGENC_BRAND = Object.freeze({
+  accent: "rgb(206,98,50)",
+  secondary: "rgb(188,105,225)",
+  line: "rgb(87,62,126)",
+  lineStrong: "rgb(177,104,255)",
+  surface: "rgb(37,31,55)",
+  surfaceAlt: "rgb(83,57,111)",
+});
+
 const DEFAULT_THEME: Theme = Object.freeze({
   colors: Object.freeze({
     primary: "ansi256(117)",
-    secondary: "ansi256(177)",
-    accent: "ansi256(213)",
+    secondary: AGENC_BRAND.secondary,
+    accent: AGENC_BRAND.accent,
     error: "ansi256(203)",
     warning: "ansi256(221)",
     success: "ansi256(50)",
@@ -69,10 +78,10 @@ const DEFAULT_THEME: Theme = Object.freeze({
     ink: "ansi256(225)",
     muted: "ansi256(189)",
     info: "ansi256(111)",
-    line: "ansi256(54)",
-    lineStrong: "ansi256(99)",
-    surface: "ansi256(233)",
-    surfaceAlt: "ansi256(236)",
+    line: AGENC_BRAND.line,
+    lineStrong: AGENC_BRAND.lineStrong,
+    surface: AGENC_BRAND.surface,
+    surfaceAlt: AGENC_BRAND.surfaceAlt,
     modeDefault: "ansi256(117)",
     modeAcceptEdits: "ansi256(50)",
     modePlan: "ansi256(177)",
@@ -171,11 +180,11 @@ function buildTheme(primitives: WatchPrimitivesModule | null): Theme {
         DEFAULT_THEME.colors.primary,
       ),
       secondary: normalizeColor(
-        color["magenta"],
+        color["agencPurple"],
         DEFAULT_THEME.colors.secondary,
       ),
       accent: normalizeColor(
-        color["amber"],
+        color["agencEmber"],
         DEFAULT_THEME.colors.accent,
       ),
       error: normalizeColor(color["red"], DEFAULT_THEME.colors.error),
@@ -190,9 +199,12 @@ function buildTheme(primitives: WatchPrimitivesModule | null): Theme {
         color["borderStrong"],
         DEFAULT_THEME.colors.lineStrong,
       ),
-      surface: normalizeColor(color["panelAltBg"], DEFAULT_THEME.colors.surface),
+      surface: normalizeColor(
+        color["agencSurface"],
+        DEFAULT_THEME.colors.surface,
+      ),
       surfaceAlt: normalizeColor(
-        color["panelHiBg"],
+        color["agencSurfaceHi"],
         DEFAULT_THEME.colors.surfaceAlt,
       ),
       modeDefault: normalizeColor(color["cyan"], DEFAULT_THEME.colors.modeDefault),

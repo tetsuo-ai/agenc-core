@@ -13,9 +13,9 @@
  *     </AgenCAppStateProvider>
  *
  * `TUIRoot` itself now mounts:
- *   - <Banner> — cockpit status row (mode/model/phase/plan/streaming).
- *   - <MessageList> — transcript derived from `useQuery`'s PhaseEvent
- *     stream through the `eventsToMessages` adapter.
+ *   - <MessageList> — OpenClaude-style semantic transcript rows derived
+ *     from `useQuery`'s PhaseEvent stream through the `eventsToMessages`
+ *     adapter.
  *   - <Composer> — multi-line prompt input; submit calls
  *     `session.submit?.(...)` when available, cancel calls
  *     the turn-local `session.abortTurnIfActive?.(..., 'interrupted')`
@@ -70,8 +70,8 @@ import {
 } from "./keybindings/loadUserBindings.js";
 import { getDisplayForCommand } from "./keybindings/shortcutFormat.js";
 import { OverlayProvider, useOverlayStack } from "./overlay/OverlayProvider.js";
-import { Banner } from "./cockpit/Banner.js";
 import {
+  DEFAULT_STATUS_LINE_ITEMS,
   StatusLineConfig,
 } from "./cockpit/StatusLineConfig.js";
 import { MessageList } from "./transcript/MessageList.js";
@@ -89,13 +89,10 @@ import { useQuery, type SessionLike as QuerySessionLike } from "./hooks/useQuery
 import {
   eventsToMessages,
 } from "./state/events-to-messages.js";
-import { isPlanActive, type PlanEvent } from "./state/plan-state.js";
 import { readPickerCommandIntent } from "./picker-intents.js";
 import { usePickerController } from "./picker-controller.js";
 import { useTuiConfigView } from "./config-view.js";
 import {
-  deriveActiveToolCount,
-  deriveBannerPhase,
   buildStatusLineSession,
 } from "./status-derivation.js";
 import type { PendingPermissionRequest } from "../permissions/context.js";
@@ -135,7 +132,7 @@ export interface AppProps {
   readonly configStore: ConfigStoreLike;
   /** Optional binding overrides. Forwarded to the real KeybindingProvider. */
   readonly bindings?: Record<BindingContext, BindingMap>;
-  /** Model label shown in the cockpit banner. */
+  /** Model label shown in the default status footer. */
   readonly model?: string;
   /** Optional boot-time prompt forwarded from the CLI TTY router. */
   readonly initialPrompt?: string;
@@ -330,33 +327,10 @@ function TUIRoot({
     [events, showAllInTranscript, transcriptMode],
   );
 
-  // Plan events ride the event-log transcript stream rather than the
-  // PhaseEvent-only path. Filter them out here so the banner can light up
-  // plan mode while MessageList renders the dedicated PlanProgress row.
-  const planEvents = useMemo<readonly PlanEvent[]>(() => {
-    const out: PlanEvent[] = [];
-    for (const ev of events as readonly { readonly type?: unknown }[]) {
-      const type = (ev as { readonly type?: unknown }).type;
-      if (typeof type !== "string" || !type.startsWith("plan_")) continue;
-      // Translate event-log style `{type, payload}` rows into the
-      // PlanEvent-side `{kind, ...}` shape. Missing payloads leave the
-      // event on the cutting-room floor.
-      const payload = (ev as { readonly payload?: unknown }).payload;
-      if (payload && typeof payload === "object") {
-        out.push({ kind: type, ...(payload as object) } as PlanEvent);
-      }
-    }
-    return out;
-  }, [events]);
-  const hasPlanActive = isPlanActive(planEvents);
   const tuiConfigView = useTuiConfigView(configStore);
-  const statusLineItems = tuiConfigView.statusLineItems;
+  const statusLineItems =
+    tuiConfigView.statusLineItems ?? DEFAULT_STATUS_LINE_ITEMS;
   const composerAttachmentsConfig = tuiConfigView.composerAttachmentsConfig;
-  const bannerPhase = useMemo(() => deriveBannerPhase(events), [events]);
-  const activeToolCount = useMemo(
-    () => deriveActiveToolCount(events),
-    [events],
-  );
 
   useEffect(() => {
     setStreaming(isStreaming);
@@ -575,26 +549,13 @@ function TUIRoot({
       height="100%"
       width="100%"
     >
-      {/* cockpit region (top) */}
-      <Box flexDirection="column" flexShrink={0}>
-        <Banner
-          mode={mode}
-          model={statusLineSession.model}
-          runId={statusLineSession.sessionId}
-          phase={bannerPhase}
-          activeToolCount={activeToolCount}
-          isStreaming={isStreaming}
-          hasPlanActive={hasPlanActive}
-        />
-      </Box>
-
       {/* transcript region (middle, flex:1) */}
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
         <MessageList messages={messages} isStreaming={isStreaming} />
       </Box>
 
       {/* composer region (bottom) */}
-      <Box flexDirection="column" flexShrink={0}>
+      <Box flexDirection="column" flexShrink={0} width="100%">
         {transcriptMode ? (
           <TranscriptModeFooter showAll={showAllInTranscript} />
         ) : null}
@@ -611,13 +572,11 @@ function TUIRoot({
               onCancel={handleCancel}
               initialValue={initialComposerText}
             />
-            {statusLineItems !== undefined ? (
-              <StatusLineConfig
-                items={statusLineItems}
-                session={statusLineSession}
-                cwd={composerSession.cwd}
-              />
-            ) : null}
+            <StatusLineConfig
+              items={statusLineItems}
+              session={statusLineSession}
+              cwd={composerSession.cwd}
+            />
           </>
         ) : null}
       </Box>

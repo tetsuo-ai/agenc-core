@@ -1,5 +1,5 @@
 /**
- * Cockpit status line — configurable single-row status strip.
+ * TUI status line — configurable single-row status strip.
  *
  * Items are specified via `config.statusLine.items: string[]` (schema
  * extension landed alongside this module in
@@ -18,7 +18,7 @@
  *   - `"time"`    — local HH:MM
  *
  * Unknown keys resolve to an empty string so a typo in the operator's
- * config silently hides that segment instead of crashing the cockpit.
+ * config silently hides that segment instead of crashing the TUI.
  *
  * `resolveStatusItem` is exported as a pure async function so tests can
  * exercise the resolver table directly without mounting the React
@@ -30,10 +30,12 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { promisify } from "node:util";
-import React, { useEffect, useState } from "react";
+import React, { useContext, useEffect, useState } from "react";
 
 import Box from "../ink/components/Box.js";
+import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
+import type { Color } from "../ink/styles.js";
 import type { PermissionMode } from "../../permissions/types.js";
 import { theme } from "../theme.js";
 
@@ -50,7 +52,7 @@ const execFileAsync = promisify(execFile);
  *
  * Every field is optional — the resolver returns an empty string for a
  * field that is not surfaced. This lets operators configure segments
- * that depend on future wiring without crashing today's cockpit.
+ * that depend on future wiring without crashing today's TUI.
  */
 export interface SessionLike {
   readonly model?: string;
@@ -327,20 +329,23 @@ function renderItemValue(item: ResolvedItem): { readonly text: string; readonly 
   }
 }
 
-function StatusChip({ item }: { readonly item: ResolvedItem }): React.ReactElement {
+function StatusItem({
+  item,
+  first,
+}: {
+  readonly item: ResolvedItem;
+  readonly first: boolean;
+}): React.ReactElement {
   const rendered = renderItemValue(item);
   return (
-    <Box flexDirection="row" marginRight={1}>
-      <Text backgroundColor={theme.colors.surface} color={theme.colors.muted}>
-        {` ${item.label.toUpperCase()} `}
-      </Text>
-      <Text
-        backgroundColor={theme.colors.surfaceAlt}
-        color={rendered.color}
-        bold
-        wrap="truncate"
-      >
-        {` ${rendered.text} `}
+    <Box flexDirection="row" flexShrink={1}>
+      {!first ? (
+        <Text color={theme.colors.dim as Color}>{" · "}</Text>
+      ) : null}
+      <Text color={theme.colors.muted as Color}>{item.label.toLowerCase()}</Text>
+      <Text color={theme.colors.dim as Color}>{" "}</Text>
+      <Text color={rendered.color as Color} bold wrap="truncate">
+        {rendered.text}
       </Text>
     </Box>
   );
@@ -362,6 +367,11 @@ export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
       value: "",
     })),
   );
+  const terminalSize = useContext(TerminalSizeContext);
+  const chromeWidth =
+    terminalSize !== null && terminalSize.columns > 0
+      ? terminalSize.columns
+      : "100%";
 
   useEffect(() => {
     let cancelled = false;
@@ -384,9 +394,20 @@ export const StatusLineConfig: React.FC<StatusLineConfigProps> = ({
   }, [items, session, cwd]);
 
   return (
-    <Box flexDirection="row" flexWrap="wrap">
+    <Box
+      flexDirection="row"
+      flexWrap="wrap"
+      overflowX="hidden"
+      width={chromeWidth}
+      backgroundColor={theme.colors.surface as Color}
+    >
+      <Text>{"  "}</Text>
       {resolved.map((item, idx) => (
-        <StatusChip key={`${item.key}-${idx}`} item={item} />
+        <StatusItem
+          key={`${item.key}-${idx}`}
+          item={item}
+          first={idx === 0}
+        />
       ))}
     </Box>
   );

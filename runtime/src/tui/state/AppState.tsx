@@ -1,7 +1,7 @@
 /**
  * AgenC TUI app state context.
  *
- * Exposes the subset of session state the cockpit needs to render and
+ * Exposes the subset of session state the TUI needs to render and
  * react to lifecycle events: current permission mode, streaming flag,
  * and the live pending-permission queue that the evaluator pushes into.
  *
@@ -370,7 +370,7 @@ export interface AgenCAppStateValue {
   readonly activePermissionRequestId: string | null;
   /** Total queued permission requests, including the active one. */
   readonly queuedPermissionCount: number;
-  /** Bump `isStreaming` on. Exposed so later waves can drive the cockpit. */
+  /** Bump `isStreaming` on so the composer/status footer tracks active turns. */
   setStreaming: (next: boolean) => void;
   /**
    * Queue ops exposed so non-React callers (evaluator, daemon bridge,

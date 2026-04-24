@@ -15,7 +15,7 @@ import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.j
 import { getTerminalFocused, resetTerminalFocusState, setTerminalFocused } from '../terminal-focus-state.js';
 import { TerminalQuerier, xtversion } from '../terminal-querier.js';
 import { DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, FOCUS_IN, FOCUS_OUT } from '../termio/csi.js';
-import { DBP, DFE, DISABLE_ALTERNATE_SCROLL, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js';
+import { DBP, DFE, DISABLE_ALTERNATE_SCROLL, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js';
 import AppContext from './AppContext.js';
 import { ClockProvider } from './ClockContext.js';
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js';
@@ -305,10 +305,10 @@ export default class App extends PureComponent<Props, State> {
       </TerminalSizeContext.Provider>;
   }
   override componentDidMount() {
-    // Composer cursor placement now uses the native terminal cursor, so keep
-    // it visible instead of relying on an inverted glyph rendered in-band.
+    // The TUI renders its input cursor in-band. Keep the native terminal
+    // cursor hidden while mounted so it cannot drift over footer text.
     if (this.props.stdout.isTTY) {
-      this.props.stdout.write(SHOW_CURSOR);
+      this.props.stdout.write(HIDE_CURSOR);
     }
     process.on('SIGCONT', this.handleProcessResume);
   }
@@ -546,9 +546,10 @@ export default class App extends PureComponent<Props, State> {
         }
       }
 
-      // Hide cursor (unless in accessibility mode) and re-enable focus reporting after resuming
+      // The visual cursor is rendered by the composer; hide the native
+      // cursor again after resuming from the shell.
       if (this.props.stdout.isTTY) {
-        this.props.stdout.write(SHOW_CURSOR);
+        this.props.stdout.write(HIDE_CURSOR);
       }
 
       // Emit resume event for Claude Code to handle

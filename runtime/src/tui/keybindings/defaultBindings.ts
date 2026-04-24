@@ -1,5 +1,5 @@
 /**
- * Default keybindings for the AgenC TUI cockpit.
+ * Default keybindings for the AgenC TUI.
  *
  * Ported from the reference Ink runtime at openclaude/src/keybindings.
  * AgenC only exposes the contexts that are live in this shell today, but

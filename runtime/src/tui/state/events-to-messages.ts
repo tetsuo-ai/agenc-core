@@ -245,7 +245,10 @@ const SILENT_TOOL_NAMES = new Set([
   "system.searchTools",
 ]);
 
-const ASSISTANT_LIFECYCLE_CHATTER = new Set(["Calling tool."]);
+const ASSISTANT_LIFECYCLE_CHATTER = [
+  "calling tool.",
+  "now implementing via tools.",
+] as const;
 
 export function isHiddenTranscriptWarningCause(cause: string): boolean {
   return HIDDEN_WARNING_CAUSES.has(cause);
@@ -256,7 +259,26 @@ export function isSilentTranscriptToolName(toolName: string | undefined): boolea
 }
 
 function isAssistantLifecycleChatter(message: string): boolean {
-  return ASSISTANT_LIFECYCLE_CHATTER.has(message.trim());
+  const normalized = normalizeAssistantLifecycleCandidate(message);
+  return ASSISTANT_LIFECYCLE_CHATTER.some((candidate) => {
+    if (normalized === candidate) return true;
+    return (
+      candidate.endsWith(".") &&
+      normalized === candidate.slice(0, Math.max(0, candidate.length - 1))
+    );
+  });
+}
+
+function normalizeAssistantLifecycleCandidate(message: string): string {
+  return message.trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+function isAssistantLifecycleChatterPrefix(message: string): boolean {
+  const normalized = normalizeAssistantLifecycleCandidate(message);
+  if (normalized.length === 0) return false;
+  return ASSISTANT_LIFECYCLE_CHATTER.some((candidate) =>
+    candidate.startsWith(normalized),
+  );
 }
 
 function formatWarning(
@@ -326,10 +348,20 @@ export function eventsToMessages(
   const activityIndexById = new Map<string, number>();
   const planIndexByTurnId = new Map<string, number>();
   const pendingExecOutputByCallId = new Map<string, PendingExecOutput>();
+  const toolNameByCallId = new Map<string, string>();
+  const toolArgsByCallId = new Map<string, unknown>();
 
   const fallbackTurnCounter = { value: 0 };
   let currentTurnId = `${FALLBACK_TURN_PREFIX}${fallbackTurnCounter.value}`;
   let activeAssistantIndex: number | null = null;
+  let pendingAssistantLifecycleText:
+    | {
+        readonly turnId: string;
+        readonly id: string;
+        readonly content: string;
+        readonly timestamp: number;
+      }
+    | null = null;
 
   const upsertActivity = (
     id: string,
@@ -364,7 +396,57 @@ export function eventsToMessages(
     };
   };
 
+  const appendAssistantDelta = (
+    turnId: string,
+    id: string,
+    delta: string,
+    timestamp: number,
+  ): void => {
+    if (
+      activeAssistantIndex === null ||
+      messages[activeAssistantIndex]?.kind !== "assistant" ||
+      messages[activeAssistantIndex]?.turnId !== turnId
+    ) {
+      messages.push({
+        id,
+        turnId,
+        kind: "assistant",
+        content: delta,
+        timestamp,
+        isComplete: false,
+      });
+      activeAssistantIndex = messages.length - 1;
+      return;
+    }
+    const prev = messages[activeAssistantIndex]!;
+    messages[activeAssistantIndex] = {
+      ...prev,
+      content: `${prev.content}${delta}`,
+      timestamp,
+      isComplete: false,
+    };
+  };
+
+  const flushPendingAssistantLifecycleText = (): void => {
+    if (pendingAssistantLifecycleText === null) return;
+    const pending = pendingAssistantLifecycleText;
+    pendingAssistantLifecycleText = null;
+    appendAssistantDelta(
+      pending.turnId,
+      pending.id,
+      pending.content,
+      pending.timestamp,
+    );
+  };
+
   const markAssistantComplete = (): void => {
+    if (pendingAssistantLifecycleText !== null) {
+      if (options.includeHidden === true) {
+        flushPendingAssistantLifecycleText();
+      } else {
+        pendingAssistantLifecycleText = null;
+      }
+    }
     if (activeAssistantIndex === null) return;
     const prev = messages[activeAssistantIndex];
     if (!prev || prev.kind !== "assistant") {
@@ -381,6 +463,39 @@ export function eventsToMessages(
       return currentTurnId;
     }
     return currentTurnId;
+  };
+
+  const stageAssistantDelta = (
+    id: string,
+    turnId: string,
+    delta: string,
+    timestamp: number,
+  ): void => {
+    if (options.includeHidden === true) {
+      flushPendingAssistantLifecycleText();
+      appendAssistantDelta(turnId, id, delta, timestamp);
+      return;
+    }
+    const candidate =
+      pendingAssistantLifecycleText !== null &&
+      pendingAssistantLifecycleText.turnId === turnId
+        ? `${pendingAssistantLifecycleText.content}${delta}`
+        : delta;
+    if (isAssistantLifecycleChatter(candidate)) {
+      pendingAssistantLifecycleText = null;
+      return;
+    }
+    if (isAssistantLifecycleChatterPrefix(candidate)) {
+      pendingAssistantLifecycleText = {
+        turnId,
+        id,
+        content: candidate,
+        timestamp,
+      };
+      return;
+    }
+    flushPendingAssistantLifecycleText();
+    appendAssistantDelta(turnId, id, delta, timestamp);
   };
 
   const ensureToolMessage = (
@@ -474,6 +589,11 @@ export function eventsToMessages(
         }
         case "tool_call": {
           markAssistantComplete();
+          toolNameByCallId.set(event.toolCall.id, event.toolCall.name);
+          toolArgsByCallId.set(
+            event.toolCall.id,
+            safeJsonParse(event.toolCall.arguments),
+          );
           if (
             isSilentTranscriptToolName(event.toolCall.name) &&
             options.includeHidden !== true
@@ -486,7 +606,7 @@ export function eventsToMessages(
             kind: "tool_call",
             content: event.toolCall.name,
             toolName: event.toolCall.name,
-            toolArgs: safeJsonParse(event.toolCall.arguments),
+            toolArgs: toolArgsByCallId.get(event.toolCall.id),
             callId: event.toolCall.id,
             timestamp,
             isComplete: false,
@@ -519,6 +639,7 @@ export function eventsToMessages(
               kind: "tool_result",
               content: event.result.content,
               toolName: event.toolCall.name,
+              toolArgs: safeJsonParse(event.toolCall.arguments),
               toolResultContent: event.result.content,
               isError: event.result.isError === true,
               timestamp,
@@ -575,36 +696,13 @@ export function eventsToMessages(
         break;
       }
       case "agent_message_delta": {
-        if (
-          isAssistantLifecycleChatter(event.payload.delta) &&
-          options.includeHidden !== true
-        ) {
-          break;
-        }
         const turnId = ensureTurnId(currentTurnId);
-        if (
-          activeAssistantIndex === null ||
-          messages[activeAssistantIndex]?.kind !== "assistant" ||
-          messages[activeAssistantIndex]?.turnId !== turnId
-        ) {
-          messages.push({
-            id: event.id ?? `assistant-${turnId}-${timestamp}`,
-            turnId,
-            kind: "assistant",
-            content: event.payload.delta,
-            timestamp,
-            isComplete: false,
-          });
-          activeAssistantIndex = messages.length - 1;
-        } else {
-          const prev = messages[activeAssistantIndex]!;
-          messages[activeAssistantIndex] = {
-            ...prev,
-            content: `${prev.content}${event.payload.delta}`,
-            timestamp,
-            isComplete: false,
-          };
-        }
+        stageAssistantDelta(
+          event.id ?? `assistant-${turnId}-${timestamp}`,
+          turnId,
+          event.payload.delta,
+          timestamp,
+        );
         break;
       }
       case "agent_message": {
@@ -612,8 +710,10 @@ export function eventsToMessages(
           isAssistantLifecycleChatter(event.payload.message) &&
           options.includeHidden !== true
         ) {
+          pendingAssistantLifecycleText = null;
           break;
         }
+        pendingAssistantLifecycleText = null;
         const turnId = ensureTurnId(currentTurnId);
         if (
           activeAssistantIndex !== null &&
@@ -645,6 +745,9 @@ export function eventsToMessages(
       }
       case "tool_call_started": {
         markAssistantComplete();
+        const parsedArgs = safeJsonParse(event.payload.args);
+        toolNameByCallId.set(event.payload.callId, event.payload.toolName);
+        toolArgsByCallId.set(event.payload.callId, parsedArgs);
         if (
           isSilentTranscriptToolName(event.payload.toolName) &&
           options.includeHidden !== true
@@ -653,7 +756,7 @@ export function eventsToMessages(
           break;
         }
         if (event.payload.toolName === "write_stdin") {
-          const args = safeJsonParse(event.payload.args);
+          const args = parsedArgs;
           const processId =
             args && typeof args === "object" && !Array.isArray(args)
               ? (args as { session_id?: unknown; process_id?: unknown }).session_id ??
@@ -672,7 +775,7 @@ export function eventsToMessages(
           kind: "tool_call",
           content: event.payload.toolName,
           toolName: event.payload.toolName,
-          toolArgs: safeJsonParse(event.payload.args),
+          toolArgs: parsedArgs,
           callId: event.payload.callId,
           timestamp,
           isComplete: false,
@@ -682,6 +785,9 @@ export function eventsToMessages(
       case "tool_progress": {
         const stream = event.payload.stream;
         const chunk = event.payload.chunk;
+        if (!toolNameByCallId.has(event.payload.callId)) {
+          toolNameByCallId.set(event.payload.callId, event.payload.toolName);
+        }
         if (suppressedToolCallIds.has(event.payload.callId)) {
           break;
         }
@@ -746,6 +852,11 @@ export function eventsToMessages(
         break;
       }
       case "exec_command_begin": {
+        toolNameByCallId.set(event.payload.callId, "exec_command");
+        toolArgsByCallId.set(event.payload.callId, {
+          cmd: event.payload.command,
+          cwd: event.payload.cwd,
+        });
         if (event.payload.processId !== undefined) {
           toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
         }
@@ -831,12 +942,17 @@ export function eventsToMessages(
             timestamp,
           };
         } else {
+          const toolName = toolNameByCallId.get(event.payload.callId);
           messages.push({
             id: event.id ?? `tool-result-${event.payload.callId}-${timestamp}`,
             turnId: ensureTurnId(currentTurnId),
             kind: "tool_result",
             content: event.payload.result,
             callId: event.payload.callId,
+            ...(toolName !== undefined ? { toolName } : {}),
+            ...(toolArgsByCallId.has(event.payload.callId)
+              ? { toolArgs: toolArgsByCallId.get(event.payload.callId) }
+              : {}),
             toolResultContent: event.payload.result,
             isError: event.payload.isError,
             timestamp,

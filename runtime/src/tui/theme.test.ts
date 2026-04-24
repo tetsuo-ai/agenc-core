@@ -68,7 +68,7 @@ describe("theme", () => {
     const snapshot = getTheme();
     expect(snapshot.colors.primary).toBe("ansi256(117)");
     expect(snapshot.colors.error).toBe("ansi256(203)");
-    expect(snapshot.colors.surface).toBe("ansi256(233)");
+    expect(snapshot.colors.surface).toBe("rgb(37,31,55)");
     expect(snapshot.modeIndicatorChar.default).toBe("›");
   });
 });

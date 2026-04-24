@@ -23,6 +23,7 @@ import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
 import { charInCellAt } from "../ink/screen.js";
 import StdinContext from "../ink/components/StdinContext.js";
+import Box from "../ink/components/Box.js";
 import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
 import {
@@ -220,12 +221,15 @@ describe("Composer", () => {
     const { unmount, stdout } = await mount(
       withInputProviders(
         emitter,
-        <Composer
-          session={{ cwd: tmpHome, home: tmpHome }}
-          onSubmit={() => undefined}
-          pasteStore={new PasteStore()}
-        />,
+        <Box width="100%">
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={() => undefined}
+            pasteStore={new PasteStore()}
+          />
+        </Box>,
       ),
+      { columns: 32 },
     );
     const rows = latestFrameText(stdout)
       .split("\n")
@@ -236,7 +240,44 @@ describe("Composer", () => {
     expect(visible).not.toContain("╮");
     expect(visible).not.toContain("╯");
     expect(visible).not.toContain("│");
+    expect(Math.max(...rows.map((row) => row.length))).toBeLessThanOrEqual(32);
 
+    unmount();
+  });
+
+  test("active empty composer shows upstream-style working footer", async () => {
+    const emitter = new EventEmitter();
+    const appStateSession = {
+      services: {
+        permissionModeRegistry: {
+          current: () => ({ mode: "bypassPermissions" as const }),
+          subscribeToModeChange: () => () => undefined,
+        },
+      },
+      abortTerminal: vi.fn(),
+    };
+    const { unmount, stdout } = await mount(
+      <AgenCAppStateProvider session={appStateSession} configStore={{}}>
+        <SetStreaming active />
+        {withInputProviders(
+          emitter,
+          <Box width="100%">
+            <Composer
+              session={{ cwd: tmpHome, home: tmpHome }}
+              onSubmit={() => undefined}
+              pasteStore={new PasteStore()}
+            />
+          </Box>,
+        )}
+      </AgenCAppStateProvider>,
+      { columns: 64 },
+    );
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Working (");
+    expect(frame).toContain("esc to interrupt");
+    expect(frame).toContain("Type prompt");
+    expect(frame).not.toContain("bypass on");
     unmount();
   });
 

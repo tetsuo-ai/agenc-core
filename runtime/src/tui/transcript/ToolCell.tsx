@@ -24,6 +24,7 @@ type ToolFamily =
   | "exec"
   | "generic";
 const TOOL_ARGS_MAX = 100;
+const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
 
 export interface ToolCellProps {
   readonly toolName?: string;
@@ -36,8 +37,6 @@ export interface ToolCellProps {
 
 interface ToolPresentation {
   readonly family: ToolFamily;
-  readonly runningVerb: string;
-  readonly doneVerb: string;
   readonly target: string;
   readonly argsSummary: string;
   readonly preserveResultLines: boolean;
@@ -61,6 +60,15 @@ function readStringField(value: unknown, keys: readonly string[]): string | unde
     }
   }
   return undefined;
+}
+
+function extractPatchTarget(toolArgs: unknown): string | undefined {
+  const patch = readStringField(toolArgs, ["patch"]);
+  if (!patch) return undefined;
+  const header =
+    /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/mu.exec(patch) ??
+    /^diff --git a\/(.+?) b\/.+$/mu.exec(patch);
+  return header?.[1]?.trim();
 }
 
 function compactJson(value: unknown): string {
@@ -124,14 +132,11 @@ function summarizeStructuredResult(
     return summarizeExecJsonResult(parsed);
   }
 
-  if (
-    toolName === "system.writeFile" ||
-    toolName === "system.appendFile"
-  ) {
+  if (family === "write") {
     return "";
   }
 
-  if (toolName === "system.editFile") {
+  if (family === "edit") {
     const replacements = formatNumberField(parsed.replacements);
     if (replacements !== undefined) {
       return `${replacements} replacement${replacements === "1" ? "" : "s"}`;
@@ -173,13 +178,57 @@ function displayMcpName(toolName: string): string {
 
 function classifyTool(toolName: string | undefined): ToolFamily {
   if (!toolName) return "generic";
-  if (toolName === "system.readFile") return "read";
-  if (toolName === "system.writeFile" || toolName === "system.appendFile") return "write";
-  if (toolName === "system.editFile") return "edit";
-  if (toolName === "system.grep" || toolName === "system.glob" || toolName === "system.listDir") {
+  const normalized = toolName.toLowerCase();
+  if (
+    normalized === "system.readfile" ||
+    normalized === "system.read_file" ||
+    normalized === "readfile" ||
+    normalized === "read_file"
+  ) {
+    return "read";
+  }
+  if (
+    normalized === "system.writefile" ||
+    normalized === "system.write_file" ||
+    normalized === "writefile" ||
+    normalized === "write_file" ||
+    normalized === "system.appendfile" ||
+    normalized === "system.append_file" ||
+    normalized === "appendfile" ||
+    normalized === "append_file"
+  ) {
+    return "write";
+  }
+  if (
+    normalized === "system.editfile" ||
+    normalized === "system.edit_file" ||
+    normalized === "editfile" ||
+    normalized === "edit_file" ||
+    normalized === "apply_patch" ||
+    normalized === "applypatch"
+  ) {
+    return "edit";
+  }
+  if (
+    normalized === "system.grep" ||
+    normalized === "grep" ||
+    normalized === "system.glob" ||
+    normalized === "glob" ||
+    normalized === "system.listdir" ||
+    normalized === "system.list_dir" ||
+    normalized === "listdir" ||
+    normalized === "list_dir" ||
+    normalized === "ls"
+  ) {
     return "search";
   }
-  if (toolName === "exec_command" || toolName === "system.bash" || toolName === "desktop.bash") {
+  if (
+    normalized === "bash" ||
+    normalized === "shell" ||
+    normalized === "exec_command" ||
+    normalized === "system.bash" ||
+    normalized === "desktop.bash"
+  ) {
     return "exec";
   }
   if (isMcpToolName(toolName)) return "mcp";
@@ -192,18 +241,20 @@ function toolTarget(
   toolArgs: unknown,
 ): string {
   if (family === "mcp" && toolName) return displayMcpName(toolName);
+  if (toolName !== undefined && toolName.toLowerCase().replace(/_/gu, "") === "applypatch") {
+    return extractPatchTarget(toolArgs) ?? "patch";
+  }
   if (family === "exec") {
     const command = readStringField(toolArgs, ["command", "cmd"]);
     return command ? compactJson(command) : toolName ?? "exec";
   }
-  if (family === "generic" && toolName) return toolName;
   const path = readStringField(toolArgs, ["path", "file_path", "cwd"]);
   if (path) return path;
   const command = readStringField(toolArgs, ["command", "cmd"]);
   if (command) return command;
   const query = readStringField(toolArgs, ["pattern", "query", "q"]);
   if (query) return query;
-  return toolName ?? "tool";
+  return family === "generic" ? "" : toolName ?? "tool";
 }
 
 function buildPresentation(
@@ -217,8 +268,6 @@ function buildPresentation(
     case "read":
       return {
         family,
-        runningVerb: "Reading",
-        doneVerb: "Read",
         target,
         argsSummary,
         preserveResultLines: true,
@@ -226,8 +275,6 @@ function buildPresentation(
     case "write":
       return {
         family,
-        runningVerb: "Writing",
-        doneVerb: "Wrote",
         target,
         argsSummary,
         preserveResultLines: false,
@@ -235,8 +282,6 @@ function buildPresentation(
     case "edit":
       return {
         family,
-        runningVerb: "Editing",
-        doneVerb: "Edited",
         target,
         argsSummary,
         preserveResultLines: false,
@@ -244,8 +289,6 @@ function buildPresentation(
     case "mcp":
       return {
         family,
-        runningVerb: "Calling",
-        doneVerb: "Called",
         target,
         argsSummary,
         preserveResultLines: false,
@@ -253,8 +296,6 @@ function buildPresentation(
     case "search":
       return {
         family,
-        runningVerb: "Searching",
-        doneVerb: "Searched",
         target,
         argsSummary,
         preserveResultLines: false,
@@ -262,8 +303,6 @@ function buildPresentation(
     case "exec":
       return {
         family,
-        runningVerb: "Running",
-        doneVerb: "Ran",
         target,
         argsSummary: "",
         preserveResultLines: false,
@@ -271,8 +310,6 @@ function buildPresentation(
     case "generic":
       return {
         family,
-        runningVerb: "Calling",
-        doneVerb: "Called",
         target,
         argsSummary,
         preserveResultLines: false,
@@ -305,12 +342,47 @@ function renderIndentedText(
   const normalized = preserveLines ? content : collapseOutput(content, 4, 2);
   return normalized.split("\n").map((line, index) => (
     <Box key={`line-${index}`} flexDirection="row">
-      <Text dim>{index === 0 ? "  └ " : "    "}</Text>
+      <Text dim>{index === 0 ? "  ⎿  " : "     "}</Text>
       <Text {...(color ? { color } : {})} dim>
         {line.length > 0 ? line : " "}
       </Text>
     </Box>
   ));
+}
+
+function toolTitle(
+  toolName: string | undefined,
+  family: ToolFamily,
+  isComplete: boolean,
+  isError: boolean,
+  shellWriteBlocked: boolean,
+): string {
+  if (shellWriteBlocked) return "Blocked";
+  if (toolName !== undefined && toolName.toLowerCase().replace(/_/gu, "") === "applypatch") {
+    if (isError) return "Patch Failed";
+    return isComplete ? "Applied Patch" : "Applying Patch";
+  }
+  switch (family) {
+    case "read":
+      if (isError) return "Read Failed";
+      return isComplete ? "Read" : "Reading";
+    case "write":
+      if (isError) return "Write Failed";
+      return isComplete ? "Write" : "Writing";
+    case "edit":
+      if (isError) return "Edit Failed";
+      return isComplete ? "Edit" : "Editing";
+    case "mcp":
+      return isError ? "MCP Failed" : "MCP";
+    case "search":
+      if (isError) return "Search Failed";
+      return isComplete ? "Search" : "Searching";
+    case "exec":
+      return isError ? "Bash Failed" : "Bash";
+    case "generic":
+      if (isError) return toolName ? `${toolName} Failed` : "Tool Failed";
+      return toolName ?? (isComplete ? "Tool" : "Running Tool");
+  }
 }
 
 export const ToolCell: React.FC<ToolCellProps> = ({
@@ -343,12 +415,14 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     : isComplete
       ? theme.colors.success
       : theme.colors.dim;
-  const glyph = isError ? "✗" : isComplete ? "✓" : "·";
-  const verb = shellWriteBlock
-    ? "Blocked"
-    : isComplete
-      ? presentation.doneVerb
-      : presentation.runningVerb;
+  const glyph = BLACK_CIRCLE;
+  const title = toolTitle(
+    toolName,
+    presentation.family,
+    isComplete,
+    isError,
+    shellWriteBlock !== null,
+  );
   let detail = "";
   if (shellWriteBlock) {
     detail = shellWriteBlock.detail;
@@ -367,11 +441,10 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
-        <Text color={statusColor}>{glyph}</Text>
+        <Text color={statusColor} dim={!isComplete && !isError}>{glyph}</Text>
         <Text> </Text>
-        <Text bold>{verb}</Text>
-        <Text> </Text>
-        <Text>{target}</Text>
+        <Text bold>{title}</Text>
+        {target.length > 0 ? <Text dim>{`(${target})`}</Text> : null}
         {showArgs ? <Text dim>{` ${presentation.argsSummary}`}</Text> : null}
       </Box>
       {detail.length > 0

@@ -570,7 +570,7 @@ describe("App", () => {
     unmount();
   });
 
-  test("renders the mounted T12 cockpit chrome from the live App tree", async () => {
+  test("renders OpenClaude-style prompt chrome with configurable status line", async () => {
     const session = {
       ...createFakeSession("plan"),
       conversationId: "conv-1234567890",
@@ -587,15 +587,13 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("READY");
-    expect(text).toContain("MODEL");
+    expect(text).toContain("model");
     expect(text).toContain("grok-code-fast-1");
-    expect(text).toContain("MODE");
+    expect(text).toContain("mode");
     expect(text).toContain("plan");
-    expect(text).toContain("run");
+    expect(text).toContain("session");
     expect(text).toContain("34567890");
-    expect(text).toContain("SESSION");
-    expect(text).toContain("34567890");
+    expect(text).not.toContain("AgenC cockpit");
     unmount();
   });
 
@@ -610,13 +608,13 @@ describe("App", () => {
     );
 
     expect(configStore.subscriberCount()).toBe(1);
-    expect(collectText(getRoot(stdout))).not.toContain("SESSION");
+    expect(collectText(getRoot(stdout))).not.toContain("session");
 
     configStore.setConfig({ statusLine: { items: ["session"] } });
     await new Promise((r) => setTimeout(r, 20));
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("SESSION");
+    expect(text).toContain("session");
     expect(text).toContain("ter-live");
 
     unmount();
@@ -636,7 +634,7 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text.indexOf("commands.")).toBeLessThan(text.indexOf("SESSION"));
+    expect(text.indexOf("commands.")).toBeLessThan(text.indexOf("session"));
     unmount();
   });
 
@@ -653,18 +651,18 @@ describe("App", () => {
       <App session={session} configStore={configStore} />,
     );
 
-    expect(collectText(getRoot(stdout))).toContain("SESSION");
+    expect(collectText(getRoot(stdout))).toContain("session");
     expect(configStore.subscriberCount()).toBe(1);
 
     configStore.setConfig({});
     await new Promise((r) => setTimeout(r, 20));
-    expect(collectText(getRoot(stdout))).not.toContain("SESSION");
+    expect(collectText(getRoot(stdout))).not.toContain("session");
 
     unmount();
     expect(configStore.subscriberCount()).toBe(0);
   });
 
-  test("surfaces active tool count and tool phase in the banner", async () => {
+  test("surfaces active tool state through semantic transcript and prompt footer", async () => {
     const session = {
       ...createFakeSession("default"),
       activeTurn: { unsafePeek: () => ({ turnId: "turn-1" }) },
@@ -688,13 +686,14 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("/ using tool");
-    expect(text).toContain("tools");
-    expect(text).toContain("1");
+    expect(text).toContain("Bash(ls)");
+    expect(text).toContain("Working (");
+    expect(text).toContain("esc to interrupt");
+    expect(text).not.toContain("/ using tool");
     unmount();
   });
 
-  test("does not render the status-line row unless config explicitly provides items", async () => {
+  test("renders default model/mode/cwd status when config does not override it", async () => {
     const session = {
       ...createFakeSession("default"),
       model: "session-model-live",
@@ -703,11 +702,13 @@ describe("App", () => {
       <App session={session} configStore={FAKE_CONFIG_STORE} />,
     );
 
+    await new Promise((r) => setTimeout(r, 60));
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("MODEL");
+    expect(text).toContain("model");
     expect(text).toContain("session-model-live");
-    expect(text).not.toContain("CWD");
-    expect(text).not.toContain("SESSION");
+    expect(text).toContain("mode");
+    expect(text).toContain("cwd");
+    expect(text).not.toContain("session ");
     unmount();
   });
 

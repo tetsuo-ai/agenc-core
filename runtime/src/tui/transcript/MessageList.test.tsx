@@ -21,6 +21,7 @@ import {
   MessageList,
   transcriptMutationKey,
   truncate,
+  truncateUserMessageForDisplay,
   type TranscriptMessage,
 } from "./MessageList.js";
 import type { PlanEvent } from "./PlanProgress.js";
@@ -141,15 +142,15 @@ describe("MessageList", () => {
     unmount();
   });
 
-  test("renders a user message with the cyan ▸ sigil", async () => {
+  test("renders a user message without local prompt sigil chrome", async () => {
     const { unmount, stdout } = await mount(
       <MessageList
         messages={[mkMsg({ id: "u1", kind: "user", content: "hello" })]}
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("\u25B8");
     expect(frame).toContain("hello");
+    expect(frame).not.toContain("\u25B8");
     unmount();
   });
 
@@ -161,17 +162,18 @@ describe("MessageList", () => {
           mkMsg({
             id: "c1",
             kind: "tool_call",
-            toolName: "shell",
+            toolName: "custom.tool",
             toolArgs: { cmd: longArg },
           }),
         ]}
       />,
     );
-    const frame = await captureFrame(stdout);
-    expect(frame).toContain("shel");
+    await captureFrame(stdout);
+    const rendered = collectTextNodes(getRootNode(stdout)).join("");
+    expect(rendered).toContain("custom.tool");
     // The ellipsis character from truncate() proves the long args were
     // compressed before rendering.
-    expect(frame).toContain("\u2026");
+    expect(rendered).toContain("\u2026");
     unmount();
   });
 
@@ -195,8 +197,25 @@ describe("MessageList", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("\u2713");
-    expect(frame).toContain("\u2717");
+    const rendered = collectTextNodes(getRootNode(stdout)).join("");
+    expect(frame).toContain("●");
+    expect(rendered).toContain("Tool Failed");
+    expect(rendered).toContain("fail");
+    unmount();
+  });
+
+  test("caps huge user prompts to keep transcript rendering bounded", async () => {
+    const huge = `start-${"x".repeat(12_000)}-end`;
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[mkMsg({ id: "u-huge", kind: "user", content: huge })]}
+      />,
+    );
+    const rendered = collectTextNodes(getRootNode(stdout)).join("\n");
+    expect(rendered).toContain("start-");
+    expect(rendered).toContain("-end");
+    expect(rendered).toContain("chars omitted from displayed prompt");
+    expect(rendered.length).toBeLessThan(11_000);
     unmount();
   });
 
@@ -263,8 +282,8 @@ describe("MessageList", () => {
       />,
     );
     const frame = latestFrameText(stdout);
-    expect(frame).toContain("✓ Wrote include/agenc/exec.h");
-    expect(frame).toContain("✓ Ran cat PLAN.md | head -n 1");
+    expect(frame).toContain("● Write(include/agenc/exec.h)");
+    expect(frame).toContain("● Bash(cat PLAN.md | head -n 1)");
     expect(frame).toContain("# AgenC Shell Implementation Plan");
     expect(frame).not.toContain("bytesWritten");
     expect(frame).not.toContain("original_token_count");
@@ -411,15 +430,55 @@ describe("MessageList", () => {
     );
     const frame = latestFrameText(stdout).trim();
     expect(frame).toMatchInlineSnapshot(`
-      "✓ Read src/App.tsx
-        └ 1→export const App = () => null
-      ✓ Wrote src/App.tsx
-        └ wrote 128 bytes
-      ✓ Edited src/App.tsx
-        └ replaced 1 occurrence
-      ✓ Called github.listIssues
-        └ 2 issues"
+      "● Read(src/App.tsx)
+        ⎿  1→export const App = () => null
+      ● Write(src/App.tsx)
+        ⎿  wrote 128 bytes
+      ● Edit(src/App.tsx)
+        ⎿  replaced 1 occurrence
+      ● MCP(github.listIssues)
+        ⎿  2 issues"
     `);
+    unmount();
+  });
+
+  test("recognizes AgenC and Codex-style aliases as semantic tool families", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "write-alias",
+            kind: "tool_call",
+            toolName: "write_file",
+            toolArgs: { path: "src/main.ts" },
+            toolResultContent: '{"path":"src/main.ts","bytesWritten":9}',
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "edit-alias",
+            kind: "tool_call",
+            toolName: "edit_file",
+            toolArgs: { path: "src/main.ts" },
+            toolResultContent: '{"replacements":2}',
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "grep-alias",
+            kind: "tool_call",
+            toolName: "grep",
+            toolArgs: { pattern: "TODO" },
+            toolResultContent: "src/main.ts:1:TODO",
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("● Write(src/main.ts)");
+    expect(frame).toContain("● Edit(src/main.ts)");
+    expect(frame).toContain("2 replacements");
+    expect(frame).toContain("● Search(TODO)");
+    expect(frame).not.toContain("bytesWritten");
     unmount();
   });
 
@@ -446,11 +505,40 @@ describe("MessageList", () => {
       />,
     );
     const frame = latestFrameText(stdout);
-    expect(frame).toContain("✗ Blocked shell write");
+    expect(frame).toContain("● Blocked(shell write)");
     expect(frame).toContain("Blocked target: /repo/CMakeLists.txt");
     expect(frame).toContain("Use apply_patch for source edits");
     expect(frame).not.toContain("Workflow implementation turns");
     expect(frame).not.toContain("cat > CMakeLists.txt");
+    unmount();
+  });
+
+  test("renders apply_patch failures without dumping raw patch payloads", async () => {
+    const patch =
+      "*** Begin Patch\n*** Add File: CMakeLists.txt\n+cmake_minimum_required(VERSION 3.16)\n+project(example)\n";
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "patch-failed",
+            kind: "tool_call",
+            toolName: "apply_patch",
+            toolArgs: { patch },
+            toolResultContent: JSON.stringify({
+              error:
+                "Invalid patch hunk on line 3: 'cmake_minimum_required(VERSION 3.16)' is not a valid hunk header.",
+            }),
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("● Patch Failed(CMakeLists.txt)");
+    expect(frame).toContain("Invalid patch hunk");
+    expect(frame).not.toContain("*** Begin Patch");
+    expect(frame).not.toContain("project(example)");
     unmount();
   });
 
@@ -580,5 +668,14 @@ describe("truncate helper", () => {
     const t = truncate(long, 50);
     expect(t.length).toBe(50);
     expect(t.endsWith("\u2026")).toBe(true);
+  });
+
+  test("truncateUserMessageForDisplay preserves head and tail with an omission marker", () => {
+    const value = `head-${"x".repeat(12_000)}-tail`;
+    const out = truncateUserMessageForDisplay(value);
+    expect(out).toContain("head-");
+    expect(out).toContain("-tail");
+    expect(out).toContain("chars omitted from displayed prompt");
+    expect(out.length).toBeLessThan(value.length);
   });
 });

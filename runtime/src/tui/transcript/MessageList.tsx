@@ -28,6 +28,7 @@ import Text from "../ink/components/Text.js";
 import ScrollBox, {
   type ScrollBoxHandle,
 } from "../ink/components/ScrollBox.js";
+import type { Color } from "../ink/styles.js";
 import { useVirtualScroll } from "../hooks/useVirtualScroll.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
 import { theme } from "../theme.js";
@@ -105,6 +106,9 @@ export interface MessageListProps {
 /* ────────────────────────────────────────────────────────────────────── */
 
 const TOOL_ARGS_MAX = 80;
+const USER_MESSAGE_DISPLAY_MAX = 10_000;
+const USER_MESSAGE_DISPLAY_EDGE = 4_500;
+const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
 
 function lengthOf(value: string | readonly unknown[] | undefined): number {
   if (typeof value === "string") return value.length;
@@ -150,6 +154,21 @@ export function truncate(input: string, max: number = TOOL_ARGS_MAX): string {
   return `${input.slice(0, Math.max(0, max - 1))}\u2026`;
 }
 
+/**
+ * Keep huge pasted prompts from becoming enormous Ink text nodes. This mirrors
+ * OpenClaude's prompt-display cap: the runtime still receives the full prompt,
+ * but the fullscreen transcript only mounts a bounded head/tail preview.
+ */
+export function truncateUserMessageForDisplay(input: string): string {
+  if (input.length <= USER_MESSAGE_DISPLAY_MAX) return input;
+  const omitted = input.length - USER_MESSAGE_DISPLAY_EDGE * 2;
+  return [
+    input.slice(0, USER_MESSAGE_DISPLAY_EDGE),
+    `\n… ${omitted} chars omitted from displayed prompt …\n`,
+    input.slice(-USER_MESSAGE_DISPLAY_EDGE),
+  ].join("");
+}
+
 /* ────────────────────────────────────────────────────────────────────── */
 /* Row dispatcher                                                          */
 /* ────────────────────────────────────────────────────────────────────── */
@@ -162,18 +181,29 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
   switch (message.kind) {
     case "user":
       return (
-        <Box flexDirection="row">
-          <Text color={theme.colors.primary}>{"\u25B8 "}</Text>
-          <Text color={theme.colors.primary}>{message.content}</Text>
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          paddingX={1}
+          paddingY={0}
+          backgroundColor={theme.colors.surface as Color}
+        >
+          <Text>{truncateUserMessageForDisplay(message.content)}</Text>
         </Box>
       );
 
     case "assistant":
       return (
-        <StreamingMessage
-          content={message.content}
-          isComplete={message.isComplete !== false}
-        />
+        <Box flexDirection="row" marginTop={1} width="100%">
+          <Text color={theme.colors.ink}>{BLACK_CIRCLE}</Text>
+          <Text> </Text>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+            <StreamingMessage
+              content={message.content}
+              isComplete={message.isComplete !== false}
+            />
+          </Box>
+        </Box>
       );
 
     case "plan_progress":
@@ -249,6 +279,7 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       return (
         <ToolCell
           toolName={message.toolName}
+          toolArgs={message.toolArgs}
           isComplete
           isError={message.isError === true}
           result={message.toolResultContent ?? message.content}

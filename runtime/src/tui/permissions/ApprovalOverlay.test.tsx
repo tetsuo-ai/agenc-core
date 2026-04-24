@@ -4,8 +4,8 @@
  * The overlay mounts inside an Ink test root fed by a PassThrough stdin.
  * Decision wiring is asserted by driving synthetic InputEvents through
  * the KeybindingProvider's `stdinContext` seam and spying on `onResolve`.
- * Rendered text is walked via the Ink DOM tree (same pattern as
- * Banner.test.tsx) instead of the ANSI frame buffer.
+ * Rendered text is walked via the Ink DOM tree instead of the ANSI frame
+ * buffer.
  */
 
 import { PassThrough } from "node:stream";

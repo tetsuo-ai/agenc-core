@@ -77,6 +77,49 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("hides split provider lifecycle chatter deltas before tool calls", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-tools" } },
+      { type: "agent_message_delta", payload: { delta: "Calling " } },
+      { type: "agent_message_delta", payload: { delta: "tool." } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "call-1",
+          toolName: "system.readFile",
+          args: '{"path":"README.md"}',
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "system.readFile",
+    });
+    expect(messages.some((message) => message.content.includes("Calling"))).toBe(
+      false,
+    );
+  });
+
+  test("flushes split lifecycle-like deltas when they become real assistant text", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-text" } },
+      { type: "agent_message_delta", payload: { delta: "Calling " } },
+      { type: "agent_message_delta", payload: { delta: "out the issue." } },
+      { type: "turn_complete", payload: { turnId: "turn-text" } },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "assistant",
+      content: "Calling out the issue.",
+      isComplete: true,
+    });
+  });
+
   test("hydrates bash activity into a single exec cell row", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-bash" } },
@@ -397,6 +440,38 @@ describe("eventsToMessages", () => {
       toolProgressContent: "reading README.md",
       toolResultContent: "1→# AgenC\n2→runtime",
       isComplete: true,
+      isError: false,
+    });
+  });
+
+  test("preserves tool name and args when progress arrives before completion", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-tool" } },
+      {
+        type: "tool_progress",
+        payload: {
+          callId: "late-1",
+          toolName: "system.writeFile",
+          chunk: "writing CMakeLists.txt",
+          stream: "status",
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "late-1",
+          result: '{"path":"CMakeLists.txt","bytesWritten":42}',
+          isError: false,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toMatchObject({
+      kind: "tool_result",
+      toolName: "system.writeFile",
+      toolResultContent: '{"path":"CMakeLists.txt","bytesWritten":42}',
       isError: false,
     });
   });

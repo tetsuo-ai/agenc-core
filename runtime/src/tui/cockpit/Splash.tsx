@@ -1,5 +1,5 @@
 /**
- * Cockpit Splash — boot-time welcome screen.
+ * TUI Splash — boot-time welcome screen.
  *
  * Dismissed on the first keystroke. The rich variant still wraps the
  * watch splash logic module (`runtime/src/watch/agenc-watch-splash.mjs`)
@@ -7,7 +7,7 @@
  * That module needs a big bag of dependencies that are only available
  * once the runtime has wired a session; the TUI-side wrapper therefore
  * dynamic-imports it and, when it cannot be wired or is missing, falls
- * back to a simple text greeting so the cockpit still boots cleanly.
+ * back to a simple text greeting so the TUI still boots cleanly.
  *
  * Content layout:
  *   - Title line with product name.

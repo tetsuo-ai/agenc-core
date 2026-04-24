@@ -4,7 +4,6 @@ import { Cursor } from "../_deps/cursor.js";
 import Box from "../ink/components/Box.js";
 import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
-import { useDeclaredCursor } from "../ink/hooks/use-declared-cursor.js";
 import { stringWidth } from "../ink/stringWidth.js";
 
 const COMPOSER_FRAME_CHROME_COLUMNS = 4;
@@ -32,19 +31,19 @@ export function ComposerBuffer({
     [availableColumns, cursor, value],
   );
   const renderedValue = useMemo(
-    () => cursorModel.render("", "", (text) => text),
-    [cursorModel],
+    () =>
+      cursorActive
+        ? cursorModel.render(
+            " ",
+            "",
+            (text) => `\x1b[7m${text}\x1b[27m`,
+          )
+        : cursorModel.render("", "", (text) => text),
+    [cursorActive, cursorModel],
   );
-  const cursorPosition = cursorModel.getPosition();
-  const viewportStartLine = cursorModel.getViewportStartLine();
-  const cursorRef = useDeclaredCursor({
-    line: cursorPosition.line - viewportStartLine,
-    column: cursorPosition.column,
-    active: cursorActive,
-  });
 
   return (
-    <Box ref={cursorRef}>
+    <Box>
       <Text>{renderedValue}</Text>
     </Box>
   );

@@ -50,6 +50,8 @@ function styleForMode(
       return { color: "green" };
     case "diff-remove":
       return { color: "red" };
+    case "code":
+      return { color: "gray" };
     default:
       return {};
   }
@@ -90,17 +92,16 @@ function renderLineElement(
   if (line.mode === "code-meta") {
     return (
       <Box key={`code-meta-${index}`} flexDirection="row">
-        <Text color="gray" dim>{"╭─ "}</Text>
         <Text color="gray" dim>{line.text}</Text>
       </Box>
     );
   }
 
   if (line.mode === "code") {
+    const style = styleForMode(line.mode);
     return (
       <Box key={`code-${index}`} flexDirection="row">
-        <Text color="gray" dim>{"│ "}</Text>
-        {renderTextContent(line, index, {})}
+        {renderTextContent(line, index, style)}
       </Box>
     );
   }
@@ -114,34 +115,7 @@ function renderLineElement(
 }
 
 function renderLines(lines: readonly MarkdownDisplayLine[]): React.ReactElement[] {
-  const rendered: React.ReactElement[] = [];
-  let inCodeBlock = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (inCodeBlock && line.mode !== "code") {
-      rendered.push(
-        <Box key={`code-close-${index}`} flexDirection="row">
-          <Text color="gray" dim>{"╰"}</Text>
-        </Box>,
-      );
-      inCodeBlock = false;
-    }
-    rendered.push(renderLineElement(line, index));
-    if (line.mode === "code-meta") {
-      inCodeBlock = true;
-    }
-  }
-
-  if (inCodeBlock) {
-    rendered.push(
-      <Box key="code-close-final" flexDirection="row">
-        <Text color="gray" dim>{"╰"}</Text>
-      </Box>,
-    );
-  }
-
-  return rendered;
+  return lines.map((line, index) => renderLineElement(line, index));
 }
 
 interface StreamingCacheEntry {

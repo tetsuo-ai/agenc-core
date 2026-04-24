@@ -86,13 +86,13 @@ describe("collapseOutput", () => {
 });
 
 describe("ExecCell status badge", () => {
-  test("running state renders an inline Running header", async () => {
+  test("running state renders an OpenClaude-style Bash row", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell command="npm run build" stdout="" stderr="" />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("\u00B7");
-    expect(frame).toContain("Running");
+    expect(frame).toContain("●");
+    expect(frame).toContain("Bash");
     expect(frame).toContain("npm");
     unmount();
   });
@@ -108,10 +108,11 @@ describe("ExecCell status badge", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("\u2713");
-    expect(frame).toContain("Ran");
+    expect(frame).toContain("●");
+    expect(frame).toContain("Bash");
     expect(frame).toContain("Completed");
     expect(frame).toContain("hi");
+    expect(frame).toContain("⎿");
     unmount();
   });
 
@@ -126,7 +127,7 @@ describe("ExecCell status badge", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("\u2717");
+    expect(frame).toContain("●");
     expect(frame).toContain("Exited");
     expect(frame).toContain("1");
     unmount();
@@ -143,7 +144,7 @@ describe("ExecCell status badge", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("\u26A0");
+    expect(frame).toContain("●");
     expect(frame).toContain("Timed");
     expect(frame).toContain("out");
     unmount();

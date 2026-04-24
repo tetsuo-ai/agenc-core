@@ -18,7 +18,7 @@
  *
  * Rendering invariants:
  *   - Never mentions a specific provider/brand in the rendered strings
- *     (provider-neutral cockpit UI).
+ *     (provider-neutral TUI).
  *   - The `input` prop is rendered as-is for the text/compact kinds so
  *     the user sees the exact command they typed in the transcript
  *     header. Kept intentionally in the same line as the result body

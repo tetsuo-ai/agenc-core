@@ -2,8 +2,8 @@
  * ExecCell — shell execution history cell.
  *
  * Mirrors codex's history-cell shape more closely than the older boxed
- * `$ command` widget: a single inline "Running/Ran <command>" header,
- * optional indented stdout / stderr lines, and a compact completion note.
+ * `$ command` widget: a single semantic Bash(command) header, optional
+ * indented stdout / stderr lines, and a compact status note.
  *
  * When stdout/stderr exceed the head/tail budget, the middle is collapsed to
  * an "… (N lines elided) …" marker so long logs do not dominate the
@@ -26,6 +26,7 @@ import { sanitizeTranscriptText } from "./sanitize.js";
 const DEFAULT_KEEP_HEAD = 5;
 const DEFAULT_KEEP_TAIL = 5;
 const MAX_LINES_BEFORE_COLLAPSE = DEFAULT_KEEP_HEAD + DEFAULT_KEEP_TAIL + 5;
+const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
 
 /**
  * Collapse a multi-line string: keep the first `keepHead` lines, then an
@@ -89,27 +90,24 @@ export interface ExecCellProps {
 
 interface StatusBadge {
   readonly glyph: string;
-  readonly label: string;
   readonly color: string;
 }
 
 function computeStatus(props: ExecCellProps): StatusBadge {
   if (props.timedOut) {
     return {
-      glyph: "\u26A0",
-      label: "timeout",
+      glyph: BLACK_CIRCLE,
       color: theme.colors.warning,
     };
   }
   if (props.exitCode === undefined) {
-    return { glyph: "\u00B7", label: "running", color: theme.colors.dim };
+    return { glyph: BLACK_CIRCLE, color: theme.colors.dim };
   }
   if (props.exitCode === 0) {
-    return { glyph: "\u2713", label: "0", color: theme.colors.success };
+    return { glyph: BLACK_CIRCLE, color: theme.colors.success };
   }
   return {
-    glyph: "\u2717",
-    label: String(props.exitCode),
+    glyph: BLACK_CIRCLE,
     color: theme.colors.error,
   };
 }
@@ -120,7 +118,7 @@ function renderIndentedLines(
 ): React.ReactElement[] {
   return lines.map((line, index) => (
     <Box key={`${color ?? "default"}-${index}`} flexDirection="row">
-      <Text dim>{index === 0 ? "  \u2514 " : "    "}</Text>
+      <Text dim>{index === 0 ? "  ⎿  " : "     "}</Text>
       <Text {...(color ? { color } : {})} dim>
         {line.length > 0 ? line : " "}
       </Text>
@@ -152,28 +150,27 @@ export const ExecCell: React.FC<ExecCellProps> = (props) => {
   const statusDetail = props.timedOut
     ? `Timed out${durationLabel}`
     : props.exitCode === undefined
-      ? null
+      ? "Running"
       : props.exitCode === 0
         ? `Completed${durationLabel}`
         : `Exited ${props.exitCode}${durationLabel}`;
   const stdoutLines = hasStdout ? collapsedStdout.split("\n") : [];
   const stderrLines = hasStderr ? collapsedStderr.split("\n") : [];
-  const verb = props.exitCode === undefined && !props.timedOut ? "Running" : "Ran";
-
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
-        <Text color={status.color}>{status.glyph}</Text>
+        <Text color={status.color} dim={props.exitCode === undefined && !props.timedOut}>
+          {status.glyph}
+        </Text>
         <Text> </Text>
-        <Text bold>{verb}</Text>
-        <Text> </Text>
-        <Text>{displayCommand}</Text>
+        <Text bold>Bash</Text>
+        {displayCommand.length > 0 ? <Text dim>{`(${displayCommand})`}</Text> : null}
       </Box>
       {renderIndentedLines(stdoutLines)}
       {renderIndentedLines(stderrLines, theme.colors.error)}
       {statusDetail ? (
         <Box flexDirection="row">
-          <Text dim>{"  \u2514 "}</Text>
+          <Text dim>{"  ⎿  "}</Text>
           <Text dim color={props.exitCode && props.exitCode !== 0 ? theme.colors.error : theme.colors.dim}>
             {statusDetail}
           </Text>

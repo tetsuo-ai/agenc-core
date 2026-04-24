@@ -1124,54 +1124,78 @@ export async function* runTurnKernel(
     kind: "regular",
     startedAtMs: turnStartedAt,
   });
-  const codeModeTurnWorker = session.services.codeModeService.startTurnWorker({
-    invokeTool: async (call: CodeModeNestedToolCall) => {
-      if (
-        call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
-        call.toolName === CODE_MODE_WAIT_TOOL_NAME
-      ) {
-        throw new Error(`${CODE_MODE_EXEC_TOOL_NAME} cannot invoke itself`);
-      }
-      if (
-        call.input !== undefined &&
-        (typeof call.input !== "object" ||
-          call.input === null ||
-          Array.isArray(call.input))
-      ) {
-        throw new Error(`tool \`${call.toolName}\` expects a JSON object for arguments`);
-      }
-      const result = await session.services.registry.dispatch({
-        id: `exec-${call.runtimeToolCallId}`,
-        name: call.toolName,
-        arguments: safeStringify(call.input ?? {}),
-      });
-      if (result.isError === true) {
-        throw new Error(result.content);
-      }
-      if (result.codeModeResult !== undefined) {
-        return result.codeModeResult;
-      }
-      try {
-        return JSON.parse(result.content) as unknown;
-      } catch {
-        return result.content;
-      }
-    },
-    notify: ({ callId, text }) => {
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "tool_progress",
-          payload: {
-            callId,
-            toolName: CODE_MODE_EXEC_TOOL_NAME,
-            chunk: text,
-            stream: "status",
+  const codeModeService = (
+    session.services as {
+      readonly codeModeService?: Session["services"]["codeModeService"];
+    }
+  ).codeModeService;
+  const codeModeTurnWorker =
+    codeModeService !== undefined
+      ? codeModeService.startTurnWorker({
+          invokeTool: async (call: CodeModeNestedToolCall) => {
+            if (
+              call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
+              call.toolName === CODE_MODE_WAIT_TOOL_NAME
+            ) {
+              throw new Error(`${CODE_MODE_EXEC_TOOL_NAME} cannot invoke itself`);
+            }
+            if (
+              call.input !== undefined &&
+              (typeof call.input !== "object" ||
+                call.input === null ||
+                Array.isArray(call.input))
+            ) {
+              throw new Error(
+                `tool \`${call.toolName}\` expects a JSON object for arguments`,
+              );
+            }
+            const result = await session.services.registry.dispatch({
+              id: `exec-${call.runtimeToolCallId}`,
+              name: call.toolName,
+              arguments: safeStringify(call.input ?? {}),
+            });
+            if (result.isError === true) {
+              throw new Error(result.content);
+            }
+            if (result.codeModeResult !== undefined) {
+              return result.codeModeResult;
+            }
+            try {
+              return JSON.parse(result.content) as unknown;
+            } catch {
+              return result.content;
+            }
           },
-        },
-      });
-    },
-  });
+          notify: ({ callId, text }) => {
+            session.emit({
+              id: session.nextInternalSubId(),
+              msg: {
+                type: "tool_progress",
+                payload: {
+                  callId,
+                  toolName: CODE_MODE_EXEC_TOOL_NAME,
+                  chunk: text,
+                  stream: "status",
+                },
+              },
+            });
+          },
+        })
+      : (() => {
+          session.emit({
+            id: session.nextInternalSubId(),
+            msg: {
+              type: "warning",
+              payload: {
+                cause: "code_mode_service_missing",
+                message:
+                  "CodeMode service is missing from SessionServices; " +
+                  "code-mode tools are disabled for this turn.",
+              },
+            },
+          });
+          return { dispose: () => undefined };
+        })();
 
   try {
     return yield* runTurnKernelInner(
