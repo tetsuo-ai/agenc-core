@@ -1115,7 +1115,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
         cwd: "/tmp",
         modelInfo: { slug: "grok-4-fast" },
       } as never,
-      projectInstructions: "## project\n\nFollow repo CLAUDE.md guidance.",
+      projectInstructions: "## project\n\nFollow repo AGENC.md guidance.",
       memoryPrompt: memory.text,
     });
     expect(assembled.text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
@@ -1206,7 +1206,7 @@ describe("prepareTurnRuntimeInputs", () => {
     await mkdir(nested, { recursive: true });
     await mkdir(memoryDir, { recursive: true });
     await writeFile(join(repoRoot, "package.json"), "{}", "utf8");
-    await writeFile(join(repoRoot, "AGENTS.md"), "PROJECT-ONE", "utf8");
+    await writeFile(join(repoRoot, "AGENC.md"), "PROJECT-ONE", "utf8");
     await writeFile(memoryMdPath, "MEMORY-ONE\n", "utf8");
 
     let instructionText = "MCP-ONE";
@@ -1241,7 +1241,7 @@ describe("prepareTurnRuntimeInputs", () => {
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
 
-    await writeFile(join(repoRoot, "AGENTS.md"), "PROJECT-TWO", "utf8");
+    await writeFile(join(repoRoot, "AGENC.md"), "PROJECT-TWO", "utf8");
     await writeFile(memoryMdPath, "MEMORY-TWO\n", "utf8");
     instructionText = "MCP-TWO";
 

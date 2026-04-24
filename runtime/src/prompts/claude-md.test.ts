@@ -45,10 +45,10 @@ describe("claude-md (T10-B tiered + @include)", () => {
     mkdirSync(repoRoot, { recursive: true });
     mkdirSync(join(home, ".agenc"));
     writeFileSync(join(managedDir, "managed.md"), "MANAGED");
-    writeFileSync(join(home, ".agenc", "AGENTS.md"), "USER");
+    writeFileSync(join(home, ".agenc", "AGENC.md"), "USER");
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "PROJECT");
-    writeFileSync(join(repoRoot, "AGENTS.local.md"), "LOCAL");
+    writeFileSync(join(repoRoot, "AGENC.md"), "PROJECT");
+    writeFileSync(join(repoRoot, "AGENC.local.md"), "LOCAL");
 
     const tiers = await loadTieredInstructions({
       cwd: repoRoot,
@@ -67,7 +67,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
     mkdirSync(home, { recursive: true });
     mkdirSync(repoRoot, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "project only");
+    writeFileSync(join(repoRoot, "AGENC.md"), "project only");
 
     const tiers = await loadTieredInstructions({
       cwd: repoRoot,
@@ -80,7 +80,23 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(tiers.local).toBeNull();
   });
 
-  test("loadTieredInstructions falls back to ~/.claude/CLAUDE.md when ~/.agenc/AGENTS.md absent", async () => {
+  test("loadTieredInstructions falls back to ~/.agenc/AGENTS.md when ~/.agenc/AGENC.md absent", async () => {
+    const home = join(tmp, "home");
+    const repoRoot = join(tmp, "repo");
+    mkdirSync(join(home, ".agenc"), { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    writeFileSync(join(home, ".agenc", "AGENTS.md"), "AGENTS-COMPAT");
+    writeFileSync(join(repoRoot, "package.json"), "{}");
+
+    const tiers = await loadTieredInstructions({
+      cwd: repoRoot,
+      homeDir: home,
+      managedPath: join(tmp, "none"),
+    });
+    expect(tiers.user?.content).toBe("AGENTS-COMPAT");
+  });
+
+  test("loadTieredInstructions falls back to ~/.claude/CLAUDE.md when ~/.agenc instructions are absent", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");
     mkdirSync(join(home, ".claude"), { recursive: true });
@@ -107,17 +123,17 @@ describe("claude-md (T10-B tiered + @include)", () => {
       dropped: [],
     });
     const tiers: TieredInstructions = {
-      managed: mk("managed", "/etc/agenc/AGENTS.md", "M"),
-      user: mk("user", "/home/u/.agenc/AGENTS.md", "U"),
-      project: mk("project", "/r/AGENTS.md", "P"),
-      local: mk("local", "/r/AGENTS.local.md", "L"),
+      managed: mk("managed", "/etc/agenc/AGENC.md", "M"),
+      user: mk("user", "/home/u/.agenc/AGENC.md", "U"),
+      project: mk("project", "/r/AGENC.md", "P"),
+      local: mk("local", "/r/AGENC.local.md", "L"),
     };
     const text = assembleTieredInstructions(tiers);
     // Each tier header includes the path.
-    expect(text).toContain("--- managed (/etc/agenc/AGENTS.md) ---");
-    expect(text).toContain("--- user (/home/u/.agenc/AGENTS.md) ---");
-    expect(text).toContain("--- project (/r/AGENTS.md) ---");
-    expect(text).toContain("--- local (/r/AGENTS.local.md) ---");
+    expect(text).toContain("--- managed (/etc/agenc/AGENC.md) ---");
+    expect(text).toContain("--- user (/home/u/.agenc/AGENC.md) ---");
+    expect(text).toContain("--- project (/r/AGENC.md) ---");
+    expect(text).toContain("--- local (/r/AGENC.local.md) ---");
     // Order: managed then user then project then local.
     const mi = text.indexOf("managed");
     const ui = text.indexOf("user");
@@ -134,7 +150,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
       user: null,
       project: {
         tier: "project",
-        path: "/r/AGENTS.md",
+        path: "/r/AGENC.md",
         content: "only me",
         rawContent: "only me",
         dropped: [],
@@ -142,7 +158,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
       local: null,
     };
     const text = assembleTieredInstructions(tiers);
-    expect(text).toContain("--- project (/r/AGENTS.md) ---");
+    expect(text).toContain("--- project (/r/AGENC.md) ---");
     expect(text).toContain("only me");
     expect(text).not.toContain("--- managed");
   });
@@ -544,7 +560,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
     mkdirSync(home, { recursive: true });
     mkdirSync(repoRoot, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "root\n@include extra.md");
+    writeFileSync(join(repoRoot, "AGENC.md"), "root\n@include extra.md");
     writeFileSync(join(repoRoot, "extra.md"), "INCLUDED");
     const tiers = await loadTieredInstructions({
       cwd: repoRoot,
@@ -562,7 +578,7 @@ describe("claude-md (T10-B tiered + @include)", () => {
     mkdirSync(home, { recursive: true });
     mkdirSync(pkgDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
     writeFileSync(join(pkgDir, "CLAUDE.md"), "PKG");
 
     const tiers = await loadTieredInstructions({
@@ -583,8 +599,8 @@ describe("claude-md (T10-B tiered + @include)", () => {
     mkdirSync(home, { recursive: true });
     mkdirSync(pkgDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
-    writeFileSync(join(pkgDir, "AGENTS.md"), "PKG");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
+    writeFileSync(join(pkgDir, "AGENC.md"), "PKG");
 
     const tiers = await loadTieredInstructions({
       cwd: pkgDir,
@@ -593,6 +609,6 @@ describe("claude-md (T10-B tiered + @include)", () => {
       projectRootMarkers: [],
     });
     expect(tiers.project?.content).toBe("PKG");
-    expect(tiers.project?.path).toBe(join(pkgDir, "AGENTS.md"));
+    expect(tiers.project?.path).toBe(join(pkgDir, "AGENC.md"));
   });
 });

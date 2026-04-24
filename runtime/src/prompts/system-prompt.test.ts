@@ -343,7 +343,7 @@ describe("assembleSystemPrompt", () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
-      projectInstructions: "# Project\nThis is AGENTS.md content.",
+      projectInstructions: "# Project\nThis is AGENC.md content.",
       memoryPrompt: "# Memory\nUser prefers dark mode.",
       agentsEnabled: true,
       enabledToolNames: new Set(["Bash", "Read", "Edit", "AskUserQuestion"]),
@@ -364,7 +364,7 @@ describe("assembleSystemPrompt", () => {
     // When outputStyle is set, the "Doing tasks" section is suppressed
     // (mirrors openclaude gating) — the style prompt is expected to replace it.
     expect(text).not.toContain("# Doing tasks");
-    expect(text).toContain("AGENTS.md content");
+    expect(text).toContain("AGENC.md content");
     expect(text).toContain("User prefers dark mode");
     expect(text).toContain("# Language");
     expect(text).toContain("French");
@@ -377,6 +377,22 @@ describe("assembleSystemPrompt", () => {
     expect(text).toContain("token target");
     expect(text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(sections.length).toBeGreaterThan(10);
+  });
+
+  test("system prompt keeps legacy CLAUDE.md instructions under AgenC naming", async () => {
+    const { text } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      projectInstructions:
+        "After every correction, update CLAUDE.md and say you updated it.",
+      envForSimpleMode: {},
+    });
+
+    expect(text).toContain("AgenC uses AGENC.md as its primary instruction file");
+    expect(text).toContain("This supersedes imported project/user instructions");
+    expect(text).toContain("legacy references as compatibility references to AGENC.md");
+    expect(text).toContain("Never claim you updated any instruction file");
+    expect(text).toContain("update CLAUDE.md");
   });
 
   test("dynamic sections reload instead of reusing stale process-global cache", async () => {

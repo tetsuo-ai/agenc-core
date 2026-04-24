@@ -13,7 +13,7 @@ describe("createSessionBackedCompactContext", () => {
     const readFileState = new Map<string, unknown>([
       ["/ws/app.ts", { content: "console.log('x')" }],
     ]);
-    const loadedNestedMemoryPaths = new Set<string>(["/ws/AGENTS.md"]);
+    const loadedNestedMemoryPaths = new Set<string>(["/ws/AGENC.md"]);
     const mcpClients = [{ name: "ide" }];
     const activeAgents = [{ name: "worker" }];
     const queryTracking = { chainId: "chain-1", depth: 2 };

@@ -225,6 +225,9 @@ const HIDDEN_WARNING_CAUSES = new Set([
   "tool_routing_classified",
   "compact_prompt_build_slow",
   "compact_tool_result_dropped",
+  "memory_extract_failed",
+  "memory_extract_parse_failed",
+  "memory_extract_timeout",
 ]);
 
 const SILENT_TOOL_NAMES = new Set([

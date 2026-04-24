@@ -1,14 +1,14 @@
 /**
- * Project instructions loader — ancestor-walk AGENTS.md discovery with
+ * Project instructions loader — ancestor-walk AGENC.md discovery with
  * configurable project-root markers and a byte-budget cap.
  *
  * Ports openclaude `utils/projectInstructions.ts` (primary/fallback filename
  * helpers, ancestor walk) and the codex `agents_md.rs` behavior (configurable
- * `project_root_markers`, `project_doc_max_bytes` budget, `AGENTS.override.md`
- * preference over `AGENTS.md`).
+ * `project_root_markers`, `project_doc_max_bytes` budget, and legacy
+ * AGENTS.md/CLAUDE.md compatibility).
  *
- * Returns the **single** closest project-root AGENTS.md (plus its override
- * twin if present). Tiered discovery of multiple intermediate AGENTS.md files
+ * Returns the **single** closest project-root AGENC.md (plus its override
+ * twin if present). Tiered discovery of multiple intermediate instruction files
  * is layered on top by `claude-md.ts`'s project tier.
  *
  * @module
@@ -19,16 +19,25 @@ import { dirname, join, relative, resolve } from "node:path";
 import { readTextFile } from "./_deps/file-read.js";
 
 /**
- * Primary filename scanned for project instructions (OpenAI/Codex
- * convention + Claude Code convention).
+ * Primary filename scanned for AgenC project instructions.
  */
-export const PRIMARY_PROJECT_INSTRUCTION_FILE = "AGENTS.md";
+export const PRIMARY_PROJECT_INSTRUCTION_FILE = "AGENC.md";
 
 /**
- * Preferred per-checkout override. Not committed; shadows AGENTS.md in
+ * Preferred per-checkout override. Not committed; shadows AGENC.md in
  * the same directory when present.
  */
-export const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENTS.override.md";
+export const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
+
+/**
+ * Legacy Codex/OpenAI instruction filename retained as a compatibility fallback.
+ */
+export const LEGACY_PROJECT_INSTRUCTION_FILE = "AGENTS.md";
+
+/**
+ * Legacy override filename retained as a compatibility fallback.
+ */
+export const LEGACY_OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENTS.override.md";
 
 /**
  * Legacy fallback filename retained for Claude Code compatibility.
@@ -151,15 +160,19 @@ export async function findProjectRoot(
 
 /**
  * Resolve the preferred instruction file in a directory. Order:
- *   1. `AGENTS.override.md`
- *   2. `AGENTS.md`
- *   3. `CLAUDE.md` (legacy)
+ *   1. `AGENC.override.md`
+ *   2. `AGENC.md`
+ *   3. `AGENTS.override.md` (legacy)
+ *   4. `AGENTS.md` (legacy)
+ *   5. `CLAUDE.md` (legacy)
  * Returns `null` if none exist.
  */
 export async function resolveInstructionFile(dir: string): Promise<string | null> {
   const candidates = [
     OVERRIDE_PROJECT_INSTRUCTION_FILE,
     PRIMARY_PROJECT_INSTRUCTION_FILE,
+    LEGACY_OVERRIDE_PROJECT_INSTRUCTION_FILE,
+    LEGACY_PROJECT_INSTRUCTION_FILE,
     FALLBACK_PROJECT_INSTRUCTION_FILE,
   ];
   for (const name of candidates) {
@@ -173,7 +186,7 @@ export async function resolveInstructionFile(dir: string): Promise<string | null
 
 /**
  * Walk upward from `cwd`, find the nearest project root marker, read the
- * AGENTS.md/AGENTS.override.md/CLAUDE.md file in that directory, and
+ * AGENC.md/AGENC.override.md/AGENTS.md/CLAUDE.md file in that directory, and
  * return its normalized contents. Applies the byte budget (truncating
  * with an I-15 marker) and respects zero-budget disable.
  */

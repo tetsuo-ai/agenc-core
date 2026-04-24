@@ -266,6 +266,14 @@ describe("eventsToMessages", () => {
       {
         type: "warning",
         payload: {
+          cause: "memory_extract_failed",
+          message:
+            "memory_extract_timeout: extraction did not finish within 30000ms",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
           cause: "mcp_auth_required",
           message: "MCP server needs authentication",
         },
@@ -278,6 +286,9 @@ describe("eventsToMessages", () => {
       kind: "warning",
       content: "MCP server needs authentication",
     });
+    expect(messages.map((message) => message.content).join("\n")).not.toContain(
+      "memory_extract_timeout",
+    );
   });
 
   test("collapses non-exec tool start/progress/result into one semantic row", () => {

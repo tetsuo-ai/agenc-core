@@ -52,13 +52,30 @@ describe("project-instructions (T10-B)", () => {
     expect(r).toBeNull();
   });
 
-  test("resolveInstructionFile prefers AGENTS.override.md over AGENTS.md", async () => {
+  test("resolveInstructionFile prefers AGENC.override.md over AGENC.md", async () => {
     const dir = join(root, "d");
     mkdirSync(dir);
-    writeFileSync(join(dir, "AGENTS.md"), "base");
-    writeFileSync(join(dir, "AGENTS.override.md"), "override");
+    writeFileSync(join(dir, "AGENC.md"), "base");
+    writeFileSync(join(dir, "AGENC.override.md"), "override");
     const p = await resolveInstructionFile(dir);
-    expect(p?.endsWith("AGENTS.override.md")).toBe(true);
+    expect(p?.endsWith("AGENC.override.md")).toBe(true);
+  });
+
+  test("resolveInstructionFile prefers AGENC.md over legacy AGENTS.override.md", async () => {
+    const dir = join(root, "d");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "AGENC.md"), "primary");
+    writeFileSync(join(dir, "AGENTS.override.md"), "legacy-override");
+    const p = await resolveInstructionFile(dir);
+    expect(p?.endsWith("AGENC.md")).toBe(true);
+  });
+
+  test("resolveInstructionFile falls back to legacy AGENTS.md", async () => {
+    const dir = join(root, "d");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "AGENTS.md"), "legacy");
+    const p = await resolveInstructionFile(dir);
+    expect(p?.endsWith("AGENTS.md")).toBe(true);
   });
 
   test("resolveInstructionFile falls back to CLAUDE.md when only CLAUDE.md exists", async () => {
@@ -69,29 +86,29 @@ describe("project-instructions (T10-B)", () => {
     expect(p?.endsWith("CLAUDE.md")).toBe(true);
   });
 
-  test("loadProjectInstructions reads AGENTS.md from the project root", async () => {
+  test("loadProjectInstructions reads AGENC.md from the project root", async () => {
     const repoRoot = join(root, "proj");
     const cwd = join(repoRoot, "nested");
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "# Project doc\n");
+    writeFileSync(join(repoRoot, "AGENC.md"), "# Project doc\n");
     const res = await loadProjectInstructions({ cwd });
     expect(res).not.toBeNull();
-    expect(res!.path).toBe(join(repoRoot, "AGENTS.md"));
+    expect(res!.path).toBe(join(repoRoot, "AGENC.md"));
     expect(res!.content).toBe("# Project doc\n");
     expect(res!.truncated).toBe(false);
     expect(res!.rootMarkerFound).toBe("package.json");
     expect(res!.rootDir).toBe(repoRoot);
   });
 
-  test("loadProjectInstructions prefers AGENTS.override.md", async () => {
+  test("loadProjectInstructions prefers AGENC.override.md", async () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "base");
-    writeFileSync(join(repoRoot, "AGENTS.override.md"), "override");
+    writeFileSync(join(repoRoot, "AGENC.md"), "base");
+    writeFileSync(join(repoRoot, "AGENC.override.md"), "override");
     const res = await loadProjectInstructions({ cwd: repoRoot });
-    expect(res!.path.endsWith("AGENTS.override.md")).toBe(true);
+    expect(res!.path.endsWith("AGENC.override.md")).toBe(true);
     expect(res!.content).toBe("override");
   });
 
@@ -100,7 +117,7 @@ describe("project-instructions (T10-B)", () => {
     mkdirSync(repoRoot);
     writeFileSync(join(repoRoot, "package.json"), "{}");
     const big = "x".repeat(1000);
-    writeFileSync(join(repoRoot, "AGENTS.md"), big);
+    writeFileSync(join(repoRoot, "AGENC.md"), big);
     const res = await loadProjectInstructions({
       cwd: repoRoot,
       projectDocMaxBytes: 100,
@@ -114,14 +131,14 @@ describe("project-instructions (T10-B)", () => {
   test("loadProjectInstructions falls back to cwd when no marker is found", async () => {
     const cwd = join(root, "no-markers");
     mkdirSync(cwd, { recursive: true });
-    writeFileSync(join(cwd, "AGENTS.md"), "cwd-doc");
+    writeFileSync(join(cwd, "AGENC.md"), "cwd-doc");
     const res = await loadProjectInstructions({
       cwd,
       // Use a marker that doesn't exist anywhere from `cwd` up to `/`.
       projectRootMarkers: ["nonexistent-marker-abc-xyz-123"],
     });
     expect(res).not.toBeNull();
-    expect(res!.path).toBe(join(cwd, "AGENTS.md"));
+    expect(res!.path).toBe(join(cwd, "AGENC.md"));
     expect(res!.content).toBe("cwd-doc");
     expect(res!.rootMarkerFound).toBe("<cwd>");
     expect(res!.rootDir).toBe(cwd);
@@ -131,7 +148,7 @@ describe("project-instructions (T10-B)", () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "hi");
+    writeFileSync(join(repoRoot, "AGENC.md"), "hi");
     const res = await loadProjectInstructions({
       cwd: repoRoot,
       projectDocMaxBytes: 0,
@@ -143,18 +160,18 @@ describe("project-instructions (T10-B)", () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "small");
+    writeFileSync(join(repoRoot, "AGENC.md"), "small");
     const res = await loadProjectInstructions({ cwd: repoRoot });
     expect(res!.truncated).toBe(false);
     expect(res!.content).toBe("small");
     expect(DEFAULT_PROJECT_DOC_MAX_BYTES).toBe(2 * 1024 * 1024);
   });
 
-  test("loadProjectInstructions returns null when marker found but no AGENTS.md", async () => {
+  test("loadProjectInstructions returns null when marker found but no instruction file", async () => {
     const repoRoot = join(root, "proj");
     mkdirSync(repoRoot);
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    // No AGENTS.md / CLAUDE.md present.
+    // No AGENC.md / legacy instruction file present.
     const res = await loadProjectInstructions({ cwd: repoRoot });
     expect(res).toBeNull();
   });
@@ -165,15 +182,15 @@ describe("project-instructions (T10-B)", () => {
     const leafDir = join(pkgDir, "src");
     mkdirSync(leafDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
     writeFileSync(join(pkgDir, "CLAUDE.md"), "PKG");
-    writeFileSync(join(leafDir, "AGENTS.override.md"), "LEAF");
+    writeFileSync(join(leafDir, "AGENC.override.md"), "LEAF");
 
     const chain = await loadProjectInstructionChain({ cwd: leafDir });
     expect(chain.map((entry) => entry.path)).toEqual([
-      join(repoRoot, "AGENTS.md"),
+      join(repoRoot, "AGENC.md"),
       join(pkgDir, "CLAUDE.md"),
-      join(leafDir, "AGENTS.override.md"),
+      join(leafDir, "AGENC.override.md"),
     ]);
     expect(chain.map((entry) => entry.content)).toEqual(["ROOT", "PKG", "LEAF"]);
   });
@@ -183,8 +200,8 @@ describe("project-instructions (T10-B)", () => {
     const leafDir = join(repoRoot, "nested");
     mkdirSync(leafDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT-CONTENT");
-    writeFileSync(join(leafDir, "AGENTS.md"), "LEAF-CONTENT");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT-CONTENT");
+    writeFileSync(join(leafDir, "AGENC.md"), "LEAF-CONTENT");
 
     const chain = await loadProjectInstructionChain({
       cwd: leafDir,
@@ -202,15 +219,15 @@ describe("project-instructions (T10-B)", () => {
     const leafDir = join(repoRoot, "nested");
     mkdirSync(leafDir, { recursive: true });
     writeFileSync(join(repoRoot, "package.json"), "{}");
-    writeFileSync(join(repoRoot, "AGENTS.md"), "ROOT");
-    writeFileSync(join(leafDir, "AGENTS.md"), "LEAF");
+    writeFileSync(join(repoRoot, "AGENC.md"), "ROOT");
+    writeFileSync(join(leafDir, "AGENC.md"), "LEAF");
 
     const chain = await loadProjectInstructionChain({
       cwd: leafDir,
       projectRootMarkers: [],
     });
     expect(chain).toHaveLength(1);
-    expect(chain[0]!.path).toBe(join(leafDir, "AGENTS.md"));
+    expect(chain[0]!.path).toBe(join(leafDir, "AGENC.md"));
     expect(chain[0]!.content).toBe("LEAF");
     expect(chain[0]!.rootMarkerFound).toBe("<cwd>");
     expect(chain[0]!.rootDir).toBe(leafDir);

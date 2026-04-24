@@ -21,6 +21,23 @@ describe("status derivation", () => {
     expect(deriveBannerPhase(events)).toBe("assistant");
   });
 
+  test("ignores memory extraction diagnostics in the banner phase", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-1" } },
+      { type: "agent_message", payload: { message: "hi" } },
+      {
+        type: "warning",
+        payload: {
+          cause: "memory_extract_failed",
+          message:
+            "memory_extract_timeout: extraction did not finish within 30000ms",
+        },
+      },
+    ];
+
+    expect(deriveBannerPhase(events)).toBe("assistant");
+  });
+
   test("ignores silent system.searchTools lifecycle in the banner phase", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-1" } },

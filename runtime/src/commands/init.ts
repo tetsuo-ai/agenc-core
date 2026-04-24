@@ -1,14 +1,15 @@
 /**
- * `/init` — create `<cwd>/AGENTS.md` from the codex init template.
+ * `/init` — create `<cwd>/AGENC.md` from the AgenC init template.
  *
- * Mirrors codex TUI `/init` behaviour: writes a contributor-guide
- * scaffold to `AGENTS.md` at the current project root. If the file
+ * Mirrors codex TUI `/init` behaviour with AgenC naming: writes a
+ * contributor-guide scaffold to `AGENC.md` at the current project root. If the file
  * already exists we skip to avoid overwriting user content.
  *
  * Template source resolution order:
- *   1. If `CODEX_INIT_TEMPLATE_PATH` env is set and readable, use it
+ *   1. If `AGENC_INIT_TEMPLATE_PATH` env is set and readable, use it.
+ *   2. If legacy `CODEX_INIT_TEMPLATE_PATH` env is set and readable, use it
  *      (lets operators ship a customized template).
- *   2. Otherwise the inline AgenC-neutralized default below.
+ *   3. Otherwise the inline default below.
  *
  * @module
  */
@@ -29,7 +30,9 @@ import {
  * of codex's `prompt_for_init_command.md` (contributor guide outline)
  * but strips codex-specific phrasing.
  */
-export const INIT_TEMPLATE = `Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+export const INIT_TARGET_FILENAME = "AGENC.md";
+
+export const INIT_TEMPLATE = `Generate a file named AGENC.md that serves as a contributor guide for this repository.
 Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
 Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
 
@@ -73,8 +76,11 @@ Commit & Pull Request Guidelines
 
 /** Resolve the template body. See module doc for ordering. */
 export function resolveInitTemplate(): string {
-  const override = process.env.CODEX_INIT_TEMPLATE_PATH;
-  if (override) {
+  const overridePaths = [
+    process.env.AGENC_INIT_TEMPLATE_PATH,
+    process.env.CODEX_INIT_TEMPLATE_PATH,
+  ].filter((path): path is string => typeof path === "string" && path.length > 0);
+  for (const override of overridePaths) {
     try {
       return readFileSync(override, "utf8");
     } catch {
@@ -86,14 +92,14 @@ export function resolveInitTemplate(): string {
 
 export const initCommand: SlashCommand = {
   name: "init",
-  description: "Scaffold an AGENTS.md contributor guide in the current directory",
+  description: "Scaffold an AGENC.md contributor guide in the current directory",
   execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
     safeExecute(async () => {
-      const target = join(ctx.cwd, "AGENTS.md");
+      const target = join(ctx.cwd, INIT_TARGET_FILENAME);
       if (existsSync(target)) {
         return {
           kind: "text",
-          text: "AGENTS.md already exists — skipping /init to avoid overwriting.",
+          text: "AGENC.md already exists — skipping /init to avoid overwriting.",
         };
       }
       const body = resolveInitTemplate();

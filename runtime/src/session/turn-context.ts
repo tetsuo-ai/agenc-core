@@ -487,7 +487,7 @@ export interface TurnContext {
   /** Custom compaction prompt; falls back to library default. */
   readonly compactPrompt?: string;
 
-  /** User instructions block (AGENTS.md ancestor walk + @include). T10 wires. */
+  /** User instructions block (AGENC.md ancestor walk + legacy fallbacks + @include). */
   readonly userInstructions?: string;
 
   /** Collaboration mode (model + reasoning effort + dev instructions). */
