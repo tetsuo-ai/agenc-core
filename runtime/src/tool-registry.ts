@@ -1,7 +1,7 @@
 /**
  * Tool registry — the lean coding-profile surface.
  *
- * Holds the 35 surviving coding tools and exposes two things the
+ * Holds the coding-profile tool catalog and exposes two things the
  * query loop needs:
  *
  *   - `toLLMTools()` → `LLMTool[]` for the provider request payload
@@ -25,6 +25,7 @@ import {
   createHttpTools,
   createBashTool,
   createPlanningTools,
+  createApplyPatchTool,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
@@ -196,6 +197,20 @@ function specForTool(tool: Tool): ConfiguredToolSpec {
   };
 }
 
+const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
+  apply_patch: "patch",
+  "system.bash": "command",
+  "system.readFile": "path",
+  "system.writeFile": "path",
+  "system.appendFile": "path",
+  "system.editFile": "path",
+  "system.listDir": "path",
+  "system.stat": "path",
+  "system.mkdir": "path",
+  "system.delete": "path",
+  "system.glob": "pattern",
+};
+
 function parseToolCallArguments(
   toolCall: LLMToolCall,
 ): Record<string, unknown> {
@@ -205,10 +220,19 @@ function parseToolCallArguments(
   }
   try {
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    if (typeof parsed === "string") {
+      const field = STRING_ARGUMENT_TOOL_FIELDS[toolCall.name];
+      return field ? { [field]: parsed } : {};
+    }
+    return {};
   } catch {
+    const field = STRING_ARGUMENT_TOOL_FIELDS[toolCall.name];
+    if (field && raw.trim().length > 0) {
+      return { [field]: raw };
+    }
     return {};
   }
 }
@@ -269,7 +293,8 @@ export interface BuildToolRegistryOptions {
  *
  * Registers: filesystem (readFile, writeFile, editFile, appendFile,
  * listDir, stat, mkdir, delete, move, glob, grep), coding helpers,
- * http (fetch/get/post/browse/extractLinks/htmlToMarkdown), and bash.
+ * http (fetch/get/post/browse/extractLinks/htmlToMarkdown), bash,
+ * Codex-style apply_patch, and planning tools.
  *
  * The default visible set stays small. Heavy AgenC-owned git/symbol
  * inventory tools and Claude-compatible workflow aliases are registered
@@ -310,6 +335,9 @@ export function buildToolRegistry(
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
+    }),
+    createApplyPatchTool({
+      allowedPaths: [options.workspaceRoot],
     }),
     ...createPlanningTools({
       ...(options.workflowController !== undefined

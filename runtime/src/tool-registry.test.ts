@@ -21,6 +21,14 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     expect(writeFile?.supportsParallelToolCalls).toBe(false);
   });
 
+  test("apply_patch gets Exclusive + requiresApproval=true", () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const applyPatch = registry.tools.find((t) => t.name === "apply_patch");
+    expect(applyPatch?.concurrencyClass?.kind).toBe("exclusive");
+    expect(applyPatch?.requiresApproval).toBe(true);
+    expect(applyPatch?.supportsParallelToolCalls).toBe(false);
+  });
+
   test("bash tool gets BackgroundTerminal + requiresApproval=true", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const bash = registry.tools.find((t) => t.name === "system.bash");
@@ -30,23 +38,28 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
 });
 
 describe("tool-registry dynamic and deferred catalog", () => {
-  test("AgenC-owned git, symbol, repo, workflow, and TodoWrite tools are deferred by default", () => {
+  test("coding and planning tools are visible while heavy catalog entries stay deferred", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const registeredNames = registry.tools.map((tool) => tool.name);
     expect(registeredNames).toContain("system.gitStatus");
     expect(registeredNames).toContain("system.symbolSearch");
     expect(registeredNames).toContain("system.repoInventory");
     expect(registeredNames).toContain("TodoWrite");
+    expect(registeredNames).toContain("EnterPlanMode");
+    expect(registeredNames).toContain("ExitPlanMode");
     expect(registeredNames).toContain("workflow.enterPlan");
     expect(registeredNames).toContain("workflow.exitPlan");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toContain("update_plan");
+    expect(visibleNames).toContain("apply_patch");
+    expect(visibleNames).toContain("TodoWrite");
+    expect(visibleNames).toContain("EnterPlanMode");
+    expect(visibleNames).toContain("ExitPlanMode");
     expect(visibleNames).toContain("system.searchTools");
     expect(visibleNames).not.toContain("system.gitStatus");
     expect(visibleNames).not.toContain("system.symbolSearch");
     expect(visibleNames).not.toContain("system.repoInventory");
-    expect(visibleNames).not.toContain("TodoWrite");
     expect(visibleNames).not.toContain("workflow.enterPlan");
   });
 
@@ -73,11 +86,15 @@ describe("tool-registry dynamic and deferred catalog", () => {
     );
   });
 
-  test("update_plan is the primary plan tool and TodoWrite is a deferred compatibility alias", async () => {
+  test("update_plan is the primary plan tool and TodoWrite is a visible compatibility alias", async () => {
     const emittedPlans: unknown[] = [];
+    const writtenPlans: string[] = [];
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
       workflowController: {
+        writePlan: async (content) => {
+          writtenPlans.push(content);
+        },
         emitPlanUpdated: (state) => {
           emittedPlans.push(state);
         },
@@ -96,6 +113,9 @@ describe("tool-registry dynamic and deferred catalog", () => {
       }),
     });
     expect(update.isError).toBeUndefined();
+    expect(writtenPlans[0]).toContain("# AgenC Plan");
+    expect(writtenPlans[0]).toContain("- [x] Inspect registry");
+    expect(writtenPlans[0]).toContain("- [-] Add compatibility alias");
     expect(JSON.parse(update.content)).toMatchObject({
       message: "Plan updated.",
       explanation: "wire tools",
@@ -106,11 +126,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
     expect(emittedPlans).toHaveLength(1);
 
-    await registry.dispatch({
-      id: "search-todo",
-      name: "system.searchTools",
-      arguments: JSON.stringify({ select: "TodoWrite" }),
-    });
     const todo = await registry.dispatch({
       id: "todo-1",
       name: "TodoWrite",
@@ -122,6 +137,8 @@ describe("tool-registry dynamic and deferred catalog", () => {
       }),
     });
     expect(todo.isError).toBeUndefined();
+    expect(writtenPlans[1]).toContain("- [x] Ship alias");
+    expect(writtenPlans[1]).toContain("- [ ] Run tests");
     expect(JSON.parse(todo.content)).toMatchObject({
       message: "Todo list updated through update_plan compatibility state.",
       plan: [
@@ -132,13 +149,14 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(emittedPlans).toHaveLength(2);
   });
 
-  test("workflow enter/exit tools drive the live permission-mode registry", async () => {
+  test("OpenClaude-style EnterPlanMode/ExitPlanMode drive the live permission-mode registry", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "acceptEdits" }),
     );
     const warnings: string[] = [];
     let syncCount = 0;
     let exited = false;
+    let plan = "# Plan\n\nDo it.";
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
       workflowController: {
@@ -152,30 +170,32 @@ describe("tool-registry dynamic and deferred catalog", () => {
         emitPlanExited: () => {
           exited = true;
         },
+        getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+        readPlan: () => plan,
+        writePlan: async (content) => {
+          plan = content;
+        },
       },
-    });
-
-    await registry.dispatch({
-      id: "search-workflow",
-      name: "system.searchTools",
-      arguments: JSON.stringify({ select: ["workflow.enterPlan", "workflow.exitPlan"] }),
     });
 
     const entered = await registry.dispatch({
       id: "enter-plan",
-      name: "workflow.enterPlan",
+      name: "EnterPlanMode",
       arguments: "{}",
     });
     expect(entered.isError).toBeUndefined();
+    expect(entered.content).toContain("Entered plan mode");
     expect(permissionRegistry.current().mode).toBe("plan");
     expect(permissionRegistry.current().prePlanMode).toBe("acceptEdits");
 
     const exitedResult = await registry.dispatch({
       id: "exit-plan",
-      name: "workflow.exitPlan",
-      arguments: "{}",
+      name: "ExitPlanMode",
+      arguments: JSON.stringify({ plan: "# Edited Plan\n\nDo it better." }),
     });
     expect(exitedResult.isError).toBeUndefined();
+    expect(exitedResult.content).toContain("Approved Plan");
+    expect(exitedResult.content).toContain("# Edited Plan");
     expect(permissionRegistry.current().mode).toBe("acceptEdits");
     expect(syncCount).toBe(2);
     expect(warnings).toEqual(["mode_changed_to_plan", "mode_exited_plan"]);

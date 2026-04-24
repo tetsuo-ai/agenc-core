@@ -24,11 +24,8 @@
  *     - `/plan` with no args renders the current plan (or a hint that no
  *       plan is written yet).
  *
- * Plan storage path decision: plans live under
- * `<ctx.cwd>/.agenc/plan.json` (project-scoped) so multiple sessions
- * operating on the same project share a single plan file. Session-scoped
- * storage under `~/.agenc/sessions/<id>/plan.json` was rejected because
- * openclaude's plan file is explicitly designed to survive session boundaries.
+ * Plan storage path decision: match OpenClaude's session plan files, but
+ * translate the storage root to AgenC: `<AGENC_HOME>/plans/<slug>.md`.
  *
  * Dependency: expects `session.services.permissionModeRegistry`.
  *
@@ -36,14 +33,21 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 
 import {
   PermissionModeRegistry,
   transitionPermissionMode,
 } from "../permissions/mode.js";
+import {
+  formatPlanText,
+  clearAllPlanSlugs,
+  clearPlanSlug,
+  getPlan,
+  getPlanFilePath,
+  setPlanSlug,
+  writePlan,
+  type PlanFileContext,
+} from "../planning/plan-files.js";
 import type { Session } from "../session/session.js";
 import type { EventMsg } from "../session/event-log.js";
 import {
@@ -53,67 +57,15 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 
-// ─────────────────────────────────────────────────────────────────────
-// Plan-file primitives
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Minimal plan record — mirrors openclaude's `Plan` shape without pulling
- * in their protocol types. `items` is free-form string content today; a
- * future tranche can replace with structured PlanItem[] once the TUI
- * learns to render it.
- */
-export interface PlanRecord {
-  readonly id: string;
-  readonly description: string;
-  readonly content: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
-/**
- * Project-scoped plan file path: `<cwd>/.agenc/plan.json`. Exported so
- * tests can assert the resolved path without replicating the join logic.
- */
-export function getPlanFilePath(cwd: string): string {
-  return resolve(cwd, ".agenc", "plan.json");
-}
-
-/** Read the plan file if present; returns `null` on absent or malformed. */
-export function getPlan(cwd: string): PlanRecord | null {
-  const path = getPlanFilePath(cwd);
-  if (!existsSync(path)) return null;
-  try {
-    const raw = readFileSync(path, "utf8");
-    const parsed = JSON.parse(raw) as Partial<PlanRecord>;
-    if (
-      typeof parsed.id === "string" &&
-      typeof parsed.description === "string" &&
-      typeof parsed.content === "string" &&
-      typeof parsed.createdAt === "string" &&
-      typeof parsed.updatedAt === "string"
-    ) {
-      return parsed as PlanRecord;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Persist a plan record to disk under `<cwd>/.agenc/plan.json`. Creates
- * the `.agenc` directory if needed. Exposed so higher tranches (plan
- * verification hook, interview phase) can write plans programmatically.
- */
-export async function writePlan(
-  cwd: string,
-  plan: PlanRecord,
-): Promise<void> {
-  const path = getPlanFilePath(cwd);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(plan, null, 2), "utf8");
-}
+export {
+  clearAllPlanSlugs,
+  clearPlanSlug,
+  formatPlanText,
+  getPlan,
+  getPlanFilePath,
+  setPlanSlug,
+  writePlan,
+};
 
 /**
  * Best-effort `$EDITOR` launch. Detaches so we don't block the command
@@ -148,22 +100,6 @@ export async function openInEditor(
   });
 }
 
-/**
- * Format a plan record for terminal display. Kept as a pure helper so
- * tests don't need stdout capture.
- */
-export function formatPlanText(plan: PlanRecord, path: string): string {
-  const lines = [
-    "Current Plan",
-    path,
-    "",
-    plan.description.trim().length > 0 ? plan.description : "(no description)",
-    "",
-    plan.content.trim().length > 0 ? plan.content : "(plan body empty)",
-  ];
-  return lines.join("\n");
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Permission-mode registry accessor
 // ─────────────────────────────────────────────────────────────────────
@@ -190,6 +126,14 @@ function emitWarning(session: Session, cause: string, message: string): void {
     payload: { cause, message },
   };
   session.emit({ id: session.nextInternalSubId(), msg });
+}
+
+function planFileContext(ctx: SlashCommandContext): PlanFileContext {
+  return {
+    ...(ctx.agencHome !== undefined ? { agencHome: ctx.agencHome } : {}),
+    home: ctx.home,
+    sessionId: ctx.session.conversationId,
+  };
 }
 
 export const planCommand: SlashCommand = {
@@ -231,36 +175,38 @@ export const planCommand: SlashCommand = {
         }
         return {
           kind: "text",
-          text:
-            "Entered plan mode. Only read-only tools are available. " +
-            "Use Shift+Tab to cycle out or call /plan again to view the plan.",
+          text: "Enabled plan mode",
         };
       }
 
       // Already in plan mode.
-      if (argsTrimmed === "open") {
-        const path = getPlanFilePath(ctx.cwd);
+      const fileCtx = planFileContext(ctx);
+      const plan = getPlan(fileCtx);
+      if (!plan) {
+        return {
+          kind: "text",
+          text: "Already in plan mode. No plan written yet.",
+        };
+      }
+
+      const firstArg = argsTrimmed.split(/\s+/)[0] ?? "";
+      if (firstArg === "open") {
+        const path = getPlanFilePath(fileCtx);
         const result = await openInEditor(path);
         if ("error" in result) {
           return {
             kind: "text",
-            text: `Could not open plan in editor (${result.error}). Path: ${path}`,
+            text: `Failed to open plan in editor: ${result.error}`,
           };
         }
-        return { kind: "skip" };
-      }
-
-      const plan = getPlan(ctx.cwd);
-      if (!plan) {
         return {
           kind: "text",
-          text:
-            "Already in plan mode. No plan written yet — describe your goal so the model can draft one.",
+          text: `Opened plan in editor: ${path}`,
         };
       }
       return {
         kind: "text",
-        text: formatPlanText(plan, getPlanFilePath(ctx.cwd)),
+        text: formatPlanText(plan, getPlanFilePath(fileCtx)),
       };
     }),
 };

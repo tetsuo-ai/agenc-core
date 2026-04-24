@@ -68,6 +68,19 @@ describe("getSlashCommandItems", () => {
     expect(exit?.value).toBe("/exit");
   });
 
+  test("preserves registry presentation order", () => {
+    const registry = makeRegistry([
+      { name: "model", description: "switch model" },
+      { name: "permissions", description: "manage permissions" },
+      { name: "help", description: "show help" },
+    ]);
+    expect(getSlashCommandItems(registry).map((item) => item.id)).toEqual([
+      "model",
+      "permissions",
+      "help",
+    ]);
+  });
+
   test("surfaces aliases and local-command metadata for discovery", () => {
     const registry = makeRegistry([
       {

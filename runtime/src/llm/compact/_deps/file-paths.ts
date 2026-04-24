@@ -2,31 +2,20 @@
  * File-path helpers compact uses to attach plan/project/task artifacts
  * to compaction summaries.
  *
- * Plan resolvers are wired into the gut runtime's plan-mode subsystem
- * (`src/commands/plan.ts`), which stores plans as project-scoped
- * `<cwd>/.agenc/plan.json` records (`PlanRecord` shape). Compact's call
- * sites only ship `agentId`, so we resolve cwd via `process.cwd()` —
- * the gut runtime runs each session with `process.cwd()` set to the
- * session's resolved cwd (`session.ts:1518`, `session.ts:858`), which
- * matches the project root the `/plan` slash command writes against.
+ * Plan resolvers are wired into the AgenC plan-mode subsystem
+ * (`src/planning/plan-files.ts`), which stores OpenClaude-style
+ * session-scoped markdown plans under `<AGENC_HOME>/plans/<slug>.md`.
  *
  * Project-instruction discovery is implemented here so compact's prompt
  * assembly can still surface AGENTS.md / CLAUDE.md / .agenc/instructions.md
  * for the cwd it was given.
  *
- * Honest divergence from upstream claude (`claude/src/utils/plans.ts`):
+ * AgenC adaptation from upstream OpenClaude (`src/utils/plans.ts`):
  *
- *   - Upstream plans are session-scoped (word-slug + cache, optionally
- *     suffixed with `-agent-<id>` for subagents). Gut plans are
- *     project-scoped (`<cwd>/.agenc/plan.json`). The `agentId`
- *     parameter is therefore accepted for signature parity with
- *     compact's call sites but does NOT change the resolved path.
- *
- *   - Upstream returns the raw plan markdown read straight from disk.
- *     Gut stores plans as a JSON `PlanRecord` (`id` / `description` /
- *     `content` / `createdAt` / `updatedAt`); we return the `content`
- *     field so compact's `plan_file_reference` attachment carries the
- *     same plan body the model would see via `/plan`.
+ *   - The storage root is AgenC's config dir (`AGENC_HOME` or
+ *     `$HOME/.agenc`) instead of Claude's config dir.
+ *   - The file content is raw markdown, matching OpenClaude's
+ *     `plan_file_reference` attachment semantics.
  *
  *   - Task disk output (`getTaskOutputPath`): no gut equivalent. Gut
  *     does not own claude's `DiskTaskOutput` per-task stdout-on-disk
@@ -44,9 +33,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  getPlan as readGutPlan,
-  getPlanFilePath as resolveGutPlanFilePath,
-} from "../../../commands/plan.js";
+  getPlan as readAgenCPlan,
+  getPlanFilePath as resolveAgenCPlanFilePath,
+} from "../../../planning/plan-files.js";
 
 function agencHome(): string {
   return (
@@ -55,36 +44,24 @@ function agencHome(): string {
   );
 }
 
-function resolveCwd(): string {
-  return process.cwd();
-}
-
 /**
  * Read the active plan body for the current session.
- *
- * Reads `<cwd>/.agenc/plan.json` via the gut plan-mode subsystem and
- * returns the `content` field, or `null` if no plan exists, the JSON
- * is malformed, or the `content` field is empty. The `agentId`
- * parameter is accepted for signature parity with the upstream
- * `getPlan(agentId?)` contract but is intentionally unused — gut plans
- * are project-scoped, not subagent-scoped.
  */
-export function getPlan(_agentId?: string): string | null {
-  const record = readGutPlan(resolveCwd());
-  if (!record) return null;
-  if (record.content.length === 0) return null;
-  return record.content;
+export function getPlan(agentId?: string, sessionId?: string): string | null {
+  return readAgenCPlan({
+    ...(agentId !== undefined ? { agentId } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  });
 }
 
 /**
  * Resolve the plan file path for the current session.
- *
- * Returns `<cwd>/.agenc/plan.json` via the gut plan-mode resolver. The
- * `agentId` parameter is accepted for signature parity but does not
- * affect the resolved path (see module-level note).
  */
-export function getPlanFilePath(_agentId?: string): string {
-  return resolveGutPlanFilePath(resolveCwd());
+export function getPlanFilePath(agentId?: string, sessionId?: string): string {
+  return resolveAgenCPlanFilePath({
+    ...(agentId !== undefined ? { agentId } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  });
 }
 
 /**

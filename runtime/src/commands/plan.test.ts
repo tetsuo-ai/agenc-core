@@ -1,37 +1,33 @@
 /**
- * Tests for `/plan` slash command + plan-file helpers (T11 W2 Agent C).
+ * Tests for `/plan` slash command + OpenClaude-style AgenC plan files.
  */
 
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { basename, join } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
 import planCommand, {
+  clearAllPlanSlugs,
   formatPlanText,
   getPermissionModeRegistry,
   getPlan,
   getPlanFilePath,
   openInEditor,
+  setPlanSlug,
   writePlan,
-  type PlanRecord,
 } from "./plan.js";
 import type { SlashCommandContext } from "./types.js";
 import type { Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
-import {
-  PermissionModeRegistry,
-} from "../permissions/mode.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-
-// ─────────────────────────────────────────────────────────────────────
-// Harness
-// ─────────────────────────────────────────────────────────────────────
 
 interface Harness {
   readonly ctx: SlashCommandContext;
   readonly registry: PermissionModeRegistry;
   readonly events: Event[];
   readonly cwd: string;
+  readonly agencHome: string;
 }
 
 function mkHarness(opts: {
@@ -40,11 +36,13 @@ function mkHarness(opts: {
   readonly argsRaw?: string;
   readonly withoutRegistry?: boolean;
 } = {}): Harness {
-  const cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), "agenc-plan-"));
-  const initialCtx = createEmptyToolPermissionContext({
-    mode: opts.initialMode ?? "default",
-  });
-  const registry = new PermissionModeRegistry(initialCtx);
+  const cwd = opts.cwd ?? mkdtempSync(join(tmpdir(), "agenc-plan-cwd-"));
+  const agencHome = mkdtempSync(join(tmpdir(), "agenc-plan-home-"));
+  const registry = new PermissionModeRegistry(
+    createEmptyToolPermissionContext({
+      mode: opts.initialMode ?? "default",
+    }),
+  );
 
   const events: Event[] = [];
   let subId = 0;
@@ -66,21 +64,21 @@ function mkHarness(opts: {
     argsRaw: opts.argsRaw ?? "",
     cwd,
     home: "/home/test-plan",
+    agencHome,
   };
-  return { ctx, registry, events, cwd };
+  return { ctx, registry, events, cwd, agencHome };
 }
 
-let tempDirs: string[] = [];
-beforeEach(() => {
-  tempDirs = [];
-});
-afterEach(() => {
-  // no cleanup needed; mkdtempSync in /tmp is auto-cleaned enough for tests
-});
+function planCtx(h: Harness) {
+  return {
+    agencHome: h.agencHome,
+    sessionId: h.ctx.session.conversationId,
+  };
+}
 
-// ─────────────────────────────────────────────────────────────────────
-// getPermissionModeRegistry
-// ─────────────────────────────────────────────────────────────────────
+beforeEach(() => {
+  clearAllPlanSlugs();
+});
 
 describe("getPermissionModeRegistry", () => {
   it("returns the registry when present on services", () => {
@@ -94,73 +92,68 @@ describe("getPermissionModeRegistry", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────
-// Plan file storage
-// ─────────────────────────────────────────────────────────────────────
-
 describe("plan-file helpers", () => {
-  it("getPlanFilePath resolves to <cwd>/.agenc/plan.json", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agenc-plan-path-"));
-    expect(getPlanFilePath(dir)).toBe(join(dir, ".agenc", "plan.json"));
+  it("getPlanFilePath resolves to <AGENC_HOME>/plans/<slug>.md", () => {
+    const h = mkHarness();
+    const slug = setPlanSlug(planCtx(h), "steady-bridge");
+    const filePath = getPlanFilePath(planCtx(h));
+    expect(slug).toBe("steady-bridge");
+    expect(filePath).toBe(join(h.agencHome, "plans", "steady-bridge.md"));
+  });
+
+  it("uses agent-specific plan file suffixes for subagents", () => {
+    const h = mkHarness();
+    setPlanSlug(planCtx(h), "steady-bridge");
+    expect(
+      getPlanFilePath({
+        ...planCtx(h),
+        agentId: "agent/one",
+      }),
+    ).toBe(join(h.agencHome, "plans", "steady-bridge-agent-agent-one.md"));
   });
 
   it("getPlan returns null when the file is absent", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agenc-plan-none-"));
-    expect(getPlan(dir)).toBeNull();
+    const h = mkHarness();
+    setPlanSlug(planCtx(h), "missing-plan");
+    expect(getPlan(planCtx(h))).toBeNull();
   });
 
-  it("writePlan persists a plan and getPlan round-trips it", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "agenc-plan-rw-"));
-    const record: PlanRecord = {
-      id: "plan-1",
-      description: "ship the thing",
-      content: "step 1: explore\nstep 2: implement",
-      createdAt: "2026-04-20T00:00:00Z",
-      updatedAt: "2026-04-20T00:00:00Z",
-    };
-    await writePlan(dir, record);
-    const loaded = getPlan(dir);
-    expect(loaded).toEqual(record);
-    expect(existsSync(join(dir, ".agenc", "plan.json"))).toBe(true);
+  it("writePlan persists markdown and getPlan round-trips it", async () => {
+    const h = mkHarness();
+    setPlanSlug(planCtx(h), "round-trip");
+    const content = "## Context\n\nShip the thing.\n";
+    const filePath = await writePlan(planCtx(h), content);
+    expect(filePath).toBe(join(h.agencHome, "plans", "round-trip.md"));
+    expect(getPlan(planCtx(h))).toBe(content);
+    expect(existsSync(filePath)).toBe(true);
   });
 
-  it("getPlan returns null for malformed JSON", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agenc-plan-bad-"));
-    mkdirSync(join(dir, ".agenc"));
-    writeFileSync(join(dir, ".agenc", "plan.json"), "{ not json", "utf8");
-    expect(getPlan(dir)).toBeNull();
-  });
-
-  it("getPlan returns null when required fields are missing", () => {
-    const dir = mkdtempSync(join(tmpdir(), "agenc-plan-partial-"));
-    mkdirSync(join(dir, ".agenc"));
-    writeFileSync(
-      join(dir, ".agenc", "plan.json"),
-      JSON.stringify({ id: "x" }),
-      "utf8",
-    );
-    expect(getPlan(dir)).toBeNull();
-  });
-
-  it("formatPlanText renders headers + path + content", () => {
-    const record: PlanRecord = {
-      id: "p",
-      description: "desc",
-      content: "body",
-      createdAt: "t",
-      updatedAt: "t",
-    };
-    const out = formatPlanText(record, "/tmp/.agenc/plan.json");
+  it("formatPlanText renders headers, path, and raw markdown", () => {
+    const out = formatPlanText("## Plan\n\nDo it.", "/tmp/agenc/plans/p.md");
     expect(out).toContain("Current Plan");
-    expect(out).toContain("/tmp/.agenc/plan.json");
-    expect(out).toContain("desc");
-    expect(out).toContain("body");
+    expect(out).toContain("/tmp/agenc/plans/p.md");
+    expect(out).toContain("## Plan");
+    expect(out).toContain('/plan open');
+  });
+
+  it("generates stable markdown slugs per session", () => {
+    const h = mkHarness();
+    const first = getPlanFilePath(planCtx(h));
+    const second = getPlanFilePath(planCtx(h));
+    expect(first).toBe(second);
+    expect(first).toContain(join(h.agencHome, "plans"));
+    expect(basename(first)).toMatch(/\.md$/);
+  });
+
+  it("persists session slug mappings across in-memory cache clears", () => {
+    const h = mkHarness();
+    setPlanSlug(planCtx(h), "persisted-slug");
+    clearAllPlanSlugs();
+    expect(getPlanFilePath(planCtx(h))).toBe(
+      join(h.agencHome, "plans", "persisted-slug.md"),
+    );
   });
 });
-
-// ─────────────────────────────────────────────────────────────────────
-// openInEditor
-// ─────────────────────────────────────────────────────────────────────
 
 describe("openInEditor", () => {
   it("returns error when no $EDITOR/$VISUAL is set", async () => {
@@ -169,8 +162,6 @@ describe("openInEditor", () => {
   });
 
   it("spawns /usr/bin/true happy path and resolves ok", async () => {
-    // `true` is a POSIX no-op that always succeeds. Used as a lightweight
-    // stand-in for $EDITOR so we don't open a real editor during tests.
     const res = await openInEditor("/dev/null", { EDITOR: "true" });
     expect(res).toEqual({ ok: true });
   });
@@ -183,10 +174,6 @@ describe("openInEditor", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────
-// /plan execute
-// ─────────────────────────────────────────────────────────────────────
-
 describe("planCommand.execute", () => {
   it("errors out when the permission-mode registry is not wired", async () => {
     const { ctx } = mkHarness({ withoutRegistry: true });
@@ -197,16 +184,12 @@ describe("planCommand.execute", () => {
     }
   });
 
-  it("transitions default → plan and returns confirmation text", async () => {
+  it("transitions default -> plan and returns OpenClaude confirmation text", async () => {
     const h = mkHarness({ initialMode: "default" });
     const res = await planCommand.execute(h.ctx);
     expect(h.registry.current().mode).toBe("plan");
     expect(h.registry.current().prePlanMode).toBe("default");
-    expect(res.kind).toBe("text");
-    if (res.kind === "text") {
-      expect(res.text).toMatch(/Entered plan mode/);
-    }
-    // warning event emitted
+    expect(res).toEqual({ kind: "text", text: "Enabled plan mode" });
     const warn = h.events.find((e) => e.msg.type === "warning");
     expect(warn).toBeDefined();
     if (warn && warn.msg.type === "warning") {
@@ -221,19 +204,14 @@ describe("planCommand.execute", () => {
     });
     const res = await planCommand.execute(h.ctx);
     expect(h.registry.current().mode).toBe("plan");
-    expect(res.kind).toBe("prompt");
-    if (res.kind === "prompt") {
-      expect(res.content).toBe("design the caching layer");
-    }
+    expect(res).toEqual({ kind: "prompt", content: "design the caching layer" });
   });
 
-  it("treats `/plan open` in non-plan mode as a transition (not an open)", async () => {
-    // openclaude docs: "open" only has editor semantics when already in
-    // plan mode. When transitioning in, we treat it as "no description".
+  it("treats `/plan open` in non-plan mode as a transition", async () => {
     const h = mkHarness({ initialMode: "default", argsRaw: "open" });
     const res = await planCommand.execute(h.ctx);
     expect(h.registry.current().mode).toBe("plan");
-    expect(res.kind).toBe("text");
+    expect(res).toEqual({ kind: "text", text: "Enabled plan mode" });
   });
 
   it("`/plan` while already in plan mode with no plan returns hint", async () => {
@@ -241,36 +219,33 @@ describe("planCommand.execute", () => {
     const res = await planCommand.execute(h.ctx);
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
-      expect(res.text).toMatch(/No plan written yet/i);
+      expect(res.text).toBe("Already in plan mode. No plan written yet.");
     }
-    // No mode-change event fires because we're already in plan.
     const warn = h.events.find(
-      (e) => e.msg.type === "warning" && e.msg.payload.cause === "mode_changed_to_plan",
+      (e) =>
+        e.msg.type === "warning" &&
+        e.msg.payload.cause === "mode_changed_to_plan",
     );
     expect(warn).toBeUndefined();
   });
 
   it("`/plan` while in plan mode with a persisted plan renders it", async () => {
     const h = mkHarness({ initialMode: "plan" });
-    const record: PlanRecord = {
-      id: "p",
-      description: "the goal",
-      content: "do things",
-      createdAt: "2026-04-20",
-      updatedAt: "2026-04-20",
-    };
-    await writePlan(h.cwd, record);
+    setPlanSlug(planCtx(h), "render-plan");
+    await writePlan(planCtx(h), "## Context\n\nDo things.\n");
     const res = await planCommand.execute(h.ctx);
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
-      expect(res.text).toContain("the goal");
-      expect(res.text).toContain("do things");
-      expect(res.text).toContain(getPlanFilePath(h.cwd));
+      expect(res.text).toContain("## Context");
+      expect(res.text).toContain("Do things.");
+      expect(res.text).toContain(getPlanFilePath(planCtx(h)));
     }
   });
 
   it("`/plan open` in plan mode falls back gracefully when no $EDITOR", async () => {
     const h = mkHarness({ initialMode: "plan", argsRaw: "open" });
+    setPlanSlug(planCtx(h), "open-plan");
+    await writePlan(planCtx(h), "open me");
     const prevEditor = process.env.EDITOR;
     const prevVisual = process.env.VISUAL;
     delete process.env.EDITOR;
@@ -279,8 +254,7 @@ describe("planCommand.execute", () => {
       const res = await planCommand.execute(h.ctx);
       expect(res.kind).toBe("text");
       if (res.kind === "text") {
-        expect(res.text).toMatch(/Could not open plan/);
-        expect(res.text).toContain(getPlanFilePath(h.cwd));
+        expect(res.text).toMatch(/Failed to open plan in editor/);
       }
     } finally {
       if (prevEditor !== undefined) process.env.EDITOR = prevEditor;
@@ -288,13 +262,18 @@ describe("planCommand.execute", () => {
     }
   });
 
-  it("`/plan open` with working $EDITOR returns skip (no transcript)", async () => {
+  it("`/plan open` with working $EDITOR returns opened text", async () => {
     const h = mkHarness({ initialMode: "plan", argsRaw: "open" });
+    setPlanSlug(planCtx(h), "open-plan");
+    await writePlan(planCtx(h), "open me");
     const prevEditor = process.env.EDITOR;
     process.env.EDITOR = "true";
     try {
       const res = await planCommand.execute(h.ctx);
-      expect(res.kind).toBe("skip");
+      expect(res.kind).toBe("text");
+      if (res.kind === "text") {
+        expect(res.text).toBe(`Opened plan in editor: ${getPlanFilePath(planCtx(h))}`);
+      }
     } finally {
       if (prevEditor !== undefined) process.env.EDITOR = prevEditor;
       else delete process.env.EDITOR;

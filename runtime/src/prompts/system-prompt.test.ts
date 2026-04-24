@@ -150,6 +150,23 @@ describe("static section emitters", () => {
     expect(s).toContain("parallel");
   });
 
+  test("using_your_tools recognizes AgenC system.* tool names", () => {
+    const tools = new Set([
+      "system.bash",
+      "system.readFile",
+      "system.editFile",
+      "system.writeFile",
+      "system.glob",
+      "system.grep",
+      "apply_patch",
+    ]);
+    const s = getUsingYourToolsSection(tools);
+    expect(s).toContain("file-read tool instead of cat");
+    expect(s).toContain("file-edit tool instead of sed");
+    expect(s).toContain("apply_patch for multi-line code edits");
+    expect(s).toContain("Do not answer with only proposed code or prose");
+  });
+
   test("using_your_tools omits dedicated guidance without Bash", () => {
     const tools = new Set(["Read", "Edit"]);
     const s = getUsingYourToolsSection(tools);

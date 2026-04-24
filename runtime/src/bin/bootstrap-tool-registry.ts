@@ -9,6 +9,7 @@ import { buildWorkflowToolController } from "./workflow-controller.js";
 
 export interface BootstrapToolRegistryOptions {
   readonly workspaceRoot: string;
+  readonly agencHome?: string;
   readonly mcpManager: MCPManager;
   readonly getSession: () => Session | null;
   readonly emitWarning: (warning: {
@@ -26,6 +27,7 @@ export function buildBootstrapToolRegistry(
     mcpToolsProvider: options.mcpManager,
     workflowController: buildWorkflowToolController({
       getSession: options.getSession,
+      ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
       emitWarning: options.emitWarning,
     }),
     ...(options.toolRegistryOptions ?? {}),

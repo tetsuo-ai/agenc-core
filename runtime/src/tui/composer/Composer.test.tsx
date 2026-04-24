@@ -616,6 +616,30 @@ describe("Composer", () => {
     unmount();
   });
 
+  test("slash palette surfaces canonical commands beyond the fallback trio", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { stdout, unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    await typeText(emitter, "/mo");
+    await sleep(50);
+
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("/model");
+    expect(frame).not.toContain("No matches");
+    expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
   test("Enter still waits on partial slash input until the command is completed", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();

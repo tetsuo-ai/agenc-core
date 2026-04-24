@@ -68,6 +68,8 @@ import {
 import type { MemoryEntry } from "../prompts/memory/types.js";
 import type { Session } from "../session/session.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 function stubSession() {
   return {
@@ -1424,6 +1426,59 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     expect(prompts[1]).not.toContain("## alpha");
   });
 
+  it("injects OpenClaude-style AgenC plan-mode instructions into live turns", async () => {
+    const prompts: string[] = [];
+    async function* fakeRunTurn(
+      _session: unknown,
+      _ctx: unknown,
+      _input: unknown,
+      opts: { readonly systemPrompt: string },
+    ): AsyncGenerator<unknown, unknown> {
+      prompts.push(opts.systemPrompt);
+      return { reason: "completed" };
+    }
+
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-prompt-"));
+    const store = new ConfigStore({ home: agencHome, env: {} });
+    await store.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    const session = {
+      conversationId: "conv-plan-prompt",
+      permissionModeRegistry,
+      emit: vi.fn(),
+    } as unknown as Session;
+
+    const iter = runSingleTurn({
+      session,
+      ctx: {} as never,
+      input: "plan this",
+      agencHome,
+      configStore: store,
+      configReloadLatch: { requested: false },
+      projectInstructions: "",
+      memoryPromptText: "",
+      allMemories: [],
+      enabledToolNames: new Set<string>(),
+      mcpServers: [],
+      provider: "grok",
+      reloadConfigFn: (async () => ({ reloaded: false })) as never,
+      assembleSystemPromptFn: (async () => ({ text: "SYS" })) as never,
+      runTurnFn: fakeRunTurn as never,
+    });
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const step = await iter.next();
+      if (step.done) break;
+    }
+
+    expect(prompts[0]).toContain("Plan mode is active");
+    expect(prompts[0]).toContain("MUST NOT make any edits");
+    expect(prompts[0]).toContain(join(agencHome, "plans"));
+    expect(prompts[0]).toContain("ExitPlanMode");
+  });
+
   it("forwards every event yielded by runTurn", async () => {
     const events = [
       { type: "turn_start", turnIndex: 0 },
@@ -2142,11 +2197,7 @@ describe("main() full-IIFE smoke", () => {
     }
   });
 
-  // The `/help` slash command was deleted alongside the openclaude-port
-  // gut. The `_deps/commands.ts` shim no longer carries a real command
-  // registry, so `/help` now surfaces as `Unknown command` instead of
-  // text. Skip until the lean rebuild reintroduces a registry.
-  it.skip("bootTUIEntry executes slash commands through the TUI submit path without entering runTurn (deleted with openclaude-port gut)", async () => {
+  it("bootTUIEntry executes slash commands through the TUI submit path without entering runTurn", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-slash-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-slash-cwd-"));
     const prevEnv = { ...process.env };
@@ -2238,9 +2289,7 @@ describe("main() full-IIFE smoke", () => {
     }
   });
 
-  // Same rationale as the `/help` skip above: `/permissions` was a
-  // registry command and the registry no longer exists.
-  it.skip("bootTUIEntry wires /permissions through the TUI session contract (deleted with openclaude-port gut)", async () => {
+  it("bootTUIEntry wires /permissions through the TUI session contract", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-permissions-cwd-"));
     const prevArgv = process.argv;

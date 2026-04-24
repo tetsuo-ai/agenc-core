@@ -55,8 +55,7 @@ export function getSlashCommandItems(
   const out: PaletteItem[] = [];
   const visible = registry
     .list()
-    .filter((cmd) => cmd.userInvocable !== false)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .filter((cmd) => cmd.userInvocable !== false);
 
   for (const cmd of visible) {
     const aliases = (cmd.aliases ?? []).filter(

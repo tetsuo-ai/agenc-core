@@ -1,6 +1,10 @@
 import type { PermissionModeRegistry } from "../../permissions/mode.js";
 import { transitionPermissionMode } from "../../permissions/mode.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
+import {
+  formatPlanMarkdownFromSteps,
+  type PlanFileContext,
+} from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
@@ -19,6 +23,10 @@ export interface PlanState {
 
 export interface WorkflowToolController {
   readonly getPermissionModeRegistry?: () => PermissionModeRegistry | null;
+  readonly getPlanFileContext?: () => PlanFileContext | null;
+  readonly getPlanFilePath?: () => string;
+  readonly readPlan?: () => string | null;
+  readonly writePlan?: (content: string) => Promise<void>;
   readonly syncPermissionContext?: (
     nextCtx: Pick<
       ToolPermissionContext,
@@ -40,6 +48,13 @@ function okResult(data: unknown): ToolResult {
 
 function errorResult(message: string): ToolResult {
   return { content: safeStringify({ error: message }), isError: true };
+}
+
+function textResult(content: string, metadata?: Record<string, unknown>): ToolResult {
+  return {
+    content,
+    ...(metadata !== undefined ? { metadata } : {}),
+  };
 }
 
 function metadata(
@@ -133,6 +148,19 @@ function parseTodoSteps(value: unknown): readonly PlanStep[] | { readonly error:
     return { error: "at most one todo may be in_progress" };
   }
   return plan;
+}
+
+async function persistStatePlan(
+  controller: WorkflowToolController | undefined,
+  state: PlanState,
+): Promise<void> {
+  if (!controller?.writePlan) return;
+  await controller.writePlan(formatPlanMarkdownFromSteps(state));
+}
+
+function inputPlan(args: Record<string, unknown>): string | undefined {
+  const plan = args.plan;
+  return typeof plan === "string" ? plan : undefined;
 }
 
 async function updatePermissionMode(params: {
@@ -241,6 +269,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         plan,
         updatedAt: new Date().toISOString(),
       };
+      await persistStatePlan(options.workflowController, state);
       options.workflowController?.emitPlanUpdated?.(state);
       return okResult({
         message: "Plan updated.",
@@ -253,7 +282,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
     name: "TodoWrite",
     description:
       "Claude-compatible todo-list alias. Prefer update_plan for new AgenC/Codex-runtime behavior; use this only when a Claude-style todo list is requested.",
-    metadata: metadata("TodoWrite", { deferred: true }),
+    metadata: metadata("TodoWrite"),
     inputSchema: {
       type: "object",
       properties: {
@@ -284,6 +313,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         plan: todos,
         updatedAt: new Date().toISOString(),
       };
+      await persistStatePlan(options.workflowController, state);
       options.workflowController?.emitPlanUpdated?.(state);
       return okResult({
         message: "Todo list updated through update_plan compatibility state.",
@@ -293,15 +323,15 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
   };
 
   const enterPlanTool: Tool = {
-    name: "workflow.enterPlan",
+    name: "EnterPlanMode",
     description:
-      "Enter read-only plan mode using the live permission-mode registry. This is the Claude-style workflow entrypoint implemented on AgenC/Codex runtime state.",
-    metadata: metadata("workflow.enterPlan", { deferred: true, mutating: true }),
+      "Requests permission to enter plan mode for complex AgenC implementation tasks requiring exploration and design.",
+    metadata: metadata("EnterPlanMode", { mutating: true }),
+    isReadOnly: true,
+    requiresApproval: true,
     inputSchema: {
       type: "object",
-      properties: {
-        reason: { type: "string" },
-      },
+      properties: {},
       additionalProperties: false,
     },
     async execute() {
@@ -310,37 +340,133 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         target: "plan",
       });
       if ("error" in result) return errorResult(result.error);
-      return okResult({
-        message: result.changed ? "Entered plan mode." : "Already in plan mode.",
-        ...result,
-      });
+      return textResult(
+        `${result.changed ? "Entered plan mode." : "Already in plan mode."}
+
+In plan mode, you should:
+1. Thoroughly explore the codebase to understand existing patterns
+2. Identify similar features and architectural approaches
+3. Consider multiple approaches and trade-offs
+4. Write the plan to the AgenC plan file
+5. When ready, use ExitPlanMode to present the plan for approval
+
+Remember: DO NOT write or edit any files except the plan file.`,
+        { ...result },
+      );
     },
   };
 
   const exitPlanTool: Tool = {
-    name: "workflow.exitPlan",
+    name: "ExitPlanMode",
     description:
-      "Exit plan mode and restore the pre-plan permission mode when available.",
-    metadata: metadata("workflow.exitPlan", { deferred: true, mutating: true }),
+      "Present the current AgenC plan for approval and exit plan mode when accepted.",
+    metadata: metadata("ExitPlanMode", { mutating: true }),
+    requiresApproval: true,
     inputSchema: {
       type: "object",
       properties: {
-        reason: { type: "string" },
+        allowedPrompts: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              tool: { type: "string", enum: ["Bash"] },
+              prompt: { type: "string" },
+            },
+            required: ["tool", "prompt"],
+            additionalProperties: false,
+          },
+        },
+        plan: {
+          type: "string",
+          description:
+            "Optional edited plan content supplied by an approval UI. Normally read from the AgenC plan file.",
+        },
+        planFilePath: {
+          type: "string",
+          description:
+            "Optional plan path supplied by an approval UI. The runtime still uses the active AgenC plan file.",
+        },
       },
-      additionalProperties: false,
+      additionalProperties: true,
     },
-    async execute() {
+    async execute(args) {
+      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
+      if (registry && registry.current().mode !== "plan") {
+        return errorResult(
+          "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
+        );
+      }
+      const editedPlan = inputPlan(args);
+      if (editedPlan !== undefined) {
+        await options.workflowController?.writePlan?.(editedPlan);
+      }
+      const plan = editedPlan ?? options.workflowController?.readPlan?.() ?? null;
+      const filePath = options.workflowController?.getPlanFilePath?.();
       const result = await updatePermissionMode({
         controller: options.workflowController,
         target: "default",
       });
       if ("error" in result) return errorResult(result.error);
-      return okResult({
-        message: result.changed ? "Exited plan mode." : "Plan mode was not active.",
-        ...result,
-      });
+      if (!plan || plan.trim().length === 0) {
+        return textResult("User has approved exiting plan mode. You can now proceed.", {
+          plan: null,
+          isAgent: false,
+          ...(filePath !== undefined ? { filePath } : {}),
+          ...result,
+        });
+      }
+      return textResult(
+        `User has approved your plan. You can now start coding. Start with updating your todo list if applicable
+
+Your plan has been saved to: ${filePath ?? "(unknown)"}
+You can refer back to it if needed during implementation.
+
+## Approved Plan:
+${plan}`,
+        {
+          plan,
+          isAgent: false,
+          ...(filePath !== undefined ? { filePath } : {}),
+          ...(editedPlan !== undefined ? { planWasEdited: true } : {}),
+          ...result,
+        },
+      );
     },
   };
 
-  return [updatePlanTool, todoWriteTool, enterPlanTool, exitPlanTool];
+  const workflowEnterPlanTool: Tool = {
+    ...enterPlanTool,
+    name: "workflow.enterPlan",
+    description:
+      "Compatibility alias for EnterPlanMode. Prefer EnterPlanMode for OpenClaude parity.",
+    metadata: metadata("workflow.enterPlan", { deferred: true, mutating: true }),
+    inputSchema: {
+      type: "object",
+      properties: { reason: { type: "string" } },
+      additionalProperties: false,
+    },
+  };
+
+  const workflowExitPlanTool: Tool = {
+    ...exitPlanTool,
+    name: "workflow.exitPlan",
+    description:
+      "Compatibility alias for ExitPlanMode. Prefer ExitPlanMode for OpenClaude parity.",
+    metadata: metadata("workflow.exitPlan", { deferred: true, mutating: true }),
+    inputSchema: {
+      type: "object",
+      properties: { reason: { type: "string" } },
+      additionalProperties: false,
+    },
+  };
+
+  return [
+    updatePlanTool,
+    todoWriteTool,
+    enterPlanTool,
+    exitPlanTool,
+    workflowEnterPlanTool,
+    workflowExitPlanTool,
+  ];
 }

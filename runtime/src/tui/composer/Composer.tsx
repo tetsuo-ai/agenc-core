@@ -123,17 +123,12 @@ const PASTE_BURST_CHAR_INTERVAL_MS =
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;
 
-let cachedFallbackSlashItems: readonly PaletteItem[] | null = null;
-
 function getSlashPaletteItems(): readonly PaletteItem[] {
   const registry = getGlobalCommandRegistry();
   if (registry) {
     return getSlashCommandItems(registry);
   }
-  if (cachedFallbackSlashItems === null) {
-    cachedFallbackSlashItems = getSlashCommandItems(buildDefaultRegistry());
-  }
-  return cachedFallbackSlashItems;
+  return getSlashCommandItems(buildDefaultRegistry());
 }
 
 
@@ -186,7 +181,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const pendingRequestCount = appState?.pendingRequests.length ?? 0;
   const hasPendingTurn = isStreaming || pendingRequestCount > 0;
 
-  const slashItems = useMemo(() => getSlashPaletteItems(), []);
+  const slashItems = getSlashPaletteItems();
   const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(
     null,
   );

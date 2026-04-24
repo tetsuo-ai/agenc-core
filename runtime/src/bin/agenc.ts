@@ -75,6 +75,11 @@ import {
   injectAttachmentsIntoPrompt,
 } from "../prompts/memory/index.js";
 import {
+  getPlan,
+  getPlanFilePath,
+} from "../planning/plan-files.js";
+import { buildPlanModeInstructions } from "../planning/plan-instructions.js";
+import {
   expandFileMentions,
   extractMentionAllowedRoots,
   formatFileMentionRejection,
@@ -489,6 +494,7 @@ export interface RunSingleTurnOpts {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly input: string;
+  readonly agencHome?: string;
   /** Transcript-facing prompt when `input` has model-only attachments injected. */
   readonly displayInput?: string;
   /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
@@ -512,6 +518,26 @@ export interface RunSingleTurnOpts {
   readonly runTurnFn?: typeof runTurn;
   readonly reloadConfigFn?: typeof maybeReloadConfigBetweenTurns;
   readonly assembleSystemPromptFn?: typeof assembleSystemPrompt;
+}
+
+function buildPlanModeSystemReminder(opts: RunSingleTurnOpts): string | null {
+  let isPlanMode = false;
+  try {
+    isPlanMode = opts.session.permissionModeRegistry.current().mode === "plan";
+  } catch {
+    isPlanMode = false;
+  }
+  if (!isPlanMode) return null;
+
+  const fileCtx = {
+    ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
+    sessionId: opts.session.conversationId,
+  };
+  const planFilePath = getPlanFilePath(fileCtx);
+  const planExists = getPlan(fileCtx) !== null;
+  return `<system-reminder>
+${buildPlanModeInstructions({ planFilePath, planExists })}
+</system-reminder>`;
 }
 
 /**
@@ -566,10 +592,14 @@ export async function* runSingleTurn(
     opts.displayInput ?? opts.input,
     opts.session,
   );
-  const systemPrompt = injectAttachmentsIntoPrompt(
+  let systemPrompt = injectAttachmentsIntoPrompt(
     assembled.text,
     selectedMemories,
   );
+  const planModeReminder = buildPlanModeSystemReminder(opts);
+  if (planModeReminder !== null) {
+    systemPrompt = `${systemPrompt}\n\n${planModeReminder}`;
+  }
 
   const iter = drive(opts.session, opts.ctx, opts.input, {
     systemPrompt,
@@ -750,6 +780,7 @@ function installTuiSessionContract(params: {
             ctx,
             input: expanded.input,
             displayInput: expanded.displayInput,
+            agencHome: params.agencHome,
             configStore: params.configStore,
             configReloadLatch,
             loadTurnInputsFn: params.loadTurnInputsFn,
@@ -1054,6 +1085,7 @@ export async function oneShotCLI(
         ctx,
         input: expandedPrompt.input,
         displayInput: expandedPrompt.displayInput,
+        agencHome,
         configStore,
         configReloadLatch,
         loadTurnInputsFn,

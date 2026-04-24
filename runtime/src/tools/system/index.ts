@@ -38,6 +38,13 @@ export {
 } from "./planning.js";
 
 export {
+  createApplyPatchTool,
+  type ApplyPatchRunner,
+  type ApplyPatchRunnerResult,
+  type ApplyPatchToolConfig,
+} from "./apply-patch.js";
+
+export {
   createBashTool,
   isCommandAllowed,
   validateShellCommand,

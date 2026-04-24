@@ -9,6 +9,9 @@
  *   3. `AGENC_MAX_TOOL_USE_CONCURRENCY=2` caps parallel dispatch.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
@@ -27,6 +30,10 @@ import {
   type ToolPermissionContext,
 } from "../permissions/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import {
+  clearAllPlanSlugs,
+  writePlanSync,
+} from "../planning/plan-files.js";
 import {
   ensureStreamingToolExecutor,
   executeTools,
@@ -74,6 +81,21 @@ interface MkSessionOpts {
   readonly registry: ToolRegistry;
   readonly preToolUseHooks?: ReadonlyArray<PreToolUseHook>;
   readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly approvalResolver?: {
+    request(ctx: {
+      readonly invocation: {
+        readonly payload: unknown;
+      };
+      readonly callId: string;
+      readonly toolName: string;
+      readonly turnId: string;
+    }): Promise<
+      | { readonly kind: "approved" }
+      | { readonly kind: "approved_for_session" }
+      | { readonly kind: "denied" }
+      | { readonly kind: "abort" }
+    >;
+  };
   readonly permissionModeRegistry?: PermissionModeRegistry;
   readonly mcpManager?: {
     resolveMcpToolInfo?: (
@@ -103,6 +125,9 @@ function mkSession(opts: MkSessionOpts): Session {
   }
   if (opts.mcpManager) {
     servicesRecord["mcpManager"] = opts.mcpManager;
+  }
+  if (opts.approvalResolver) {
+    servicesRecord["approvalResolver"] = opts.approvalResolver;
   }
   const baseSession: Record<string, unknown> = {
     conversationId: "conv-1",
@@ -167,14 +192,25 @@ function mkState(opts: {
 }
 
 const ENV_VAR = "AGENC_MAX_TOOL_USE_CONCURRENCY";
-const savedEnv: { value: string | undefined } = { value: undefined };
+const savedEnv: {
+  value: string | undefined;
+  agencHome: string | undefined;
+} = { value: undefined, agencHome: undefined };
+const tempDirs: string[] = [];
 
 beforeEach(() => {
   savedEnv.value = process.env[ENV_VAR];
+  savedEnv.agencHome = process.env.AGENC_HOME;
 });
 afterEach(() => {
   if (savedEnv.value === undefined) delete process.env[ENV_VAR];
   else process.env[ENV_VAR] = savedEnv.value;
+  if (savedEnv.agencHome === undefined) delete process.env.AGENC_HOME;
+  else process.env.AGENC_HOME = savedEnv.agencHome;
+  clearAllPlanSlugs();
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("executeTools — T7 gap #109 pipeline", () => {
@@ -580,6 +616,177 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(executed).toBe(1);
     expect(state.messages.length).toBe(1);
     expect(state.messages[0]!.content).toBe("read-ok");
+  });
+
+  test("requiresApproval tools wait for approval before dispatching", async () => {
+    let executed = 0;
+    const approvalSnapshots: Array<{
+      readonly toolName: string;
+      readonly turnId: string;
+    }> = [];
+    const tool: Tool = {
+      name: "ExitPlanMode",
+      description: "requests plan approval",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        executed += 1;
+        return { content: "approved plan exit" };
+      },
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      approvalResolver: {
+        request: async (ctx) => {
+          approvalSnapshots.push({
+            toolName: ctx.toolName,
+            turnId: ctx.turnId,
+          });
+          expect(executed).toBe(0);
+          return { kind: "approved" };
+        },
+      },
+    });
+
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "plan-exit",
+          name: "ExitPlanMode",
+          arguments: "{}",
+        },
+      ],
+    });
+    await executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as unknown as TurnContext,
+      session,
+    );
+
+    expect(approvalSnapshots).toEqual([
+      { toolName: "ExitPlanMode", turnId: "turn-1" },
+    ]);
+    expect(executed).toBe(1);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toBe("approved plan exit");
+  });
+
+  test("requiresApproval tools do not dispatch when approval is denied", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "ExitPlanMode",
+      description: "requests plan approval",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => {
+        executed += 1;
+        return { content: "should-not-run" };
+      },
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      approvalResolver: {
+        request: async () => ({ kind: "denied" }),
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "plan-deny",
+          name: "ExitPlanMode",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as unknown as TurnContext,
+      session,
+    );
+
+    expect(executed).toBe(0);
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toContain("rejected by user");
+  });
+
+  test("ExitPlanMode approval payload includes the current AgenC plan", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-exit-plan-"));
+    tempDirs.push(agencHome);
+    process.env.AGENC_HOME = agencHome;
+    writePlanSync(
+      { agencHome, sessionId: "conv-1" },
+      "# AgenC Plan\n\n## Steps\n\n- [ ] Wire approval gate\n",
+    );
+
+    let approvalInput: Record<string, unknown> | null = null;
+    const tool: Tool = {
+      name: "ExitPlanMode",
+      description: "requests plan approval",
+      inputSchema: { type: "object" },
+      requiresApproval: true,
+      execute: async () => ({ content: "approved" }),
+    };
+
+    const log = new EventLog();
+    const registry = mkRegistry([tool]);
+    const session = mkSession({
+      log,
+      registry,
+      approvalResolver: {
+        request: async (ctx) => {
+          const payload = ctx.invocation.payload as {
+            readonly kind?: string;
+            readonly arguments?: string;
+          };
+          approvalInput =
+            payload.kind === "function" && typeof payload.arguments === "string"
+              ? JSON.parse(payload.arguments)
+              : {};
+          return { kind: "approved" };
+        },
+      },
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "plan-preview",
+          name: "ExitPlanMode",
+          arguments: "{}",
+        },
+      ],
+    });
+
+    await executeTools(
+      state,
+      {
+        ...mkCtx(),
+        approvalPolicy: { value: "on_request" },
+        sandboxPolicy: { value: "workspace_write" },
+      } as unknown as TurnContext,
+      session,
+    );
+
+    expect(approvalInput?.["plan"]).toContain("Wire approval gate");
+    expect(approvalInput?.["planFilePath"]).toEqual(
+      expect.stringContaining(join(agencHome, "plans")),
+    );
   });
 
   test("router classification emits tool_routing_classified warning", async () => {

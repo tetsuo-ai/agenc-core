@@ -50,6 +50,7 @@ export interface CompactRuntimeOptions {
 export interface CompactRuntimeContext {
   abortController: AbortController;
   agentId?: AgentId;
+  sessionId?: string;
   options: CompactRuntimeOptions;
   getAppState: () => CompactRuntimeAppState;
   referenceContextItem?: TurnContextItem;
@@ -244,6 +245,7 @@ export function createSessionBackedCompactContext(
   return {
     abortController: session.abortController ?? new AbortController(),
     agentId: undefined,
+    sessionId: session.conversationId,
     options: {
       tools: session.services.registry?.toLLMTools?.() ?? [],
       mainLoopModel: readMainLoopModel(session, opts.turnContext),

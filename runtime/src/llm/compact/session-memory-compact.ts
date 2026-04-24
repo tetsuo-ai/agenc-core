@@ -427,6 +427,7 @@ function createCompactionResultFromSessionMemory(
   hookResults: HookResultMessage[],
   transcriptPath: string | undefined,
   agentId?: AgentId,
+  sessionId?: string,
 ): CompactionResult {
   const preCompactTokenCount = tokenCountFromLastAPIResponse(messages)
 
@@ -467,7 +468,7 @@ function createCompactionResultFromSessionMemory(
     }),
   ]
 
-  const planAttachment = createPlanAttachmentIfNeeded(agentId)
+  const planAttachment = createPlanAttachmentIfNeeded(agentId, sessionId)
   const attachments = planAttachment ? [planAttachment] : []
 
   return {
@@ -501,7 +502,7 @@ export async function trySessionMemoryCompaction(
   messages: Message[],
   agentId?: AgentId,
   autoCompactThreshold?: number,
-  context?: Pick<CompactRuntimeContext, 'rolloutStore'>,
+  context?: Pick<CompactRuntimeContext, 'rolloutStore' | 'sessionId'>,
 ): Promise<CompactionResult | null> {
   if (!shouldUseSessionMemoryCompaction()) {
     return null
@@ -589,6 +590,7 @@ export async function trySessionMemoryCompaction(
       hookResults,
       transcriptPath,
       agentId,
+      context?.sessionId,
     )
 
     const postCompactMessages = buildPostCompactMessages(compactionResult)

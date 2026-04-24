@@ -1,5 +1,11 @@
 import type { EventMsg } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import {
+  getPlan,
+  getPlanFilePath,
+  writePlan,
+  type PlanFileContext,
+} from "../planning/plan-files.js";
 import type {
   PlanState,
   WorkflowToolController,
@@ -7,6 +13,7 @@ import type {
 
 export interface WorkflowToolControllerOptions {
   readonly getSession: () => Session | null;
+  readonly agencHome?: string;
   readonly emitWarning?: (warning: { readonly cause: string; readonly message: string }) => void;
 }
 
@@ -38,9 +45,31 @@ function emit(session: Session, msg: EventMsg): void {
 export function buildWorkflowToolController(
   options: WorkflowToolControllerOptions,
 ): WorkflowToolController {
+  const planFileContext = (): PlanFileContext | null => {
+    const session = options.getSession();
+    if (session === null) return null;
+    return {
+      ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+      sessionId: session.conversationId,
+    };
+  };
+
   return {
     getPermissionModeRegistry: () =>
       options.getSession()?.permissionModeRegistry ?? null,
+    getPlanFileContext: planFileContext,
+    getPlanFilePath: () => {
+      const ctx = planFileContext();
+      return getPlanFilePath(ctx ?? {});
+    },
+    readPlan: () => {
+      const ctx = planFileContext();
+      return getPlan(ctx ?? {});
+    },
+    writePlan: async (content) => {
+      const ctx = planFileContext();
+      await writePlan(ctx ?? {}, content);
+    },
     syncPermissionContext: async (nextCtx) => {
       await options.getSession()?.syncPermissionContextFromRegistry(nextCtx);
     },
@@ -53,7 +82,7 @@ export function buildWorkflowToolController(
       emit(session, {
         type: "plan_exited",
         payload: {
-          turnId: "workflow.exitPlan",
+          turnId: "ExitPlanMode",
           timestamp: Date.now(),
         },
       });

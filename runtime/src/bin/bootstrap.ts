@@ -898,6 +898,7 @@ export async function bootstrapLocalRuntimeSession(
 
   const registry = buildBootstrapToolRegistry({
     workspaceRoot,
+    agencHome,
     mcpManager,
     getSession: () => sessionRef,
     emitWarning: emitProviderWarning,

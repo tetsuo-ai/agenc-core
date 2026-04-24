@@ -13,6 +13,8 @@
  *     into hook arg observers) so tools that stream progress chunks
  *     re-emit through the session event log as `tool_progress`.
  *   - Permission evaluator pass via `canUseTool` + `permissionContext`.
+ *   - Codex-style approval classification for `requiresApproval`
+ *     tools, routed through the session approval resolver.
  *   - Mid-execution abort drain — when the abort signal is already
  *     tripped, queued tools yield a synthetic
  *     `permission mode changed mid-execution` error result instead of
@@ -22,14 +24,20 @@
  *     count.
  *   - `tool_routing_classified` warning on every queued call.
  *
- * Anything beyond that — orchestrator approvals, sibling-abort
- * cascade, real router classification — still belongs to the upstream
- * stack the rebuild has not yet ported.
+ * Anything beyond that — sibling-abort cascade and real router
+ * classification — still belongs to the upstream stack the rebuild
+ * has not yet ported.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import type { LLMToolCall } from "../../llm/types.js";
+import {
+  getPlan,
+  getPlanFilePath,
+  type PlanFileContext,
+} from "../../planning/plan-files.js";
+import { reviewDecisionOpaqueString } from "../../permissions/review-decision.js";
 import {
   runPostToolUseHooks,
   runPreToolUseHooks,
@@ -39,6 +47,15 @@ import {
   type PermissionDecisionHook,
 } from "../../tools/hooks.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
+import type { Tool } from "../../tools/types.js";
+import {
+  ApprovalRejectedError,
+  orchestrateToolCall,
+  type ApprovalPolicy,
+  type ApprovalResolver,
+  type PermissionRequestHook,
+  type SandboxMode,
+} from "../../tools/orchestrator.js";
 
 interface ToolDispatchResultLike {
   readonly content: string;
@@ -50,6 +67,8 @@ interface ToolRegistryLike {
     readonly name: string;
     readonly description?: string;
     readonly inputSchema?: unknown;
+    readonly isReadOnly?: boolean;
+    readonly requiresApproval?: boolean;
     [extra: string]: unknown;
   }>;
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResultLike>;
@@ -194,6 +213,12 @@ interface LiveDispatchOptions {
     context: any,
   ) => Promise<any>;
   readonly permissionContext?: any;
+  readonly approvalPolicy?: ApprovalPolicy;
+  readonly sandboxMode?: SandboxMode;
+  readonly permissionHooks?: ReadonlyArray<PermissionRequestHook>;
+  readonly permissionDecisionHooks?: ReadonlyArray<PermissionDecisionHook>;
+  readonly approvalResolver?: ApprovalResolver;
+  readonly agencHome?: string;
   readonly onHookError?: (phase: string, err: unknown, idx: number) => void;
   readonly tracker?: unknown;
   readonly [extra: string]: unknown;
@@ -245,6 +270,28 @@ function buildToolPayload(
   return { kind: "function", arguments: rawArgs ?? "" };
 }
 
+function buildPayloadForArgs(
+  payload: ToolPayload,
+  args: Record<string, unknown>,
+): ToolPayload {
+  const serialized = JSON.stringify(args);
+  switch (payload.kind) {
+    case "function":
+      return { kind: "function", arguments: serialized };
+    case "mcp":
+      return {
+        kind: "mcp",
+        server: payload.server,
+        tool: payload.tool,
+        rawArguments: serialized,
+      };
+    case "custom":
+    case "tool_search":
+    case "local_shell":
+      return payload;
+  }
+}
+
 function buildInvocation(
   toolName: string,
   callId: string,
@@ -265,6 +312,68 @@ function buildInvocation(
         snapshot: () => [],
         clear: () => {},
       } as ToolInvocation["tracker"]),
+  };
+}
+
+function resolveTurnId(options: LiveDispatchOptions | undefined): string {
+  const turn = options?.turn as
+    | {
+        readonly subId?: unknown;
+        readonly turnId?: unknown;
+        readonly id?: unknown;
+      }
+    | undefined;
+  const value = turn?.subId ?? turn?.turnId ?? turn?.id;
+  return typeof value === "string" && value.length > 0 ? value : "turn";
+}
+
+function planFileContextForApproval(
+  options: LiveDispatchOptions | undefined,
+): PlanFileContext {
+  const session = options?.session as
+    | { readonly conversationId?: unknown }
+    | undefined;
+  return {
+    ...(options?.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+    ...(typeof session?.conversationId === "string" &&
+    session.conversationId.length > 0
+      ? { sessionId: session.conversationId }
+      : {}),
+  };
+}
+
+function withPlanApprovalPreview(
+  toolName: string,
+  args: Record<string, unknown>,
+  options: LiveDispatchOptions | undefined,
+): Record<string, unknown> {
+  if (toolName !== "ExitPlanMode" && toolName !== "workflow.exitPlan") {
+    return args;
+  }
+
+  const currentPlan =
+    typeof args["plan"] === "string" && args["plan"].trim().length > 0
+      ? args["plan"]
+      : getPlan(planFileContextForApproval(options));
+  if (typeof currentPlan !== "string" || currentPlan.trim().length === 0) {
+    return args;
+  }
+
+  return {
+    ...args,
+    plan: currentPlan,
+    planFilePath: getPlanFilePath(planFileContextForApproval(options)),
+  };
+}
+
+function approvalRejectedResult(err: ApprovalRejectedError): ToolDispatchResultLike {
+  const decision = reviewDecisionOpaqueString(err.decision);
+  return {
+    content: JSON.stringify({
+      error: err.message,
+      approvalDecision: decision,
+    }),
+    isError: true,
   };
 }
 
@@ -556,14 +665,66 @@ export class StreamingToolExecutor {
         };
 
         try {
-          dispatchResult = await dispatchWithInjectedArgs(
-            this.registry,
-            dispatchCall,
-            { __onProgress: onProgress },
+          const approvalArgs = withPlanApprovalPreview(
+            tool.toolCall.name,
+            effectiveArgs,
+            this.liveOptions,
           );
+          const approvalInvocation = buildInvocation(
+            tool.toolCall.name,
+            tool.toolCall.id,
+            buildPayloadForArgs(payload, approvalArgs),
+            this.liveOptions ?? {},
+          );
+          dispatchResult = await orchestrateToolCall({
+            tool: toolDef as Tool,
+            approvalCtx: {
+              invocation: approvalInvocation,
+              callId: tool.toolCall.id,
+              toolName: tool.toolCall.name,
+              turnId: resolveTurnId(this.liveOptions),
+              ...(this.abortSignal !== undefined
+                ? { signal: this.abortSignal }
+                : {}),
+            },
+            ...(this.abortSignal !== undefined
+              ? { signal: this.abortSignal }
+              : {}),
+            approvalPolicy: this.liveOptions?.approvalPolicy ?? "never",
+            sandboxMode: this.liveOptions?.sandboxMode ?? "workspace_write",
+            payload,
+            approvalArgs,
+            ...(this.liveOptions?.permissionHooks !== undefined
+              ? { permissionHooks: this.liveOptions.permissionHooks }
+              : {}),
+            ...(this.liveOptions?.permissionDecisionHooks !== undefined
+              ? {
+                  permissionDecisionHooks:
+                    this.liveOptions.permissionDecisionHooks,
+                }
+              : {}),
+            ...(this.liveOptions?.approvalResolver !== undefined
+              ? { approvalResolver: this.liveOptions.approvalResolver }
+              : {}),
+            onNoApprovalResolver: (ctx) => {
+              emitOn(session, "error", {
+                cause: "no_approval_resolver",
+                message: `approval required for ${ctx.toolName} but no resolver is wired`,
+              });
+            },
+            dispatch: async () =>
+              dispatchWithInjectedArgs(this.registry, dispatchCall, {
+                __onProgress: onProgress,
+              }),
+          });
         } catch (err) {
           dispatchResult = {
-            content: err instanceof Error ? err.message : String(err),
+            content:
+              err instanceof ApprovalRejectedError
+                ? approvalRejectedResult(err).content
+                : err instanceof Error
+                  ? err.message
+                  : String(err),
             isError: true,
           };
         }

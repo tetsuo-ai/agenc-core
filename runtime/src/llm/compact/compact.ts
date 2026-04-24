@@ -1236,7 +1236,10 @@ export async function compactConversation(
       ...fileAttachments,
       ...asyncAgentAttachments,
     ]
-    const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
+    const planAttachment = createPlanAttachmentIfNeeded(
+      context.agentId,
+      context.sessionId,
+    )
     if (planAttachment) {
       postCompactFileAttachments.push(planAttachment)
     }
@@ -1661,7 +1664,10 @@ export async function partialCompactConversation(
       ...fileAttachments,
       ...asyncAgentAttachments,
     ]
-    const planAttachment = createPlanAttachmentIfNeeded(context.agentId)
+    const planAttachment = createPlanAttachmentIfNeeded(
+      context.agentId,
+      context.sessionId,
+    )
     if (planAttachment) {
       postCompactFileAttachments.push(planAttachment)
     }
@@ -2165,6 +2171,7 @@ export async function createPostCompactFileAttachments(
           file.filename,
           toolUseContext.agentId,
           toolUseContext.cwd ?? toolUseContext.options?.cwd,
+          toolUseContext.sessionId,
         ) && !preservedReadPaths.has(expandPath(file.filename)),
     )
     .sort((a, b) => b.timestamp - a.timestamp)
@@ -2208,14 +2215,15 @@ export async function createPostCompactFileAttachments(
  */
 export function createPlanAttachmentIfNeeded(
   agentId?: AgentId,
+  sessionId?: string,
 ): AttachmentMessage | null {
-  const planContent = getPlan(agentId)
+  const planContent = getPlan(agentId, sessionId)
 
   if (!planContent) {
     return null
   }
 
-  const planFilePath = getPlanFilePath(agentId)
+  const planFilePath = getPlanFilePath(agentId, sessionId)
 
   return createAttachmentMessage({
     type: 'plan_file_reference',
@@ -2291,8 +2299,8 @@ export async function createPlanModeAttachmentIfNeeded(
     return null
   }
 
-  const planFilePath = getPlanFilePath(context.agentId)
-  const planExists = getPlan(context.agentId) !== null
+  const planFilePath = getPlanFilePath(context.agentId, context.sessionId)
+  const planExists = getPlan(context.agentId, context.sessionId) !== null
 
   return createAttachmentMessage({
     type: 'plan_mode',
@@ -2419,11 +2427,12 @@ function shouldExcludeFromPostCompactRestore(
   filename: string,
   agentId?: AgentId,
   cwd?: string,
+  sessionId?: string,
 ): boolean {
   const normalizedFilename = expandPath(filename)
   // Exclude plan files
   try {
-    const planFilePath = expandPath(getPlanFilePath(agentId))
+    const planFilePath = expandPath(getPlanFilePath(agentId, sessionId))
     if (normalizedFilename === planFilePath) {
       return true
     }

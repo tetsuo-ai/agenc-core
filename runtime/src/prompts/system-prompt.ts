@@ -128,25 +128,32 @@ Do not use destructive shortcuts to bypass obstacles. Investigate unexpected sta
 /** 5. using_your_tools — tool invocation conventions. */
 export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): string {
   const items: Array<string | string[]> = [];
+  const hasTool = (...names: readonly string[]): boolean =>
+    names.some((name) => enabledTools.has(name));
 
   // Dedicated-tool preference (only if Bash is enabled alongside named
   // dedicated tools — mirrors openclaude guidance).
-  const hasBash = enabledTools.has("bash") || enabledTools.has("Bash");
+  const hasBash = hasTool("bash", "Bash", "system.bash", "shell", "exec_command");
   const dedicated: string[] = [];
-  if (enabledTools.has("read") || enabledTools.has("Read")) {
+  if (hasTool("read", "Read", "system.readFile")) {
     dedicated.push(`Use the file-read tool instead of cat/head/tail/sed.`);
   }
-  if (enabledTools.has("edit") || enabledTools.has("Edit")) {
+  if (hasTool("edit", "Edit", "system.editFile", "apply_patch")) {
     dedicated.push(`Use the file-edit tool instead of sed or awk.`);
   }
-  if (enabledTools.has("write") || enabledTools.has("Write")) {
+  if (hasTool("write", "Write", "system.writeFile")) {
     dedicated.push(`Use the file-write tool instead of cat-with-heredoc or redirection.`);
   }
-  if (enabledTools.has("glob") || enabledTools.has("Glob")) {
+  if (hasTool("glob", "Glob", "system.glob")) {
     dedicated.push(`Use the glob tool instead of find or ls.`);
   }
-  if (enabledTools.has("grep") || enabledTools.has("Grep")) {
+  if (hasTool("grep", "Grep", "system.grep")) {
     dedicated.push(`Use the grep tool instead of shell grep or rg.`);
+  }
+  if (hasTool("apply_patch")) {
+    dedicated.push(
+      `Use apply_patch for multi-line code edits; pass the full *** Begin Patch / *** End Patch body as the patch argument.`,
+    );
   }
 
   if (hasBash && dedicated.length > 0) {
@@ -159,6 +166,9 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
     );
   }
 
+  items.push(
+    `For coding tasks, inspect and modify files with tools. Do not answer with only proposed code or prose when the user asked you to make the change.`,
+  );
   items.push(
     `You can call multiple tools in a single response. Independent tool calls should run in parallel; sequential calls should remain sequential when they depend on each other.`,
   );
