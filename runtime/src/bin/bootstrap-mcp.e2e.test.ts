@@ -19,6 +19,7 @@ import type {
 } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
+import { runCommand } from "../utils/process.js";
 
 const FIXTURE_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -106,6 +107,7 @@ function makeProviderRecorder(params: {
             name: "system.searchTools",
             arguments: JSON.stringify({
               query: "ping",
+              select: MCP_TOOL_NAME,
               source: "mcp",
               maxResults: 5,
             }),
@@ -124,6 +126,48 @@ function makeProviderRecorder(params: {
       }
 
       return response("MCP ping complete.");
+    },
+    healthCheck: async () => true,
+  };
+}
+
+function makeBuiltinDiscoveryProvider(params: {
+  readonly seenToolNamesByCall: string[][];
+  readonly workspace: string;
+}): LLMProvider {
+  let callCount = 0;
+  return {
+    name: "stub-builtins",
+    chat: async () => response("unused"),
+    chatStream: async (_messages, _onChunk, options) => {
+      params.seenToolNamesByCall.push(toolNames(options?.tools));
+      callCount += 1;
+
+      if (callCount === 1) {
+        return response("", [
+          {
+            id: "search-git-status",
+            name: "system.searchTools",
+            arguments: JSON.stringify({
+              query: "git status",
+              select: "system.gitStatus",
+              maxResults: 5,
+            }),
+          },
+        ]);
+      }
+
+      if (callCount === 2) {
+        return response("", [
+          {
+            id: "call-git-status",
+            name: "system.gitStatus",
+            arguments: JSON.stringify({ path: params.workspace }),
+          },
+        ]);
+      }
+
+      return response("git status complete.");
     },
     healthCheck: async () => true,
   };
@@ -323,5 +367,70 @@ timeout = 10000
         HOME: home,
       },
     });
+  });
+});
+
+describe("bootstrapLocalRuntimeSession deferred built-in tool discovery", () => {
+  it("loads a deferred built-in tool through searchTools selection for the follow-up turn", async () => {
+    const home = await makeTempDir("agenc-builtins-home-");
+    const workspace = await makeTempDir("agenc-builtins-ws-");
+    await writeFile(join(workspace, "README.md"), "# demo\n", "utf8");
+    await runCommand("git", ["init"], { cwd: workspace });
+
+    const seenToolNamesByCall: string[][] = [];
+    const provider = makeBuiltinDiscoveryProvider({ seenToolNamesByCall, workspace });
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockReturnValue(provider as never);
+
+    let boot: LocalRuntimeBootstrap | null = null;
+    try {
+      boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_MCP_SERVERS: "",
+          HOME: home,
+        },
+        cwd: "/ignored-by-env",
+      });
+
+      expect(boot.registry.tools.map((tool) => tool.name)).toContain(
+        "system.gitStatus",
+      );
+      expect(boot.registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
+        "system.gitStatus",
+      );
+
+      const phaseEvents = await collectEvents(
+        boot.session.runTurn("load and run git status", {
+          ctx: boot.ctx,
+        }),
+      );
+
+      expect(seenToolNamesByCall).toHaveLength(3);
+      expect(seenToolNamesByCall[0]).toContain("system.searchTools");
+      expect(seenToolNamesByCall[0]).not.toContain("system.gitStatus");
+      expect(seenToolNamesByCall[1]).toContain("system.gitStatus");
+      expect(seenToolNamesByCall[2]).toContain("system.gitStatus");
+      expect(boot.registry.getDiscoveredToolNames?.().has("system.gitStatus")).toBe(
+        true,
+      );
+
+      const gitToolResult = phaseEvents.find(
+        (event): event is Extract<PhaseEvent, { type: "tool_result" }> =>
+          event.type === "tool_result" &&
+          event.toolCall.name === "system.gitStatus",
+      );
+      expect(gitToolResult?.result.isError).toBe(false);
+      expect(JSON.parse(gitToolResult?.result.content ?? "{}")).toMatchObject({
+        repoRoot: workspace,
+      });
+    } finally {
+      await boot?.shutdown().catch(() => {
+        /* best effort */
+      });
+    }
   });
 });

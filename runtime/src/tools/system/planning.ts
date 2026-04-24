@@ -6,12 +6,12 @@ import { safeStringify } from "../types.js";
 
 type PlanStepStatus = "pending" | "in_progress" | "completed";
 
-interface PlanStep {
+export interface PlanStep {
   readonly step: string;
   readonly status: PlanStepStatus;
 }
 
-interface PlanState {
+export interface PlanState {
   readonly explanation?: string;
   readonly plan: readonly PlanStep[];
   readonly updatedAt: string;
@@ -27,6 +27,7 @@ export interface WorkflowToolController {
   ) => Promise<void>;
   readonly emitWarning?: (cause: string, message: string) => void;
   readonly emitPlanExited?: () => void;
+  readonly emitPlanUpdated?: (state: PlanState) => void;
 }
 
 export interface PlanningToolOptions {
@@ -240,6 +241,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         plan,
         updatedAt: new Date().toISOString(),
       };
+      options.workflowController?.emitPlanUpdated?.(state);
       return okResult({
         message: "Plan updated.",
         ...state,
@@ -282,6 +284,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         plan: todos,
         updatedAt: new Date().toISOString(),
       };
+      options.workflowController?.emitPlanUpdated?.(state);
       return okResult({
         message: "Todo list updated through update_plan compatibility state.",
         ...state,

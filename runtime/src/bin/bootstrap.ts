@@ -64,9 +64,10 @@ import type {
 import { AgentControl } from "../agents/control.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
-  buildToolRegistry,
   type BuildToolRegistryOptions,
+  type ToolRegistry,
 } from "../tool-registry.js";
+import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
@@ -454,7 +455,7 @@ function transcriptMessagesFrom(
  */
 function buildDeferredServices(
   provider: LLMProvider,
-  registry: ReturnType<typeof buildToolRegistry>,
+  registry: ToolRegistry,
   mcpManager: SessionServices["mcpManager"],
   permissionModeRegistry: PermissionModeRegistry,
   configStore: ConfigStore,
@@ -788,7 +789,7 @@ export interface LocalRuntimeBootstrap {
   readonly conversationId: string;
   readonly resolvedProvider: string;
   readonly model: string;
-  readonly registry: ReturnType<typeof buildToolRegistry>;
+  readonly registry: ToolRegistry;
   readonly provider: LLMProvider;
   readonly config: Config;
   readonly modelInfo: ModelInfo;
@@ -895,33 +896,12 @@ export async function bootstrapLocalRuntimeSession(
     });
   };
 
-  const registry = buildToolRegistry({
+  const registry = buildBootstrapToolRegistry({
     workspaceRoot,
-    mcpToolsProvider: mcpManager,
-    workflowController: {
-      getPermissionModeRegistry: () =>
-        sessionRef?.permissionModeRegistry ?? null,
-      syncPermissionContext: async (nextCtx) => {
-        await sessionRef?.syncPermissionContextFromRegistry(nextCtx);
-      },
-      emitWarning: (cause, message) => {
-        emitProviderWarning({ cause, message });
-      },
-      emitPlanExited: () => {
-        if (sessionRef === null) return;
-        sessionRef.emit({
-          id: sessionRef.nextInternalSubId(),
-          msg: {
-            type: "plan_exited",
-            payload: {
-              turnId: "workflow.exitPlan",
-              timestamp: Date.now(),
-            },
-          },
-        });
-      },
-    },
-    ...(options.toolRegistryOptions ?? {}),
+    mcpManager,
+    getSession: () => sessionRef,
+    emitWarning: emitProviderWarning,
+    toolRegistryOptions: options.toolRegistryOptions,
   });
   const provider: LLMProvider = createProvider(
     resolvedProvider as ProviderName,

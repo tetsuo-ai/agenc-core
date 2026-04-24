@@ -74,7 +74,15 @@ describe("tool-registry dynamic and deferred catalog", () => {
   });
 
   test("update_plan is the primary plan tool and TodoWrite is a deferred compatibility alias", async () => {
-    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const emittedPlans: unknown[] = [];
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        emitPlanUpdated: (state) => {
+          emittedPlans.push(state);
+        },
+      },
+    });
 
     const update = await registry.dispatch({
       id: "plan-1",
@@ -96,6 +104,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
         { step: "Add compatibility alias", status: "in_progress" },
       ],
     });
+    expect(emittedPlans).toHaveLength(1);
 
     await registry.dispatch({
       id: "search-todo",
@@ -120,6 +129,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
         { step: "Run tests", status: "pending" },
       ],
     });
+    expect(emittedPlans).toHaveLength(2);
   });
 
   test("workflow enter/exit tools drive the live permission-mode registry", async () => {
@@ -172,7 +182,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(exited).toBe(true);
   });
 
-  test("searchTools discovers deferred dynamic tools and loads their schema", async () => {
+  test("searchTools suggests deferred tools but only explicit selection loads schema", async () => {
     const deferredTool: Tool = {
       name: "dynamic.report",
       description: "Generate a deferred dynamic report.",
@@ -205,9 +215,25 @@ describe("tool-registry dynamic and deferred catalog", () => {
       arguments: JSON.stringify({ query: "report" }),
     });
     const body = JSON.parse(result.content) as {
-      results: Array<{ name: string }>;
+      loaded: string[];
+      results: Array<{ name: string; loadHint?: string }>;
     };
     expect(body.results.map((entry) => entry.name)).toContain("dynamic.report");
+    expect(body.loaded).not.toContain("dynamic.report");
+    expect(
+      body.results.find((entry) => entry.name === "dynamic.report")?.loadHint,
+    ).toContain("select:dynamic.report");
+    expect(registry.getDiscoveredToolNames?.().has("dynamic.report")).toBe(false);
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
+      "dynamic.report",
+    );
+
+    await registry.dispatch({
+      id: "search-1b",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "dynamic.report" }),
+    });
+
     expect(registry.getDiscoveredToolNames?.().has("dynamic.report")).toBe(true);
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
       "dynamic.report",
@@ -245,6 +271,16 @@ describe("tool-registry dynamic and deferred catalog", () => {
       id: "search-2",
       name: "system.searchTools",
       arguments: JSON.stringify({ query: "lookup" }),
+    });
+
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
+      mcpTool.name,
+    );
+
+    await registry.dispatch({
+      id: "search-2b",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: mcpTool.name }),
     });
 
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
