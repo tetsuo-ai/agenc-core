@@ -1,0 +1,487 @@
+/**
+ * Tests for the task-dispatch subsystem (`session/tasks.ts` + the
+ * `Session.spawnTask` / `Session.onTaskFinished` / `Session.abortAllTasks`
+ * methods). Proves the "one turn in flight at a time" invariant that
+ * upstream codex `tasks/mod.rs::spawn_task` enforces via the
+ * `active_turn` mutex + `abort_all_tasks(TurnAbortReason::Replaced)`
+ * re-entry contract.
+ *
+ * Coverage (per T5 port brief):
+ *   1. Concurrency — two concurrent spawn/run paths serialize.
+ *   2. Replace-on-new-turn — prior AbortController fires with "replaced".
+ *   3. Task registry lifecycle — spawn/finish/abort bookkeeping.
+ *   4. ActiveTurnState lock — concurrent mutations to one field are safe.
+ *   5. Regression — back-to-back sequential spawns reuse a clean state.
+ *   6. bin/agenc.ts parity — the single-turn spawn flow still behaves.
+ */
+
+import { describe, expect, it } from "vitest";
+
+import { AsyncQueue } from "../utils/async-queue.js";
+import {
+  Session,
+  type Event,
+  type SessionOpts,
+  type SessionServices,
+} from "./session.js";
+import {
+  type Config,
+  type ManagedFeatures,
+  type ModelInfo,
+  type SessionConfiguration,
+} from "./turn-context.js";
+import {
+  GRACEFUL_INTERRUPTION_TIMEOUT_MS,
+  createActiveTurnState,
+  createDoneHandle,
+  waitForDoneWithin,
+} from "./tasks.js";
+import type { LLMProvider } from "../llm/types.js";
+
+// ─────────────────────────────────────────────────────────────────────
+// Fixture helpers (mirror session.test.ts)
+// ─────────────────────────────────────────────────────────────────────
+
+function mkFeatures(): ManagedFeatures {
+  return {
+    appsEnabledForAuth: () => false,
+    useLegacyLandlock: () => false,
+  };
+}
+
+function mkConfig(): Config {
+  return {
+    model: "test-model",
+    cwd: "/tmp",
+    features: mkFeatures(),
+    multiAgentV2: {
+      usageHintEnabled: false,
+      usageHintText: "",
+      hideSpawnAgentMetadata: false,
+    },
+    permissions: {
+      allowLoginShell: false,
+      shellEnvironmentPolicy: {
+        allowedEnvVars: [],
+        blockedEnvVars: [],
+      },
+      windowsSandboxPrivateDesktop: false,
+    },
+    ghostSnapshot: { enabled: false },
+    agentRoles: [],
+  };
+}
+
+function mkModelInfo(): ModelInfo {
+  return {
+    slug: "test-model",
+    effectiveContextWindowPercent: 100,
+    contextWindow: 1024,
+    supportedReasoningLevels: [],
+    defaultReasoningSummary: "auto",
+    truncationPolicy: "off",
+    usedFallbackModelMetadata: false,
+  };
+}
+
+function mkSessionConfiguration(): SessionConfiguration {
+  return {
+    cwd: "/tmp",
+    approvalPolicy: { value: "never" },
+    sandboxPolicy: { value: "read_only" },
+    fileSystemSandboxPolicy: {
+      allowWrite: [],
+      denyWrite: [],
+      allowRead: [],
+      denyRead: [],
+    },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+    },
+    windowsSandboxLevel: "none",
+    collaborationMode: { model: "test-model" },
+    dynamicTools: [],
+    sessionSource: "cli_main",
+  };
+}
+
+function mkProvider(): LLMProvider {
+  return {
+    name: "stub-provider",
+    chat: async () => ({
+      content: "",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "test-model",
+      finishReason: "stop",
+    }),
+    chatStream: async () => ({
+      content: "",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "test-model",
+      finishReason: "stop",
+    }),
+  } as unknown as LLMProvider;
+}
+
+function buildSession(): Session {
+  const services = {
+    mcpConnectionManager: {
+      setApprovalPolicy: () => {},
+      setSandboxPolicy: () => {},
+      requiredStartupFailures: async () => [],
+    },
+    mcpStartupCancellationToken: {
+      cancel: () => {},
+      isCancelled: () => false,
+    },
+    provider: mkProvider(),
+    registry: {
+      tools: [],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "", isError: false }),
+    },
+  } as unknown as SessionServices;
+  const opts: SessionOpts = {
+    conversationId: "conv-test",
+    initialState: {
+      sessionConfiguration: mkSessionConfiguration(),
+      history: [],
+    },
+    features: mkFeatures(),
+    services,
+    jsRepl: { id: "repl-test" },
+    config: mkConfig(),
+    modelInfo: mkModelInfo(),
+    eventQueue: new AsyncQueue<Event>(),
+  };
+  return new Session(opts);
+}
+
+// Resolves on next microtask so async tests can interleave work.
+const flush = (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+
+// ─────────────────────────────────────────────────────────────────────
+// Module-level primitives
+// ─────────────────────────────────────────────────────────────────────
+
+describe("tasks.ts primitives", () => {
+  it("createActiveTurnState initializes all 11 upstream fields to defaults", () => {
+    const s = createActiveTurnState();
+    expect(s.pendingApprovals.size).toBe(0);
+    expect(s.pendingRequestPermissions.size).toBe(0);
+    expect(s.pendingUserInput.size).toBe(0);
+    expect(s.pendingElicitations.size).toBe(0);
+    expect(s.pendingDynamicTools.size).toBe(0);
+    expect(s.pendingInput).toEqual([]);
+    expect(s.mailboxDeliveryPhase).toBe("current_turn");
+    expect(s.grantedPermissions).toBeNull();
+    expect(s.strictAutoReviewEnabled).toBe(false);
+    expect(s.toolCalls).toBe(0);
+    expect(s.hasMemoryCitation).toBe(false);
+    expect(s.tokenUsageAtTurnStart).toEqual({
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    });
+  });
+
+  it("createDoneHandle resolves when resolveDone fires", async () => {
+    const { done, resolveDone } = createDoneHandle();
+    let resolved = false;
+    void done.then(() => {
+      resolved = true;
+    });
+    expect(resolved).toBe(false);
+    resolveDone();
+    await done;
+    expect(resolved).toBe(true);
+  });
+
+  it("waitForDoneWithin returns true on done, false on timeout", async () => {
+    const { done: done1, resolveDone: r1 } = createDoneHandle();
+    setTimeout(r1, 5);
+    await expect(waitForDoneWithin(done1, 100)).resolves.toBe(true);
+
+    // Never-resolving Promise — the timeout arm wins.
+    const stuck = new Promise<void>(() => {
+      /* never */
+    });
+    await expect(waitForDoneWithin(stuck, 20)).resolves.toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 3 — Task registry lifecycle
+// ─────────────────────────────────────────────────────────────────────
+
+describe("Session.spawnTask registry lifecycle", () => {
+  it("registers the task under its subId and fills the activeTurn slot", async () => {
+    const session = buildSession();
+    const task = await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    const active = session.activeTurn.unsafePeek();
+    expect(active).not.toBeNull();
+    expect(active?.turnId).toBe("turn-A");
+    expect(active?.tasks.has("turn-A")).toBe(true);
+    expect(active?.tasks.get("turn-A")?.kind).toBe("regular");
+    expect(task.subId).toBe("turn-A");
+    expect(task.done).toBeInstanceOf(Promise);
+    expect(task.abortController).toBeInstanceOf(AbortController);
+    // Cleanup for next test-stage.
+    await session.onTaskFinished("turn-A");
+  });
+
+  it("onTaskFinished removes the task and clears the activeTurn slot when empty", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    await session.onTaskFinished("turn-A");
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+
+  it("onTaskFinished resolves the task's done promise", async () => {
+    const session = buildSession();
+    const task = await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    let resolved = false;
+    const watcher = task.done.then(() => {
+      resolved = true;
+    });
+    await session.onTaskFinished("turn-A");
+    await watcher;
+    expect(resolved).toBe(true);
+  });
+
+  it("abortAllTasks clears the registry AND fires each task's AbortController", async () => {
+    const session = buildSession();
+    const task = await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    expect(task.abortController.signal.aborted).toBe(false);
+    await session.abortAllTasks("interrupted");
+    expect(task.abortController.signal.aborted).toBe(true);
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 2 — Replace-on-new-turn semantics
+// ─────────────────────────────────────────────────────────────────────
+
+describe("Session.spawnTask replace-on-new-turn", () => {
+  it("aborts the prior in-flight task with reason=replaced", async () => {
+    const session = buildSession();
+    const first = await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    expect(first.abortController.signal.aborted).toBe(false);
+    const second = await session.spawnTask({ subId: "turn-B", kind: "regular" });
+    // Prior task's AbortController fires.
+    expect(first.abortController.signal.aborted).toBe(true);
+    expect(first.abortController.signal.reason).toBe("replaced");
+    // New turn is live.
+    expect(session.activeTurn.unsafePeek()?.turnId).toBe("turn-B");
+    expect(second.abortController.signal.aborted).toBe(false);
+    await session.onTaskFinished("turn-B");
+  });
+
+  it("prior task's done Promise settles after replace", async () => {
+    const session = buildSession();
+    const first = await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    const doneP = first.done;
+    await session.spawnTask({ subId: "turn-B", kind: "regular" });
+    // done was resolved during handleTaskAbort (fallback path) — awaiting
+    // should resolve immediately, not hang.
+    await expect(
+      Promise.race([
+        doneP.then(() => "done"),
+        new Promise((r) => setTimeout(() => r("timeout"), 50)),
+      ]),
+    ).resolves.toBe("done");
+    await session.onTaskFinished("turn-B");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 1 — Concurrency: two concurrent spawns serialize
+// ─────────────────────────────────────────────────────────────────────
+
+describe("Session.spawnTask concurrency", () => {
+  it("serializes two concurrent spawns via taskDispatchLock", async () => {
+    const session = buildSession();
+    // Kick off two spawns at once. The second MUST see the first
+    // installed-then-aborted; it MUST NOT race with it.
+    const [a, b] = await Promise.all([
+      session.spawnTask({ subId: "turn-A", kind: "regular" }),
+      session.spawnTask({ subId: "turn-B", kind: "regular" }),
+    ]);
+    // Exactly one of them is the "winner" — the last one installed.
+    const active = session.activeTurn.unsafePeek();
+    expect(active).not.toBeNull();
+    // The live turn matches the later-scheduled task's subId.
+    expect([a.subId, b.subId]).toContain(active?.turnId);
+    // The OTHER one was replaced mid-flight — its abortController fired.
+    const replaced = active?.turnId === a.subId ? b : a;
+    expect(replaced.abortController.signal.aborted).toBe(true);
+    expect(replaced.abortController.signal.reason).toBe("replaced");
+    await session.onTaskFinished(active!.turnId);
+  });
+
+  it("concurrent abort + spawn remain consistent", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    // Fire an abort + a new spawn concurrently. Whichever lands first
+    // the invariant "registry in a known good state at end" must hold.
+    await Promise.all([
+      session.abortAllTasks("interrupted"),
+      session.spawnTask({ subId: "turn-B", kind: "regular" }),
+    ]);
+    // End state: exactly one task or none, never half-cleaned.
+    const active = session.activeTurn.unsafePeek();
+    if (active !== null) {
+      expect(active.tasks.size).toBe(1);
+      await session.onTaskFinished(active.turnId);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 4 — ActiveTurnState lock: concurrent mutations serialize
+// ─────────────────────────────────────────────────────────────────────
+
+describe("ActiveTurnState lock", () => {
+  it("concurrent toolCalls increments under the lock are safe", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    const N = 200;
+    const increments = Array.from({ length: N }, () =>
+      session.withActiveTurnState(async (s) => {
+        // Simulate a read-modify-write across an await boundary.
+        const before = s.toolCalls;
+        await flush();
+        s.toolCalls = before + 1;
+      }),
+    );
+    await Promise.all(increments);
+    const final = await session.withActiveTurnState((s) => s.toolCalls);
+    expect(final).toBe(N);
+    await session.onTaskFinished("turn-A");
+  });
+
+  it("withActiveTurnState returns undefined when no turn is active", async () => {
+    const session = buildSession();
+    const v = await session.withActiveTurnState((s) => s.toolCalls);
+    expect(v).toBeUndefined();
+  });
+
+  it("token_usage_at_turn_start is captured on spawn when provided", async () => {
+    const session = buildSession();
+    await session.spawnTask({
+      subId: "turn-A",
+      kind: "regular",
+      tokenUsageAtTurnStart: {
+        promptTokens: 10,
+        completionTokens: 20,
+        totalTokens: 30,
+      },
+    });
+    const seeded = await session.withActiveTurnState(
+      (s) => s.tokenUsageAtTurnStart,
+    );
+    expect(seeded).toEqual({
+      promptTokens: 10,
+      completionTokens: 20,
+      totalTokens: 30,
+    });
+    await session.onTaskFinished("turn-A");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 5 — Regression: sequential spawns reuse a clean state
+// ─────────────────────────────────────────────────────────────────────
+
+describe("Session.spawnTask sequential reentry", () => {
+  it("back-to-back spawn + finish cycles yield fresh ActiveTurn each time", async () => {
+    const session = buildSession();
+    for (let i = 0; i < 5; i += 1) {
+      const task = await session.spawnTask({
+        subId: `turn-${i}`,
+        kind: "regular",
+      });
+      // toolCalls starts from zero in each turn — proves the state was
+      // reset (not carried over from the prior turn).
+      const before = await session.withActiveTurnState((s) => s.toolCalls);
+      expect(before).toBe(0);
+      await session.withActiveTurnState((s) => {
+        s.toolCalls = 42;
+      });
+      await session.onTaskFinished(`turn-${i}`);
+      // activeTurn slot cleared between turns.
+      expect(session.activeTurn.unsafePeek()).toBeNull();
+      // task.done resolved.
+      await task.done;
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Part 6 — bin/agenc.ts parity: the single-turn spawn flow
+// ─────────────────────────────────────────────────────────────────────
+
+describe("bin/agenc.ts parity", () => {
+  it("session.spawnTask from runTurnKernel entry + session.onTaskFinished from finally is the supported pattern", async () => {
+    // Mirrors the pattern in runTurnKernel: spawnTask at entry, do
+    // yields, then onTaskFinished in a finally. Prove the round-trip
+    // works even when the kernel throws.
+    const session = buildSession();
+
+    const runKernelLike = async (subId: string, shouldThrow: boolean) => {
+      const task = await session.spawnTask({ subId, kind: "regular" });
+      try {
+        await flush();
+        if (shouldThrow) throw new Error("kernel blew up");
+        return task;
+      } finally {
+        await session.onTaskFinished(subId);
+      }
+    };
+
+    // Happy path.
+    await runKernelLike("turn-happy", false);
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+
+    // Error path — must still clean the registry.
+    await expect(runKernelLike("turn-error", true)).rejects.toThrow(
+      "kernel blew up",
+    );
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+
+  it("abortTurnIfActive returns true for the live turn and false otherwise", async () => {
+    const session = buildSession();
+    const task = await session.spawnTask({ subId: "turn-A", kind: "regular" });
+    expect(await session.abortTurnIfActive("turn-B", "interrupted")).toBe(
+      false,
+    );
+    expect(task.abortController.signal.aborted).toBe(false);
+    expect(await session.abortTurnIfActive("turn-A", "interrupted")).toBe(
+      true,
+    );
+    expect(task.abortController.signal.aborted).toBe(true);
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Constants parity check
+// ─────────────────────────────────────────────────────────────────────
+
+describe("constants", () => {
+  it("graceful interruption budget matches upstream codex tasks/mod.rs:62", () => {
+    // Upstream: GRACEFULL_INTERRUPTION_TIMEOUT_MS = 100 (note: typo in
+    // upstream; gut carries the corrected spelling). The ms value is
+    // what matters for behavior parity.
+    expect(GRACEFUL_INTERRUPTION_TIMEOUT_MS).toBe(100);
+  });
+});

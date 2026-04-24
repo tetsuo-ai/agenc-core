@@ -544,6 +544,41 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
         bindProviderConversation: () => void;
       }
     ).bindProviderConversation = () => {};
+    // T5 task-dispatch port: runTurnKernel now calls spawnTask at entry
+    // and onTaskFinished at exit. Stub these on the test's minimal
+    // session shim so the generator can drain without errors.
+    (
+      session as unknown as {
+        spawnTask: (opts: {
+          subId: string;
+          kind: string;
+          startedAtMs?: number;
+        }) => Promise<{
+          subId: string;
+          kind: string;
+          abortController: AbortController;
+          done: Promise<void>;
+          resolveDone: () => void;
+          startedAtMs: number;
+        }>;
+      }
+    ).spawnTask = async (opts) => {
+      let resolveDone!: () => void;
+      const done = new Promise<void>((r) => {
+        resolveDone = r;
+      });
+      return {
+        subId: opts.subId,
+        kind: opts.kind,
+        abortController: new AbortController(),
+        done,
+        resolveDone,
+        startedAtMs: opts.startedAtMs ?? Date.now(),
+      };
+    };
+    (
+      session as unknown as { onTaskFinished: () => Promise<void> }
+    ).onTaskFinished = async () => {};
 
     const ctx = {
       subId: "turn-1",
