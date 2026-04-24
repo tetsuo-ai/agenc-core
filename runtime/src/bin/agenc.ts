@@ -768,31 +768,27 @@ function installTuiSessionContract(params: {
           input: prompt,
         });
         const ctx = params.session.newDefaultTurn();
-        const startedAtMs = Date.now();
-        await params.session.activeTurn.swap({
-          turnId: ctx.subId,
-          startedAtMs,
-          abortController: new AbortController(),
-        });
-        try {
-          for await (const event of runSingleTurn({
-            session: params.session,
-            ctx,
-            input: expanded.input,
-            displayInput: expanded.displayInput,
-            agencHome: params.agencHome,
-            configStore: params.configStore,
-            configReloadLatch,
-            loadTurnInputsFn: params.loadTurnInputsFn,
-            provider: params.resolvedProvider,
-          })) {
-            params.session.emitPhaseEvent(event);
-          }
-        } finally {
-          const current = params.session.activeTurn.unsafePeek();
-          if (current?.turnId === ctx.subId) {
-            await params.session.activeTurn.swap(null);
-          }
+        // The task-dispatch subsystem (see session/tasks.ts) owns the
+        // activeTurn lifecycle now. `runTurnKernel` calls
+        // `session.spawnTask` at entry (which aborts any prior turn
+        // with `TurnAbortReason::Replaced`) and `session.onTaskFinished`
+        // in a finally. The earlier ad-hoc `activeTurn.swap` pattern
+        // here was redundant AND incorrect under the new semantics: it
+        // would populate the slot before the kernel tried to spawn,
+        // and the kernel would then abort it as a "replaced" prior
+        // turn.
+        for await (const event of runSingleTurn({
+          session: params.session,
+          ctx,
+          input: expanded.input,
+          displayInput: expanded.displayInput,
+          agencHome: params.agencHome,
+          configStore: params.configStore,
+          configReloadLatch,
+          loadTurnInputsFn: params.loadTurnInputsFn,
+          provider: params.resolvedProvider,
+        })) {
+          params.session.emitPhaseEvent(event);
         }
       };
 
