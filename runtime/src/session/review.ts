@@ -13,12 +13,7 @@
  *   - `codex-rs/core/src/guardian/review_session.rs` —
  *     `GuardianReviewSessionManager`. This file ports the manager's
  *     shape and lifecycle primitives (`shutdown`, trunk vs ephemeral
- *     review-session tracking), but leaves the sub-codex spawning
- *     (`run_codex_thread_interactive`), guardian-prompt construction,
- *     and token-usage analytics as RESERVED slots — gut does not have
- *     the parent-child session delegate wiring yet, and building the
- *     full guardian flow here would pull in many other subsystems that
- *     are not in scope for this port.
+ *     review-session tracking).
  *   - `codex-rs/core/review_prompt.md` and the two
  *     `codex-rs/core/templates/review/*.xml` templates — lifted
  *     verbatim into the three exported string constants so future
@@ -42,10 +37,8 @@
  *      review sessions by subId so `shutdown()` can cancel them all on
  *      session teardown. The full trunk-reuse and ephemeral-fork
  *      semantics from `guardian/review_session.rs` (reuse-key
- *      invalidation, fork snapshots, prior-review-count deltas) are
- *      RESERVED for a later port when the sub-codex delegate surface
- *      lands; the minimum today is: register a spawned review by subId
- *      + cancel-all on shutdown.
+ *      invalidation, fork snapshots, prior-review-count deltas) now
+ *      route through the AgenC child-session delegate.
  *
  *   3. `isTaskKindSteerable(kind)` — the classifier used by the
  *      forthcoming steer_input port (Item 6). Review tasks are
@@ -68,49 +61,29 @@
  *      model's JSON response (or fall back to the plain-text path
  *      mirroring upstream `parse_review_output_event`).
  *
- * INCOMPLETE (punted, documented here to match the "no lying, no
- * shortcuts" rule):
+ * Remaining narrow gaps:
  *
  *   - `spawnReviewTask` does NOT synthesize the review-scoped
  *     `TurnContext`, disable `web_search` / `view_image`, or route the
- *     reviewer model through the provider adapter. That work belongs
- *     in a later port alongside the sub-codex delegate surface that
- *     upstream `run_codex_thread_one_shot` provides. Today, the
- *     function is a thin wrapper over `session.spawnTask` plus
- *     manager-side bookkeeping; the actual review conversation driver
- *     is RESERVED. Callers get a live `RunningTask` with the correct
- *     `kind` and the correct abort lifecycle, which is what Item 6
- *     (steer_input), Item 5 (live_thread), and later the actual
- *     review runner need to build on.
+ *     reviewer model through the provider adapter. `runReview` owns
+ *     the real review conversation via `runAgenCReviewOneShot`; this
+ *     helper remains only the task-registry primitive for callers that
+ *     need a bare review `RunningTask`.
  *
- *   - `ReviewManager.runReview` (the codex `run_review` on-session
- *     orchestrator with timeout / fork-snapshot / delta-prompt logic)
- *     is RESERVED. The manager today only tracks spawned reviews for
- *     shutdown purposes.
- *
- *   - `build_guardian_review_session_config` is NOT ported. It relies
- *     on the gut `Config` + `Constrained` facets for
- *     `approval_policy`, `sandbox_policy`, and `mcp_servers`, which in
- *     turn depend on the T11 permissions port landing. RESERVED.
- *
- *   - `exit_review_mode` — emits upstream codex `ExitedReviewMode`
- *     event + records the assistant+user rollout messages. Gut does
- *     not have the same event schema yet; this is RESERVED for the
- *     final event-routing port.
- *
- * All RESERVED pieces are behavior, not schema. The exported types in
- * this file match upstream so a later port can flesh the runner out
- * without breaking consumers of the manager / spawn entry points.
+ *   - Full analytics parity for prior-review-count deltas is not yet
+ *     wired. The live runtime behavior, child session, timeout, abort,
+ *     exit event, and bounded snapshot reuse are implemented.
  *
  * @module
  */
 
 import type { TaskKind } from "./tasks.js";
 import type {
-  CodexThreadOneShotOutcome,
-  CodexThreadOneShotRequest,
-  DelegateSessionLike,
-} from "./codex-delegate.js";
+  AgenCDelegateSessionLike,
+  AgenCReviewOneShotOutcome,
+  AgenCReviewOneShotRequest,
+} from "./agenc-delegate.js";
+import type { LLMMessage } from "../llm/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Structural types (upstream `codex-protocol` review surface)
@@ -401,15 +374,13 @@ interface TrackedReview {
  * subId so a session-level shutdown can cancel them all.
  *
  * The upstream manager distinguishes a long-lived "trunk" review
- * session from short-lived "ephemeral" fork reviews; the gut port
- * stores both in one registry because the trunk/ephemeral distinction
- * in upstream is driven by the sub-codex delegate surface that is
- * RESERVED here. The manager contract (`register`, `take`, `shutdown`)
- * is preserved so the trunk/ephemeral split can land later without
- * churn for callers.
+ * session from short-lived "ephemeral" fork reviews; the AgenC port
+ * keeps lifecycle entries in one registry and snapshots review
+ * histories by reuse key for child delegates.
  */
 export class ReviewManager {
   private readonly reviews = new Map<string, TrackedReview>();
+  private readonly snapshots = new Map<string, ReviewConversationSnapshot>();
 
   /**
    * Upstream: `spawn_guardian_review_session` → `state.trunk = ...`.
@@ -482,7 +453,7 @@ export class ReviewManager {
   /**
    * Upstream codex `guardian/review_session.rs::run_review` orchestrator
    * (the on-session wrapper that threads timeout + fork snapshot +
-   * delta prompt logic around the sub-codex delegate). Gut port
+   * delta prompt logic around the child-session delegate). AgenC port
    * wraps the T13 delegate with:
    *
    *   - a bounded timeout (the upstream
@@ -496,27 +467,18 @@ export class ReviewManager {
    *     (emitted by the delegate) so consumers do not need to route
    *     around the manager.
    *
-   * What is RESERVED vs upstream:
-   *   - Fork snapshots / delta prompts. Upstream's `run_review` can
-   *     spawn a review off a "reuse key" that captures the parent
-   *     state and only re-runs the reviewer when the state changes
-   *     materially. Gut does not have the parent-state snapshot
-   *     surface (upstream `ReviewSpawnInputs::reuse_key`) so every
-   *     `runReview` call spawns a fresh review turn. When the state-
-   *     snapshot port lands, reuse-key semantics will attach here
-   *     without changing the public signature.
-   *   - Prior-review-count deltas / manager analytics. Upstream emits
-   *     `guardian_review_session_completed_with_turn_delta`; gut does
-   *     not wire analytics through the manager yet.
+   * Remaining difference vs upstream: prior-review-count analytics are
+   * not emitted yet. The child session, timeout/abort, exit event, and
+   * bounded snapshot reuse paths are live.
    *
-   * The delegate itself (`runOneShot`) handles the actual review
+   * The delegate itself (`runAgenCReviewOneShot`) handles the actual review
    * provider call + `exit_review_mode` emission; `runReview` is the
    * manager-level wrapper that adds bookkeeping + abort merging.
    */
   async runReview(
-    session: DelegateSessionLike,
-    req: CodexThreadOneShotRequest,
-  ): Promise<CodexThreadOneShotOutcome> {
+    session: AgenCDelegateSessionLike,
+    req: AgenCReviewOneShotRequest,
+  ): Promise<AgenCReviewOneShotOutcome> {
     // Build the controller the manager owns so `shutdown()` +
     // timeout can both fire it without fighting the caller's own
     // signal. The delegate also accepts a `signal` through
@@ -549,16 +511,20 @@ export class ReviewManager {
       request: req.request,
     });
 
+    const preparedReq = this.prepareSnapshotReuse(req);
+
     // Lazy-import the delegate to sidestep the circular-dep risk
-    // (review.ts <-> codex-delegate.ts). Only the types were
+    // (review.ts <-> agenc-delegate.ts). Only the types were
     // imported at the module head.
-    const { runOneShot } = await import("./codex-delegate.js");
+    const { runAgenCReviewOneShot } = await import("./agenc-delegate.js");
 
     try {
-      return await runOneShot(session, {
-        ...req,
+      const outcome = await runAgenCReviewOneShot(session, {
+        ...preparedReq,
         signal: managerController.signal,
       });
+      this.recordSnapshot(preparedReq, outcome);
+      return outcome;
     } finally {
       // Remove the listener even on success paths so the caller's
       // AbortController doesn't keep a reference to us.
@@ -568,6 +534,71 @@ export class ReviewManager {
       this.take(req.subId);
     }
   }
+
+  private prepareSnapshotReuse(
+    req: AgenCReviewOneShotRequest,
+  ): AgenCReviewOneShotRequest {
+    const key = reviewSnapshotKey(req);
+    if (key === null) return req;
+    const snapshot = this.snapshots.get(key);
+    if (snapshot === undefined) return { ...req, reuseKey: key };
+
+    const deltaPrompt: LLMMessage = {
+      role: "user",
+      content: [
+        "A previous review snapshot is available in this child delegate's history.",
+        "Reuse prior findings where still valid, and focus this review on changes or new evidence in the latest request.",
+        `Previous finding count: ${snapshot.findingCount}`,
+        snapshot.overallExplanation.trim().length > 0
+          ? `Previous overall explanation: ${snapshot.overallExplanation}`
+          : undefined,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n"),
+    };
+
+    return {
+      ...req,
+      reuseKey: key,
+      initialHistory: snapshot.history,
+      input: [deltaPrompt, ...req.input],
+    };
+  }
+
+  private recordSnapshot(
+    req: AgenCReviewOneShotRequest,
+    outcome: AgenCReviewOneShotOutcome,
+  ): void {
+    const key = reviewSnapshotKey(req);
+    if (key === null || outcome.rawText === null) return;
+    this.snapshots.set(key, {
+      history: [
+        ...(req.initialHistory ?? []),
+        ...req.input,
+        { role: "assistant" as const, content: outcome.rawText },
+      ].slice(-12),
+      findingCount: outcome.output.findings.length,
+      overallExplanation: outcome.output.overallExplanation,
+    });
+  }
+}
+
+interface ReviewConversationSnapshot {
+  readonly history: ReadonlyArray<LLMMessage>;
+  readonly findingCount: number;
+  readonly overallExplanation: string;
+}
+
+function reviewSnapshotKey(req: AgenCReviewOneShotRequest): string | null {
+  if (req.reuseKey === false || req.registerTask === false) return null;
+  if (typeof req.reuseKey === "string" && req.reuseKey.trim().length > 0) {
+    return req.reuseKey.trim();
+  }
+  return [
+    req.request.target,
+    req.reviewerModel ?? req.parentContext.modelInfo.slug,
+    req.config.cwd,
+  ].join("\u0000");
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -575,9 +606,8 @@ export class ReviewManager {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Options for `spawnReviewTask`. Mirrors upstream
- * `spawn_review_thread` signature modulo the RESERVED review-scoped
- * TurnContext construction (see module docstring "INCOMPLETE").
+ * Options for `spawnReviewTask`. Mirrors the upstream
+ * `spawn_review_thread` task-registration shape.
  */
 export interface SpawnReviewTaskOptions {
   /** Upstream `sub_id`. Identifier the session uses in its task registry. */
@@ -614,8 +644,8 @@ export interface SpawnedReviewTask {
  * review flows through the Wave 2 task-dispatch machinery
  * (replace-on-new-turn, abort controller, done promise, graceful
  * interruption). The review-scoped `TurnContext` assembly + the
- * reviewer-model sub-codex run are RESERVED pending the sub-codex
- * delegate port; see module docstring for the full incomplete list.
+ * reviewer-model child delegate run are handled by
+ * `runAgenCReviewOneShot`; see module docstring for lifecycle notes.
  *
  * The returned `SpawnedReviewTask` carries the task's abort controller
  * so callers can cancel the review directly (`spawnedTask.abortController.abort(...)`)

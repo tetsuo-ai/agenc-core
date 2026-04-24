@@ -22,10 +22,10 @@ import { randomUUID } from "node:crypto";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import type { ApprovalCtx } from "../tools/orchestrator.js";
 import type {
-  CodexThreadOneShotRequest,
-  DelegateSessionLike,
-} from "./codex-delegate.js";
-import { buildGuardianReviewSessionConfig } from "./codex-delegate.js";
+  AgenCDelegateSessionLike,
+  AgenCReviewOneShotRequest,
+} from "./agenc-delegate.js";
+import { buildGuardianReviewSessionConfig } from "./agenc-delegate.js";
 import type { ModelInfo, TurnContext } from "./turn-context.js";
 import {
   ReviewManager,
@@ -88,15 +88,12 @@ export interface GuardianApprovalReviewer {
   ): Promise<GuardianApprovalReviewResult>;
 }
 
-type DelegateServices = NonNullable<DelegateSessionLike["services"]>;
+type DelegateServices = NonNullable<AgenCDelegateSessionLike["services"]>;
 type DelegateModelsManager = NonNullable<DelegateServices["modelsManager"]>;
 
-interface GuardianModelsManager extends DelegateModelsManager {
-  tryListModels?(): ReadonlyArray<ModelInfo> | undefined;
-  listModels?(): Promise<ReadonlyArray<ModelInfo>>;
-}
+type GuardianModelsManager = DelegateModelsManager;
 
-export interface GuardianApprovalReviewSession extends DelegateSessionLike {
+export interface GuardianApprovalReviewSession extends AgenCDelegateSessionLike {
   readonly conversationId?: string;
   readonly services?: DelegateServices & {
     readonly modelsManager?: GuardianModelsManager;
@@ -454,7 +451,7 @@ interface BuildOneShotRequestOptions {
 
 function buildOneShotRequest(
   opts: BuildOneShotRequestOptions,
-): CodexThreadOneShotRequest {
+): AgenCReviewOneShotRequest {
   const config = buildGuardianReviewSessionConfig({
     parentConfig: opts.turn.config,
     activeModel: opts.reviewerModel,
@@ -478,6 +475,7 @@ function buildOneShotRequest(
     finalOutputJsonSchema: guardianOutputSchema(),
     systemPrompt: guardianPolicyPrompt(),
     registerTask: false,
+    reuseKey: false,
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     timeoutMs: opts.timeoutMs,
   };

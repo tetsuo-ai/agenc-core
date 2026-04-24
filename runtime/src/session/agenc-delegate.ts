@@ -1,90 +1,15 @@
 /**
- * Sub-codex delegate surface for review-scoped one-shot turns.
+ * AgenC child-session delegate surface for review-scoped one-shot turns.
  *
- * Port of the upstream codex review delegate machinery:
- *   - `codex-rs/core/src/codex_delegate.rs::run_codex_thread_one_shot`
- *     (lines 156-237) — the one-shot wrapper that spawns a child
- *     codex thread, submits a single `Op::UserInput`, and tears down
- *     on `TurnComplete` / `TurnAborted`.
- *   - `codex-rs/core/src/guardian/review_session.rs::build_guardian_review_session_config`
- *     (lines 831-897) — the helper that takes a parent `Config` +
- *     reviewer overrides and returns the review-scoped `Config` used
- *     by the delegate (review-model override, reviewer-prompt
- *     `base_instructions`, `approval_policy = Never`, `sandbox_policy
- *     = read_only`, cleared `mcp_servers`, disabled web/spawn
- *     features).
- *   - `codex-rs/core/src/tasks/review.rs::start_review_conversation`
- *     (lines 95-138) — the caller that assembles the sub-agent
- *     config, disables `web_search` + `view_image` + collab + spawn-csv,
- *     and hands the configured delegate a single user prompt.
+ * This module replaces the old flat reviewer provider call with the
+ * upstream-shaped delegate contract: create an isolated child Session,
+ * submit one user input through a tx queue, consume child events through
+ * an rx queue, forward approval/permission requests to the parent, and
+ * shut the child down on completion, abort, or timeout.
  *
- * Translation conventions applied:
- *   - Rust `Arc<Session>` / `Arc<TurnContext>` → structural TS
- *     interfaces (`DelegateSessionLike`, `DelegateTurnContextLike`) so
- *     this module does not import the full `Session` / `TurnContext`
- *     types (avoids a cyclic dep with `session.ts` and keeps tests
- *     free of heavyweight fixtures).
- *   - Rust `CancellationToken` → `AbortController` per
- *     `docs/plan/translation-conventions.md`. The delegate accepts an
- *     `AbortSignal` and derives a child controller so shutdown can
- *     fire without touching the caller's signal.
- *   - Rust `async_channel::Sender<Op> + Receiver<Event>` bidirectional
- *     surface → a single `Promise<CodexThreadOneShotOutcome>` because
- *     gut has no child-Session spawn (see INCOMPLETE below). The
- *     upstream `Codex` handle's `rx_event` / `tx_sub` are RESERVED.
- *   - Rust `SubAgentSource::Review` → the string literal `"review"`;
- *     the full `SubAgentSource` enum is not ported because gut has no
- *     subagent-source routing to consume it.
- *
- * INCOMPLETE (flagged honestly per "no lying, no shortcuts"):
- *
- *   - Gut has no sub-Session spawn surface. Upstream `Codex::spawn`
- *     (`codex-rs/core/src/session/mod.rs`) constructs a separate
- *     `Session` with its own MCP manager, skills manager, thread
- *     store, rollout trace, analytics pipeline, and agent-control
- *     handle. Gut ships none of those shared services in a form that
- *     can be cloned into a child session (see
- *     `runtime/src/session/session.ts::SessionServices` — the
- *     services are live references to singletons, not cloneable
- *     factories). So the gut delegate runs the one-shot turn in a
- *     *flat* shape: a single bounded provider call using the parent
- *     session's provider transport with a request-scoped reviewer
- *     model/tool envelope, plus the review-scoped `TurnContext` +
- *     reviewer-prompt system message inlined at the call site. The
- *     *semantics* match upstream's one-shot contract (single sampling
- *     iteration, teardown on completion/abort), but the delegate does
- *     not currently provide a separate child-Session for the reviewer
- *     turn. This RESERVED surface covers:
- *       - `Codex.rx_event` / `Codex.tx_sub` sub-agent I/O channels
- *         (`codex_delegate.rs:230-236`). Callers today receive only
- *         the synthesized `CodexThreadOneShotOutcome`.
- *       - Approval/permission forwarding inside `forward_events`
- *         (`codex_delegate.rs:239-386`). The gut delegate runs with
- *         `approval_policy = Never` and `sandbox_policy = read_only`
- *         (matching `build_guardian_review_session_config`), so the
- *         upstream approval-relay layer is not exercised by the
- *         single review prompt today.
- *       - `ThreadStore` / `RolloutTraceRecorder` / `analytics_events_client`
- *         cross-session propagation. Gut's review turn reuses the
- *         parent's rollout store and emits events through the parent
- *         session.
- *     When gut grows a real child-Session spawn (T11+), upgrading the
- *     delegate to spawn-then-submit-then-drain will not require
- *     changing the public `runOneShot` signature.
- *
- *   - `forward_events` approval routing (upstream codex
- *     `codex_delegate.rs:239-386`) is not ported. Because the gut
- *     delegate uses the parent's `session.services.provider` directly
- *     and the review-scoped `TurnContext` forces
- *     `approval_policy = never` + `sandbox_policy = read_only`, no
- *     approval events can be generated by the one-shot path. If a
- *     future refactor widens the review task to honor approvals, the
- *     approval-forwarding loop will need to land alongside the
- *     child-Session spawn.
- *
- *   - Fork-snapshot reuse / delta prompts from upstream
- *     `guardian/review_session.rs`. Gut's review manager still starts
- *     every review as a fresh flat one-shot provider call.
+ * Product-facing names are AgenC-owned. References to upstream behavior
+ * in comments are provenance only; live file names, exported types, and
+ * events avoid Codex-branded delegate names.
  *
  * @module
  */
@@ -93,14 +18,24 @@ import type {
   LLMChatOptions,
   LLMMessage,
   LLMProvider,
-  LLMResponse,
 } from "../llm/types.js";
+import {
+  createProvider,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
 import type {
   Config,
   ModelInfo,
+  SessionConfiguration,
   TurnContext,
 } from "./turn-context.js";
 import { buildTurnContext } from "./turn-context.js";
+import {
+  Session,
+  type AgentStatus,
+  type SessionServices,
+} from "./session.js";
 import type { Event, EventMsg } from "./event-log.js";
 import type { ReviewOutput, ReviewRequest } from "./review.js";
 import {
@@ -109,9 +44,13 @@ import {
   parseReviewOutput,
 } from "./review.js";
 import type { TaskKind } from "./tasks.js";
+import { AsyncQueue, BehaviorSubject } from "./_deps/utils.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import type { ToolRegistry } from "./_deps/tool-registry.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Structural dependencies (`DelegateSessionLike`, `DelegateTurnContextLike`)
+// Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
 //
 // Upstream codex passes `Arc<Session>` + `Arc<TurnContext>`. Gut stays
 // structural so tests can build minimal fixtures. The *minimum* a
@@ -127,7 +66,7 @@ import type { TaskKind } from "./tasks.js";
  * aborted) so the caller does not need to reach into the delegate's
  * internals.
  */
-export interface DelegateEventSink {
+export interface AgenCDelegateEventSink {
   /** Upstream codex `Session::send_event` — sends an event with the
    *  given sub_id stamped as `id`. */
   sendEvent(subId: string, msg: EventMsg): void;
@@ -141,21 +80,18 @@ export interface DelegateEventSink {
  * all present on `Session`), while tests can supply a minimal object
  * literal.
  *
- * Upstream codex threads the full `Arc<Session>` through
- * `run_codex_thread_one_shot` because `forward_events` needs the
- * parent's approval/permission routing. The gut delegate does not run
- * approval paths today (see module-doc INCOMPLETE), so the slim
- * interface stays honest and the RESERVED fields land explicitly
- * when that port arrives.
+ * The live path passes a real `Session`; this structural surface keeps
+ * tests and guardian approval review from importing more than they
+ * need while still exposing parent task lifecycle and forwarding hooks.
  */
-export interface DelegateSessionLike extends DelegateEventSink {
+export interface AgenCDelegateSessionLike extends AgenCDelegateEventSink {
   /** Upstream `sess.services.provider`. The provider to route the
    *  one-shot review call through. */
   readonly provider: LLMProvider;
   /** Optional service bag present on live `Session`. The delegate uses
    *  `modelsManager` when available to match upstream's reviewer-model
    *  capability lookup before the provider call. */
-  readonly services?: {
+  readonly services?: Partial<SessionServices> & {
     readonly modelsManager?: {
       getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
     };
@@ -187,27 +123,20 @@ export interface DelegateSessionLike extends DelegateEventSink {
  * override so a future ThreadContext-style refactor can narrow the
  * coupling.
  */
-export type DelegateTurnContextLike = TurnContext;
+export type AgenCDelegateTurnContextLike = TurnContext;
 
 // ─────────────────────────────────────────────────────────────────────
-// Request / response shapes (upstream codex `run_codex_thread_one_shot`)
+// Request / response shapes
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Input shape for `runOneShot`. Mirrors the positional arg list of
- * upstream codex `run_codex_thread_one_shot`:
+ * Input shape for `runAgenCReviewOneShot`. Mirrors the positional arg
+ * list of the upstream one-shot child-thread helper:
  *   (config, auth_manager, models_manager, input, parent_session,
  *    parent_ctx, cancel_token, subagent_source,
  *    final_output_json_schema, initial_history)
- *
- * Gut collapses `auth_manager` / `models_manager` / `initial_history`
- * into RESERVED slots — the one-shot review path does not exercise
- * them today (see module-doc INCOMPLETE). Keeping the optional
- * fields on the request shape preserves upstream parity so when the
- * child-Session spawn lands, the caller signature will not need to
- * change.
  */
-export interface CodexThreadOneShotRequest {
+export interface AgenCReviewOneShotRequest {
   /** Upstream `sub_id`. Identifier the session registers the task
    *  under. The delegate reuses this as the `TurnContext.subId` so the
    *  review-scoped context stamps emitted events with the caller's id. */
@@ -219,7 +148,7 @@ export interface CodexThreadOneShotRequest {
   readonly config: Config;
   /** Upstream `parent_ctx`. The parent `TurnContext` used as the
    *  basis for the review-scoped `TurnContext`. */
-  readonly parentContext: DelegateTurnContextLike;
+  readonly parentContext: AgenCDelegateTurnContextLike;
   /** Upstream `input: Vec<UserInput>`. Gut delegate accepts a
    *  pre-formed `LLMMessage[]` because the upstream `UserInput::Text`
    *  → provider-message plumbing lives outside this module's scope. */
@@ -264,10 +193,13 @@ export interface CodexThreadOneShotRequest {
    * semantics.
    */
   readonly registerTask?: boolean;
-  // RESERVED: upstream codex `auth_manager`, `models_manager`,
-  // `subagent_source`, `initial_history`. Left off the TS shape until
-  // the child-Session spawn is wired; adding them later does not
-  // require signature churn for callers.
+  /** Optional child-session history reused by ReviewManager snapshot caching. */
+  readonly initialHistory?: ReadonlyArray<LLMMessage>;
+  /**
+   * Snapshot reuse key. `false` disables reuse for sensitive ephemeral
+   * delegates such as guardian approval review.
+   */
+  readonly reuseKey?: string | false;
 }
 
 /**
@@ -292,7 +224,7 @@ export interface CodexThreadOneShotRequest {
  *     provider failure. Carries the underlying error reason for
  *     telemetry. `null` on success paths.
  */
-export interface CodexThreadOneShotOutcome {
+export interface AgenCReviewOneShotOutcome {
   readonly verdict: "pass" | "fail" | "partial" | "aborted" | "timeout";
   readonly output: ReviewOutput;
   readonly rawText: string | null;
@@ -356,8 +288,8 @@ export interface BuildGuardianReviewSessionConfigOptions {
 }
 
 /**
- * Synthesize the review-scoped `Config` that the sub-codex delegate
- * runs under. Mirrors upstream codex
+ * Synthesize the review-scoped `Config` that the AgenC delegate runs
+ * under. Mirrors upstream
  * `guardian/review_session.rs::build_guardian_review_session_config`
  * (`review_session.rs:831-897`).
  *
@@ -365,22 +297,10 @@ export interface BuildGuardianReviewSessionConfigOptions {
  *   - `model` ← `activeModel` (upstream line 838)
  *   - `modelReasoningEffort` ← `reasoningEffort` (line 839)
  *   - approval/sandbox → `never` / `read_only` (lines 849-851)
- *   - Features `Collab`, `WebSearchRequest`, `WebSearchCached`,
- *     `SpawnCsv` (the gut-visible subset; upstream also disables
- *     `Apps`, `Plugins`, `CodexHooks`, which gut's `ManagedFeatures`
- *     does not expose — documented below as RESERVED).
- *
- * INCOMPLETE:
- *   - Upstream clears `mcp_servers` (line 855) and rebuilds
- *     `NetworkProxySpec` (line 859). Gut's `Config` shape does not
- *     surface an `mcp_servers` slot today (MCP is wired through
- *     `SessionServices.mcpManager` at session construction time), and
- *     `NetworkProxy` is an opt-in per-turn concern. Those paths are
- *     RESERVED and documented here rather than hidden behind
- *     silent no-ops.
- *   - Upstream `include_skill_instructions = false` (line 840) and
- *     `include_apps_instructions = false` (line 852) map to gut's
- *     `Config` fields that do not exist yet. RESERVED.
+ * Child-session service isolation clears runtime tool/MCP visibility
+ * at delegate construction time (`buildChildServices`) rather than by
+ * mutating `Config`, because AgenC wires those surfaces through
+ * `SessionServices`.
  *
  * Pure function: does not mutate the input config. Returns a fresh
  * frozen snapshot via the standard structuredClone+graft path used by
@@ -417,7 +337,7 @@ export function buildGuardianReviewSessionConfig(
   // Gut's `Config` holds approval/sandbox on `SessionConfiguration`
   // (not directly on Config). The reviewer-scoped TurnContext pulls
   // approval/sandbox from the parent sessionConfiguration during
-  // `buildTurnContext`; the runOneShot path overrides them there.
+  // `buildTurnContext`; the review delegate path overrides them there.
   // Documenting the indirection here so the contract is visible.
 
   // Freeze so callers cannot silently mutate.
@@ -425,7 +345,7 @@ export function buildGuardianReviewSessionConfig(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// runOneShot — upstream codex `run_codex_thread_one_shot` port
+// AgenC one-shot review delegate
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -443,10 +363,11 @@ export function buildGuardianReviewSessionConfig(
  * delegate prepends a system message before the user prompt).
  */
 export function buildReviewTurnContext(
-  parentCtx: DelegateTurnContextLike,
+  parentCtx: AgenCDelegateTurnContextLike,
   reviewerModel: string,
   reviewerModelInfo: ModelInfo | undefined,
   reviewSubId: string,
+  provider: LLMProvider = parentCtx.provider,
 ): TurnContext {
   const modelInfo: ModelInfo = reviewerModelInfo ?? {
     ...parentCtx.modelInfo,
@@ -469,11 +390,14 @@ export function buildReviewTurnContext(
       model: reviewerModel,
       ...(parentCtx.collaborationMode.reasoningEffort !== undefined
         ? { reasoningEffort: parentCtx.collaborationMode.reasoningEffort }
-        : {}),
+        : modelInfo.defaultReasoningLevel !== undefined &&
+            modelInfo.defaultReasoningLevel !== "none"
+          ? { reasoningEffort: modelInfo.defaultReasoningLevel }
+          : {}),
     },
     // Upstream zeroes developer_instructions / user_instructions for
     // the reviewer (session/review.rs:121-122). Preserve that contract.
-    dynamicTools: parentCtx.dynamicTools,
+    dynamicTools: [],
     sessionSource: parentCtx.sessionSource,
   };
   return buildTurnContext({
@@ -481,7 +405,7 @@ export function buildReviewTurnContext(
     subId: reviewSubId,
     config: parentCtx.config,
     modelInfo,
-    provider: parentCtx.provider,
+    provider,
     sessionConfiguration: sc,
     ...(parentCtx.authManager !== undefined
       ? { authManager: parentCtx.authManager }
@@ -494,35 +418,9 @@ export function buildReviewTurnContext(
   });
 }
 
-/**
- * Compose a minimal review-scoped message list for the provider call.
- * Upstream hands `input: Vec<UserInput>` to the child codex and lets
- * the child session's prompt builder prepend its `base_instructions`
- * (the reviewer system prompt). Because gut's delegate is a flat
- * one-shot (no child session), the prompt construction happens here.
- *
- * Layout:
- *   [0] system  — reviewer system prompt
- *   [1..]       — caller-supplied `input` messages verbatim
- *
- * The caller's messages pass through unchanged so a reviewer-prompt
- * that already contains a `user` message with the diff body stays
- * intact.
- */
-function composeReviewerMessages(
-  systemPrompt: string,
-  input: ReadonlyArray<LLMMessage>,
-): LLMMessage[] {
-  const systemMessage: LLMMessage = {
-    role: "system",
-    content: systemPrompt,
-  };
-  return [systemMessage, ...input];
-}
-
 async function resolveReviewerModelInfo(
-  session: DelegateSessionLike,
-  req: CodexThreadOneShotRequest,
+  session: AgenCDelegateSessionLike,
+  req: AgenCReviewOneShotRequest,
   reviewerModel: string,
 ): Promise<ModelInfo> {
   if (req.reviewerModelInfo !== undefined) {
@@ -542,53 +440,338 @@ async function resolveReviewerModelInfo(
   };
 }
 
-function toProviderReasoningEffort(
-  effort: ModelInfo["defaultReasoningLevel"] | undefined,
-): LLMChatOptions["reasoningEffort"] | undefined {
-  switch (effort) {
-    case "low":
-    case "medium":
-    case "high":
-      return effort;
+export type AgenCDelegateOp =
+  | { readonly type: "user_input"; readonly input: ReadonlyArray<LLMMessage> }
+  | { readonly type: "interrupt"; readonly reason?: unknown }
+  | { readonly type: "shutdown"; readonly reason?: unknown };
+
+export interface AgenCDelegateThread {
+  readonly childSession: Session;
+  readonly rxEvent: AsyncQueue<Event>;
+  readonly txSub: AsyncQueue<AgenCDelegateOp>;
+  readonly agentStatus: BehaviorSubject<AgentStatus>;
+  readonly completion: Promise<void>;
+  shutdown(reason?: unknown): Promise<void>;
+}
+
+interface InternalDelegateThread extends AgenCDelegateThread {
+  lastAssistantText(): string | null;
+  error(): Error | null;
+}
+
+const DELEGATE_EVENT_QUEUE_DEPTH = 1_000;
+const DELEGATE_SHUTDOWN_DRAIN_MS = 500;
+
+function asRealSession(session: AgenCDelegateSessionLike): Session | null {
+  return session instanceof Session ? session : null;
+}
+
+function createDisabledToolRegistry(): ToolRegistry {
+  return {
+    tools: [],
+    toLLMTools: () => [],
+    dispatch: async (name: string) => ({
+      content: `tool ${name} is unavailable in AgenC review delegates`,
+      isError: true,
+    }),
+    getDiscoveredToolNames: () => [],
+  } as unknown as ToolRegistry;
+}
+
+function createDelegateProvider(
+  parentProvider: LLMProvider,
+  reviewerModel: string,
+  finalOutputJsonSchema?: unknown,
+): LLMProvider {
+  const structuredOutput =
+    finalOutputJsonSchema !== undefined
+      ? ({
+          schema: finalOutputJsonSchema,
+        } as LLMChatOptions["structuredOutput"])
+      : undefined;
+  let provider = parentProvider;
+  const providerName = readProviderIdentity(parentProvider);
+  if (providerName !== null) {
+    try {
+      provider = createProvider(providerName, {
+        ...readProviderFactoryOptions(parentProvider),
+        model: reviewerModel,
+        tools: [],
+        ...(finalOutputJsonSchema !== undefined
+          ? { extra: { structuredOutput: finalOutputJsonSchema } }
+          : {}),
+      });
+    } catch {
+      provider = parentProvider;
+    }
+  }
+  return {
+    ...provider,
+    name: provider.name,
+    healthCheck: (...args: Parameters<LLMProvider["healthCheck"]>) =>
+      provider.healthCheck(...args),
+    chat: (messages, options) =>
+      provider.chat(messages, {
+        ...options,
+        model: reviewerModel,
+        tools: [],
+        toolRouting: { allowedToolNames: [] },
+        toolChoice: "none",
+        parallelToolCalls: false,
+        ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+      } as LLMChatOptions),
+    chatStream: async (messages, onChunk, options) => {
+      const mergedOptions = {
+        ...options,
+        model: reviewerModel,
+        tools: [],
+        toolRouting: { allowedToolNames: [] },
+        toolChoice: "none",
+        parallelToolCalls: false,
+        ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+      } as LLMChatOptions;
+      if (provider.chatStream.length < 3) {
+        const response = await provider.chat(messages, mergedOptions);
+        if (response.content.length > 0) {
+          onChunk({ content: response.content, done: false });
+        }
+        return response;
+      }
+      return provider.chatStream(messages, onChunk, mergedOptions);
+    },
+  };
+}
+
+function buildChildSessionConfiguration(
+  parentCtx: TurnContext,
+  reviewerModel: string,
+): SessionConfiguration {
+  return {
+    cwd: parentCtx.cwd,
+    approvalPolicy: { value: "never" },
+    sandboxPolicy: { value: "read_only" },
+    fileSystemSandboxPolicy: parentCtx.fileSystemSandboxPolicy,
+    networkSandboxPolicy: parentCtx.networkSandboxPolicy,
+    windowsSandboxLevel: parentCtx.windowsSandboxLevel,
+    collaborationMode: {
+      model: reviewerModel,
+      ...(parentCtx.collaborationMode.reasoningEffort !== undefined
+        ? { reasoningEffort: parentCtx.collaborationMode.reasoningEffort }
+        : {}),
+    },
+    dynamicTools: [],
+    sessionSource: parentCtx.sessionSource,
+  };
+}
+
+function buildChildServices(
+  parent: Session,
+  provider: LLMProvider,
+): SessionServices {
+  return {
+    ...parent.services,
+    provider,
+    registry: createDisabledToolRegistry(),
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
+    approvalResolver: parent.services.approvalResolver,
+    permissionRequestHooks: parent.services.permissionRequestHooks,
+  };
+}
+
+function shouldQueueDelegateEvent(event: Event): boolean {
+  switch (event.msg.type) {
+    case "session_configured":
+    case "agent_message_delta":
+    case "token_count":
+      return false;
     default:
-      return undefined;
+      return true;
   }
 }
 
+function shouldForwardEventToParent(event: Event): boolean {
+  switch (event.msg.type) {
+    case "exec_approval_request":
+    case "request_permissions":
+    case "mcp_tool_call_begin":
+    case "mcp_tool_call_end":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function messageText(message: LLMMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && "text" in part) {
+        const text = (part as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+function splitDelegateInput(
+  req: AgenCReviewOneShotRequest,
+): { readonly history: LLMMessage[]; readonly userMessage: string } {
+  const input = [...(req.initialHistory ?? []), ...req.input];
+  for (let i = input.length - 1; i >= 0; i -= 1) {
+    const message = input[i];
+    if (message?.role !== "user") continue;
+    return {
+      history: [...input.slice(0, i), ...input.slice(i + 1)],
+      userMessage: messageText(message),
+    };
+  }
+  return {
+    history: input.slice(0, -1),
+    userMessage: input.length > 0 ? messageText(input[input.length - 1]!) : "",
+  };
+}
+
+export function spawnAgenCDelegateThread(
+  parent: Session,
+  req: AgenCReviewOneShotRequest,
+  reviewerModel: string,
+  reviewerModelInfo: ModelInfo,
+  childController: AbortController,
+): InternalDelegateThread {
+  const provider = createDelegateProvider(
+    parent.provider,
+    reviewerModel,
+    req.finalOutputJsonSchema,
+  );
+  const childSessionConfiguration = buildChildSessionConfiguration(
+    req.parentContext,
+    reviewerModel,
+  );
+  const childSession = new Session({
+    conversationId: `${parent.conversationId}:review:${req.subId}`,
+    initialState: {
+      sessionConfiguration: childSessionConfiguration,
+      history: [...(req.initialHistory ?? [])],
+    },
+    features: parent.features,
+    services: buildChildServices(parent, provider),
+    jsRepl: parent.jsRepl,
+    config: req.config,
+    modelInfo: reviewerModelInfo,
+    eventQueue: new AsyncQueue<Event>(),
+    agentStatus: { status: "idle" },
+  });
+
+  const rxEvent = new AsyncQueue<Event>({ maxDepth: DELEGATE_EVENT_QUEUE_DEPTH });
+  const txSub = new AsyncQueue<AgenCDelegateOp>();
+  let assistantText: string | null = null;
+  let runError: Error | null = null;
+
+  const unsubscribe = childSession.eventLog.subscribe((event) => {
+    if (event.msg.type === "agent_message") {
+      assistantText = event.msg.payload.message;
+    }
+    if (shouldQueueDelegateEvent(event)) {
+      rxEvent.send(event);
+    }
+    if (shouldForwardEventToParent(event)) {
+      parent.emit({
+        id: req.subId,
+        msg: event.msg,
+      });
+    }
+  });
+
+  const completion = (async () => {
+    try {
+      while (true) {
+        const op = await txSub.recv();
+        if (op === null || op.type === "shutdown") break;
+        if (op.type === "interrupt") {
+          if (!childController.signal.aborted) {
+            childController.abort(op.reason ?? "interrupted");
+          }
+          await childSession.abortAllTasks("interrupted");
+          continue;
+        }
+
+        const { history, userMessage } = splitDelegateInput({
+          ...req,
+          input: op.input,
+        });
+        const reviewCtx = buildReviewTurnContext(
+          req.parentContext,
+          reviewerModel,
+          reviewerModelInfo,
+          req.subId,
+          provider,
+        );
+        for await (const phase of childSession.runTurn(userMessage, {
+          ctx: reviewCtx,
+          systemPrompt: req.systemPrompt ?? REVIEW_SYSTEM_PROMPT,
+          history,
+          signal: childController.signal,
+          displayUserMessage: userMessage,
+        })) {
+          if (phase.type === "assistant_text") {
+            assistantText = phase.content;
+          } else if (
+            phase.type === "turn_complete" &&
+            "error" in phase &&
+            phase.error instanceof Error
+          ) {
+            runError = phase.error;
+          }
+        }
+        break;
+      }
+    } catch (err) {
+      runError = err instanceof Error ? err : new Error(String(err));
+    } finally {
+      unsubscribe();
+      rxEvent.close();
+      txSub.close();
+      await childSession.shutdown().catch(() => {});
+    }
+  })();
+
+  return {
+    childSession,
+    rxEvent,
+    txSub,
+    agentStatus: childSession.agentStatus,
+    completion,
+    lastAssistantText: () => assistantText,
+    error: () => runError,
+    shutdown: async (reason?: unknown) => {
+      txSub.send({ type: "interrupt", reason });
+      txSub.send({ type: "shutdown", reason });
+      await Promise.race([
+        completion,
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, DELEGATE_SHUTDOWN_DRAIN_MS);
+          (timer as { unref?: () => void }).unref?.();
+        }),
+      ]);
+    },
+  };
+}
+
 /**
- * Upstream codex `run_codex_thread_one_shot`
- * (`codex_delegate.rs:156-237`) port. Runs a bounded single-turn
- * review provider call under the review-scoped `TurnContext` and
- * returns a structured outcome.
- *
- * Upstream sequence preserved:
- *   1. Derive a child cancellation context from the caller's signal
- *      so shutdown can fire without touching the caller's controller.
- *   2. Register the turn as `kind: "review"` through `spawnTask` so
- *      the Wave 2 replace-on-new-turn / abort-cascade contract
- *      applies.
- *   3. Synthesize the review-scoped `TurnContext` + reviewer system
- *      prompt, compose the provider input, and issue a single
- *      provider call.
- *   4. Parse the assistant text into a `ReviewOutput` (mirrors
- *      upstream `parse_review_output_event`) and classify the
- *      verdict.
- *   5. Emit `exit_review_mode` once on termination (happy, timeout,
- *      aborted).
- *   6. Drain the task via `onTaskFinished` so the session's active
- *      turn slot clears.
- *
- * The outcome shape matches `CodexThreadOneShotOutcome` — never
- * throws on review failure paths (timeout, abort, malformed
- * response). Propagates a typed {@link ReviewerModelMismatchError}
- * up-front when the reviewer model is not resolvable through the
- * provider, because that is a setup-time contract violation, not a
- * review outcome.
+ * Runs a review through an isolated AgenC child Session and returns the
+ * parsed one-shot outcome. Parent review task registration remains on
+ * the parent session when requested; model sampling, events, tools, and
+ * approval forwarding happen in the child delegate.
  */
-export async function runOneShot(
-  session: DelegateSessionLike,
-  req: CodexThreadOneShotRequest,
-): Promise<CodexThreadOneShotOutcome> {
+export async function runAgenCReviewOneShot(
+  session: AgenCDelegateSessionLike,
+  req: AgenCReviewOneShotRequest,
+): Promise<AgenCReviewOneShotOutcome> {
   // Reviewer-model resolution. Upstream consults ModelsManager before
   // spawning the child review session; AgenC mirrors that when the
   // live Session service bag is present and falls back to the parent
@@ -607,9 +790,11 @@ export async function runOneShot(
   if (effectiveReviewerModel.length === 0) {
     throw new ReviewerModelMismatchError(reviewerModel, session.provider.name);
   }
+  const parentSession = asRealSession(session);
+  if (parentSession === null) {
+    throw new Error("AgenC review delegate requires a live Session parent");
+  }
 
-  // Parent abort → child controller merge. Fire the child when the
-  // parent fires; tear down the listener on completion.
   const childController = new AbortController();
   const parentSignal = req.signal;
   let parentAbortListener: (() => void) | undefined;
@@ -626,11 +811,6 @@ export async function runOneShot(
     }
   }
 
-  // Upstream: `sess.spawn_task(tc, input, ReviewTask::new())` registers
-  // the review turn with `TaskKind::Review`. Gut's default path keeps
-  // that task lifecycle. Guardian approval review is the one exception:
-  // it runs inside an active main turn, so registering a replacement
-  // task would abort the very turn whose approval is being reviewed.
   const task = req.registerTask === false
     ? undefined
     : await session.spawnTask({
@@ -640,11 +820,6 @@ export async function runOneShot(
         startedAtMs: Date.now(),
       });
 
-  // Timeout guard. Upstream applies deadlines at the manager level
-  // (`run_before_review_deadline`, review_session.rs:899-914); gut
-  // exposes the budget on the delegate too for callers without a
-  // manager. On expiry, fire the child controller and record the
-  // timeout reason so the final outcome classifies correctly.
   let timeoutFired = false;
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   if (req.timeoutMs !== undefined && req.timeoutMs > 0) {
@@ -656,54 +831,20 @@ export async function runOneShot(
 
   let assistantText: string | null = null;
   let providerError: Error | null = null;
+  let thread: InternalDelegateThread | null = null;
   try {
-    // Build the review-scoped TurnContext so the provider call uses
-    // the reviewer-facing model/reasoning envelope. Providers consume
-    // those fields through request-scoped chat options below because
-    // AgenC's flat delegate does not spawn a separate child Session yet.
-    const reviewCtx = buildReviewTurnContext(
-      req.parentContext,
-      effectiveReviewerModel,
-      reviewerModelInfo,
-      req.subId,
-    );
-
-    const messages = composeReviewerMessages(
-      req.systemPrompt ?? REVIEW_SYSTEM_PROMPT,
-      req.input,
-    );
-
-    if (childController.signal.aborted) {
-      // Aborted before we even issued the provider call (parent
-      // signal fired synchronously, or timeout is zero and fired on
-      // the microtask queue). Fall through to the termination block
-      // with no assistantText.
-    } else {
-      const reasoningEffort = toProviderReasoningEffort(
-        reviewCtx.collaborationMode.reasoningEffort ??
-          reviewCtx.modelInfo.defaultReasoningLevel,
+    if (!childController.signal.aborted) {
+      thread = spawnAgenCDelegateThread(
+        parentSession,
+        req,
+        effectiveReviewerModel,
+        reviewerModelInfo,
+        childController,
       );
-      const chatOptions: LLMChatOptions = {
-        signal: childController.signal,
-        model: reviewCtx.modelInfo.slug,
-        tools: [],
-        toolRouting: { allowedToolNames: [] },
-        toolChoice: "none",
-        parallelToolCalls: false,
-        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-        ...(req.finalOutputJsonSchema !== undefined
-          ? {
-              structuredOutput: {
-                schema: req.finalOutputJsonSchema,
-              } as LLMChatOptions["structuredOutput"],
-            }
-          : {}),
-      };
-      const response: LLMResponse = await session.provider.chat(
-        messages as LLMMessage[],
-        chatOptions,
-      );
-      assistantText = response.content ?? null;
+      thread.txSub.send({ type: "user_input", input: req.input });
+      await thread.completion;
+      assistantText = thread.lastAssistantText();
+      providerError = thread.error();
     }
   } catch (err) {
     providerError = err instanceof Error ? err : new Error(String(err));
@@ -712,12 +853,15 @@ export async function runOneShot(
     if (parentSignal && parentAbortListener !== undefined) {
       parentSignal.removeEventListener("abort", parentAbortListener);
     }
+    if (thread !== null && !thread.rxEvent.isClosed) {
+      await thread.shutdown("review_complete");
+    }
   }
 
   // Verdict classification. Order matches upstream: timeout → abort
   // → provider error → parsed output. Timeout wins over generic
   // abort so the UI can surface the more-specific reason.
-  let verdict: CodexThreadOneShotOutcome["verdict"];
+  let verdict: AgenCReviewOneShotOutcome["verdict"];
   let output: ReviewOutput;
   let error: Error | null = null;
   if (timeoutFired) {

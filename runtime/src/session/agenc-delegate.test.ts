@@ -1,9 +1,9 @@
 /**
- * Tests for the review sub-codex delegate (`session/codex-delegate.ts`)
+ * Tests for the AgenC review delegate (`session/agenc-delegate.ts`)
  * and the `ReviewManager.runReview` orchestrator wired on top of it.
  *
  * Proves the T13 delegate contract:
- *   - `runOneShot` happy-path returns a structured `CodexThreadOneShotOutcome`
+ *   - `runAgenCReviewOneShot` happy-path returns a structured outcome
  *     with verdict classification, raw text, and emits
  *     `exit_review_mode` with `reason === "completed"`.
  *   - The registered task has `kind === "review"` and is NOT steerable
@@ -58,10 +58,11 @@ import {
 import {
   ReviewerModelMismatchError,
   buildGuardianReviewSessionConfig,
-  runOneShot,
-  type CodexThreadOneShotRequest,
+  runAgenCReviewOneShot,
+  spawnAgenCDelegateThread,
+  type AgenCReviewOneShotRequest,
   type ExitReviewModePayload,
-} from "./codex-delegate.js";
+} from "./agenc-delegate.js";
 import { newDefaultTurnWithSubId } from "./turn-context.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -187,7 +188,13 @@ function mkScriptedProvider(opts: ScriptedProviderOptions = {}): LLMProvider {
   return {
     name: "scripted-provider",
     chat,
-    chatStream: chat as unknown as LLMProvider["chatStream"],
+    chatStream: async (messages, onChunk, options) => {
+      const response = await chat(messages, options);
+      if (response.content.length > 0) {
+        onChunk({ content: response.content });
+      }
+      return response;
+    },
     healthCheck: async () => true,
   } as unknown as LLMProvider;
 }
@@ -238,10 +245,24 @@ function mkReviewRequest(overrides?: Partial<ReviewRequest>): ReviewRequest {
   };
 }
 
+function messageTextForTest(message: LLMMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && "text" in part) {
+        const text = (part as { text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .join("\n");
+}
+
 function mkOneShotRequest(
   session: Session,
-  overrides?: Partial<CodexThreadOneShotRequest>,
-): CodexThreadOneShotRequest {
+  overrides?: Partial<AgenCReviewOneShotRequest>,
+): AgenCReviewOneShotRequest {
   const parentContext = newDefaultTurnWithSubId(session, "parent-ctx");
   return {
     subId: "review-delegate-A",
@@ -272,7 +293,7 @@ function observeExitReviewMode(session: Session): Promise<ExitReviewModePayload>
 // Happy-path one-shot review
 // ─────────────────────────────────────────────────────────────────────
 
-describe("runOneShot happy-path review", () => {
+describe("runAgenCReviewOneShot happy-path review", () => {
   it("returns a structured outcome + emits exit_review_mode with reason=completed", async () => {
     const provider = mkScriptedProvider({
       content: JSON.stringify({
@@ -286,7 +307,7 @@ describe("runOneShot happy-path review", () => {
     const exitPromise = observeExitReviewMode(session);
     const req = mkOneShotRequest(session);
 
-    const outcome = await runOneShot(session, req);
+    const outcome = await runAgenCReviewOneShot(session, req);
 
     expect(outcome.verdict).toBe("pass");
     expect(outcome.output.overallExplanation).toBe("No issues found.");
@@ -311,7 +332,7 @@ describe("runOneShot happy-path review", () => {
     });
     const session = mkSession(provider);
     const req = mkOneShotRequest(session);
-    await runOneShot(session, req);
+    await runAgenCReviewOneShot(session, req);
     expect(observedKind).toBe("review");
   });
 
@@ -334,7 +355,7 @@ describe("runOneShot happy-path review", () => {
       }),
     });
     const session = mkSession(provider);
-    const outcome = await runOneShot(session, mkOneShotRequest(session));
+    const outcome = await runAgenCReviewOneShot(session, mkOneShotRequest(session));
     expect(outcome.verdict).toBe("fail");
     expect(outcome.output.findings.length).toBe(1);
   });
@@ -342,14 +363,14 @@ describe("runOneShot happy-path review", () => {
   it("classifies verdict=partial when assistant text is empty", async () => {
     const provider = mkScriptedProvider({ content: "" });
     const session = mkSession(provider);
-    const outcome = await runOneShot(session, mkOneShotRequest(session));
+    const outcome = await runAgenCReviewOneShot(session, mkOneShotRequest(session));
     expect(outcome.verdict).toBe("partial");
   });
 
   it("drains the task from the active turn registry on completion", async () => {
     const provider = mkScriptedProvider({ content: "ok" });
     const session = mkSession(provider);
-    await runOneShot(session, mkOneShotRequest(session));
+    await runAgenCReviewOneShot(session, mkOneShotRequest(session));
     expect(session.activeTurn.unsafePeek()).toBeNull();
   });
 
@@ -365,7 +386,7 @@ describe("runOneShot happy-path review", () => {
       },
     });
     const session = mkSession(provider);
-    await runOneShot(session, mkOneShotRequest(session));
+    await runAgenCReviewOneShot(session, mkOneShotRequest(session));
     expect(observedFirst).toContain("# Review guidelines:");
   });
 
@@ -379,7 +400,7 @@ describe("runOneShot happy-path review", () => {
     });
     const session = mkSession(provider);
 
-    await runOneShot(session, {
+    await runAgenCReviewOneShot(session, {
       ...mkOneShotRequest(session),
       reviewerModel: "reviewer-5",
       reviewerModelInfo: {
@@ -393,6 +414,48 @@ describe("runOneShot happy-path review", () => {
     expect(observedOptions?.tools).toEqual([]);
     expect(observedOptions?.toolRouting?.allowedToolNames).toEqual([]);
     expect(observedOptions?.toolChoice).toBe("none");
+  });
+
+  it("runs through the child Session streaming path instead of direct provider.chat", async () => {
+    let chatCalls = 0;
+    let streamCalls = 0;
+    const provider = mkScriptedProvider({
+      content: "streamed review",
+    });
+    const wrapped: LLMProvider = {
+      ...provider,
+      chat: async (...args) => {
+        chatCalls += 1;
+        return provider.chat(...args);
+      },
+      chatStream: async (messages, onChunk, options) => {
+        streamCalls += 1;
+        return provider.chatStream(messages, onChunk, options);
+      },
+    };
+    const session = mkSession(wrapped);
+
+    const outcome = await runAgenCReviewOneShot(
+      session,
+      mkOneShotRequest(session),
+    );
+
+    expect(outcome.rawText).toBe("streamed review");
+    expect(streamCalls).toBe(1);
+    expect(chatCalls).toBe(0);
+  });
+
+  it("does not leak child lifecycle events into the parent transcript", async () => {
+    const session = mkSession(mkScriptedProvider({ content: "ok" }));
+    const parentEvents: string[] = [];
+    session.eventLog.subscribe((event) => parentEvents.push(event.msg.type));
+
+    await runAgenCReviewOneShot(session, mkOneShotRequest(session));
+
+    expect(parentEvents).toContain("exit_review_mode");
+    expect(parentEvents).not.toContain("turn_started");
+    expect(parentEvents).not.toContain("user_message");
+    expect(parentEvents).not.toContain("agent_message");
   });
 
   it("resolves reviewer aliases through the session ModelsManager before calling the provider", async () => {
@@ -416,12 +479,49 @@ describe("runOneShot happy-path review", () => {
     } as unknown as Partial<SessionServices>);
     const req = mkOneShotRequest(session, { reviewerModel: "reviewer-alias" });
 
-    const outcome = await runOneShot(session, req);
+    const outcome = await runAgenCReviewOneShot(session, req);
 
     expect(getModelInfo).toHaveBeenCalledWith("reviewer-alias", req.config);
     expect(observedOptions?.model).toBe("resolved-reviewer");
     expect(observedOptions?.reasoningEffort).toBe("low");
     expect(outcome.modelUsed).toBe("resolved-reviewer");
+  });
+
+  it("forwards child approval and permission events to the parent event log", async () => {
+    const session = mkSession(mkScriptedProvider({ content: "ok" }));
+    const parentEvents: EventMsg[] = [];
+    session.eventLog.subscribe((event) => parentEvents.push(event.msg));
+    const req = mkOneShotRequest(session);
+    const parentContext = req.parentContext;
+    const thread = spawnAgenCDelegateThread(
+      session,
+      req,
+      parentContext.modelInfo.slug,
+      parentContext.modelInfo,
+      new AbortController(),
+    );
+
+    thread.childSession.sendEvent("child-approval", {
+      type: "exec_approval_request",
+      payload: {
+        callId: "call-1",
+        command: "rm -rf /tmp/example",
+      },
+    });
+    thread.childSession.sendEvent("child-approval", {
+      type: "request_permissions",
+      payload: {
+        callId: "call-1",
+        toolName: "system.exec_command",
+        permissions: ["filesystem.write"],
+      },
+    });
+    await thread.shutdown("test complete");
+
+    expect(parentEvents.some((event) => event.type === "exec_approval_request"))
+      .toBe(true);
+    expect(parentEvents.some((event) => event.type === "request_permissions"))
+      .toBe(true);
   });
 });
 
@@ -429,7 +529,7 @@ describe("runOneShot happy-path review", () => {
 // Timeout path
 // ─────────────────────────────────────────────────────────────────────
 
-describe("runOneShot + runReview timeout", () => {
+describe("runAgenCReviewOneShot + runReview timeout", () => {
   it("fires timeout when provider delay exceeds timeoutMs; verdict=timeout", async () => {
     const provider = mkScriptedProvider({
       content: "late response",
@@ -437,7 +537,7 @@ describe("runOneShot + runReview timeout", () => {
     });
     const session = mkSession(provider);
     const exitPromise = observeExitReviewMode(session);
-    const outcome = await runOneShot(session, {
+    const outcome = await runAgenCReviewOneShot(session, {
       ...mkOneShotRequest(session),
       timeoutMs: 30,
     });
@@ -471,7 +571,7 @@ describe("runOneShot + runReview timeout", () => {
 // Reviewer-model mismatch
 // ─────────────────────────────────────────────────────────────────────
 
-describe("runOneShot reviewer-model validation", () => {
+describe("runAgenCReviewOneShot reviewer-model validation", () => {
   it("raises ReviewerModelMismatchError for an empty reviewer model slug", async () => {
     const provider = mkScriptedProvider({ content: "ok" });
     const session = mkSession(provider);
@@ -479,7 +579,7 @@ describe("runOneShot reviewer-model validation", () => {
     // the fallback does not recover. Override the reviewerModel to
     // empty explicitly to trigger the check.
     const req = mkOneShotRequest(session, { reviewerModel: "" });
-    await expect(runOneShot(session, req)).rejects.toBeInstanceOf(
+    await expect(runAgenCReviewOneShot(session, req)).rejects.toBeInstanceOf(
       ReviewerModelMismatchError,
     );
   });
@@ -489,7 +589,7 @@ describe("runOneShot reviewer-model validation", () => {
     const session = mkSession(provider);
     const req = mkOneShotRequest(session, { reviewerModel: "" });
     try {
-      await runOneShot(session, req);
+      await runAgenCReviewOneShot(session, req);
       expect.fail("expected ReviewerModelMismatchError");
     } catch (err) {
       expect(err).toBeInstanceOf(ReviewerModelMismatchError);
@@ -504,7 +604,7 @@ describe("runOneShot reviewer-model validation", () => {
 // Abort path — session.abortAllTasks during an in-flight review
 // ─────────────────────────────────────────────────────────────────────
 
-describe("runOneShot abort lifecycle", () => {
+describe("runAgenCReviewOneShot abort lifecycle", () => {
   it("session.abortAllTasks cancels a running review; verdict=aborted + exit_review_mode reason=aborted", async () => {
     const provider = mkScriptedProvider({
       content: "too late",
@@ -512,7 +612,7 @@ describe("runOneShot abort lifecycle", () => {
     });
     const session = mkSession(provider);
     const exitPromise = observeExitReviewMode(session);
-    const oneShotPromise = runOneShot(session, {
+    const oneShotPromise = runAgenCReviewOneShot(session, {
       ...mkOneShotRequest(session),
       subId: "review-abort-A",
     });
@@ -533,7 +633,7 @@ describe("runOneShot abort lifecycle", () => {
     const session = mkSession(provider);
     const controller = new AbortController();
     const exitPromise = observeExitReviewMode(session);
-    const oneShotPromise = runOneShot(session, {
+    const oneShotPromise = runAgenCReviewOneShot(session, {
       ...mkOneShotRequest(session),
       subId: "review-abort-B",
       signal: controller.signal,
@@ -560,7 +660,7 @@ describe("exit_review_mode event payload", () => {
     });
     const session = mkSession(provider);
     const exitPromise = observeExitReviewMode(session);
-    await runOneShot(session, {
+    await runAgenCReviewOneShot(session, {
       ...mkOneShotRequest(session),
       reviewerModel: "reviewer-5",
     });
@@ -673,6 +773,64 @@ describe("ReviewManager.runReview orchestrator", () => {
     expect(payload.reason).toBe("completed");
   });
 
+  it("reuses the previous child review snapshot as initial history on matching reviews", async () => {
+    let calls = 0;
+    const observedMessages: LLMMessage[][] = [];
+    const provider = mkScriptedProvider({
+      onChat: (messages) => {
+        calls += 1;
+        observedMessages.push(messages);
+      },
+      content: "placeholder",
+    });
+    const scripted: LLMProvider = {
+      ...provider,
+      chat: async (messages, options) => {
+        calls += 1;
+        observedMessages.push(messages);
+        return {
+          content: calls === 1 ? "first review snapshot" : "second review",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: options?.model ?? "test-model",
+          finishReason: "stop",
+        };
+      },
+      chatStream: async (messages, onChunk, options) => {
+        calls += 1;
+        observedMessages.push(messages);
+        const content = calls === 1 ? "first review snapshot" : "second review";
+        onChunk({ content, done: false });
+        return {
+          content,
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: options?.model ?? "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const session = mkSession(scripted);
+    const manager = new ReviewManager();
+    const req = {
+      ...mkOneShotRequest(session),
+      subId: "review-snapshot",
+      reuseKey: "same-review",
+    } satisfies AgenCReviewOneShotRequest;
+
+    await manager.runReview(session, req);
+    await manager.runReview(session, {
+      ...req,
+      subId: "review-snapshot-2",
+    });
+
+    const secondMessages = observedMessages[1] ?? [];
+    expect(secondMessages.some((message) => messageTextForTest(message).includes("first review snapshot")))
+      .toBe(true);
+    expect(secondMessages.some((message) => messageTextForTest(message).includes("previous review snapshot")))
+      .toBe(true);
+  });
+
   it("runReview propagates caller signal abort → verdict=aborted", async () => {
     const provider = mkScriptedProvider({
       content: "too late",
@@ -698,7 +856,7 @@ describe("ReviewManager.runReview orchestrator", () => {
 
   it("runReview releases the registry entry even when the delegate throws synchronously", async () => {
     // An empty reviewer model triggers ReviewerModelMismatchError in
-    // runOneShot before spawnTask is called. runReview should still
+    // runAgenCReviewOneShot before spawnTask is called. runReview should still
     // release the manager registry entry via its finally-clause.
     const session = mkSession(mkScriptedProvider({ content: "ok" }));
     const manager = new ReviewManager();
@@ -717,13 +875,13 @@ describe("ReviewManager.runReview orchestrator", () => {
 // Provider error surfaces as verdict=fail
 // ─────────────────────────────────────────────────────────────────────
 
-describe("runOneShot provider error handling", () => {
+describe("runAgenCReviewOneShot provider error handling", () => {
   it("classifies provider throw as verdict=fail and carries the error in outcome.error", async () => {
     const boom = new Error("provider boom");
     const provider = mkScriptedProvider({ throwError: boom });
     const session = mkSession(provider);
     const exitPromise = observeExitReviewMode(session);
-    const outcome = await runOneShot(session, mkOneShotRequest(session));
+    const outcome = await runAgenCReviewOneShot(session, mkOneShotRequest(session));
     expect(outcome.verdict).toBe("fail");
     expect(outcome.error).toBe(boom);
     const payload = await exitPromise;

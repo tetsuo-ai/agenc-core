@@ -369,7 +369,7 @@ export type EventMsg =
   | { readonly type: "plan_exited"; readonly payload: PlanExitedEvent }
   | {
       readonly type: "exit_review_mode";
-      readonly payload: import("./codex-delegate.js").ExitReviewModePayload;
+      readonly payload: import("./agenc-delegate.js").ExitReviewModePayload;
     };
 
 /**
