@@ -106,6 +106,11 @@
  */
 
 import type { TaskKind } from "./tasks.js";
+import type {
+  CodexThreadOneShotOutcome,
+  CodexThreadOneShotRequest,
+  DelegateSessionLike,
+} from "./codex-delegate.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Structural types (upstream `codex-protocol` review surface)
@@ -472,6 +477,96 @@ export class ReviewManager {
    */
   get size(): number {
     return this.reviews.size;
+  }
+
+  /**
+   * Upstream codex `guardian/review_session.rs::run_review` orchestrator
+   * (the on-session wrapper that threads timeout + fork snapshot +
+   * delta prompt logic around the sub-codex delegate). Gut port
+   * wraps the T13 delegate with:
+   *
+   *   - a bounded timeout (the upstream
+   *     `run_before_review_deadline` / `GUARDIAN_REVIEW_SESSION_DEADLINE`
+   *     analog),
+   *   - an `AbortController` that fires on timeout OR on the caller's
+   *     own abort signal,
+   *   - registration in the manager registry for session-wide
+   *     shutdown,
+   *   - an `exit_review_mode` event on every termination path
+   *     (emitted by the delegate) so consumers do not need to route
+   *     around the manager.
+   *
+   * What is RESERVED vs upstream:
+   *   - Fork snapshots / delta prompts. Upstream's `run_review` can
+   *     spawn a review off a "reuse key" that captures the parent
+   *     state and only re-runs the reviewer when the state changes
+   *     materially. Gut does not have the parent-state snapshot
+   *     surface (upstream `ReviewSpawnInputs::reuse_key`) so every
+   *     `runReview` call spawns a fresh review turn. When the state-
+   *     snapshot port lands, reuse-key semantics will attach here
+   *     without changing the public signature.
+   *   - Prior-review-count deltas / manager analytics. Upstream emits
+   *     `guardian_review_session_completed_with_turn_delta`; gut does
+   *     not wire analytics through the manager yet.
+   *
+   * The delegate itself (`runOneShot`) handles the actual review
+   * provider call + `exit_review_mode` emission; `runReview` is the
+   * manager-level wrapper that adds bookkeeping + abort merging.
+   */
+  async runReview(
+    session: DelegateSessionLike,
+    req: CodexThreadOneShotRequest,
+  ): Promise<CodexThreadOneShotOutcome> {
+    // Build the controller the manager owns so `shutdown()` +
+    // timeout can both fire it without fighting the caller's own
+    // signal. The delegate also accepts a `signal` through
+    // `req.signal`; we merge by letting the caller's original
+    // `req.signal` cascade here, then pass the merged controller's
+    // signal to the delegate.
+    const managerController = new AbortController();
+    const callerSignal = req.signal;
+    let callerAbortListener: (() => void) | undefined;
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        managerController.abort(callerSignal.reason);
+      } else {
+        callerAbortListener = () => {
+          managerController.abort(callerSignal.reason);
+        };
+        callerSignal.addEventListener("abort", callerAbortListener, {
+          once: true,
+        });
+      }
+    }
+
+    // Register the review so session-level shutdown can cancel it.
+    // The abort controller is the manager-owned one so `shutdown` /
+    // `take` routes abort through the same surface the delegate
+    // listens on.
+    this.register({
+      subId: req.subId,
+      abortController: managerController,
+      request: req.request,
+    });
+
+    // Lazy-import the delegate to sidestep the circular-dep risk
+    // (review.ts <-> codex-delegate.ts). Only the types were
+    // imported at the module head.
+    const { runOneShot } = await import("./codex-delegate.js");
+
+    try {
+      return await runOneShot(session, {
+        ...req,
+        signal: managerController.signal,
+      });
+    } finally {
+      // Remove the listener even on success paths so the caller's
+      // AbortController doesn't keep a reference to us.
+      if (callerSignal && callerAbortListener !== undefined) {
+        callerSignal.removeEventListener("abort", callerAbortListener);
+      }
+      this.take(req.subId);
+    }
   }
 }
 
