@@ -816,6 +816,76 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("hydrates the live MCP manager from config.toml mcp_servers when no env override is set", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      `
+[mcp_servers.github]
+command = "github-mcp"
+args = ["--stdio"]
+timeout = 5000
+required = true
+      `,
+      "utf8",
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    const startMcpSpy = vi
+      .spyOn(Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_MCP_SERVERS: "",
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.mcpManager.getConfiguredServers()).toEqual([
+        expect.objectContaining({
+          name: "github",
+          command: "github-mcp",
+          args: ["--stdio"],
+          timeout: 5_000,
+          required: true,
+        }),
+      ]);
+      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
+        signal: boot.session.services.mcpStartupCancellationToken.signal,
+      });
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("wires the session-facing MCP service to the live manager readiness surface", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));

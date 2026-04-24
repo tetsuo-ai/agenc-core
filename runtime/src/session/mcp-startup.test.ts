@@ -15,9 +15,12 @@ import type { MCPCallObserver } from "../mcp-client/tool-bridge.js";
 import {
   attachMcpManagerToSession,
   createSessionMcpManager,
+  createSessionMcpManagerFromConfig,
   createSessionMcpManagerFromEnv,
   createSessionMcpService,
+  getMcpConfigFromConfig,
   getMcpConfigFromEnv,
+  resolveSessionMcpConfig,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
@@ -233,6 +236,35 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
+  it("constructs the real manager from loaded config mcp_servers", () => {
+    const manager = createSessionMcpManagerFromConfig(
+      {
+        mcp_servers: {
+          github: {
+            command: "github-mcp",
+            args: ["--stdio"],
+            env: { GH_TOKEN: "test-token" },
+            timeout: 5_000,
+            required: true,
+          },
+        },
+      },
+      {} as NodeJS.ProcessEnv,
+    );
+
+    expect(manager).toBeInstanceOf(MCPManager);
+    expect(manager.getConfiguredServers()).toEqual([
+      expect.objectContaining({
+        name: "github",
+        command: "github-mcp",
+        args: ["--stdio"],
+        env: { GH_TOKEN: "test-token" },
+        timeout: 5_000,
+        required: true,
+      }),
+    ]);
+  });
+
   it("exposes runtime readiness and routing off the real manager", () => {
     const manager = {
       isConnected: vi.fn((name: string) => name === "github"),
@@ -334,5 +366,64 @@ describe("mcp-startup.getMcpConfigFromEnv", () => {
     expect(parsed).toHaveLength(2);
     expect(parsed[0]!.name).toBe("alpha");
     expect(parsed[1]!.name).toBe("beta");
+  });
+});
+
+describe("mcp-startup config-backed MCP resolution", () => {
+  it("returns [] when config has no mcp_servers", () => {
+    expect(getMcpConfigFromConfig({})).toEqual([]);
+  });
+
+  it("maps keyed config tables to runtime configs with names", () => {
+    const parsed = getMcpConfigFromConfig({
+      mcp_servers: {
+        alpha: {
+          command: "alpha-cmd",
+          args: ["--stdio"],
+          enabled: false,
+        },
+        beta: {
+          transport: "http",
+          endpoint: "https://example.test/mcp",
+          headers: { Authorization: "Bearer token" },
+          required: true,
+        },
+      },
+    });
+
+    expect(parsed).toEqual([
+      expect.objectContaining({
+        name: "alpha",
+        command: "alpha-cmd",
+        args: ["--stdio"],
+        enabled: false,
+      }),
+      expect.objectContaining({
+        name: "beta",
+        transport: "http",
+        endpoint: "https://example.test/mcp",
+        headers: { Authorization: "Bearer token" },
+        required: true,
+      }),
+    ]);
+  });
+
+  it("lets AGENC_MCP_SERVERS completely override config mcp_servers", () => {
+    const resolved = resolveSessionMcpConfig(
+      {
+        mcp_servers: {
+          configOnly: { command: "config-cmd" },
+        },
+      },
+      {
+        AGENC_MCP_SERVERS: JSON.stringify([
+          { name: "envOnly", command: "env-cmd" },
+        ]),
+      } as NodeJS.ProcessEnv,
+    );
+
+    expect(resolved).toEqual([
+      expect.objectContaining({ name: "envOnly", command: "env-cmd" }),
+    ]);
   });
 });

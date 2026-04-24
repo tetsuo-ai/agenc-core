@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,6 +139,123 @@ async function collectEvents(
   return events;
 }
 
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+async function expectLiveMcpEndToEnd(params: {
+  readonly home: string;
+  readonly workspace: string;
+  readonly pidFile: string;
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const seenToolNamesByCall: string[][] = [];
+  const seenMessagesByCall: LLMMessage[][] = [];
+  const provider = makeProviderRecorder({
+    seenToolNamesByCall,
+    seenMessagesByCall,
+  });
+  const providerMod = await import("../llm/provider.js");
+  const createProviderSpy = vi
+    .spyOn(providerMod, "createProvider")
+    .mockReturnValue(provider as never);
+
+  let boot: LocalRuntimeBootstrap | null = null;
+  let pid: number | undefined;
+  try {
+    boot = await bootstrapLocalRuntimeSession({
+      apiKey: "test-key",
+      env: params.env,
+      cwd: "/ignored-by-env",
+    });
+
+    pid = await readPid(params.pidFile);
+    expect(isPidAlive(pid)).toBe(true);
+    expect(boot.mcpManager.getConnectedServers()).toEqual([MCP_SERVER_NAME]);
+    expect(boot.mcpManager.getTools().map((tool) => tool.name)).toContain(
+      MCP_TOOL_NAME,
+    );
+    expect(boot.registry.tools.map((tool) => tool.name)).toContain(
+      MCP_TOOL_NAME,
+    );
+
+    const constructorToolNames = toolNames(
+      createProviderSpy.mock.calls[0]?.[1].tools,
+    );
+    expect(constructorToolNames).toContain("system.searchTools");
+    expect(constructorToolNames).not.toContain(MCP_TOOL_NAME);
+    expect(
+      boot.registry.toLLMTools().map((tool) => tool.function.name),
+    ).not.toContain(MCP_TOOL_NAME);
+
+    const emitted: Event[] = [];
+    const unsubscribe = boot.session.eventLog.subscribe((event) => {
+      emitted.push(event);
+    });
+    try {
+      const phaseEvents = await collectEvents(
+        boot.session.runTurn("find and run the live MCP ping tool", {
+          ctx: boot.ctx,
+        }),
+      );
+
+      expect(seenToolNamesByCall).toHaveLength(3);
+      expect(seenToolNamesByCall[0]).toContain("system.searchTools");
+      expect(seenToolNamesByCall[0]).not.toContain(MCP_TOOL_NAME);
+      expect(seenToolNamesByCall[1]).toContain(MCP_TOOL_NAME);
+      expect(seenToolNamesByCall[2]).toContain(MCP_TOOL_NAME);
+      expect(boot.registry.getDiscoveredToolNames?.().has(MCP_TOOL_NAME)).toBe(
+        true,
+      );
+
+      const mcpToolResult = phaseEvents.find(
+        (event): event is Extract<PhaseEvent, { type: "tool_result" }> =>
+          event.type === "tool_result" && event.toolCall.name === MCP_TOOL_NAME,
+      );
+      expect(mcpToolResult?.result.content).toBe("pong");
+      expect(mcpToolResult?.result.isError).toBe(false);
+
+      expect(
+        emitted.some(
+          (event) =>
+            event.msg.type === "mcp_tool_call_begin" &&
+            event.msg.payload.server === MCP_SERVER_NAME &&
+            event.msg.payload.toolName === "ping",
+        ),
+      ).toBe(true);
+      expect(
+        emitted.some(
+          (event) =>
+            event.msg.type === "mcp_tool_call_end" &&
+            event.msg.payload.result === "pong" &&
+            event.msg.payload.isError === false,
+        ),
+      ).toBe(true);
+      expect(seenMessagesByCall[2]).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: "tool",
+            toolCallId: "call-live-mcp",
+            content: "pong",
+          }),
+        ]),
+      );
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    await boot?.shutdown().catch(() => {
+      /* best effort */
+    });
+    if (pid !== undefined) {
+      await waitFor(
+        () => !isPidAlive(pid),
+        `stdio MCP child ${pid} to exit after bootstrap shutdown`,
+      );
+    }
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(
@@ -164,117 +281,47 @@ describe("bootstrapLocalRuntimeSession live MCP integration", () => {
       },
     ];
 
-    const seenToolNamesByCall: string[][] = [];
-    const seenMessagesByCall: LLMMessage[][] = [];
-    const provider = makeProviderRecorder({
-      seenToolNamesByCall,
-      seenMessagesByCall,
+    await expectLiveMcpEndToEnd({
+      home,
+      workspace,
+      pidFile,
+      env: {
+        ...process.env,
+        AGENC_HOME: home,
+        AGENC_WORKSPACE: workspace,
+        AGENC_MCP_SERVERS: JSON.stringify(mcpServers),
+        HOME: home,
+      },
     });
-    const providerMod = await import("../llm/provider.js");
-    const createProviderSpy = vi
-      .spyOn(providerMod, "createProvider")
-      .mockReturnValue(provider as never);
+  });
 
-    let boot: LocalRuntimeBootstrap | null = null;
-    let pid: number | undefined;
-    try {
-      boot = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          AGENC_MCP_SERVERS: JSON.stringify(mcpServers),
-          HOME: home,
-        },
-        cwd: "/ignored-by-env",
-      });
+  it("starts a real stdio MCP server from config.toml mcp_servers", async () => {
+    const home = await makeTempDir("agenc-live-mcp-home-");
+    const workspace = await makeTempDir("agenc-live-mcp-ws-");
+    const pidFile = join(home, "mcp", "live.pid");
+    await writeFile(
+      join(home, "config.toml"),
+      `
+[mcp_servers.${MCP_SERVER_NAME}]
+transport = "stdio"
+command = ${tomlString(process.execPath)}
+args = [${tomlString(FIXTURE_PATH)}, ${tomlString(pidFile)}]
+timeout = 10000
+      `,
+      "utf8",
+    );
 
-      pid = await readPid(pidFile);
-      expect(isPidAlive(pid)).toBe(true);
-      expect(boot.mcpManager.getConnectedServers()).toEqual([MCP_SERVER_NAME]);
-      expect(boot.mcpManager.getTools().map((tool) => tool.name)).toContain(
-        MCP_TOOL_NAME,
-      );
-      expect(boot.registry.tools.map((tool) => tool.name)).toContain(
-        MCP_TOOL_NAME,
-      );
-
-      const constructorToolNames = toolNames(
-        createProviderSpy.mock.calls[0]?.[1].tools,
-      );
-      expect(constructorToolNames).toContain("system.searchTools");
-      expect(constructorToolNames).not.toContain(MCP_TOOL_NAME);
-      expect(
-        boot.registry.toLLMTools().map((tool) => tool.function.name),
-      ).not.toContain(MCP_TOOL_NAME);
-
-      const emitted: Event[] = [];
-      const unsubscribe = boot.session.eventLog.subscribe((event) => {
-        emitted.push(event);
-      });
-      try {
-        const phaseEvents = await collectEvents(
-          boot.session.runTurn("find and run the live MCP ping tool", {
-            ctx: boot.ctx,
-          }),
-        );
-
-        expect(seenToolNamesByCall).toHaveLength(3);
-        expect(seenToolNamesByCall[0]).toContain("system.searchTools");
-        expect(seenToolNamesByCall[0]).not.toContain(MCP_TOOL_NAME);
-        expect(seenToolNamesByCall[1]).toContain(MCP_TOOL_NAME);
-        expect(seenToolNamesByCall[2]).toContain(MCP_TOOL_NAME);
-        expect(
-          boot.registry.getDiscoveredToolNames?.().has(MCP_TOOL_NAME),
-        ).toBe(true);
-
-        const mcpToolResult = phaseEvents.find(
-          (event): event is Extract<PhaseEvent, { type: "tool_result" }> =>
-            event.type === "tool_result" &&
-            event.toolCall.name === MCP_TOOL_NAME,
-        );
-        expect(mcpToolResult?.result.content).toBe("pong");
-        expect(mcpToolResult?.result.isError).toBe(false);
-
-        expect(
-          emitted.some(
-            (event) =>
-              event.msg.type === "mcp_tool_call_begin" &&
-              event.msg.payload.server === MCP_SERVER_NAME &&
-              event.msg.payload.toolName === "ping",
-          ),
-        ).toBe(true);
-        expect(
-          emitted.some(
-            (event) =>
-              event.msg.type === "mcp_tool_call_end" &&
-              event.msg.payload.result === "pong" &&
-              event.msg.payload.isError === false,
-          ),
-        ).toBe(true);
-        expect(seenMessagesByCall[2]).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              role: "tool",
-              toolCallId: "call-live-mcp",
-              content: "pong",
-            }),
-          ]),
-        );
-      } finally {
-        unsubscribe();
-      }
-    } finally {
-      await boot?.shutdown().catch(() => {
-        /* best effort */
-      });
-      if (pid !== undefined) {
-        await waitFor(
-          () => !isPidAlive(pid),
-          `stdio MCP child ${pid} to exit after bootstrap shutdown`,
-        );
-      }
-    }
+    await expectLiveMcpEndToEnd({
+      home,
+      workspace,
+      pidFile,
+      env: {
+        ...process.env,
+        AGENC_HOME: home,
+        AGENC_WORKSPACE: workspace,
+        AGENC_MCP_SERVERS: "",
+        HOME: home,
+      },
+    });
   });
 });

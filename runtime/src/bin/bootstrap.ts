@@ -33,7 +33,7 @@ import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionServices, type SessionState } from "../session/session.js";
 import {
   createMcpStartupCancellationToken,
-  createSessionMcpManagerFromEnv,
+  createSessionMcpManagerFromConfig,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
 import type {
@@ -859,7 +859,10 @@ export async function bootstrapLocalRuntimeSession(
     startup.config,
     env,
   );
-  const mcpManager = createSessionMcpManagerFromEnv(env);
+  const mcpManager = createSessionMcpManagerFromConfig(
+    configStore.current(),
+    env,
+  );
   let sessionRef: Session | null = null;
   const emitProviderWarning = (warning: {
     cause: string;

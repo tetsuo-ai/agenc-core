@@ -12,10 +12,10 @@
  * session boundary owns the attach/start ordering for the running
  * session.
  *
- * This module also ships `getMcpConfigFromEnv()`, a minimal escape
- * hatch that lets ops inject MCP servers via the `AGENC_MCP_SERVERS`
- * env var until the full `~/.agenc/config.toml` plumbing lands (T10).
- * The env var must be a JSON array of `MCPServerConfig` objects.
+ * This module also ships `getMcpConfigFromEnv()` as an explicit
+ * `AGENC_MCP_SERVERS` override. Normal startup reads the loaded
+ * `~/.agenc/config.toml` snapshot (`mcp_servers`) first, then lets the
+ * env override replace that list when set.
  *
  * @module
  */
@@ -23,6 +23,10 @@
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
+import type {
+  AgenCConfig,
+  McpServerConfig as AgenCMcpServerConfig,
+} from "../config/index.js";
 import type { Session } from "./session.js";
 import type { SessionServices } from "./session.js";
 import { createMCPCallObserverForSession } from "./observer-wiring.js";
@@ -124,15 +128,95 @@ export function createSessionMcpManager(
   return new LiveMCPManager([...configs]);
 }
 
+function cloneRecord<T>(
+  value: Readonly<Record<string, T>> | undefined,
+): Record<string, T> | undefined {
+  return value ? { ...value } : undefined;
+}
+
+function toRuntimeMcpServerConfig(
+  name: string,
+  config: AgenCMcpServerConfig,
+): MCPServerConfig {
+  const raw = config as AgenCMcpServerConfig & Record<string, unknown>;
+  return {
+    ...raw,
+    name,
+    ...(config.args !== undefined ? { args: [...config.args] } : {}),
+    ...(config.env !== undefined ? { env: cloneRecord(config.env) } : {}),
+    ...(config.headers !== undefined
+      ? { headers: cloneRecord(config.headers) }
+      : {}),
+  } as MCPServerConfig;
+}
+
 /**
- * Minimal env-backed manager construction for the local runtime path.
- * This preserves the current `AGENC_MCP_SERVERS` escape hatch while
- * making the session bootstrap layer the owner of manager creation.
+ * Read `mcp_servers` from the loaded AgenC config snapshot and convert
+ * keyed TOML tables (`[mcp_servers.github]`) into the runtime manager's
+ * named config array (`{ name: "github", ... }`).
+ */
+export function getMcpConfigFromConfig(
+  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+): MCPServerConfig[] {
+  const servers = config?.mcp_servers;
+  if (!servers) return [];
+  return Object.entries(servers)
+    .filter((entry): entry is [string, AgenCMcpServerConfig] => {
+      const [name, value] = entry;
+      return (
+        typeof name === "string" &&
+        name.trim().length > 0 &&
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value)
+      );
+    })
+    .map(([name, value]) => toRuntimeMcpServerConfig(name, value));
+}
+
+function hasMcpEnvOverride(env: NodeJS.ProcessEnv): boolean {
+  return (
+    typeof env.AGENC_MCP_SERVERS === "string" &&
+    env.AGENC_MCP_SERVERS.trim().length > 0
+  );
+}
+
+/**
+ * Resolve the effective MCP server list for session startup. Config is
+ * the default source; `AGENC_MCP_SERVERS` remains a complete override
+ * so ops/tests can replace the list without editing config.toml.
+ */
+export function resolveSessionMcpConfig(
+  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): MCPServerConfig[] {
+  if (hasMcpEnvOverride(env)) {
+    return getMcpConfigFromEnv(env);
+  }
+  return getMcpConfigFromConfig(config);
+}
+
+/**
+ * Config-backed manager construction for the local runtime path. The
+ * env parameter is only the explicit `AGENC_MCP_SERVERS` override.
+ */
+export function createSessionMcpManagerFromConfig(
+  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): MCPManager {
+  return createSessionMcpManager(resolveSessionMcpConfig(config, env));
+}
+
+/**
+ * Back-compat env-backed manager construction for callers/tests that
+ * have not yet threaded a ConfigStore snapshot. Prefer
+ * `createSessionMcpManagerFromConfig` in live bootstrap paths.
  */
 export function createSessionMcpManagerFromEnv(
   env: NodeJS.ProcessEnv = process.env,
+  config?: Pick<AgenCConfig, "mcp_servers">,
 ): MCPManager {
-  return createSessionMcpManager(getMcpConfigFromEnv(env));
+  return createSessionMcpManager(resolveSessionMcpConfig(config, env));
 }
 
 export function createMcpStartupCancellationToken(): McpStartupCancellationToken {
@@ -224,12 +308,11 @@ export async function startMcpManagerForSession(
 }
 
 /**
- * Read `AGENC_MCP_SERVERS` and parse it as a JSON array of
- * `MCPServerConfig`. Returns `[]` when the env var is unset, empty,
- * or malformed — the caller can still construct an `MCPManager`
- * with an empty config so the observer-attach site remains live.
- *
- * T10 will replace this with a real `~/.agenc/config.toml` resolver.
+ * Read `AGENC_MCP_SERVERS` and parse it as a JSON array of runtime
+ * `MCPServerConfig` objects. Returns `[]` when the env var is unset,
+ * empty, or malformed — the caller can still construct an
+ * `MCPManager` with an empty config so the observer-attach site
+ * remains live.
  */
 export function getMcpConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
