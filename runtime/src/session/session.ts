@@ -79,6 +79,7 @@ import {
   type McpStartupCancellationToken,
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
+import type { GuardianRejectionCircuitBreaker } from "./guardian-rejection-circuit-breaker.js";
 import {
   EventLog,
   isDurableEvent,
@@ -513,6 +514,16 @@ export interface SessionServices {
   readonly modelsManager: ModelsManager;
   readonly toolApprovals: ApprovalStore;
   readonly guardianRejections: Map<string, unknown>;
+  /**
+   * Codex `GuardianRejectionCircuitBreaker` (per-turn guardian-denial
+   * counter with consecutive + total thresholds). Ported from upstream
+   * codex `core/src/guardian/mod.rs`. Optional while callers are wired up;
+   * the bootstrap default map above stays until every consumer routes
+   * denials through the breaker instead.
+   *
+   * See `./guardian-rejection-circuit-breaker.ts` for the full contract.
+   */
+  readonly guardianRejectionCircuitBreaker?: GuardianRejectionCircuitBreaker;
   /** T13 review-task port. codex `session/review.rs` manager analog. */
   readonly reviewManager?: import("./review.js").ReviewManager;
   readonly skillsManager: SkillsManager;
