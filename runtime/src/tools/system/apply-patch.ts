@@ -214,10 +214,22 @@ function normalizeAddFileLines(patch: string): string {
   return normalized.join("\n");
 }
 
+function unwrapHeredocWrapper(patch: string): string {
+  const trimmed = patch.trim();
+  const lines = trimmed.split("\n");
+  if (lines.length < 4) return patch;
+  const first = lines[0];
+  const last = lines[lines.length - 1];
+  const isHeredocOpener =
+    first === "<<EOF" || first === "<<'EOF'" || first === '<<"EOF"';
+  if (!isHeredocOpener || !last?.endsWith("EOF")) return patch;
+  return lines.slice(1, -1).join("\n");
+}
+
 function normalizePatchEnvelope(patch: string): string {
-  let normalized = repairPlusPrefixedPatchRemainder(
-    patch.replace(/\r\n?/gu, "\n").trimEnd(),
-  );
+  let normalized = patch.replace(/\r\n?/gu, "\n").trimEnd();
+  normalized = unwrapHeredocWrapper(normalized);
+  normalized = repairPlusPrefixedPatchRemainder(normalized);
   normalized = normalized.replace(/^\s*(?=\*\*\* Begin Patch(?:\n|$))/u, "");
   if (
     !hasEndPatchLine(normalized) &&
@@ -470,6 +482,25 @@ function parsePatchOperations(patch: string): PatchOperation[] {
   return operations;
 }
 
+const UNICODE_DASH_RE = /[‐‑‒–—―−]/gu;
+const UNICODE_SINGLE_QUOTE_RE = /[‘’‚‛]/gu;
+const UNICODE_DOUBLE_QUOTE_RE = /[“”„‟]/gu;
+const UNICODE_SPACE_RE =
+  /[            　]/gu;
+
+function normalizeForFuzzyMatch(value: string): string {
+  return value
+    .trim()
+    .replace(UNICODE_DASH_RE, "-")
+    .replace(UNICODE_SINGLE_QUOTE_RE, "'")
+    .replace(UNICODE_DOUBLE_QUOTE_RE, '"')
+    .replace(UNICODE_SPACE_RE, " ");
+}
+
+function trimEnd(value: string): string {
+  return value.replace(/\s+$/u, "");
+}
+
 function seekSequence(
   lines: readonly string[],
   pattern: readonly string[],
@@ -477,16 +508,32 @@ function seekSequence(
   endOfFile: boolean,
 ): number | null {
   if (pattern.length === 0) return startIndex;
-  for (let i = startIndex; i <= lines.length - pattern.length; i += 1) {
-    if (endOfFile && i + pattern.length !== lines.length) continue;
-    let matched = true;
-    for (let j = 0; j < pattern.length; j += 1) {
-      if (lines[i + j] !== pattern[j]) {
-        matched = false;
-        break;
+  if (pattern.length > lines.length) return null;
+
+  const searchStart =
+    endOfFile && lines.length >= pattern.length
+      ? lines.length - pattern.length
+      : startIndex;
+  const searchEnd = lines.length - pattern.length;
+
+  const passes: ReadonlyArray<(value: string) => string> = [
+    (value) => value,
+    trimEnd,
+    (value) => value.trim(),
+    normalizeForFuzzyMatch,
+  ];
+
+  for (const project of passes) {
+    for (let i = searchStart; i <= searchEnd; i += 1) {
+      let matched = true;
+      for (let j = 0; j < pattern.length; j += 1) {
+        if (project(lines[i + j] ?? "") !== project(pattern[j] ?? "")) {
+          matched = false;
+          break;
+        }
       }
+      if (matched) return i;
     }
-    if (matched) return i;
   }
   return null;
 }
@@ -516,7 +563,11 @@ function computeReplacements(
     }
 
     if (chunk.oldLines.length === 0) {
-      replacements.push([lineIndex, 0, [...chunk.newLines]]);
+      const insertionIndex =
+        originalLines.at(-1) === ""
+          ? originalLines.length - 1
+          : originalLines.length;
+      replacements.push([insertionIndex, 0, [...chunk.newLines]]);
       continue;
     }
 

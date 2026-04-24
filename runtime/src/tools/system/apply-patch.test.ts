@@ -107,8 +107,8 @@ describe("apply_patch tool", () => {
     await expect(stat(join(root, "old/name.txt"))).rejects.toThrow();
   });
 
-  test("inserts update-only hunks after their context marker", async () => {
-    await writeFile(join(root, "modify.txt"), "line1\nline3\n", "utf8");
+  test("appends pure-addition update hunks at end of file", async () => {
+    await writeFile(join(root, "modify.txt"), "line1\nline2\n", "utf8");
     const tool = createApplyPatchTool({ allowedPaths: [root] });
 
     const result = await tool.execute({
@@ -116,7 +116,7 @@ describe("apply_patch tool", () => {
         "*** Begin Patch\n" +
         "*** Update File: modify.txt\n" +
         "@@ line1\n" +
-        "+line2\n" +
+        "+line3\n" +
         "*** End Patch",
       cwd: root,
     });
@@ -124,6 +124,75 @@ describe("apply_patch tool", () => {
     expect(result.isError).toBeUndefined();
     await expect(readFile(join(root, "modify.txt"), "utf8")).resolves.toBe(
       "line1\nline2\nline3\n",
+    );
+  });
+
+  test("matches hunks despite trailing whitespace in the file", async () => {
+    await writeFile(join(root, "ws.txt"), "foo   \nbar\n", "utf8");
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: ws.txt\n" +
+        "@@\n" +
+        "-foo\n" +
+        "+FOO\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(join(root, "ws.txt"), "utf8")).resolves.toBe(
+      "FOO\nbar\n",
+    );
+  });
+
+  test("matches hunks authored with ASCII dashes against typographic dashes", async () => {
+    await writeFile(
+      join(root, "unicode.py"),
+      "import asyncio  # local import – avoids top‑level dep\n",
+      "utf8",
+    );
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: unicode.py\n" +
+        "@@\n" +
+        "-import asyncio  # local import - avoids top-level dep\n" +
+        "+import asyncio  # HELLO\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(join(root, "unicode.py"), "utf8")).resolves.toBe(
+      "import asyncio  # HELLO\n",
+    );
+  });
+
+  test("unwraps heredoc-style patch wrappers", async () => {
+    await writeFile(join(root, "heredoc.txt"), "before\n", "utf8");
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "<<'EOF'\n" +
+        "*** Begin Patch\n" +
+        "*** Update File: heredoc.txt\n" +
+        "@@\n" +
+        "-before\n" +
+        "+after\n" +
+        "*** End Patch\n" +
+        "EOF",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    await expect(readFile(join(root, "heredoc.txt"), "utf8")).resolves.toBe(
+      "after\n",
     );
   });
 
