@@ -200,6 +200,61 @@ describe("configCommand — reload", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("refreshes MCP after reload when the session service is wired", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      const store = new ConfigStore({ home: tmp });
+      const refreshFromConfig = vi.fn().mockResolvedValue({
+        configuredServers: ["github"],
+        requiredServers: ["github"],
+      });
+      const session = stubSession();
+      (session as unknown as StubSession).services = {
+        mcpManager: { refreshFromConfig },
+      };
+
+      const r = await configCommand.execute(
+        stubCtx({ configStore: store, argsRaw: "reload", home: tmp, session }),
+      );
+
+      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
+      expect(refreshFromConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "grok-4-reloaded" }),
+      );
+      expect(r.text).toContain("MCP refreshed (1 configured, 1 required)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("reports MCP refresh failure after config reload", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
+    try {
+      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      const store = new ConfigStore({ home: tmp });
+      const refreshFromConfig = vi
+        .fn()
+        .mockRejectedValue(new Error("required server missing"));
+      const session = stubSession();
+      (session as unknown as StubSession).services = {
+        mcpManager: { refreshFromConfig },
+      };
+
+      const r = await configCommand.execute(
+        stubCtx({ configStore: store, argsRaw: "reload", home: tmp, session }),
+      );
+
+      expect(r.kind).toBe("error");
+      if (r.kind !== "error") throw new Error("expected error");
+      expect(r.message).toContain("Config reloaded, but MCP refresh failed");
+      expect(r.message).toContain("required server missing");
+      expect(store.current().model).toBe("grok-4-reloaded");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("configCommand — profile", () => {

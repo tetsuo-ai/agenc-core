@@ -35,6 +35,8 @@ export interface MCPServerConfig {
   env?: Record<string, string>;
   /** Whether this server is enabled. Default: true */
   enabled?: boolean;
+  /** Whether startup/reload must fail if this server cannot connect. */
+  required?: boolean;
   /** Connection timeout in ms. Default: 30000 */
   timeout?: number;
   /** Route this server into a container instead of running on the host.

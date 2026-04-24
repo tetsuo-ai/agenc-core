@@ -75,6 +75,7 @@ import {
 } from "./_deps/context-collapse.js";
 import {
   startMcpManagerForSession,
+  type McpRefreshResult,
   type McpStartupCancellationToken,
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
@@ -278,6 +279,7 @@ export interface ModelsManager {
 export interface McpManager {
   effectiveServers(config: unknown, auth: unknown): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
+  refreshFromConfig?(config: unknown): Promise<McpRefreshResult>;
   /**
    * Live runtime readiness seam used by the delegate/subagent path.
    * Optional so compatibility shims remain structurally valid, but the

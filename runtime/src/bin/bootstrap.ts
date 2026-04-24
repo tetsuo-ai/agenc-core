@@ -898,6 +898,29 @@ export async function bootstrapLocalRuntimeSession(
   const registry = buildToolRegistry({
     workspaceRoot,
     mcpToolsProvider: mcpManager,
+    workflowController: {
+      getPermissionModeRegistry: () =>
+        sessionRef?.permissionModeRegistry ?? null,
+      syncPermissionContext: async (nextCtx) => {
+        await sessionRef?.syncPermissionContextFromRegistry(nextCtx);
+      },
+      emitWarning: (cause, message) => {
+        emitProviderWarning({ cause, message });
+      },
+      emitPlanExited: () => {
+        if (sessionRef === null) return;
+        sessionRef.emit({
+          id: sessionRef.nextInternalSubId(),
+          msg: {
+            type: "plan_exited",
+            payload: {
+              turnId: "workflow.exitPlan",
+              timestamp: Date.now(),
+            },
+          },
+        });
+      },
+    },
     ...(options.toolRegistryOptions ?? {}),
   });
   const provider: LLMProvider = createProvider(
@@ -987,7 +1010,7 @@ export async function bootstrapLocalRuntimeSession(
     services: buildDeferredServices(
       provider,
       registry,
-      createSessionMcpService(mcpManager),
+      createSessionMcpService(mcpManager, { env }),
       permissionModeRegistry,
       configStore,
       toolApprovals,

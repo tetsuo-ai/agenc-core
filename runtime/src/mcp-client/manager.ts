@@ -88,7 +88,7 @@ function toToolCatalogPolicyConfig(
  * ```
  */
 export class MCPManager {
-  private readonly configs: MCPServerConfig[];
+  private configs: MCPServerConfig[];
   private readonly logger: Logger;
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
@@ -226,6 +226,21 @@ export class MCPManager {
     this.resourceBridges.clear();
     this.promptBridges.clear();
     this.logger.info("All MCP servers disconnected");
+  }
+
+  /**
+   * Replace the configured MCP server set without replacing this
+   * manager instance. The registry holds a provider reference to this
+   * object, so config reloads must refresh in place rather than
+   * swapping in a new manager behind stale callers.
+   */
+  async refreshServers(
+    configs: ReadonlyArray<MCPServerConfig>,
+    opts: MCPManagerStartOpts = {},
+  ): Promise<void> {
+    await this.stop();
+    this.configs = [...configs];
+    await this.start(opts);
   }
 
   /**

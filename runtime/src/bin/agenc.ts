@@ -388,6 +388,33 @@ export async function maybeReloadConfigBetweenTurns(params: {
   // Wipe the prompt-section cache so the refresh picks up any new
   // static-head inputs (env info, model, MCP, etc.) on the next turn.
   (params.clearCache ?? clearSystemPromptSections)();
+  let mcpRefreshSuffix = "";
+  const refreshMcp = (
+    params.session?.services as
+      | { mcpManager?: Session["services"]["mcpManager"] }
+      | undefined
+  )?.mcpManager?.refreshFromConfig;
+  if (params.session && typeof refreshMcp === "function") {
+    try {
+      const result = await refreshMcp.call(
+        params.session.services.mcpManager,
+        next,
+      );
+      mcpRefreshSuffix = `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
+    } catch (error) {
+      params.session.emit({
+        id: params.session.nextInternalSubId(),
+        msg: {
+          type: "error",
+          payload: {
+            cause: "mcp_config_refresh_failed",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        },
+      });
+      throw error;
+    }
+  }
   params.session?.emit({
     id: params.session.nextInternalSubId(),
     msg: {
@@ -395,7 +422,7 @@ export async function maybeReloadConfigBetweenTurns(params: {
       payload: {
         cause: "config_reloaded",
         message:
-          `config reloaded (model: ${previous.model ?? "default"} → ${next.model ?? "default"})`,
+          `config reloaded (model: ${previous.model ?? "default"} → ${next.model ?? "default"})${mcpRefreshSuffix}`,
       },
     },
   });

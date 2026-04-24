@@ -20,6 +20,8 @@ import {
   createSessionMcpService,
   getMcpConfigFromConfig,
   getMcpConfigFromEnv,
+  refreshMcpManagerFromConfig,
+  requiredMcpServerNames,
   resolveSessionMcpConfig,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
@@ -209,6 +211,41 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
 
     await manager.stop();
   });
+
+  it("startMcpManagerForSession enforces required servers declared in config", async () => {
+    const start = vi.fn().mockResolvedValue(undefined);
+    const manager = {
+      setCallObserver: vi.fn(),
+      getConfiguredServers: vi.fn(() => [
+        { name: "required", command: "required-cmd", required: true },
+        { name: "optional", command: "optional-cmd" },
+      ]),
+      start,
+    } as unknown as MCPManager;
+    const { session } = stubSession();
+
+    await startMcpManagerForSession(manager, session);
+
+    expect(start).toHaveBeenCalledWith({ requiredServers: ["required"] });
+  });
+
+  it("startMcpManagerForSession preserves explicit requiredServers opts", async () => {
+    const start = vi.fn().mockResolvedValue(undefined);
+    const manager = {
+      setCallObserver: vi.fn(),
+      getConfiguredServers: vi.fn(() => [
+        { name: "configured", command: "configured-cmd", required: true },
+      ]),
+      start,
+    } as unknown as MCPManager;
+    const { session } = stubSession();
+
+    await startMcpManagerForSession(manager, session, {
+      requiredServers: ["explicit"],
+    });
+
+    expect(start).toHaveBeenCalledWith({ requiredServers: ["explicit"] });
+  });
 });
 
 describe("mcp-startup session-owned manager helpers", () => {
@@ -329,6 +366,82 @@ describe("mcp-startup session-owned manager helpers", () => {
       }),
     );
     expect((effective.get("filesystem") as { instructions?: string } | undefined)?.instructions).toBeUndefined();
+  });
+
+  it("derives required server names from config metadata", () => {
+    expect(
+      requiredMcpServerNames([
+        { name: "alpha", command: "alpha-cmd", required: true },
+        { name: "beta", command: "beta-cmd" },
+        { name: "gamma", command: "gamma-cmd", required: false },
+      ]),
+    ).toEqual(["alpha"]);
+  });
+
+  it("refreshes the live manager from config and enforces required servers", async () => {
+    const refreshServers = vi.fn().mockResolvedValue(undefined);
+    const manager = {
+      refreshServers,
+    } as unknown as MCPManager;
+
+    const result = await refreshMcpManagerFromConfig({
+      manager,
+      env: {} as NodeJS.ProcessEnv,
+      config: {
+        mcp_servers: {
+          github: { command: "github-mcp", required: true },
+          filesystem: { command: "fs-mcp" },
+        },
+      },
+    });
+
+    expect(refreshServers).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          name: "github",
+          command: "github-mcp",
+          required: true,
+        }),
+        expect.objectContaining({
+          name: "filesystem",
+          command: "fs-mcp",
+        }),
+      ],
+      { requiredServers: ["github"] },
+    );
+    expect(result).toEqual({
+      configuredServers: ["github", "filesystem"],
+      requiredServers: ["github"],
+    });
+  });
+
+  it("service refreshFromConfig preserves env override semantics", async () => {
+    const refreshServers = vi.fn().mockResolvedValue(undefined);
+    const manager = {
+      refreshServers,
+    } as unknown as MCPManager;
+    const service = createSessionMcpService(manager, {
+      env: {
+        AGENC_MCP_SERVERS: JSON.stringify([
+          { name: "envOnly", command: "env-mcp", required: true },
+        ]),
+      } as NodeJS.ProcessEnv,
+    });
+
+    const result = await service.refreshFromConfig?.({
+      mcp_servers: {
+        configOnly: { command: "config-mcp" },
+      },
+    });
+
+    expect(refreshServers).toHaveBeenCalledWith(
+      [expect.objectContaining({ name: "envOnly", command: "env-mcp" })],
+      { requiredServers: ["envOnly"] },
+    );
+    expect(result).toEqual({
+      configuredServers: ["envOnly"],
+      requiredServers: ["envOnly"],
+    });
   });
 });
 

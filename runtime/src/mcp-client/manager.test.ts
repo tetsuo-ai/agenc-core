@@ -215,6 +215,30 @@ describe("MCPManager", () => {
     await manager.stop(); // should not throw
   });
 
+  it("refreshServers replaces configs and restarts the same manager instance", async () => {
+    const firstBridge = makeMockBridge("old", ["before"]);
+    const nextBridge = makeMockBridge("new", ["after"]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce("old-client")
+      .mockResolvedValueOnce("new-client");
+    mockCreateToolBridge
+      .mockResolvedValueOnce(firstBridge)
+      .mockResolvedValueOnce(nextBridge);
+
+    const manager = new MCPManager([makeConfig("old")]);
+    await manager.start();
+    await manager.refreshServers([makeConfig("new")]);
+
+    expect(firstBridge.dispose).toHaveBeenCalledOnce();
+    expect(manager.getConfiguredServers()).toEqual([
+      expect.objectContaining({ name: "new" }),
+    ]);
+    expect(manager.getConnectedServers()).toEqual(["new"]);
+    expect(manager.getTools().map((tool) => tool.name)).toEqual([
+      "mcp.new.after",
+    ]);
+  });
+
   // --------------------------------------------------------------------------
   // getTools / getToolsByServer / getConnectedServers
   // --------------------------------------------------------------------------
@@ -401,8 +425,9 @@ describe("MCPManager", () => {
     expect(mockCreateToolBridge).toHaveBeenCalledTimes(1);
 
     resolveSlowClient?.(slowClient);
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 10 && slowClient.close.mock.calls.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 
     expect(manager.getConnectedServers()).toEqual(["fast"]);
     expect(mockCreateToolBridge).toHaveBeenCalledTimes(1);

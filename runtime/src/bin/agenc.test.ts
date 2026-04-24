@@ -494,6 +494,85 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
     expect(arg.msg.payload.message).toMatch(/grok-4/);
   });
 
+  it("refreshes MCP before emitting the reload warning", async () => {
+    const base = defaultConfig();
+    const nextCfg = { ...base, model: "grok-4" };
+    const loader = vi
+      .fn()
+      .mockResolvedValueOnce(base)
+      .mockResolvedValueOnce(nextCfg);
+    const store = new ConfigStore({
+      env: {},
+      loader: (opts) => loader(opts),
+    });
+    await store.reload();
+    const latch: ConfigReloadLatch = { requested: true };
+    const emit = vi.fn();
+    const refreshFromConfig = vi.fn().mockResolvedValue({
+      configuredServers: ["github"],
+      requiredServers: ["github"],
+    });
+    const sessionStub = {
+      emit,
+      nextInternalSubId: () => "sub-x",
+      services: { mcpManager: { refreshFromConfig } },
+    } as unknown as Parameters<typeof maybeReloadConfigBetweenTurns>[0]["session"];
+
+    await maybeReloadConfigBetweenTurns({
+      latch,
+      store,
+      session: sessionStub,
+      clearCache: () => {},
+    });
+
+    expect(refreshFromConfig).toHaveBeenCalledWith(nextCfg);
+    expect(emit).toHaveBeenCalledTimes(1);
+    const arg = emit.mock.calls[0]![0];
+    expect(arg.msg.type).toBe("warning");
+    expect(arg.msg.payload.message).toContain(
+      "MCP refreshed (1 configured, 1 required)",
+    );
+  });
+
+  it("emits and propagates MCP refresh failures", async () => {
+    const base = defaultConfig();
+    const nextCfg = { ...base, model: "grok-4" };
+    const loader = vi
+      .fn()
+      .mockResolvedValueOnce(base)
+      .mockResolvedValueOnce(nextCfg);
+    const store = new ConfigStore({
+      env: {},
+      loader: (opts) => loader(opts),
+    });
+    await store.reload();
+    const latch: ConfigReloadLatch = { requested: true };
+    const emit = vi.fn();
+    const refreshFromConfig = vi
+      .fn()
+      .mockRejectedValue(new Error("required server missing"));
+    const sessionStub = {
+      emit,
+      nextInternalSubId: () => "sub-x",
+      services: { mcpManager: { refreshFromConfig } },
+    } as unknown as Parameters<typeof maybeReloadConfigBetweenTurns>[0]["session"];
+
+    await expect(
+      maybeReloadConfigBetweenTurns({
+        latch,
+        store,
+        session: sessionStub,
+        clearCache: () => {},
+      }),
+    ).rejects.toThrow(/required server missing/);
+
+    expect(latch.requested).toBe(false);
+    expect(emit).toHaveBeenCalledTimes(1);
+    const arg = emit.mock.calls[0]![0];
+    expect(arg.msg.type).toBe("error");
+    expect(arg.msg.payload.cause).toBe("mcp_config_refresh_failed");
+  });
+
   it("uses clearSystemPromptSections by default", async () => {
     // Seed the module cache, then verify reload drains it.
     const base = defaultConfig();

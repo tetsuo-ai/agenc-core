@@ -32,6 +32,12 @@ export {
 } from "./coding.js";
 
 export {
+  createPlanningTools,
+  type PlanningToolOptions,
+  type WorkflowToolController,
+} from "./planning.js";
+
+export {
   createBashTool,
   isCommandAllowed,
   validateShellCommand,

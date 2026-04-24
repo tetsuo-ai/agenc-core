@@ -68,6 +68,10 @@ function agencHomeFromCtx(ctx: SlashCommandContext): string {
   return ctx.agencHome ?? join(ctx.home, ".agenc");
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot formatting
 // ---------------------------------------------------------------------------
@@ -171,6 +175,21 @@ function handleProfileSubcommand(
     kind: "text",
     text: `Profile switch to "${name}" staged — takes effect on next turn.`,
   };
+}
+
+async function refreshMcpAfterConfigReload(
+  session: Session,
+  next: AgenCConfig,
+): Promise<string> {
+  const services = session.services as {
+    mcpManager?: Session["services"]["mcpManager"];
+  };
+  const refresh = services.mcpManager?.refreshFromConfig;
+  if (typeof refresh !== "function") {
+    return "";
+  }
+  const result = await refresh(next);
+  return `; MCP refreshed (${result.configuredServers.length} configured, ${result.requiredServers.length} required)`;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,10 +305,21 @@ export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand 
             const before = configStore.current();
             const next = await configStore.reload();
             const changed = before.model !== next.model ? "changed" : "unchanged";
-            return {
-              kind: "text",
-              text: `Config reloaded (model ${changed}: ${before.model ?? "<unset>"} → ${next.model ?? "<unset>"})`,
-            };
+            try {
+              const mcpSuffix = await refreshMcpAfterConfigReload(
+                ctx.session,
+                next,
+              );
+              return {
+                kind: "text",
+                text: `Config reloaded (model ${changed}: ${before.model ?? "<unset>"} → ${next.model ?? "<unset>"})${mcpSuffix}`,
+              };
+            } catch (error) {
+              return {
+                kind: "error",
+                message: `Config reloaded, but MCP refresh failed: ${errorMessage(error)}`,
+              };
+            }
           }
           case "profile":
             return handleProfileSubcommand(rest, configStore, ctx);

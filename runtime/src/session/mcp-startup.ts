@@ -37,6 +37,15 @@ export interface McpStartupCancellationToken {
   isCancelled(): boolean;
 }
 
+export interface McpRefreshResult {
+  readonly configuredServers: readonly string[];
+  readonly requiredServers: readonly string[];
+}
+
+export interface CreateSessionMcpServiceOptions {
+  readonly env?: NodeJS.ProcessEnv;
+}
+
 type ConfiguredServerWithExtras = MCPServerConfig & {
   readonly required?: boolean;
   readonly instructions?: string;
@@ -219,6 +228,52 @@ export function createSessionMcpManagerFromEnv(
   return createSessionMcpManager(resolveSessionMcpConfig(config, env));
 }
 
+export function requiredMcpServerNames(
+  configs: ReadonlyArray<MCPServerConfig>,
+): string[] {
+  return configs
+    .filter(
+      (config): config is ConfiguredServerWithExtras =>
+        (config as ConfiguredServerWithExtras).required === true,
+    )
+    .map((config) => config.name);
+}
+
+function withConfiguredRequiredServers(
+  configs: ReadonlyArray<MCPServerConfig>,
+  opts: MCPManagerStartOpts = {},
+): MCPManagerStartOpts {
+  if (opts.requiredServers !== undefined) {
+    return opts;
+  }
+  const requiredServers = requiredMcpServerNames(configs);
+  if (requiredServers.length === 0) {
+    return opts;
+  }
+  return {
+    ...opts,
+    requiredServers,
+  };
+}
+
+export async function refreshMcpManagerFromConfig(params: {
+  readonly manager: MCPManager;
+  readonly config: Pick<AgenCConfig, "mcp_servers"> | undefined;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly opts?: MCPManagerStartOpts;
+}): Promise<McpRefreshResult> {
+  const configs = resolveSessionMcpConfig(params.config, params.env);
+  const requiredServers = requiredMcpServerNames(configs);
+  await params.manager.refreshServers(
+    configs,
+    withConfiguredRequiredServers(configs, params.opts ?? {}),
+  );
+  return {
+    configuredServers: configs.map((config) => config.name),
+    requiredServers,
+  };
+}
+
 export function createMcpStartupCancellationToken(): McpStartupCancellationToken {
   const controller = new AbortController();
   return {
@@ -240,11 +295,18 @@ export function createMcpStartupCancellationToken(): McpStartupCancellationToken
  */
 export function createSessionMcpService(
   manager: MCPManager,
+  options: CreateSessionMcpServiceOptions = {},
 ): SessionServices["mcpManager"] {
   const runtimeManager = manager as RuntimeMcpManagerWithMetadata;
   return {
     effectiveServers: async () => buildEffectiveServerMap(runtimeManager),
     toolPluginProvenance: async () => null,
+    refreshFromConfig: (config) =>
+      refreshMcpManagerFromConfig({
+        manager,
+        config: config as Pick<AgenCConfig, "mcp_servers"> | undefined,
+        env: options.env,
+      }),
     isConnected:
       typeof manager.isConnected === "function"
         ? manager.isConnected.bind(manager)
@@ -304,7 +366,11 @@ export async function startMcpManagerForSession(
   opts: MCPManagerStartOpts = {},
 ): Promise<void> {
   attachMcpManagerToSession(manager, session);
-  await manager.start(opts);
+  const metadataManager = manager as MCPManager & {
+    getConfiguredServers?(): readonly MCPServerConfig[];
+  };
+  const configs = metadataManager.getConfiguredServers?.() ?? [];
+  await manager.start(withConfiguredRequiredServers(configs, opts));
 }
 
 /**

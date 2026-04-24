@@ -24,14 +24,17 @@ import {
   createCodingTools,
   createHttpTools,
   createBashTool,
+  createPlanningTools,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
+import type { WorkflowToolController } from "./tools/system/index.js";
 import {
   defaultConcurrencyClassFor,
   isBashTool,
   isReadOnlyFilesystemTool,
   isWriteFilesystemTool,
+  SHARED_READ,
   sharedServer,
   type ConcurrencyClass,
 } from "./tools/concurrency.js";
@@ -76,10 +79,16 @@ function inferMcpServerId(toolName: string): string | undefined {
 
 function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
   const serverId = opts.serverId ?? tool.serverId ?? inferMcpServerId(tool.name);
+  const inferredReadOnly =
+    tool.metadata?.mutating === false || isReadOnlyFilesystemTool(tool.name);
   const baseClass: ConcurrencyClass =
     tool.concurrencyClass ??
-    (serverId ? sharedServer(serverId) : defaultConcurrencyClassFor(tool.name));
-  const isReadOnly = tool.isReadOnly ?? isReadOnlyFilesystemTool(tool.name);
+    (serverId
+      ? sharedServer(serverId)
+      : inferredReadOnly
+        ? SHARED_READ
+        : defaultConcurrencyClassFor(tool.name));
+  const isReadOnly = tool.isReadOnly ?? inferredReadOnly;
   const supportsParallelToolCalls =
     tool.supportsParallelToolCalls ??
     (baseClass.kind === "shared_read" ||
@@ -238,7 +247,14 @@ export interface BuildToolRegistryOptions {
   readonly discoverableTools?: ToolListInput;
   readonly unavailableCalledTools?: readonly string[];
   readonly parallelMcpServerNames?: ReadonlySet<string>;
+  /**
+   * Include AgenC-owned structured git/symbol/repo-inventory tools in
+   * the catalog. Defaults to true, but those tools stay deferred so the
+   * default model-visible prompt remains Codex-small.
+   */
   readonly codeIntelligenceTools?: boolean;
+  /** Live plan-mode bridge for workflow.enterPlan/workflow.exitPlan. */
+  readonly workflowController?: WorkflowToolController;
   /**
    * T9 integration seam: extra tools to register beyond the default
    * coding-profile catalog. The CLI entrypoint uses this to expose
@@ -255,9 +271,9 @@ export interface BuildToolRegistryOptions {
  * listDir, stat, mkdir, delete, move, glob, grep), coding helpers,
  * http (fetch/get/post/browse/extractLinks/htmlToMarkdown), and bash.
  *
- * The 35-tool set in TODO.MD resolves to ~30 concrete Tool objects
- * because some namespaces (git*, symbol*, TodoWrite, workflow) are
- * still being wired in — they land in later tranches.
+ * The default visible set stays small. Heavy AgenC-owned git/symbol
+ * inventory tools and Claude-compatible workflow aliases are registered
+ * as deferred entries and load through `system.searchTools`.
  */
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
@@ -279,7 +295,7 @@ export function buildToolRegistry(
     ...createCodingTools({
       allowedPaths: [options.workspaceRoot],
       persistenceRootDir: options.workspaceRoot,
-      codeIntelligenceTools: options.codeIntelligenceTools ?? false,
+      codeIntelligenceTools: options.codeIntelligenceTools ?? true,
       getToolCatalog: () =>
         buildRouter()
           .getSpecs()
@@ -293,6 +309,11 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
+        : {}),
+    }),
+    ...createPlanningTools({
+      ...(options.workflowController !== undefined
+        ? { workflowController: options.workflowController }
         : {}),
     }),
     ...(options.extraTools ?? []),
