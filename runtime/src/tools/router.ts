@@ -521,6 +521,29 @@ export class ToolRouter {
       opts.signal.addEventListener("abort", forwardAbort, { once: true });
     }
 
+    // Upstream codex `tools/registry.rs:303-309` — increment the
+    // per-turn `tool_calls` counter under the `ActiveTurnState` lock
+    // before dispatching the handler. Saturating-add semantics (caps
+    // at Number.MAX_SAFE_INTEGER) mirror upstream `saturating_add(1)`.
+    // Duck-typed call: router tests pass a mock `session` without the
+    // ActiveTurnState lock plumbing; treat the absence of the helper
+    // as a no-op so test fixtures keep working.
+    const withActiveTurnState = (
+      opts.session as unknown as {
+        withActiveTurnState?: (
+          fn: (state: { toolCalls: number }) => void,
+        ) => Promise<unknown>;
+      }
+    ).withActiveTurnState;
+    if (typeof withActiveTurnState === "function") {
+      await withActiveTurnState.call(opts.session, (state) => {
+        const next = state.toolCalls + 1;
+        state.toolCalls = Number.isSafeInteger(next)
+          ? next
+          : Number.MAX_SAFE_INTEGER;
+      });
+    }
+
     try {
       return await orchestrateToolCall({
         tool: spec.tool,
