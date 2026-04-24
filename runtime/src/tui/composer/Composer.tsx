@@ -181,7 +181,7 @@ export const Composer: React.FC<ComposerProps> = ({
   const pendingRequestCount = appState?.pendingRequests.length ?? 0;
   const hasPendingTurn = isStreaming || pendingRequestCount > 0;
 
-  const slashItems = getSlashPaletteItems();
+  const slashItems = useMemo(() => getSlashPaletteItems(), []);
   const [dismissedSlashToken, setDismissedSlashToken] = useState<string | null>(
     null,
   );
@@ -234,17 +234,22 @@ export const Composer: React.FC<ComposerProps> = ({
       setDismissedMentionToken(null);
     }
   }, [dismissedMentionToken, mentionTokenKey]);
+  const mentionRequestSeqRef = useRef(0);
   useEffect(() => {
     if (!mentionDraft?.cursorInsideToken) {
+      mentionRequestSeqRef.current += 1;
       setMentionItems([]);
       return undefined;
     }
-    let alive = true;
-    void getMentionItems(session.cwd, mentionDraft.query).then((items) => {
-      if (alive) setMentionItems(items);
-    });
+    const seq = mentionRequestSeqRef.current + 1;
+    mentionRequestSeqRef.current = seq;
+    const timeout = setTimeout(() => {
+      void getMentionItems(session.cwd, mentionDraft.query).then((items) => {
+        if (mentionRequestSeqRef.current === seq) setMentionItems(items);
+      });
+    }, 80);
     return () => {
-      alive = false;
+      clearTimeout(timeout);
     };
   }, [mentionDraft?.cursorInsideToken, mentionDraft?.query, session.cwd]);
 

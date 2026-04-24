@@ -20,13 +20,15 @@
  * @module
  */
 
-import React, { useEffect, useRef } from "react";
+import React, { useContext, useEffect, useMemo, useRef } from "react";
 
 import Box from "../ink/components/Box.js";
+import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import ScrollBox, {
   type ScrollBoxHandle,
 } from "../ink/components/ScrollBox.js";
+import { useVirtualScroll } from "../hooks/useVirtualScroll.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
 import { theme } from "../theme.js";
 
@@ -116,29 +118,28 @@ export function transcriptMutationKey(
   messages: readonly TranscriptMessage[],
   isStreaming: boolean = false,
 ): string {
-  return messages
-    .map((message) =>
-      [
-        message.id,
-        message.kind,
-        message.timestamp,
-        message.isComplete === false ? "streaming" : "final",
-        lengthOf(message.content),
-        lengthOf(message.execStdout),
-        lengthOf(message.execStderr),
-        message.execExitCode ?? "",
-        message.execDurationMs ?? "",
-        message.execTimedOut === true ? "timeout" : "",
-        lengthOf(message.toolProgressContent),
-        lengthOf(message.toolResultContent),
-        lengthOf(message.planEvents),
-        message.progressStream ?? "",
-        message.label ?? "",
-        message.isError === true ? "error" : "",
-      ].join(":"),
-    )
-    .join("|")
-    .concat(isStreaming ? "|tail:1" : "|tail:0");
+  const tail = messages[messages.length - 1];
+  if (!tail) return isStreaming ? "0:tail:1" : "0:tail:0";
+  return [
+    messages.length,
+    tail.id,
+    tail.kind,
+    tail.timestamp,
+    tail.isComplete === false ? "streaming" : "final",
+    lengthOf(tail.content),
+    lengthOf(tail.execStdout),
+    lengthOf(tail.execStderr),
+    tail.execExitCode ?? "",
+    tail.execDurationMs ?? "",
+    tail.execTimedOut === true ? "timeout" : "",
+    lengthOf(tail.toolProgressContent),
+    lengthOf(tail.toolResultContent),
+    lengthOf(tail.planEvents),
+    tail.progressStream ?? "",
+    tail.label ?? "",
+    tail.isError === true ? "error" : "",
+    isStreaming ? "tail:1" : "tail:0",
+  ].join(":");
 }
 
 /**
@@ -303,6 +304,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   isStreaming = false,
 }) => {
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
+  const terminalSize = useContext(TerminalSizeContext);
   // Remember whether the operator was glued to the bottom at the moment
   // the last message arrived. Using a ref here instead of state avoids
   // re-rendering the whole list on every scroll tick.
@@ -418,6 +420,17 @@ export const MessageList: React.FC<MessageListProps> = ({
     messages.length > 0 &&
     messages[messages.length - 1]?.kind === "assistant" &&
     messages[messages.length - 1]?.isComplete === false;
+  const itemKeys = useMemo(
+    () => messages.map((message, index) => `${message.id}:${index}`),
+    [messages],
+  );
+  const virtual = useVirtualScroll(
+    scrollRef,
+    itemKeys,
+    terminalSize?.columns ?? 80,
+  );
+  const [visibleStart, visibleEnd] = virtual.range;
+  const visibleMessages = messages.slice(visibleStart, visibleEnd);
 
   return (
     <ScrollBox
@@ -430,11 +443,25 @@ export const MessageList: React.FC<MessageListProps> = ({
       stickyScroll
     >
       <Box flexDirection="column" width="100%">
-        {messages.map((message) => (
-          <Box key={message.id} flexDirection="column">
-            <MessageRow message={message} />
-          </Box>
-        ))}
+        {virtual.topSpacer > 0 ? (
+          <Box height={Math.floor(virtual.topSpacer)} flexShrink={0} />
+        ) : null}
+        {visibleMessages.map((message, offset) => {
+          const virtualIndex = visibleStart + offset;
+          const key = itemKeys[virtualIndex] ?? message.id;
+          return (
+            <Box
+              key={key}
+              ref={virtual.measureRef(key)}
+              flexDirection="column"
+            >
+              <MessageRow message={message} />
+            </Box>
+          );
+        })}
+        {virtual.bottomSpacer > 0 ? (
+          <Box height={Math.floor(virtual.bottomSpacer)} flexShrink={0} />
+        ) : null}
         {isStreaming && !hasInlineStreamingAssistant ? (
           <Box flexDirection="row">
             <Text dim>{"\u2026"}</Text>

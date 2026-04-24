@@ -31,6 +31,22 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("keeps live assistant deltas incomplete until a completion event", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-stream" } },
+      { type: "agent_message_delta", payload: { delta: "working" } },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "assistant",
+      turnId: "turn-stream",
+      content: "working",
+      isComplete: false,
+    });
+  });
+
   test("hydrates bash activity into a single exec cell row", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-bash" } },

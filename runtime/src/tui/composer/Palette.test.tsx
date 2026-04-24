@@ -236,6 +236,35 @@ describe("<Palette>", () => {
     unmount();
   });
 
+  test("truncates long labels so palette rows do not wrap", async () => {
+    const emitter = new EventEmitter();
+    const longLabel = `/open ${"deeply-nested/".repeat(12)}target.ts`;
+    const { stdout, unmount } = await mount(
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        <Palette
+          trigger="@"
+          query=""
+          items={[
+            {
+              id: "long",
+              label: longLabel,
+              description: "workspace file",
+              value: longLabel,
+            },
+          ]}
+          placement="above"
+          onSelect={() => undefined}
+          onClose={() => undefined}
+        />
+      </KeybindingProvider>,
+    );
+
+    const text = collectText(getRootNode(stdout));
+    expect(text).toContain("…");
+    expect(text).not.toContain(longLabel);
+    unmount();
+  });
+
   test("Up/Down arrows move the selection (with wrap-around)", async () => {
     const emitter = new EventEmitter();
     const onSelect = vi.fn();

@@ -946,6 +946,5 @@ export function eventsToMessages(
     }
   }
 
-  markAssistantComplete();
   return messages;
 }

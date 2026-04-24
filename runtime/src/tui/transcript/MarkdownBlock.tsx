@@ -244,11 +244,11 @@ export const MarkdownBlock: React.FC<MarkdownBlockProps> = ({
   }, [content, isComplete, width]);
 
   const syncCompleteLines = useMemo(
-    () => renderMarkdownDisplayLinesSync(content, { width }),
-    [content, width],
+    () => (isComplete ? renderMarkdownDisplayLinesSync(content, { width }) : null),
+    [content, isComplete, width],
   );
   const [lines, setLines] = useState<readonly MarkdownDisplayLine[]>(
-    isComplete ? syncCompleteLines : (streamingLines ?? []),
+    isComplete ? (syncCompleteLines ?? []) : (streamingLines ?? []),
   );
 
   useEffect(() => {
@@ -256,7 +256,7 @@ export const MarkdownBlock: React.FC<MarkdownBlockProps> = ({
       setLines(streamingLines ?? []);
       return;
     }
-    setLines(syncCompleteLines);
+    setLines(syncCompleteLines ?? []);
   }, [isComplete, streamingLines, syncCompleteLines]);
 
   useEffect(() => {

@@ -13,6 +13,8 @@ import { describe, expect, test } from "vitest";
 
 import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
+import type { DOMElement, DOMNode } from "../ink/dom.js";
+import Box from "../ink/components/Box.js";
 import { charInCellAt } from "../ink/screen.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
@@ -91,6 +93,29 @@ function latestFrameText(stdout: PassThrough): string {
     rows.push(row.replace(/\s+$/u, ""));
   }
   return rows.join("\n");
+}
+
+function getRootNode(stdout: PassThrough): DOMElement {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { rootNode?: DOMElement }
+    | undefined;
+  if (!instance?.rootNode) {
+    throw new Error("Ink root not found in test harness");
+  }
+  return instance.rootNode;
+}
+
+function collectTextNodes(node: DOMNode): string[] {
+  if (node.nodeName === "#text") {
+    return [node.nodeValue];
+  }
+  const parts: string[] = [];
+  if ("childNodes" in node) {
+    for (const child of node.childNodes) {
+      parts.push(...collectTextNodes(child));
+    }
+  }
+  return parts;
 }
 
 function mkMsg(
@@ -402,10 +427,39 @@ describe("MessageList", () => {
         content: `turn ${index}`,
       }),
     );
-    const { unmount, stdout } = await mount(<MessageList messages={messages} />);
+    const { unmount, stdout } = await mount(
+      <Box flexDirection="column" height={12}>
+        <MessageList messages={messages} />
+      </Box>,
+    );
     const frame = latestFrameText(stdout);
     expect(frame).toContain("turn 259");
     expect(frame).not.toContain("tool_routing_classified");
+    unmount();
+  });
+
+  test("virtualizes long transcript DOM rows instead of mounting all history", async () => {
+    const messages = Array.from({ length: 1_000 }, (_, index) =>
+      mkMsg({
+        id: `m-${index}`,
+        kind: "user",
+        content: `turn ${index}`,
+      }),
+    );
+
+    const { unmount, stdout } = await mount(
+      <Box flexDirection="column" height={12}>
+        <MessageList messages={messages} />
+      </Box>,
+    );
+    const frame = latestFrameText(stdout);
+    const renderedTurns = collectTextNodes(getRootNode(stdout)).filter((text) =>
+      /^turn \d+$/u.test(text),
+    );
+
+    expect(frame).toContain("turn 999");
+    expect(renderedTurns.length).toBeLessThanOrEqual(240);
+    expect(renderedTurns).not.toContain("turn 0");
     unmount();
   });
 

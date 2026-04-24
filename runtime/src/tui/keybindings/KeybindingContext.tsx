@@ -473,11 +473,11 @@ export function useKeybinding(
   // don't re-register with the provider (which would briefly deregister
   // and re-register, losing any in-flight double-press state).
   const handlerRef = useRef(handler);
-  useEffect(() => {
+  useLayoutEffect(() => {
     handlerRef.current = handler;
   }, [handler]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const invoke = () => {
       handlerRef.current();
     };

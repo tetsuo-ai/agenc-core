@@ -87,6 +87,48 @@ function phaseColor(phase: string | undefined): Color {
   return theme.colors.info as Color;
 }
 
+function phaseLabel(phase: string | undefined): string | undefined {
+  if (phase === undefined || phase.length === 0) return undefined;
+  switch (phase) {
+    case "stream_model":
+    case "assistant":
+      return "responding";
+    case "tool":
+      return "using tool";
+    case "tool_result":
+      return "tool done";
+    case "exec":
+      return "running command";
+    case "exec_done":
+      return "command done";
+    case "plan":
+      return "planning";
+    case "compact":
+      return "compacting";
+    case "turn":
+      return "starting";
+    case "complete":
+    case "ready":
+      return "ready";
+    case "aborted":
+      return "interrupted";
+    case "stream_error":
+      return "stream error";
+    case "command":
+      return "command";
+    case "user":
+      return "prompt";
+    case "warning":
+    case "error":
+    case "notice":
+      return phase;
+    default:
+      return phase
+        .replaceAll("_", " ")
+        .replace(/\b\w/gu, (char) => char.toUpperCase());
+  }
+}
+
 /**
  * Short form of the run id so the banner stays on one line in narrow
  * terminals. Takes the last 8 characters to match the session-id short
@@ -163,6 +205,10 @@ function LeadStatus({
   const liveColor = (isStreaming ? theme.colors.primary : theme.colors.muted) as Color;
   const liveLabel = isStreaming ? "LIVE" : "READY";
   const glyph = isStreaming ? (spinnerFrame ?? getSpinnerFrame(0)) : "•";
+  const label =
+    !isStreaming && (phase === "ready" || phase === "complete")
+      ? undefined
+      : phaseLabel(phase);
 
   return (
     <Box flexDirection="row" alignItems="center" marginRight={1}>
@@ -171,10 +217,10 @@ function LeadStatus({
       <Text color={theme.colors.ink as Color} bold>
         {liveLabel}
       </Text>
-      {phase !== undefined && phase.length > 0 ? (
+      {label !== undefined && label.length > 0 ? (
         <>
           <Text color={theme.colors.dim as Color}> / </Text>
-          <Text color={phaseColor(phase)}>{phase}</Text>
+          <Text color={phaseColor(phase)}>{label}</Text>
         </>
       ) : null}
     </Box>

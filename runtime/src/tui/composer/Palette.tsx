@@ -24,9 +24,10 @@
  * exercise its ranking behavior without having to drive keypresses.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 import Box from "../ink/components/Box.js";
+import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
 import Text from "../ink/components/Text.js";
 import type { Color } from "../ink/styles.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
@@ -377,6 +378,21 @@ function renderLabelSegments(
   return nodes;
 }
 
+function truncateLabelForRow(
+  label: string,
+  matchIndices: readonly number[],
+  maxChars: number,
+): { readonly label: string; readonly matches: readonly number[] } {
+  if (label.length <= maxChars) {
+    return { label, matches: matchIndices };
+  }
+  const keep = Math.max(1, maxChars - 1);
+  return {
+    label: `${label.slice(0, keep)}…`,
+    matches: matchIndices.filter((index) => index < keep),
+  };
+}
+
 /**
  * The palette popover. Pure presentation + keyboard navigation — the
  * caller owns trigger detection, placement decisions, and the insert
@@ -391,6 +407,7 @@ export const Palette: React.FC<PaletteProps> = ({
   onSelect,
   onClose,
 }) => {
+  const terminalSize = useContext(TerminalSizeContext);
   const ranked = useMemo(
     () => fuzzyMatchWithIndices(items, query),
     [items, query],
@@ -494,6 +511,10 @@ export const Palette: React.FC<PaletteProps> = ({
   const overflowAbove = visibleStart;
   const overflowBelow = Math.max(0, totalMatches - visibleEnd);
   const visible = ranked.slice(visibleStart, visibleEnd);
+  const labelBudget = Math.max(
+    16,
+    Math.min(72, (terminalSize?.columns ?? 80) - 30),
+  );
 
   return (
     <Box
@@ -509,9 +530,14 @@ export const Palette: React.FC<PaletteProps> = ({
       {visible.map((entry, idx) => {
         const absoluteIdx = visibleStart + idx;
         const isSelected = absoluteIdx === selectedIdx;
-        const labelNodes = renderLabelSegments(
+        const label = truncateLabelForRow(
           entry.item.label,
           entry.matches,
+          labelBudget,
+        );
+        const labelNodes = renderLabelSegments(
+          label.label,
+          label.matches,
           undefined,
           accentColor,
           isSelected,

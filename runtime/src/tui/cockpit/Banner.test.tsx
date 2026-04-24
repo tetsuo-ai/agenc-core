@@ -212,6 +212,16 @@ describe("Banner", () => {
     unmount();
   });
 
+  test("renders user-facing phase labels instead of raw lifecycle names", async () => {
+    const { stdout, unmount } = await mount(
+      <Banner mode="default" phase="tool_result" />,
+    );
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("tool done");
+    expect(text).not.toContain("tool_result");
+    unmount();
+  });
+
   test("renders [PLAN] marker when hasPlanActive is true", async () => {
     const { stdout, unmount } = await mount(
       <Banner mode="plan" hasPlanActive />,

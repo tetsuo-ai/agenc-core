@@ -640,7 +640,7 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("/ tool");
+    expect(text).toContain("/ using tool");
     expect(text).toContain("tools");
     expect(text).toContain("1");
     unmount();
