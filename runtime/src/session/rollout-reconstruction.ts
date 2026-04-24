@@ -147,9 +147,8 @@ function turnIdsCompatible(active?: string, item?: string): boolean {
  * is *only* a contextual fragment is an injection, not a real
  * user-turn boundary.
  *
- * AGENTS.md uses the codex literal start marker `"# AGENTS.md instructions for "`
- * and end marker `"</INSTRUCTIONS>"` (fragment.rs:4-5). The older
- * `<agents_md>` tag was incorrect — do not re-add it.
+ * AGENC.md uses an AgenC-owned start marker
+ * `"# AGENC.md instructions for "` and end marker `"</INSTRUCTIONS>"`.
  */
 interface ContextualFragmentDef {
   readonly startMarker: string;
@@ -157,9 +156,9 @@ interface ContextualFragmentDef {
 }
 
 const CONTEXTUAL_USER_FRAGMENTS: ReadonlyArray<ContextualFragmentDef> = [
-  // AGENTS.md instructions (codex AGENTS_MD_FRAGMENT).
+  // AGENC.md instructions.
   {
-    startMarker: "# AGENTS.md instructions for ",
+    startMarker: "# AGENC.md instructions for ",
     endMarker: "</INSTRUCTIONS>",
   },
   // Environment context (codex ENVIRONMENT_CONTEXT_FRAGMENT).

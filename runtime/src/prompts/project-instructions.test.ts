@@ -61,11 +61,11 @@ describe("project-instructions (T10-B)", () => {
     expect(p?.endsWith("AGENC.override.md")).toBe(true);
   });
 
-  test("resolveInstructionFile ignores AGENTS.md and CLAUDE.md", async () => {
+  test("resolveInstructionFile ignores non-AgenC instruction files", async () => {
     const dir = join(root, "d");
     mkdirSync(dir);
-    writeFileSync(join(dir, "AGENTS.md"), "agents");
-    writeFileSync(join(dir, "CLAUDE.md"), "claude");
+    writeFileSync(join(dir, "TEAM-INSTRUCTIONS.md"), "team");
+    writeFileSync(join(dir, "PROJECT-INSTRUCTIONS.md"), "project");
     const p = await resolveInstructionFile(dir);
     expect(p).toBeNull();
   });

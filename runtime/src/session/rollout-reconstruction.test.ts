@@ -532,19 +532,19 @@ describe("rollout-reconstruction", () => {
   });
 
   /**
-   * AGENTS.md fragments use codex literal markers
-   * (`# AGENTS.md instructions for ` / `</INSTRUCTIONS>`). A
+   * AGENC.md fragments use AgenC-owned markers
+   * (`# AGENC.md instructions for ` / `</INSTRUCTIONS>`). A
    * content-array fragment whose text matches both the start and
    * end markers is contextual and must NOT count as a user-turn
    * boundary. The matcher is case-insensitive per
    * `fragment.rs:23-33`.
    */
-  test("AGENTS.md-style contextual fragments require matching close tag", () => {
-    const agentsMdBody =
-      "# AGENTS.md instructions for project\nsome body\n</INSTRUCTIONS>";
-    const fakeOpenOnly = "# AGENTS.md instructions for project\nsome body"; // no close → real user turn
+  test("AGENC.md-style contextual fragments require matching close tag", () => {
+    const agencMdBody =
+      "# AGENC.md instructions for project\nsome body\n</INSTRUCTIONS>";
+    const fakeOpenOnly = "# AGENC.md instructions for project\nsome body"; // no close → real user turn
     const items: RolloutItem[] = [
-      { type: "response_item", payload: { role: "user", content: agentsMdBody } },
+      { type: "response_item", payload: { role: "user", content: agencMdBody } },
       { type: "response_item", payload: { role: "user", content: fakeOpenOnly } },
       {
         type: "event_msg",
@@ -557,9 +557,9 @@ describe("rollout-reconstruction", () => {
     ];
     const r = reconstructFromRollout(items);
     // Only the fakeOpenOnly message counts as a boundary, so
-    // rollback=1 drops it. The contextual AGENTS.md fragment stays.
+    // rollback=1 drops it. The contextual AGENC.md fragment stays.
     const texts = r.history.map((h) => h.content as string);
-    expect(texts).toContain(agentsMdBody);
+    expect(texts).toContain(agencMdBody);
     expect(texts).not.toContain(fakeOpenOnly);
   });
 

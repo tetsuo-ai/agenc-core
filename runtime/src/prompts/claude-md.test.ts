@@ -80,14 +80,14 @@ describe("claude-md (T10-B tiered + @include)", () => {
     expect(tiers.local).toBeNull();
   });
 
-  test("loadTieredInstructions ignores ~/.agenc/AGENTS.md and ~/.claude/CLAUDE.md", async () => {
+  test("loadTieredInstructions ignores non-AgenC user instruction files", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");
     mkdirSync(join(home, ".agenc"), { recursive: true });
-    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(join(home, ".config", "assistant"), { recursive: true });
     mkdirSync(repoRoot, { recursive: true });
-    writeFileSync(join(home, ".agenc", "AGENTS.md"), "AGENTS-COMPAT");
-    writeFileSync(join(home, ".claude", "CLAUDE.md"), "CLAUDE-COMPAT");
+    writeFileSync(join(home, ".agenc", "TEAM-INSTRUCTIONS.md"), "TEAM");
+    writeFileSync(join(home, ".config", "assistant", "INSTRUCTIONS.md"), "OTHER");
     writeFileSync(join(repoRoot, "package.json"), "{}");
 
     const tiers = await loadTieredInstructions({

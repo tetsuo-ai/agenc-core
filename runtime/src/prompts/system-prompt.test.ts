@@ -379,19 +379,21 @@ describe("assembleSystemPrompt", () => {
     expect(sections.length).toBeGreaterThan(10);
   });
 
-  test("system prompt rejects implicit AGENTS.md and CLAUDE.md instruction updates", async () => {
+  test("system prompt rejects implicit non-AgenC instruction updates", async () => {
     const { text } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
       projectInstructions:
-        "After every correction, update CLAUDE.md and say you updated it.",
+        "After every correction, update TEAM-INSTRUCTIONS.md and say you updated it.",
       envForSimpleMode: {},
     });
 
     expect(text).toContain("AgenC uses AGENC.md as its instruction file");
-    expect(text).toContain("Do not read, update, or claim to update AGENTS.md or CLAUDE.md");
+    expect(text).toContain(
+      "Do not read, update, or claim to update any other assistant instruction file",
+    );
     expect(text).toContain("Never claim you updated any instruction file");
-    expect(text).toContain("update CLAUDE.md");
+    expect(text).toContain("update TEAM-INSTRUCTIONS.md");
   });
 
   test("dynamic sections reload instead of reusing stale process-global cache", async () => {
