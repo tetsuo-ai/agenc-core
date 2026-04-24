@@ -6,12 +6,25 @@
  */
 
 import { describe, expect, test } from "vitest";
+import type { HistoryEntry } from "./history.js";
 import {
   LARGE_PASTE_CHAR_THRESHOLD,
   composerReducer,
   expandPendingPastes,
   type ComposerState,
 } from "./useComposerState.js";
+
+function entry(value: string, overrides?: Partial<HistoryEntry>): HistoryEntry {
+  return {
+    timestamp: 0,
+    value,
+    ...overrides,
+  };
+}
+
+function entries(...values: string[]): HistoryEntry[] {
+  return values.map((v) => entry(v));
+}
 
 function freshState(overrides: Partial<ComposerState> = {}): ComposerState {
   return {
@@ -28,6 +41,7 @@ function freshState(overrides: Partial<ComposerState> = {}): ComposerState {
     selectedRemoteImageIndex: null,
     pasteInFlight: false,
     pendingEnters: 0,
+    killBuffer: null,
     ...overrides,
   };
 }
@@ -71,8 +85,23 @@ describe("composerReducer", () => {
     const next = composerReducer(start, { type: "SUBMIT" });
     expect(next.value).toBe("");
     expect(next.cursor).toBe(0);
-    expect(next.history).toEqual(["hello"]);
+    expect(next.history.map((e) => e.value)).toEqual(["hello"]);
     expect(next.historyIdx).toBeNull();
+  });
+
+  test("SUBMIT with historyMentions persists them on the new entry", () => {
+    const start = freshState({ value: "see @x.ts", cursor: 9 });
+    const next = composerReducer(start, {
+      type: "SUBMIT",
+      historyValue: "see @x.ts",
+      historyMentions: [
+        { start: 4, end: 9, kind: "file", resolved: "/repo/x.ts" },
+      ],
+    });
+    expect(next.history[0]?.value).toBe("see @x.ts");
+    expect(next.history[0]?.mentions).toEqual([
+      { start: 4, end: 9, kind: "file", resolved: "/repo/x.ts" },
+    ]);
   });
 
   test("large paste inserts a placeholder and expands on submit", () => {
@@ -93,7 +122,7 @@ describe("composerReducer", () => {
       historyValue: expandPendingPastes(state.value, state.pendingPastes),
     });
     expect(state.value).toBe("");
-    expect(state.history).toEqual([pasted]);
+    expect(state.history.map((e) => e.value)).toEqual([pasted]);
     expect(state.pendingPastes).toEqual([]);
   });
 
@@ -171,7 +200,7 @@ describe("composerReducer", () => {
     const after = composerReducer(state, { type: "PASTE_COMPLETE" });
     expect(after.pasteInFlight).toBe(false);
     expect(after.pendingEnters).toBe(0);
-    expect(after.history).toEqual(["one"]);
+    expect(after.history.map((e) => e.value)).toEqual(["one"]);
     expect(after.value).toBe("");
   });
 
@@ -179,7 +208,7 @@ describe("composerReducer", () => {
     const start = freshState({
       value: "draft",
       cursor: 5,
-      history: ["older"],
+      history: entries("older"),
     });
     const next = composerReducer(start, { type: "HISTORY_PREV" });
     expect(next.value).toBe("older");
@@ -192,7 +221,7 @@ describe("composerReducer", () => {
     let state = freshState({
       value: "draft",
       cursor: 5,
-      history: ["older"],
+      history: entries("older"),
     });
     state = composerReducer(state, { type: "HISTORY_PREV" });
     expect(state.value).toBe("older");
@@ -207,7 +236,7 @@ describe("composerReducer", () => {
     let state = freshState({
       value: "",
       cursor: 0,
-      history: ["newest", "middle", "oldest"],
+      history: entries("newest", "middle", "oldest"),
     });
     state = composerReducer(state, { type: "HISTORY_PREV" });
     state = composerReducer(state, { type: "HISTORY_PREV" });
@@ -218,11 +247,35 @@ describe("composerReducer", () => {
     expect(state.value).toBe("oldest");
   });
 
+  test("HISTORY_PREV preserves persisted mention metadata on recall", () => {
+    const start = freshState({
+      value: "draft",
+      cursor: 5,
+      history: [
+        entry("look at @src/index.ts", {
+          mentions: [
+            {
+              start: 8,
+              end: 21,
+              kind: "file",
+              resolved: "/repo/src/index.ts",
+            },
+          ],
+        }),
+      ],
+    });
+    const next = composerReducer(start, { type: "HISTORY_PREV" });
+    expect(next.value).toBe("look at @src/index.ts");
+    expect(next.history[0]?.mentions).toEqual([
+      { start: 8, end: 21, kind: "file", resolved: "/repo/src/index.ts" },
+    ]);
+  });
+
   test("HISTORY_SEARCH_START snapshots the current draft without previewing history yet", () => {
     const start = freshState({
       value: "draft",
       cursor: 3,
-      history: ["second", "first"],
+      history: entries("second", "first"),
     });
     const next = composerReducer(start, { type: "HISTORY_SEARCH_START" });
     expect(next.value).toBe("draft");
@@ -239,7 +292,7 @@ describe("composerReducer", () => {
     let state = freshState({
       value: "draft",
       cursor: 5,
-      history: ["alpha two", "alpha one", "alpha one", "beta"],
+      history: entries("alpha two", "alpha one", "alpha one", "beta"),
     });
     state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
     state = composerReducer(state, {
@@ -252,7 +305,10 @@ describe("composerReducer", () => {
       matchIndex: 0,
       status: "match",
     });
-    expect(state.historySearch?.matches).toEqual(["alpha two", "alpha one"]);
+    expect(state.historySearch?.matches.map((m) => m.value)).toEqual([
+      "alpha two",
+      "alpha one",
+    ]);
 
     state = composerReducer(state, { type: "HISTORY_SEARCH_OLDER" });
     expect(state.value).toBe("alpha one");
@@ -267,7 +323,7 @@ describe("composerReducer", () => {
     let state = freshState({
       value: "draft",
       cursor: 2,
-      history: ["alpha one"],
+      history: entries("alpha one"),
     });
     state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
     state = composerReducer(state, {
@@ -286,7 +342,7 @@ describe("composerReducer", () => {
     let state = freshState({
       value: "draft",
       cursor: 5,
-      history: ["alpha one"],
+      history: entries("alpha one"),
     });
     state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
     state = composerReducer(state, {
@@ -303,7 +359,7 @@ describe("composerReducer", () => {
     let state = freshState({
       value: "draft",
       cursor: 5,
-      history: ["alpha one"],
+      history: entries("alpha one"),
     });
     state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
     state = composerReducer(state, {
@@ -323,13 +379,13 @@ describe("composerReducer", () => {
     const start = freshState({
       value: "draft",
       cursor: 5,
-      history: ["live prompt", "shared"],
+      history: entries("live prompt", "shared"),
     });
     const next = composerReducer(start, {
       type: "LOAD_HISTORY",
-      history: ["disk newest", "shared", "disk oldest"],
+      history: entries("disk newest", "shared", "disk oldest"),
     });
-    expect(next.history).toEqual([
+    expect(next.history.map((e) => e.value)).toEqual([
       "live prompt",
       "shared",
       "disk newest",
@@ -354,7 +410,7 @@ describe("composerReducer", () => {
 
     state = composerReducer(state, {
       type: "LOAD_HISTORY",
-      history: ["alpha from disk"],
+      history: entries("alpha from disk"),
     });
 
     expect(state.value).toBe("alpha from disk");
@@ -400,5 +456,62 @@ describe("composerReducer", () => {
     });
     const endOfFirst = composerReducer(first, { type: "MOVE_CURSOR_END" });
     expect(endOfFirst.cursor).toBe(8);
+  });
+
+  test("KILL_TO_END_OF_LINE captures the rest of the line and survives CLEAR", () => {
+    const start = freshState({ value: "hello world", cursor: 5 });
+    const killed = composerReducer(start, { type: "KILL_TO_END_OF_LINE" });
+    expect(killed.value).toBe("hello");
+    expect(killed.cursor).toBe(5);
+    expect(killed.killBuffer).toBe(" world");
+
+    // CLEAR resets the buffer/history pointers but the kill buffer is
+    // intentionally preserved so a yank in the next prompt restores it.
+    const cleared = composerReducer(killed, { type: "CLEAR" });
+    expect(cleared.value).toBe("");
+    expect(cleared.killBuffer).toBe(" world");
+
+    const yanked = composerReducer(cleared, { type: "YANK" });
+    expect(yanked.value).toBe(" world");
+    expect(yanked.cursor).toBe(" world".length);
+  });
+
+  test("KILL_TO_END_OF_LINE on a newline kills the newline only", () => {
+    const start = freshState({ value: "abc\ndef", cursor: 3 });
+    const killed = composerReducer(start, { type: "KILL_TO_END_OF_LINE" });
+    expect(killed.value).toBe("abcdef");
+    expect(killed.cursor).toBe(3);
+    expect(killed.killBuffer).toBe("\n");
+  });
+
+  test("KILL_TO_END_OF_LINE at end of buffer is a no-op and preserves prior kill", () => {
+    const start = freshState({
+      value: "ready",
+      cursor: 5,
+      killBuffer: "saved",
+    });
+    const next = composerReducer(start, { type: "KILL_TO_END_OF_LINE" });
+    expect(next).toBe(start);
+    expect(next.killBuffer).toBe("saved");
+  });
+
+  test("YANK with empty kill buffer is a no-op", () => {
+    const start = freshState({ value: "abc", cursor: 1, killBuffer: null });
+    const next = composerReducer(start, { type: "YANK" });
+    expect(next).toBe(start);
+  });
+
+  test("YANK inserts kill buffer at cursor", () => {
+    const start = freshState({
+      value: "abc",
+      cursor: 1,
+      killBuffer: "XYZ",
+    });
+    const next = composerReducer(start, { type: "YANK" });
+    expect(next.value).toBe("aXYZbc");
+    expect(next.cursor).toBe(4);
+    // killBuffer is preserved across yanks (Emacs semantics — it stays
+    // available for repeated yanks until the next kill replaces it).
+    expect(next.killBuffer).toBe("XYZ");
   });
 });

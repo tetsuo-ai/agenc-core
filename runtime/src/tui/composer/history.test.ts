@@ -34,7 +34,7 @@ describe("composer history persistence", () => {
     expect(out).toEqual([]);
   });
 
-  test("readHistory returns submitted values newest-first", async () => {
+  test("readHistory returns full entries newest-first", async () => {
     const path = join(home, HISTORY_FILE_REL);
     await mkdir(join(home, ".agenc"), { recursive: true });
     const lines = [
@@ -45,7 +45,8 @@ describe("composer history persistence", () => {
     writeFileSync(path, lines + "\n", "utf8");
 
     const out = await readHistory(home);
-    expect(out).toEqual(["newest", "middle", "oldest"]);
+    expect(out.map((e) => e.value)).toEqual(["newest", "middle", "oldest"]);
+    expect(out.map((e) => e.timestamp)).toEqual([3, 2, 1]);
   });
 
   test("readHistory silently skips malformed JSON lines", async () => {
@@ -61,7 +62,38 @@ describe("composer history persistence", () => {
     writeFileSync(path, contents, "utf8");
 
     const out = await readHistory(home);
-    expect(out).toEqual(["second", "first"]);
+    expect(out.map((e) => e.value)).toEqual(["second", "first"]);
+  });
+
+  test("readHistory roundtrips persisted mentions and tolerates entries without mentions", async () => {
+    const path = join(home, HISTORY_FILE_REL);
+    await mkdir(join(home, ".agenc"), { recursive: true });
+    const withMentions = JSON.stringify({
+      timestamp: 10,
+      value: "look at @src/index.ts please",
+      mentions: [
+        {
+          start: 8,
+          end: 22,
+          kind: "file",
+          resolved: "/repo/src/index.ts",
+        },
+      ],
+    });
+    const withoutMentions = JSON.stringify({
+      timestamp: 5,
+      value: "older without",
+    });
+    writeFileSync(path, [withoutMentions, withMentions].join("\n") + "\n", "utf8");
+
+    const out = await readHistory(home);
+    expect(out).toHaveLength(2);
+    expect(out[0]?.value).toBe("look at @src/index.ts please");
+    expect(out[0]?.mentions).toEqual([
+      { start: 8, end: 22, kind: "file", resolved: "/repo/src/index.ts" },
+    ]);
+    expect(out[1]?.value).toBe("older without");
+    expect(out[1]?.mentions).toBeUndefined();
   });
 
   test("appendHistory creates the file when missing", async () => {
@@ -92,6 +124,6 @@ describe("composer history persistence", () => {
 
     // Reading back returns newest-first as documented.
     const out = await readHistory(home);
-    expect(out).toEqual(["two", "one"]);
+    expect(out.map((e) => e.value)).toEqual(["two", "one"]);
   });
 });

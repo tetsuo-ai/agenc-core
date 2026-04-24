@@ -27,12 +27,14 @@ export function ComposerBuffer({
   promptPrefix,
   cursorActive,
   placeholder,
+  argumentHint,
 }: {
   readonly value: string;
   readonly cursor: number;
   readonly promptPrefix: string;
   readonly cursorActive: boolean;
   readonly placeholder?: string;
+  readonly argumentHint?: string;
 }): React.ReactElement {
   const terminalSize = useContext(TerminalSizeContext);
   const prefixWidth = Math.max(1, stringWidth(promptPrefix));
@@ -51,6 +53,13 @@ export function ComposerBuffer({
     column: cursorPosition.column,
     active: cursorActive && terminalFocused,
   });
+  const ghostHint = useMemo(
+    () =>
+      argumentHint && argumentHint.length > 0
+        ? { text: argumentHint, dim }
+        : undefined,
+    [argumentHint],
+  );
   const renderedValue = useMemo(
     () => {
       if (!cursorActive) {
@@ -63,16 +72,24 @@ export function ComposerBuffer({
       ) {
         return `${renderCursorCell(CURSOR_CELL)}${dim(placeholder)}`;
       }
-      return cursorModel.render(CURSOR_CELL, "", renderCursorCell);
+      return cursorModel.render(CURSOR_CELL, "", renderCursorCell, ghostHint);
     },
-    [cursorActive, cursorModel, placeholder, value.length],
+    [cursorActive, cursorModel, ghostHint, placeholder, value.length],
   );
 
+  // Per-row Text children eliminate the cursor-artifact vector: the previous
+  // single <Text wrap="truncate-end"> blob held all wrapped lines as one
+  // string with embedded \n, so when a line shortened across frames Ink's
+  // reconciler did not always clear the trailing inverted-cursor cell.
+  // Splitting per row scopes the diff to one logical row at a time.
+  const rows = renderedValue.split("\n");
   return (
-    <Box ref={cursorRef}>
-      <Text wrap="truncate-end">
-        <Ansi>{renderedValue}</Ansi>
-      </Text>
+    <Box ref={cursorRef} flexDirection="column">
+      {rows.map((row, index) => (
+        <Text key={index} wrap="truncate-end">
+          <Ansi>{row}</Ansi>
+        </Text>
+      ))}
     </Box>
   );
 }

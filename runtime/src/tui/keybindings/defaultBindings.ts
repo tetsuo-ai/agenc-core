@@ -44,6 +44,8 @@ export type BindingCommand =
   | "chat:cancel"
   | "chat:externalEditor"
   | "chat:imagePaste"
+  | "chat:killToEnd"
+  | "chat:yank"
   | "modal:confirm"
   | "modal:cancel"
   | "modal:yes"
@@ -205,6 +207,8 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
     [normalizeKeySequence("ctrl+x ctrl+e")]: "chat:externalEditor",
     [normalizeKeySequence("ctrl+v")]: "chat:imagePaste",
     [normalizeKeySequence("alt+v")]: "chat:imagePaste",
+    [normalizeKeySequence("ctrl+k")]: "chat:killToEnd",
+    [normalizeKeySequence("ctrl+y")]: "chat:yank",
   },
   modal: {
     [normalizeKeySequence("enter")]: "modal:confirm",
@@ -270,6 +274,8 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "chat:cancel",
   "chat:externalEditor",
   "chat:imagePaste",
+  "chat:killToEnd",
+  "chat:yank",
   "modal:confirm",
   "modal:cancel",
   "modal:yes",

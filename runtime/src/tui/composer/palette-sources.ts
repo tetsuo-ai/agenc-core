@@ -57,6 +57,28 @@ export interface SkillMentionServiceLike {
 }
 
 /**
+ * Minimal shape of an app/connector registry for the `$`-mention palette.
+ *
+ * Apps and skills share the `$<token>` trigger because both surface as
+ * runtime-side mentions but resolve through different managers. The two
+ * namespaces are expected to be disjoint at the manager layer; if a
+ * collision is ever observed, the manager owns disambiguation.
+ *
+ * Optional in `ComposerSession` — when no `appsManager` is plumbed in,
+ * `getAppMentionItems` returns `[]` and the existing skill-only behavior
+ * is preserved.
+ */
+export interface AppMentionServiceLike {
+  listApps(): Promise<
+    ReadonlyArray<{
+      readonly id: string;
+      readonly description?: string;
+      readonly category?: string;
+    }>
+  >;
+}
+
+/**
  * Produce palette items from a slash-command registry.
  *
  * Entries with `userInvocable: false` are filtered out — they're
@@ -121,6 +143,33 @@ export async function getSkillMentionItems(
         skill.path ?? "",
       ].filter((value) => value.length > 0),
       value: `$${skill.name}`,
+      kind: "skill" as const,
+    }));
+}
+
+export async function getAppMentionItems(
+  appsManager: AppMentionServiceLike | undefined,
+): Promise<PaletteItem[]> {
+  if (appsManager === undefined) return [];
+  let apps;
+  try {
+    apps = await appsManager.listApps();
+  } catch {
+    return [];
+  }
+  return apps
+    .filter((app) => app.id.trim().length > 0)
+    .map((app) => ({
+      id: `app:${app.id}`,
+      label: `$${app.id}`,
+      description:
+        app.description ??
+        (app.category ? `${app.category} app` : "AgenC app"),
+      keywords: [app.id, app.category ?? ""].filter(
+        (value) => value.length > 0,
+      ),
+      value: `$${app.id}`,
+      kind: "app" as const,
     }));
 }
 

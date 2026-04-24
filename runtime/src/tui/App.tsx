@@ -391,6 +391,11 @@ function TUIRoot({
           readonly skillsManager?: ComposerSession["skillsManager"];
         }
       ).skillsManager,
+      appsManager: (
+        session.services as {
+          readonly appsManager?: ComposerSession["appsManager"];
+        }
+      ).appsManager,
     }),
     [session],
   );

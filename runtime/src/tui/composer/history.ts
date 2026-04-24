@@ -25,10 +25,25 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+/**
+ * Span of one mention captured at submit time. Persisted alongside the
+ * entry value so a later up-arrow recall preserves the mention metadata
+ * without re-running the workspace scanner. Schema is forward-compatible:
+ * old JSONL lines without `mentions` continue to read as
+ * `{ ...entry, mentions: undefined }`.
+ */
+export interface PersistedMention {
+  readonly start: number;
+  readonly end: number;
+  readonly kind: "file" | "skill" | "app";
+  readonly resolved?: string;
+}
+
 export interface HistoryEntry {
   timestamp: number;
   value: string;
   cwd?: string;
+  mentions?: readonly PersistedMention[];
 }
 
 /**
@@ -43,14 +58,18 @@ function historyPath(home: string): string {
 }
 
 /**
- * Returns submitted-value strings newest-first, reading at most `limit`
- * (default 1000) entries from the tail of the file. Malformed JSON
- * lines are skipped, and a missing file returns `[]`.
+ * Returns full `HistoryEntry` records newest-first, reading at most
+ * `limit` (default 1000) entries from the tail of the file. Malformed
+ * JSON lines are skipped, and a missing file returns `[]`.
+ *
+ * Returning `HistoryEntry[]` (rather than just `string[]`) lets recall
+ * paths preserve persisted mention spans so an up-arrow rehydration can
+ * skip re-scanning the workspace.
  */
 export async function readHistory(
   home: string,
   limit?: number,
-): Promise<string[]> {
+): Promise<HistoryEntry[]> {
   const path = historyPath(home);
   const cap = typeof limit === "number" && limit > 0 ? limit : 1000;
 
@@ -75,7 +94,7 @@ export async function readHistory(
   // file on every read.
   const tail = lines.length > cap ? lines.slice(lines.length - cap) : lines;
 
-  const out: string[] = [];
+  const out: HistoryEntry[] = [];
   // Walk tail-first so newest entries come out at index 0.
   for (let i = tail.length - 1; i >= 0; i--) {
     const line = tail[i]!;
@@ -87,7 +106,24 @@ export async function readHistory(
         typeof parsed === "object" &&
         typeof (parsed as HistoryEntry).value === "string"
       ) {
-        out.push((parsed as HistoryEntry).value);
+        const entry = parsed as HistoryEntry;
+        const mentions = Array.isArray(entry.mentions)
+          ? (entry.mentions.filter(
+              (m) =>
+                m !== null &&
+                typeof m === "object" &&
+                typeof (m as PersistedMention).start === "number" &&
+                typeof (m as PersistedMention).end === "number" &&
+                typeof (m as PersistedMention).kind === "string",
+            ) as readonly PersistedMention[])
+          : undefined;
+        out.push({
+          timestamp:
+            typeof entry.timestamp === "number" ? entry.timestamp : 0,
+          value: entry.value,
+          cwd: typeof entry.cwd === "string" ? entry.cwd : undefined,
+          mentions: mentions && mentions.length > 0 ? mentions : undefined,
+        });
       }
     } catch {
       // Corrupted line — silently skip.

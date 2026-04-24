@@ -18,6 +18,8 @@
 
 import { useMemo, useReducer, type Dispatch } from "react";
 
+import type { HistoryEntry, PersistedMention } from "./history.js";
+
 export type HistorySearchStatus = "idle" | "match" | "no-match";
 export const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 
@@ -36,7 +38,7 @@ export interface ComposerHistorySearchState {
   originalValue: string;
   originalCursor: number;
   query: string;
-  matches: string[];
+  matches: HistoryEntry[];
   matchIndex: number | null;
   status: HistorySearchStatus;
 }
@@ -44,7 +46,10 @@ export interface ComposerHistorySearchState {
 export interface ComposerState {
   value: string;
   cursor: number;
-  history: string[];
+  // Newest-first list of fully-persisted history entries. Was previously
+  // `string[]`; widened to `HistoryEntry[]` so up-arrow recall preserves
+  // the persisted mention spans without re-scanning the workspace.
+  history: HistoryEntry[];
   historyIdx: number | null;
   draftBeforeHistory: string | null;
   historySearch: ComposerHistorySearchState | null;
@@ -55,6 +60,10 @@ export interface ComposerState {
   selectedRemoteImageIndex: number | null;
   pasteInFlight: boolean;
   pendingEnters: number;
+  // Single-entry kill buffer (Emacs Ctrl-K / Ctrl-Y). Survives CLEAR and
+  // SUBMIT so a yank in the next prompt restores the previous kill. `null`
+  // when nothing has been killed yet.
+  killBuffer: string | null;
 }
 
 export type ComposerAction =
@@ -70,13 +79,19 @@ export type ComposerAction =
   | { type: "MOVE_CURSOR"; delta: number }
   | { type: "MOVE_CURSOR_HOME" }
   | { type: "MOVE_CURSOR_END" }
-  | { type: "SUBMIT"; historyValue?: string }
+  | {
+      type: "SUBMIT";
+      historyValue?: string;
+      historyMentions?: readonly PersistedMention[];
+    }
   | { type: "HISTORY_PREV" }
   | { type: "HISTORY_NEXT" }
   | { type: "NEWLINE" }
   | { type: "PASTE_START" }
   | { type: "PASTE_COMPLETE" }
   | { type: "CLEAR" }
+  | { type: "KILL_TO_END_OF_LINE" }
+  | { type: "YANK" }
   | { type: "HISTORY_SEARCH_START" }
   | { type: "HISTORY_SEARCH_APPEND"; text: string }
   | { type: "HISTORY_SEARCH_BACKSPACE" }
@@ -85,7 +100,7 @@ export type ComposerAction =
   | { type: "HISTORY_SEARCH_NEWER" }
   | { type: "HISTORY_SEARCH_ACCEPT" }
   | { type: "HISTORY_SEARCH_CANCEL" }
-  | { type: "LOAD_HISTORY"; history: readonly string[] };
+  | { type: "LOAD_HISTORY"; history: readonly HistoryEntry[] };
 
 /**
  * Clamp a cursor position to `[0, value.length]` so every reducer
@@ -143,35 +158,37 @@ function restoreHistorySearchOriginal(
 }
 
 function findHistorySearchMatches(
-  history: readonly string[],
+  history: readonly HistoryEntry[],
   query: string,
-): string[] {
+): HistoryEntry[] {
   const foldedQuery = query.toLocaleLowerCase();
   if (foldedQuery.length === 0) return [];
 
   const seen = new Set<string>();
-  const matches: string[] = [];
+  const matches: HistoryEntry[] = [];
   for (const entry of history) {
-    if (typeof entry !== "string" || entry.length === 0) continue;
-    if (!entry.toLocaleLowerCase().includes(foldedQuery)) continue;
-    if (seen.has(entry)) continue;
-    seen.add(entry);
+    const value = entry?.value;
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (!value.toLocaleLowerCase().includes(foldedQuery)) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
     matches.push(entry);
   }
   return matches;
 }
 
 function mergeHistory(
-  current: readonly string[],
-  loaded: readonly string[],
-): string[] {
+  current: readonly HistoryEntry[],
+  loaded: readonly HistoryEntry[],
+): HistoryEntry[] {
   const seen = new Set<string>();
-  const out: string[] = [];
+  const out: HistoryEntry[] = [];
 
   for (const entry of [...current, ...loaded]) {
-    if (typeof entry !== "string" || entry.length === 0) continue;
-    if (seen.has(entry)) continue;
-    seen.add(entry);
+    const value = entry?.value;
+    if (typeof value !== "string" || value.length === 0) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
     out.push(entry);
   }
 
@@ -207,8 +224,8 @@ function applyHistorySearchQuery(
   const match = matches[0]!;
   return {
     ...state,
-    value: match,
-    cursor: match.length,
+    value: match.value,
+    cursor: match.value.length,
     historySearch: {
       ...search,
       query,
@@ -242,8 +259,8 @@ function stepHistorySearch(
 
   return {
     ...state,
-    value: match,
-    cursor: match.length,
+    value: match.value,
+    cursor: match.value.length,
     historySearch: {
       ...search,
       matchIndex: nextIndex,
@@ -255,6 +272,7 @@ function stepHistorySearch(
 function commitToHistory(
   state: ComposerState,
   explicitHistoryValue?: string,
+  historyMentions?: readonly PersistedMention[],
 ): ComposerState {
   const value = state.value;
   const historyValue = expandPendingPastes(
@@ -282,10 +300,17 @@ function commitToHistory(
   // HISTCONTROL=ignoredups. Avoids spamming the history file when a
   // user re-runs the same prompt.
   const newest = state.history[0];
+  const newEntry: HistoryEntry = {
+    timestamp: Date.now(),
+    value: historyValue,
+    ...(historyMentions && historyMentions.length > 0
+      ? { mentions: historyMentions }
+      : {}),
+  };
   const history =
-    typeof newest === "string" && newest === historyValue
+    newest && newest.value === historyValue
       ? state.history
-      : [historyValue, ...state.history];
+      : [newEntry, ...state.history];
   return {
     ...state,
     value: "",
@@ -610,7 +635,11 @@ export function composerReducer(
           pendingEnters: state.pendingEnters + 1,
         };
       }
-      return commitToHistory(state, action.historyValue);
+      return commitToHistory(
+        state,
+        action.historyValue,
+        action.historyMentions,
+      );
     }
     case "CLEAR": {
       return {
@@ -624,6 +653,49 @@ export function composerReducer(
         largePasteCounters: {},
         localImages: [],
         remoteImages: [],
+        selectedRemoteImageIndex: null,
+      };
+    }
+    case "KILL_TO_END_OF_LINE": {
+      const cursor = clampCursor(state.cursor, state.value.length);
+      const newlineAt = state.value.indexOf("\n", cursor);
+      let killStart = cursor;
+      let killEnd: number;
+      if (newlineAt === -1) {
+        // No newline ahead — kill to end of buffer.
+        killEnd = state.value.length;
+      } else if (newlineAt === cursor) {
+        // Caret sits on the newline itself — kill the newline only.
+        killEnd = cursor + 1;
+      } else {
+        killEnd = newlineAt;
+      }
+      const killed = state.value.slice(killStart, killEnd);
+      if (killed.length === 0) {
+        // Nothing to kill (cursor at end of buffer with no newline).
+        // Leave killBuffer untouched so a previous kill survives.
+        return state;
+      }
+      const nextValue =
+        state.value.slice(0, killStart) + state.value.slice(killEnd);
+      return {
+        ...state,
+        value: nextValue,
+        cursor: killStart,
+        killBuffer: killed,
+        selectedRemoteImageIndex: null,
+      };
+    }
+    case "YANK": {
+      const text = state.killBuffer;
+      if (text === null || text.length === 0) return state;
+      const cursor = clampCursor(state.cursor, state.value.length);
+      const nextValue =
+        state.value.slice(0, cursor) + text + state.value.slice(cursor);
+      return {
+        ...state,
+        value: nextValue,
+        cursor: cursor + text.length,
         selectedRemoteImageIndex: null,
       };
     }
@@ -723,8 +795,8 @@ export function composerReducer(
           ...state,
           draftBeforeHistory: state.value,
           historyIdx: 0,
-          value: entry,
-          cursor: entry.length,
+          value: entry.value,
+          cursor: entry.value.length,
           pendingPastes: [],
           largePasteCounters: {},
           localImages: [],
@@ -742,8 +814,8 @@ export function composerReducer(
       return {
         ...state,
         historyIdx: nextIdx,
-        value: entry,
-        cursor: entry.length,
+        value: entry.value,
+        cursor: entry.value.length,
         pendingPastes: [],
         largePasteCounters: {},
         localImages: [],
@@ -777,8 +849,8 @@ export function composerReducer(
       return {
         ...state,
         historyIdx: nextIdx,
-        value: entry,
-        cursor: entry.length,
+        value: entry.value,
+        cursor: entry.value.length,
         pendingPastes: [],
         largePasteCounters: {},
         localImages: [],
@@ -820,7 +892,7 @@ export function composerReducer(
 }
 
 export interface UseComposerStateOptions {
-  readonly initialHistory: string[];
+  readonly initialHistory: readonly HistoryEntry[];
   readonly initialValue?: string;
 }
 
@@ -850,13 +922,18 @@ export function useComposerState(
       selectedRemoteImageIndex: null,
       pasteInFlight: false,
       pendingEnters: 0,
+      killBuffer: null,
     }),
     // We intentionally depend on the array contents via a stable key
-    // derived from length + first entry. Full identity comparison isn't
-    // worth it here; the caller is expected to pass a fresh array when
-    // history actually changes.
+    // derived from length + first entry's value. Full identity comparison
+    // isn't worth it here; the caller is expected to pass a fresh array
+    // when history actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [opts.initialHistory.length, opts.initialHistory[0], opts.initialValue],
+    [
+      opts.initialHistory.length,
+      opts.initialHistory[0]?.value,
+      opts.initialValue,
+    ],
   );
   const [state, dispatch] = useReducer(composerReducer, initialState);
   return { state, dispatch };

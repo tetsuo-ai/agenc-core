@@ -67,9 +67,11 @@ import {
 } from "./paste-store.js";
 import { Palette, fuzzyMatch, type PaletteItem } from "./Palette.js";
 import {
+  getAppMentionItems,
   getMentionItems,
   getSkillMentionItems,
   getSlashCommandItems,
+  type AppMentionServiceLike,
   type SkillMentionServiceLike,
 } from "./palette-sources.js";
 import {
@@ -106,6 +108,12 @@ export interface ComposerSession {
   readonly emit?: (event: string, payload?: unknown) => void;
   /** Optional live skills service for Codex-style `$skill` mentions. */
   readonly skillsManager?: SkillMentionServiceLike;
+  /**
+   * Optional app/connector registry. When present, app entries are merged
+   * into the same `$` palette as skills with a `kind: "app"` tag so the
+   * insertion handler can route them to the correct runtime resolver.
+   */
+  readonly appsManager?: AppMentionServiceLike;
 }
 
 export interface ComposerAttachmentsConfig {
@@ -330,6 +338,19 @@ export const Composer: React.FC<ComposerProps> = ({
     [slashDraft, slashItems],
   );
   const slashPreviewItem = slashMatches[0] ?? null;
+  // Inline ghost hint for slash commands. Only shown when there is exactly
+  // one matching command — otherwise the user is still narrowing down which
+  // command they want and a hint would be misleading. Cursor.render gates
+  // the actual rendering on `isAtEnd()`, so this naturally stays hidden
+  // when the caret is mid-buffer.
+  const argumentHint = useMemo<string | undefined>(() => {
+    if (slashDraft === null) return undefined;
+    if (slashMatches.length !== 1) return undefined;
+    const description = slashMatches[0]?.description;
+    if (typeof description !== "string" || description.length === 0)
+      return undefined;
+    return ` — ${description}`;
+  }, [slashDraft, slashMatches]);
   const showSlashPalette =
     Boolean(slashDraft?.cursorInsideToken) &&
     slashTokenKey !== dismissedSlashToken &&
@@ -423,15 +444,35 @@ export const Composer: React.FC<ComposerProps> = ({
     }
     let alive = true;
     const timeout = setTimeout(() => {
-      void getSkillMentionItems(session.skillsManager).then((items) => {
-        if (alive) setSkillMentionItems(items);
+      // Skills and apps share the `$<token>` trigger; they're fetched in
+      // parallel and merged into one ranked list. The `kind` tag on each
+      // PaletteItem lets the insertion handler route to the right resolver.
+      void Promise.all([
+        getSkillMentionItems(session.skillsManager),
+        getAppMentionItems(session.appsManager),
+      ]).then(([skillItems, appItems]) => {
+        if (!alive) return;
+        if (appItems.length === 0) {
+          setSkillMentionItems(skillItems);
+          return;
+        }
+        if (skillItems.length === 0) {
+          setSkillMentionItems(appItems);
+          return;
+        }
+        setSkillMentionItems([...skillItems, ...appItems]);
       });
     }, 80);
     return () => {
       alive = false;
       clearTimeout(timeout);
     };
-  }, [session.skillsManager, skillDraft?.cursorInsideToken, skillDraft?.query]);
+  }, [
+    session.appsManager,
+    session.skillsManager,
+    skillDraft?.cursorInsideToken,
+    skillDraft?.query,
+  ]);
 
   // Hold the latest `state.value` in a ref so imperative callbacks
   // (paste-complete → appendHistory) can read the freshest buffer
@@ -691,13 +732,35 @@ export const Composer: React.FC<ComposerProps> = ({
       return;
     }
     const snapshot = buildSubmittedText(effectiveValue, state);
+    // Re-scan mentions on the post-`expandPendingPastes` snapshot so the
+    // persisted offsets line up with the value that lands in history. The
+    // live `mentions` memo is computed against the pre-expansion buffer
+    // and would carry stale offsets if a placeholder expanded in the
+    // middle of the prompt.
+    const submittedMentions = scanMentions(
+      snapshot,
+      session.cwd,
+      config?.attachments?.allowedRoots,
+    ).map((m) => ({
+      start: m.start,
+      end: m.end,
+      kind: "file" as const,
+      ...(m.validation.ok ? { resolved: m.validation.resolved } : {}),
+    }));
     onSubmitRef.current(snapshot);
-    dispatch({ type: "SUBMIT", historyValue: snapshot });
+    dispatch({
+      type: "SUBMIT",
+      historyValue: snapshot,
+      historyMentions: submittedMentions,
+    });
     if (home.length > 0) {
       const entry: HistoryEntry = {
         timestamp: Date.now(),
         value: snapshot,
         cwd: session.cwd,
+        ...(submittedMentions.length > 0
+          ? { mentions: submittedMentions }
+          : {}),
       };
       // Fire-and-forget — appending to ~/.agenc/history.jsonl must
       // never block the UI. Failures are swallowed because the user's
@@ -707,6 +770,7 @@ export const Composer: React.FC<ComposerProps> = ({
       });
     }
   }, [
+    config?.attachments?.allowedRoots,
     dispatch,
     hasPendingTurn,
     home,
@@ -817,9 +881,48 @@ export const Composer: React.FC<ComposerProps> = ({
     showSkillPalette,
   ]);
 
+  // Kill (Ctrl-K) and yank (Ctrl-Y) follow Emacs semantics. The kill buffer
+  // survives CLEAR and SUBMIT so a yank in the next prompt can restore the
+  // last kill — the reducer keeps `killBuffer` outside the per-submit reset.
+  // Both handlers flush the burst-debounced pending char first, matching the
+  // submit/cancel ordering above.
+  const handleKillToEnd = useCallback((): void => {
+    if (inputLocked) return;
+    flushPendingPlainChar();
+    if (state.historySearch !== null) return;
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
+    dispatch({ type: "KILL_TO_END_OF_LINE" });
+  }, [
+    dispatch,
+    flushPendingPlainChar,
+    inputLocked,
+    showMentionPalette,
+    showSlashPalette,
+    showSkillPalette,
+    state.historySearch,
+  ]);
+
+  const handleYank = useCallback((): void => {
+    if (inputLocked) return;
+    flushPendingPlainChar();
+    if (state.historySearch !== null) return;
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
+    dispatch({ type: "YANK" });
+  }, [
+    dispatch,
+    flushPendingPlainChar,
+    inputLocked,
+    showMentionPalette,
+    showSlashPalette,
+    showSkillPalette,
+    state.historySearch,
+  ]);
+
   useKeybinding("chat:submit", handleSubmit, "chat");
   useKeybinding("chat:cancel", handleCancel, "chat");
   useKeybinding("chat:newline", handleNewline, "chat");
+  useKeybinding("chat:killToEnd", handleKillToEnd, "chat");
+  useKeybinding("chat:yank", handleYank, "chat");
   useKeybinding("history:prev", handleHistoryPrev, "chat");
   useKeybinding("history:next", handleHistoryNext, "chat");
   useKeybinding("history:search", handleHistorySearch, "global");
@@ -1064,9 +1167,21 @@ export const Composer: React.FC<ComposerProps> = ({
       };
     }
     if (skillDraft && skillDraft.query.length === 0) {
+      const sourcesLabel =
+        session.appsManager !== undefined && session.skillsManager !== undefined
+          ? "skills and apps"
+          : session.appsManager !== undefined
+            ? "apps"
+            : "skills";
+      const tokenLabel =
+        session.appsManager !== undefined && session.skillsManager !== undefined
+          ? "$mention"
+          : session.appsManager !== undefined
+            ? "$app"
+            : "$skill";
       return {
         color: colors.primary,
-        text: `Browse skills with Up/Down. ${acceptSuggestionKey} or ${submitKey} inserts the selected $skill.`,
+        text: `Browse ${sourcesLabel} with Up/Down. ${acceptSuggestionKey} or ${submitKey} inserts the selected ${tokenLabel}.`,
       };
     }
     if (skillDraft && skillPreviewItem) {
@@ -1087,6 +1202,8 @@ export const Composer: React.FC<ComposerProps> = ({
     formattedNewlineKeys,
     mentionDraft,
     mentionPreviewItem,
+    session.appsManager,
+    session.skillsManager,
     skillDraft,
     skillPreviewItem,
     slashConflict,
@@ -1237,6 +1354,7 @@ export const Composer: React.FC<ComposerProps> = ({
               promptPrefix={promptPrefix}
               cursorActive={!inputLocked}
               placeholder={placeholderText}
+              argumentHint={argumentHint}
             />
           </Box>
         </Box>

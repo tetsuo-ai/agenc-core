@@ -49,6 +49,13 @@ export interface PaletteItem {
   readonly keywords?: readonly string[];
   /** What gets inserted into the composer on select. */
   readonly value: string;
+  /**
+   * Which `$`-trigger source this item came from. Used by the composer's
+   * insertion handler so skill vs. app mentions can be routed to the right
+   * runtime resolver. Optional and only set on items produced by
+   * `getSkillMentionItems` / `getAppMentionItems`.
+   */
+  readonly kind?: "skill" | "app";
 }
 
 /** Props accepted by `<Palette>`. See component comment for details. */
