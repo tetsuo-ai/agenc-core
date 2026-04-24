@@ -281,7 +281,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
   const todoWriteTool: Tool = {
     name: "TodoWrite",
     description:
-      "Claude-compatible todo-list alias. Prefer update_plan for new AgenC/Codex-runtime behavior; use this only when a Claude-style todo list is requested.",
+      "Todo-list alias. Prefer update_plan for new AgenC runtime behavior; use this only when a todo-list-shaped workflow is requested.",
     metadata: metadata("TodoWrite"),
     inputSchema: {
       type: "object",

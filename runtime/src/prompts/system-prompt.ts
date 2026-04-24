@@ -135,7 +135,7 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   const hasExecCommand = hasTool("exec_command");
   if (hasTool("apply_patch")) {
     items.push(
-      `For source-code edits, use apply_patch as the primary editing tool. Pass the full *** Begin Patch / *** End Patch body as the patch argument. The patch is AgenC/Codex grammar, not a git unified diff: do not include diff --git, --- a/file, or +++ b/file headers. Do not use shell redirection, heredocs, sed -i, or perl -i for source edits.`,
+      `For source-code edits, use apply_patch as the primary editing tool. Pass the full *** Begin Patch / *** End Patch body as the patch argument. The patch uses AgenC grammar, not a git unified diff: do not include diff --git, --- a/file, or +++ b/file headers. Do not use shell redirection, heredocs, sed -i, or perl -i for source edits.`,
     );
     items.push(
       `Use system.writeFile/system.editFile only as AgenC compatibility tools when explicitly needed or after loading them through system.searchTools. Normal code changes should go through apply_patch.`,

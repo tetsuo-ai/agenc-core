@@ -8,6 +8,7 @@ import { createRoot } from "../ink/root.js";
 import StdinContext from "../ink/components/StdinContext.js";
 import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
+import { charInCellAt } from "../ink/screen.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
   ModelSelectionOverlay,
@@ -111,6 +112,23 @@ function getRoot(stdout: PassThrough): DOMElement {
   return instance.rootNode;
 }
 
+function latestFrameText(stdout: PassThrough): string {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen as never, x, y) ?? " ";
+    }
+    rows.push(row.replace(/\s+$/u, ""));
+  }
+  return rows.join("\n");
+}
+
 function makeKeyEvent(opts: {
   name?: string;
   sequence?: string;
@@ -182,6 +200,43 @@ describe("ModelSelectionOverlay", () => {
     expect(text).toContain("Model");
     expect(text).toContain("xAI");
     expect(text).toContain("OpenAI");
+    unmount();
+  });
+
+  test("renders options as compact single-row selection entries", async () => {
+    const emitter = new EventEmitter();
+    const { stdout, unmount } = await mount(
+      withProviders(
+        emitter,
+        <ModelSelectionOverlay
+          title="Select Model"
+          items={[
+            {
+              id: "reasoning",
+              label: "grok-4.20-0309-reasoning",
+              description: "Reasoning model",
+            },
+            {
+              id: "fast",
+              label: "grok-4-1-fast-non-reasoning",
+              description: "Fast model",
+            },
+          ]}
+          onSelect={() => undefined}
+          onClose={() => undefined}
+        />,
+      ),
+    );
+
+    const rows = latestFrameText(stdout)
+      .split("\n")
+      .map((row) => row.trim());
+    expect(
+      rows.some((row) =>
+        row.includes("\u203A grok-4.20-0309-reasoning  Reasoning model"),
+      ),
+    ).toBe(true);
+    expect(rows.some((row) => row === "Reasoning model")).toBe(false);
     unmount();
   });
 

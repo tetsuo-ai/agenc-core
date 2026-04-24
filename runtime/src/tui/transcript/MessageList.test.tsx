@@ -363,6 +363,37 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("renders shell write policy failures as compact blocked cells", async () => {
+    const result = JSON.stringify({
+      error:
+        "shell_workspace_file_write_disallowed: Workflow implementation turns must use structured file tools for project file authoring. Use `apply_patch` for source edits instead of shell redirection. Blocked target(s): /repo/CMakeLists.txt",
+    });
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "exec-block",
+            kind: "tool_call",
+            toolName: "exec_command",
+            toolArgs: {
+              cmd: "cat > CMakeLists.txt << 'EOF'\nproject(x)\nEOF",
+            },
+            toolResultContent: result,
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("✗ Blocked shell write");
+    expect(frame).toContain("Blocked target: /repo/CMakeLists.txt");
+    expect(frame).toContain("Use apply_patch for source edits");
+    expect(frame).not.toContain("Workflow implementation turns");
+    expect(frame).not.toContain("cat > CMakeLists.txt");
+    unmount();
+  });
+
   test("long transcript renders the scrollback tail without debug noise", async () => {
     const messages = Array.from({ length: 260 }, (_, index) =>
       mkMsg({

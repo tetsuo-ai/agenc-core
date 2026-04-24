@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,7 +21,7 @@ describe("apply_patch tool", () => {
     root = "";
   });
 
-  test("validates Codex patch targets before invoking the runner", async () => {
+  test("validates AgenC patch targets before invoking the runner", async () => {
     const runner = vi.fn<ApplyPatchRunner>(async () => ({
       stdout: "Success. Updated the following files:\nA new.txt\n",
       stderr: "",
@@ -48,7 +48,66 @@ describe("apply_patch tool", () => {
     );
   });
 
-  test("accepts the upstream Codex JSON input key", async () => {
+  test("applies add, update, and delete operations in-process", async () => {
+    await writeFile(join(root, "modify.txt"), "line1\nline2\n", "utf8");
+    await writeFile(join(root, "delete.txt"), "obsolete\n", "utf8");
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Add File: nested/new.txt\n" +
+        "+created\n" +
+        "*** Delete File: delete.txt\n" +
+        "*** Update File: modify.txt\n" +
+        "@@\n" +
+        "-line2\n" +
+        "+changed\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe(
+      "Success. Updated the following files:\nA nested/new.txt\nM modify.txt\nD delete.txt",
+    );
+    await expect(readFile(join(root, "nested/new.txt"), "utf8")).resolves.toBe(
+      "created\n",
+    );
+    await expect(readFile(join(root, "modify.txt"), "utf8")).resolves.toBe(
+      "line1\nchanged\n",
+    );
+    await expect(stat(join(root, "delete.txt"))).rejects.toThrow();
+  });
+
+  test("moves updated files in-process", async () => {
+    await mkdir(join(root, "old"), { recursive: true });
+    await writeFile(join(root, "old/name.txt"), "old content\n", "utf8");
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: old/name.txt\n" +
+        "*** Move to: renamed/dir/name.txt\n" +
+        "@@\n" +
+        "-old content\n" +
+        "+new content\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe(
+      "Success. Updated the following files:\nM renamed/dir/name.txt",
+    );
+    await expect(readFile(join(root, "renamed/dir/name.txt"), "utf8")).resolves.toBe(
+      "new content\n",
+    );
+    await expect(stat(join(root, "old/name.txt"))).rejects.toThrow();
+  });
+
+  test("accepts the alternate JSON input key", async () => {
     const runner = vi.fn<ApplyPatchRunner>(async () => ({
       stdout: "Success. Updated the following files:\nA new.txt\n",
       stderr: "",

@@ -192,7 +192,6 @@ export function getModelPaletteItems(options: {
   return models.map((model) => ({
     id: `${provider}:${model}`,
     label: model,
-    description: `${PROVIDER_DISPLAY_LABELS[provider]} model`,
     keywords: [model, PROVIDER_DISPLAY_LABELS[provider]],
     value: model,
   }));

@@ -102,7 +102,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         command: {
           type: "string",
           description:
-            "Compatibility alias for cmd. Prefer cmd for Codex-style calls.",
+            "Compatibility alias for cmd. Prefer cmd for AgenC calls.",
         },
         workdir: {
           type: "string",
@@ -111,7 +111,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         cwd: {
           type: "string",
           description:
-            "Compatibility alias for workdir. Prefer workdir for Codex-style calls.",
+            "Compatibility alias for workdir. Prefer workdir for AgenC calls.",
         },
         timeoutMs: {
           type: "number",
@@ -146,12 +146,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         sandbox_permissions: {
           type: "object",
           description:
-            "Codex-compatible permissions field accepted for request shape parity.",
+            "Permissions field accepted for request shape parity.",
         },
         additional_permissions: {
           type: "object",
           description:
-            "Codex-compatible additional permissions field accepted for request shape parity.",
+            "Additional permissions field accepted for request shape parity.",
         },
         justification: {
           type: "string",

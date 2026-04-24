@@ -150,6 +150,16 @@ function isItemDisabled(item: ModelSelectionItem | undefined): boolean {
   );
 }
 
+function selectionPrefix(
+  index: number,
+  selected: boolean,
+  searchable: boolean,
+): string {
+  const marker = selected ? "\u203A" : " ";
+  if (searchable) return `${marker} `;
+  return `${marker} ${index + 1}. `;
+}
+
 function findSelectableIndex(
   items: readonly ModelSelectionItem[],
   start: number,
@@ -406,20 +416,36 @@ export const ModelSelectionOverlay: React.FC<ModelSelectionOverlayProps> = ({
             {windowedItems.items.map((item, offset) => {
               const index = windowedItems.start + offset;
               const isSelected = index === selectedIndex;
+              const disabledReason = isItemDisabled(item)
+                ? item.disabledReason ?? "Unavailable"
+                : undefined;
               return (
-                <Box key={item.id} flexDirection="column" marginBottom={0}>
+                <Box key={item.id} flexDirection="row" width="100%">
                   <Text
+                    inverse={isSelected}
+                    color={isSelected ? undefined : dim}
+                  >
+                    {selectionPrefix(index, isSelected, searchable)}
+                  </Text>
+                  <Text
+                    wrap="truncate-end"
                     inverse={isSelected}
                     color={isSelected ? undefined : accent}
                   >
                     {item.label}
                   </Text>
                   {item.description ? (
-                    <Text color={dim}>{item.description}</Text>
+                    <Text wrap="truncate-end" inverse={isSelected} color={dim}>
+                      {`  ${item.description}`}
+                    </Text>
                   ) : null}
-                  {isItemDisabled(item) ? (
-                    <Text color={warning}>
-                      {item.disabledReason ?? "Unavailable"}
+                  {disabledReason ? (
+                    <Text
+                      wrap="truncate-end"
+                      inverse={isSelected}
+                      color={warning}
+                    >
+                      {`  ${disabledReason}`}
                     </Text>
                   ) : null}
                 </Box>

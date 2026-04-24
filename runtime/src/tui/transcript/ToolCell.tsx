@@ -15,7 +15,14 @@ import { theme } from "../theme.js";
 import { collapseOutput } from "./ExecCell.js";
 import { sanitizeTranscriptText } from "./sanitize.js";
 
-type ToolFamily = "read" | "write" | "edit" | "mcp" | "search" | "generic";
+type ToolFamily =
+  | "read"
+  | "write"
+  | "edit"
+  | "mcp"
+  | "search"
+  | "exec"
+  | "generic";
 const TOOL_ARGS_MAX = 100;
 
 export interface ToolCellProps {
@@ -34,6 +41,11 @@ interface ToolPresentation {
   readonly target: string;
   readonly argsSummary: string;
   readonly preserveResultLines: boolean;
+}
+
+interface ShellWriteBlockSummary {
+  readonly target: string;
+  readonly detail: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -68,6 +80,30 @@ function compactJson(value: unknown): string {
     : rendered;
 }
 
+function parseJsonRecord(input: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(input);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeShellWriteBlock(
+  value: string | undefined,
+): ShellWriteBlockSummary | null {
+  if (!value) return null;
+  const parsed = parseJsonRecord(value);
+  const error = typeof parsed?.error === "string" ? parsed.error : value;
+  if (!error.includes("shell_workspace_file_write_disallowed")) return null;
+  const targetMatch = /Blocked target\(s\):\s*(.+)$/u.exec(error);
+  const target = targetMatch?.[1]?.trim() ?? "workspace file";
+  return {
+    target: "shell write",
+    detail: `Blocked target: ${target}. Use apply_patch for source edits.`,
+  };
+}
+
 function isMcpToolName(toolName: string): boolean {
   return toolName.startsWith("mcp.") || toolName.startsWith("mcp__");
 }
@@ -90,6 +126,9 @@ function classifyTool(toolName: string | undefined): ToolFamily {
   if (toolName === "system.grep" || toolName === "system.glob" || toolName === "system.listDir") {
     return "search";
   }
+  if (toolName === "exec_command" || toolName === "system.bash" || toolName === "desktop.bash") {
+    return "exec";
+  }
   if (isMcpToolName(toolName)) return "mcp";
   return "generic";
 }
@@ -100,6 +139,10 @@ function toolTarget(
   toolArgs: unknown,
 ): string {
   if (family === "mcp" && toolName) return displayMcpName(toolName);
+  if (family === "exec") {
+    const command = readStringField(toolArgs, ["command", "cmd"]);
+    return command ? compactJson(command) : toolName ?? "exec";
+  }
   if (family === "generic" && toolName) return toolName;
   const path = readStringField(toolArgs, ["path", "file_path", "cwd"]);
   if (path) return path;
@@ -163,6 +206,15 @@ function buildPresentation(
         argsSummary,
         preserveResultLines: false,
       };
+    case "exec":
+      return {
+        family,
+        runningVerb: "Running",
+        doneVerb: "Ran",
+        target,
+        argsSummary: "",
+        preserveResultLines: false,
+      };
     case "generic":
       return {
         family,
@@ -222,6 +274,10 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     () => sanitizeTranscriptText(progress ?? "").trimEnd(),
     [progress],
   );
+  const shellWriteBlock = useMemo(
+    () => summarizeShellWriteBlock(result),
+    [result],
+  );
 
   const statusColor = isError
     ? theme.colors.error
@@ -229,17 +285,25 @@ export const ToolCell: React.FC<ToolCellProps> = ({
       ? theme.colors.success
       : theme.colors.dim;
   const glyph = isError ? "✗" : isComplete ? "✓" : "·";
-  const verb = isComplete ? presentation.doneVerb : presentation.runningVerb;
-  const detail =
-    normalizedResult.length > 0
-      ? normalizedResult
-      : normalizedProgress.length > 0
-        ? normalizedProgress
-        : "";
+  const verb = shellWriteBlock
+    ? "Blocked"
+    : isComplete
+      ? presentation.doneVerb
+      : presentation.runningVerb;
+  let detail = "";
+  if (shellWriteBlock) {
+    detail = shellWriteBlock.detail;
+  } else if (normalizedResult.length > 0) {
+    detail = normalizedResult;
+  } else if (normalizedProgress.length > 0) {
+    detail = normalizedProgress;
+  }
   const showArgs =
+    shellWriteBlock === null &&
     presentation.family === "generic" &&
     presentation.argsSummary.length > 0 &&
     presentation.argsSummary !== "{}";
+  const target = shellWriteBlock?.target ?? presentation.target;
 
   return (
     <Box flexDirection="column">
@@ -248,7 +312,7 @@ export const ToolCell: React.FC<ToolCellProps> = ({
         <Text> </Text>
         <Text bold>{verb}</Text>
         <Text> </Text>
-        <Text>{presentation.target}</Text>
+        <Text>{target}</Text>
         {showArgs ? <Text dim>{` ${presentation.argsSummary}`}</Text> : null}
       </Box>
       {detail.length > 0

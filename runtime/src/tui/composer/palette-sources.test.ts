@@ -124,6 +124,7 @@ describe("provider/model picker items", () => {
         .slice(0, XAI_CURRENT_TEXT_MODELS.length)
         .map((item) => item.label),
     ).toEqual(Array.from(XAI_CURRENT_TEXT_MODELS));
+    expect(items[0]?.description).toBeUndefined();
   });
 
   test("lists bounded permission picker actions and modes", () => {

@@ -517,13 +517,17 @@ export const Palette: React.FC<PaletteProps> = ({
           isSelected,
         );
         return (
-          <Box key={entry.item.id} flexDirection="row">
+          <Box key={entry.item.id} flexDirection="row" width="100%">
             <Text inverse={isSelected}>{isSelected ? "› " : "  "}</Text>
             <Box flexDirection="row" flexGrow={1}>
               {labelNodes}
               {entry.item.description !== undefined &&
               entry.item.description.length > 0 ? (
-                <Text color={dimColor} inverse={isSelected}>
+                <Text
+                  wrap="truncate-end"
+                  color={dimColor}
+                  inverse={isSelected}
+                >
                   {"  "}
                   {entry.item.description}
                 </Text>
