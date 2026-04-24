@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   LiveThread,
+  LiveThreadInitGuard,
   createLiveThread,
   resumeLiveThread,
 } from "./live-thread.js";
 import type { RolloutItem } from "./rollout-item.js";
 import { RolloutStore } from "./rollout-store.js";
+import { FileThreadStore } from "./thread-store.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -70,7 +72,6 @@ describe("createLiveThread", () => {
       });
       expect(thread).toBeInstanceOf(LiveThread);
       expect(thread.threadId).toBe("conv-create");
-      // Identity survives accessor reads.
       expect(thread.threadId).toBe("conv-create");
       expect(thread.rolloutStore).toBe(store);
       expect(thread.isShutdown).toBe(false);
@@ -171,7 +172,6 @@ describe("LiveThread.appendItems", () => {
         rolloutStore: store,
       });
       thread.shutdown();
-      // Second shutdown must not throw and must not re-flush surprisingly.
       expect(() => thread.shutdown()).not.toThrow();
       expect(thread.isShutdown).toBe(true);
     } finally {
@@ -215,7 +215,7 @@ describe("LiveThread.persist / flush / localRolloutPath", () => {
   });
 });
 
-describe("LiveThread.discard", () => {
+describe("LiveThread.discard (no ThreadStore)", () => {
   it("marks the handle shut down without rolling back prior writes", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
     const store = openStore({ cwd, sessionId: "session-discard" });
@@ -228,7 +228,8 @@ describe("LiveThread.discard", () => {
       thread.flush();
       thread.discard();
       expect(thread.isShutdown).toBe(true);
-      // RESERVED stub: gut cannot truly discard; prior writes remain.
+      // Without a bound ThreadStore, gut cannot truly discard; prior
+      // flushed writes remain.
       const replayed = store
         .readAll()
         .filter((item) => item.type === "response_item");
@@ -247,7 +248,6 @@ describe("resumeLiveThread", () => {
   it("wraps an existing resumed RolloutStore with the given thread id", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
     const sessionId = "session-resume";
-    // First session: seed an item and close.
     const original = openStore({ cwd, sessionId });
     try {
       original.appendRollout(responseItemRollout("r-seed", "seed"));
@@ -256,7 +256,6 @@ describe("resumeLiveThread", () => {
       original.close();
     }
 
-    // Resume session: reopen with resume=true, wrap in LiveThread.
     const resumed = openStore({ cwd, sessionId, resume: true });
     try {
       const thread = resumeLiveThread({
@@ -276,16 +275,16 @@ describe("resumeLiveThread", () => {
   });
 });
 
-describe("RESERVED methods", () => {
-  it("loadHistory throws a RESERVED error", () => {
+describe("LiveThread store-bound methods (no ThreadStore supplied)", () => {
+  it("loadHistory throws a helpful error when no ThreadStore is bound", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
-    const store = openStore({ cwd, sessionId: "session-reserved-load" });
+    const store = openStore({ cwd, sessionId: "session-no-store-load" });
     try {
       const thread = createLiveThread({
-        threadId: "conv-reserved",
+        threadId: "conv-no-store",
         rolloutStore: store,
       });
-      expect(() => thread.loadHistory(false)).toThrow(/RESERVED/);
+      expect(() => thread.loadHistory(false)).toThrow(/ThreadStore/);
       expect(() => thread.loadHistory(true)).toThrow(/ThreadStore/);
     } finally {
       store.close();
@@ -293,20 +292,227 @@ describe("RESERVED methods", () => {
     }
   });
 
-  it("updateMemoryMode throws a RESERVED error", () => {
+  it("updateMemoryMode throws a helpful error when no ThreadStore is bound", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
-    const store = openStore({ cwd, sessionId: "session-reserved-mem" });
+    const store = openStore({ cwd, sessionId: "session-no-store-mem" });
     try {
       const thread = createLiveThread({
-        threadId: "conv-reserved-mem",
+        threadId: "conv-no-store-mem",
         rolloutStore: store,
       });
-      expect(() => thread.updateMemoryMode("standard", false)).toThrow(
-        /RESERVED/,
+      expect(() => thread.updateMemoryMode("enabled", false)).toThrow(
+        /ThreadStore/,
       );
-      expect(() => thread.updateMemoryMode("compact", true)).toThrow(
-        /ThreadMetadataPatch/,
+      expect(() => thread.updateMemoryMode("disabled", true)).toThrow(
+        /ThreadStore/,
       );
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("LiveThread store-bound methods (with FileThreadStore)", () => {
+  it("discard() removes the live writer entry from the store", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "ts-discard" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "ts-discard",
+        rolloutStore: store,
+        threadStore,
+      });
+      // A second createLiveThread for the same id should fail because
+      // the live writer is registered.
+      expect(() =>
+        createLiveThread({
+          threadId: "ts-discard",
+          rolloutStore: store,
+          threadStore,
+        }),
+      ).toThrow(/already has a live local writer/);
+
+      thread.discard();
+      expect(thread.isShutdown).toBe(true);
+
+      // After discard, a fresh createLiveThread for the same id must succeed.
+      const reborn = createLiveThread({
+        threadId: "ts-discard",
+        rolloutStore: store,
+        threadStore,
+      });
+      expect(reborn.threadId).toBe("ts-discard");
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("loadHistory(false) returns only non-archived rollout items", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "ts-load-nonarch" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "ts-load-nonarch",
+        rolloutStore: store,
+        threadStore,
+      });
+      thread.appendItems([
+        responseItemRollout("a", "alpha"),
+        responseItemRollout("b", "beta"),
+      ]);
+      thread.flush();
+      const history = thread.loadHistory(false);
+      const replayedIds = history.items
+        .filter((item) => item.type === "response_item")
+        .map((item) => {
+          if (item.type !== "response_item") throw new Error("unreachable");
+          return item.payload.id;
+        });
+      expect(replayedIds).toEqual(["a", "b"]);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("loadHistory(false) throws when the thread is archived; loadHistory(true) returns it", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "ts-load-arch" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "ts-load-arch",
+        rolloutStore: store,
+        threadStore,
+      });
+      thread.appendItems([responseItemRollout("x", "x")]);
+      thread.flush();
+      threadStore.archiveThread({ threadId: "ts-load-arch" });
+
+      expect(() => thread.loadHistory(false)).toThrow(/not found/);
+      const archivedHistory = thread.loadHistory(true);
+      expect(archivedHistory.items.length).toBeGreaterThan(0);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("updateMemoryMode persists and is visible on subsequent reads", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "ts-memmode" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "ts-memmode",
+        rolloutStore: store,
+        threadStore,
+      });
+      const updated = thread.updateMemoryMode("disabled", false);
+      expect(updated.memoryMode).toBe("disabled");
+      const readBack = threadStore.readThread({
+        threadId: "ts-memmode",
+        includeArchived: false,
+        includeHistory: false,
+      });
+      expect(readBack.memoryMode).toBe("disabled");
+
+      const updated2 = thread.updateMemoryMode("enabled", false);
+      expect(updated2.memoryMode).toBe("enabled");
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("LiveThreadInitGuard", () => {
+  it("discard rolls back the live writer when init fails", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "guard-rollback" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "guard-rollback",
+        rolloutStore: store,
+        threadStore,
+      });
+      const guard = new LiveThreadInitGuard(thread);
+
+      // Simulate a failure path in two-phase init.
+      try {
+        throw new Error("simulated init failure");
+      } catch {
+        guard.discard();
+      }
+
+      expect(thread.isShutdown).toBe(true);
+
+      // After rollback, a new create for the same id must succeed.
+      const reborn = createLiveThread({
+        threadId: "guard-rollback",
+        rolloutStore: store,
+        threadStore,
+      });
+      expect(reborn.threadId).toBe("guard-rollback");
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("commit() makes discard() a no-op", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "guard-commit" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "guard-commit",
+        rolloutStore: store,
+        threadStore,
+      });
+      const guard = new LiveThreadInitGuard(thread);
+      guard.commit();
+      guard.discard(); // should be a no-op
+      expect(thread.isShutdown).toBe(false);
+
+      // The live writer entry must still be registered — creating a
+      // duplicate should fail.
+      expect(() =>
+        createLiveThread({
+          threadId: "guard-commit",
+          rolloutStore: store,
+          threadStore,
+        }),
+      ).toThrow(/already has a live local writer/);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("discard() is idempotent and asRef returns undefined after discard", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-live-thread-cwd-"));
+    const store = openStore({ cwd, sessionId: "guard-idempotent" });
+    try {
+      const threadStore = new FileThreadStore({ cwd });
+      const thread = createLiveThread({
+        threadId: "guard-idempotent",
+        rolloutStore: store,
+        threadStore,
+      });
+      const guard = new LiveThreadInitGuard(thread);
+      expect(guard.asRef()).toBe(thread);
+
+      guard.discard();
+      expect(guard.asRef()).toBeUndefined();
+
+      // Second discard must not throw.
+      expect(() => guard.discard()).not.toThrow();
     } finally {
       store.close();
       rmSync(cwd, { recursive: true, force: true });
