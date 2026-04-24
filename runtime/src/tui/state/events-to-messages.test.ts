@@ -258,6 +258,14 @@ describe("eventsToMessages", () => {
       {
         type: "warning",
         payload: {
+          cause: "provider_switched",
+          message:
+            "provider grok -> grok; model grok-4-fast -> grok-4.20-0309-non-reasoning; previous_response_id reset",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
           cause: "mcp_auth_required",
           message: "MCP server needs authentication",
         },
@@ -312,6 +320,87 @@ describe("eventsToMessages", () => {
       toolResultContent: "1→# AgenC\n2→runtime",
       isComplete: true,
       isError: false,
+    });
+  });
+
+  test("absorbs system.searchTools lifecycle rows silently", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-search-tools" } },
+      { type: "user_message", payload: { message: "hi" } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "search-tools-1",
+          toolName: "system.searchTools",
+          args: '{"query":"memory"}',
+        },
+      },
+      {
+        type: "tool_progress",
+        payload: {
+          callId: "search-tools-1",
+          toolName: "system.searchTools",
+          chunk: "searching memory tools",
+          stream: "status",
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "search-tools-1",
+          result:
+            '{"totalCatalogSize":39,"loaded":[],"missingSelections":[],"results":[]}',
+          isError: false,
+        },
+      },
+      { type: "agent_message", payload: { message: "hi" } },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(2);
+    expect(messages.map((message) => message.content).join("\n")).not.toContain(
+      "searchTools",
+    );
+    expect(messages.map((message) => message.content).join("\n")).not.toContain(
+      "totalCatalogSize",
+    );
+    expect(messages[0]).toMatchObject({ kind: "user", content: "hi" });
+    expect(messages[1]).toMatchObject({ kind: "assistant", content: "hi" });
+  });
+
+  test("absorbs phase-event ToolSearch rows silently", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_start", turnIndex: 0 },
+      {
+        type: "tool_call",
+        toolCall: {
+          id: "search-tools-phase",
+          name: "system.searchTools",
+          arguments: '{"query":"memory"}',
+        },
+      },
+      {
+        type: "tool_result",
+        toolCall: {
+          id: "search-tools-phase",
+          name: "system.searchTools",
+          arguments: '{"query":"memory"}',
+        },
+        result: {
+          content:
+            '{"totalCatalogSize":39,"loaded":[],"missingSelections":[],"results":[]}',
+          isError: false,
+        },
+      },
+      { type: "assistant_text", content: "no noise" },
+      { type: "turn_complete", turnIndex: 0 },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "assistant",
+      content: "no noise",
     });
   });
 });

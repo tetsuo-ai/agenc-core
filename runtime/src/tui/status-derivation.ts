@@ -1,5 +1,67 @@
 import type { SessionLike as StatusLineSessionLike } from "./cockpit/StatusLineConfig.js";
-import type { TranscriptSourceEvent } from "./state/events-to-messages.js";
+import {
+  isHiddenTranscriptWarningCause,
+  isSilentTranscriptToolName,
+  type TranscriptSourceEvent,
+} from "./state/events-to-messages.js";
+
+function toolCallId(event: TranscriptSourceEvent): string | undefined {
+  switch (event.type) {
+    case "tool_call":
+    case "tool_result":
+      return event.toolCall.id;
+    case "tool_call_started":
+    case "tool_progress":
+    case "tool_call_completed":
+      return event.payload.callId;
+    default:
+      return undefined;
+  }
+}
+
+function toolName(event: TranscriptSourceEvent): string | undefined {
+  switch (event.type) {
+    case "tool_call":
+    case "tool_result":
+      return event.toolCall.name;
+    case "tool_call_started":
+    case "tool_progress":
+      return event.payload.toolName;
+    default:
+      return undefined;
+  }
+}
+
+function isSilentToolEventAt(
+  events: readonly TranscriptSourceEvent[],
+  index: number,
+): boolean {
+  const event = events[index];
+  if (!event) return false;
+
+  const immediateName = toolName(event);
+  if (isSilentTranscriptToolName(immediateName)) {
+    return true;
+  }
+
+  const callId = toolCallId(event);
+  if (callId === undefined) {
+    return false;
+  }
+
+  for (let priorIndex = index - 1; priorIndex >= 0; priorIndex -= 1) {
+    const prior = events[priorIndex];
+    if (!prior || toolCallId(prior) !== callId) {
+      continue;
+    }
+    const priorName = toolName(prior);
+    if (priorName !== undefined) {
+      return isSilentTranscriptToolName(priorName);
+    }
+  }
+
+  return false;
+}
 
 export function deriveBannerPhase(
   events: readonly TranscriptSourceEvent[],
@@ -13,9 +75,11 @@ export function deriveBannerPhase(
       case "tool_call":
       case "tool_call_started":
       case "tool_progress":
+        if (isSilentToolEventAt(events, index)) break;
         return "tool";
       case "tool_result":
       case "tool_call_completed":
+        if (isSilentToolEventAt(events, index)) break;
         return "tool_result";
       case "exec_command_begin":
         return "exec";
@@ -36,6 +100,7 @@ export function deriveBannerPhase(
       case "turn_aborted":
         return "aborted";
       case "warning":
+        if (isHiddenTranscriptWarningCause(event.payload.cause)) break;
         return "warning";
       case "error":
         return "error";
@@ -66,12 +131,14 @@ export function deriveActiveToolCount(
   for (const event of events) {
     switch (event.type) {
       case "tool_call":
+        if (isSilentTranscriptToolName(event.toolCall.name)) break;
         active.add(event.toolCall.id);
         break;
       case "tool_result":
         active.delete(event.toolCall.id);
         break;
       case "tool_call_started":
+        if (isSilentTranscriptToolName(event.payload.toolName)) break;
         active.add(event.payload.callId);
         break;
       case "tool_call_completed":

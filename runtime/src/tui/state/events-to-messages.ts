@@ -218,6 +218,7 @@ function formatCompactBoundary(
 const HIDDEN_WARNING_CAUSES = new Set([
   "model_ui_spoof_pattern",
   "orphaned_turn_recovered",
+  "provider_switched",
   "snapshot_behind_rollout",
   "stream_chunk_reordered",
   "system_resumed_from",
@@ -226,10 +227,24 @@ const HIDDEN_WARNING_CAUSES = new Set([
   "compact_tool_result_dropped",
 ]);
 
+const SILENT_TOOL_NAMES = new Set([
+  "ToolSearch",
+  "tool_search",
+  "system.searchTools",
+]);
+
+export function isHiddenTranscriptWarningCause(cause: string): boolean {
+  return HIDDEN_WARNING_CAUSES.has(cause);
+}
+
+export function isSilentTranscriptToolName(toolName: string | undefined): boolean {
+  return typeof toolName === "string" && SILENT_TOOL_NAMES.has(toolName);
+}
+
 function formatWarning(
   payload: Extract<TranscriptEventMsg, { readonly type: "warning" }>["payload"],
 ): { kind: TranscriptMessage["kind"]; label?: string; content: string } | null {
-  if (HIDDEN_WARNING_CAUSES.has(payload.cause)) {
+  if (isHiddenTranscriptWarningCause(payload.cause)) {
     return null;
   }
   if (payload.cause === "context_compacted" || payload.cause === "compact_completed") {
@@ -287,6 +302,7 @@ export function eventsToMessages(
   const toolMessageIndexByCallId = new Map<string, number>();
   const toolCallIdByProcessId = new Map<number, string>();
   const suppressedWriteStdinCallIds = new Set<string>();
+  const suppressedToolCallIds = new Set<string>();
   const activityIndexById = new Map<string, number>();
   const planIndexByTurnId = new Map<string, number>();
   const pendingExecOutputByCallId = new Map<string, PendingExecOutput>();
@@ -432,6 +448,10 @@ export function eventsToMessages(
         }
         case "tool_call": {
           markAssistantComplete();
+          if (isSilentTranscriptToolName(event.toolCall.name)) {
+            suppressedToolCallIds.add(event.toolCall.id);
+            break;
+          }
           ensureToolMessage(event.toolCall.id, {
             turnId: ensureTurnId(currentTurnId),
             kind: "tool_call",
@@ -446,6 +466,13 @@ export function eventsToMessages(
         }
         case "tool_result": {
           markAssistantComplete();
+          if (
+            suppressedToolCallIds.has(event.toolCall.id) ||
+            isSilentTranscriptToolName(event.toolCall.name)
+          ) {
+            suppressedToolCallIds.delete(event.toolCall.id);
+            break;
+          }
           const callIndex = toolMessageIndexByCallId.get(event.toolCall.id);
           if (callIndex !== undefined) {
             messages[callIndex] = {
@@ -576,6 +603,10 @@ export function eventsToMessages(
       }
       case "tool_call_started": {
         markAssistantComplete();
+        if (isSilentTranscriptToolName(event.payload.toolName)) {
+          suppressedToolCallIds.add(event.payload.callId);
+          break;
+        }
         if (event.payload.toolName === "write_stdin") {
           const args = safeJsonParse(event.payload.args);
           const processId =
@@ -606,6 +637,9 @@ export function eventsToMessages(
       case "tool_progress": {
         const stream = event.payload.stream;
         const chunk = event.payload.chunk;
+        if (suppressedToolCallIds.has(event.payload.callId)) {
+          break;
+        }
         const targetCallId =
           event.payload.processId !== undefined
             ? toolCallIdByProcessId.get(event.payload.processId) ??
@@ -722,6 +756,10 @@ export function eventsToMessages(
         break;
       }
       case "tool_call_completed": {
+        if (suppressedToolCallIds.has(event.payload.callId)) {
+          suppressedToolCallIds.delete(event.payload.callId);
+          break;
+        }
         if (suppressedWriteStdinCallIds.has(event.payload.callId)) {
           suppressedWriteStdinCallIds.delete(event.payload.callId);
           break;
