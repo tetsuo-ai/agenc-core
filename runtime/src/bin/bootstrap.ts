@@ -50,6 +50,11 @@ import {
 import { RolloutStore } from "../session/rollout-store.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import { recordInitialHistoryOnResume } from "../session/agent-task-lifecycle.js";
+import {
+  runStartupPrewarm,
+  emitSessionConfigured as emitSessionConfiguredEvent,
+} from "../session/bootstrap.js";
+import { discoverDefaultUserShellAsync } from "../utils/shell-discovery.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
@@ -984,21 +989,31 @@ export async function bootstrapLocalRuntimeSession(
   };
   let initialTranscriptEvents: readonly BootstrapTranscriptEvent[] = [];
   let initialMessages: ReadonlyArray<EventMsg> = [];
+
+  // Discover the real user shell up-front so `Session.services.userShell`
+  // holds a live `UserShell` (zsh/bash/sh) instead of the `/bin/sh`
+  // interface stub `buildDeferredServices` returns. Matches upstream
+  // codex `core/src/session/session.rs:585-605` where
+  // `shell::default_user_shell()` feeds `SessionServices.user_shell`.
+  const discoveredShell = await discoverDefaultUserShellAsync({ env });
   const session = new Session({
     conversationId,
     initialState,
     features: config.features,
-    services: buildDeferredServices(
-      provider,
-      registry,
-      createSessionMcpService(mcpManager, { env }),
-      permissionModeRegistry,
-      configStore,
-      toolApprovals,
-      networkApproval,
-      modelsManager,
-      { agencHome, workspaceRoot, env },
-    ),
+    services: {
+      ...buildDeferredServices(
+        provider,
+        registry,
+        createSessionMcpService(mcpManager, { env }),
+        permissionModeRegistry,
+        configStore,
+        toolApprovals,
+        networkApproval,
+        modelsManager,
+        { agencHome, workspaceRoot, env },
+      ),
+      userShell: discoveredShell,
+    },
     jsRepl: { id: `repl-${conversationId}` },
     initialTranscriptEvents,
   });
@@ -1282,13 +1297,11 @@ export async function bootstrapLocalRuntimeSession(
       initialMessages,
       rolloutPath: rolloutStore.rolloutPath,
     };
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "session_configured",
-        payload: sessionConfiguredPayload,
-      },
-    });
+    // `emitSessionConfiguredEvent` is the shared helper shared with
+    // `session/bootstrap.ts::bootstrapSession`; routing the bin path
+    // through it keeps the emit shape identical whether the caller
+    // uses the full `bootstrapSession` entry or this staged bin flow.
+    emitSessionConfiguredEvent(session, sessionConfiguredPayload);
     session.setInitialTranscriptEvents([
       ...initialTranscriptEvents,
       {
@@ -1307,6 +1320,17 @@ export async function bootstrapLocalRuntimeSession(
     // `codex-rs/core/src/session/session.rs:717-748, 766` where the
     // SessionConfiguredEvent is dispatched before McpConnectionManager::new.
     await session.startMcpManager(mcpManager, {
+      signal: session.services.mcpStartupCancellationToken.signal,
+    });
+
+    // Startup prewarm: pre-build the default TurnContext and best-
+    // effort register the agent task so the first submit does not
+    // pay that cost. Mirrors codex
+    // `session/session.rs:931-932` (`schedule_startup_prewarm`) and
+    // the `maybePrewarmAgentTaskRegistration` helper in
+    // `session/agent-task-lifecycle.ts`. Errors are swallowed inside
+    // the helper.
+    await runStartupPrewarm(session, {
       signal: session.services.mcpStartupCancellationToken.signal,
     });
 
