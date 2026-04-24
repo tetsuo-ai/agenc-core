@@ -111,11 +111,14 @@ import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
 import {
   createActiveTurnState,
   createDoneHandle,
+  isSteerable,
+  nonSteerableTurnKindFrom,
   waitForDoneWithin,
   GRACEFUL_INTERRUPTION_TIMEOUT_MS,
   type ActiveTurnState,
   type RunningTask,
   type SpawnTaskOptions,
+  type SteerInputResult,
   type TurnAbortReason,
 } from "./tasks.js";
 
@@ -137,11 +140,21 @@ export type { Event, EventMsg, SessionConfiguredEvent };
 /** Re-exports for the task-dispatch subsystem. See `./tasks.ts` for details. */
 export type {
   ActiveTurnState,
+  NonSteerableTurnKind,
   RunningTask,
   SpawnTaskOptions,
+  SteerInputAccepted,
+  SteerInputError,
+  SteerInputRejected,
+  SteerInputResult,
   TaskKind,
   TurnAbortReason,
   MailboxDeliveryPhase,
+} from "./tasks.js";
+export {
+  describeSteerInputError,
+  isSteerable,
+  nonSteerableTurnKindFrom,
 } from "./tasks.js";
 
 /** Codex `AgentStatus` FSM. T9 (subagents) expands. */
@@ -1450,6 +1463,128 @@ export class Session {
       this.mailbox.send(rest);
     }
     return idleItems;
+  }
+
+  /**
+   * Upstream codex `session/mod.rs::steer_input` (line 2938). Folds
+   * `items` into the live turn's mailbox/idle-input pipeline so the
+   * running task picks them up at the next idle-merge boundary, and
+   * sets the mailbox delivery phase back to `current_turn` so the
+   * injected items stay in THIS turn rather than deferring.
+   *
+   * Rejection surface mirrors upstream 1:1:
+   *   - `empty_input` when `items` is empty — matches
+   *     `SteerInputError::EmptyInput` (`session/mod.rs:2944`).
+   *   - `no_active_turn` when the `activeTurn` slot is `null` OR its
+   *     task registry is empty. Carries `items` back to the caller
+   *     unchanged so no data is lost. Matches
+   *     `SteerInputError::NoActiveTurn(input)` (`session/mod.rs:2950`,
+   *     2954, 2978).
+   *   - `sub_id_mismatch` when the caller's `subId` does not match
+   *     the live turn's first task id. Matches upstream
+   *     `SteerInputError::ExpectedTurnMismatch` (`session/mod.rs:2960`),
+   *     renamed to fit gut's `subId` naming on `RunningTask`.
+   *   - `active_turn_not_steerable` when the live task's `kind` is
+   *     `compact` or `review`. Matches upstream's explicit arm
+   *     rejection (`session/mod.rs:2967-2979`) via the shared
+   *     `isSteerable` predicate in `tasks.ts`.
+   *
+   * Happy path: appends each item to `Session.mailbox` via the same
+   * `enqueueIdleInput` envelope the caller-side path uses (so the
+   * existing `drainIdleInput` consumer keeps working without a second
+   * code path), then accepts mailbox delivery for the current turn by
+   * flipping `ActiveTurnState.mailboxDeliveryPhase` back to
+   * `current_turn` under the per-turn lock. Returns the subId that
+   * accepted the steer, matching upstream's `Ok(active_turn_id.clone())`.
+   */
+  async steerInput(
+    subId: string,
+    items: readonly LLMMessage[],
+  ): Promise<SteerInputResult> {
+    if (items.length === 0) {
+      return { ok: false, error: { kind: "empty_input" } };
+    }
+
+    // Upstream takes `active_turn.lock().await` for the whole check +
+    // update so steer state stays atomic (see the clippy `expect` at
+    // `session/mod.rs:2934-2937`). Gut's `AsyncLock.with` gives the
+    // same serialization window — the mailbox + turnState writes
+    // happen before we release the lock.
+    const result = await this.activeTurn.with(
+      async (current): Promise<SteerInputResult> => {
+        if (current === null) {
+          return {
+            ok: false,
+            error: { kind: "no_active_turn", items: [...items] },
+          };
+        }
+        const firstEntry = current.tasks.entries().next();
+        if (firstEntry.done === true) {
+          return {
+            ok: false,
+            error: { kind: "no_active_turn", items: [...items] },
+          };
+        }
+        const [activeSubId, activeTask] = firstEntry.value;
+
+        if (subId !== activeSubId) {
+          return {
+            ok: false,
+            error: {
+              kind: "sub_id_mismatch",
+              expected: subId,
+              actual: activeSubId,
+            },
+          };
+        }
+
+        if (!isSteerable(activeTask.kind)) {
+          const nonSteerable = nonSteerableTurnKindFrom(activeTask.kind);
+          // `nonSteerable` is guaranteed non-null when `isSteerable`
+          // returned false; the branch is exhaustive on `TaskKind`.
+          if (nonSteerable === null) {
+            // Unreachable: exhaustive on TaskKind. Kept as an honest
+            // branch rather than a `!` assertion so future TaskKind
+            // additions show up as a compile error instead of a
+            // silent misclassification.
+            return {
+              ok: false,
+              error: { kind: "no_active_turn", items: [...items] },
+            };
+          }
+          return {
+            ok: false,
+            error: {
+              kind: "active_turn_not_steerable",
+              turnKind: nonSteerable,
+            },
+          };
+        }
+
+        // Accepted. Route each item through the existing idle-input
+        // envelope so `drainIdleInput` sees them in FIFO order with no
+        // second consumer path. Upstream calls
+        // `turn_state.push_pending_input(input.into())` which lands on
+        // `TurnState.pending_input`; gut's `pending_input` is
+        // WIRED-EXTERNAL through the mailbox per the classification in
+        // `tasks.ts`, so the equivalent gut surface is `enqueueIdleInput`.
+        for (const item of items) {
+          this.enqueueIdleInput(item);
+        }
+
+        // Upstream: `turn_state.accept_mailbox_delivery_for_current_turn()`
+        // (`session/mod.rs:2992`). Re-affirm `current_turn` delivery so
+        // a late `defer_mailbox_delivery_to_next_turn` earlier in this
+        // turn does not strand the steered items.
+        await current.turnState.with((ts) => {
+          ts.mailboxDeliveryPhase = "current_turn";
+        });
+
+        return { ok: true, subId: activeSubId, accepted: items.length };
+      },
+    );
+
+    return result;
   }
 
   /**

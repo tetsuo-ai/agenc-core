@@ -327,3 +327,150 @@ export interface ActiveTurnLike {
   readonly tasks: Map<string, RunningTask>;
   readonly turnState: AsyncLock<ActiveTurnState>;
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Steer-input surface
+//
+// Port of upstream codex `session/mod.rs::steer_input` +
+// `SteerInputError` (`session/mod.rs:213`). `steer_input` folds
+// user-provided items into an in-flight turn. The non-negotiable
+// contract is that only `regular` turns accept steering; `compact`
+// and `review` turns reject with `ActiveTurnNotSteerable` because
+// mid-stream user prompts would corrupt the managed pipeline those
+// tasks run (summary generation, review handoff).
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Upstream codex `protocol/src/protocol.rs::NonSteerableTurnKind`
+ * (`protocol.rs:1964`). The two kinds that reject same-turn steering.
+ *
+ * Kept as a string union to mirror gut's `TaskKind` style and serialize
+ * cleanly when surfaced through event payloads or error reporting.
+ */
+export type NonSteerableTurnKind = "review" | "compact";
+
+/**
+ * Upstream codex `TaskKind::is_steerable`-equivalent predicate. Returns
+ * `true` when a task of this kind can absorb mid-stream user prompts
+ * via `steer_input`.
+ *
+ * Contract mirrors `session/mod.rs:2966-2979`:
+ *   - `regular` → steerable.
+ *   - `compact`, `review` → NOT steerable; steer calls are rejected
+ *     with `SteerInputError::ActiveTurnNotSteerable`.
+ *
+ * Keeping this as a free function (instead of a method on `TaskKind`)
+ * matches how upstream codex distinguishes the cases via a `match` arm
+ * rather than a trait method; both are direct port styles and the free
+ * function stays trivially callable from `Session.steerInput`, tests,
+ * and any future gate site.
+ */
+export function isSteerable(kind: TaskKind): boolean {
+  switch (kind) {
+    case "regular":
+      return true;
+    case "compact":
+    case "review":
+      return false;
+  }
+}
+
+/**
+ * Maps a non-steerable `TaskKind` back onto the upstream
+ * `NonSteerableTurnKind` discriminator so `SteerInputError` payloads
+ * use the same label surface codex emits.
+ *
+ * Returns `null` when the kind is steerable (caller should not raise
+ * `ActiveTurnNotSteerable` in that case).
+ */
+export function nonSteerableTurnKindFrom(
+  kind: TaskKind,
+): NonSteerableTurnKind | null {
+  switch (kind) {
+    case "regular":
+      return null;
+    case "compact":
+      return "compact";
+    case "review":
+      return "review";
+  }
+}
+
+/**
+ * Upstream codex `session/mod.rs::SteerInputError` (`session/mod.rs:213`).
+ * Discriminated union so callers can switch on `kind` and pull the
+ * variant-specific payload without downcasts.
+ *
+ * Variant mapping vs upstream:
+ *   - `no_active_turn` ↔ upstream `NoActiveTurn(Vec<UserInput>)`. Gut
+ *     carries the rejected items back to the caller so they can retry
+ *     or surface them to the user without loss.
+ *   - `sub_id_mismatch` ↔ upstream `ExpectedTurnMismatch { expected,
+ *     actual }`. Renamed to `sub_id_mismatch` to match gut's `subId`
+ *     naming on `RunningTask` / `spawnTask`; the payload is identical
+ *     modulo field names.
+ *   - `active_turn_not_steerable` ↔ upstream
+ *     `ActiveTurnNotSteerable { turn_kind }`. Same shape.
+ *   - `empty_input` ↔ upstream `EmptyInput`. No payload.
+ */
+export type SteerInputError =
+  | { readonly kind: "no_active_turn"; readonly items: readonly unknown[] }
+  | {
+      readonly kind: "sub_id_mismatch";
+      readonly expected: string;
+      readonly actual: string;
+    }
+  | {
+      readonly kind: "active_turn_not_steerable";
+      readonly turnKind: NonSteerableTurnKind;
+    }
+  | { readonly kind: "empty_input" };
+
+/**
+ * Result of a successful `steerInput` call. Mirrors upstream's
+ * `Result<String, SteerInputError>` success arm which returns the
+ * active turn id; gut returns the same subId so callers can correlate
+ * the steer to the turn it merged into.
+ */
+export interface SteerInputAccepted {
+  readonly ok: true;
+  readonly subId: string;
+  readonly accepted: number;
+}
+
+export interface SteerInputRejected {
+  readonly ok: false;
+  readonly error: SteerInputError;
+}
+
+export type SteerInputResult = SteerInputAccepted | SteerInputRejected;
+
+/**
+ * Build a `SteerInputError` with a friendly human-readable message,
+ * used for Event emission and telemetry. Mirrors upstream
+ * `SteerInputError::to_error_event` (`session/mod.rs:220-248`) — gut
+ * returns a `{ message }` tuple instead of the upstream
+ * `ErrorEvent` so callers can assemble their own event envelopes
+ * without a cross-module dep on event-log here.
+ */
+export function describeSteerInputError(err: SteerInputError): {
+  readonly message: string;
+  readonly code: string;
+} {
+  switch (err.kind) {
+    case "no_active_turn":
+      return { message: "no active turn to steer", code: "bad_request" };
+    case "sub_id_mismatch":
+      return {
+        message: `expected active turn id \`${err.expected}\` but found \`${err.actual}\``,
+        code: "bad_request",
+      };
+    case "active_turn_not_steerable":
+      return {
+        message: `cannot steer a ${err.turnKind} turn`,
+        code: "active_turn_not_steerable",
+      };
+    case "empty_input":
+      return { message: "input must not be empty", code: "bad_request" };
+  }
+}
