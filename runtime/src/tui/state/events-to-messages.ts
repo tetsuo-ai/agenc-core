@@ -89,6 +89,15 @@ export type TranscriptSourceEvent =
   | TranscriptEventEnvelope
   | TranscriptSlashResultEvent;
 
+export interface EventsToMessagesOptions {
+  /**
+   * Include lifecycle/debug rows that are hidden from the normal prompt view.
+   * This is used by transcript-focused mode, matching upstream's split between
+   * a clean chat surface and a verbose transcript surface.
+   */
+  readonly includeHidden?: boolean;
+}
+
 interface PendingExecOutput {
   stdout: string;
   stderr: string;
@@ -246,8 +255,9 @@ export function isSilentTranscriptToolName(toolName: string | undefined): boolea
 
 function formatWarning(
   payload: Extract<TranscriptEventMsg, { readonly type: "warning" }>["payload"],
+  options: EventsToMessagesOptions,
 ): { kind: TranscriptMessage["kind"]; label?: string; content: string } | null {
-  if (isHiddenTranscriptWarningCause(payload.cause)) {
+  if (isHiddenTranscriptWarningCause(payload.cause) && options.includeHidden !== true) {
     return null;
   }
   if (payload.cause === "context_compacted" || payload.cause === "compact_completed") {
@@ -300,6 +310,7 @@ function formatSessionConfigured(
 
 export function eventsToMessages(
   events: readonly TranscriptSourceEvent[],
+  options: EventsToMessagesOptions = {},
 ): TranscriptMessage[] {
   const messages: TranscriptMessage[] = [];
   const toolMessageIndexByCallId = new Map<string, number>();
@@ -451,7 +462,10 @@ export function eventsToMessages(
         }
         case "tool_call": {
           markAssistantComplete();
-          if (isSilentTranscriptToolName(event.toolCall.name)) {
+          if (
+            isSilentTranscriptToolName(event.toolCall.name) &&
+            options.includeHidden !== true
+          ) {
             suppressedToolCallIds.add(event.toolCall.id);
             break;
           }
@@ -471,7 +485,8 @@ export function eventsToMessages(
           markAssistantComplete();
           if (
             suppressedToolCallIds.has(event.toolCall.id) ||
-            isSilentTranscriptToolName(event.toolCall.name)
+            (isSilentTranscriptToolName(event.toolCall.name) &&
+              options.includeHidden !== true)
           ) {
             suppressedToolCallIds.delete(event.toolCall.id);
             break;
@@ -606,7 +621,10 @@ export function eventsToMessages(
       }
       case "tool_call_started": {
         markAssistantComplete();
-        if (isSilentTranscriptToolName(event.payload.toolName)) {
+        if (
+          isSilentTranscriptToolName(event.payload.toolName) &&
+          options.includeHidden !== true
+        ) {
           suppressedToolCallIds.add(event.payload.callId);
           break;
         }
@@ -815,7 +833,7 @@ export function eventsToMessages(
         break;
       }
       case "warning": {
-        const warning = formatWarning(event.payload);
+        const warning = formatWarning(event.payload, options);
         if (warning === null) {
           break;
         }

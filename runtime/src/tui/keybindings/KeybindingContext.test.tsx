@@ -105,6 +105,14 @@ function ModalSwitcher(): null {
   return null;
 }
 
+function TranscriptSwitcher(): null {
+  const setCtx = useSetKeybindingContext();
+  React.useEffect(() => {
+    setCtx("transcript");
+  }, [setCtx]);
+  return null;
+}
+
 function InterruptHandler({ onFire }: { onFire: () => void }): null {
   useKeybinding("app:interrupt", onFire, "global");
   return null;
@@ -112,6 +120,24 @@ function InterruptHandler({ onFire }: { onFire: () => void }): null {
 
 function ExitHandler({ onFire }: { onFire: () => void }): null {
   useKeybinding("app:exit", onFire, "global");
+  return null;
+}
+
+function TranscriptHalfPageDownHandler({
+  onFire,
+}: {
+  onFire: () => void;
+}): null {
+  useKeybinding("scroll:halfPageDown", onFire, "transcript");
+  return null;
+}
+
+function TranscriptFullPageDownHandler({
+  onFire,
+}: {
+  onFire: () => void;
+}): null {
+  useKeybinding("scroll:fullPageDown", onFire, "transcript");
   return null;
 }
 
@@ -289,6 +315,48 @@ describe("KeybindingProvider", () => {
     // In modal context, chat:submit handler must NOT fire.
     emitter.emit("input", makeParsedKeyEvent({ name: "return" }));
     expect(chatSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("transcript context owns copy-mode pager keys before global exits", async () => {
+    const emitter = new EventEmitter();
+    const halfPageDown = vi.fn();
+    const exit = vi.fn();
+    const warned = vi.fn();
+    const { unmount } = await mount(
+      <Harness emitter={emitter} onWarning={warned}>
+        <TranscriptHalfPageDownHandler onFire={halfPageDown} />
+        <ExitHandler onFire={exit} />
+        <TranscriptSwitcher />
+      </Harness>,
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit(
+      "input",
+      makeParsedKeyEvent({ name: "d", ctrl: true, sequence: "d" }),
+    );
+
+    expect(halfPageDown).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(warned).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  test("normalizes space into a transcript pager binding", async () => {
+    const emitter = new EventEmitter();
+    const fullPageDown = vi.fn();
+    const { unmount } = await mount(
+      <Harness emitter={emitter}>
+        <TranscriptFullPageDownHandler onFire={fullPageDown} />
+        <TranscriptSwitcher />
+      </Harness>,
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeParsedKeyEvent({ name: "space", sequence: " " }));
+
+    expect(fullPageDown).toHaveBeenCalledTimes(1);
     unmount();
   });
 });

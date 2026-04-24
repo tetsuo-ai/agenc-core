@@ -1,11 +1,9 @@
 /**
- * Per-dir orchestrator type stubs for `runtime/src/tui/**`.
+ * Per-dir approval orchestrator types for `runtime/src/tui/**`.
  *
- * The TUI consumes `ApprovalResolver` to wire the approval-overlay
- * back into the runtime. Mirrored as a permissive structural shape so
- * the gut TUI tree stays resolvable after the openclaude
- * `tools/orchestrator.ts` is removed. Real wiring lives in the lean
- * rebuild's orchestrator port.
+ * The TUI only needs the structural `ApprovalResolver` shape to wire the
+ * approval overlay back into the runtime. Keeping the type here avoids a
+ * dependency from the vendored Ink tree into the tool-orchestrator module.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

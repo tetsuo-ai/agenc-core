@@ -106,6 +106,8 @@ export interface ComposerProps {
   readonly onSubmit: (value: string) => void;
   /** Fired on `chat:cancel` (Escape). */
   readonly onCancel?: () => void;
+  /** Optional text captured before Ink mounted; pre-fills without submitting. */
+  readonly initialValue?: string;
   /** When true, ignore draft input and hide the declared text cursor. */
   readonly inputLocked?: boolean;
   /** Optional paste-store seam for tests. Defaults to the process singleton. */
@@ -141,29 +143,31 @@ export const Composer: React.FC<ComposerProps> = ({
   config,
   onSubmit,
   onCancel,
+  initialValue,
   inputLocked = false,
   pasteStore,
 }) => {
   const store = pasteStore ?? getPasteStore();
 
-  // Seed history asynchronously; until the read completes the reducer
-  // runs with an empty list. We hold the seeded history in a
-  // `useState` rather than pushing it into the reducer because the
-  // reducer's initial state is snapshot on first render.
-  const [initialHistory, setInitialHistory] = useState<string[]>([]);
+  const { state, dispatch } = useComposerState({
+    initialHistory: [],
+    initialValue,
+  });
+
+  // Seed history asynchronously. The reducer owns merging so prompts
+  // submitted before the disk read resolves remain newer than loaded
+  // entries, matching upstream reverse-history behavior.
   useEffect(() => {
     const home = session.home ?? process.env.HOME ?? "";
     if (home.length === 0) return;
     let alive = true;
     void readHistory(home).then((entries) => {
-      if (alive) setInitialHistory(entries);
+      if (alive) dispatch({ type: "LOAD_HISTORY", history: entries });
     });
     return () => {
       alive = false;
     };
-  }, [session.home]);
-
-  const { state, dispatch } = useComposerState({ initialHistory });
+  }, [dispatch, session.home]);
   const stdin = useContext(StdinContext);
   const activeKeybindingContext = useActiveKeybindingContext();
 
@@ -272,9 +276,19 @@ export const Composer: React.FC<ComposerProps> = ({
     if (pending === null) return "";
     clearTimeout(pending.timer);
     pendingPlainCharRef.current = null;
+    const cursor = Math.max(0, Math.min(state.cursor, state.value.length));
+    valueRef.current =
+      state.value.slice(0, cursor) +
+      pending.text +
+      state.value.slice(cursor);
     dispatch({ type: "INSERT", text: pending.text });
     return pending.text;
-  }, [dispatch]);
+  }, [dispatch, state.cursor, state.value]);
+
+  const valueAfterFlushingPendingPlainChar = useCallback((): string => {
+    flushPendingPlainChar();
+    return valueRef.current;
+  }, [flushPendingPlainChar]);
 
   const clearPendingPlainChar = useCallback((): void => {
     const pending = pendingPlainCharRef.current;
@@ -448,19 +462,19 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleSubmit = useCallback((): void => {
     if (inputLocked) return;
-    flushPendingPlainChar();
+    const effectiveValue = valueAfterFlushingPendingPlainChar();
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_ACCEPT" });
       return;
     }
     if (showSlashPalette || showMentionPalette || hasPendingTurn) return;
-    if (store.isInFlight() || valueRef.current.length === 0) {
+    if (store.isInFlight() || effectiveValue.length === 0) {
       // While a paste is mid-stream, forward the press to the reducer
       // which will buffer it (I-69). Empty submits are quietly dropped.
       dispatch({ type: "SUBMIT" });
       return;
     }
-    const snapshot = valueRef.current;
+    const snapshot = effectiveValue;
     onSubmitRef.current(snapshot);
     dispatch({ type: "SUBMIT" });
     if (home.length > 0) {
@@ -481,23 +495,23 @@ export const Composer: React.FC<ComposerProps> = ({
     hasPendingTurn,
     home,
     inputLocked,
-    flushPendingPlainChar,
     session.cwd,
     showMentionPalette,
     showSlashPalette,
     state.historySearch,
     store,
+    valueAfterFlushingPendingPlainChar,
   ]);
 
   const handleCancel = useCallback((): void => {
     if (inputLocked) return;
-    flushPendingPlainChar();
+    const effectiveValue = valueAfterFlushingPendingPlainChar();
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_CANCEL" });
       return;
     }
     if (showSlashPalette || showMentionPalette) return;
-    if (valueRef.current.length > 0) {
+    if (effectiveValue.length > 0) {
       dispatch({ type: "CLEAR" });
       return;
     }
@@ -506,13 +520,13 @@ export const Composer: React.FC<ComposerProps> = ({
     if (onCancel) onCancel();
   }, [
     dispatch,
-    flushPendingPlainChar,
     hasPendingTurn,
     inputLocked,
     onCancel,
     showMentionPalette,
     showSlashPalette,
     state.historySearch,
+    valueAfterFlushingPendingPlainChar,
   ]);
 
   const handleNewline = useCallback((): void => {

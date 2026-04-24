@@ -30,7 +30,7 @@ import {
   useSetKeybindingContext,
 } from "../keybindings/KeybindingContext.js";
 import { AgenCAppStateProvider, useAgenCAppState } from "../state/AppState.js";
-import { Composer, validateMentionPath } from "./Composer.js";
+import { Composer, HISTORY_FILE_REL, validateMentionPath } from "./Composer.js";
 import { PasteStore } from "./paste-store.js";
 
 type TestStdin = PassThrough & {
@@ -259,6 +259,27 @@ describe("Composer", () => {
     unmount();
   });
 
+  test("pre-fills the draft from early input without submitting", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          initialValue="typed during startup"
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    const text = latestFrameText(stdout);
+    expect(text).toContain("typed during startup");
+    expect(onSubmit).not.toHaveBeenCalled();
+    unmount();
+  });
+
   test("printable keypresses update the buffer and backspace edits in place", async () => {
     const emitter = new EventEmitter();
     const onSubmit = vi.fn();
@@ -284,6 +305,29 @@ describe("Composer", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("h!");
+    unmount();
+  });
+
+  test("Enter flushes the pending single-character insert before submit", async () => {
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    emitter.emit("input", makeKeyEvent({ name: "x", sequence: "x" }));
+    await sleep(1);
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await sleep(30);
+
+    expect(onSubmit).toHaveBeenCalledWith("x");
     unmount();
   });
 
@@ -328,6 +372,48 @@ describe("Composer", () => {
       "second draft",
       "first draft",
     ]);
+    unmount();
+  });
+
+  test("loads persisted history for Up navigation and reverse search", async () => {
+    mkdirSync(join(tmpHome, ".agenc"), { recursive: true });
+    writeFileSync(
+      join(tmpHome, HISTORY_FILE_REL),
+      [
+        JSON.stringify({ timestamp: 1, value: "old persisted prompt" }),
+        JSON.stringify({ timestamp: 2, value: "new persisted prompt" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const emitter = new EventEmitter();
+    const onSubmit = vi.fn();
+    const { stdout, unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Composer
+          session={{ cwd: tmpHome, home: tmpHome }}
+          onSubmit={onSubmit}
+          pasteStore={new PasteStore()}
+        />,
+      ),
+    );
+
+    await sleep(40);
+    emitter.emit("input", makeKeyEvent({ name: "up" }));
+    await sleep(20);
+    expect(latestFrameText(stdout)).toContain("new persisted prompt");
+
+    emitter.emit("input", makeKeyEvent({ name: "escape" }));
+    await sleep(20);
+    emitter.emit("input", makeKeyEvent({ name: "r", sequence: "r", ctrl: true }));
+    await sleep(20);
+    await typeText(emitter, "old");
+    await sleep(20);
+
+    const searchingFrame = latestFrameText(stdout);
+    expect(searchingFrame).toContain("reverse-i-search: old");
+    expect(searchingFrame).toContain("old persisted prompt");
     unmount();
   });
 

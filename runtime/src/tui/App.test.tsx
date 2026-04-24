@@ -414,6 +414,54 @@ describe("App", () => {
     unmount();
   });
 
+  test("Ctrl+O opens transcript mode and Ctrl+E exposes hidden lifecycle rows", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      activeTurn: { unsafePeek: () => null },
+      abortTerminal: () => undefined,
+      initialTranscriptEvents: [
+        { type: "turn_started", payload: { turnId: "turn-transcript" } },
+        { type: "user_message", payload: { message: "hi" } },
+        {
+          type: "warning",
+          payload: {
+            cause: "memory_extract_timeout",
+            message:
+              "memory_extract_timeout: extraction did not finish within 30000ms",
+          },
+        },
+        { type: "agent_message", payload: { message: "hello" } },
+      ],
+    };
+    const { stdin, stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+      { exitOnCtrlC: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(collectText(getRoot(stdout))).toContain("Type prompt");
+    expect(collectText(getRoot(stdout))).not.toContain("memory_extract_timeout");
+
+    stdin.write("\x0f");
+    await new Promise((r) => setTimeout(r, 30));
+    let text = collectText(getRoot(stdout));
+    expect(text).toContain("Transcript mode");
+    expect(text).not.toContain("Type prompt");
+    expect(text).not.toContain("memory_extract_timeout");
+
+    stdin.write("\x05");
+    await new Promise((r) => setTimeout(r, 30));
+    text = collectText(getRoot(stdout));
+    expect(text).toContain("memory_extract_timeout");
+
+    stdin.write("q");
+    await new Promise((r) => setTimeout(r, 30));
+    text = collectText(getRoot(stdout));
+    expect(text).toContain("Type prompt");
+    expect(text).not.toContain("Transcript mode");
+    unmount();
+  });
+
   test("Esc on an empty composer interrupts the active turn", async () => {
     const abortTurnIfActive = vi.fn(async () => true);
     const abortTerminal = vi.fn();

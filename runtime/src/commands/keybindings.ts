@@ -6,8 +6,9 @@
  * stdio so the user sees the real editor UI; when `$EDITOR` is unset
  * we fall back to `nano`.
  *
- * The default bindings map mirrors the shortcuts T11 wires in the TUI
- * layer (Shift+Tab → cycleMode, Ctrl+C → interrupt).
+ * The default file uses AgenC's live keybinding schema, which mirrors
+ * OpenClaude's `{ bindings: [{ context, bindings }] }` structure with
+ * AgenC action names and `~/.agenc` storage.
  *
  * @module
  */
@@ -24,12 +25,79 @@ import {
 } from "./types.js";
 
 export const DEFAULT_KEYBINDINGS = {
-  shortcuts: [
-    { keys: "Shift+Tab", action: "cycleMode", description: "Cycle Normal / Auto-Accept / Plan modes" },
-    { keys: "Ctrl+C", action: "interrupt", description: "Interrupt the current turn" },
-    { keys: "Ctrl+D", action: "exit", description: "Exit the session" },
-    { keys: "Ctrl+G", action: "openPlan", description: "Open the active plan file" },
-    { keys: "Ctrl+L", action: "clearScreen", description: "Clear the screen (history preserved)" },
+  $schema: "https://agenc.dev/schemas/keybindings.json",
+  $docs: "https://agenc.dev/docs/keybindings",
+  bindings: [
+    {
+      context: "Global",
+      bindings: {
+        "ctrl+c": "app:interrupt",
+        "ctrl+d": "app:exit",
+        "ctrl+l": "app:redraw",
+        "ctrl+o": "app:toggleTranscript",
+        "ctrl+r": "history:search",
+        pageup: "scroll:pageUp",
+        pagedown: "scroll:pageDown",
+        wheelup: "scroll:lineUp",
+        wheeldown: "scroll:lineDown",
+        "ctrl+home": "scroll:top",
+        "ctrl+end": "scroll:bottom",
+      },
+    },
+    {
+      context: "Chat",
+      bindings: {
+        "shift+tab": "chat:cycleMode",
+        enter: "chat:submit",
+        tab: "chat:acceptSuggestion",
+        "shift+enter": "chat:newline",
+        "ctrl+j": "chat:newline",
+        escape: "chat:cancel",
+        up: "history:prev",
+        down: "history:next",
+        "ctrl+x ctrl+e": "chat:externalEditor",
+        "ctrl+v": "chat:imagePaste",
+        "alt+v": "chat:imagePaste",
+      },
+    },
+    {
+      context: "Confirmation",
+      bindings: {
+        enter: "modal:confirm",
+        escape: "modal:cancel",
+        y: "modal:yes",
+        n: "modal:no",
+        a: "modal:allowSession",
+        d: "modal:deny",
+      },
+    },
+    {
+      context: "Transcript",
+      bindings: {
+        "ctrl+e": "transcript:toggleShowAll",
+        "ctrl+c": "transcript:exit",
+        escape: "transcript:exit",
+        q: "transcript:exit",
+        up: "scroll:lineUp",
+        down: "scroll:lineDown",
+        k: "scroll:lineUp",
+        j: "scroll:lineDown",
+        "ctrl+p": "scroll:lineUp",
+        "ctrl+n": "scroll:lineDown",
+        pageup: "scroll:pageUp",
+        pagedown: "scroll:pageDown",
+        "ctrl+u": "scroll:halfPageUp",
+        "ctrl+d": "scroll:halfPageDown",
+        "ctrl+b": "scroll:fullPageUp",
+        "ctrl+f": "scroll:fullPageDown",
+        b: "scroll:fullPageUp",
+        space: "scroll:fullPageDown",
+        home: "scroll:top",
+        end: "scroll:bottom",
+        g: "scroll:top",
+        "shift+g": "scroll:bottom",
+      },
+    },
   ],
 };
 

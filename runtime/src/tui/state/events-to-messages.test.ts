@@ -307,6 +307,27 @@ describe("eventsToMessages", () => {
     );
   });
 
+  test("can include internal lifecycle warnings for transcript show-all mode", () => {
+    const events: TranscriptSourceEvent[] = [
+      {
+        type: "warning",
+        payload: {
+          cause: "memory_extract_timeout",
+          message:
+            "memory_extract_timeout: extraction did not finish within 30000ms",
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events, { includeHidden: true });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "warning",
+      content:
+        "memory_extract_timeout: extraction did not finish within 30000ms",
+    });
+  });
+
   test("collapses non-exec tool start/progress/result into one semantic row", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-tool" } },
@@ -393,6 +414,40 @@ describe("eventsToMessages", () => {
     );
     expect(messages[0]).toMatchObject({ kind: "user", content: "hi" });
     expect(messages[1]).toMatchObject({ kind: "assistant", content: "hi" });
+  });
+
+  test("can include system.searchTools rows for transcript show-all mode", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-search-tools" } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "search-tools-1",
+          toolName: "system.searchTools",
+          args: '{"query":"memory"}',
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "search-tools-1",
+          result:
+            '{"totalCatalogSize":39,"loaded":[],"missingSelections":[],"results":[]}',
+          isError: false,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events, { includeHidden: true });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "system.searchTools",
+      toolArgs: { query: "memory" },
+      toolResultContent:
+        '{"totalCatalogSize":39,"loaded":[],"missingSelections":[],"results":[]}',
+      isComplete: true,
+    });
   });
 
   test("absorbs phase-event ToolSearch rows silently", () => {

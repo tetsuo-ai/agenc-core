@@ -17,14 +17,19 @@
  *     plain Win32 terminals without VT mode support).
  */
 
-export type BindingContext = "global" | "chat" | "modal";
+export type BindingContext = "global" | "chat" | "modal" | "transcript";
 
 export type BindingCommand =
   | "app:interrupt"
   | "app:exit"
   | "app:redraw"
+  | "app:toggleTranscript"
   | "scroll:pageUp"
   | "scroll:pageDown"
+  | "scroll:halfPageUp"
+  | "scroll:halfPageDown"
+  | "scroll:fullPageUp"
+  | "scroll:fullPageDown"
   | "scroll:lineUp"
   | "scroll:lineDown"
   | "scroll:top"
@@ -44,7 +49,9 @@ export type BindingCommand =
   | "modal:yes"
   | "modal:no"
   | "modal:allowSession"
-  | "modal:deny";
+  | "modal:deny"
+  | "transcript:toggleShowAll"
+  | "transcript:exit";
 
 export interface BindingMap {
   [keySequence: string]: BindingCommand;
@@ -177,6 +184,7 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
     [normalizeKeySequence("ctrl+c")]: "app:interrupt",
     [normalizeKeySequence("ctrl+d")]: "app:exit",
     [normalizeKeySequence("ctrl+l")]: "app:redraw",
+    [normalizeKeySequence("ctrl+o")]: "app:toggleTranscript",
     [normalizeKeySequence("ctrl+r")]: "history:search",
     [normalizeKeySequence("pageup")]: "scroll:pageUp",
     [normalizeKeySequence("pagedown")]: "scroll:pageDown",
@@ -206,6 +214,30 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
     [normalizeKeySequence("a")]: "modal:allowSession",
     [normalizeKeySequence("d")]: "modal:deny",
   },
+  transcript: {
+    [normalizeKeySequence("ctrl+e")]: "transcript:toggleShowAll",
+    [normalizeKeySequence("ctrl+c")]: "transcript:exit",
+    [normalizeKeySequence("escape")]: "transcript:exit",
+    [normalizeKeySequence("q")]: "transcript:exit",
+    [normalizeKeySequence("up")]: "scroll:lineUp",
+    [normalizeKeySequence("down")]: "scroll:lineDown",
+    [normalizeKeySequence("k")]: "scroll:lineUp",
+    [normalizeKeySequence("j")]: "scroll:lineDown",
+    [normalizeKeySequence("ctrl+p")]: "scroll:lineUp",
+    [normalizeKeySequence("ctrl+n")]: "scroll:lineDown",
+    [normalizeKeySequence("pageup")]: "scroll:pageUp",
+    [normalizeKeySequence("pagedown")]: "scroll:pageDown",
+    [normalizeKeySequence("ctrl+u")]: "scroll:halfPageUp",
+    [normalizeKeySequence("ctrl+d")]: "scroll:halfPageDown",
+    [normalizeKeySequence("ctrl+b")]: "scroll:fullPageUp",
+    [normalizeKeySequence("ctrl+f")]: "scroll:fullPageDown",
+    [normalizeKeySequence("b")]: "scroll:fullPageUp",
+    [normalizeKeySequence("space")]: "scroll:fullPageDown",
+    [normalizeKeySequence("home")]: "scroll:top",
+    [normalizeKeySequence("end")]: "scroll:bottom",
+    [normalizeKeySequence("g")]: "scroll:top",
+    [normalizeKeySequence("shift+g")]: "scroll:bottom",
+  },
 };
 
 /**
@@ -217,8 +249,13 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "app:interrupt",
   "app:exit",
   "app:redraw",
+  "app:toggleTranscript",
   "scroll:pageUp",
   "scroll:pageDown",
+  "scroll:halfPageUp",
+  "scroll:halfPageDown",
+  "scroll:fullPageUp",
+  "scroll:fullPageDown",
   "scroll:lineUp",
   "scroll:lineDown",
   "scroll:top",
@@ -239,6 +276,8 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "modal:no",
   "modal:allowSession",
   "modal:deny",
+  "transcript:toggleShowAll",
+  "transcript:exit",
 ];
 
 /**
@@ -249,6 +288,7 @@ export const KNOWN_BINDING_CONTEXTS: readonly BindingContext[] = [
   "global",
   "chat",
   "modal",
+  "transcript",
 ];
 
 /**

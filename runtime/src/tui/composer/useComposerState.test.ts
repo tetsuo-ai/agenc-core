@@ -247,6 +247,52 @@ describe("composerReducer", () => {
     });
   });
 
+  test("LOAD_HISTORY merges disk entries behind live in-memory prompts", () => {
+    const start = freshState({
+      value: "draft",
+      cursor: 5,
+      history: ["live prompt", "shared"],
+    });
+    const next = composerReducer(start, {
+      type: "LOAD_HISTORY",
+      history: ["disk newest", "shared", "disk oldest"],
+    });
+    expect(next.history).toEqual([
+      "live prompt",
+      "shared",
+      "disk newest",
+      "disk oldest",
+    ]);
+    expect(next.value).toBe("draft");
+    expect(next.cursor).toBe(5);
+  });
+
+  test("LOAD_HISTORY refreshes active reverse search matches", () => {
+    let state = freshState({
+      value: "draft",
+      cursor: 5,
+      history: [],
+    });
+    state = composerReducer(state, { type: "HISTORY_SEARCH_START" });
+    state = composerReducer(state, {
+      type: "HISTORY_SEARCH_APPEND",
+      text: "alpha",
+    });
+    expect(state.historySearch?.status).toBe("no-match");
+
+    state = composerReducer(state, {
+      type: "LOAD_HISTORY",
+      history: ["alpha from disk"],
+    });
+
+    expect(state.value).toBe("alpha from disk");
+    expect(state.historySearch).toMatchObject({
+      query: "alpha",
+      status: "match",
+      matchIndex: 0,
+    });
+  });
+
   test("MOVE_CURSOR clamps to [0, value.length]", () => {
     const start = freshState({ value: "abc", cursor: 1 });
     const left = composerReducer(start, { type: "MOVE_CURSOR", delta: -10 });

@@ -1,8 +1,9 @@
 /**
- * Local stub for openclaude `utils/logger.ts`.
+ * Minimal logger adapter for the TUI tree.
  *
- * Only the silent logger is reached for from the gut TUI tree, so this
- * shim provides just that minimal surface.
+ * Only the silent logger is reached from the AgenC TUI today; keeping the
+ * adapter explicit avoids importing the runtime logger into the vendored Ink
+ * subtree.
  */
 
 export interface Logger {

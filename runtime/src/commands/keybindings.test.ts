@@ -60,7 +60,8 @@ describe("keybindingsCommand", () => {
     expect(existsSync(file)).toBe(true);
     expect(spawnEditor).toHaveBeenCalled();
     const parsed = JSON.parse(readFileSync(file, "utf8"));
-    expect(parsed.shortcuts).toBeDefined();
+    expect(parsed.bindings).toBeDefined();
+    expect(parsed.bindings[0].context).toBe("Global");
   });
 
   it("emits an error when the editor fails to spawn", async () => {

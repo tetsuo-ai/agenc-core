@@ -7,7 +7,10 @@
  * sequence, unknown actions fall back to the supplied default.
  */
 
-import { describe, expect, test } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   formatKeySequence,
@@ -15,6 +18,24 @@ import {
   getDisplayForCommand,
   getShortcutDisplay,
 } from "./shortcutFormat.js";
+
+let tempHome: string;
+let previousAgencHome: string | undefined;
+
+beforeEach(() => {
+  previousAgencHome = process.env.AGENC_HOME;
+  tempHome = mkdtempSync(join(tmpdir(), "agenc-shortcuts-"));
+  process.env.AGENC_HOME = tempHome;
+});
+
+afterEach(() => {
+  if (previousAgencHome === undefined) {
+    delete process.env.AGENC_HOME;
+  } else {
+    process.env.AGENC_HOME = previousAgencHome;
+  }
+  rmSync(tempHome, { recursive: true, force: true });
+});
 
 describe("formatKeySequence", () => {
   test("pretty-prints modifier chord", () => {
@@ -26,6 +47,7 @@ describe("formatKeySequence", () => {
     expect(formatKeySequence("enter")).toBe("Enter");
     expect(formatKeySequence("escape")).toBe("Esc");
     expect(formatKeySequence("pageup")).toBe("PageUp");
+    expect(formatKeySequence("space")).toBe("Space");
   });
 
   test("preserves multi-chord sequences", () => {
@@ -68,18 +90,37 @@ describe("getShortcutDisplay", () => {
     );
   });
 
-  test("falls back when the action is upstream-only and unknown to gut", () => {
-    // app:toggleTranscript exists upstream but the gut TUI does not
-    // implement it; the caller's fallback string must round-trip through
-    // unchanged so the post-compact stdout breadcrumb stays coherent.
+  test("resolves the upstream transcript toggle action in AgenC", () => {
     expect(
       getShortcutDisplay("app:toggleTranscript", "Global", "ctrl+o"),
-    ).toBe("ctrl+o");
+    ).toBe("Ctrl+O");
   });
 
   test("accepts upstream-style capitalized context names", () => {
     expect(getShortcutDisplay("history:search", "Global", "ctrl+r")).toBe(
       "Ctrl+R",
+    );
+  });
+
+  test("uses AgenC keybindings.json overrides for display hints", () => {
+    mkdirSync(tempHome, { recursive: true });
+    writeFileSync(
+      join(tempHome, "keybindings.json"),
+      JSON.stringify({
+        bindings: [
+          {
+            context: "Global",
+            bindings: {
+              "ctrl+k": "history:search",
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(getShortcutDisplay("history:search", "Global", "ctrl+r")).toBe(
+      "Ctrl+K",
     );
   });
 });

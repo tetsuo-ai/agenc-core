@@ -39,10 +39,12 @@ import React, {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 
 import Box from "./ink/components/Box.js";
+import Text from "./ink/components/Text.js";
 import { AlternateScreen } from "./ink/components/AlternateScreen.js";
 import StdinContext from "./ink/components/StdinContext.js";
 import { isMouseTrackingEnabled } from "./ink/vendored/fullscreen.js";
@@ -56,11 +58,17 @@ import {
 import {
   KeybindingProvider,
   useKeybinding,
+  useSetKeybindingContext,
 } from "./keybindings/KeybindingContext.js";
 import type {
   BindingContext,
   BindingMap,
 } from "./keybindings/defaultBindings.js";
+import {
+  loadUserBindingsSync,
+  watchUserBindings,
+} from "./keybindings/loadUserBindings.js";
+import { getDisplayForCommand } from "./keybindings/shortcutFormat.js";
 import { OverlayProvider, useOverlayStack } from "./overlay/OverlayProvider.js";
 import { Banner } from "./cockpit/Banner.js";
 import {
@@ -131,6 +139,8 @@ export interface AppProps {
   readonly model?: string;
   /** Optional boot-time prompt forwarded from the CLI TTY router. */
   readonly initialPrompt?: string;
+  /** Optional boot-time draft captured before Ink mounted. */
+  readonly initialComposerText?: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -277,9 +287,11 @@ async function interruptActiveTurn(
 function TUIRoot({
   model,
   initialPrompt,
+  initialComposerText,
 }: {
   readonly model?: string;
   readonly initialPrompt?: string;
+  readonly initialComposerText?: string;
 }): React.ReactElement {
   const {
     mode,
@@ -302,12 +314,21 @@ function TUIRoot({
   );
   const initialPromptSubmittedRef = useRef(false);
   const overlay = useOverlayStack();
+  const setKeybindingContext = useSetKeybindingContext();
+  const [transcriptMode, setTranscriptMode] = useState(false);
+  const [showAllInTranscript, setShowAllInTranscript] = useState(false);
 
   // Derive transcript messages from phase events on every render. The
   // adapter is pure and cheap, so useMemo's only job here is to keep
   // referential identity stable for MessageList's sticky-scroll
   // bookkeeping.
-  const messages = useMemo(() => eventsToMessages(events), [events]);
+  const messages = useMemo(
+    () =>
+      eventsToMessages(events, {
+        includeHidden: transcriptMode && showAllInTranscript,
+      }),
+    [events, showAllInTranscript, transcriptMode],
+  );
 
   // Plan events ride the event-log transcript stream rather than the
   // PhaseEvent-only path. Filter them out here so the banner can light up
@@ -340,6 +361,11 @@ function TUIRoot({
   useEffect(() => {
     setStreaming(isStreaming);
   }, [isStreaming, setStreaming]);
+
+  useEffect(() => {
+    if (overlay.overlays.length > 0) return;
+    setKeybindingContext(transcriptMode ? "transcript" : "chat");
+  }, [overlay.overlays.length, setKeybindingContext, transcriptMode]);
 
   // Overlay context adapter. `InteractiveHandler` wants a minimal
   // `push(node) => dispose` surface; the OverlayProvider exposes
@@ -500,6 +526,32 @@ function TUIRoot({
   }, [currentTurnId, session]);
   useKeybinding("app:interrupt", handleInterrupt, "global");
 
+  const handleToggleTranscript = useCallback((): void => {
+    setTranscriptMode((value) => {
+      const next = !value;
+      if (!next) {
+        setShowAllInTranscript(false);
+      }
+      return next;
+    });
+  }, []);
+  useKeybinding("app:toggleTranscript", handleToggleTranscript, "global");
+
+  const handleTranscriptShowAll = useCallback((): void => {
+    setShowAllInTranscript((value) => !value);
+  }, []);
+  useKeybinding(
+    "transcript:toggleShowAll",
+    handleTranscriptShowAll,
+    "transcript",
+  );
+
+  const handleExitTranscript = useCallback((): void => {
+    setTranscriptMode(false);
+    setShowAllInTranscript(false);
+  }, []);
+  useKeybinding("transcript:exit", handleExitTranscript, "transcript");
+
   const handleCancel = (): void => {
     void interruptActiveTurn(session, currentTurnId);
   };
@@ -543,22 +595,30 @@ function TUIRoot({
 
       {/* composer region (bottom) */}
       <Box flexDirection="column" flexShrink={0}>
-        <Composer
-          session={composerSession}
-          config={
-            composerAttachmentsConfig !== undefined
-              ? { attachments: composerAttachmentsConfig }
-              : undefined
-          }
-          onSubmit={handleSubmit}
-          onCancel={handleCancel}
-        />
-        {statusLineItems !== undefined ? (
-          <StatusLineConfig
-            items={statusLineItems}
-            session={statusLineSession}
-            cwd={composerSession.cwd}
-          />
+        {transcriptMode ? (
+          <TranscriptModeFooter showAll={showAllInTranscript} />
+        ) : null}
+        {!transcriptMode ? (
+          <>
+            <Composer
+              session={composerSession}
+              config={
+                composerAttachmentsConfig !== undefined
+                  ? { attachments: composerAttachmentsConfig }
+                  : undefined
+              }
+              onSubmit={handleSubmit}
+              onCancel={handleCancel}
+              initialValue={initialComposerText}
+            />
+            {statusLineItems !== undefined ? (
+              <StatusLineConfig
+                items={statusLineItems}
+                session={statusLineSession}
+                cwd={composerSession.cwd}
+              />
+            ) : null}
+          </>
         ) : null}
       </Box>
 
@@ -576,6 +636,30 @@ function TUIRoot({
 
 function OverlayFrame({ children }: { readonly children: ReactNode }) {
   return <Box flexDirection="column">{children}</Box>;
+}
+
+function TranscriptModeFooter({
+  showAll,
+}: {
+  readonly showAll: boolean;
+}): React.ReactElement {
+  const toggleKey =
+    getDisplayForCommand("app:toggleTranscript", "global") ?? "Ctrl+O";
+  const showAllKey =
+    getDisplayForCommand("transcript:toggleShowAll", "transcript") ??
+    "Ctrl+E";
+  const exitKey =
+    getDisplayForCommand("transcript:exit", "transcript") ?? "Esc";
+
+  return (
+    <Box flexDirection="row" width="100%">
+      <Text dim>
+        {`Transcript mode · ${toggleKey}/${exitKey}/q returns · ${showAllKey} ${
+          showAll ? "hides lifecycle rows" : "shows lifecycle rows"
+        }`}
+      </Text>
+    </Box>
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -600,9 +684,25 @@ function KeybindingsFromStdin({
 }): React.ReactElement {
   const stdinCtx = useContext(StdinContext);
   const emitter = stdinCtx.internal_eventEmitter;
+  const [effectiveBindings, setEffectiveBindings] = useState<
+    Record<BindingContext, BindingMap>
+  >(() => bindings ?? loadUserBindingsSync().bindings);
+
+  useEffect(() => {
+    if (bindings) {
+      setEffectiveBindings(bindings);
+      return;
+    }
+
+    setEffectiveBindings(loadUserBindingsSync().bindings);
+    return watchUserBindings((next) => {
+      setEffectiveBindings(next.bindings);
+    });
+  }, [bindings]);
+
   return (
     <KeybindingProvider
-      {...(bindings ? { bindings } : {})}
+      bindings={effectiveBindings}
       stdinContext={{ internal_eventEmitter: emitter }}
     >
       {children}
@@ -616,13 +716,18 @@ export const App: React.FC<AppProps> = ({
   bindings,
   model,
   initialPrompt,
+  initialComposerText,
 }) => {
   return (
     <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
       <AgenCAppStateProvider session={session} configStore={configStore}>
         <KeybindingsFromStdin {...(bindings ? { bindings } : {})}>
           <OverlayProvider>
-            <TUIRoot model={model} initialPrompt={initialPrompt} />
+            <TUIRoot
+              model={model}
+              initialPrompt={initialPrompt}
+              initialComposerText={initialComposerText}
+            />
           </OverlayProvider>
         </KeybindingsFromStdin>
       </AgenCAppStateProvider>

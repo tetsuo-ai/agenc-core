@@ -12,28 +12,27 @@
  *      key sequence, since `DEFAULT_BINDINGS` is keyed the other way
  *      (key sequence -> command). Other parts of the TUI also benefit
  *      (status bar hints, modal footer text, etc.).
- *   2. Translate an upstream-style action label (`'app:toggleTranscript'`
- *      with a capitalized context name) into the gut canonical
- *      `BindingCommand` + `BindingContext` pair where one exists. The
- *      caller passes a fallback so unmapped actions still get a coherent
+ *   2. Translate upstream-style action/context labels such as
+ *      `'app:toggleTranscript'` / `'Global'` into the AgenC canonical
+ *      `BindingCommand` + `BindingContext` pair. The caller passes a
+ *      fallback so unmapped upstream-only actions still get a coherent
  *      display string.
  *
  * The helper is sync-only because it has to be callable from non-React
  * paths like `manual-compact.ts::buildDisplayText`. Bindings are read
  * directly from `DEFAULT_BINDINGS`; user overrides from
- * `~/.agenc/keybindings.json` are not currently merged here because the
- * gut runtime's user-binding loader is still TODO. When that loader
- * lands, swap the `bindings` parameter default for the merged result.
+ * `~/.agenc/keybindings.json` are merged through `loadUserBindingsSync()`
+ * so shortcut hints follow the same binding map as the live provider.
  */
 
 import {
-  DEFAULT_BINDINGS,
   KNOWN_BINDING_COMMANDS,
   KNOWN_BINDING_CONTEXTS,
   type BindingCommand,
   type BindingContext,
   type BindingMap,
 } from "./defaultBindings.js";
+import { loadUserBindingsSync } from "./loadUserBindings.js";
 
 const MODIFIER_LABELS: Record<string, string> = {
   ctrl: "Ctrl",
@@ -46,6 +45,7 @@ const SPECIAL_KEY_LABELS: Record<string, string> = {
   enter: "Enter",
   escape: "Esc",
   tab: "Tab",
+  space: "Space",
   backspace: "Backspace",
   delete: "Delete",
   up: "Up",
@@ -109,7 +109,7 @@ function findKeysForCommand(
 export function getDisplaysForCommand(
   command: BindingCommand,
   context: BindingContext,
-  bindings: Record<BindingContext, BindingMap> = DEFAULT_BINDINGS,
+  bindings: Record<BindingContext, BindingMap> = loadUserBindingsSync().bindings,
 ): string[] {
   const order: BindingContext[] =
     context === "global" ? ["global"] : [context, "global"];
@@ -140,9 +140,20 @@ export function getDisplaysForCommand(
 export function getDisplayForCommand(
   command: BindingCommand,
   context: BindingContext,
-  bindings: Record<BindingContext, BindingMap> = DEFAULT_BINDINGS,
+  bindings: Record<BindingContext, BindingMap> = loadUserBindingsSync().bindings,
 ): string | undefined {
-  return getDisplaysForCommand(command, context, bindings)[0];
+  const order: BindingContext[] =
+    context === "global" ? ["global"] : [context, "global"];
+  for (const ctx of order) {
+    const map = bindings[ctx];
+    if (!map) continue;
+    const keys = Object.keys(map);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const key = keys[index]!;
+      if (map[key] === command) return formatKeySequence(key);
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -155,9 +166,8 @@ export function getDisplayForCommand(
  *   - If the action already matches a known `BindingCommand`, it is
  *     returned as-is.
  *   - Upstream-only actions that have no equivalent gut binding (such
- *     as `app:toggleTranscript`, which the gut TUI does not implement
- *     today) return `undefined` so the caller falls back to its
- *     hardcoded display string.
+ *     return `undefined` so the caller falls back to its hardcoded
+ *     display string.
  */
 function resolveActionToCommand(action: string): BindingCommand | undefined {
   const trimmed = action.trim();

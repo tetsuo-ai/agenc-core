@@ -150,7 +150,7 @@ export function keyToChord(input: string, key: Key): string {
   // flagged via `key.shift` by the Ink input pipeline so we don't need to
   // preserve the visual case here.
   if (input.length > 0) {
-    parts.push(input.toLowerCase());
+    parts.push(input === " " ? "space" : input.toLowerCase());
     return parts.join("+");
   }
 

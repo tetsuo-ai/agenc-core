@@ -1154,6 +1154,7 @@ async function loadBootTUI(): Promise<
     configStore: unknown;
     model?: string;
     initialPrompt?: string;
+    initialComposerText?: string;
   }) => Promise<{ unmount: () => void; waitUntilExit: () => Promise<void> }>
 > {
   // The path is relative to the *compiled* output layout (both
@@ -1172,6 +1173,7 @@ async function loadBootTUI(): Promise<
       configStore: unknown;
       model?: string;
       initialPrompt?: string;
+      initialComposerText?: string;
     }) => Promise<{
       unmount: () => void;
       waitUntilExit: () => Promise<void>;
@@ -1180,14 +1182,39 @@ async function loadBootTUI(): Promise<
   return mod.bootTUI;
 }
 
+type EarlyInputCapture = {
+  readonly startCapturingEarlyInput?: () => void;
+  readonly consumeEarlyInput?: (options?: {
+    readonly restoreRawMode?: boolean;
+  }) => string;
+  readonly stopCapturingEarlyInput?: (options?: {
+    readonly restoreRawMode?: boolean;
+  }) => void;
+};
+
+async function startTuiEarlyInputCapture(): Promise<() => string> {
+  try {
+    const specifier = "../tui/ink/vendored/earlyInput.js";
+    const mod = (await import(specifier)) as EarlyInputCapture;
+    mod.startCapturingEarlyInput?.();
+    return () =>
+      mod.consumeEarlyInput?.({ restoreRawMode: true }) ?? "";
+  } catch {
+    return () => "";
+  }
+}
+
 type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 
-/**
- * Boot the TUI with a pre-populated composer prompt. Wave 5-B wires the
- * option through to `bootTUI`; actual composer wiring is a follow-up
- * (see TODO inside the composer reducer).
- */
+/** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
 export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
+  const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
+  let earlyInputConsumed = false;
+  const consumeEarlyInput = (): string => {
+    if (earlyInputConsumed) return "";
+    earlyInputConsumed = true;
+    return consumeEarlyInputRaw();
+  };
   try {
     validateAgencHome();
     const {
@@ -1236,12 +1263,18 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
 
       try {
         const boot = await loadBootTUI();
+        const capturedEarlyInput = consumeEarlyInput();
+        const initialComposerText =
+          args.initialPrompt === undefined ? capturedEarlyInput : "";
         const handle = await boot({
           session,
           configStore,
           model,
           ...(args.initialPrompt !== undefined
             ? { initialPrompt: args.initialPrompt }
+            : {}),
+          ...(initialComposerText.length > 0
+            ? { initialComposerText }
             : {}),
         });
         activeInkUnmount = handle.unmount;
@@ -1259,6 +1292,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       });
     }
   } catch (error) {
+    consumeEarlyInput();
     if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
       process.stderr.write(`agenc: ${error.message}\n`);
       return 1;

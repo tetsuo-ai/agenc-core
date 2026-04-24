@@ -78,7 +78,7 @@ describe("MODE_CYCLE_KEY", () => {
 });
 
 describe("DEFAULT_BINDINGS", () => {
-  test("maps every BindingCommand to at least one binding across the three contexts", () => {
+  test("maps every BindingCommand to at least one binding across all contexts", () => {
     // The mode-cycle key must always be present in the chat map — if the
     // platform selector drifted, this would silently break cycleMode.
     expect(DEFAULT_BINDINGS.chat[normalizeKeySequence(MODE_CYCLE_KEY)]).toBe(
@@ -89,6 +89,7 @@ describe("DEFAULT_BINDINGS", () => {
       DEFAULT_BINDINGS.global,
       DEFAULT_BINDINGS.chat,
       DEFAULT_BINDINGS.modal,
+      DEFAULT_BINDINGS.transcript,
     ]) {
       for (const command of Object.values(map)) {
         seen.add(command);
@@ -105,6 +106,18 @@ describe("DEFAULT_BINDINGS", () => {
     );
     expect(DEFAULT_BINDINGS.chat[normalizeKeySequence("ctrl+j")]).toBe(
       "chat:newline",
+    );
+  });
+
+  test("binds transcript copy-mode pager keys before global process controls", () => {
+    expect(DEFAULT_BINDINGS.transcript[normalizeKeySequence("ctrl+d")]).toBe(
+      "scroll:halfPageDown",
+    );
+    expect(DEFAULT_BINDINGS.transcript[normalizeKeySequence("space")]).toBe(
+      "scroll:fullPageDown",
+    );
+    expect(DEFAULT_BINDINGS.transcript[normalizeKeySequence("shift+g")]).toBe(
+      "scroll:bottom",
     );
   });
 });

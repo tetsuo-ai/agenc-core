@@ -98,8 +98,6 @@ export interface MessageListProps {
   readonly messages: readonly TranscriptMessage[];
   /** True while an assistant_text stream is still landing deltas. */
   readonly isStreaming?: boolean;
-  /** Hook for future transcript-search jump. Not used in Wave 4-A. */
-  readonly onJumpTo?: (msgId: string) => void;
 }
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -351,26 +349,42 @@ export const MessageList: React.FC<MessageListProps> = ({
     }
   }, [isStreaming, messages]);
 
-  const pageUp = (): void => {
-    const handle = scrollRef.current;
-    if (!handle) return;
-    const delta = -Math.max(1, Math.floor(handle.getViewportHeight() / 2));
-    handle.scrollTo(Math.max(0, handle.getScrollTop() + handle.getPendingDelta() + delta));
-  };
-
-  const pageDown = (): void => {
+  const jumpBy = (delta: number): void => {
     const handle = scrollRef.current;
     if (!handle) return;
     const max = Math.max(0, handle.getScrollHeight() - handle.getViewportHeight());
-    const target =
-      handle.getScrollTop() + handle.getPendingDelta() + Math.max(1, Math.floor(handle.getViewportHeight() / 2));
+    const target = handle.getScrollTop() + handle.getPendingDelta() + delta;
     if (target >= max) {
       handle.scrollTo(max);
       handle.scrollToBottom();
       stickyRef.current = true;
       return;
     }
-    handle.scrollTo(target);
+    handle.scrollTo(Math.max(0, target));
+  };
+
+  const pageUp = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    jumpBy(-Math.max(1, Math.floor(handle.getViewportHeight() / 2)));
+  };
+
+  const pageDown = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    jumpBy(Math.max(1, Math.floor(handle.getViewportHeight() / 2)));
+  };
+
+  const fullPageUp = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    jumpBy(-Math.max(1, handle.getViewportHeight()));
+  };
+
+  const fullPageDown = (): void => {
+    const handle = scrollRef.current;
+    if (!handle) return;
+    jumpBy(Math.max(1, handle.getViewportHeight()));
   };
 
   const lineUp = (): void => {
@@ -411,10 +425,20 @@ export const MessageList: React.FC<MessageListProps> = ({
 
   useKeybinding("scroll:pageUp", pageUp, "global");
   useKeybinding("scroll:pageDown", pageDown, "global");
+  useKeybinding("scroll:pageUp", pageUp, "transcript");
+  useKeybinding("scroll:pageDown", pageDown, "transcript");
+  useKeybinding("scroll:halfPageUp", pageUp, "transcript");
+  useKeybinding("scroll:halfPageDown", pageDown, "transcript");
+  useKeybinding("scroll:fullPageUp", fullPageUp, "transcript");
+  useKeybinding("scroll:fullPageDown", fullPageDown, "transcript");
   useKeybinding("scroll:lineUp", lineUp, "global");
   useKeybinding("scroll:lineDown", lineDown, "global");
   useKeybinding("scroll:top", scrollTop, "global");
   useKeybinding("scroll:bottom", scrollBottom, "global");
+  useKeybinding("scroll:lineUp", lineUp, "transcript");
+  useKeybinding("scroll:lineDown", lineDown, "transcript");
+  useKeybinding("scroll:top", scrollTop, "transcript");
+  useKeybinding("scroll:bottom", scrollBottom, "transcript");
 
   const hasInlineStreamingAssistant =
     messages.length > 0 &&

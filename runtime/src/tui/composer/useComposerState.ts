@@ -62,7 +62,8 @@ export type ComposerAction =
   | { type: "HISTORY_SEARCH_OLDER" }
   | { type: "HISTORY_SEARCH_NEWER" }
   | { type: "HISTORY_SEARCH_ACCEPT" }
-  | { type: "HISTORY_SEARCH_CANCEL" };
+  | { type: "HISTORY_SEARCH_CANCEL" }
+  | { type: "LOAD_HISTORY"; history: readonly string[] };
 
 /**
  * Clamp a cursor position to `[0, value.length]` so every reducer
@@ -136,6 +137,23 @@ function findHistorySearchMatches(
     matches.push(entry);
   }
   return matches;
+}
+
+function mergeHistory(
+  current: readonly string[],
+  loaded: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  for (const entry of [...current, ...loaded]) {
+    if (typeof entry !== "string" || entry.length === 0) continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    out.push(entry);
+  }
+
+  return out;
 }
 
 function applyHistorySearchQuery(
@@ -416,6 +434,26 @@ export function composerReducer(
         historySearch: null,
       };
     }
+    case "LOAD_HISTORY": {
+      const history = mergeHistory(state.history, action.history);
+      const next: ComposerState = {
+        ...state,
+        history,
+        ...(state.historyIdx !== null
+          ? { historyIdx: null, draftBeforeHistory: null }
+          : {}),
+      };
+
+      if (state.historySearch === null) {
+        return next;
+      }
+
+      return applyHistorySearchQuery(
+        next,
+        state.historySearch,
+        state.historySearch.query,
+      );
+    }
     case "HISTORY_PREV": {
       if (state.historySearch !== null) {
         return stepHistorySearch(state, +1);
@@ -507,6 +545,7 @@ export function composerReducer(
 
 export interface UseComposerStateOptions {
   readonly initialHistory: string[];
+  readonly initialValue?: string;
 }
 
 export interface UseComposerStateResult {
@@ -522,8 +561,8 @@ export function useComposerState(
   // caller truly rotates history.
   const initialState = useMemo<ComposerState>(
     () => ({
-      value: "",
-      cursor: 0,
+      value: opts.initialValue ?? "",
+      cursor: opts.initialValue?.length ?? 0,
       history: [...opts.initialHistory],
       historyIdx: null,
       draftBeforeHistory: null,
@@ -536,7 +575,7 @@ export function useComposerState(
     // worth it here; the caller is expected to pass a fresh array when
     // history actually changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [opts.initialHistory.length, opts.initialHistory[0]],
+    [opts.initialHistory.length, opts.initialHistory[0], opts.initialValue],
   );
   const [state, dispatch] = useReducer(composerReducer, initialState);
   return { state, dispatch };

@@ -13,10 +13,8 @@
  *   - `deltaMs`: wall-clock milliseconds between the previous tick and
  *     this one. Useful for ease-in animations that need to stay smooth
  *     across backgrounded terminals where the frame rate drops.
- *   - `isIdle`: placeholder for the eventual idle-detector wiring. The
- *     real implementation lives in `ink.tsx` (search for
- *     `i70CurrentInterval`) and will be surfaced through this hook in a
- *     later wave. For Wave 2 we always return false.
+ *   - `isIdle`: true after the Ink interaction clock has been quiet long
+ *     enough for low-priority animation consumers to back off.
  *
  * The `fpsTarget` argument is honored as a cap: when the clock ticks
  * faster than the target, we drop intermediate ticks. Consumers that
@@ -25,6 +23,7 @@
 
 import { useCallback, useContext, useRef, useSyncExternalStore } from "react";
 import { ClockContext, type Clock } from "../ink/components/ClockContext.js";
+import { getLastInteractionTime } from "../ink/vendored/state.js";
 
 export interface AnimationTick {
   readonly tick: number;
@@ -38,6 +37,7 @@ export interface UseAnimationTickOptions {
 }
 
 const DEFAULT_FPS_TARGET = 60;
+export const ANIMATION_IDLE_AFTER_MS = 2_000;
 
 /**
  * Fallback snapshot emitted when no `ClockProvider` is mounted above the
@@ -88,7 +88,7 @@ export function useAnimationTick(
         state.snapshot = Object.freeze({
           tick: state.tick,
           deltaMs: delta,
-          isIdle: false,
+          isIdle: Date.now() - getLastInteractionTime() >= ANIMATION_IDLE_AFTER_MS,
         });
         onStoreChange();
       }, true /* keepAlive: we want the clock running while this hook is mounted */);
@@ -100,12 +100,6 @@ export function useAnimationTick(
     return stateRef.current.snapshot;
   }, []);
 
-  // TODO Wave 5: wire `isIdle` to the real i70 idle detector.
-  //   The authoritative state lives on the Ink instance as
-  //   `i70CurrentInterval` (see `ink.tsx:i70CurrentInterval`); when that
-  //   crosses I70_IDLE_INTERVAL_MS we should flip `isIdle` to true here.
-  //   Left as a stub for Wave 2 because the bridge from the Ink instance
-  //   to React-land hasn't been designed yet.
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
