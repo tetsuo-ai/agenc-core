@@ -88,17 +88,20 @@ export function ComposerBuffer({
     [cursorActive, cursorModel, ghostHint, placeholder, value.length],
   );
 
-  // Single <Text wrap="truncate-end"> blob, mirroring
-  // openclaude/src/components/BaseTextInput.tsx — the per-row split tried
-  // earlier did not eliminate the cursor artifact and broke the
-  // empty-placeholder layout. The artifact root cause was the placeholder
-  // rendering offsetting the in-band glyph by one column from the declared
-  // cursor; with that fixed above, a single Text matches upstream and
-  // diffs cleanly across frames.
+  // Key the <Ansi> on whether we're in placeholder or typed mode. The two
+  // branches produce different span structures: the placeholder branch
+  // yields a single dim span, while cursorModel.render yields two or more
+  // (typed text + inverted cursor cell). Ink's ink-virtual-text subtree
+  // inside Ansi can carry stale cell state across that structural change,
+  // manifesting as the placeholder's first character staying visible at
+  // column 0 while the typed content is written starting at column 1.
+  // Keying Ansi by mode forces React to unmount+remount at the transition
+  // so the subtree rebuilds clean.
+  const ansiKey = value.length === 0 ? "placeholder" : "typed";
   return (
     <Box ref={cursorRef}>
       <Text wrap="truncate-end">
-        <Ansi>{renderedValue}</Ansi>
+        <Ansi key={ansiKey}>{renderedValue}</Ansi>
       </Text>
     </Box>
   );

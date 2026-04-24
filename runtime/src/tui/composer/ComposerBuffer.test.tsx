@@ -147,6 +147,101 @@ describe("ComposerBuffer", () => {
     unmount();
   });
 
+  test("placeholder → typed transition inside a backgroundColor'd parent Box", async () => {
+    // Reproduces the real composer layout: ComposerBuffer sits inside a
+    // Box with backgroundColor, which is the scenario where the user
+    // reports col 0 retaining the placeholder's first char after typing.
+    const { stdout, rerender, unmount } = await mount(
+      <Box
+        width={40}
+        flexDirection="row"
+        backgroundColor="ansi:magenta"
+      >
+        <Box flexDirection="row" flexGrow={1}>
+          <ComposerBuffer
+            value=""
+            cursor={0}
+            promptPrefix=""
+            cursorActive={true}
+            placeholder="Ask AgenC to do anything"
+          />
+        </Box>
+      </Box>,
+      40,
+    );
+
+    const screen1 = getScreen(stdout);
+    const charBefore = charInCellAt(screen1 as never, 0, 0) ?? " ";
+    expect(charBefore).toBe("A");
+
+    rerender(
+      <Box
+        width={40}
+        flexDirection="row"
+        backgroundColor="ansi:magenta"
+      >
+        <Box flexDirection="row" flexGrow={1}>
+          <ComposerBuffer
+            value="S"
+            cursor={1}
+            promptPrefix=""
+            cursorActive={true}
+            placeholder=""
+          />
+        </Box>
+      </Box>,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const screen2 = getScreen(stdout);
+    const charAfter = charInCellAt(screen2 as never, 0, 0) ?? " ";
+    expect(charAfter).toBe("S");
+
+    unmount();
+  });
+
+  test("placeholder → typed transition clears placeholder's first char at col 0", async () => {
+    const { stdout, rerender, unmount } = await mount(
+      <Box width={40}>
+        <ComposerBuffer
+          value=""
+          cursor={0}
+          promptPrefix=""
+          cursorActive={true}
+          placeholder="Ask AgenC to do anything"
+        />
+      </Box>,
+      40,
+    );
+
+    // Confirm initial state has the placeholder 'A' at col 0.
+    const screen1 = getScreen(stdout);
+    const charBefore = charInCellAt(screen1 as never, 0, 0) ?? " ";
+    expect(charBefore).toBe("A");
+
+    rerender(
+      <Box width={40}>
+        <ComposerBuffer
+          value="S"
+          cursor={1}
+          promptPrefix=""
+          cursorActive={true}
+          placeholder="Ask AgenC to do anything"
+        />
+      </Box>,
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const screen2 = getScreen(stdout);
+    const charAfter = charInCellAt(screen2 as never, 0, 0) ?? " ";
+    // This is the bug repro: col 0 should now be 'S' (what the user typed),
+    // not 'A' (the placeholder's first char). If this assertion fails, the
+    // renderer did not overwrite col 0 between frames.
+    expect(charAfter).toBe("S");
+
+    unmount();
+  });
+
   test("renders placeholder when buffer is empty", async () => {
     const { stdout, unmount } = await mount(
       <Box width={40}>

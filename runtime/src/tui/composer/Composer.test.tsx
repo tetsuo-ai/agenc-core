@@ -292,6 +292,48 @@ describe("Composer", () => {
     unmount();
   });
 
+  test("typing overwrites the placeholder at col 0 instead of leaving a stale char", async () => {
+    // Regression test for: when buffer transitions from empty (placeholder
+    // "Ask AgenC to do anything" visible) to a typed character that differs
+    // from the placeholder's first letter, col 0 must show the typed char,
+    // not the placeholder's leftover 'A'. Uses "S" as the first typed char
+    // so it's distinguishable from the placeholder's 'A'.
+    const emitter = new EventEmitter();
+    const { unmount, stdout } = await mount(
+      withInputProviders(
+        emitter,
+        <Box width="100%">
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome }}
+            onSubmit={() => undefined}
+            pasteStore={new PasteStore()}
+          />
+        </Box>,
+      ),
+      { columns: 48 },
+    );
+
+    // Wait for mount + initial placeholder render.
+    await sleep(40);
+    const initialFrame = latestFrameText(stdout);
+    expect(initialFrame).toContain("Ask AgenC to do anything");
+
+    // Type "S" (different from placeholder's first char).
+    await typeText(emitter, "Started", 20);
+    await sleep(60);
+
+    const frame = latestFrameText(stdout);
+    // The first non-whitespace content on the buffer row should start with
+    // the typed "Started", NOT "AStarted" (placeholder 'A' leftover).
+    const bufferRow = frame
+      .split("\n")
+      .find((line) => line.includes("Started"));
+    expect(bufferRow).toBeDefined();
+    expect(bufferRow).not.toContain("AStarted");
+    expect(bufferRow).toContain("Started");
+    unmount();
+  });
+
   test("opens Codex-style skill mention palette from live skills service", async () => {
     const emitter = new EventEmitter();
     const { unmount, stdout } = await mount(
