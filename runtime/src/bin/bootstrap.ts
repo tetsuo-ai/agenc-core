@@ -66,7 +66,7 @@ import { AgentRegistry } from "../agents/registry.js";
 import {
   buildToolRegistry,
   type BuildToolRegistryOptions,
-} from "./_deps/tool-registry.js";
+} from "../tool-registry.js";
 import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,

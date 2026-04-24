@@ -208,6 +208,28 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.registry.tools.some((tool) => tool.name === extraTool.name)).toBe(
         true,
       );
+      expect(boot.registry.tools.map((tool) => tool.name)).toEqual(
+        expect.arrayContaining([
+          "system.readFile",
+          "system.writeFile",
+          "system.bash",
+          extraTool.name,
+        ]),
+      );
+      const providerTools = createProviderSpy.mock.calls[0]?.[1].tools as
+        | Array<{ readonly function?: { readonly name?: string } }>
+        | undefined;
+      const providerToolNames =
+        providerTools?.map((tool) => tool.function?.name).filter(Boolean) ?? [];
+      expect(providerToolNames.length).toBeGreaterThan(10);
+      expect(providerToolNames).toEqual(
+        expect.arrayContaining([
+          "system.readFile",
+          "system.writeFile",
+          "system.bash",
+          extraTool.name,
+        ]),
+      );
       expect(createProviderSpy).toHaveBeenCalledWith(
         "grok",
         expect.objectContaining({
