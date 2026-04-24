@@ -89,6 +89,7 @@ import {
 } from "./event-log.js";
 import type { RolloutStore } from "./rollout-store.js";
 import type { LiveThread } from "./live-thread.js";
+import type { RolloutTraceRecorder } from "./rollout-trace.js";
 import type { AppendOptions } from "./session-store.js";
 import {
   buildPerTurnConfig,
@@ -488,6 +489,20 @@ export interface SessionServices {
   readonly analyticsEventsClient: AnalyticsEventsClient;
   readonly hooks: Hooks;
   readonly rollout: RolloutRecorder | undefined;
+  /**
+   * Codex `rollout_trace` (T6 diagnostics). Coexists with `rollout`:
+   * `rollout` is the authoritative rollout item log (source of truth),
+   * `rolloutTrace` is the best-effort diagnostic trace bundle recorder
+   * used for replay analysis and post-mortem debugging.
+   *
+   * Declared optional (`?`) instead of `RolloutTraceRecorder | undefined`
+   * so existing `SessionServices` construction sites in `bin/bootstrap.ts`
+   * and test fixtures do not need to be updated in this tranche. Upstream
+   * codex treats this slot as required and passes a disabled handle when
+   * tracing is off; AgenC callers can opt in by supplying
+   * `createRolloutTraceRecorder(...)` or `RolloutTraceRecorder.disabled()`.
+   */
+  readonly rolloutTrace?: RolloutTraceRecorder;
   readonly userShell: UserShell;
   readonly agentIdentityManager: AgentIdentityManager;
   readonly shellSnapshotTx: ShellSnapshotTx;
