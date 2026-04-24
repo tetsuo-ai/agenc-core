@@ -51,10 +51,9 @@ import { RolloutStore } from "../session/rollout-store.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import { recordInitialHistoryOnResume } from "../session/agent-task-lifecycle.js";
 import {
-  runStartupPrewarm,
-  emitSessionConfigured as emitSessionConfiguredEvent,
+  bootstrapSession,
+  type BootstrapSessionConfiguredPayload,
 } from "../session/bootstrap.js";
-import { discoverDefaultUserShellAsync } from "../utils/shell-discovery.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
@@ -1000,350 +999,400 @@ export async function bootstrapLocalRuntimeSession(
   let initialTranscriptEvents: readonly BootstrapTranscriptEvent[] = [];
   let initialMessages: ReadonlyArray<EventMsg> = [];
 
-  // Discover the real user shell up-front so `Session.services.userShell`
-  // holds a live `UserShell` (zsh/bash/sh) instead of the `/bin/sh`
-  // interface stub `buildDeferredServices` returns. Matches upstream
-  // codex `core/src/session/session.rs:585-605` where
-  // `shell::default_user_shell()` feeds `SessionServices.user_shell`.
-  const discoveredShell = await discoverDefaultUserShellAsync({ env });
-  const session = new Session({
-    conversationId,
-    initialState,
-    features: config.features,
-    services: {
-      ...buildDeferredServices(
-        provider,
-        registry,
-        createSessionMcpService(mcpManager, { env }),
-        unifiedExecManager,
-        permissionModeRegistry,
-        configStore,
-        toolApprovals,
-        networkApproval,
-        modelsManager,
-        { agencHome, workspaceRoot, env },
-      ),
-      userShell: discoveredShell,
-    },
-    jsRepl: { id: `repl-${conversationId}` },
-    initialTranscriptEvents,
-  });
-  sessionRef = session;
-  const agentRegistry = new AgentRegistry();
-  const agentControl = new AgentControl({
-    session,
-    registry: agentRegistry,
-  });
-  agentControl.registerSessionRoot(conversationId);
-  bindSessionAgentControl(session, {
-    control: agentControl,
-    registry: agentRegistry,
-  });
-  // Intentionally defer `session.startMcpManager(mcpManager)` — per codex
-  // `codex-rs/core/src/session/session.rs:717-748, 766`, SessionConfigured
-  // must be emitted BEFORE the MCP connection manager is constructed
-  // ("Dispatch the SessionConfiguredEvent first and then report any
-  // errors"). The call is moved below, after the session_configured emit.
-
   const sessionProjectRootMarkers = startup.config.project_root_markers;
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
   let turnStateAccumulator: TurnStateAccumulator | null = null;
   let shutdownStarted = false;
+  // Lifecycle slots filled by the bootstrapSession hooks. The shutdown
+  // closure closes over these `let` bindings so it is safe to call at
+  // any point in the bootstrap lifecycle, including partial-failure
+  // paths where onBeforeSessionConfigured aborts before the session or
+  // agent control plane is fully wired.
+  let sessionForShutdown: Session | null = null;
+  let agentControlForShutdown: AgentControl | null = null;
+  let rolloutStoreForReturn: RolloutStore | null = null;
+  let ctxForReturn: TurnContext | null = null;
 
   const shutdown = async (): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
     turnStateAccumulator?.detach();
-    clearCurrentRuntimeSession(session);
+    if (sessionForShutdown !== null) {
+      clearCurrentRuntimeSession(sessionForShutdown);
+    }
     if (sidecarManager !== null) {
       await sidecarManager.stop().catch(() => {
         /* best effort */
       });
     }
-    await shutdownSessionLifecycle({
-      session,
-      agentControl,
-      mcpManager,
-    }).catch(() => {
-      /* best effort */
-    });
+    if (sessionForShutdown !== null && agentControlForShutdown !== null) {
+      await shutdownSessionLifecycle({
+        session: sessionForShutdown,
+        agentControl: agentControlForShutdown,
+        mcpManager,
+      }).catch(() => {
+        /* best effort */
+      });
+    }
   };
 
   try {
-    setCurrentRuntimeSession(session);
-    await registerStartupSessionIngress({
-      env,
+    // Construct the session through `bootstrapSession` so shell
+    // discovery, SessionConfigured emit, startup prewarm, and
+    // resume-history recording all flow through the shared entry
+    // point. The bin-specific orchestration (rollout mount, history
+    // reconstruction, sidecar register, buildTurnContext, sidecar
+    // start, MCP start) is threaded in via `onBeforeSessionConfigured`
+    // / `onAfterSessionConfigured`. The bin path intentionally does
+    // NOT pass `mcp` to `bootstrapSession` because upstream codex
+    // starts the live MCP connection manager AFTER SessionConfigured
+    // (session.rs:856-908); the `onAfterSessionConfigured` hook does
+    // that work instead.
+    const session = await bootstrapSession({
       conversationId,
-    });
-
-    // Context-collapse runtime state is process-global. Clear it on every
-    // bootstrap, then restore persisted commit/snapshot metadata for
-    // explicit resume sessions before the first live query can run.
-    restoreFromEntries([], undefined);
-    if (options.conversationId !== undefined) {
-      try {
-        const transcriptLog = await loadPersistedContextCollapseState({
-          configHomes: Array.from(
-            new Set([transcriptConfigHome, legacyProcessConfigHome]),
-          ),
-          workspaceRoot,
-          conversationId,
-          projectRootMarkers: sessionProjectRootMarkers,
+      initialState,
+      features: config.features,
+      services: {
+        ...buildDeferredServices(
+          provider,
+          registry,
+          createSessionMcpService(mcpManager, { env }),
+          unifiedExecManager,
+          permissionModeRegistry,
+          configStore,
+          toolApprovals,
+          networkApproval,
+          modelsManager,
+          { agencHome, workspaceRoot, env },
+        ),
+      },
+      jsRepl: { id: `repl-${conversationId}` },
+      initialTranscriptEvents,
+      // Lazy payload — `rolloutPath`, `initialMessages`, and
+      // `historyEntryCount` are populated inside the before-hook when
+      // the rollout store mounts and resume-history reconstruction
+      // updates `initialState`.
+      sessionConfigured: (): BootstrapSessionConfiguredPayload => ({
+        sessionId: conversationId,
+        model,
+        modelProviderId: resolvedProvider,
+        cwd: workspaceRoot,
+        historyLogId: 0,
+        historyEntryCount: initialState.history.length,
+        initialMessages,
+        ...(rolloutStoreForReturn !== null
+          ? { rolloutPath: rolloutStoreForReturn.rolloutPath }
+          : {}),
+      }),
+      onBeforeSessionConfigured: async (s) => {
+        sessionRef = s;
+        sessionForShutdown = s;
+        const agentRegistry = new AgentRegistry();
+        const agentControl = new AgentControl({
+          session: s,
+          registry: agentRegistry,
         });
-        if (transcriptLog !== null) {
-          restoreFromEntries(
-            transcriptLog.contextCollapseCommits ?? [],
-            transcriptLog.contextCollapseSnapshot,
-          );
+        agentControl.registerSessionRoot(conversationId);
+        bindSessionAgentControl(s, {
+          control: agentControl,
+          registry: agentRegistry,
+        });
+        agentControlForShutdown = agentControl;
+
+        setCurrentRuntimeSession(s);
+        await registerStartupSessionIngress({
+          env,
+          conversationId,
+        });
+
+        // Context-collapse runtime state is process-global. Clear it
+        // on every bootstrap, then restore persisted commit/snapshot
+        // metadata for explicit resume sessions before the first live
+        // query can run.
+        restoreFromEntries([], undefined);
+        if (options.conversationId !== undefined) {
+          try {
+            const transcriptLog = await loadPersistedContextCollapseState({
+              configHomes: Array.from(
+                new Set([transcriptConfigHome, legacyProcessConfigHome]),
+              ),
+              workspaceRoot,
+              conversationId,
+              projectRootMarkers: sessionProjectRootMarkers,
+            });
+            if (transcriptLog !== null) {
+              restoreFromEntries(
+                transcriptLog.contextCollapseCommits ?? [],
+                transcriptLog.contextCollapseSnapshot,
+              );
+            }
+          } catch (err) {
+            if (
+              !(
+                err &&
+                typeof err === "object" &&
+                "code" in err &&
+                err.code === "ENOENT"
+              )
+            ) {
+              s.emit({
+                id: s.nextInternalSubId(),
+                msg: {
+                  type: "warning",
+                  payload: {
+                    cause: "context_collapse_restore_failed",
+                    message: err instanceof Error ? err.message : String(err),
+                  },
+                },
+              });
+            }
+          }
         }
-      } catch (err) {
-        if (
-          !(
-            err &&
-            typeof err === "object" &&
-            "code" in err &&
-            err.code === "ENOENT"
-          )
-        ) {
-          session.emit({
-            id: session.nextInternalSubId(),
+
+        const rolloutStore = new RolloutStore({
+          cwd: workspaceRoot,
+          sessionId: conversationId,
+          agencVersion: "0.2.0",
+          ...(options.conversationId !== undefined ? { resume: true } : {}),
+          ...(sessionProjectRootMarkers !== undefined
+            ? { projectRootMarkers: sessionProjectRootMarkers }
+            : {}),
+        });
+        rolloutStore.open({
+          sessionId: conversationId,
+          timestamp: new Date().toISOString(),
+          cwd: workspaceRoot,
+          originator: "agenc-cli",
+          agencVersion: "0.2.0",
+          model,
+          modelProvider: resolvedProvider,
+        });
+        s.mountRolloutStore(rolloutStore);
+        rolloutStoreForReturn = rolloutStore;
+
+        try {
+          const existingItems = rolloutStore.readAll();
+          if (existingItems.length > 0) {
+            const indexSnapshot = readIndexSnapshot(
+              join(
+                getProjectDir(workspaceRoot, sessionProjectRootMarkers),
+                "sessions",
+                conversationId,
+                "index.json",
+              ),
+            );
+            const reconstruction = reconstructFromRollout(existingItems, {
+              ...(indexSnapshot ? { indexSnapshot } : {}),
+            });
+            initialState = {
+              ...initialState,
+              history: reconstruction.history,
+              ...(reconstruction.previousTurnSettings !== undefined
+                ? { previousTurnSettings: reconstruction.previousTurnSettings }
+                : {}),
+              ...(reconstruction.referenceContextItem !== undefined
+                ? { referenceContextItem: reconstruction.referenceContextItem }
+                : {}),
+            };
+            await s.state.swap(initialState);
+            initialTranscriptEvents = transcriptEventsFromRollout([
+              ...existingItems,
+              ...reconstruction.synthesizedEvents,
+            ]);
+            initialMessages = transcriptMessagesFrom(initialTranscriptEvents);
+            s.setInitialTranscriptEvents(initialTranscriptEvents);
+            if (reconstruction.synthesizedEvents.length > 0) {
+              for (const synth of reconstruction.synthesizedEvents) {
+                if (synth.type === "event_msg") {
+                  s.emit(synth.payload);
+                } else {
+                  rolloutStore.appendRollout(synth);
+                }
+              }
+            }
+            // Port of codex `Session::record_initial_history` resume
+            // branch (session/mod.rs:1150-1236): restore persisted
+            // agent task, emit a model-change warning when the
+            // rollout's last turn ran on a different model, and seed
+            // token-usage from the last persisted token_count event
+            // so resume UIs show cumulative usage immediately. This
+            // runs unconditionally on resume — each sub-step is a
+            // no-op when its input is absent.
+            //
+            // Note: `bootstrapSession` also runs
+            // `recordInitialHistoryOnResume` when `opts.resume` is
+            // set. The bin path does NOT pass `opts.resume` because
+            // the resume items are only knowable after the rollout
+            // store is mounted (which happens inside this hook), so
+            // the record call is made here directly.
+            await recordInitialHistoryOnResume(s, existingItems, {
+              ...(reconstruction.previousTurnSettings?.model !== undefined
+                ? { previousModel: reconstruction.previousTurnSettings.model }
+                : {}),
+              currentModel: model,
+            });
+          }
+        } catch (err) {
+          s.emit({
+            id: s.nextInternalSubId(),
             msg: {
               type: "warning",
               payload: {
-                cause: "context_collapse_restore_failed",
+                cause: "orphan_recovery_failed",
                 message: err instanceof Error ? err.message : String(err),
               },
             },
           });
         }
-      }
-    }
 
-    const rolloutStore = new RolloutStore({
-      cwd: workspaceRoot,
-      sessionId: conversationId,
-      agencVersion: "0.2.0",
-      ...(options.conversationId !== undefined ? { resume: true } : {}),
-      ...(sessionProjectRootMarkers !== undefined
-        ? { projectRootMarkers: sessionProjectRootMarkers }
-        : {}),
-    });
-    rolloutStore.open({
-      sessionId: conversationId,
-      timestamp: new Date().toISOString(),
-      cwd: workspaceRoot,
-      originator: "agenc-cli",
-      agencVersion: "0.2.0",
-      model,
-      modelProvider: resolvedProvider,
-    });
-    session.mountRolloutStore(rolloutStore);
-
-    try {
-      const existingItems = rolloutStore.readAll();
-      if (existingItems.length > 0) {
-        const indexSnapshot = readIndexSnapshot(
-          join(
-            getProjectDir(workspaceRoot, sessionProjectRootMarkers),
-            "sessions",
-            conversationId,
-            "index.json",
-          ),
+        const projectDir = getProjectDir(
+          workspaceRoot,
+          sessionProjectRootMarkers,
         );
-        const reconstruction = reconstructFromRollout(existingItems, {
-          ...(indexSnapshot ? { indexSnapshot } : {}),
-        });
-        initialState = {
-          ...initialState,
-          history: reconstruction.history,
-          ...(reconstruction.previousTurnSettings !== undefined
-            ? { previousTurnSettings: reconstruction.previousTurnSettings }
-            : {}),
-          ...(reconstruction.referenceContextItem !== undefined
-            ? { referenceContextItem: reconstruction.referenceContextItem }
-            : {}),
-        };
-        await session.state.swap(initialState);
-        initialTranscriptEvents = transcriptEventsFromRollout([
-          ...existingItems,
-          ...reconstruction.synthesizedEvents,
-        ]);
-        initialMessages = transcriptMessagesFrom(initialTranscriptEvents);
-        session.setInitialTranscriptEvents(initialTranscriptEvents);
-        if (reconstruction.synthesizedEvents.length > 0) {
-          for (const synth of reconstruction.synthesizedEvents) {
-            if (synth.type === "event_msg") {
-              session.emit(synth.payload);
-            } else {
-              rolloutStore.appendRollout(synth);
-            }
-          }
-        }
-        // Port of codex `Session::record_initial_history` resume
-        // branch (session/mod.rs:1150-1236): restore persisted agent
-        // task, emit a model-change warning when the rollout's last
-        // turn ran on a different model, and seed token-usage from
-        // the last persisted token_count event so resume UIs show
-        // cumulative usage immediately. This runs unconditionally
-        // on resume — each sub-step is a no-op when its input is
-        // absent.
-        await recordInitialHistoryOnResume(session, existingItems, {
-          ...(reconstruction.previousTurnSettings?.model !== undefined
-            ? { previousModel: reconstruction.previousTurnSettings.model }
-            : {}),
-          currentModel: model,
-        });
-      }
-    } catch (err) {
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "orphan_recovery_failed",
-            message: err instanceof Error ? err.message : String(err),
+        sidecarManager = new SidecarManager({
+          onDiagnostic: (diagnostic) => {
+            s.emit({
+              id: s.nextInternalSubId(),
+              msg: {
+                type: diagnostic.level,
+                payload: {
+                  cause: diagnostic.cause,
+                  message: diagnostic.message,
+                },
+              },
+            } as Parameters<typeof s.emit>[0]);
           },
-        },
-      });
-    }
+        });
 
-    const projectDir = getProjectDir(workspaceRoot, sessionProjectRootMarkers);
-    sidecarManager = new SidecarManager({
-      onDiagnostic: (diagnostic) => {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: {
-            type: diagnostic.level,
-            payload: {
+        const fileHistory = new FileHistory({
+          projectDir,
+          onDiagnostic: (diagnostic) =>
+            sidecarManager?.recordDiagnostic({
+              sidecar: "file-history",
+              level: "warning",
               cause: diagnostic.cause,
               message: diagnostic.message,
+              at: Date.now(),
+            }),
+        });
+        sidecarManager.register(new FileHistorySidecar({ fileHistory }));
+        sidecarManager.register(
+          new ErrorLogSidecar({
+            projectDir,
+            sessionId: conversationId,
+          }),
+        );
+
+        const costSidecar = new CostSidecar({
+          budgetTracker: s.budgetTracker,
+          projectDir,
+          sessionId: conversationId,
+          onDiagnostic: (diagnostic) =>
+            sidecarManager?.recordDiagnostic({
+              sidecar: "cost",
+              level: diagnostic.level,
+              cause: diagnostic.cause,
+              message: diagnostic.message,
+              at: Date.now(),
+            }),
+        });
+        await costSidecar.loadFromDisk();
+        sidecarManager.register(costSidecar);
+
+        const extractMemoriesFn = buildExtractMemoriesViaSubagent({
+          session: () => (shutdownStarted ? null : s),
+          memoryDir,
+        });
+        turnStateAccumulator = new TurnStateAccumulator();
+        turnStateAccumulator.subscribe(s.eventLog);
+        const getTurnState = (): MemoryTurnState | null =>
+          turnStateAccumulator?.snapshot() ?? null;
+        sidecarManager.register(
+          registerAutoSaveSidecar({
+            session: { memoryDir, memoryMdPath },
+            extractor: extractMemoriesFn,
+            getTurnState,
+            emitWarning: (message: string) => {
+              if (shutdownStarted) return;
+              s.emit({
+                id: s.nextInternalSubId(),
+                msg: {
+                  type: "warning",
+                  payload: {
+                    cause: "memory_write_contention",
+                    message,
+                  },
+                },
+              });
+            },
+          }),
+        );
+
+        ctxForReturn = buildTurnContext({
+          conversationId,
+          subId: s.nextInternalSubId(),
+          config,
+          modelInfo,
+          provider,
+          sessionConfiguration: initialState.sessionConfiguration,
+        });
+      },
+      onAfterSessionConfigured: async (s) => {
+        // Persist the SessionConfigured event into the initial
+        // transcript so TUIs that render from
+        // `session.getInitialTranscriptEvents()` see the event in the
+        // same position it was emitted.
+        const rolloutPath = rolloutStoreForReturn?.rolloutPath;
+        s.setInitialTranscriptEvents([
+          ...initialTranscriptEvents,
+          {
+            type: "session_configured",
+            payload: {
+              sessionId: conversationId,
+              model,
+              modelProviderId: resolvedProvider,
+              cwd: workspaceRoot,
+              historyLogId: 0,
+              historyEntryCount: initialState.history.length,
+              initialMessages,
+              ...(rolloutPath !== undefined ? { rolloutPath } : {}),
             },
           },
-        } as Parameters<typeof session.emit>[0]);
+        ]);
+
+        // Start sidecars AFTER session_configured so they cannot emit
+        // earlier events. Mirrors codex `session.rs:750-751`: "Start
+        // the watcher after SessionConfigured so it cannot emit
+        // earlier events."
+        if (sidecarManager !== null) {
+          await sidecarManager.start(s.eventLog);
+        }
+
+        // Start the MCP connection manager AFTER session_configured
+        // has been emitted + persisted to rollout. Mirrors codex
+        // ordering at
+        // `codex-rs/core/src/session/session.rs:717-748, 766` where
+        // the SessionConfiguredEvent is dispatched before
+        // McpConnectionManager::new.
+        await s.startMcpManager(mcpManager, {
+          signal: s.services.mcpStartupCancellationToken.signal,
+        });
       },
     });
 
-    const fileHistory = new FileHistory({
-      projectDir,
-      onDiagnostic: (diagnostic) =>
-        sidecarManager?.recordDiagnostic({
-          sidecar: "file-history",
-          level: "warning",
-          cause: diagnostic.cause,
-          message: diagnostic.message,
-          at: Date.now(),
-        }),
-    });
-    sidecarManager.register(new FileHistorySidecar({ fileHistory }));
-    sidecarManager.register(
-      new ErrorLogSidecar({
-        projectDir,
-        sessionId: conversationId,
-      }),
-    );
+    sessionRef = session;
+    sessionForShutdown = session;
 
-    const costSidecar = new CostSidecar({
-      budgetTracker: session.budgetTracker,
-      projectDir,
-      sessionId: conversationId,
-      onDiagnostic: (diagnostic) =>
-        sidecarManager?.recordDiagnostic({
-          sidecar: "cost",
-          level: diagnostic.level,
-          cause: diagnostic.cause,
-          message: diagnostic.message,
-          at: Date.now(),
-        }),
-    });
-    await costSidecar.loadFromDisk();
-    sidecarManager.register(costSidecar);
-
-    const extractMemoriesFn = buildExtractMemoriesViaSubagent({
-      session: () => (shutdownStarted ? null : session),
-      memoryDir,
-    });
-    turnStateAccumulator = new TurnStateAccumulator();
-    turnStateAccumulator.subscribe(session.eventLog);
-    const getTurnState = (): MemoryTurnState | null =>
-      turnStateAccumulator?.snapshot() ?? null;
-    sidecarManager.register(
-      registerAutoSaveSidecar({
-        session: { memoryDir, memoryMdPath },
-        extractor: extractMemoriesFn,
-        getTurnState,
-        emitWarning: (message: string) => {
-          if (shutdownStarted) return;
-          session.emit({
-            id: session.nextInternalSubId(),
-            msg: {
-              type: "warning",
-              payload: {
-                cause: "memory_write_contention",
-                message,
-              },
-            },
-          });
-        },
-      }),
-    );
-
-    const ctx = buildTurnContext({
-      conversationId,
-      subId: session.nextInternalSubId(),
-      config,
-      modelInfo,
-      provider,
-      sessionConfiguration: initialState.sessionConfiguration,
-    });
-
-    const sessionConfiguredPayload = {
-      sessionId: conversationId,
-      model,
-      modelProviderId: resolvedProvider,
-      cwd: workspaceRoot,
-      historyLogId: 0,
-      historyEntryCount: initialState.history.length,
-      initialMessages,
-      rolloutPath: rolloutStore.rolloutPath,
-    };
-    // `emitSessionConfiguredEvent` is the shared helper shared with
-    // `session/bootstrap.ts::bootstrapSession`; routing the bin path
-    // through it keeps the emit shape identical whether the caller
-    // uses the full `bootstrapSession` entry or this staged bin flow.
-    emitSessionConfiguredEvent(session, sessionConfiguredPayload);
-    session.setInitialTranscriptEvents([
-      ...initialTranscriptEvents,
-      {
-        type: "session_configured",
-        payload: sessionConfiguredPayload,
-      },
-    ]);
-
-    // Start sidecars AFTER session_configured so they cannot emit earlier
-    // events. Mirrors codex `session.rs:750-751`: "Start the watcher after
-    // SessionConfigured so it cannot emit earlier events."
-    await sidecarManager.start(session.eventLog);
-
-    // Start the MCP connection manager AFTER session_configured has been
-    // emitted + persisted to rollout. Mirrors codex ordering at
-    // `codex-rs/core/src/session/session.rs:717-748, 766` where the
-    // SessionConfiguredEvent is dispatched before McpConnectionManager::new.
-    await session.startMcpManager(mcpManager, {
-      signal: session.services.mcpStartupCancellationToken.signal,
-    });
-
-    // Startup prewarm: pre-build the default TurnContext and best-
-    // effort register the agent task so the first submit does not
-    // pay that cost. Mirrors codex
-    // `session/session.rs:931-932` (`schedule_startup_prewarm`) and
-    // the `maybePrewarmAgentTaskRegistration` helper in
-    // `session/agent-task-lifecycle.ts`. Errors are swallowed inside
-    // the helper.
-    await runStartupPrewarm(session, {
-      signal: session.services.mcpStartupCancellationToken.signal,
-    });
+    if (rolloutStoreForReturn === null || ctxForReturn === null) {
+      // This is unreachable — `onBeforeSessionConfigured` always
+      // assigns both slots before returning. The guard exists so
+      // TypeScript narrows the final return statement.
+      throw new Error(
+        "bootstrap invariant: rollout store / turn context not initialized",
+      );
+    }
 
     return {
       agencHome,
@@ -1359,9 +1408,9 @@ export async function bootstrapLocalRuntimeSession(
       initialState,
       mcpManager,
       session,
-      rolloutStore,
-      sidecarManager,
-      ctx,
+      rolloutStore: rolloutStoreForReturn,
+      sidecarManager: sidecarManager!,
+      ctx: ctxForReturn,
       memoryDir,
       memoryMdPath,
       shutdown,
