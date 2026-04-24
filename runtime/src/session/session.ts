@@ -484,6 +484,8 @@ export interface SessionServices {
   readonly modelsManager: ModelsManager;
   readonly toolApprovals: ApprovalStore;
   readonly guardianRejections: Map<string, unknown>;
+  /** T13 review-task port. codex `session/review.rs` manager analog. */
+  readonly reviewManager?: import("./review.js").ReviewManager;
   readonly skillsManager: SkillsManager;
   readonly pluginsManager: PluginsManager;
   readonly mcpManager: McpManager;
