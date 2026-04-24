@@ -1,20 +1,31 @@
 /**
  * Agent task registration lifecycle.
  *
- * Hand-port of codex `core/src/session/agent_task_lifecycle.rs` (182 LOC).
- * The Rust file is an additional `impl Session` block that holds the
- * task-registration bookkeeping separate from the Session struct
- * definition in `session.rs`. In TypeScript we mirror that separation
- * by putting the helpers in a dedicated module; each helper takes
- * `session: Session` as its first argument.
+ * AgenC-specific session layer over the low-level agent-task
+ * registration primitive that upstream codex exposes in
+ * `codex-rs/agent-identity/src/lib.rs::register_agent_task` (the
+ * HTTP call that mints a `task_id` for a given agent runtime).
+ * Upstream codex caches a single `task_id` per process in
+ * `AgentIdentityAuth::ensure_runtime`
+ * (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`) via a
+ * `OnceCell`. No session-scoped cache, rollout persistence, identity
+ * rotation handling, or double-checked registration lock exists in the
+ * current codex tree; this module is the AgenC extension that adds
+ * those. Each helper takes `session: Session` as its first argument.
+ *
+ * The only function in this module with a direct upstream port is
+ * `recordInitialHistoryOnResume`, which mirrors the
+ * `InitialHistory::Resumed` arm of
+ * `codex-rs/core/src/session/mod.rs::record_initial_history`
+ * (model-change warning and token-info seed). See that function's
+ * docstring for exact line references.
  *
  * Integrations that land in later tranches:
  *   - T6 (event log / rollout) wires `persistRolloutItems` with the
  *     real rollout recorder.
  *
- * For T5 the implementation is structurally faithful: the control flow
- * mirrors Rust line-for-line, and the forward-dep services return
- * safe defaults so typechecking succeeds end-to-end.
+ * For T5 the forward-dep services return safe defaults so typechecking
+ * succeeds end-to-end.
  *
  * @module
  */
@@ -30,9 +41,13 @@ export type { RolloutItem, SessionStateUpdate } from "./rollout-item.js";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Codex `RegisteredAgentTask` (agent_identity/task_registration.rs:19).
- * Three string fields identifying a task registered with the
- * identity-binding service.
+ * AgenC-specific in-memory shape for a task registered with the
+ * identity-binding service. Upstream codex does not define an
+ * equivalent struct: `codex-rs/agent-identity/src/lib.rs::register_agent_task`
+ * returns only a `task_id: String`, and the surrounding agent runtime id
+ * and registration timestamp live outside that return value. AgenC
+ * groups them together so the session-scoped cache and rollout
+ * persistence path have a single value to pass around.
  */
 export interface RegisteredAgentTask {
   readonly agentRuntimeId: string;
@@ -41,8 +56,11 @@ export interface RegisteredAgentTask {
 }
 
 /**
- * Codex `SessionAgentTask` (codex-protocol). Wire representation of a
- * RegisteredAgentTask used in RolloutItem::SessionState(update).
+ * AgenC-specific wire representation of a RegisteredAgentTask used in
+ * `RolloutItem::SessionState(update)` persistence. Upstream codex has
+ * no equivalent struct in `codex-protocol` or elsewhere in the current
+ * tree. Shape is kept identical to `RegisteredAgentTask` to keep the
+ * conversion helpers below trivial.
  */
 export interface SessionAgentTask {
   readonly agentRuntimeId: string;
@@ -51,7 +69,8 @@ export interface SessionAgentTask {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Conversion helpers — mirror codex `RegisteredAgentTask::{from,to}_session_agent_task`.
+// Conversion helpers — AgenC-specific. Trivial field-for-field copies
+// between the in-memory and on-rollout shapes.
 // ─────────────────────────────────────────────────────────────────────
 
 export function registeredAgentTaskFromSessionAgentTask(
@@ -149,14 +168,23 @@ async function persistRolloutItems(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Ported methods — line-for-line mirror of Rust impl block.
-// Each exported function corresponds to one Rust fn.
+// Session-scoped task-registration lifecycle — AgenC-specific.
+// Upstream codex keeps only a process-wide `OnceCell<String>` cache in
+// `AgentIdentityAuth::ensure_runtime`
+// (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`) and
+// makes no attempt to invalidate on identity rotation, persist the
+// registration, or double-check a session-scoped cache. The helpers
+// below are the AgenC additions that wrap the same underlying HTTP
+// primitive with session-aware bookkeeping.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * codex `Session::maybe_prewarm_agent_task_registration` (agent_task_lifecycle.rs:11-20).
- * Startup task registration is best-effort: regular turns retry on
- * demand, and a prewarm failure should not shut down the session.
+ * AgenC-specific. Startup task registration is best-effort: regular
+ * turns retry on demand, and a prewarm failure should not shut down the
+ * session. Codex's equivalent startup path is `ensure_runtime`
+ * (`codex-rs/login/src/auth/agent_identity.rs`), which has no
+ * swallow-and-continue wrapper because it runs from the async auth
+ * handshake, not the session boot.
  */
 export async function maybePrewarmAgentTaskRegistration(
   session: Session,
@@ -164,19 +192,20 @@ export async function maybePrewarmAgentTaskRegistration(
   try {
     await ensureAgentTaskRegistered(session);
   } catch (error) {
-    // Mirror codex `warn!("startup agent task prewarm failed; regular turns will retry registration")`
+    // AgenC-specific: prewarm failures are intentionally swallowed so
+    // that regular turns can retry registration on demand.
     void error;
   }
 }
 
 /**
- * codex `Session::latest_persisted_agent_task` (agent_task_lifecycle.rs:22-29).
- * Walk rollout items in reverse, return the `Option<SessionAgentTask>`
- * from the most recent `SessionState` update (or `None` if none).
- *
- * Returns `undefined` if no SessionState was ever persisted, or the
- * stored value (which may itself be `undefined` meaning "explicitly
- * cleared"). Mirrors Rust's `Option<Option<SessionAgentTask>>`.
+ * AgenC-specific. Walks rollout items in reverse and returns the
+ * `SessionAgentTask | undefined` from the most recent `SessionState`
+ * update, wrapped in a `{ value }` envelope so callers can distinguish
+ * "no SessionState ever persisted" (returns `undefined`) from
+ * "SessionState persisted with the slot explicitly cleared" (returns
+ * `{ value: undefined }`). Upstream codex does not persist an
+ * agent-task slot on rollout, so there is no equivalent walker.
  */
 export function latestPersistedAgentTask(
   rolloutItems: ReadonlyArray<RolloutItem>,
@@ -191,10 +220,11 @@ export function latestPersistedAgentTask(
 }
 
 /**
- * codex `Session::restore_persisted_agent_task` (agent_task_lifecycle.rs:31-63).
- * If the most recent persisted SessionState has an agent task, validate
- * it against the current identity and either keep it (on match) or
- * clear the cached task (on mismatch).
+ * AgenC-specific. If the most recent persisted `SessionState` has an
+ * agent task, validate it against the current identity and either keep
+ * it (on match) or clear the cached task (on mismatch). Upstream codex
+ * has no persisted agent-task restore path; on process restart it
+ * simply re-registers a fresh task through `ensure_runtime`.
  */
 export async function restorePersistedAgentTask(
   session: Session,
@@ -211,7 +241,8 @@ export async function restorePersistedAgentTask(
     if (matches) {
       await setAgentTask(session, agentTaskUpdate);
     } else {
-      // Mirror codex `debug!("discarding persisted agent task because it does not match the registered agent identity")`
+      // AgenC-specific: drop the persisted task when it no longer
+      // matches the currently bound agent identity.
       await clearAgentTask(session);
     }
   } else {
@@ -243,22 +274,30 @@ export function lastTokenInfoFromRollout(
 }
 
 /**
- * Port of codex `Session::record_initial_history` resume branch
- * (session/mod.rs:1150-1236 — the `InitialHistory::Resumed` arm).
+ * Port of the `InitialHistory::Resumed` arm of codex
+ * `Session::record_initial_history`
+ * (`codex-rs/core/src/session/mod.rs::record_initial_history`,
+ * function at lines 1151-1236; the Resumed arm runs roughly
+ * 1172-1209).
  *
  * Three resume-time behaviors are wired here so the AgenC bootstrap
  * has a single entrypoint for them:
  *
- *   1. **Agent-task restore.** Delegates to `restorePersistedAgentTask`
- *      so the cached task matches the post-replay session identity.
+ *   1. **Agent-task restore.** Delegates to `restorePersistedAgentTask`.
+ *      AgenC-specific: no equivalent exists in codex because codex does
+ *      not persist the agent task to the rollout. Runs first so the
+ *      cached task is consistent with the post-replay session identity
+ *      before any model-dependent state mutations.
  *   2. **Model-change warning.** Codex emits
- *      `EventMsg::Warning(WarningEvent { ... })` (session/mod.rs:1186-1195)
- *      when the rollout's last `turn_context.model` differs from the
- *      session's active model. The warning wording mirrors codex's
- *      English sentence; "Codex" is swapped for "AgenC".
+ *      `EventMsg::Warning(WarningEvent { ... })` at
+ *      `session/mod.rs:1185-1196` when the rollout's last
+ *      `turn_context.model` differs from the session's active model.
+ *      The warning wording mirrors codex's English sentence; "Codex" is
+ *      swapped for "AgenC".
  *   3. **Token-info seed.** Sets `initialTokenUsage` on session state
  *      from the last persisted `token_count` event so UIs display
- *      cumulative usage immediately after resume.
+ *      cumulative usage immediately after resume. Mirrors
+ *      `session/mod.rs:1200-1203`.
  *
  * Callers (bootstrap.ts resume branch) pass the rollout items read
  * from the JSONL file plus the already-computed `previousTurnSettings`
@@ -275,12 +314,13 @@ export async function recordInitialHistoryOnResume(
     readonly currentModel: string;
   },
 ): Promise<void> {
-  // 1. Agent-task restore. Preserves codex line 1173 ordering
-  // (task restore before any state mutations tied to the new model).
+  // 1. Agent-task restore. AgenC-specific (no upstream equivalent);
+  // run first so the cached task lines up with the restored session
+  // identity before any model-dependent state mutations.
   await restorePersistedAgentTask(session, rolloutItems);
 
   // 2. Model-change warning. Matches codex's sentence at
-  // session/mod.rs:1189-1191 with "Codex" → "AgenC".
+  // session/mod.rs:1189-1192 with "Codex" → "AgenC".
   if (
     opts.previousModel !== undefined &&
     opts.previousModel !== opts.currentModel
@@ -299,8 +339,8 @@ export async function recordInitialHistoryOnResume(
     });
   }
 
-  // 3. Seed token_info so downstream UIs see persisted usage
-  // (codex session/mod.rs:1200-1203).
+  // 3. Seed token_info so downstream UIs see persisted usage. Mirrors
+  // codex session/mod.rs:1200-1203.
   const info = lastTokenInfoFromRollout(rolloutItems);
   if (info !== undefined) {
     await session.state.with((s) => {
@@ -311,7 +351,9 @@ export async function recordInitialHistoryOnResume(
 }
 
 /**
- * codex `Session::persist_agent_task_update` (agent_task_lifecycle.rs:65-70).
+ * AgenC-specific. Persist a `SessionState` rollout item carrying the
+ * current agent-task cache value (or an explicit clear when `agentTask`
+ * is null). Upstream codex does not persist this slot.
  */
 async function persistAgentTaskUpdate(
   session: Session,
@@ -328,9 +370,9 @@ async function persistAgentTaskUpdate(
 }
 
 /**
- * codex `Session::clear_cached_agent_task` (agent_task_lifecycle.rs:72-85).
- * Clear the cached task only if it matches the passed-in task (avoids
- * clearing a task another flow just wrote concurrently).
+ * AgenC-specific. Clear the cached task only if it still matches the
+ * passed-in task, which avoids clobbering a task another flow wrote
+ * concurrently. Upstream codex has no session-scoped cache to clear.
  */
 async function clearCachedAgentTask(
   session: Session,
@@ -351,9 +393,11 @@ async function clearCachedAgentTask(
 }
 
 /**
- * codex `Session::cache_agent_task` (agent_task_lifecycle.rs:87-102).
- * Write the task into session state if it differs from the current
- * cached value, persisting the update.
+ * AgenC-specific. Write the task into session state if it differs from
+ * the current cached value, then persist the update to the rollout.
+ * Upstream codex stores only a `OnceCell<String>` per process
+ * (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`) and
+ * never rewrites or persists it.
  */
 async function cacheAgentTask(
   session: Session,
@@ -376,9 +420,10 @@ async function cacheAgentTask(
 }
 
 /**
- * codex `Session::cached_agent_task_for_current_identity` (agent_task_lifecycle.rs:104-135).
- * Returns the cached task iff it still matches the current identity.
- * On mismatch, clears the cached value and returns undefined.
+ * AgenC-specific. Returns the cached task iff it still matches the
+ * current agent identity; on mismatch, clears the cached value and
+ * returns undefined. Upstream codex does no per-call identity match
+ * check against its `OnceCell<String>` task cache.
  */
 export async function cachedAgentTaskForCurrentIdentity(
   session: Session,
@@ -398,17 +443,26 @@ export async function cachedAgentTaskForCurrentIdentity(
 }
 
 /**
- * codex `Session::ensure_agent_task_registered` (agent_task_lifecycle.rs:137-181).
- * Fast path: return cached. Otherwise, take the registration lock,
- * double-check the cache, then call the identity manager to register
- * a new task. Retry up to twice if the identity manager returns a
- * task that no longer matches current identity (race with identity
- * rotation during registration).
+ * AgenC-specific session-scoped wrapper around the codex low-level
+ * registration primitive `register_agent_task`
+ * (`codex-rs/agent-identity/src/lib.rs`, pub fn at line 109). Codex's
+ * only caller, `AgentIdentityAuth::ensure_runtime`
+ * (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`), just
+ * memoizes the returned task id in a `OnceCell<String>` and never
+ * retries, re-validates, or double-checks.
  *
- * Returns `undefined` when feature is disabled or auth binding
- * unavailable (mirrors Rust `Ok(None)`). Throws on registration
- * failure (caller decides whether to log-and-continue per the
- * `maybe_prewarm_agent_task_registration` pattern).
+ * AgenC adds:
+ *   - fast-path return of the session-scoped cached task;
+ *   - a registration lock + double-check so concurrent turns do not
+ *     race-register duplicate tasks;
+ *   - up-to-two retry if the identity manager returns a task that no
+ *     longer matches current identity (covers a mid-registration
+ *     identity rotation);
+ *   - `undefined` return when the feature is disabled or auth binding
+ *     is unavailable.
+ *
+ * Throws on registration failure; callers decide whether to
+ * log-and-continue (see `maybePrewarmAgentTaskRegistration`).
  */
 export async function ensureAgentTaskRegistered(
   session: Session,
@@ -427,7 +481,8 @@ export async function ensureAgentTaskRegistered(
       const matches =
         (await identityManager(session).taskMatchesCurrentIdentity?.(registered)) ?? false;
       if (!matches) {
-        // Mirror codex `debug!("discarding newly registered agent task because the registered agent identity changed")`
+        // AgenC-specific: a registration that lost the race with an
+        // identity rotation is discarded and retried once.
         continue;
       }
 
