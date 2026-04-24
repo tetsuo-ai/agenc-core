@@ -337,7 +337,11 @@ export type EventMsg =
       readonly type: "plan_item_completed";
       readonly payload: PlanItemCompletedEvent;
     }
-  | { readonly type: "plan_exited"; readonly payload: PlanExitedEvent };
+  | { readonly type: "plan_exited"; readonly payload: PlanExitedEvent }
+  | {
+      readonly type: "exit_review_mode";
+      readonly payload: import("./codex-delegate.js").ExitReviewModePayload;
+    };
 
 /**
  * Structured deprecation-notice payload. Emitted whenever the runtime
@@ -441,6 +445,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "plan_delta",
     "plan_item_completed",
     "plan_exited",
+    "exit_review_mode",
   ]),
 );
 
