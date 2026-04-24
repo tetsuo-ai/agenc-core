@@ -223,6 +223,8 @@ export function ensureStreamingToolExecutor(
   const resolvedExecutionSurface: "cli" | "headless" =
     process.stdin && process.stdin.isTTY === false ? "headless" : "cli";
   const permissionModeRegistry = session.services.permissionModeRegistry;
+  const discoveredToolNames =
+    session.services.registry.getDiscoveredToolNames?.();
   const permissionContext: ToolEvaluatorContext | null = permissionModeRegistry
     ? attachContextDefaults({
         session,
@@ -282,6 +284,7 @@ export function ensureStreamingToolExecutor(
               modeChangeRegistry: permissionModeRegistry,
             }
           : {}),
+        ...(discoveredToolNames !== undefined ? { discoveredToolNames } : {}),
         onHookError: (phase: string, err: unknown, idx: number) => {
           session.emit({
             id: session.nextInternalSubId(),

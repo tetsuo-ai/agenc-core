@@ -500,6 +500,10 @@ export interface LLMChatOptions {
    */
   readonly promptCacheKey?: string;
   readonly toolRouting?: LLMChatToolRoutingOptions;
+  /** Request-scoped tool catalog. Providers should prefer this over
+   * constructor-time tools so late MCP/dynamic tools can appear after
+   * session startup. */
+  readonly tools?: ReadonlyArray<LLMTool>;
   readonly toolChoice?: LLMToolChoice;
   /** Optional request-scoped structured output contract. */
   readonly structuredOutput?: LLMStructuredOutputRequest;

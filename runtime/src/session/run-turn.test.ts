@@ -62,6 +62,7 @@ import type {
   LLMMessage,
   LLMProvider,
   LLMResponse,
+  LLMTool,
   StreamProgressCallback,
 } from "../llm/types.js";
 import { StreamModelError } from "../phases/stream-model.js";
@@ -850,6 +851,7 @@ describe("runTurn — live sampling request contract", () => {
     let seenOptions:
       | {
           toolRouting?: { allowedToolNames?: readonly string[] };
+          tools?: readonly LLMTool[];
           parallelToolCalls?: boolean;
           reasoningEffort?: string;
         }
@@ -893,6 +895,9 @@ describe("runTurn — live sampling request contract", () => {
     });
     expect(seenMessages[1]).toEqual({ role: "user", content: "hello" });
     expect(seenOptions?.toolRouting?.allowedToolNames).toEqual([
+      "visible_tool",
+    ]);
+    expect(seenOptions?.tools?.map((tool) => tool.function.name)).toEqual([
       "visible_tool",
     ]);
     expect(seenOptions?.parallelToolCalls).toBe(true);

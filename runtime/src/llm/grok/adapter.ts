@@ -1570,6 +1570,7 @@ export class GrokProvider implements LLMProvider {
     const toolSelection = this.resolveResponseTools(
       options?.toolRouting?.allowedToolNames,
       options?.toolChoice,
+      options?.tools,
     );
     const built = this.buildParams(messages, {
       store: false,
@@ -1817,16 +1818,56 @@ export class GrokProvider implements LLMProvider {
   private resolveResponseTools(
     allowedToolNames?: readonly string[],
     toolChoice?: LLMToolChoice,
+    requestTools?: readonly LLMTool[],
   ): ToolSelectionDiagnostics {
+    const rawRequestTools = requestTools ? [...requestTools] : undefined;
+    const requestToolCatalog = rawRequestTools
+      ? slimTools(rawRequestTools).tools
+      : undefined;
+    const responseTools = requestToolCatalog
+      ? toXaiResponsesTools(requestToolCatalog)
+      : this.responseTools;
+    const rawToolsByName = rawRequestTools
+      ? new Map(rawRequestTools.map((tool) => [tool.function.name, tool]))
+      : this.rawToolsByName;
+    const responseToolsByName = requestToolCatalog
+      ? new Map(
+          responseTools
+            .map((tool, index) => {
+              const name = requestToolCatalog[index]?.function?.name;
+              return name ? [name, tool] : undefined;
+            })
+            .filter(
+              (
+                entry,
+              ): entry is [string, Record<string, unknown>] =>
+                entry !== undefined,
+            ),
+        )
+      : this.responseToolsByName;
+    const responseToolCharsByName = requestToolCatalog
+      ? new Map(
+          responseTools
+            .map((tool, index) => {
+              const name = requestToolCatalog[index]?.function?.name;
+              return name ? [name, JSON.stringify(tool).length] : undefined;
+            })
+            .filter(
+              (
+                entry,
+              ): entry is [string, number] => entry !== undefined,
+            ),
+        )
+      : this.responseToolCharsByName;
     const providerNativeTools = this.providerNativeTools;
     const providerCatalogToolCount =
-      this.responseTools.length + providerNativeTools.length;
+      responseTools.length + providerNativeTools.length;
     const providerCatalogToolNames = [
-      ...extractTraceToolNames(this.responseTools),
+      ...extractTraceToolNames(responseTools),
       ...providerNativeTools.map((definition) => definition.name),
     ];
     const fullCatalogTools = [
-      ...this.responseTools,
+      ...responseTools,
       ...providerNativeTools.map((definition) => definition.payload),
     ];
     if (allowedToolNames === undefined) {
@@ -1845,7 +1886,12 @@ export class GrokProvider implements LLMProvider {
       }
       return {
         tools: fullCatalogTools,
-        chars: this.toolChars,
+        chars: rawRequestTools
+          ? fullCatalogTools.reduce(
+              (sum, tool) => sum + JSON.stringify(tool).length,
+              0,
+            )
+          : this.toolChars,
         requestedToolNames: [],
         resolvedToolNames: providerCatalogToolNames,
         missingRequestedToolNames: [],
@@ -1894,10 +1940,10 @@ export class GrokProvider implements LLMProvider {
     const resolvedToolNames: string[] = [];
     let chars = 0;
     for (const name of requestedToolNames) {
-      let responseTool = this.responseToolsByName.get(name);
-      let responseToolChars = this.responseToolCharsByName.get(name);
+      let responseTool = responseToolsByName.get(name);
+      let responseToolChars = responseToolCharsByName.get(name);
       if (!responseTool) {
-        const rawTool = this.rawToolsByName.get(name);
+        const rawTool = rawToolsByName.get(name);
         if (rawTool) {
           const slimTool = toSlimTool(rawTool);
           responseTool = toXaiResponsesTools([slimTool.tool])[0];

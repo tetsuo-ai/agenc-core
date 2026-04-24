@@ -150,6 +150,7 @@ function buildProviderOptions(
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
   return {
     signal,
+    tools: request.tools,
     parallelToolCalls: request.parallelToolCalls,
     toolRouting: { allowedToolNames },
     reasoningEffort:

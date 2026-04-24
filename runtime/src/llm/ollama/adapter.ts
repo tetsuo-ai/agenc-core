@@ -257,7 +257,11 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
-    const toolSelection = this.selectTools(options?.toolRouting?.allowedToolNames);
+    const requestTools = options?.tools ? [...options.tools] : this.tools;
+    const toolSelection = this.selectTools(
+      options?.toolRouting?.allowedToolNames,
+      requestTools,
+    );
     const params = this.buildParams(messages, options, toolSelection);
     const requestMetrics = collectParamDiagnostics(params, toolSelection);
     const requestTimeoutMs = resolveRequestTimeoutMs(
@@ -313,7 +317,11 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
-    const toolSelection = this.selectTools(options?.toolRouting?.allowedToolNames);
+    const requestTools = options?.tools ? [...options.tools] : this.tools;
+    const toolSelection = this.selectTools(
+      options?.toolRouting?.allowedToolNames,
+      requestTools,
+    );
     const params: Record<string, unknown> = {
       ...this.buildParams(messages, options, toolSelection),
       stream: true,
@@ -524,9 +532,11 @@ export class OllamaProvider implements LLMProvider {
       params.keep_alive = this.config.keepAlive;
 
     // Tools — Ollama uses OpenAI-compatible format
-    if (this.tools.length > 0) {
+    const requestTools = options?.tools ? [...options.tools] : this.tools;
+    if (requestTools.length > 0) {
       params.tools = (toolSelection ?? this.selectTools(
         options?.toolRouting?.allowedToolNames,
+        requestTools,
       )).tools;
     }
 
@@ -535,12 +545,13 @@ export class OllamaProvider implements LLMProvider {
 
   private selectTools(
     allowedToolNames?: readonly string[],
+    tools: readonly LLMTool[] = this.tools,
   ): ToolSelectionDiagnostics {
-    const providerCatalogToolCount = this.tools.length;
-    const providerCatalogToolNames = this.tools.map((tool) => tool.function.name);
+    const providerCatalogToolCount = tools.length;
+    const providerCatalogToolNames = tools.map((tool) => tool.function.name);
     if (allowedToolNames === undefined) {
       return {
-        tools: this.tools,
+        tools: [...tools],
         requestedToolNames: [],
         resolvedToolNames: providerCatalogToolNames,
         missingRequestedToolNames: [],
@@ -580,7 +591,7 @@ export class OllamaProvider implements LLMProvider {
     }
 
     const requestedToolNames = [...allowed];
-    const filtered = this.tools.filter((tool) => allowed.has(tool.function.name));
+    const filtered = tools.filter((tool) => allowed.has(tool.function.name));
     const resolvedToolNames = filtered.map((tool) => tool.function.name);
     const missingRequestedToolNames = requestedToolNames.filter((name) =>
       !resolvedToolNames.includes(name)

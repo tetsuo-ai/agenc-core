@@ -237,6 +237,9 @@ export class OpenAIProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
+    const requestTools = options?.tools
+      ? [...options.tools]
+      : this.config.tools ?? [];
 
     try {
       return await this.auth.withAuthorizedOperation(async () => {
@@ -247,7 +250,7 @@ export class OpenAIProvider implements LLMProvider {
           const request = buildOpenAIResponsesRequest({
             model: this.config.model,
             messages,
-            tools: this.config.tools ?? [],
+            tools: requestTools,
             options,
             store: this.config.store,
           });
@@ -265,7 +268,7 @@ export class OpenAIProvider implements LLMProvider {
             {
               model: this.config.model,
               messages,
-              tools: this.config.tools ?? [],
+              tools: requestTools,
               options,
               store: this.config.store,
             },
@@ -278,7 +281,7 @@ export class OpenAIProvider implements LLMProvider {
         const request = buildChatCompletionsRequest({
           model: this.config.model,
           messages,
-          tools: this.config.tools ?? [],
+          tools: requestTools,
           options,
         });
         const response = await session.requestJson<Record<string, unknown>>({
@@ -292,7 +295,7 @@ export class OpenAIProvider implements LLMProvider {
         return parseChatCompletionsResponse(this.config.model, response.data, {
           model: this.config.model,
           messages,
-          tools: this.config.tools ?? [],
+          tools: requestTools,
           options,
         });
       });
@@ -422,7 +425,7 @@ export class OpenAIProvider implements LLMProvider {
     const requestOptions = {
       model: this.config.model,
       messages,
-      tools: this.config.tools ?? [],
+      tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       store: this.config.store,
     };
@@ -558,7 +561,7 @@ export class OpenAIProvider implements LLMProvider {
     const requestOptions = {
       model: this.config.model,
       messages,
-      tools: this.config.tools ?? [],
+      tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
     };
     const request = {

@@ -139,6 +139,7 @@ export interface LiveToolDispatchOptions {
   readonly canUseTool?: CanUseToolFn;
   readonly permissionContext?: ToolEvaluatorContext | null;
   readonly modeChangeRegistry?: PermissionModeRegistry;
+  readonly discoveredToolNames?: ReadonlySet<string>;
   readonly onProgress?: ToolProgressCallback;
   readonly onHookError?: (
     phase: "pre" | "post" | "failure",
@@ -263,6 +264,7 @@ export class ToolRouter {
         ...((tool as Tool & { serverId?: string }).serverId !== undefined
           ? { serverId: (tool as Tool & { serverId?: string }).serverId }
           : {}),
+        ...(tool.metadata?.deferred === true ? { deferred: true } : {}),
         ...(unavailable.has(tool.name) ? { unavailable: true } : {}),
         ...flags,
       };
@@ -633,6 +635,9 @@ function rawDispatchOptions(
       : {}),
     ...(opts.modeChangeRegistry !== undefined
       ? { modeChangeRegistry: opts.modeChangeRegistry }
+      : {}),
+    ...(opts.discoveredToolNames !== undefined
+      ? { discoveredToolNames: opts.discoveredToolNames }
       : {}),
     ...(opts.approvalResolver !== undefined
       ? {

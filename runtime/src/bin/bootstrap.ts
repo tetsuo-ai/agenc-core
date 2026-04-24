@@ -894,6 +894,7 @@ export async function bootstrapLocalRuntimeSession(
 
   const registry = buildToolRegistry({
     workspaceRoot,
+    mcpToolsProvider: mcpManager,
     ...(options.toolRegistryOptions ?? {}),
   });
   const provider: LLMProvider = createProvider(

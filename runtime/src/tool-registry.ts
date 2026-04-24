@@ -9,20 +9,22 @@
  *     as a `ToolDispatchResult` that becomes the tool message body
  *
  * Build once per session. The registry is intentionally flat — every
- * surviving tool registers into one list with no grouping, no
- * permission gating layer (that comes later), no MCP forwarding yet.
+ * surviving tool registers into one router-backed list with no grouping.
+ * The provider-visible catalog is request scoped: built-ins are visible
+ * by default, while MCP/deferred tools become visible after discovery.
  *
  * @module
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
-import type { Tool } from "./tools/types.js";
+import type { Tool, ToolCatalogEntry, ToolMetadata } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
 import {
   createFilesystemTools,
   createCodingTools,
   createHttpTools,
   createBashTool,
+  SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import {
@@ -30,8 +32,13 @@ import {
   isBashTool,
   isReadOnlyFilesystemTool,
   isWriteFilesystemTool,
+  sharedServer,
   type ConcurrencyClass,
 } from "./tools/concurrency.js";
+import {
+  ToolRouter,
+  type ConfiguredToolSpec,
+} from "./tools/router.js";
 
 export interface ToolDispatchResult {
   readonly content: string;
@@ -42,6 +49,7 @@ export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
+  getDiscoveredToolNames?(): ReadonlySet<string>;
 }
 
 function toolToLLMTool(tool: Tool): LLMTool {
@@ -59,9 +67,18 @@ function toolToLLMTool(tool: Tool): LLMTool {
  * T7: attach ConcurrencyClass + other execution metadata to a Tool.
  * Idempotent — tools that already declared their own metadata win.
  */
-function tagTool(tool: Tool): Tool {
+function inferMcpServerId(toolName: string): string | undefined {
+  const parts = toolName.split(".");
+  if (parts.length < 3 || parts[0] !== "mcp") return undefined;
+  const serverId = parts[1]?.trim();
+  return serverId && serverId.length > 0 ? serverId : undefined;
+}
+
+function tagTool(tool: Tool, opts: { readonly serverId?: string } = {}): Tool {
+  const serverId = opts.serverId ?? tool.serverId ?? inferMcpServerId(tool.name);
   const baseClass: ConcurrencyClass =
-    tool.concurrencyClass ?? defaultConcurrencyClassFor(tool.name);
+    tool.concurrencyClass ??
+    (serverId ? sharedServer(serverId) : defaultConcurrencyClassFor(tool.name));
   const isReadOnly = tool.isReadOnly ?? isReadOnlyFilesystemTool(tool.name);
   const supportsParallelToolCalls =
     tool.supportsParallelToolCalls ??
@@ -87,10 +104,86 @@ function tagTool(tool: Tool): Tool {
   return {
     ...tool,
     concurrencyClass: baseClass,
+    ...(serverId ? { serverId } : {}),
     isReadOnly,
     supportsParallelToolCalls,
     requiresApproval,
     isConcurrencySafe,
+  };
+}
+
+type ToolListProvider = {
+  readonly getTools: () => readonly Tool[];
+};
+
+type ToolListInput = readonly Tool[] | (() => readonly Tool[]);
+
+function readToolList(input: ToolListInput | undefined): readonly Tool[] {
+  if (input === undefined) return [];
+  return typeof input === "function" ? input() : input;
+}
+
+function toolMap(tools: readonly Tool[]): Map<string, Tool> {
+  return new Map(tools.map((tool) => [tool.name, tool]));
+}
+
+function withMetadata(
+  tool: Tool,
+  updates: {
+    readonly source?: ToolMetadata["source"];
+    readonly family?: string;
+    readonly deferred?: boolean;
+    readonly hiddenByDefault?: boolean;
+    readonly mutating?: boolean;
+  },
+): Tool {
+  const metadata: ToolMetadata = {
+    ...(tool.metadata ?? {}),
+    ...(updates.source !== undefined ? { source: updates.source } : {}),
+    ...(updates.family !== undefined ? { family: updates.family } : {}),
+    ...(updates.deferred !== undefined ? { deferred: updates.deferred } : {}),
+    ...(updates.hiddenByDefault !== undefined
+      ? { hiddenByDefault: updates.hiddenByDefault }
+      : {}),
+    ...(updates.mutating !== undefined ? { mutating: updates.mutating } : {}),
+  };
+  return { ...tool, metadata };
+}
+
+function catalogEntryForTool(
+  tool: Tool,
+  spec?: ConfiguredToolSpec,
+): ToolCatalogEntry {
+  const metadata = tool.metadata ?? {};
+  const family = metadata.family ?? tool.name.split(".")[0] ?? "tool";
+  const source = metadata.source ?? "builtin";
+  const hiddenByDefault = metadata.hiddenByDefault ?? false;
+  const mutating = metadata.mutating ?? tool.requiresApproval === true;
+  const deferred = spec?.deferred === true || metadata.deferred === true;
+  return {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: tool.inputSchema,
+    metadata: {
+      family,
+      source,
+      hiddenByDefault,
+      mutating,
+      deferred,
+      ...(metadata.keywords !== undefined ? { keywords: metadata.keywords } : {}),
+      ...(metadata.preferredProfiles !== undefined
+        ? { preferredProfiles: metadata.preferredProfiles }
+        : {}),
+    },
+  };
+}
+
+function specForTool(tool: Tool): ConfiguredToolSpec {
+  return {
+    tool,
+    supportsParallelToolCalls: tool.supportsParallelToolCalls ?? false,
+    ...(tool.serverId !== undefined ? { serverId: tool.serverId } : {}),
+    ...(tool.metadata?.deferred === true ? { deferred: true } : {}),
   };
 }
 
@@ -124,6 +217,29 @@ export interface BuildToolRegistryOptions {
    */
   readonly bashExecObserver?: BashExecObserver;
   /**
+   * Live MCP tool source. This is intentionally a provider instead of a
+   * one-time array because MCP startup happens after SessionConfigured.
+   */
+  readonly mcpToolsProvider?: ToolListProvider;
+  /**
+   * Hide MCP tool schemas until `system.searchTools` discovers them.
+   * This mirrors codex's deferred MCP catalog path and prevents large
+   * MCP installs from bloating every request by default.
+   */
+  readonly deferMcpTools?: boolean;
+  /** Runtime-injected dynamic tools. Tools with metadata.deferred are
+   * hidden until discovery; all others are visible immediately. */
+  readonly dynamicTools?: ToolListInput;
+  /** Late-load tools that should be searchable but not advertised until
+   * discovered. */
+  readonly deferredTools?: ToolListInput;
+  /** Optional discoverable tools. These are cataloged and visible unless
+   * their own metadata marks them deferred. */
+  readonly discoverableTools?: ToolListInput;
+  readonly unavailableCalledTools?: readonly string[];
+  readonly parallelMcpServerNames?: ReadonlySet<string>;
+  readonly codeIntelligenceTools?: boolean;
+  /**
    * T9 integration seam: extra tools to register beyond the default
    * coding-profile catalog. The CLI entrypoint uses this to expose
    * `system.agent.delegate` (the subagent spawn dispatcher) as a
@@ -146,7 +262,16 @@ export interface BuildToolRegistryOptions {
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,
 ): ToolRegistry {
-  const rawTools: Tool[] = [
+  const discoveredToolNames = new Set<string>();
+  const markDiscovered = (toolNames: readonly string[]): void => {
+    for (const name of toolNames) {
+      if (typeof name === "string" && name.trim().length > 0) {
+        discoveredToolNames.add(name);
+      }
+    }
+  };
+
+  const staticTools: Tool[] = [
     ...createFilesystemTools({
       allowedPaths: [options.workspaceRoot],
       allowDelete: options.allowBashDelete ?? false,
@@ -154,6 +279,12 @@ export function buildToolRegistry(
     ...createCodingTools({
       allowedPaths: [options.workspaceRoot],
       persistenceRootDir: options.workspaceRoot,
+      codeIntelligenceTools: options.codeIntelligenceTools ?? false,
+      getToolCatalog: () =>
+        buildRouter()
+          .getSpecs()
+          .map((spec) => catalogEntryForTool(spec.tool, spec)),
+      onDiscoverTools: markDiscovered,
     }),
     ...createHttpTools({
       allowedDomains: ["*"],
@@ -165,7 +296,7 @@ export function buildToolRegistry(
         : {}),
     }),
     ...(options.extraTools ?? []),
-  ];
+  ].map((tool) => tagTool(tool));
 
   // T7: tag each registered tool with its ConcurrencyClass + flags.
   // Tools without explicit metadata get sensible defaults:
@@ -173,21 +304,90 @@ export function buildToolRegistry(
   //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
   //   - http.*                            → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
-  const tools: Tool[] = rawTools.map((tool) => tagTool(tool));
+  function currentMcpTools(): readonly Tool[] {
+    return (options.mcpToolsProvider?.getTools() ?? []).map((tool) => {
+      const serverId = inferMcpServerId(tool.name);
+      return tagTool(
+        withMetadata(tool, {
+          source: "mcp",
+          family: "mcp",
+          deferred: options.deferMcpTools ?? true,
+        }),
+        serverId ? { serverId } : {},
+      );
+    });
+  }
 
-  const byName = new Map<string, Tool>();
-  for (const tool of tools) {
-    byName.set(tool.name, tool);
+  function currentDynamicTools(): readonly Tool[] {
+    return readToolList(options.dynamicTools).map((tool) =>
+      tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+    );
+  }
+
+  function currentDeferredTools(): readonly Tool[] {
+    return readToolList(options.deferredTools).map((tool) =>
+      tagTool(
+        withMetadata(tool, {
+          source: tool.metadata?.source ?? "plugin",
+          deferred: true,
+        }),
+      ),
+    );
+  }
+
+  function currentDiscoverableTools(): readonly Tool[] {
+    return readToolList(options.discoverableTools).map((tool) =>
+      tagTool(withMetadata(tool, { source: tool.metadata?.source ?? "plugin" })),
+    );
+  }
+
+  function buildRouter(): ToolRouter {
+    const baseSpecs = staticTools.map(specForTool);
+    const mcpTools = currentMcpTools();
+    const directMcpTools = mcpTools.filter(
+      (tool) => tool.metadata?.deferred !== true,
+    );
+    const deferredMcpTools = mcpTools.filter(
+      (tool) => tool.metadata?.deferred === true,
+    );
+    return ToolRouter.fromConfig({
+      baseSpecs,
+      mcpTools: toolMap(directMcpTools),
+      deferredMcpTools: toolMap(deferredMcpTools),
+      discoverableTools: currentDiscoverableTools(),
+      dynamicTools: [...currentDynamicTools(), ...currentDeferredTools()],
+      unavailableCalledTools: options.unavailableCalledTools ?? [],
+      ...(options.parallelMcpServerNames !== undefined
+        ? { parallelMcpServerNames: options.parallelMcpServerNames }
+        : {}),
+    });
+  }
+
+  function allSpecs(): readonly ConfiguredToolSpec[] {
+    return buildRouter().getSpecs();
+  }
+
+  function visibleSpecs(): readonly ConfiguredToolSpec[] {
+    return allSpecs().filter(
+      (spec) =>
+        spec.deferred !== true || discoveredToolNames.has(spec.tool.name),
+    );
   }
 
   return {
-    tools,
+    get tools(): readonly Tool[] {
+      return allSpecs().map((spec) => spec.tool);
+    },
     toLLMTools(): LLMTool[] {
-      return tools.map(toolToLLMTool);
+      return visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+    },
+    getDiscoveredToolNames(): ReadonlySet<string> {
+      return discoveredToolNames;
     },
     async dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult> {
-      const tool = byName.get(toolCall.name);
-      if (!tool) {
+      const router = buildRouter();
+      const spec = router.findSpec(toolCall.name);
+      if (!spec) {
         return {
           content: safeStringify({
             error: `unknown tool: ${toolCall.name}`,
@@ -197,7 +397,14 @@ export function buildToolRegistry(
       }
       try {
         const args = parseToolCallArguments(toolCall);
-        const result = await tool.execute(args);
+        if (spec.tool.name === "system.searchTools") {
+          Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+            value: visibleSpecs().map((visible) => visible.tool.name),
+            enumerable: false,
+            configurable: true,
+          });
+        }
+        const result = await spec.tool.execute(args);
         return {
           content: result.content,
           isError: result.isError,

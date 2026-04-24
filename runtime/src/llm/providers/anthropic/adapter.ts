@@ -135,12 +135,15 @@ export class AnthropicProvider implements LLMProvider {
       wireApi: "messages",
     });
     const timeoutMs = options?.timeoutMs ?? this.config.timeoutMs;
+    const requestTools = options?.tools
+      ? [...options.tools]
+      : this.config.tools ?? [];
 
     try {
       const request = buildAnthropicMessagesRequest({
         model: this.config.model,
         messages,
-        tools: this.config.tools ?? [],
+        tools: requestTools,
         options,
         maxTokens: this.config.maxTokens,
         contextManagement: this.config.contextManagement,
@@ -155,7 +158,7 @@ export class AnthropicProvider implements LLMProvider {
       return parseAnthropicMessagesResponse(this.config.model, response.data, {
         model: this.config.model,
         messages,
-        tools: this.config.tools ?? [],
+        tools: requestTools,
         options,
         maxTokens: this.config.maxTokens,
       });
@@ -175,7 +178,7 @@ export class AnthropicProvider implements LLMProvider {
     const requestOptions = {
       model: this.config.model,
       messages,
-      tools: this.config.tools ?? [],
+      tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       maxTokens: this.config.maxTokens,
       contextManagement: this.config.contextManagement,

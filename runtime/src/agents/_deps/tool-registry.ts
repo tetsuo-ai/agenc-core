@@ -27,4 +27,5 @@ export interface ToolRegistry {
   readonly tools: readonly Tool[];
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
+  getDiscoveredToolNames?(): ReadonlySet<string>;
 }
