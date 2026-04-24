@@ -20,7 +20,6 @@ import {
   registerAutoSaveSidecar,
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
-import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
@@ -28,14 +27,9 @@ import {
   NetworkApprovalService as RuntimeNetworkApprovalService,
 } from "../permissions/network-approval.js";
 import { initializeToolPermissionContext } from "../permissions/settings.js";
-import type { ReviewDecision } from "../permissions/review-decision.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
-import { Session, type SessionServices, type SessionState } from "../session/session.js";
-import { createGuardianRejectionCircuitBreaker } from "../session/guardian-rejection-circuit-breaker.js";
-import { createDefaultGuardianApprovalReviewer } from "../session/guardian-approval-review.js";
-import { ReviewManager } from "../session/review.js";
+import { Session, type SessionState } from "../session/session.js";
 import {
-  createMcpStartupCancellationToken,
   createSessionMcpManagerFromConfig,
   createSessionMcpService,
 } from "../session/mcp-startup.js";
@@ -77,7 +71,6 @@ import {
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   UnifiedExecProcessManager,
-  type UnifiedExecProcessManagerLike,
 } from "../unified-exec/index.js";
 import {
   clearCurrentRuntimeSession,
@@ -120,6 +113,10 @@ import {
   buildExtractMemoriesViaSubagent,
   TurnStateAccumulator,
 } from "./memory-bootstrap.js";
+import {
+  buildBootstrapSessionServices,
+  type BootstrapSessionServicesHandle,
+} from "./bootstrap-services.js";
 export {
   EXTRACT_MEMORIES_TIMEOUT_MS,
   buildExtractMemoriesViaSubagent,
@@ -422,211 +419,6 @@ function transcriptMessagesFrom(
         payload: event.payload,
       }) as EventMsg,
   );
-}
-
-/**
- * Build the `SessionServices` container for a live local-runtime session.
- *
- * This is NOT a placeholder in the sense of "fake container that should be
- * swapped in test": it is the canonical live-session wiring. However, several
- * subsystem slots are still structural stubs until their owning tranche lands.
- * Every stub is labelled below with the tranche owner per
- * `docs/plan/feature-matrix.md` and `docs/plan/runtime-owner-manifest.md`.
- *
- * Real wiring today:
- *  - `provider` / `registry` / `configStore` / `permissionModeRegistry` — live
- *  - `toolApprovals` / `networkApproval` — live (permissions T11)
- *  - `mcpManager` — live facade over the real `MCPManager` (T9)
- *  - `agentControl` — rebound post-construction by `bindSessionAgentControl`
- *    (bootstrap caller wires the real `AgentControl` + `AgentRegistry` pair
- *    directly below this function's call site)
- *
- * Deferred structural stubs (each documented inline with its tranche owner):
- *  - `mcpConnectionManager` (T9 — codex `McpConnectionManager`)
- *  - `mcpStartupCancellationToken` (T9)
- *  - `analyticsEventsClient` (T-future — telemetry)
- *  - `hooks` (T4 compact hooks, T7 stop hooks, T10 lifecycle hooks)
- *  - `rollout` (T5 — `RolloutRecorder`; session attaches a live
- *    `RolloutStore` separately via `session.mountRolloutStore(...)`)
- *  - `userShell` (T7)
- *  - `agentIdentityManager` (T9)
- *  - `shellSnapshotTx` (T9)
- *  - `execPolicy` (T11)
- *  - `authManager` (provider auth mode metadata)
- *  - `sessionTelemetry` (T6)
- *  - `modelsManager` (live provider/model catalog)
- *  - `skillsManager` / `pluginsManager` / `skillsWatcher` (T10)
- *  - `threadStore` (T6)
- *  - `modelClient` (deferred codex ModelClient facade)
- *  - `codeModeService` (T-future)
- *
- * Every deferred stub here must stay structurally valid (no field reads
- * throw) until its tranche replaces it with the real implementation.
- */
-function buildDeferredServices(
-  provider: LLMProvider,
-  registry: ToolRegistry,
-  mcpManager: SessionServices["mcpManager"],
-  unifiedExecManager: UnifiedExecProcessManagerLike,
-  permissionModeRegistry: PermissionModeRegistry,
-  configStore: ConfigStore,
-  toolApprovals: RuntimeApprovalStore<unknown>,
-  networkApproval: RuntimeNetworkApprovalService,
-  modelsManager: SessionServices["modelsManager"],
-  skillsOptions: {
-    readonly agencHome: string;
-    readonly workspaceRoot: string;
-    readonly env: NodeJS.ProcessEnv;
-  },
-): SessionServices {
-  const noopAsync = async () => {
-    /* deferred structural stub — replaced when the owning tranche lands */
-  };
-  const skillsServices = createLocalSkillsServices(skillsOptions);
-  return {
-    /** T9: real `McpConnectionManager` (codex-rs mcp_connection_manager). */
-    mcpConnectionManager: {
-      setApprovalPolicy: () => {},
-      setSandboxPolicy: () => {},
-      requiredStartupFailures: async () => [],
-    },
-    /** T9: startup cancellation token for MCP server-list refresh races. */
-    mcpStartupCancellationToken: createMcpStartupCancellationToken(),
-    unifiedExecManager,
-    /** T-future: analytics/telemetry client. */
-    analyticsEventsClient: { emit: noopAsync },
-    /**
-     * Hooks registry. Codex `Hooks` covers three distinct lifecycle surfaces:
-     *   - pre/post compact hooks — T4 (`llm/compact/`)
-     *   - stop / stop-failure hooks — T7 (`phases/stop-hooks.ts`, read via
-     *     `hooks.stopHooks` / `hooks.stopFailureHooks` handler arrays)
-     *   - session-start hooks — T10 (prompts/memory startup wiring)
-     *
-     * The `stopHooks` / `stopFailureHooks` keys read by `phases/stop-hooks.ts`
-     * are intentionally omitted here so the phase's `hooks?.stopHooks ?? []`
-     * fallback returns an empty list. When a consumer wires configured stop
-     * handlers, they will replace this slot with the real shape.
-     */
-    hooks: {
-      startupWarnings: () => [],
-      executePreCompact: noopAsync,
-      executePostCompact: noopAsync,
-      executeStop: noopAsync,
-      executeStopFailure: noopAsync,
-    },
-    /**
-     * T5: `RolloutRecorder`. AgenC mounts a live `RolloutStore` post-
-     * construction via `session.mountRolloutStore(...)`; this slot stays
-     * undefined until a dedicated recorder lands that matches codex's
-     * `Mutex<rollout_recorder>` shape.
-     */
-    rollout: undefined,
-    /** T7: `UserShell` (deriveExecArgs for shell tool). */
-    userShell: {
-      path: process.env.SHELL ?? "/bin/sh",
-      deriveExecArgs: (input: string) => ["-c", input],
-    },
-    /** T9: `AgentIdentityManager` (subagent identity registration). */
-    agentIdentityManager: { ensureRegistered: noopAsync },
-    /** T9: `ShellSnapshotTx` (BehaviorSubject broadcasting shell env snapshots). */
-    shellSnapshotTx: {
-      value: null,
-      isClosed: false,
-      next: () => {},
-      subscribe: () => () => {},
-      changes: async function* () {
-        // empty
-      },
-      complete: () => {},
-    } as unknown as SessionServices["shellSnapshotTx"],
-    showRawAgentReasoning: false,
-    /** T11: `ExecPolicyManager` (exec-policy DSL evaluator). */
-    execPolicy: { current: () => null },
-    /** Provider auth mode metadata; adapters own concrete OAuth refresh. */
-    authManager: { mode: "bearer_key" },
-    /** T6: `SessionTelemetry` (per-turn timing + retry classification). */
-    sessionTelemetry: {},
-    /**
-     * Live `ModelsManager` (per-model capability registry + online refresh).
-     * Its fallback `effectiveContextWindowPercent: 100` value intentionally
-     * matches codex's "no reduction" meaning for unknown models.
-     */
-    modelsManager,
-    /** T11 live: per-session approval cache backed by `RuntimeApprovalStore`. */
-    toolApprovals: {
-      hasApproval: (key: string) => toolApprovals.get(key) !== undefined,
-      approve: (key: string) => {
-        toolApprovals.set(key, { kind: "approved_for_session" });
-      },
-      clear: () => {
-        toolApprovals.clear();
-      },
-      withCachedApproval: ({ keys, fetchDecision }) =>
-        toolApprovals.withCachedApproval({
-          keys,
-          fetchDecision: () => fetchDecision() as Promise<ReviewDecision>,
-        }),
-    },
-    guardianRejections: new Map(),
-    /**
-     * Codex `GuardianRejectionCircuitBreaker` plus approval-review
-     * producer. The turn kernel owns clear/isOpen; the guardian
-     * reviewer owns recordDenial/recordNonDenial.
-     */
-    guardianRejectionCircuitBreaker: createGuardianRejectionCircuitBreaker(),
-    guardianApprovalReviewer: createDefaultGuardianApprovalReviewer(),
-    reviewManager: new ReviewManager(),
-    /** T10: local `SKILL.md` discovery for user/project/plugin roots. */
-    skillsManager: skillsServices.skillsManager,
-    /** T10: local plugin skill-root discovery. */
-    pluginsManager: skillsServices.pluginsManager,
-    /** T9 live facade — `createSessionMcpService(...)` wraps the real `MCPManager`. */
-    mcpManager,
-    /** T10: cache invalidation hook; a real fs watcher can replace this later. */
-    skillsWatcher: skillsServices.skillsWatcher,
-    /**
-     * T9 live: the real `AgentControl` + `AgentRegistry` pair is bound into
-     * this slot by `bindSessionAgentControl(session, ...)` in the caller,
-     * immediately after `new Session(...)`. This deferred stub is therefore
-     * only live during the short window between Session construction and
-     * the binding call. See `session.ts::SessionServices.agentControl` for
-     * the single-bind-site invariant that keeps this slot effectively
-     * immutable after bootstrap.
-     */
-    agentControl: {
-      maxThreads: 0,
-      spawnAgent: async () => null,
-      shutdownAgentTree: noopAsync,
-    },
-    /** T11 live: network-approval service backed by `RuntimeNetworkApprovalService`. */
-    networkApproval: {
-      enabled: () => true,
-      clearSessionHosts: () => {
-        networkApproval.clearSessionHosts();
-      },
-      requestNetworkApproval: (opts: unknown) =>
-        networkApproval.requestNetworkApproval(
-          opts as Parameters<typeof networkApproval.requestNetworkApproval>[0],
-        ),
-      requestDeferredApproval: (opts: unknown) =>
-        networkApproval.requestDeferredApproval(
-          opts as Parameters<typeof networkApproval.requestDeferredApproval>[0],
-        ),
-    },
-    /** T6: `LocalThreadStore` (thread-name persistence). */
-    threadStore: {
-      threadName: async () => undefined,
-      setThreadName: noopAsync,
-    },
-    /** Deferred codex `ModelClient`; provider dispatch uses `services.provider`. */
-    modelClient: { setWindowGeneration: () => {} },
-    /** T-future: `CodeModeService` (codex JS-REPL tool surface). */
-    codeModeService: { enabled: () => false },
-    provider,
-    registry,
-    permissionModeRegistry,
-    configStore,
-  };
 }
 
 /**
@@ -1031,6 +823,28 @@ export async function bootstrapLocalRuntimeSession(
   let agentControlForShutdown: AgentControl | null = null;
   let rolloutStoreForReturn: RolloutStore | null = null;
   let ctxForReturn: TurnContext | null = null;
+  const bootstrapServices: BootstrapSessionServicesHandle =
+    buildBootstrapSessionServices({
+      provider,
+      providerName: resolvedProvider,
+      ...(options.apiKey ?? startup.apiKey
+        ? { apiKey: options.apiKey ?? startup.apiKey }
+        : {}),
+      registry,
+      mcpManager: createSessionMcpService(mcpManager, { env }),
+      unifiedExecManager,
+      permissionModeRegistry,
+      configStore,
+      toolApprovals,
+      networkApproval,
+      modelsManager,
+      agencHome,
+      workspaceRoot,
+      env,
+      conversationId,
+      model,
+      sessionConfiguration,
+    });
 
   const shutdown = async (): Promise<void> => {
     if (shutdownStarted) return;
@@ -1053,6 +867,7 @@ export async function bootstrapLocalRuntimeSession(
         /* best effort */
       });
     }
+    bootstrapServices.shutdown();
   };
 
   try {
@@ -1071,20 +886,7 @@ export async function bootstrapLocalRuntimeSession(
       conversationId,
       initialState,
       features: config.features,
-      services: {
-        ...buildDeferredServices(
-          provider,
-          registry,
-          createSessionMcpService(mcpManager, { env }),
-          unifiedExecManager,
-          permissionModeRegistry,
-          configStore,
-          toolApprovals,
-          networkApproval,
-          modelsManager,
-          { agencHome, workspaceRoot, env },
-        ),
-      },
+      services: bootstrapServices.services,
       jsRepl: { id: `repl-${conversationId}` },
       initialTranscriptEvents,
       // Lazy payload — `rolloutPath`, `initialMessages`, and
@@ -1106,6 +908,7 @@ export async function bootstrapLocalRuntimeSession(
       onBeforeSessionConfigured: async (s) => {
         sessionRef = s;
         sessionForShutdown = s;
+        bootstrapServices.bindSession(s);
         const agentRegistry = new AgentRegistry();
         const agentControl = new AgentControl({
           session: s,
@@ -1188,6 +991,17 @@ export async function bootstrapLocalRuntimeSession(
         });
         s.mountRolloutStore(rolloutStore);
         rolloutStoreForReturn = rolloutStore;
+        bootstrapServices.bindRolloutStore({
+          session: s,
+          rolloutStore,
+          resume: options.conversationId !== undefined,
+          threadMetadata: {
+            agentPath: "/root",
+            sessionSource: "cli_main",
+            approvalPolicy: sessionConfiguration.approvalPolicy.value,
+            sandboxPolicy: sessionConfiguration.sandboxPolicy.value,
+          },
+        });
 
         try {
           const existingItems = rolloutStore.readAll();

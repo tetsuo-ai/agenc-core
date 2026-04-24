@@ -5,6 +5,7 @@ import {
   DEFAULT_MAX_TOOL_RESULT_BYTES,
   DEFAULT_TOOL_TIMEOUT_MS,
   defaultCheckModeStillAllowed,
+  executeToolDispatch,
   formatError,
   parseToolArgsWithBigInt,
   requestApprovalWithAbortRace,
@@ -808,6 +809,25 @@ describe("runToolUse — hook invocation", () => {
     });
     expect(sawPost).toBe(true);
     expect(out.content).toBe("rewritten");
+  });
+
+  test("executeToolDispatch exposes the code-mode result projection", async () => {
+    const tool: Tool = {
+      name: "h-code-mode",
+      description: "",
+      inputSchema: {},
+      execute: async () => ({ content: "projected" }),
+    };
+
+    const out = await executeToolDispatch({
+      rawArgs: "{}",
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "h-code-mode"),
+    });
+
+    expect(out.content).toBe("projected");
+    expect(out.codeModeResult).toBe("projected");
   });
 
   test("failure-hook fires on tool throw", async () => {

@@ -69,7 +69,11 @@ import type {
   ToolOutput,
   ToolPayload,
 } from "./context.js";
-import { functionToolOutput, toolNameDisplay } from "./context.js";
+import {
+  codeModeResult,
+  functionToolOutput,
+  toolNameDisplay,
+} from "./context.js";
 import type { Tool } from "./types.js";
 import {
   mergeHookPermissionDecision,
@@ -1837,7 +1841,11 @@ export async function executeToolDispatch(
     ...opts,
     throwOnExecutionError: true,
   });
-  return { content: output.content, isError: output.isError };
+  return {
+    content: output.content,
+    isError: output.isError,
+    codeModeResult: codeModeResult(output),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────

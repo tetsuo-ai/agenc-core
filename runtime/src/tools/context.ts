@@ -34,10 +34,9 @@ export type ToolCallSource = "direct" | "js_repl" | "code_mode";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex `ToolPayload` (context.rs:50-68). AgenC subset: we
- * don't ship JsRepl or CodeMode as of T7 — those live behind future
- * subsystems — but the variants are wired so the router can switch
- * on them when they land.
+ * Port of codex `ToolPayload` (context.rs:50-68). The variants stay
+ * explicit so direct calls, JS REPL calls, MCP calls, and code-mode
+ * projections can preserve their upstream payload-specific behavior.
  */
 export type ToolPayload =
   | { readonly kind: "function"; readonly arguments: string }
@@ -1020,7 +1019,10 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
           content: variant.reason,
           structured: {
             type: "mcp_tool_call_output",
-            result: { content: [], isError: true } satisfies MCPStructuredContent,
+            result: {
+              content: [{ type: "text", text: variant.reason }],
+              isError: true,
+            } satisfies MCPStructuredContent,
           },
         };
       }
@@ -1029,19 +1031,141 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// code_mode projection — stubbed pending code_mode subsystem
+// code_mode projection — port of codex code-mode result mapping
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port stub of codex `response_input_to_code_mode_result` /
- * `content_items_to_code_mode_result` (context.rs:457-513). AgenC
- * does not yet ship the code_mode subsystem; when it lands, this
- * helper should project a `ToolOutput` into the JSON value the
- * code_mode JS runner consumes. Returns the plain text body for now
- * so the surface is deterministic.
- *
- * TODO(code_mode): implement full dispatch once code_mode lands.
+ * Port of codex `response_input_to_code_mode_result`
+ * (context.rs:483-515) adapted to AgenC's provider-neutral
+ * `LLMToolResultMessage` shape. This is used by code-mode host paths
+ * that only have the response item, not the original `ToolOutput`.
  */
 export function codeModeResult(output: ToolOutput): unknown {
-  return toText(output);
+  const variant = output.variant;
+  if (!variant) return output.content;
+
+  switch (variant.kind) {
+    case "function":
+      return contentItemsToCodeModeResult(variant.body);
+    case "mcp":
+      return mcpStructuredContentToCodeModeResult(variant.structured);
+    case "exec":
+      return execCodeModeResult(variant);
+    case "apply_patch":
+      return {};
+    case "tool_search":
+      return cloneSerializable(variant.tools, "tool_search result");
+    case "aborted":
+      return abortedCodeModeResult(variant);
+  }
+}
+
+/**
+ * Port of codex `response_input_to_code_mode_result` for the
+ * `LLMToolResultMessage` form emitted by `toResponseItem`.
+ */
+export function responseInputToCodeModeResult(
+  response: LLMToolResultMessage,
+): unknown {
+  const structured = response.structured;
+  if (isRecord(structured)) {
+    if (structured.type === "tool_search_output") {
+      const tools = Array.isArray(structured.tools) ? structured.tools : [];
+      return cloneSerializable(tools, "tool_search result");
+    }
+    if (structured.type === "mcp_tool_call_output") {
+      return cloneSerializable(
+        structured.result ?? { content: [], isError: true },
+        "mcp result",
+      );
+    }
+  }
+  return response.content;
+}
+
+/**
+ * Port of codex `content_items_to_code_mode_result`
+ * (context.rs:517-534). Code-mode receives the useful item payloads
+ * joined by newlines, not the response/transcript wrapper text.
+ */
+export function contentItemsToCodeModeResult(
+  items: ReadonlyArray<FunctionCallOutputContentItem>,
+): string {
+  const parts: string[] = [];
+  for (const item of items) {
+    if (item.type === "input_text") {
+      if (item.text.trim().length > 0) parts.push(item.text);
+    } else if (item.image_url.trim().length > 0) {
+      parts.push(item.image_url);
+    }
+  }
+  return parts.join("\n");
+}
+
+function mcpStructuredContentToCodeModeResult(
+  structured: MCPStructuredContent,
+): unknown {
+  const result: Record<string, unknown> = {
+    content: structured.content,
+  };
+  if (structured.structuredContent !== undefined) {
+    result.structuredContent = structured.structuredContent;
+  }
+  if (structured.isError !== undefined) {
+    result.isError = structured.isError;
+  }
+  if (structured._meta !== undefined) {
+    result._meta = structured._meta;
+  }
+  return cloneSerializable(result, "mcp result");
+}
+
+function execCodeModeResult(
+  variant: Extract<ToolOutputVariant, { kind: "exec" }>,
+): unknown {
+  const result: Record<string, unknown> = {
+    wall_time_seconds: variant.wallTimeMs / 1000,
+    output: execTruncatedOutput(variant),
+  };
+  if (variant.chunkId && variant.chunkId.length > 0) {
+    result.chunk_id = variant.chunkId;
+  }
+  if (variant.exitCode !== undefined) {
+    result.exit_code = variant.exitCode;
+  }
+  if (variant.processId !== undefined) {
+    result.session_id = variant.processId;
+  }
+  if (variant.originalTokenCount !== undefined) {
+    result.original_token_count = variant.originalTokenCount;
+  }
+  return result;
+}
+
+function abortedCodeModeResult(
+  variant: Extract<ToolOutputVariant, { kind: "aborted" }>,
+): unknown {
+  if (variant.payload.kind === "tool_search") return [];
+  if (variant.payload.kind === "mcp") {
+    return mcpStructuredContentToCodeModeResult({
+      content: [{ type: "text", text: variant.reason }],
+      isError: true,
+    });
+  }
+  return variant.reason;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function cloneSerializable(value: unknown, label: string): unknown {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) return null;
+    return JSON.parse(serialized) as unknown;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `failed to serialize ${label}: ${message}`;
+  }
 }

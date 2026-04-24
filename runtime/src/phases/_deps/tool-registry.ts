@@ -10,4 +10,5 @@
 export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
+  readonly codeModeResult?: unknown;
 }

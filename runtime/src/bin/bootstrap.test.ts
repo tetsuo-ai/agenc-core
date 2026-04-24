@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -259,6 +266,133 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("wires live bootstrap services instead of inert structural stubs", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const traceRoot = await mkdtemp(join(tmpdir(), "agenc-bootstrap-trace-"));
+    const previousTraceRoot = process.env.AGENC_ROLLOUT_TRACE_ROOT;
+    process.env.AGENC_ROLLOUT_TRACE_ROOT = traceRoot;
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        conversationId: "conv-services",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+          SHELL: "/bin/sh",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      const services = boot.session.services as typeof boot.session.services & {
+        readonly analyticsEventsClient: {
+          emit(event: unknown): Promise<void>;
+          events(): ReadonlyArray<{ readonly event: unknown }>;
+        };
+        readonly modelClient: {
+          setWindowGeneration(n: number): void;
+          currentWindowGeneration(): number;
+        };
+        readonly rolloutTrace: {
+          readonly enabled: boolean;
+          readonly bundleDir?: string;
+        };
+      };
+
+      expect(services.rollout).toBeDefined();
+      expect(services.rollout?.rolloutPath()).toBe(boot.rolloutStore.rolloutPath);
+      await services.rollout?.record({
+        type: "session_state",
+        payload: { bootstrapServiceProbe: true },
+      });
+      expect(
+        boot.rolloutStore
+          .readAll()
+          .some(
+            (item) =>
+              item.type === "session_state" &&
+              item.payload.bootstrapServiceProbe === true,
+          ),
+      ).toBe(true);
+
+      await services.threadStore.setThreadName("conv-services", "Service Probe");
+      await expect(services.threadStore.threadName("conv-services")).resolves.toBe(
+        "Service Probe",
+      );
+
+      expect(services.rolloutTrace.enabled).toBe(true);
+      expect(services.rolloutTrace.bundleDir).toBeDefined();
+      const traceLog = await readFile(
+        join(services.rolloutTrace.bundleDir!, "trace.jsonl"),
+        "utf8",
+      );
+      expect(traceLog).toContain("\"type\":\"thread_started\"");
+
+      const shellSnapshot = services.shellSnapshotTx.value as {
+        readonly cwd?: string;
+        readonly shell?: string;
+      };
+      expect(shellSnapshot.cwd).toBe(workspace);
+      expect(shellSnapshot.shell).toBe("/bin/sh");
+
+      services.modelClient.setWindowGeneration(7);
+      expect(services.modelClient.currentWindowGeneration()).toBe(7);
+
+      await services.analyticsEventsClient.emit({ type: "bootstrap_probe" });
+      expect(services.analyticsEventsClient.events().at(-1)?.event).toEqual({
+        type: "bootstrap_probe",
+      });
+
+      expect(services.execPolicy.current()).toMatchObject({
+        cwd: workspace,
+        approvalPolicy: "on_request",
+        sandboxPolicy: "workspace_write",
+      });
+      expect(services.authManager).toEqual({ mode: "bearer_key" });
+      expect(services.codeModeService.enabled()).toBe(false);
+      await expect(
+        services.hooks.executePreCompact({
+          trigger: "manual",
+          customInstructions: null,
+        }),
+      ).resolves.toEqual({});
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      if (previousTraceRoot === undefined) {
+        delete process.env.AGENC_ROLLOUT_TRACE_ROOT;
+      } else {
+        process.env.AGENC_ROLLOUT_TRACE_ROOT = previousTraceRoot;
+      }
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+      await rm(traceRoot, { recursive: true, force: true });
     }
   });
 

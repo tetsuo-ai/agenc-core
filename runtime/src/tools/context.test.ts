@@ -16,6 +16,7 @@ import {
   abortedToolOutput,
   applyPatchToolOutput,
   codeModeResult,
+  contentItemsToCodeModeResult,
   contentItemsToText,
   DEFAULT_IMAGE_DETAIL,
   DEFAULT_MAX_EXEC_OUTPUT_BYTES,
@@ -34,6 +35,7 @@ import {
   TELEMETRY_PREVIEW_MAX_BYTES,
   TELEMETRY_PREVIEW_MAX_LINES,
   TELEMETRY_PREVIEW_TRUNCATION_NOTICE,
+  responseInputToCodeModeResult,
   toolSearchToolOutput,
   toResponseItem,
   toText,
@@ -412,8 +414,8 @@ describe("contentItemsToText", () => {
   });
 });
 
-describe("codeModeResult stub", () => {
-  test("returns plain text body (TODO until code_mode subsystem lands)", () => {
+describe("codeModeResult", () => {
+  test("function text result returns the plain content", () => {
     const out = functionToolOutputFromText({
       callId: "c1",
       toolName,
@@ -423,5 +425,149 @@ describe("codeModeResult stub", () => {
       durationMs: 0,
     });
     expect(codeModeResult(out)).toBe("hi");
+  });
+
+  test("function content items join non-empty text and image URLs with newlines", () => {
+    const out = functionToolOutputFromContent({
+      callId: "c1",
+      toolName,
+      payload,
+      body: [
+        { type: "input_text", text: "  " },
+        { type: "input_text", text: "line 1" },
+        { type: "input_image", image_url: "https://img/x.png" },
+        { type: "input_text", text: "line 2" },
+        { type: "input_image", image_url: "" },
+      ],
+      isError: false,
+      durationMs: 0,
+    });
+
+    expect(codeModeResult(out)).toBe("line 1\nhttps://img/x.png\nline 2");
+    expect(
+      contentItemsToCodeModeResult([
+        { type: "input_text", text: "a" },
+        { type: "input_image", image_url: "x" },
+        { type: "input_text", text: "b" },
+      ]),
+    ).toBe("a\nx\nb");
+  });
+
+  test("mcp result stays as the raw call-tool result", () => {
+    const out = mcpToolOutput({
+      callId: "c1",
+      toolName,
+      payload: {
+        kind: "mcp",
+        server: "server",
+        tool: "tool",
+        rawArguments: "{}",
+      },
+      structured: {
+        content: [{ type: "text", text: "ignored" }],
+        structuredContent: { content: "done" },
+        isError: false,
+        _meta: { source: "mcp" },
+      },
+      wallTimeMs: 1250,
+      durationMs: 1250,
+    });
+
+    expect(codeModeResult(out)).toEqual({
+      content: [{ type: "text", text: "ignored" }],
+      structuredContent: { content: "done" },
+      isError: false,
+      _meta: { source: "mcp" },
+    });
+  });
+
+  test("exec result returns the upstream unified exec object", () => {
+    const out = execToolOutput({
+      callId: "c1",
+      toolName,
+      payload,
+      rawOutput: Buffer.from("stdout body", "utf8"),
+      exitCode: 0,
+      wallTimeMs: 1250,
+      chunkId: "chunk-abc",
+      processId: 42,
+      originalTokenCount: 9,
+      durationMs: 1250,
+    });
+
+    expect(codeModeResult(out)).toEqual({
+      chunk_id: "chunk-abc",
+      wall_time_seconds: 1.25,
+      exit_code: 0,
+      session_id: 42,
+      original_token_count: 9,
+      output: "stdout body",
+    });
+  });
+
+  test("apply_patch result is suppressed to an empty object", () => {
+    const out = applyPatchToolOutput({
+      callId: "c1",
+      toolName,
+      payload,
+      diff: "--- a\n+++ b\n@@\n-old\n+new\n",
+      durationMs: 0,
+    });
+
+    expect(codeModeResult(out)).toEqual({});
+  });
+
+  test("tool_search result returns the tools array", () => {
+    const tools = [{ name: "read" }, { name: "write" }];
+    const out = toolSearchToolOutput({
+      callId: "c1",
+      toolName,
+      payload: { kind: "tool_search", arguments: { query: "file" } },
+      tools,
+      durationMs: 0,
+    });
+
+    expect(codeModeResult(out)).toEqual(tools);
+  });
+
+  test("aborted result dispatches by payload shape", () => {
+    const searchOut = abortedToolOutput(
+      "c1",
+      toolName,
+      { kind: "tool_search", arguments: { query: "x" } },
+      0,
+    );
+    const mcpOut = abortedToolOutput(
+      "c2",
+      toolName,
+      {
+        kind: "mcp",
+        server: "server",
+        tool: "tool",
+        rawArguments: "{}",
+      },
+      0,
+    );
+
+    expect(codeModeResult(searchOut)).toEqual([]);
+    expect(codeModeResult(mcpOut)).toEqual({
+      content: [{ type: "text", text: "aborted by user after 0.0s" }],
+      isError: true,
+    });
+  });
+
+  test("responseInputToCodeModeResult handles structured response items", () => {
+    const tools = [{ name: "read" }];
+    const searchOut = toolSearchToolOutput({
+      callId: "c1",
+      toolName,
+      payload: { kind: "tool_search", arguments: { query: "read" } },
+      tools,
+      durationMs: 0,
+    });
+
+    expect(responseInputToCodeModeResult(toResponseItem(searchOut))).toEqual(
+      tools,
+    );
   });
 });

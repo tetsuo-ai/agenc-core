@@ -54,6 +54,11 @@ import {
 export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
+  /**
+   * Upstream-shaped value exposed to code-mode nested tool calls.
+   * Normal model/TUI consumers keep using `content`.
+   */
+  readonly codeModeResult?: unknown;
 }
 
 export interface ToolRegistry {

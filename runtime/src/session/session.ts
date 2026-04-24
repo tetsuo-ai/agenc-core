@@ -1917,6 +1917,14 @@ export class Session {
     }
 
     this.mailbox.close();
+    const liveThread = (this.services as {
+      readonly liveThread?: { shutdown(): void };
+    }).liveThread;
+    try {
+      liveThread?.shutdown();
+    } catch {
+      /* best-effort */
+    }
     // Flush + close the rollout store (I-4: final durable fsync).
     if (this.rolloutStore) {
       try {
@@ -1925,6 +1933,12 @@ export class Session {
       } catch {
         /* best-effort */
       }
+    }
+    try {
+      this.services.rolloutTrace?.flush();
+      this.services.rolloutTrace?.close();
+    } catch {
+      /* best-effort */
     }
     this.eventLog.close();
     this.txEvent.close();
