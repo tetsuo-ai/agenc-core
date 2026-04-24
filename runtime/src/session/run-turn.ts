@@ -77,7 +77,12 @@ import {
 } from "./compact-runtime-context.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
-import { toTurnContextItem, type TurnContext } from "./turn-context.js";
+import {
+  toTurnContextItem,
+  type TurnContext,
+  type TurnContextItem,
+} from "./turn-context.js";
+import type { RunningTask } from "./tasks.js";
 import {
   buildInitialTurnState,
   resetIterationFields,
@@ -1100,6 +1105,78 @@ export async function* runTurnKernel(
     return { reason: "completed" };
   }
 
+  // Upstream codex `tasks/mod.rs::spawn_task` — register this turn with
+  // the session's task dispatcher BEFORE any state-mutation work runs.
+  // This takes the `activeTurn` lock and aborts any prior in-flight
+  // turn with `TurnAbortReason::Replaced`, then installs the new
+  // `ActiveTurn` keyed on `ctx.subId`. `onTaskFinished` in the finally
+  // block below clears the registry on every exit path (normal, abort,
+  // error). The returned task's `abortController` is merged into the
+  // kernel's signal so `abortAllTasks` propagates to in-flight phases.
+  const runningTask = await session.spawnTask({
+    subId: ctx.subId,
+    kind: "regular",
+    startedAtMs: turnStartedAt,
+  });
+
+  try {
+    return yield* runTurnKernelInner(
+      session,
+      ctx,
+      userMessage,
+      opts,
+      runningTask,
+      {
+        turnStartedAt,
+        emitTurnStarted,
+        emitTurnComplete,
+        emitTurnAborted,
+        referenceContextItem,
+        sessionOwner,
+      },
+    );
+  } finally {
+    // Upstream codex emits `on_task_finished` uniformly from the spawn
+    // site so every task-kind shares the same lifecycle. In gut the
+    // kernel BOTH runs the task body AND owns its finish emit.
+    await session.onTaskFinished(ctx.subId);
+  }
+}
+
+/**
+ * Inner body of `runTurnKernel` extracted so the outer generator can
+ * wrap it in a try/finally that funnels every exit path through
+ * `session.onTaskFinished`. The outer wrapper also owns the
+ * `session.spawnTask` call (see upstream codex `tasks/mod.rs::spawn_task`
+ * → `start_task` → task body → `on_task_finished` sequence).
+ */
+interface RunTurnKernelCommons {
+  readonly turnStartedAt: number;
+  readonly emitTurnStarted: () => void;
+  readonly emitTurnComplete: (content: string) => void;
+  readonly emitTurnAborted: (reason: string) => void;
+  readonly referenceContextItem: TurnContextItem;
+  readonly sessionOwner: Session & {
+    consumePendingProviderSwitch?: () => Promise<void>;
+  };
+}
+
+async function* runTurnKernelInner(
+  session: Session,
+  ctx: TurnContext,
+  userMessage: string,
+  opts: RunTurnOptions,
+  runningTask: RunningTask,
+  commons: RunTurnKernelCommons,
+): AsyncGenerator<PhaseEvent, Terminal> {
+  const {
+    emitTurnStarted,
+    emitTurnComplete,
+    emitTurnAborted,
+    referenceContextItem,
+    sessionOwner,
+  } = commons;
+
   // Seed the initial TurnState BEFORE pre-sampling compact so the
   // dispatcher can splice post-compact messages back into state and the
   // first `prepareContext` call reads the compacted view. Codex's
@@ -1211,7 +1288,16 @@ export async function* runTurnKernel(
     return terminal;
   }
 
-  const signal = mergeSignals(opts.signal, session.abortController.signal);
+  // Merge external opts.signal, the session-level abort, and the
+  // task-local abort from `spawnTask`. Upstream codex `start_task`
+  // constructs a child `CancellationToken` for the running task
+  // (see `tasks/mod.rs` line 269) whose cancellation is triggered
+  // by `abort_all_tasks`. The merged signal here is the gut
+  // equivalent of `task_cancellation_token.child_token()`.
+  const signal = mergeSignals(
+    mergeSignals(opts.signal, session.abortController.signal),
+    runningTask.abortController.signal,
+  );
 
   let usage: LLMUsage = {
     promptTokens: 0,
