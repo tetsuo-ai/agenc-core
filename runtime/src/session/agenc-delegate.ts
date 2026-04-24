@@ -42,6 +42,7 @@ import {
   REVIEW_SYSTEM_PROMPT,
   emptyReviewOutput,
   parseReviewOutput,
+  recordReviewExitRollout,
 } from "./review.js";
 import type { TaskKind } from "./tasks.js";
 import { AsyncQueue, BehaviorSubject } from "./_deps/utils.js";
@@ -193,6 +194,12 @@ export interface AgenCReviewOneShotRequest {
    * semantics.
    */
   readonly registerTask?: boolean;
+  /**
+   * Persist upstream-style synthetic review user/assistant records on
+   * `exit_review_mode`. Defaults to true for standalone review tasks
+   * and false for inline approval reviewers (`registerTask:false`).
+   */
+  readonly recordExitRollout?: boolean;
   /** Optional child-session history reused by ReviewManager snapshot caching. */
   readonly initialHistory?: ReadonlyArray<LLMMessage>;
   /**
@@ -902,10 +909,8 @@ export async function runAgenCReviewOneShot(
   // consumers do not have to reconcile "did the task emit the event
   // or did I need to emit it myself". Upstream emits from
   // `tasks/review.rs::exit_review_mode` (`tasks/review.rs:213-283`)
-  // including the rollout record; gut emits only the event here and
-  // leaves rollout materialization to a later port (the RESERVED
-  // record_conversation_items + record_response_item_and_emit_turn_item
-  // call sites).
+  // including the rollout record; AgenC mirrors that by persisting the
+  // synthetic review user/assistant records before the exit event.
   const exitPayload: ExitReviewModePayload = {
     subId: req.subId,
     reason:
@@ -918,6 +923,9 @@ export async function runAgenCReviewOneShot(
     modelUsed: effectiveReviewerModel,
     request: req.request,
   };
+  if (req.recordExitRollout ?? req.registerTask !== false) {
+    await recordReviewExitRollout(session, exitPayload);
+  }
   session.sendEvent(req.subId, {
     type: "exit_review_mode",
     payload: exitPayload,

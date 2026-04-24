@@ -50,7 +50,7 @@
  *   4. The three review-prompt string constants
  *      (`REVIEW_SYSTEM_PROMPT`, `REVIEW_EXIT_SUCCESS_TMPL`,
  *      `REVIEW_EXIT_INTERRUPTED_TMPL`) — ported verbatim from the
- *      upstream assets so a future runner can synthesize the reviewer
+ *      upstream assets so the reviewer runner can synthesize the
  *      system prompt and exit-templates without a file loader.
  *
  *   5. `ReviewRequest`, `ReviewFinding`, `ReviewOutput` — the
@@ -61,18 +61,9 @@
  *      model's JSON response (or fall back to the plain-text path
  *      mirroring upstream `parse_review_output_event`).
  *
- * Remaining narrow gaps:
- *
- *   - `spawnReviewTask` does NOT synthesize the review-scoped
- *     `TurnContext`, disable `web_search` / `view_image`, or route the
- *     reviewer model through the provider adapter. `runReview` owns
- *     the real review conversation via `runAgenCReviewOneShot`; this
- *     helper remains only the task-registry primitive for callers that
- *     need a bare review `RunningTask`.
- *
- *   - Full analytics parity for prior-review-count deltas is not yet
- *     wired. The live runtime behavior, child session, timeout, abort,
- *     exit event, and bounded snapshot reuse are implemented.
+ * `spawnReviewTask` now runs the full scoped reviewer turn by owning
+ * the parent `kind: "review"` task while delegating model execution to
+ * the isolated AgenC child-session driver in `agenc-delegate.ts`.
  *
  * @module
  */
@@ -82,8 +73,10 @@ import type {
   AgenCDelegateSessionLike,
   AgenCReviewOneShotOutcome,
   AgenCReviewOneShotRequest,
+  ExitReviewModePayload,
 } from "./agenc-delegate.js";
 import type { ReviewDelegateCompletionReason } from "./event-log.js";
+import type { ResponseItem } from "./rollout-item.js";
 import type { LLMMessage } from "../llm/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -259,6 +252,110 @@ export function renderReviewExitSuccess(results: string): string {
   return REVIEW_EXIT_SUCCESS_TMPL.replace("{{results}}", results);
 }
 
+const REVIEW_ROLLOUT_USER_MESSAGE_ID = "review_rollout_user";
+const REVIEW_ROLLOUT_ASSISTANT_MESSAGE_ID = "review_rollout_assistant";
+const REVIEW_FALLBACK_MESSAGE = "Reviewer failed to output a response.";
+
+interface ReviewRolloutSessionLike {
+  readonly rolloutStore?: {
+    appendRollout(item: { readonly type: "response_item"; readonly payload: ResponseItem }, opts?: unknown): void;
+  } | null;
+  readonly state?: {
+    with<R>(fn: (value: { history?: unknown[] }) => R | Promise<R>): Promise<R>;
+  };
+}
+
+function formatReviewLocation(item: ReviewFinding): string {
+  const loose = item as ReviewFinding & {
+    readonly code_location?: {
+      readonly absolute_file_path?: string;
+      readonly absolute_path?: string;
+      readonly line_range?: { readonly start?: number; readonly end?: number };
+    };
+  };
+  const loc = item.codeLocation ?? {
+    absolutePath:
+      loose.code_location?.absolute_path ??
+      loose.code_location?.absolute_file_path ??
+      "",
+    lineRange: {
+      start: loose.code_location?.line_range?.start ?? 0,
+      end: loose.code_location?.line_range?.end ?? 0,
+    },
+  };
+  return `${loc.absolutePath}:${loc.lineRange.start}-${loc.lineRange.end}`;
+}
+
+export function formatReviewFindingsBlock(
+  findings: ReadonlyArray<ReviewFinding>,
+  selection?: ReadonlyArray<boolean>,
+): string {
+  const lines: string[] = ["", findings.length > 1 ? "Full review comments:" : "Review comment:"];
+  findings.forEach((item, idx) => {
+    lines.push("");
+    const marker =
+      selection !== undefined ? `${selection[idx] ?? true ? "[x]" : "[ ]"} ` : "";
+    lines.push(`- ${marker}${item.title} - ${formatReviewLocation(item)}`);
+    for (const bodyLine of item.body.split(/\r?\n/)) {
+      lines.push(`  ${bodyLine}`);
+    }
+  });
+  return lines.join("\n");
+}
+
+export function renderReviewOutputText(output: ReviewOutput): string {
+  const sections: string[] = [];
+  const explanation = output.overallExplanation.trim();
+  if (explanation.length > 0) sections.push(explanation);
+  if (output.findings.length > 0) {
+    const findings = formatReviewFindingsBlock(output.findings).trim();
+    if (findings.length > 0) sections.push(findings);
+  }
+  return sections.length > 0 ? sections.join("\n\n") : REVIEW_FALLBACK_MESSAGE;
+}
+
+export function buildReviewExitResponseItems(
+  payload: ExitReviewModePayload,
+): readonly [ResponseItem, ResponseItem] {
+  const completed = payload.reason === "completed";
+  const userMessage = completed
+    ? renderReviewExitSuccess(renderReviewOutputText(payload.reviewOutput))
+    : REVIEW_EXIT_INTERRUPTED_TMPL;
+  const assistantMessage = completed
+    ? renderReviewOutputText(payload.reviewOutput)
+    : "Review was interrupted. Please re-run /review and wait for it to complete.";
+  return [
+    {
+      id: REVIEW_ROLLOUT_USER_MESSAGE_ID,
+      role: "user",
+      content: userMessage,
+    },
+    {
+      id: REVIEW_ROLLOUT_ASSISTANT_MESSAGE_ID,
+      role: "assistant",
+      content: assistantMessage,
+    },
+  ];
+}
+
+export async function recordReviewExitRollout(
+  session: unknown,
+  payload: ExitReviewModePayload,
+): Promise<void> {
+  const target = session as ReviewRolloutSessionLike;
+  const items = buildReviewExitResponseItems(payload);
+  for (const item of items) {
+    target.rolloutStore?.appendRollout({
+      type: "response_item",
+      payload: item,
+    });
+  }
+  await target.state?.with((state) => {
+    if (!Array.isArray(state.history)) return;
+    state.history = [...state.history, ...items];
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Review output parser (upstream parse_review_output_event)
 // ─────────────────────────────────────────────────────────────────────
@@ -344,18 +441,14 @@ function tryParseReviewOutput(raw: string): ReviewOutput | null {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal `SessionLike` surface needed by `spawnReviewTask`. Matches
- * the `Session.spawnTask` signature without pulling the full
- * `Session` type into this module (avoids a circular dep with
- * `session.ts`).
+ * `SessionLike` surface needed by `spawnReviewTask`. Matches the live
+ * `Session` review-delegate surface without importing the concrete
+ * class here (avoids a circular dep with `session.ts`).
  */
-export interface SessionLike {
-  spawnTask(opts: {
-    readonly subId: string;
-    readonly kind: TaskKind;
-    readonly abortController?: AbortController;
-    readonly startedAtMs?: number;
-  }): Promise<{ readonly subId: string; readonly kind: TaskKind; readonly abortController: AbortController; readonly done: Promise<void> }>;
+export interface SessionLike extends AgenCDelegateSessionLike {
+  newDefaultTurnWithSubId?(
+    subId: string,
+  ): AgenCReviewOneShotRequest["parentContext"];
 }
 
 /**
@@ -714,6 +807,33 @@ function completionReasonFromVerdict(
   return "completed";
 }
 
+function llmMessageText(message: LLMMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && "text" in part) {
+        const text = (part as { readonly text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .filter((part) => part.length > 0)
+    .join("\n");
+}
+
+function priorFindingCountFromHistory(
+  history: ReadonlyArray<LLMMessage> | undefined,
+): number {
+  if (history === undefined) return 0;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const message = history[i];
+    if (message?.role !== "assistant") continue;
+    return parseReviewOutput(llmMessageText(message)).findings.length;
+  }
+  return 0;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // spawnReviewTask entry point
 // ─────────────────────────────────────────────────────────────────────
@@ -727,6 +847,27 @@ export interface SpawnReviewTaskOptions {
   readonly subId: string;
   /** Upstream `resolved: ResolvedReviewRequest`. The reviewer's target + hint. */
   readonly request: ReviewRequest;
+  /** Review-scoped config. Defaults to `parentContext.config` when omitted. */
+  readonly config?: AgenCReviewOneShotRequest["config"];
+  /**
+   * Parent turn context used to synthesize the review-scoped child
+   * turn. Defaults to `session.newDefaultTurnWithSubId(...)` when the
+   * live Session method is available.
+   */
+  readonly parentContext?: AgenCReviewOneShotRequest["parentContext"];
+  /**
+   * Model-visible review prompt. Defaults to a compact prompt rendered
+   * from `request` so `spawnReviewTask` can be used directly by slash
+   * command callers.
+   */
+  readonly input?: ReadonlyArray<LLMMessage>;
+  readonly reviewerModel?: AgenCReviewOneShotRequest["reviewerModel"];
+  readonly reviewerModelInfo?: AgenCReviewOneShotRequest["reviewerModelInfo"];
+  readonly finalOutputJsonSchema?: AgenCReviewOneShotRequest["finalOutputJsonSchema"];
+  readonly timeoutMs?: AgenCReviewOneShotRequest["timeoutMs"];
+  readonly systemPrompt?: AgenCReviewOneShotRequest["systemPrompt"];
+  readonly initialHistory?: AgenCReviewOneShotRequest["initialHistory"];
+  readonly reuseKey?: AgenCReviewOneShotRequest["reuseKey"];
   /** Optional pre-allocated controller so tests can observe abort. */
   readonly abortController?: AbortController;
   /** Optional started-at override for telemetry determinism. */
@@ -748,17 +889,16 @@ export interface SpawnedReviewTask {
   readonly kind: "review";
   readonly abortController: AbortController;
   readonly done: Promise<void>;
+  readonly outcome: Promise<AgenCReviewOneShotOutcome | null>;
   readonly request: ReviewRequest;
 }
 
 /**
  * Upstream codex `session/review.rs::spawn_review_thread` entry point.
- * Gut port invokes `session.spawnTask({kind: "review", ...})` so the
- * review flows through the Wave 2 task-dispatch machinery
- * (replace-on-new-turn, abort controller, done promise, graceful
- * interruption). The review-scoped `TurnContext` assembly + the
- * reviewer-model child delegate run are handled by
- * `runAgenCReviewOneShot`; see module docstring for lifecycle notes.
+ * Registers a `kind: "review"` task, then starts the full isolated
+ * AgenC child-session reviewer driver. The returned `done` promise
+ * resolves only after the reviewer finishes and the parent task slot is
+ * drained, matching upstream `ReviewTask::run -> on_task_finished`.
  *
  * The returned `SpawnedReviewTask` carries the task's abort controller
  * so callers can cancel the review directly (`spawnedTask.abortController.abort(...)`)
@@ -769,6 +909,9 @@ export async function spawnReviewTask(
   opts: SpawnReviewTaskOptions,
 ): Promise<SpawnedReviewTask> {
   const abortController = opts.abortController ?? new AbortController();
+  const parentContext = resolveSpawnReviewParentContext(session, opts);
+  const config = opts.config ?? parentContext.config;
+  const input = opts.input ?? renderReviewTaskInput(opts.request);
   const task = await session.spawnTask({
     subId: opts.subId,
     kind: "review",
@@ -790,11 +933,173 @@ export async function spawnReviewTask(
       request: opts.request,
     });
   }
+  const request: AgenCReviewOneShotRequest = {
+    subId: task.subId,
+    config,
+    parentContext,
+    input,
+    request: opts.request,
+    signal: task.abortController.signal,
+    registerTask: false,
+    recordExitRollout: true,
+    ...(opts.reviewerModel !== undefined
+      ? { reviewerModel: opts.reviewerModel }
+      : {}),
+    ...(opts.reviewerModelInfo !== undefined
+      ? { reviewerModelInfo: opts.reviewerModelInfo }
+      : {}),
+    ...(opts.finalOutputJsonSchema !== undefined
+      ? { finalOutputJsonSchema: opts.finalOutputJsonSchema }
+      : {}),
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.systemPrompt !== undefined ? { systemPrompt: opts.systemPrompt } : {}),
+    ...(opts.initialHistory !== undefined
+      ? { initialHistory: opts.initialHistory }
+      : {}),
+    ...(opts.reuseKey !== undefined ? { reuseKey: opts.reuseKey } : {}),
+  };
+  session.sendEvent(task.subId, {
+    type: "entered_review_mode",
+    payload: opts.request,
+  });
+  const outcome = runSpawnedReviewTask(
+    session,
+    task.subId,
+    request,
+    opts.manager,
+  );
   return {
     subId: task.subId,
     kind: "review",
     abortController: task.abortController,
     done: task.done,
+    outcome,
     request: opts.request,
   };
+}
+
+function resolveSpawnReviewParentContext(
+  session: SessionLike,
+  opts: SpawnReviewTaskOptions,
+): AgenCReviewOneShotRequest["parentContext"] {
+  if (opts.parentContext !== undefined) return opts.parentContext;
+  if (typeof session.newDefaultTurnWithSubId === "function") {
+    return session.newDefaultTurnWithSubId(`${opts.subId}-parent`);
+  }
+  throw new Error(
+    "spawnReviewTask requires parentContext when the session cannot create a default turn context",
+  );
+}
+
+function renderReviewTaskInput(request: ReviewRequest): ReadonlyArray<LLMMessage> {
+  return [
+    {
+      role: "user",
+      content: [
+        "Please review the requested target.",
+        `Target: ${request.target}`,
+        request.userFacingHint !== undefined && request.userFacingHint.trim().length > 0
+          ? `Hint: ${request.userFacingHint}`
+          : undefined,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n"),
+    },
+  ];
+}
+
+async function runSpawnedReviewTask(
+  session: SessionLike,
+  subId: string,
+  req: AgenCReviewOneShotRequest,
+  manager: ReviewManager | undefined,
+): Promise<AgenCReviewOneShotOutcome | null> {
+  const startedAt = Date.now();
+  const modelUsed = req.reviewerModel ?? req.parentContext.modelInfo.slug;
+  const explicitReuseKey = explicitReviewReuseKey(req);
+  const priorFindingCount = priorFindingCountFromHistory(req.initialHistory);
+  const snapshotReused = (req.initialHistory?.length ?? 0) > 0;
+  session.sendEvent(subId, {
+    type: "review_delegate_started",
+    payload: {
+      subId,
+      target: req.request.target,
+      modelUsed,
+      ...(explicitReuseKey !== undefined ? { reuseKey: explicitReuseKey } : {}),
+      snapshot_reused: snapshotReused,
+      priorFindingCount,
+      startedAt,
+    },
+  });
+  try {
+    const { runAgenCReviewOneShot } = await import("./agenc-delegate.js");
+    const outcome = await runAgenCReviewOneShot(session, req);
+    const completedAt = Date.now();
+    session.sendEvent(subId, {
+      type: "review_delegate_completed",
+      payload: {
+        subId,
+        target: req.request.target,
+        modelUsed: outcome.modelUsed,
+        ...(explicitReuseKey !== undefined ? { reuseKey: explicitReuseKey } : {}),
+        snapshot_reused: snapshotReused,
+        priorFindingCount,
+        newFindingCount: outcome.output.findings.length,
+        durationMs: Math.max(0, completedAt - startedAt),
+        verdict: outcome.verdict,
+        reason: completionReasonFromVerdict(outcome.verdict),
+        completedAt,
+        ...(outcome.error !== null ? { error: outcome.error.message } : {}),
+      },
+    });
+    return outcome;
+  } catch (err) {
+    const completedAt = Date.now();
+    session.sendEvent(subId, {
+      type: "review_delegate_completed",
+      payload: {
+        subId,
+        target: req.request.target,
+        modelUsed,
+        ...(explicitReuseKey !== undefined ? { reuseKey: explicitReuseKey } : {}),
+        snapshot_reused: snapshotReused,
+        priorFindingCount,
+        newFindingCount: 0,
+        durationMs: Math.max(0, completedAt - startedAt),
+        verdict: "fail",
+        reason: "error",
+        completedAt,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    const exitPayload: ExitReviewModePayload = {
+      subId,
+      reason: "aborted",
+      reviewOutput: emptyReviewOutput(),
+      modelUsed,
+      request: req.request,
+    };
+    if (req.recordExitRollout ?? req.registerTask !== false) {
+      await recordReviewExitRollout(session, exitPayload);
+    }
+    session.sendEvent(subId, {
+      type: "exit_review_mode",
+      payload: exitPayload,
+    });
+    session.sendEvent(subId, {
+      type: "error",
+      payload: {
+        cause: "review_task_failed",
+        message: err instanceof Error ? err.message : String(err),
+        turnId: subId,
+        ...(err instanceof Error && err.stack !== undefined
+          ? { stack: err.stack }
+          : {}),
+      },
+    });
+    return null;
+  } finally {
+    manager?.take(subId);
+    await session.onTaskFinished(subId);
+  }
 }

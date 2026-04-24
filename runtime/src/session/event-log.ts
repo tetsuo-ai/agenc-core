@@ -403,6 +403,10 @@ export type EventMsg =
       readonly payload: ReviewDelegateCompletedEvent;
     }
   | {
+      readonly type: "entered_review_mode";
+      readonly payload: import("./review.js").ReviewRequest;
+    }
+  | {
       readonly type: "deprecation_notice";
       readonly payload: DeprecationNoticeEvent;
     }
@@ -518,6 +522,7 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "guardian_assessment",
     "review_delegate_started",
     "review_delegate_completed",
+    "entered_review_mode",
     "deprecation_notice",
     "plan_started",
     "plan_delta",

@@ -132,8 +132,9 @@ describe("I-8 emitError helper", () => {
 });
 
 describe("I-26 forward-compat + schema version", () => {
-  test("KNOWN_EVENT_TYPES contains all 23 variants", () => {
-    expect(KNOWN_EVENT_TYPES.size).toBeGreaterThanOrEqual(23);
+  test("KNOWN_EVENT_TYPES contains all known variants", () => {
+    expect(KNOWN_EVENT_TYPES.size).toBeGreaterThanOrEqual(24);
+    expect(isKnownEventType("entered_review_mode")).toBe(true);
   });
 
   test("isKnownEventType detects known + unknown", () => {

@@ -40,7 +40,12 @@ import {
   type ModelInfo,
   type SessionConfiguration,
 } from "./turn-context.js";
-import type { LLMProvider } from "../llm/types.js";
+import type {
+  LLMChatOptions,
+  LLMMessage,
+  LLMProvider,
+  LLMResponse,
+} from "../llm/types.js";
 import {
   REVIEW_EXIT_INTERRUPTED_TMPL,
   REVIEW_EXIT_SUCCESS_TMPL,
@@ -123,27 +128,65 @@ function mkSessionConfiguration(): SessionConfiguration {
   };
 }
 
-function mkProvider(): LLMProvider {
+interface ProviderOptions {
+  readonly content?: string;
+  readonly delayMs?: number;
+  readonly onChat?: (messages: LLMMessage[], options?: LLMChatOptions) => void;
+}
+
+function mkProvider(opts: ProviderOptions = {}): LLMProvider {
+  const chat = async (
+    messages: LLMMessage[],
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse> => {
+    opts.onChat?.(messages, options);
+    const signal = options?.signal;
+    if (signal?.aborted) {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    if (opts.delayMs !== undefined && opts.delayMs > 0) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, opts.delayMs);
+        const abortHandler = () => {
+          clearTimeout(timer);
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        };
+        if (signal?.aborted) {
+          abortHandler();
+        } else if (signal !== undefined) {
+          signal.addEventListener("abort", abortHandler, { once: true });
+        }
+      });
+    }
+    return {
+      content: opts.content ?? "",
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: options?.model ?? "test-model",
+      finishReason: "stop",
+    };
+  };
   return {
     name: "stub-provider",
-    chat: async () => ({
-      content: "",
-      toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      model: "test-model",
-      finishReason: "stop",
-    }),
-    chatStream: async () => ({
-      content: "",
-      toolCalls: [],
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      model: "test-model",
-      finishReason: "stop",
-    }),
+    chat,
+    chatStream: async (messages, onChunk, options) => {
+      const response = await chat(messages, options);
+      if (response.content.length > 0) {
+        onChunk({ content: response.content, done: false });
+      }
+      return response;
+    },
   } as unknown as LLMProvider;
 }
 
-function mkSession(opts?: { reviewManager?: ReviewManager }): Session {
+function mkSession(opts?: {
+  reviewManager?: ReviewManager;
+  provider?: LLMProvider;
+}): Session {
   const services = {
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -154,7 +197,7 @@ function mkSession(opts?: { reviewManager?: ReviewManager }): Session {
       cancel: () => {},
       isCancelled: () => false,
     },
-    provider: mkProvider(),
+    provider: opts?.provider ?? mkProvider(),
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -183,6 +226,36 @@ const mkReviewRequest = (overrides?: Partial<ReviewRequest>): ReviewRequest => (
   userFacingHint: "Focus on error-handling paths",
   ...overrides,
 });
+
+type ExitReviewPayload = Extract<
+  Event["msg"],
+  { readonly type: "exit_review_mode" }
+>["payload"];
+
+function observeExitReviewMode(session: Session): Promise<ExitReviewPayload> {
+  return new Promise((resolve) => {
+    const unsubscribe = session.eventLog.subscribe((event) => {
+      if (event.msg.type === "exit_review_mode") {
+        unsubscribe();
+        resolve(event.msg.payload);
+      }
+    });
+  });
+}
+
+function messageText(message: LLMMessage): string {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && "text" in part) {
+        const text = (part as { readonly text?: unknown }).text;
+        return typeof text === "string" ? text : "";
+      }
+      return "";
+    })
+    .join("\n");
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // isTaskKindSteerable classification (Item 6 readiness)
@@ -255,6 +328,98 @@ describe("spawnReviewTask registry lifecycle", () => {
     expect(resolved).toBe(true);
     expect(session.activeTurn.unsafePeek()).toBeNull();
   });
+
+  it("runs the full reviewer driver and resolves outcome after exit_review_mode", async () => {
+    let observedMessages: LLMMessage[] = [];
+    let observedOptions: LLMChatOptions | undefined;
+    const events: Event["msg"][] = [];
+    const rolloutItems: unknown[] = [];
+    const provider = mkProvider({
+      content: "review completed",
+      onChat: (messages, options) => {
+        observedMessages = messages;
+        observedOptions = options;
+      },
+    });
+    const session = mkSession({ provider });
+    session.eventLog.subscribe((event) => events.push(event.msg));
+    session.rolloutStore = {
+      append: (item: unknown) => {
+        rolloutItems.push(item);
+      },
+      appendRollout: (item: unknown) => {
+        rolloutItems.push(item);
+      },
+    } as Session["rolloutStore"];
+    const exitPromise = observeExitReviewMode(session);
+    const spawned = await spawnReviewTask(session, {
+      subId: "review-full-driver",
+      request: mkReviewRequest({ target: "Full driver target" }),
+    });
+
+    const outcome = await spawned.outcome;
+    await spawned.done;
+    const exit = await exitPromise;
+
+    expect(outcome?.verdict).toBe("pass");
+    expect(exit.reason).toBe("completed");
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+    expect(observedMessages.some((message) =>
+      messageText(message).includes("Target: Full driver target"),
+    )).toBe(true);
+    expect(observedOptions?.tools).toEqual([]);
+    expect(observedOptions?.toolChoice).toBe("none");
+    expect(events.find((event) => event.type === "entered_review_mode"))
+      .toMatchObject({
+        type: "entered_review_mode",
+        payload: { target: "Full driver target" },
+      });
+    expect(events.find((event) => event.type === "review_delegate_started"))
+      .toMatchObject({
+        type: "review_delegate_started",
+        payload: {
+          subId: "review-full-driver",
+          snapshot_reused: false,
+          priorFindingCount: 0,
+        },
+      });
+    expect(events.find((event) => event.type === "review_delegate_completed"))
+      .toMatchObject({
+        type: "review_delegate_completed",
+        payload: {
+          subId: "review-full-driver",
+          newFindingCount: 0,
+          verdict: "pass",
+          reason: "completed",
+        },
+      });
+    expect(rolloutItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "response_item",
+          payload: expect.objectContaining({
+            id: "review_rollout_user",
+            role: "user",
+          }),
+        }),
+        expect.objectContaining({
+          type: "response_item",
+          payload: expect.objectContaining({
+            id: "review_rollout_assistant",
+            role: "assistant",
+            content: "review completed",
+          }),
+        }),
+      ]),
+    );
+    const history = session.state.unsafePeek().history;
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "review_rollout_user" }),
+        expect.objectContaining({ id: "review_rollout_assistant" }),
+      ]),
+    );
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -312,6 +477,26 @@ describe("spawnReviewTask abort lifecycle", () => {
     expect(await session.abortTurnIfActive("review-other", "interrupted")).toBe(false);
     expect(spawned.abortController.signal.aborted).toBe(false);
     expect(await session.abortTurnIfActive("review-A", "interrupted")).toBe(true);
+    expect(spawned.abortController.signal.aborted).toBe(true);
+  });
+
+  it("abortAllTasks cancels the running reviewer driver and emits an aborted review exit", async () => {
+    const session = mkSession({
+      provider: mkProvider({ content: "too late", delayMs: 500 }),
+    });
+    const exitPromise = observeExitReviewMode(session);
+    const spawned = await spawnReviewTask(session, {
+      subId: "review-abort-driver",
+      request: mkReviewRequest(),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await session.abortAllTasks("interrupted");
+
+    const outcome = await spawned.outcome;
+    const exit = await exitPromise;
+    expect(outcome?.verdict).toBe("aborted");
+    expect(exit.reason).toBe("aborted");
     expect(spawned.abortController.signal.aborted).toBe(true);
   });
 });
