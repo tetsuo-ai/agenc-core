@@ -8,6 +8,7 @@
  */
 
 import type { Logger } from "../utils/logger.js";
+import type { FunctionCallOutputContentItem } from "./context.js";
 
 // Lean-rebuild stubs: the Solana protocol types, wallet types, and
 // the full PolicyEngine surface have all been removed. Tools that used
@@ -81,6 +82,10 @@ export interface ToolResult {
   content: string;
   /** True if execution failed (error message in content) */
   isError?: boolean;
+  /** Structured value returned to nested code-mode callers. */
+  codeModeResult?: unknown;
+  /** Rich content items for providers that support multimodal tool outputs. */
+  contentItems?: readonly FunctionCallOutputContentItem[];
   /** Optional metadata for logging — not sent to LLMs */
   metadata?: Record<string, unknown>;
 }

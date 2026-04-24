@@ -116,6 +116,7 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   "system.mkdir": "path",
   "system.delete": "path",
   "system.glob": "pattern",
+  exec: "code",
 };
 
 function isBlankString(value: string): boolean {

@@ -23,7 +23,6 @@ import type {
 } from "../session/turn-context.js";
 import type {
   AnalyticsEventsClient,
-  CodeModeService,
   ExecPolicyManager,
   Hooks,
   LocalThreadStore,
@@ -33,6 +32,10 @@ import type {
   Session,
   SessionServices,
 } from "../session/session.js";
+import {
+  createCodeModeService,
+  type CodeModeService,
+} from "../tools/code-mode/index.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RolloutStore } from "../session/rollout-store.js";
 import {
@@ -91,6 +94,7 @@ export interface BootstrapSessionServicesOptions {
   readonly conversationId: string;
   readonly model: string;
   readonly sessionConfiguration: SessionConfiguration;
+  readonly codeModeService?: CodeModeService;
 }
 
 export interface BootstrapRolloutBinding {
@@ -191,27 +195,6 @@ export class BootstrapModelClient implements ModelClient {
 
   currentWindowGeneration(): number {
     return this.windowGeneration;
-  }
-}
-
-export class BootstrapCodeModeService implements CodeModeService {
-  private readonly codeModeEnabled: boolean;
-
-  constructor(opts: {
-    readonly env: NodeJS.ProcessEnv;
-    readonly registry: ToolRegistry;
-  }) {
-    const raw = opts.env.AGENC_CODE_MODE?.trim().toLowerCase();
-    const requested = raw === "1" || raw === "true" || raw === "on";
-    this.codeModeEnabled =
-      requested &&
-      opts.registry.tools.some(
-        (tool) => tool.name === "js_repl" || tool.name === "system.js_repl",
-      );
-  }
-
-  enabled(): boolean {
-    return this.codeModeEnabled;
   }
 }
 
@@ -489,6 +472,8 @@ export function buildBootstrapSessionServices(
     opts.sessionConfiguration,
   );
   const modelClient = new BootstrapModelClient(opts.provider);
+  const codeModeService =
+    opts.codeModeService ?? createCodeModeService({ env: opts.env });
   const rolloutRecorder = new BootstrapRolloutRecorderFacade();
   const rolloutTrace = createRolloutTraceRecorder({
     threadId: opts.conversationId,
@@ -576,10 +561,7 @@ export function buildBootstrapSessionServices(
     },
     threadStore: threadNameStore,
     modelClient,
-    codeModeService: new BootstrapCodeModeService({
-      env: opts.env,
-      registry: opts.registry,
-    }),
+    codeModeService,
     provider: opts.provider,
     registry: opts.registry,
     permissionModeRegistry: opts.permissionModeRegistry,

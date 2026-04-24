@@ -1,5 +1,6 @@
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import type { BashToolConfig } from "./types.js";
 import {
   createApplyPatchTool,
@@ -19,6 +20,8 @@ export interface ExecCommandToolConfig extends BashToolConfig {
 
 const APPLY_PATCH_HEREDOC_RE =
   /^\s*apply_patch\s+<<\s*['"]?([A-Za-z0-9_.-]+)['"]?\s*\n([\s\S]*?)\n\1\s*$/u;
+const PLAIN_INTERACTIVE_SHELL_RE =
+  /^\s*(?:(?:\/[\w.-]+)+\/)?(?:bash|dash|ksh|sh|zsh)(?:\s+-[A-Za-z]*[il][A-Za-z]*)*\s*$/u;
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0
@@ -39,6 +42,10 @@ function extractApplyPatchHeredoc(command: string): string | undefined {
 
 function asBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function isPlainInteractiveShellCommand(command: string): boolean {
+  return PLAIN_INTERACTIVE_SHELL_RE.test(command);
 }
 
 function errorResult(error: unknown): ToolResult {
@@ -170,6 +177,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
       const workdir = asString(args.workdir) ?? asString(args.cwd);
       const timeoutMs = asNumber(args.timeoutMs);
+      const tty = asBoolean(args.tty);
       const applyPatchBody = extractApplyPatchHeredoc(cmd);
       if (applyPatchBody !== undefined) {
         return applyPatch.execute({
@@ -182,6 +190,27 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         });
       }
 
+      if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
+        const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({
+          toolName: "exec_command",
+          args: {
+            command: cmd,
+            ...(workdir !== undefined ? { cwd: workdir } : {}),
+          },
+          workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
+        });
+        if (workspaceWriteDecision.blocked) {
+          return {
+            content: safeStringify({
+              error:
+                workspaceWriteDecision.message ??
+                "Shell workspace write policy blocked the command.",
+            }),
+            isError: true,
+          };
+        }
+      }
+
       try {
         const output = await manager.execCommand({
           cmd,
@@ -189,7 +218,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(workdir !== undefined ? { workdir } : {}),
           ...(asString(args.shell) !== undefined ? { shell: asString(args.shell) } : {}),
           ...(asBoolean(args.login) !== undefined ? { login: asBoolean(args.login) } : {}),
-          ...(asBoolean(args.tty) !== undefined ? { tty: asBoolean(args.tty) } : {}),
+          ...(tty !== undefined ? { tty } : {}),
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),
@@ -214,7 +243,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           metadata: {
             command: cmd,
             cwd: workdir ?? config?.cwd ?? process.cwd(),
-            tty: asBoolean(args.tty) ?? false,
+            tty: tty ?? false,
             ...(output.process_id !== undefined
               ? { processId: output.process_id }
               : {}),

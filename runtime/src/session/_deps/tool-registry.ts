@@ -7,6 +7,8 @@
  * root tool-registry is removed.
  */
 
+import type { FunctionCallOutputContentItem } from "../../tools/context.js";
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type LLMTool = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,6 +19,8 @@ export type JSONSchema = Record<string, unknown>;
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  codeModeResult?: unknown;
+  contentItems?: readonly FunctionCallOutputContentItem[];
   metadata?: Record<string, unknown>;
 }
 
@@ -34,6 +38,8 @@ export type Tool = {
 export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
+  readonly codeModeResult?: unknown;
+  readonly contentItems?: readonly FunctionCallOutputContentItem[];
 }
 
 export interface ToolRegistry {

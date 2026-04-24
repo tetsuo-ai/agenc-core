@@ -18,6 +18,7 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
+import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type { Tool, ToolCatalogEntry, ToolMetadata } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
 import {
@@ -37,6 +38,10 @@ import {
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
 } from "./unified-exec/index.js";
+import {
+  createCodeModeTools,
+  type CodeModeService,
+} from "./tools/code-mode/index.js";
 import {
   defaultConcurrencyClassFor,
   isBashTool,
@@ -59,6 +64,7 @@ export interface ToolDispatchResult {
    * Normal model/TUI consumers keep using `content`.
    */
   readonly codeModeResult?: unknown;
+  readonly contentItems?: readonly FunctionCallOutputContentItem[];
 }
 
 export interface ToolRegistry {
@@ -222,6 +228,7 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   "system.mkdir": "path",
   "system.delete": "path",
   "system.glob": "pattern",
+  exec: "code",
 };
 
 const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
@@ -234,6 +241,8 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "ExitPlanMode",
   "system.agent.delegate",
   "system.searchTools",
+  "exec",
+  "wait",
 ]);
 
 function codexPrimarySurface(tool: Tool): Tool {
@@ -313,6 +322,8 @@ export interface BuildToolRegistryOptions {
   readonly codeIntelligenceTools?: boolean;
   /** Live plan-mode bridge for workflow.enterPlan/workflow.exitPlan. */
   readonly workflowController?: WorkflowToolController;
+  /** Upstream-style JavaScript code-mode service for exec/wait. */
+  readonly codeModeService?: CodeModeService;
   /**
    * T9 integration seam: extra tools to register beyond the default
    * coding-profile catalog. The CLI entrypoint uses this to expose
@@ -349,7 +360,7 @@ export function buildToolRegistry(
     }
   };
 
-  const defaultBuiltinTools: Tool[] = [
+  const rawDefaultBuiltinTools: Tool[] = [
     ...createFilesystemTools({
       allowedPaths: [options.workspaceRoot],
       allowDelete: options.allowBashDelete ?? false,
@@ -377,6 +388,7 @@ export function buildToolRegistry(
     }),
     createWriteStdinTool({
       cwd: options.workspaceRoot,
+      allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
     }),
     createBashTool({
@@ -393,6 +405,18 @@ export function buildToolRegistry(
         ? { workflowController: options.workflowController }
         : {}),
     }),
+  ];
+  const codeModeTools: readonly Tool[] =
+    options.codeModeService?.enabled() === true
+      ? createCodeModeTools({
+          service: options.codeModeService,
+          getEnabledTools: () => allSpecs().map((spec) => spec.tool),
+          descriptionTools: rawDefaultBuiltinTools,
+        })
+      : [];
+  const defaultBuiltinTools: Tool[] = [
+    ...rawDefaultBuiltinTools,
+    ...codeModeTools,
   ].map((tool) => tagTool(codexPrimarySurface(tool)));
   const extraTools: Tool[] = (options.extraTools ?? []).map((tool) =>
     tagTool(tool),
@@ -509,6 +533,8 @@ export function buildToolRegistry(
         return {
           content: result.content,
           isError: result.isError,
+          codeModeResult: result.codeModeResult,
+          contentItems: result.contentItems,
         };
       } catch (error) {
         return {

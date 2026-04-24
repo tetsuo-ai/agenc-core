@@ -1,6 +1,17 @@
+import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 
 import { UnifiedExecError, UnifiedExecProcessManager } from "./index.js";
+
+const require = createRequire(import.meta.url);
+const hasPtySupport = (() => {
+  try {
+    require.resolve("@homebridge/node-pty-prebuilt-multiarch");
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 describe("UnifiedExecProcessManager", () => {
   test("runs one-shot non-PTY commands without returning a session id", async () => {
@@ -47,37 +58,40 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test("persists PTY shell state across write_stdin calls", async () => {
-    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
-    try {
-      const started = await manager.execCommand({
-        cmd: "bash -i",
-        tty: true,
-        yield_time_ms: 250,
-      });
+  test.runIf(hasPtySupport)(
+    "persists PTY shell state across write_stdin calls",
+    async () => {
+      const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+      try {
+        const started = await manager.execCommand({
+          cmd: "bash -i",
+          tty: true,
+          yield_time_ms: 250,
+        });
 
-      expect(started.process_id).toEqual(expect.any(Number));
-      const sessionId = started.process_id!;
+        expect(started.process_id).toEqual(expect.any(Number));
+        const sessionId = started.process_id!;
 
-      await manager.writeStdin({
-        session_id: sessionId,
-        chars: "export AGENC_UNIFIED_EXEC_TEST=ok\n",
-        yield_time_ms: 250,
-      });
-      const echoed = await manager.writeStdin({
-        session_id: sessionId,
-        chars: "printf \"$AGENC_UNIFIED_EXEC_TEST\\n\"\n",
-        yield_time_ms: 250,
-      });
+        await manager.writeStdin({
+          session_id: sessionId,
+          chars: "export AGENC_UNIFIED_EXEC_TEST=ok\n",
+          yield_time_ms: 250,
+        });
+        const echoed = await manager.writeStdin({
+          session_id: sessionId,
+          chars: "printf \"$AGENC_UNIFIED_EXEC_TEST\\n\"\n",
+          yield_time_ms: 250,
+        });
 
-      expect(echoed.stdout).toContain("ok");
-      expect(echoed.process_id).toBe(sessionId);
-    } finally {
-      await manager.closeAll("test_cleanup");
-    }
-  });
+        expect(echoed.stdout).toContain("ok");
+        expect(echoed.process_id).toBe(sessionId);
+      } finally {
+        await manager.closeAll("test_cleanup");
+      }
+    },
+  );
 
-  test("closeAll terminates live PTY sessions", async () => {
+  test.runIf(hasPtySupport)("closeAll terminates live PTY sessions", async () => {
     const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
     const started = await manager.execCommand({
       cmd: "bash -i",

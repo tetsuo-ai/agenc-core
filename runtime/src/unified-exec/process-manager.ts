@@ -1,9 +1,8 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { createRequire } from "node:module";
 import { basename, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-
-import type { IPty } from "@homebridge/node-pty-prebuilt-multiarch";
 
 import {
   approximateTokenCount,
@@ -29,6 +28,7 @@ const MAX_YIELD_TIME_MS = 30_000;
 const DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
+const require = createRequire(import.meta.url);
 
 type ExitState = {
   readonly exitCode: number | null;
@@ -39,7 +39,33 @@ type StoredProcess =
   | { readonly kind: "pty"; readonly process: IPty }
   | { readonly kind: "pipe"; readonly process: ChildProcessByStdio<null, Readable, Readable> };
 
-type PtyModule = typeof import("@homebridge/node-pty-prebuilt-multiarch");
+interface IPty {
+  readonly pid: number;
+  write(data: string): void;
+  resize(columns: number, rows: number): void;
+  kill(signal?: string): void;
+  onData(listener: (data: string) => void): { dispose(): void };
+  onExit(
+    listener: (event: {
+      readonly exitCode: number;
+      readonly signal?: number | string;
+    }) => void,
+  ): { dispose(): void };
+}
+
+interface PtyModule {
+  spawn(
+    file: string,
+    args: readonly string[],
+    options: {
+      readonly name?: string;
+      readonly cols?: number;
+      readonly rows?: number;
+      readonly cwd?: string;
+      readonly env?: Record<string, string>;
+    },
+  ): IPty;
+}
 
 interface OutputChunk {
   readonly stream: UnifiedExecStream;
@@ -367,7 +393,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   private async loadPty(): Promise<PtyModule> {
     try {
-      return await import("@homebridge/node-pty-prebuilt-multiarch");
+      return require("@homebridge/node-pty-prebuilt-multiarch") as PtyModule;
     } catch (error) {
       throw new UnifiedExecError(
         "create_process",

@@ -112,6 +112,7 @@ import {
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
+import type { CodeModeService } from "../tools/code-mode/types.js";
 import {
   createActiveTurnState,
   createDoneHandle,
@@ -442,11 +443,6 @@ export interface LocalThreadStore {
 export interface ModelClient {
   setWindowGeneration(n: number): void;
   // Deferred until a caller needs the full codex ModelClient facade.
-}
-
-/** Codex `CodeModeService`. T-future. */
-export interface CodeModeService {
-  enabled(): boolean;
 }
 
 /** Codex `NetworkApprovalService`. T11 (network approval). */

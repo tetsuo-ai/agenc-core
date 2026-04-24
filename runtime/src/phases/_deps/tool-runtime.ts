@@ -48,6 +48,7 @@ import {
   type PermissionDecisionHook,
 } from "../../tools/hooks.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
+import type { FunctionCallOutputContentItem } from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
 import {
   ApprovalRejectedError,
@@ -61,6 +62,8 @@ import {
 interface ToolDispatchResultLike {
   readonly content: string;
   readonly isError?: boolean;
+  readonly codeModeResult?: unknown;
+  readonly contentItems?: readonly FunctionCallOutputContentItem[];
 }
 
 interface ToolRegistryLike {
@@ -744,6 +747,8 @@ export class StreamingToolExecutor {
             result: {
               content: dispatchResult.content,
               isError: dispatchResult.isError === true,
+              codeModeResult: dispatchResult.codeModeResult,
+              contentItems: dispatchResult.contentItems,
             },
           },
           onHookError ? (err, idx) => onHookError("post", err, idx) : undefined,

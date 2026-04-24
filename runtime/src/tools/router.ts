@@ -439,7 +439,12 @@ export class ToolRouter {
     }
     try {
       const result = await spec.tool.execute(args);
-      return { content: result.content, isError: result.isError };
+      return {
+        content: result.content,
+        isError: result.isError,
+        codeModeResult: result.codeModeResult,
+        contentItems: result.contentItems,
+      };
     } catch (err) {
       return {
         content: JSON.stringify({

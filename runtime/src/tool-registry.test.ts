@@ -3,6 +3,7 @@ import { buildToolRegistry } from "./tool-registry.js";
 import { PermissionModeRegistry } from "./permissions/mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
 import type { Tool } from "./tools/types.js";
+import { QuickJsCodeModeService } from "./tools/code-mode/service.js";
 
 describe("T7 tool-registry ConcurrencyClass tagging", () => {
   test("read-only fs tools get SharedRead + isReadOnly=true", () => {
@@ -107,6 +108,17 @@ describe("tool-registry dynamic and deferred catalog", () => {
       exitCode: 0,
       stdout: "agenc-codex",
     });
+  });
+
+  test("code mode adds visible exec/wait tools when enabled", () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      codeModeService: new QuickJsCodeModeService({ enabled: true }),
+    });
+
+    const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
+    expect(visibleNames).toContain("exec");
+    expect(visibleNames).toContain("wait");
   });
 
   test("searchTools supports OpenClaude-style select:<tool> loading", async () => {

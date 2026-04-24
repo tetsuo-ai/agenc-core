@@ -1,5 +1,6 @@
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import {
   UnifiedExecError,
   UnifiedExecProcessManager,
@@ -8,6 +9,7 @@ import {
 
 export interface WriteStdinToolConfig {
   readonly cwd?: string;
+  readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
   readonly maxTimeoutMs?: number;
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
@@ -102,12 +104,30 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           isError: true,
         };
       }
+      const chars = asString(args.chars) ?? "";
+      if (chars.trim().length > 0) {
+        const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({
+          toolName: "write_stdin",
+          args: { command: chars, cwd: config?.cwd },
+          workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
+        });
+        if (workspaceWriteDecision.blocked) {
+          return {
+            content: safeStringify({
+              error:
+                workspaceWriteDecision.message ??
+                "Shell workspace write policy blocked the input.",
+            }),
+            isError: true,
+          };
+        }
+      }
 
       try {
         const output = await manager.writeStdin({
           session_id: sessionId,
           callId: asString(args.__callId),
-          chars: asString(args.chars) ?? "",
+          chars,
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),

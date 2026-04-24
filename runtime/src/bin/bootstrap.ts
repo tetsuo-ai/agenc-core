@@ -72,6 +72,7 @@ import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   UnifiedExecProcessManager,
 } from "../unified-exec/index.js";
+import { createCodeModeService } from "../tools/code-mode/index.js";
 import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
@@ -684,6 +685,7 @@ export async function bootstrapLocalRuntimeSession(
     cwd: workspaceRoot,
     maxTimeoutMs: 300_000,
   });
+  const codeModeService = createCodeModeService({ env });
   let sessionRef: Session | null = null;
   const emitProviderWarning = (warning: {
     cause: string;
@@ -725,6 +727,7 @@ export async function bootstrapLocalRuntimeSession(
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
+      codeModeService,
     },
   });
   const provider: LLMProvider = createProvider(
@@ -844,6 +847,7 @@ export async function bootstrapLocalRuntimeSession(
       conversationId,
       model,
       sessionConfiguration,
+      codeModeService,
     });
 
   const shutdown = async (): Promise<void> => {

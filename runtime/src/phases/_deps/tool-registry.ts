@@ -7,8 +7,11 @@
  * the root tool-registry is removed.
  */
 
+import type { FunctionCallOutputContentItem } from "../../tools/context.js";
+
 export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
   readonly codeModeResult?: unknown;
+  readonly contentItems?: readonly FunctionCallOutputContentItem[];
 }

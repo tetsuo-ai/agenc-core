@@ -48,6 +48,70 @@ describe("apply_patch tool", () => {
     );
   });
 
+  test("accepts the upstream Codex JSON input key", async () => {
+    const runner = vi.fn<ApplyPatchRunner>(async () => ({
+      stdout: "Success. Updated the following files:\nA new.txt\n",
+      stderr: "",
+      exitCode: 0,
+    }));
+    const tool = createApplyPatchTool({ allowedPaths: [root], runner });
+
+    const result = await tool.execute({
+      input:
+        "*** Begin Patch\n" +
+        "*** Add File: nested/new.txt\n" +
+        "+created\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(runner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch: expect.stringContaining("*** Add File: nested/new.txt"),
+      }),
+    );
+  });
+
+  test("rejects git unified diffs with apply_patch grammar guidance", async () => {
+    const runner = vi.fn<ApplyPatchRunner>();
+    const tool = createApplyPatchTool({ allowedPaths: [root], runner });
+
+    const result = await tool.execute({
+      patch:
+        "diff --git a/CMakeLists.txt b/CMakeLists.txt\n" +
+        "--- a/CMakeLists.txt\n" +
+        "+++ b/CMakeLists.txt\n" +
+        "@@\n" +
+        "-old\n" +
+        "+new\n",
+      cwd: root,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("not a git unified diff");
+    expect(result.content).toContain("*** Begin Patch");
+    expect(runner).not.toHaveBeenCalled();
+  });
+
+  test("rejects absolute patch paths", async () => {
+    const runner = vi.fn<ApplyPatchRunner>();
+    const tool = createApplyPatchTool({ allowedPaths: [root], runner });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        `*** Add File: ${join(root, "absolute.txt")}\n` +
+        "+blocked\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("patch paths must be relative");
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   test("rejects patch targets outside allowed roots", async () => {
     const runner = vi.fn<ApplyPatchRunner>();
     const tool = createApplyPatchTool({ allowedPaths: [root], runner });

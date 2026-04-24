@@ -49,6 +49,12 @@ import {
   LLMTimeoutError,
 } from "../llm/errors.js";
 import type { LLMMessage, LLMTool, LLMUsage } from "../llm/types.js";
+import { safeStringify } from "../tools/types.js";
+import {
+  CODE_MODE_EXEC_TOOL_NAME,
+  CODE_MODE_WAIT_TOOL_NAME,
+  type CodeModeNestedToolCall,
+} from "../tools/code-mode/types.js";
 import { commit } from "../phases/commit.js";
 import { continuationNudge } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
@@ -1118,6 +1124,54 @@ export async function* runTurnKernel(
     kind: "regular",
     startedAtMs: turnStartedAt,
   });
+  const codeModeTurnWorker = session.services.codeModeService.startTurnWorker({
+    invokeTool: async (call: CodeModeNestedToolCall) => {
+      if (
+        call.toolName === CODE_MODE_EXEC_TOOL_NAME ||
+        call.toolName === CODE_MODE_WAIT_TOOL_NAME
+      ) {
+        throw new Error(`${CODE_MODE_EXEC_TOOL_NAME} cannot invoke itself`);
+      }
+      if (
+        call.input !== undefined &&
+        (typeof call.input !== "object" ||
+          call.input === null ||
+          Array.isArray(call.input))
+      ) {
+        throw new Error(`tool \`${call.toolName}\` expects a JSON object for arguments`);
+      }
+      const result = await session.services.registry.dispatch({
+        id: `exec-${call.runtimeToolCallId}`,
+        name: call.toolName,
+        arguments: safeStringify(call.input ?? {}),
+      });
+      if (result.isError === true) {
+        throw new Error(result.content);
+      }
+      if (result.codeModeResult !== undefined) {
+        return result.codeModeResult;
+      }
+      try {
+        return JSON.parse(result.content) as unknown;
+      } catch {
+        return result.content;
+      }
+    },
+    notify: ({ callId, text }) => {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "tool_progress",
+          payload: {
+            callId,
+            toolName: CODE_MODE_EXEC_TOOL_NAME,
+            chunk: text,
+            stream: "status",
+          },
+        },
+      });
+    },
+  });
 
   try {
     return yield* runTurnKernelInner(
@@ -1136,6 +1190,7 @@ export async function* runTurnKernel(
       },
     );
   } finally {
+    codeModeTurnWorker.dispose();
     // Upstream codex emits `on_task_finished` uniformly from the spawn
     // site so every task-kind shares the same lifecycle. In gut the
     // kernel BOTH runs the task body AND owns its finish emit.

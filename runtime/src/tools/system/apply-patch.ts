@@ -13,6 +13,57 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BUFFER = 2 * 1024 * 1024;
 const PATCH_PATH_HEADER =
   /^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$/u;
+const APPLY_PATCH_DESCRIPTION = `Use the \`apply_patch\` tool to edit files.
+Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply. It is not a git unified diff. Do not pass \`diff --git\`, \`--- a/file\`, or \`+++ b/file\` hunks to this tool.
+
+Every patch must use this envelope:
+
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
+
+Within that envelope, every file operation starts with one of these headers:
+
+*** Add File: <path> - create a new file. Every following line is a + line.
+*** Delete File: <path> - remove an existing file. Nothing follows.
+*** Update File: <path> - patch an existing file in place.
+
+An update may be immediately followed by:
+
+*** Move to: <new path>
+
+Then one or more hunks, each introduced by @@. Within a hunk, every line starts with a space, -, or +.
+
+The grammar is:
+Patch := Begin { FileOp } End
+Begin := "*** Begin Patch" NEWLINE
+End := "*** End Patch" NEWLINE
+FileOp := AddFile | DeleteFile | UpdateFile
+AddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }
+DeleteFile := "*** Delete File: " path NEWLINE
+UpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }
+MoveTo := "*** Move to: " newPath NEWLINE
+Hunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]
+HunkLine := (" " | "-" | "+") text NEWLINE
+
+Example:
+
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+
+Important:
+- Include an Add/Delete/Update header for every file operation.
+- Prefix new lines with +, including every line when creating a file.
+- File references must be relative, never absolute.
+- Put the complete patch body in the patch argument.`;
 
 export interface ApplyPatchRunnerResult {
   readonly stdout: string;
@@ -47,8 +98,21 @@ function asNonEmptyString(value: unknown): string | undefined {
     : undefined;
 }
 
+function looksLikeGitUnifiedDiff(patch: string): boolean {
+  return (
+    /^diff --git /mu.test(patch) ||
+    (/^--- [ab]\//mu.test(patch) && /^\+\+\+ [ab]\//mu.test(patch))
+  );
+}
+
 function extractPatchPaths(patch: string): string[] | { error: string } {
   const lines = patch.replace(/\r\n?/gu, "\n").split("\n");
+  if (looksLikeGitUnifiedDiff(patch)) {
+    return {
+      error:
+        "apply_patch expects the AgenC/Codex patch grammar, not a git unified diff. Retry with *** Begin Patch, *** Add File/Update File/Delete File headers, and *** End Patch.",
+    };
+  }
   if (lines[0] !== "*** Begin Patch") {
     return { error: "patch must start with *** Begin Patch" };
   }
@@ -97,6 +161,9 @@ async function validatePatchPaths(opts: {
   }
 
   for (const target of targets) {
+    if (isAbsolute(target)) {
+      return `patch paths must be relative, never absolute: ${target}`;
+    }
     const resolvedTarget = resolvePatchTarget(cwdSafe.resolved, target);
     const safe = await safePath(resolvedTarget, allowedPaths);
     if (!safe.safe) {
@@ -146,8 +213,7 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
   const runner = config.runner ?? runApplyPatchCommand;
   return {
     name: "apply_patch",
-    description:
-      "Apply an AgenC workspace patch using the Codex apply_patch grammar. The patch must use the *** Begin Patch / *** End Patch format. Prefer this for multi-line code edits.",
+    description: APPLY_PATCH_DESCRIPTION,
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -166,6 +232,11 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
           description:
             "Complete AgenC/Codex patch body, starting with *** Begin Patch and ending with *** End Patch.",
         },
+        input: {
+          type: "string",
+          description:
+            "Upstream Codex JSON key for the complete apply_patch body. Same value as patch.",
+        },
         cwd: {
           type: "string",
           description:
@@ -176,12 +247,12 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
           description: "Optional timeout in milliseconds.",
         },
       },
-      required: ["patch"],
+      anyOf: [{ required: ["patch"] }, { required: ["input"] }],
       additionalProperties: false,
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
-      const patch = asNonEmptyString(args.patch);
+      const patch = asNonEmptyString(args.patch) ?? asNonEmptyString(args.input);
       if (!patch) return errorResult("patch must be a non-empty string");
 
       const cwdArg = asNonEmptyString(args.cwd);

@@ -31,7 +31,11 @@
  * @module
  */
 
-import type { LLMMessage, LLMToolCall } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  LLMToolCall,
+} from "../llm/types.js";
 import { validateToolCallsForExecution } from "../llm/stream-parser.js";
 import {
   StreamingToolExecutor,
@@ -71,8 +75,41 @@ function toolResultMessage(
   return {
     role: "tool",
     toolCallId: callId,
-    content: result.content,
+    content: toolResultContent(result),
   };
+}
+
+function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
+  if (!result.contentItems || result.contentItems.length === 0) {
+    return result.content;
+  }
+  const parts: LLMContentPart[] = [];
+  for (const item of result.contentItems) {
+    if (
+      typeof item === "object" &&
+      item !== null &&
+      (item as { type?: unknown }).type === "input_text"
+    ) {
+      parts.push({
+        type: "text",
+        text: String((item as { text?: unknown }).text ?? ""),
+      });
+      continue;
+    }
+    if (
+      typeof item === "object" &&
+      item !== null &&
+      (item as { type?: unknown }).type === "input_image"
+    ) {
+      parts.push({
+        type: "image_url",
+        image_url: {
+          url: String((item as { image_url?: unknown }).image_url ?? ""),
+        },
+      });
+    }
+  }
+  return parts.length > 0 ? parts : result.content;
 }
 
 function toolResultUserRecord(
@@ -85,7 +122,7 @@ function toolResultUserRecord(
     role: "user",
     toolCallId: callId,
     toolName,
-    content: result.content,
+    content: toolResultContent(result),
   };
 }
 
