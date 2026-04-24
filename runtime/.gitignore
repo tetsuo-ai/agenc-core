@@ -5,3 +5,7 @@ node_modules/
 logs/
 dist/
 build/
+# Source tree for the `bun:bundle` alias is checked in and must not
+# match the top-level `build/` build-artifact rule.
+!src/build/
+!src/build/**
