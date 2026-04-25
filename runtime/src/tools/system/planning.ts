@@ -1,10 +1,7 @@
 import type { PermissionModeRegistry } from "../../permissions/mode.js";
 import { transitionPermissionMode } from "../../permissions/mode.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
-import {
-  formatPlanMarkdownFromSteps,
-  type PlanFileContext,
-} from "../../planning/plan-files.js";
+import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 
@@ -13,6 +10,7 @@ type PlanStepStatus = "pending" | "in_progress" | "completed";
 export interface PlanStep {
   readonly step: string;
   readonly status: PlanStepStatus;
+  readonly activeForm?: string;
 }
 
 export interface PlanState {
@@ -132,6 +130,7 @@ function parseTodoSteps(value: unknown): readonly PlanStep[] | { readonly error:
     const record = raw as Record<string, unknown>;
     const step = toOptionalString(record.content);
     const status = normalizeStatus(record.status);
+    const activeForm = toOptionalString(record.activeForm);
     if (!step) {
       return { error: `todos[${index}].content must be a non-empty string` };
     }
@@ -142,20 +141,16 @@ function parseTodoSteps(value: unknown): readonly PlanStep[] | { readonly error:
       };
     }
     if (status === "in_progress") inProgressCount += 1;
-    plan.push({ step, status });
+    plan.push({
+      step,
+      status,
+      ...(activeForm !== undefined ? { activeForm } : {}),
+    });
   }
   if (inProgressCount > 1) {
     return { error: "at most one todo may be in_progress" };
   }
   return plan;
-}
-
-async function persistStatePlan(
-  controller: WorkflowToolController | undefined,
-  state: PlanState,
-): Promise<void> {
-  if (!controller?.writePlan) return;
-  await controller.writePlan(formatPlanMarkdownFromSteps(state));
 }
 
 function inputPlan(args: Record<string, unknown>): string | undefined {
@@ -260,6 +255,12 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
       additionalProperties: false,
     },
     async execute(args) {
+      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
+      if (registry && registry.current().mode === "plan") {
+        return errorResult(
+          "update_plan is a TODO/checklist tool and is not allowed in Plan mode",
+        );
+      }
       const plan = parsePlanSteps(args.plan);
       if ("error" in plan) return errorResult(plan.error);
       state = {
@@ -269,7 +270,6 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         plan,
         updatedAt: new Date().toISOString(),
       };
-      await persistStatePlan(options.workflowController, state);
       options.workflowController?.emitPlanUpdated?.(state);
       return okResult({
         message: "Plan updated.",
@@ -307,13 +307,18 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
       additionalProperties: false,
     },
     async execute(args) {
+      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
+      if (registry && registry.current().mode === "plan") {
+        return errorResult(
+          "TodoWrite is a TODO/checklist tool and is not allowed in Plan mode",
+        );
+      }
       const todos = parseTodoSteps(args.todos);
       if ("error" in todos) return errorResult(todos.error);
       state = {
         plan: todos,
         updatedAt: new Date().toISOString(),
       };
-      await persistStatePlan(options.workflowController, state);
       options.workflowController?.emitPlanUpdated?.(state);
       return okResult({
         message: "Todo list updated through update_plan compatibility state.",
@@ -435,38 +440,10 @@ ${plan}`,
     },
   };
 
-  const workflowEnterPlanTool: Tool = {
-    ...enterPlanTool,
-    name: "workflow.enterPlan",
-    description:
-      "Compatibility alias for EnterPlanMode. Prefer EnterPlanMode for OpenClaude parity.",
-    metadata: metadata("workflow.enterPlan", { deferred: true, mutating: true }),
-    inputSchema: {
-      type: "object",
-      properties: { reason: { type: "string" } },
-      additionalProperties: false,
-    },
-  };
-
-  const workflowExitPlanTool: Tool = {
-    ...exitPlanTool,
-    name: "workflow.exitPlan",
-    description:
-      "Compatibility alias for ExitPlanMode. Prefer ExitPlanMode for OpenClaude parity.",
-    metadata: metadata("workflow.exitPlan", { deferred: true, mutating: true }),
-    inputSchema: {
-      type: "object",
-      properties: { reason: { type: "string" } },
-      additionalProperties: false,
-    },
-  };
-
   return [
     updatePlanTool,
     todoWriteTool,
     enterPlanTool,
     exitPlanTool,
-    workflowEnterPlanTool,
-    workflowExitPlanTool,
   ];
 }

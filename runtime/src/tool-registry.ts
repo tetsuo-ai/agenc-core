@@ -320,7 +320,7 @@ export interface BuildToolRegistryOptions {
    * default model-visible prompt remains Codex-small.
    */
   readonly codeIntelligenceTools?: boolean;
-  /** Live plan-mode bridge for workflow.enterPlan/workflow.exitPlan. */
+  /** Live plan-mode bridge for EnterPlanMode/ExitPlanMode. */
   readonly workflowController?: WorkflowToolController;
   /** Upstream-style JavaScript code-mode service for exec/wait. */
   readonly codeModeService?: CodeModeService;
@@ -342,8 +342,8 @@ export interface BuildToolRegistryOptions {
  * Codex-style apply_patch, and planning tools.
  *
  * The default visible set stays small. Heavy AgenC-owned git/symbol
- * inventory tools and Claude-compatible workflow aliases are registered
- * as deferred entries and load through `system.searchTools`.
+ * inventory tools are registered as deferred entries and load through
+ * `system.searchTools`.
  */
 export function buildToolRegistry(
   options: BuildToolRegistryOptions,

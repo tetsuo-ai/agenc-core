@@ -906,7 +906,13 @@ describe("runTurn — live sampling request contract", () => {
 
   test("plan mode sanitizes visible assistant text but still completes the raw proposed plan", async () => {
     const ctx = mkCtx();
-    (ctx.collaborationMode as { model: string }).model = "plan";
+    (ctx as unknown as {
+      sessionConfiguration: {
+        permissionContext: { mode: string };
+      };
+    }).sessionConfiguration = {
+      permissionContext: { mode: "plan" },
+    };
     const { session, events } = mkSession({
       provider: mkProvider({
         content: [

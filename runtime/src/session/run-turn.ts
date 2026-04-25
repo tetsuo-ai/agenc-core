@@ -1832,7 +1832,6 @@ export {
   isPlanMode,
   maybeCompletePlanItemFromMessage,
   realtimeTextForEvent,
-  trackTurnResolvedConfigAnalytics,
 } from "./plan-mode.js";
 
 export type {

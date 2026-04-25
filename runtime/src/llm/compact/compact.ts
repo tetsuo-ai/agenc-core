@@ -2305,7 +2305,7 @@ export async function createPlanModeAttachmentIfNeeded(
   return createAttachmentMessage({
     type: 'plan_mode',
     reminderType: 'full',
-    isSubAgent: !!context.agentId,
+    ...(context.agentId ? { isSubAgent: true as const } : {}),
     planFilePath,
     planExists,
   })

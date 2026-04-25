@@ -192,7 +192,7 @@ function deriveApprovalToolInput(ctx: {
 }
 
 function isExitPlanTool(toolName: string): boolean {
-  return toolName === "ExitPlanMode" || toolName === "workflow.exitPlan";
+  return toolName === "ExitPlanMode";
 }
 
 function planApprovalStats(input: unknown): {

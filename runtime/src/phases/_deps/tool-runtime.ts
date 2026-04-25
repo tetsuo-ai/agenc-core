@@ -352,7 +352,7 @@ function withPlanApprovalPreview(
   args: Record<string, unknown>,
   options: LiveDispatchOptions | undefined,
 ): Record<string, unknown> {
-  if (toolName !== "ExitPlanMode" && toolName !== "workflow.exitPlan") {
+  if (toolName !== "ExitPlanMode") {
     return args;
   }
 

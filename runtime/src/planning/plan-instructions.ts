@@ -1,12 +1,26 @@
 export type PlanModeReminderType = "full" | "sparse";
 export type PlanModeWorkflow = "interview" | "phased";
 
+/**
+ * Inputs to `buildPlanModeInstructions`.
+ *
+ * Precedence (highest first):
+ *   1. `isSubAgent === true`             → minimal sub-agent prompt
+ *   2. `reminderType === "sparse"`       → one-paragraph reminder
+ *   3. `workflow` ("phased"|"interview") → full workflow prompt
+ *
+ * `isSubAgent` is intentionally orthogonal to `workflow` so a sub-agent
+ * can be spawned under either workflow (the prompt collapses to the
+ * minimal sub-agent surface today; a future renderer may want to mix
+ * the two dimensions). The flag is `true | undefined` — passing `false`
+ * is forbidden so the precedence above is total.
+ */
 export interface PlanModeInstructionInput {
   readonly planFilePath: string;
   readonly planExists: boolean;
   readonly reminderType?: PlanModeReminderType;
   readonly workflow?: PlanModeWorkflow;
-  readonly isSubAgent?: boolean;
+  readonly isSubAgent?: true;
   readonly includeReentryReminder?: boolean;
 }
 
@@ -181,7 +195,7 @@ export function buildPlanModeInstructions(
   const workflow = input.workflow ?? "interview";
 
   let body: string;
-  if (input.isSubAgent === true) {
+  if (input.isSubAgent) {
     body = buildSubAgentInstructions(input);
   } else if (reminderType === "sparse") {
     const workflowDescription =

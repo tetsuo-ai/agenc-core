@@ -1510,6 +1510,127 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     expect(prompts[0]).toContain("ExitPlanMode");
   });
 
+  it("injects the one-shot ## Exited Plan Mode reminder when pendingPlanModeExitReminder is set", async () => {
+    const prompts: string[] = [];
+    async function* fakeRunTurn(
+      _session: unknown,
+      _ctx: unknown,
+      _input: unknown,
+      opts: { readonly systemPrompt: string },
+    ): AsyncGenerator<unknown, unknown> {
+      prompts.push(opts.systemPrompt);
+      return { reason: "completed" };
+    }
+
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-exit-prompt-"));
+    const store = new ConfigStore({ home: agencHome, env: {} });
+    await store.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        mode: "default",
+        pendingPlanModeExitReminder: true,
+      }),
+    );
+    const session = {
+      conversationId: "conv-plan-exit-prompt",
+      permissionModeRegistry,
+      emit: vi.fn(),
+    } as unknown as Session;
+
+    const iter = runSingleTurn({
+      session,
+      ctx: {} as never,
+      input: "now do it",
+      agencHome,
+      configStore: store,
+      configReloadLatch: { requested: false },
+      projectInstructions: "",
+      memoryPromptText: "",
+      allMemories: [],
+      enabledToolNames: new Set<string>(),
+      mcpServers: [],
+      provider: "grok",
+      reloadConfigFn: (async () => ({ reloaded: false })) as never,
+      assembleSystemPromptFn: (async () => ({ text: "SYS" })) as never,
+      runTurnFn: fakeRunTurn as never,
+    });
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const step = await iter.next();
+      if (step.done) break;
+    }
+
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("## Exited Plan Mode");
+    expect(prompts[0]).toContain(
+      "You have exited plan mode. You can now make edits, run tools, and take actions.",
+    );
+    // The flag must be cleared after the one-shot fires.
+    expect(
+      permissionModeRegistry.current().pendingPlanModeExitReminder,
+    ).toBe(false);
+  });
+
+  it("does not re-emit the exit reminder on the second turn (one-shot semantics)", async () => {
+    const prompts: string[] = [];
+    async function* fakeRunTurn(
+      _session: unknown,
+      _ctx: unknown,
+      _input: unknown,
+      opts: { readonly systemPrompt: string },
+    ): AsyncGenerator<unknown, unknown> {
+      prompts.push(opts.systemPrompt);
+      return { reason: "completed" };
+    }
+
+    const agencHome = await mkdtemp(
+      join(tmpdir(), "agenc-plan-exit-oneshot-"),
+    );
+    const store = new ConfigStore({ home: agencHome, env: {} });
+    await store.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({
+        mode: "default",
+        pendingPlanModeExitReminder: true,
+      }),
+    );
+    const session = {
+      conversationId: "conv-plan-exit-oneshot",
+      permissionModeRegistry,
+      emit: vi.fn(),
+    } as unknown as Session;
+
+    const baseOpts = {
+      session,
+      ctx: {} as never,
+      agencHome,
+      configStore: store,
+      configReloadLatch: { requested: false },
+      projectInstructions: "",
+      memoryPromptText: "",
+      allMemories: [],
+      enabledToolNames: new Set<string>(),
+      mcpServers: [],
+      provider: "grok",
+      reloadConfigFn: (async () => ({ reloaded: false })) as never,
+      assembleSystemPromptFn: (async () => ({ text: "SYS" })) as never,
+      runTurnFn: fakeRunTurn as never,
+    } as const;
+
+    for (const input of ["turn 1", "turn 2"]) {
+      const iter = runSingleTurn({ ...baseOpts, input });
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const step = await iter.next();
+        if (step.done) break;
+      }
+    }
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toContain("## Exited Plan Mode");
+    expect(prompts[1]).not.toContain("## Exited Plan Mode");
+  });
+
   it("forwards every event yielded by runTurn", async () => {
     const events = [
       { type: "turn_start", turnIndex: 0 },

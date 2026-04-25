@@ -69,10 +69,19 @@ function mkSession(): { session: Session; events: Event[] } {
 }
 
 function mkCtx(collabModel = "plan"): TurnContext {
+  // The historical legacy gate consulted `collaborationMode.model === "plan"`
+  // to flip plan mode. After the gate consolidation, plan mode is gated
+  // exclusively on `sessionConfiguration.permissionContext.mode`. Preserve
+  // the test ergonomic of `mkCtx("plan")` ⇒ plan-mode-active by routing
+  // the literal "plan" through the authoritative path.
+  const planModeActive = collabModel === "plan";
   return {
     subId: "turn-plan-1",
     collaborationMode: { model: collabModel },
     modelInfo: { slug: "test" },
+    ...(planModeActive
+      ? { sessionConfiguration: { permissionContext: { mode: "plan" } } }
+      : {}),
   } as unknown as TurnContext;
 }
 
@@ -81,24 +90,7 @@ function mkCtx(collabModel = "plan"): TurnContext {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("isPlanMode", () => {
-  test("returns true when collaborationMode.model === 'plan'", () => {
-    expect(isPlanMode(mkCtx("plan"))).toBe(true);
-  });
-
-  test("returns false when collaborationMode is ordinary chat", () => {
-    expect(isPlanMode(mkCtx("chat"))).toBe(false);
-    expect(isPlanMode(mkCtx("some-model"))).toBe(false);
-  });
-
-  test("returns true when explicit kind='plan' is set (T11 forward-compat)", () => {
-    const ctx = {
-      subId: "t",
-      collaborationMode: { kind: "plan", model: "gpt-4o" },
-    } as unknown as TurnContext;
-    expect(isPlanMode(ctx)).toBe(true);
-  });
-
-  test("returns true when sessionConfiguration.permissionContext.mode === 'plan' (T11 W2 real gate)", () => {
+  test("returns true when sessionConfiguration.permissionContext.mode === 'plan'", () => {
     const ctx = {
       subId: "t",
       collaborationMode: { model: "chat" },
@@ -109,13 +101,29 @@ describe("isPlanMode", () => {
     expect(isPlanMode(ctx)).toBe(true);
   });
 
-  test("legacy collaborationMode.model === 'plan' still wins when permissionContext absent", () => {
-    // Ensures the fallback path keeps compiling / firing for pre-W3 wiring.
-    const ctx = {
+  test("returns false when permissionContext.mode is anything else (or absent)", () => {
+    const noCtx = {
+      subId: "t",
+      collaborationMode: { model: "chat" },
+    } as unknown as TurnContext;
+    expect(isPlanMode(noCtx)).toBe(false);
+
+    const defaultCtx = {
+      subId: "t",
+      collaborationMode: { model: "chat" },
+      sessionConfiguration: {
+        permissionContext: { mode: "default" },
+      },
+    } as unknown as TurnContext;
+    expect(isPlanMode(defaultCtx)).toBe(false);
+
+    // Legacy `collaborationMode.model === "plan"` is no longer
+    // consulted — the gate is permissionContext-only.
+    const legacy = {
       subId: "t",
       collaborationMode: { model: "plan" },
     } as unknown as TurnContext;
-    expect(isPlanMode(ctx)).toBe(true);
+    expect(isPlanMode(legacy)).toBe(false);
   });
 });
 

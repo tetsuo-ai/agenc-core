@@ -308,11 +308,17 @@ export function transitionPermissionMode(
   let next = ctx;
 
   // Plan-mode enter: stash prePlanMode (and optionally strip dangerous
-  // rules if the caller wants plan-with-auto semantics).
+  // rules if the caller wants plan-with-auto semantics). Also clear any
+  // pending plan-mode-exit reminder pulse — a quick toggle out and back
+  // must not surface an exit reminder for an exit the model never saw.
+  // Mirrors openclaude bootstrap/state.ts:1355-1357.
   if (toMode === "plan" && fromMode !== "plan") {
     next = prepareContextForPlanMode(next, {
       shouldUseAutoInPlan: shouldPlanUseAutoMode(),
     });
+    if (next.pendingPlanModeExitReminder === true) {
+      next = { ...next, pendingPlanModeExitReminder: false };
+    }
   }
 
   // Auto-mode enter: verify the gate is live, flip the active flag, and
@@ -337,7 +343,11 @@ export function transitionPermissionMode(
     };
   }
 
-  // Plan-mode leave: clear stash + mark hasExitedPlanModeInSession.
+  // Plan-mode leave: clear stash, mark hasExitedPlanModeInSession (sticky,
+  // gates re-entry reminder) AND set the one-shot
+  // pendingPlanModeExitReminder pulse so the next turn injects the
+  // `## Exited Plan Mode` system-reminder. Mirrors openclaude's
+  // handlePlanModeTransition (bootstrap/state.ts:1349-1363).
   if (fromMode === "plan" && toMode !== "plan") {
     if (toMode !== "auto" && next.autoModeActive === true) {
       next = {
@@ -349,6 +359,7 @@ export function transitionPermissionMode(
       ...next,
       prePlanMode: undefined,
       hasExitedPlanModeInSession: true,
+      pendingPlanModeExitReminder: true,
     };
   }
 

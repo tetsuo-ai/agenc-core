@@ -132,7 +132,7 @@ function extractCommand(args: unknown): string {
 }
 
 function isPlanApprovalTool(tool: string): boolean {
-  return tool === "ExitPlanMode" || tool === "workflow.exitPlan";
+  return tool === "ExitPlanMode";
 }
 
 function extractAllowedPrompts(args: unknown): Array<{

@@ -55,6 +55,7 @@ import {
   queueStreamingToolCall,
   validateToolCallsForDispatch,
 } from "./execute-tools.js";
+import { isPlanMode } from "../session/plan-mode.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { AssistantMessage, ToolUseBlock, TurnState } from "../session/turn-state.js";
@@ -99,18 +100,6 @@ class AssistantVisibleTextStreamParser {
     if (!this.plan || text.length === 0) return text;
     return this.plan.pushStr(text).visibleText;
   }
-}
-
-function isPlanMode(ctx: TurnContext): boolean {
-  const permissionMode = (
-    ctx as TurnContext & {
-      sessionConfiguration?: {
-        permissionContext?: { mode?: string };
-      };
-    }
-  ).sessionConfiguration?.permissionContext?.mode;
-  if (permissionMode === "plan") return true;
-  return ctx.collaborationMode.model === "plan";
 }
 
 function toVisibleAssistantText(

@@ -192,12 +192,36 @@ describe("transitionPermissionMode — plan enter/exit", () => {
     const entered = transitionPermissionMode("acceptEdits", "plan", start);
     expect(entered.prePlanMode).toBe("acceptEdits");
     expect(entered.hasExitedPlanModeInSession).toBeFalsy();
+    expect(entered.pendingPlanModeExitReminder).toBeFalsy();
 
     // Caller sets mode on the returned context; simulate for exit.
     const inPlan: ToolPermissionContext = { ...entered, mode: "plan" };
     const exited = transitionPermissionMode("plan", "default", inPlan);
     expect(exited.prePlanMode).toBeUndefined();
     expect(exited.hasExitedPlanModeInSession).toBe(true);
+    expect(exited.pendingPlanModeExitReminder).toBe(true);
+  });
+
+  it("sets pendingPlanModeExitReminder on plan-leave to any non-plan target", () => {
+    for (const toMode of ["default", "acceptEdits", "bypassPermissions"] as const) {
+      const inPlan = baseCtx({ mode: "plan", prePlanMode: "default" });
+      const exited = transitionPermissionMode("plan", toMode, inPlan);
+      expect(exited.pendingPlanModeExitReminder).toBe(true);
+    }
+  });
+
+  it("clears pendingPlanModeExitReminder on plan-mode re-entry", () => {
+    // Simulate: enter plan → exit to default → re-enter plan. The pulse
+    // set on exit must be cleared on re-entry so the model never sees
+    // an exit reminder for an exit it has already reversed.
+    const inPlan = baseCtx({ mode: "plan", prePlanMode: "default" });
+    const exited = transitionPermissionMode("plan", "default", inPlan);
+    expect(exited.pendingPlanModeExitReminder).toBe(true);
+
+    const back: ToolPermissionContext = { ...exited, mode: "default" };
+    const reEntered = transitionPermissionMode("default", "plan", back);
+    expect(reEntered.pendingPlanModeExitReminder).toBe(false);
+    expect(reEntered.prePlanMode).toBe("default");
   });
 
   it("clears plan-scoped auto-mode state on exit back to a non-auto mode", () => {

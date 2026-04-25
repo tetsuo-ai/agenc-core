@@ -33,11 +33,10 @@
  *   turn.rs:1738 emit_turn_item_in_plan_mode         → emitTurnItemInPlanMode
  *   turn.rs:1759 handle_assistant_item_done_in_plan_mode → handleAssistantItemDoneInPlanMode
  *   turn.rs:1445 realtime_text_for_event             → realtimeTextForEvent
- *   turn.rs:666  track_turn_resolved_config_analytics → trackTurnResolvedConfigAnalytics (STUB)
  *
- * Plan mode is gated on `turnContext.collaborationMode.model === "plan"`
- * today as a simple structural check; T11 (modes + slash commands)
- * replaces the gate with the real `PlanMode` collaboration-mode kind.
+ * Plan mode is gated on `sessionConfiguration.permissionContext.mode`,
+ * the authoritative source mirrored from `PermissionModeRegistry` by
+ * `Session` on every transition.
  *
  * The event surface extends the AgenC EventMsg union with dedicated
  * `plan_started` / `plan_delta` / `plan_item_completed` / `plan_exited`
@@ -142,12 +141,10 @@ export function createPlanModeStreamState(turnId: string): PlanModeStreamState {
 /**
  * Is plan mode currently active for this turn context?
  *
- * T11 Wave 2: consult the real `PermissionMode` first (the authoritative
- * source set by `PermissionModeRegistry` + the `EnterPlanMode` /
- * `ExitPlanMode` tools + the `/plan` slash command). Falls back to the
- * legacy structural check against `collaborationMode.kind|model === "plan"`
- * so existing streaming call sites keep working before W3 wires
- * sessionConfiguration through turn contexts.
+ * Authoritative source: `sessionConfiguration.permissionContext.mode`,
+ * mirrored from `PermissionModeRegistry` by `Session` after every
+ * mode transition (the `EnterPlanMode` / `ExitPlanMode` tools and the
+ * `/plan` slash command both flow through the registry).
  */
 export function isPlanMode(ctx: TurnContext): boolean {
   const withPermission = ctx as unknown as {
@@ -155,17 +152,9 @@ export function isPlanMode(ctx: TurnContext): boolean {
       permissionContext?: { mode?: string };
     };
   };
-  const permissionMode =
-    withPermission.sessionConfiguration?.permissionContext?.mode;
-  if (permissionMode === "plan") return true;
-
-  // Legacy gate fallback — pre-T11 collaborationMode structural check.
-  const mode = ctx.collaborationMode as unknown as {
-    kind?: string;
-    model?: string;
-  };
-  if (mode.kind === "plan") return true;
-  return mode.model === "plan";
+  return (
+    withPermission.sessionConfiguration?.permissionContext?.mode === "plan"
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -690,21 +679,3 @@ export function realtimeTextForEvent(msg: EventMsg): string | undefined {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// track_turn_resolved_config_analytics (codex turn.rs:666) — STUB
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Stub for codex `track_turn_resolved_config_analytics`. Analytics is
- * out of scope today; the hook exists so run-turn can call it at the
- * right boundary once the analytics subsystem lands.
- *
- * TODO(T6+analytics): wire the real event emitter here.
- */
-export function trackTurnResolvedConfigAnalytics(
-  _session: Session,
-  _ctx: TurnContext,
-  _input: ReadonlyArray<unknown>,
-): void {
-  // no-op
-}

@@ -78,7 +78,10 @@ import {
   getPlan,
   getPlanFilePath,
 } from "../planning/plan-files.js";
-import { buildPlanModeInstructions } from "../planning/plan-instructions.js";
+import {
+  buildPlanModeExitInstructions,
+  buildPlanModeInstructions,
+} from "../planning/plan-instructions.js";
 import {
   expandFileMentions,
   extractMentionAllowedRoots,
@@ -531,7 +534,7 @@ async function buildPlanModeSystemReminder(
   } catch {
     planCtx = null;
   }
-  if (planCtx?.mode !== "plan") return null;
+  if (planCtx === null) return null;
 
   const fileCtx = {
     ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
@@ -539,6 +542,29 @@ async function buildPlanModeSystemReminder(
   };
   const planFilePath = getPlanFilePath(fileCtx);
   const planExists = getPlan(fileCtx) !== null;
+
+  // Out-of-plan branch: emit the one-shot `## Exited Plan Mode` reminder
+  // exactly once on the first non-plan turn after a plan-leave. Mirrors
+  // openclaude getPlanModeExitAttachment (utils/attachments.ts:1245-1274).
+  // Any non-plan target counts (default, acceptEdits, bypassPermissions,
+  // auto) — the pulse was set by transitionPermissionMode regardless of
+  // toMode.
+  if (planCtx.mode !== "plan") {
+    if (planCtx.pendingPlanModeExitReminder !== true) return null;
+    await opts.session.permissionModeRegistry.update({
+      ...planCtx,
+      pendingPlanModeExitReminder: false,
+    });
+    return `<system-reminder>
+${buildPlanModeExitInstructions({
+  planFilePath,
+  planExists,
+})}
+</system-reminder>`;
+  }
+
+  // In-plan branch: emit the standard plan-mode instructions, with the
+  // re-entry preface when this is a return after a previous exit.
   const includeReentryReminder =
     planCtx.hasExitedPlanModeInSession === true && planExists;
   if (includeReentryReminder) {

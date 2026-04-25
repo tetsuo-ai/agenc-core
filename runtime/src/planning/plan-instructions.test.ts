@@ -81,4 +81,23 @@ describe("plan mode instructions", () => {
     expect(buildPlanModeReentryInstructions("/tmp/agenc/plans/session.md"))
       .toContain("always edit the plan file");
   });
+
+  test("sub-agent prompt overrides workflow regardless of phased/interview", () => {
+    const phased = buildPlanModeInstructions({
+      planFilePath: "/tmp/agenc/plans/session.md",
+      planExists: false,
+      workflow: "phased",
+      isSubAgent: true,
+    });
+    const interview = buildPlanModeInstructions({
+      planFilePath: "/tmp/agenc/plans/session.md",
+      planExists: false,
+      workflow: "interview",
+      isSubAgent: true,
+    });
+    expect(phased).toBe(interview);
+    expect(phased).not.toContain("Phase 1: Initial Understanding");
+    expect(phased).not.toContain("Iterative Planning Workflow");
+    expect(phased).toContain("AskUserQuestion");
+  });
 });
