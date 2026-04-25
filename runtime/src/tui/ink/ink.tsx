@@ -600,14 +600,22 @@ export default class Ink {
     // cells at sibling boundaries that per-node damage tracking misses.
     // Selection/highlight overlays write via setCellStyleId which doesn't
     // track damage. prevFrameContaminated covers the cleanup frame.
-    if (didLayoutShift() || selActive || hlActive || this.prevFrameContaminated) {
-      frame.screen.damage = {
-        x: 0,
-        y: 0,
-        width: frame.screen.width,
-        height: frame.screen.height
-      };
-    }
+    //
+    // Unconditional full-screen damage: previously gated on
+    // `didLayoutShift() || selActive || hlActive || prevFrameContaminated`,
+    // which left a class of drift bugs where a cell modified in one frame
+    // but outside later frames' accumulated damage regions could retain
+    // stale ANSI state on the terminal without ever being re-checked by
+    // the diff. Forcing full-screen damage every frame makes the diff
+    // scan every cell; matching cells still short-circuit in
+    // findNextDiff, so the cost is an Int32Array stride-compare over the
+    // screen rather than a re-emission of unchanged cells.
+    frame.screen.damage = {
+      x: 0,
+      y: 0,
+      width: frame.screen.width,
+      height: frame.screen.height,
+    };
 
     // Alt-screen: anchor the physical cursor to (0,0) before every diff.
     // All cursor moves in log-update are RELATIVE to prev.cursor; if tmux

@@ -310,6 +310,19 @@ export class LogUpdate {
     let currentStyleId = stylePool.none
     let currentHyperlink: Hyperlink = undefined
 
+    // Unconditional SGR reset at frame start: the diff loop below tracks
+    // `currentStyleId` in VM-local state and assumes the TERMINAL is in
+    // `stylePool.none` state at this point. That assumption was being
+    // violated whenever a previous frame's emission left the terminal in
+    // a non-none SGR state (e.g. dim/inverse carried past the last
+    // per-frame reset because the trailing cell's styleId matched the
+    // loop's idle state by coincidence, so no reset code was emitted).
+    // The result was "random" cells showing up styled after the tree had
+    // stopped producing that style. Emitting SGR-0 here forces the
+    // terminal to the same zero-state the loop assumes, so every
+    // subsequent cell's transition string is computed against reality.
+    screen.diff.push({ type: 'styleStr', str: '\x1b[0m' })
+
     // First pass: render changes to existing rows (rows < prev.screen.height)
     let needsFullReset = false
     let resetTriggerY = -1
