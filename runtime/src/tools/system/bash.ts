@@ -984,7 +984,17 @@ export function createBashTool(config?: BashToolConfig): Tool {
         !useShellMode && SHELL_WRAPPER_COMMANDS.has(basename(command).toLowerCase());
 
       // T6 gap #119: exec_command_begin / _end lifecycle emit.
-      const execCallId = `bash-${randomBytes(4).toString("hex")}`;
+      // Reuse the LLM tool-call id so the `exec_command_begin/_end`
+      // events collide with `tool_call_started/_completed` in
+      // `events-to-messages.ts`'s `toolMessageIndexByCallId` — otherwise
+      // the two callId namespaces produce two transcript rows for the
+      // same Bash invocation (the streaming row + the completed row).
+      // Mirrors openclaude where bash is a single tool_use_id pair with
+      // streaming via `progressMessages` keyed off the same id.
+      const execCallId =
+        typeof input.__callId === "string" && input.__callId.length > 0
+          ? input.__callId
+          : `bash-${randomBytes(4).toString("hex")}`;
       const execObservedCommand = useShellMode
         ? shellCommand
         : [command, ...execArgs].join(" ");

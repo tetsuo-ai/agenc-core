@@ -297,6 +297,7 @@ function TUIRoot({
     pendingRequests,
     permissionQueueOps,
     setStreaming,
+    model: liveModel,
   } =
     useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
@@ -399,9 +400,14 @@ function TUIRoot({
     }),
     [session],
   );
+  // Prefer the live AppState model (updated synchronously by `/model`)
+  // over the seeded prop so the status bar refreshes on the next render
+  // after a slash-command swap. Mirrors openclaude's
+  // `useAppState(s => s.mainLoopModel)` subscription pattern.
+  const effectiveModel = liveModel ?? model;
   const statusLineSession = useMemo(
-    () => buildStatusLineSession(session, mode, model),
-    [mode, model, session],
+    () => buildStatusLineSession(session, mode, effectiveModel),
+    [mode, effectiveModel, session],
   );
   const handleCycleMode = useCallback((): void => {
     const registry = session.services.permissionModeRegistry;

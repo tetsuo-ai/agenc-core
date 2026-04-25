@@ -59,7 +59,8 @@ import {
 } from "../keybindings/shortcutFormat.js";
 import { slashCommandOpensPicker } from "../picker-intents.js";
 import { useAgenCAppState } from "../state/AppState.js";
-import { theme } from "../theme.js";
+import { modeValueColor, theme } from "../theme.js";
+import type { PermissionMode } from "../../permissions/types.js";
 import {
   getPasteStore,
   type PasteEvent,
@@ -970,13 +971,17 @@ export const Composer: React.FC<ComposerProps> = ({
       mode as keyof typeof theme.modeIndicatorChar
     ] ?? theme.modeIndicatorChar.default;
   const promptPrefix = `${promptGlyph} `;
-  const accentColor = (
-    pendingRequestCount > 0
-      ? colors.warning
-      : isStreaming
-        ? colors.accent
-        : colors.primary
-  ) as Color;
+  // Single source of truth — same helper StatusLineConfig consumes — so
+  // the `◆`/`⚠` mode glyph never drifts in color across the UI. Default
+  // mode keeps its activity tint (ember while streaming, warning when an
+  // approval is pending); non-default modes always show their canonical
+  // mode color, with `warning` overriding only when there's a pending
+  // approval to draw the eye to.
+  const accentColor = modeValueColor(mode as PermissionMode, {
+    colors,
+    pendingRequestCount,
+    isStreaming,
+  }) as Color;
   const submitKey = getDisplayForCommand("chat:submit", "chat") ?? "Enter";
   const acceptSuggestionKey =
     getDisplayForCommand("chat:acceptSuggestion", "chat") ?? "Tab";

@@ -369,14 +369,25 @@ function renderIndentedText(
   color?: string,
 ): React.ReactElement[] {
   const normalized = preserveLines ? content : collapseOutput(content, 4, 2);
-  return normalized.split("\n").map((line, index) => (
-    <Box key={`line-${index}`} flexDirection="row">
-      <Text dim>{index === 0 ? "  ⎿  " : "     "}</Text>
-      <Text {...(color ? { color } : {})} dim>
-        {line.length > 0 ? line : " "}
-      </Text>
-    </Box>
-  ));
+  // Mirror openclaude's `MessageResponse` two-column flex layout
+  // (components/MessageResponse.tsx): one row, the `⎿  ` prefix rendered
+  // ONCE in a `flexShrink={0}` column, the entire content rendered as a
+  // single `<Text>` inside a `flexGrow={1}` column. Yoga places wrap
+  // continuation rows at the content column's `getComputedLeft()` (≈ col
+  // 5), so a long source line that wraps inherits the cell indent
+  // automatically — no per-line re-indent needed.
+  return [
+    <Box key="tool-result" flexDirection="row">
+      <Box flexShrink={0}>
+        <Text dim>{"  ⎿  "}</Text>
+      </Box>
+      <Box flexShrink={1} flexGrow={1}>
+        <Text {...(color ? { color } : {})} dim>
+          {normalized.length > 0 ? normalized : " "}
+        </Text>
+      </Box>
+    </Box>,
+  ];
 }
 
 function toolTitle(

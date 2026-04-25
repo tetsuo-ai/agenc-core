@@ -719,6 +719,7 @@ export class StreamingToolExecutor {
             dispatch: async () =>
               dispatchWithInjectedArgs(this.registry, dispatchCall, {
                 __onProgress: onProgress,
+                __callId: tool.toolCall.id,
               }),
           });
         } catch (err) {

@@ -855,6 +855,15 @@ function installTuiSessionContract(params: {
 
       const trimmed = message.trimStart();
       if (trimmed.startsWith("/")) {
+        // The TUI publishes `session.appStateBridge` from
+        // AgenCAppStateProvider so slash commands can refresh React-side
+        // state synchronously (e.g., `/model` updates the status bar
+        // immediately without waiting for the next turn boundary).
+        const appStateBridge = (
+          params.session as Session & {
+            appStateBridge?: { setModel?: (next: string) => void };
+          }
+        ).appStateBridge;
         const slash = await runSlashCommand(message, {
           session: params.session,
           cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
@@ -864,6 +873,7 @@ function installTuiSessionContract(params: {
           ),
           agencHome: params.agencHome,
           configStore: params.configStore,
+          ...(appStateBridge ? { appState: appStateBridge } : {}),
         });
         switch (slash.kind) {
           case "skip":

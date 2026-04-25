@@ -20,6 +20,18 @@ import type { Session } from "../session/session.js";
 import type { ConfigStore } from "../config/store.js";
 
 /**
+ * Optional bridge into the React-side AppState so slash commands can
+ * synchronously update reactive UI state (status bar, etc.) without
+ * waiting for a future turn boundary. Mirrors openclaude's
+ * `setAppState({ ...prev, mainLoopModel })` pattern at
+ * `commands/model/model.tsx:59-63`.
+ */
+export interface SlashCommandAppStateBridge {
+  /** Update the model slug shown in the status bar. */
+  readonly setModel?: (model: string) => void;
+}
+
+/**
  * Context passed to every slash-command invocation. Fields are
  * readonly; commands may consult `session` or `configStore` but must
  * not mutate them in place (use session's documented mutators).
@@ -36,6 +48,11 @@ export interface SlashCommandContext {
   readonly home: string;
   /** Resolved AgenC state directory (`AGENC_HOME` or `$HOME/.agenc`). */
   readonly agencHome?: string;
+  /**
+   * Bridge into React-side AppState. Populated by the dispatcher when
+   * running in a TUI context; absent in headless/test contexts.
+   */
+  readonly appState?: SlashCommandAppStateBridge;
 }
 
 /** Discriminated union of outcomes a command can return. */

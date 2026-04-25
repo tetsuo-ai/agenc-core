@@ -362,6 +362,14 @@ export interface AgenCAppStateValue {
   readonly session: SessionLike;
   readonly configStore: ConfigStoreLike;
   readonly isStreaming: boolean;
+  /**
+   * Active model slug surfaced to the status bar. Mirrors openclaude's
+   * `useAppState(s => s.mainLoopModel)` (`hooks/useMainLoopModel.ts:14`).
+   * Updated by the `/model` slash command via `setModel` so the status
+   * bar refreshes synchronously rather than waiting for the next turn's
+   * `consumePendingProviderSwitch` to land the authoritative value.
+   */
+  readonly model: string | undefined;
   /** Full live permission queue in FIFO order. */
   readonly permissionQueue: readonly PendingPermissionRequest[];
   /** Live queue of pending permission requests awaiting operator review. */
@@ -372,6 +380,12 @@ export interface AgenCAppStateValue {
   readonly queuedPermissionCount: number;
   /** Bump `isStreaming` on so the composer/status footer tracks active turns. */
   setStreaming: (next: boolean) => void;
+  /**
+   * Update the visible model slug (status bar). Slash-command path uses
+   * this for synchronous parity with openclaude `setAppState({...prev,
+   * mainLoopModel: model})` at `commands/model/model.tsx:59-63`.
+   */
+  setModel: (next: string) => void;
   /**
    * Queue ops exposed so non-React callers (evaluator, daemon bridge,
    * tests) can push pending requests without going through React
@@ -399,6 +413,15 @@ export function AgenCAppStateProvider({
   const [mode, setMode] = useState<PermissionMode>(
     () => session.services.permissionModeRegistry.current().mode,
   );
+  // Seed from the session's collaboration-mode model slug so the very
+  // first render already has the right value; `/model` then overwrites
+  // it synchronously (no waiting for the next turn-bound consume).
+  const [model, setModel] = useState<string | undefined>(() => {
+    const sc = (session as unknown as {
+      sessionConfiguration?: { collaborationMode?: { model?: string } };
+    }).sessionConfiguration;
+    return sc?.collaborationMode?.model;
+  });
   const [isStreaming, setStreaming] = useState<boolean>(false);
   const [permissionQueue, setPermissionQueue] = useState<
     readonly PendingPermissionRequest[]
@@ -433,6 +456,19 @@ export function AgenCAppStateProvider({
 
   const exposedOps = opsRef.current;
 
+  const pendingRequests = useMemo<readonly PendingPermissionRequest[]>(
+    () => (permissionQueue.length > 0 ? [permissionQueue[0]!] : []),
+    [permissionQueue],
+  );
+  const activePermissionRequestId = pendingRequests[0]?.requestId ?? null;
+
+  const memoSetStreaming = useCallback((next: boolean) => {
+    setStreaming(next);
+  }, []);
+  const memoSetModel = useCallback((next: string) => {
+    setModel(next);
+  }, []);
+
   useEffect(() => {
     // The live evaluator/runtime bridge needs a session-level handle it
     // can push into without importing React. Publish the provider-owned
@@ -443,13 +479,20 @@ export function AgenCAppStateProvider({
         approvalResolver?: ApprovalResolver;
       };
       permissionQueueOps?: PermissionQueueOps;
+      appStateBridge?: { setModel?: (next: string) => void };
     };
     const previous = sessionWithQueueOps.permissionQueueOps;
     const previousApprovalResolver =
       sessionWithQueueOps.services.approvalResolver;
+    const previousBridge = sessionWithQueueOps.appStateBridge;
     sessionWithQueueOps.permissionQueueOps = exposedOps;
     sessionWithQueueOps.services.approvalResolver =
       createTuiApprovalResolver(exposedOps, session);
+    // Publish the React-side setters so non-React callers (the slash
+    // dispatcher in `bin/agenc.ts`) can refresh AppState synchronously
+    // — mirrors openclaude's `setAppState({...prev, mainLoopModel})`
+    // pattern adapted to AgenC's session-as-bridge convention.
+    sessionWithQueueOps.appStateBridge = { setModel: memoSetModel };
     return () => {
       if (sessionWithQueueOps.permissionQueueOps === exposedOps) {
         sessionWithQueueOps.permissionQueueOps = previous;
@@ -461,18 +504,9 @@ export function AgenCAppStateProvider({
         sessionWithQueueOps.services.approvalResolver =
           previousApprovalResolver;
       }
+      sessionWithQueueOps.appStateBridge = previousBridge;
     };
-  }, [session, exposedOps]);
-
-  const pendingRequests = useMemo<readonly PendingPermissionRequest[]>(
-    () => (permissionQueue.length > 0 ? [permissionQueue[0]!] : []),
-    [permissionQueue],
-  );
-  const activePermissionRequestId = pendingRequests[0]?.requestId ?? null;
-
-  const memoSetStreaming = useCallback((next: boolean) => {
-    setStreaming(next);
-  }, []);
+  }, [session, exposedOps, memoSetModel]);
 
   const value = useMemo<AgenCAppStateValue>(
     () => ({
@@ -480,11 +514,13 @@ export function AgenCAppStateProvider({
       session,
       configStore,
       isStreaming,
+      model,
       permissionQueue,
       pendingRequests,
       activePermissionRequestId,
       queuedPermissionCount: permissionQueue.length,
       setStreaming: memoSetStreaming,
+      setModel: memoSetModel,
       permissionQueueOps: exposedOps,
     }),
     [
@@ -492,10 +528,12 @@ export function AgenCAppStateProvider({
       session,
       configStore,
       isStreaming,
+      model,
       permissionQueue,
       pendingRequests,
       activePermissionRequestId,
       memoSetStreaming,
+      memoSetModel,
       exposedOps,
     ],
   );

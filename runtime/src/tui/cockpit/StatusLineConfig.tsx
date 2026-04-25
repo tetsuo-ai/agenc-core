@@ -36,7 +36,7 @@ import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
 import type { Color } from "../ink/styles.js";
 import type { PermissionMode } from "../../permissions/types.js";
-import { theme } from "../theme.js";
+import { modeValueColor as themeModeValueColor, theme } from "../theme.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -257,22 +257,10 @@ function displayMode(mode: PermissionMode): string {
 }
 
 function modeValueColor(mode: PermissionMode): string {
-  switch (mode) {
-    case "acceptEdits":
-      return theme.colors.modeAcceptEdits;
-    case "plan":
-      return theme.colors.modePlan;
-    case "bypassPermissions":
-    case "dontAsk":
-      return theme.colors.modeBypass;
-    case "auto":
-      return theme.colors.modeAuto;
-    case "bubble":
-      return theme.colors.dim;
-    case "default":
-    default:
-      return theme.colors.modeDefault;
-  }
+  // Status line is mode-only — no activity tinting (no streaming spinner,
+  // no pending-approval warning override). Composer.tsx consumes the same
+  // helper with `pendingRequestCount` / `isStreaming` populated.
+  return themeModeValueColor(mode, { colors: theme.colors });
 }
 
 function formatTokenCount(raw: string): string {

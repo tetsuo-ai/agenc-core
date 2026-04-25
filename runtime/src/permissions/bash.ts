@@ -820,8 +820,90 @@ function evaluateSubcommand(
  * no redirection chars appear. Plan mode denies everything that isn't
  * read-only.
  */
+/**
+ * Quote-aware scan for any write-redirect operator. Matches openclaude's
+ * `hasShellRedirection` operator set at
+ * `src/tools/BashTool/modeValidation.ts:58-74`:
+ *   `>`, `>>`, `>|`, `&>`, `&>>`, `1>`, `1>>`, `2>`, `2>>`.
+ *
+ * Walks the command, skipping single- and double-quoted regions and
+ * backslash-escaped characters so tokens like `'a > b'` or `"a > b"`
+ * aren't treated as redirects. Returns true on the first match.
+ *
+ * Not detected (matches upstream's set):
+ *   - `<` input redirect alone — does not write.
+ *   - `<<` heredoc / `<<<` here-string — body is data, not a write target;
+ *     the dangerous `cat > foo << EOF` form is caught by the `>` rule.
+ *   - `<>` read-write — rare; also not in upstream's set.
+ *
+ * Not stripped: `> /dev/null`, `< /dev/null`, `2>&1`. Upstream strips
+ * these via `stripSafeRedirections` before its bare check; the AgenC
+ * plan-mode gate is conservative-by-design — even `cmd > /dev/null` is
+ * a write and plan mode is supposed to be reading.
+ */
+function hasWriteRedirection(command: string): boolean {
+  let i = 0;
+  const n = command.length;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < n) {
+    const c = command[i]!;
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+      i += 1;
+      continue;
+    }
+    if (inDouble) {
+      if (c === "\\" && i + 1 < n) {
+        i += 2;
+        continue;
+      }
+      if (c === '"') inDouble = false;
+      i += 1;
+      continue;
+    }
+    if (c === "'") {
+      inSingle = true;
+      i += 1;
+      continue;
+    }
+    if (c === '"') {
+      inDouble = true;
+      i += 1;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      i += 2;
+      continue;
+    }
+    // `&>`, `&>>`
+    if (c === "&" && command[i + 1] === ">") return true;
+    // `1>`, `1>>`, `2>`, `2>>` (only when the digit is preceded by
+    // whitespace / start so we don't false-positive on `cat foo1>bar`
+    // — upstream's shell-quote tokenizer naturally separates the digit,
+    // we approximate by requiring a preceding word-boundary char).
+    if (
+      (c === "1" || c === "2") &&
+      command[i + 1] === ">" &&
+      (i === 0 || /\s/.test(command[i - 1] ?? ""))
+    ) {
+      return true;
+    }
+    // `>`, `>>`, `>|`
+    if (c === ">") return true;
+    i += 1;
+  }
+  return false;
+}
+
 function looksReadOnly(command: string): boolean {
-  if (/[`$]|(^|\s)(>>?|<)\s/.test(command)) return false;
+  // Hard reject: any write redirection short-circuits the safe-command
+  // allowlist. `cat > /etc/passwd` does NOT become read-only just
+  // because `cat` is in SANDBOX_SAFE_COMMANDS. Mirrors openclaude
+  // `hasShellRedirection` (modeValidation.ts:58-74).
+  if (hasWriteRedirection(command)) return false;
+  // Command substitution / variable expansion is unbounded execution.
+  if (/[`$]/.test(command)) return false;
   const parts = splitCommand(command);
   if (parts.length === 0) return false;
   for (const part of parts) {

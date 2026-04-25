@@ -109,6 +109,64 @@ const DEFAULT_THEME: Theme = Object.freeze({
 }) as Theme;
 
 /**
+ * Inputs to {@link modeValueColor}. When the composer wants to also reflect
+ * activity (streaming / pending approvals) the caller passes the relevant
+ * flags; surfaces that only express mode (e.g., the StatusLine) leave both
+ * undefined.
+ */
+export interface ModeValueColorContext {
+  /** Pending approval count — non-zero overrides mode color with `warning`. */
+  readonly pendingRequestCount?: number;
+  /** Whether the model is currently streaming a response. */
+  readonly isStreaming?: boolean;
+  /**
+   * Theme colors to consult. Caller passes this so renderers can use
+   * the same theme instance they already have without re-importing.
+   */
+  readonly colors: Theme["colors"];
+}
+
+/**
+ * Single source of truth for "what color should this surface show for the
+ * given mode". The StatusLine and Composer leading-glyph render sites
+ * consume the same helper so the `◆`/`⚠`/`›` glyph never drifts in color
+ * across the UI.
+ *
+ * Color precedence (highest first):
+ *   1. `pendingRequestCount > 0`      → `warning`        (approval pending)
+ *   2. mode ∈ {plan, bypass, auto, acceptEdits, bubble} → mode's own token
+ *   3. mode === default                → `accent` while streaming, else `primary`
+ *
+ * Step 1 preserves the existing "approval-pending" affordance — it is
+ * the only state worth tinting on top of mode. Step 3 preserves the
+ * "ember while thinking" UX *only* in default mode, so non-default modes
+ * never get their mode color overwritten by the streaming tint.
+ */
+export function modeValueColor(
+  mode: PermissionMode,
+  ctx: ModeValueColorContext,
+): string {
+  const { colors } = ctx;
+  if ((ctx.pendingRequestCount ?? 0) > 0) return colors.warning;
+  switch (mode) {
+    case "acceptEdits":
+      return colors.modeAcceptEdits;
+    case "plan":
+      return colors.modePlan;
+    case "bypassPermissions":
+    case "dontAsk":
+      return colors.modeBypass;
+    case "auto":
+      return colors.modeAuto;
+    case "bubble":
+      return colors.dim;
+    case "default":
+    default:
+      return ctx.isStreaming ? colors.accent : colors.modeDefault;
+  }
+}
+
+/**
  * Narrow the shape of what we actually read off the watch primitives
  * module. Nothing in here is required — missing keys fall back to the
  * default palette silently.
