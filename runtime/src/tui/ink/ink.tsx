@@ -382,6 +382,16 @@ export default class Ink {
       this.options.stdout.write(ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
       this.resetFramesForAltScreen();
       this.needsEraseBeforePaint = true;
+      // Force the next render (and via prevFrameContaminated propagation,
+      // the one after that) to use the full-paint path. Resize triggers
+      // delayed measurement effects in ScrollBox / virtual-scroll that
+      // can re-fire mid-settle and produce a transient empty visible
+      // range — without a forced full repaint, the empty range gets
+      // diff'd against the previous (correct) buffer and clears the
+      // visible transcript. Forcing a full repaint means each post-resize
+      // frame re-asserts the React tree's content from scratch, so a
+      // transient empty render is overwritten by the next non-empty one.
+      this.forceFullRepaintNextFrame = true;
     }
 
     // Re-render the React tree with updated props so the context value changes.
@@ -839,15 +849,20 @@ export default class Ink {
     // selection overlay, that buffer has inverted cells. selActive/hlActive
     // are only ever true in alt-screen; in main-screen this is false→false.
     //
-    // Also propagate forceFullRepaint to the NEXT frame whenever this
-    // frame had a layout shift OR was itself a forced full repaint. The
-    // first frame after a layout change is at high risk of producing
-    // stale-cell drift (e.g. a removed-and-then-added React subtree, a
-    // popup closing, a streaming insert that flips heights). Flagging the
-    // next frame to also do a full repaint gives the renderer a second
-    // opportunity to reconverge with the terminal's physical state.
+    // Also propagate to the NEXT frame whenever this frame had a layout
+    // shift. The first frame after a layout change is at high risk of
+    // producing stale-cell drift (e.g. a removed-and-then-added React
+    // subtree, a popup closing, a streaming insert that flips heights).
+    // Flagging the next frame to also force-repaint gives the renderer a
+    // second chance to reconverge.
+    //
+    // CRITICAL: source the propagation from the layout-shift FACT, not
+    // from `forceFullRepaint` itself — forceFullRepaint reads
+    // prevFrameContaminated, so OR-ing them creates a self-sustaining
+    // loop where a single shift turns every subsequent frame into a full
+    // repaint forever.
     this.prevFrameContaminated =
-      selActive || hlActive || forceFullRepaint;
+      selActive || hlActive || didLayoutShift();
 
     // A ScrollBox has pendingScrollDelta left to drain — schedule the next
     // frame. MUST NOT call this.scheduleRender() here: we're inside a
