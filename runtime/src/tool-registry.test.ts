@@ -105,10 +105,15 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content)).toMatchObject({
-      exitCode: 0,
-      stdout: "agenc-codex",
-    });
+    // After the openclaude tool_result shape port, `content` is plain
+    // text (the model-facing surface) — same shape as openclaude's
+    // BashTool tool_result. Structured fields (exitCode, stdout,
+    // stderr) live on `metadata`, which the registry deliberately
+    // does NOT propagate to the LLM-facing dispatch result (metadata
+    // is in-process-only; `ToolResult.metadata` is documented as
+    // "not sent to LLMs"). Tests that need to assert the structured
+    // fields call `tool.execute()` directly.
+    expect(result.content).toBe("agenc-codex");
   });
 
   test("code mode adds visible exec/wait tools when enabled", () => {

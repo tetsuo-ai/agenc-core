@@ -1762,8 +1762,24 @@ function createEditFileTool(
 ): Tool {
   return {
     name: "system.editFile",
+    // Marked deferred: apply_patch is the canonical edit path. system.editFile
+    // remains available via system.searchTools for cases where a single
+    // string replacement is genuinely simpler than authoring a patch hunk —
+    // matches openclaude's "FileEditTool is the dedicated edit tool, BashTool
+    // is the fallback" precedence flipped to AgenC's apply_patch-primary
+    // model. Loaded on demand via select:system.editFile so the default
+    // visible catalog stays Codex-small.
+    metadata: {
+      family: "filesystem",
+      source: "builtin",
+      keywords: ["edit", "replace", "patch-fallback"],
+      preferredProfiles: ["coding"],
+      hiddenByDefault: true,
+      mutating: true,
+      deferred: true,
+    },
     description:
-      "Compatibility exact string replacement in an existing file. For source-code edits, prefer apply_patch. " +
+      "Single-string replacement in an existing file (apply_patch fallback). For source-code edits, prefer apply_patch — this tool exists for cases where a one-shot find/replace is genuinely simpler. " +
       "This only sends the diff (old_string → new_string), so it does not " +
       "expose the model to JSON-escape mistakes in nested string literals like #include directives, shell " +
       "single-quotes, or printf format strings. The file must exist and must have been read in this session " +

@@ -15,11 +15,9 @@ import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import { safeStringify } from "../types.js";
 import type {
   BashToolConfig,
   BashToolInput,
-  BashExecutionResult,
 } from "./types.js";
 import {
   parseDirectCommandLine,
@@ -98,7 +96,10 @@ const SHELL_PREFIX_COMMANDS = new Set([
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 
 function errorResult(message: string): ToolResult {
-  return { content: safeStringify({ error: message }), isError: true };
+  // Plain-text content; structured fields (none here) absent. Mirrors
+  // openclaude's `tool_result` shape — errors are strings the model can
+  // read directly without an extra JSON.parse hop.
+  return { content: message, isError: true };
 }
 
 function toText(value: unknown): string {
@@ -394,25 +395,35 @@ function runSpawnedCommand(params: {
         );
       }
 
-      const result: BashExecutionResult = {
-        exitCode,
-        stdout: stdoutResult.text,
-        stderr: stderrResult.text,
-        timedOut,
-        durationMs,
-        truncated: stdoutResult.truncated || stderrResult.truncated,
-      };
-
+      // Flatten content to plain text (stdout, then stderr if non-empty)
+      // so the model sees the raw command output instead of a JSON
+      // string it has to re-parse. Mirrors openclaude `BashTool`
+      // `tool_result.content` shape (plain string, structured flags on
+      // the result envelope). Structured fields move to `metadata`
+      // where the inner emitEnd observer + ToolResult consumers can
+      // still read them.
+      const stdoutText = stdoutResult.text;
+      const stderrText = stderrResult.text;
+      const content =
+        stderrText.length > 0
+          ? stdoutText.length > 0
+            ? `${stdoutText}\n${stderrText}`
+            : stderrText
+          : stdoutText;
       resolve({
-        content: safeStringify(result),
+        content,
         isError: isError || undefined,
         metadata: {
           command: params.metadataCommand,
           args: params.metadataArgs,
           cwd: params.cwd,
           shellMode: params.shellMode,
+          exitCode,
+          stdout: stdoutText,
+          stderr: stderrText,
           timedOut,
           durationMs,
+          truncated: stdoutResult.truncated || stderrResult.truncated,
         },
       });
     };
@@ -431,22 +442,19 @@ function runSpawnedCommand(params: {
       cleanup("error");
       const durationMs = Date.now() - params.startTime;
       resolve({
-        content: safeStringify({
-          error: err.message,
-          exitCode: null,
-          stdout: "",
-          stderr: err.message,
-          timedOut: false,
-          durationMs,
-          truncated: false,
-        }),
+        content: err.message,
         isError: true,
         metadata: {
           command: params.metadataCommand,
           args: params.metadataArgs,
           cwd: params.cwd,
           shellMode: params.shellMode,
+          exitCode: null,
+          stdout: "",
+          stderr: err.message,
+          timedOut: false,
           durationMs,
+          truncated: false,
         },
       });
     });
@@ -747,8 +755,24 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
   return {
     name: "system.bash",
+    // Marked deferred: exec_command is the canonical shell tool (codex
+    // parity — codex's `local_shell` + `write_stdin` is what AgenC's
+    // `exec_command` + `write_stdin` mirrors). system.bash stays
+    // available via system.searchTools for callers that genuinely
+    // need the direct-mode (command + args) split or the dual-mode
+    // semantics, but defaults to off to keep the visible catalog
+    // Codex-small and avoid duplicate-tool confusion.
+    metadata: {
+      family: "terminal",
+      source: "builtin",
+      keywords: ["bash", "shell", "exec-fallback"],
+      preferredProfiles: ["coding"],
+      hiddenByDefault: true,
+      mutating: true,
+      deferred: true,
+    },
     description:
-      "Execute commands in two modes:\n" +
+      "Direct-or-shell command runner (exec_command fallback). Prefer exec_command for general shell work — this tool exists for cases that need explicit `command` + `args` array semantics or the dual-mode shell/direct split.\n" +
       '1. **Direct mode** (command + args): Set `command` to a binary (e.g. "git") and `args` to an array of flags/operands. Uses execFile directly.\n' +
       '2. **Shell mode** (command only, no args): Set `command` to a full shell string (e.g. "ls -la | grep foo"). Pipes, redirects, chaining, and backgrounding are supported.\n\n' +
       "NEVER use this tool to bypass verification: no `--no-verify` on commits, no `|| true` wrapping around failing tests, no rewriting a failing test into `exit 0`. If a test fails, read the error and fix the real cause. If a pre-commit or CI hook fails, investigate the cause and create a new commit with the fix — do not skip the hook. If the verification harness itself is genuinely wrong, stop and explain the discrepancy in your reply so the user can review before you modify the harness. Attempts to overwrite a verification harness that just failed in this turn will be refused by the runtime.",
@@ -952,22 +976,19 @@ export function createBashTool(config?: BashToolConfig): Tool {
       const cwdValidationError = validateWorkingDirectory(cwd);
       if (cwdValidationError) {
         return {
-          content: safeStringify({
-            error: cwdValidationError,
-            exitCode: null,
-            stdout: "",
-            stderr: cwdValidationError,
-            timedOut: false,
-            durationMs: 0,
-            truncated: false,
-          }),
+          content: cwdValidationError,
           isError: true,
           metadata: {
             command,
             args: execArgs,
             cwd,
             shellMode: useShellMode,
+            exitCode: null,
+            stdout: "",
+            stderr: cwdValidationError,
+            timedOut: false,
             durationMs: 0,
+            truncated: false,
           },
         };
       }
@@ -1005,27 +1026,27 @@ export function createBashTool(config?: BashToolConfig): Tool {
       });
       const emitEnd = (result: ToolResult): ToolResult => {
         if (!execObserver?.onEnd) return result;
-        // Parse the exit/stdout/stderr out of the serialized result.
-        let exitCode = 0;
-        let stdout: string | undefined;
-        let stderr: string | undefined;
-        try {
-          const parsed = JSON.parse(result.content) as {
-            exitCode?: number | null;
-            stdout?: string;
-            stderr?: string;
-          };
-          exitCode = typeof parsed.exitCode === "number" ? parsed.exitCode : result.isError ? 1 : 0;
-          stdout = parsed.stdout;
-          stderr = parsed.stderr;
-        } catch {
-          exitCode = result.isError ? 1 : 0;
-        }
+        // Read the structured fields directly from metadata — they're
+        // populated alongside the plain-text content above. (Earlier
+        // versions JSON.parsed the content blob; that no longer works
+        // since content is plain text now, matching openclaude's
+        // tool_result shape.)
+        const md = (result.metadata ?? {}) as {
+          exitCode?: number | null;
+          stdout?: string;
+          stderr?: string;
+        };
+        const exitCode =
+          typeof md.exitCode === "number"
+            ? md.exitCode
+            : result.isError
+              ? 1
+              : 0;
         execObserver.onEnd!({
           callId: execCallId,
           exitCode,
-          ...(stdout !== undefined ? { stdout } : {}),
-          ...(stderr !== undefined ? { stderr } : {}),
+          ...(md.stdout !== undefined ? { stdout: md.stdout } : {}),
+          ...(md.stderr !== undefined ? { stderr: md.stderr } : {}),
           durationMs: Date.now() - startTime,
         });
         return result;
@@ -1140,25 +1161,27 @@ export function createBashTool(config?: BashToolConfig): Tool {
                 );
               }
 
-              const result: BashExecutionResult = {
-                exitCode,
-                stdout: stdoutResult.text,
-                stderr: stderrResult.text,
-                timedOut: isTimeout,
-                durationMs,
-                truncated: stdoutResult.truncated || stderrResult.truncated,
-              };
-
+              const directErrorContent =
+                stderrResult.text.length > 0
+                  ? stdoutResult.text.length > 0
+                    ? `${stdoutResult.text}\n${stderrResult.text}`
+                    : stderrResult.text
+                  : stdoutResult.text || fallbackErrorText;
               resolve({
-                content: safeStringify(result),
+                content: directErrorContent,
                 isError: true,
                 metadata: {
                   command,
                   args: execArgs,
                   cwd,
                   shellMode: false,
+                  exitCode,
+                  stdout: stdoutResult.text,
+                  stderr: stderrResult.text,
                   timedOut: isTimeout,
                   durationMs,
+                  truncated:
+                    stdoutResult.truncated || stderrResult.truncated,
                 },
               });
               return;
@@ -1169,23 +1192,26 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
             logger.debug(`Bash tool success (${durationMs}ms): ${logCmd}`);
 
-            const result: BashExecutionResult = {
-              exitCode: 0,
-              stdout: stdoutResult.text,
-              stderr: stderrResult.text,
-              timedOut: false,
-              durationMs,
-              truncated: stdoutResult.truncated || stderrResult.truncated,
-            };
-
+            const directContent =
+              stderrResult.text.length > 0
+                ? stdoutResult.text.length > 0
+                  ? `${stdoutResult.text}\n${stderrResult.text}`
+                  : stderrResult.text
+                : stdoutResult.text;
             resolve({
-              content: safeStringify(result),
+              content: directContent,
               metadata: {
                 command,
                 args: execArgs,
                 cwd,
                 shellMode: false,
+                exitCode: 0,
+                stdout: stdoutResult.text,
+                stderr: stderrResult.text,
+                timedOut: false,
                 durationMs,
+                truncated:
+                  stdoutResult.truncated || stderrResult.truncated,
               },
             });
           },

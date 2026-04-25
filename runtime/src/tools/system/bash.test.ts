@@ -50,8 +50,24 @@ function createFakeChild() {
   return child;
 }
 
-function parseContent(result: { content: string }): Record<string, unknown> {
-  return JSON.parse(result.content) as Record<string, unknown>;
+function parseContent(result: {
+  content: string;
+  metadata?: Record<string, unknown>;
+}): Record<string, unknown> {
+  // After the openclaude tool_result shape port, structured fields (exitCode,
+  // stdout, stderr, timedOut, durationMs, truncated) live on `metadata`
+  // and `content` is plain text. Historical assertions used JSON.parse(
+  // result.content) and inspected `.error` / `.exitCode` / etc.; rebuild
+  // the same shape from metadata + content for continuity.
+  const md = (result.metadata ?? {}) as Record<string, unknown>;
+  return {
+    ...md,
+    content: result.content,
+    // For pre-port tests that asserted on `parsed.error` (the old
+    // errorResult had `JSON.stringify({error: <message>})` for content);
+    // surface the plain-text content there too.
+    error: result.content,
+  };
 }
 
 async function expectShellModeExecutionError(

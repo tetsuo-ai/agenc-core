@@ -30,6 +30,7 @@ import {
   createWriteStdinTool,
   createPlanningTools,
   createApplyPatchTool,
+  createSleepTool,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
@@ -400,6 +401,7 @@ export function buildToolRegistry(
     createApplyPatchTool({
       allowedPaths: [options.workspaceRoot],
     }),
+    createSleepTool(),
     ...createPlanningTools({
       ...(options.workflowController !== undefined
         ? { workflowController: options.workflowController }

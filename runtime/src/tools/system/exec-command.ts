@@ -237,17 +237,28 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             : {}),
         });
         const isError = output.exitCode !== null && output.exitCode !== 0;
+        // Flatten the result content to plain text so the model sees the
+        // raw stdout/stderr instead of a JSON-encoded blob it has to
+        // re-parse. Mirrors openclaude's `BashTool` `tool_result.content`
+        // shape (plain string, structured flags on the result envelope).
+        // Structured fields (exitCode, durationMs, timedOut, etc.) move
+        // into `metadata` where in-process consumers can still read them.
         return {
-          content: safeStringify(output),
+          content: output.output,
           isError: isError || undefined,
           metadata: {
             command: cmd,
             cwd: workdir ?? config?.cwd ?? process.cwd(),
             tty: tty ?? false,
-            ...(output.process_id !== undefined
-              ? { processId: output.process_id }
-              : {}),
+            exitCode: output.exitCode,
+            stdout: output.stdout,
+            stderr: output.stderr,
+            timedOut: output.timedOut,
+            truncated: output.truncated,
             durationMs: output.durationMs,
+            ...(output.process_id !== undefined
+              ? { processId: output.process_id, sessionId: output.process_id }
+              : {}),
           },
         };
       } catch (error) {

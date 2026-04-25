@@ -60,6 +60,8 @@ export {
   type WriteStdinToolConfig,
 } from "./write-stdin.js";
 
+export { createSleepTool } from "./sleep.js";
+
 export {
   type BashToolConfig,
   type BashToolInput,
