@@ -30,7 +30,26 @@ An update may be immediately followed by:
 
 *** Move to: <new path>
 
-Then one or more hunks, each introduced by @@. Within a hunk, every line starts with a space, -, or +.
+Then one or more hunks, each introduced by @@. Within a hunk, EVERY line MUST start with one of these three single-character prefixes:
+  - a single space (\` \`) for an unchanged context line
+  - a minus (\`-\`) for a line being removed
+  - a plus (\`+\`) for a line being added
+
+A context line that already starts with \`#\`, \`/\`, \`*\`, \`-\`, \`+\`, or any other character STILL needs the leading space — the prefix is what tells the parser it's a hunk line, not a header. Example showing why this matters:
+
+  WRONG (omits space prefix on context lines):
+    @@
+    #ifndef FOO_H
+    -#define FOO_H 1
+    +#define FOO_H 2
+    #endif
+
+  RIGHT (every hunk line has a single-char prefix):
+    @@
+     #ifndef FOO_H
+    -#define FOO_H 1
+    +#define FOO_H 2
+     #endif
 
 The grammar is:
 Patch := Begin { FileOp } End
@@ -337,8 +356,17 @@ function parseUpdateChunk(
       break;
     }
 
+    // Patch envelope markers terminate the current hunk. Anything starting
+    // with `*** ` is one of: End Patch, Add File, Delete File, Update File,
+    // Move to. `@@` starts a new hunk. Both end the current hunk parse.
+    if (line.startsWith("*** ") || line.startsWith("@@")) {
+      break;
+    }
+
     const prefix = line[0];
     if (prefix === undefined) {
+      // Empty line — treat as a blank context line (matches the historical
+      // behavior and the model's intuition that blank lines are context).
       oldLines.push("");
       newLines.push("");
       parsedLines += 1;
@@ -361,12 +389,19 @@ function parseUpdateChunk(
       continue;
     }
 
-    if (parsedLines === 0) {
-      throw new Error(
-        `Invalid patch hunk on line ${lineNumber + 1}: Unexpected line found in update hunk: '${line}'. Every line should start with ' ' (context line), '+' (added line), or '-' (removed line)`,
-      );
-    }
-    break;
+    // Lenient recovery: a line inside a hunk that doesn't start with one of
+    // the canonical prefixes ' ', '+', '-' AND isn't a `*** ...` / `@@`
+    // marker is the most common patch-authoring mistake — the model wrote
+    // a context line and forgot the leading space. Codex/upstream strictly
+    // rejects, but in practice that rejection just makes the model give up
+    // and rewrite the whole file. Treat the line as context with an
+    // implicit space prefix; the seek path's whitespace-tolerant fallbacks
+    // will validate it against the file. If the content is genuinely
+    // garbage, the seek will fail with the actionable error message
+    // (file context + hints) and the model can correct on retry.
+    oldLines.push(line);
+    newLines.push(line);
+    parsedLines += 1;
   }
 
   return {

@@ -452,6 +452,40 @@ describe("apply_patch tool", () => {
     expect(written).toBe("alpha\r\nBETA\r\ngamma\r\n");
   });
 
+  test("recovers from missing space prefix on context lines (lenient parse)", async () => {
+    // A common model authoring mistake: writing context lines without
+    // the leading space that the patch grammar requires. Strict parsers
+    // reject this with "Every line should start with ' ', '+', or '-'",
+    // and the model usually responds by giving up and rewriting the
+    // whole file. Lenient parse treats unprefixed lines as context with
+    // an implicit space; the seek path's whitespace-tolerant fallbacks
+    // validate the match.
+    await writeFile(
+      join(root, "ast.h"),
+      "#ifndef AGENC_AST_H\n#define AGENC_AST_H 1\n#endif\n",
+      "utf8",
+    );
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: ast.h\n" +
+        "@@\n" +
+        // Note: NO leading space on context lines — the model's typical mistake.
+        "#ifndef AGENC_AST_H\n" +
+        "-#define AGENC_AST_H 1\n" +
+        "+#define AGENC_AST_H 2\n" +
+        "#endif\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const written = await readFile(join(root, "ast.h"), "utf8");
+    expect(written).toBe("#ifndef AGENC_AST_H\n#define AGENC_AST_H 2\n#endif\n");
+  });
+
   test("seek failure error includes file context and hints", async () => {
     await writeFile(
       join(root, "target.txt"),
