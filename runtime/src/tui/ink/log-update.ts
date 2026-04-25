@@ -67,8 +67,19 @@ export class LogUpdate {
     const lines: string[] = []
     let currentStyles: AnsiCode[] = []
     let currentHyperlink: Hyperlink = undefined
+    // Erase-In-Line (CSI K, default mode 0) clears from cursor to end of
+    // line. Prepending it to every row guarantees the terminal's existing
+    // row contents are wiped before we paint — without this, an empty row
+    // (cells all char=' ') would `trimEnd` to an empty string and the
+    // terminal would keep whatever was there from a previous frame. That
+    // was the leak behind the visible "doubled composer" / "stale
+    // placeholder row" symptom users saw after the layout shifted from
+    // empty-buffer (placeholder visible) to typed-buffer (placeholder
+    // gone): the row that USED to hold the placeholder no longer had any
+    // content from the React tree, so the full-paint never overwrote it.
+    const ERASE_LINE = '\x1b[2K'
     for (let y = 0; y < screen.height; y++) {
-      let line = ''
+      let line = ERASE_LINE
       for (let x = 0; x < screen.width; x++) {
         const cell = cellAt(screen, x, y)
         if (cell && cell.width !== CellWidth.SpacerTail) {
