@@ -79,10 +79,37 @@ export function buildWorkflowToolController(
     emitPlanExited: () => {
       const session = options.getSession();
       if (session === null) return;
+      // Use the live turn id from the active turn — NOT the tool name.
+      // Earlier code hardcoded `turnId: "ExitPlanMode"`, which leaked
+      // the tool name into `events-to-messages.ts:ensureTurnId`'s
+      // mutating side effect (`currentTurnId = turnId`), contaminating
+      // every subsequent assistant row in the same turn with the bogus
+      // turn id "ExitPlanMode" — causing each filtered "Calling tool."
+      // lifecycle group to fail the per-turn coalesce check and
+      // produce a stray `● .` row in the transcript.
+      // Mirrors the canonical emitPlanExited at session/plan-mode.ts:442
+      // which uses `resolveTurnId(ctx)`.
+      const activeTurnId =
+        (session as unknown as {
+          activeTurn?: { unsafePeek?: () => { turnId?: string } | null };
+          conversationId?: string;
+        }).activeTurn?.unsafePeek?.()?.turnId;
+      const sessionId = (session as unknown as { conversationId?: string })
+        .conversationId;
+      // turnId is a required field on the event payload. Prefer the
+      // active turn id (real conversation turn); fall back to the
+      // session's conversationId so downstream reducers always see a
+      // stable, non-empty value. NEVER use a tool-name string here.
+      const turnId =
+        typeof activeTurnId === "string" && activeTurnId.length > 0
+          ? activeTurnId
+          : typeof sessionId === "string" && sessionId.length > 0
+            ? sessionId
+            : "plan-exited";
       emit(session, {
         type: "plan_exited",
         payload: {
-          turnId: "ExitPlanMode",
+          turnId,
           timestamp: Date.now(),
         },
       });
@@ -91,8 +118,22 @@ export function buildWorkflowToolController(
       const session = options.getSession();
       if (session === null) return;
       const timestamp = Date.now();
-      const turnId = "update_plan";
-      const planItemId = "update_plan-current";
+      // Same fix as emitPlanExited above — use the active turn id, not
+      // the hardcoded tool-name string "update_plan".
+      const activeTurnId =
+        (session as unknown as {
+          activeTurn?: { unsafePeek?: () => { turnId?: string } | null };
+          conversationId?: string;
+        }).activeTurn?.unsafePeek?.()?.turnId;
+      const sessionId = (session as unknown as { conversationId?: string })
+        .conversationId;
+      const turnId =
+        typeof activeTurnId === "string" && activeTurnId.length > 0
+          ? activeTurnId
+          : typeof sessionId === "string" && sessionId.length > 0
+            ? sessionId
+            : "update-plan";
+      const planItemId = `update_plan-${turnId}`;
       emit(session, {
         type: "plan_started",
         payload: {

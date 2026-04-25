@@ -131,6 +131,70 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("plan_exited with a bogus payload turnId does not contaminate currentTurnId (regression: stray dot rows)", () => {
+    // Real failure mode from a `--yolo + /plan` session: the
+    // workflow-controller's `emitPlanExited` hardcoded
+    // `turnId: "ExitPlanMode"` on the event payload. Pre-fix,
+    // `ensureTurnId` had a side effect that wrote that bogus value
+    // into `currentTurnId`, contaminating every subsequent assistant
+    // row in the same turn — and the per-turn `lastAssistantIndexByTurn`
+    // map keyed off the now-corrupt id, so each filtered "Calling tool."
+    // lifecycle group leaked a stray `● .` row into the transcript.
+    //
+    // Post-fix:
+    //   1) `emitPlanExited` uses the real active turn id (workflow-controller).
+    //   2) `ensureTurnId` is a pure function — never mutates
+    //      `currentTurnId`. Only the `turn_started` handler advances
+    //      the canonical turn id.
+    //
+    // This test simulates the broken event stream (bogus payload turnId)
+    // and asserts that subsequent assistant rows keep the real turn id
+    // and that no stray `● .` rows leak through the lifecycle filter.
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "real-turn-id" } },
+      {
+        type: "tool_call_started",
+        payload: { callId: "call-exit", toolName: "ExitPlanMode", args: "{}" },
+      },
+      // Buggy upstream emitter — payload.turnId is the tool name, not
+      // the conversation turn. Even if a runtime regresses, the reducer
+      // must not contaminate currentTurnId from it.
+      { type: "plan_exited", payload: { turnId: "ExitPlanMode" } },
+      {
+        type: "tool_call_completed",
+        payload: { callId: "call-exit", result: "{}", isError: false },
+      },
+      // A lifecycle "Calling tool." group — must be filtered cleanly.
+      { type: "agent_message_delta", payload: { delta: "Calling" } },
+      { type: "agent_message_delta", payload: { delta: " tool" } },
+      { type: "agent_message_delta", payload: { delta: "." } },
+      {
+        type: "tool_call_started",
+        payload: { callId: "call-2", toolName: "system.readFile", args: "{}" },
+      },
+      { type: "agent_message", payload: { message: "Calling tool." } },
+      {
+        type: "tool_call_completed",
+        payload: { callId: "call-2", result: '"ok"', isError: false },
+      },
+      // Real final message after the tool work.
+      { type: "agent_message_delta", payload: { delta: "All done" } },
+      { type: "agent_message", payload: { message: "All done" } },
+    ];
+
+    const messages = eventsToMessages(events);
+    const assistantRows = messages.filter((m) => m.kind === "assistant");
+    // Exactly one assistant row — no stray "." rows from the lifecycle
+    // group.
+    expect(assistantRows).toHaveLength(1);
+    expect(assistantRows[0]).toMatchObject({
+      content: "All done",
+      isComplete: true,
+      // Critical: turn id is the real one, NOT "ExitPlanMode".
+      turnId: "real-turn-id",
+    });
+  });
+
   test("hides provider lifecycle assistant chatter in the normal transcript", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-tools" } },

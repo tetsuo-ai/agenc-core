@@ -259,14 +259,16 @@ export function isSilentTranscriptToolName(toolName: string | undefined): boolea
 }
 
 function isAssistantLifecycleChatter(message: string): boolean {
+  // Strict equality only. Earlier code also matched the same string with
+  // its trailing period stripped ("calling tool" matched "calling tool.")
+  // — which let the streaming filter drop a delta-group at the "tool"
+  // delta and then leak the final "." delta as a standalone assistant
+  // row (visible as a stray `● .` between tool cells). Upstream models
+  // always emit the full "Calling tool." with the period; require it.
   const normalized = normalizeAssistantLifecycleCandidate(message);
-  return ASSISTANT_LIFECYCLE_CHATTER.some((candidate) => {
-    if (normalized === candidate) return true;
-    return (
-      candidate.endsWith(".") &&
-      normalized === candidate.slice(0, Math.max(0, candidate.length - 1))
-    );
-  });
+  return ASSISTANT_LIFECYCLE_CHATTER.some(
+    (candidate) => normalized === candidate,
+  );
 }
 
 function normalizeAssistantLifecycleCandidate(message: string): string {
@@ -466,10 +468,21 @@ export function eventsToMessages(
     activeAssistantIndex = null;
   };
 
+  /**
+   * Resolve the turn id to attach to a message row.
+   *
+   * Pure — does NOT mutate `currentTurnId`. Earlier code did mutate as a
+   * side effect, which meant any non-turn event carrying its own
+   * `payload.turnId` (e.g. a `plan_exited` event whose payload had
+   * `turnId: "ExitPlanMode"` from a buggy emitter) would corrupt the
+   * global turn id and tag every subsequent assistant row with the
+   * wrong identity. Turn-id mutation is now reserved for the
+   * `turn_started` handler (line 684), the only canonical site that
+   * advances the conversation turn.
+   */
   const ensureTurnId = (turnId?: string | null): string => {
     if (typeof turnId === "string" && turnId.length > 0) {
-      currentTurnId = turnId;
-      return currentTurnId;
+      return turnId;
     }
     return currentTurnId;
   };
