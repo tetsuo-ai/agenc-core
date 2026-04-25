@@ -176,6 +176,11 @@ export default class Ink {
   // one full-render frame; steady-state frames after clear it and regain
   // the blit + narrow-damage fast path.
   private prevFrameContaminated = false;
+  // External escape hatch for forcing the next render to be a full-screen
+  // repaint instead of an incremental diff. Set by code paths that know
+  // they bypassed the renderer (raw stdout writes, terminal mode toggles,
+  // post-pty resize, focus regain). Cleared after one frame.
+  forceFullRepaintNextFrame = false;
   // Set by handleResize: prepend ERASE_SCREEN to the next onRender's patches
   // INSIDE the BSU/ESU block so clear+paint is atomic. Writing ERASE_SCREEN
   // synchronously in handleResize would leave the screen blank for the ~80ms
@@ -636,12 +641,36 @@ export default class Ink {
     }
     const tDiff = performance.now();
     const rewriteMainScreen = !this.altScreenActive && shouldUseMainScreenRewrite();
+    // Force a full-screen repaint when our model of the previous frame
+    // can't be trusted to match what the terminal actually shows. The diff
+    // path skips cells where prev === next; if those cells drifted on the
+    // physical terminal (overlay leftovers, external writes, focus changes
+    // re-painting), the drift survives any number of incremental frames.
+    // Triggers handled here:
+    //   - prevFrameContaminated: selection/highlight overlay was applied
+    //     to the prev buffer post-render, OR the buffer was reset/blanked.
+    //   - selActive || hlActive: overlay active this frame, so the next
+    //     frame after this one will need a clean re-paint anyway — paint
+    //     this one fully too so the terminal's physical state matches the
+    //     overlay we just applied.
+    //   - didLayoutShift(): a sibling resize/spinner toggle moved cells
+    //     around; per-node damage tracking can miss the trailing edge.
+    //   - this.forceFullRepaintNextFrame: external escape hatch set by
+    //     code paths that know they bypassed the renderer (raw stdout
+    //     writes, terminal mode changes, focus regain).
+    const forceFullRepaint =
+      this.prevFrameContaminated ||
+      selActive ||
+      hlActive ||
+      didLayoutShift() ||
+      this.forceFullRepaintNextFrame;
+    this.forceFullRepaintNextFrame = false;
     const diff = this.log.render(prevFrame, frame, this.altScreenActive,
     // DECSTBM needs BSU/ESU atomicity — without it the outer terminal
     // renders the scrolled-but-not-yet-repainted intermediate state.
     // tmux is the main case (re-emits DECSTBM with its own timing and
     // doesn't implement DEC 2026, so SYNC_OUTPUT_SUPPORTED is false).
-    SYNC_OUTPUT_SUPPORTED, rewriteMainScreen);
+    SYNC_OUTPUT_SUPPORTED, rewriteMainScreen, forceFullRepaint);
     const diffMs = performance.now() - tDiff;
     // Swap buffers
     this.backFrame = this.frontFrame;

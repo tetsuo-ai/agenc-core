@@ -126,8 +126,20 @@ export class LogUpdate {
     altScreen = false,
     decstbmSafe = true,
     rewriteMainScreen = false,
+    forceFullRepaint = false,
   ): Diff {
     if (!this.options.isTTY) {
+      return this.renderFullFrame(next)
+    }
+    // Forced full repaint: bypass the prev->next diff path entirely and
+    // re-emit every visible cell. Used when the terminal's actual state
+    // can't be trusted to match `prev` (overlay activity, external writes,
+    // resize, alt-screen toggle, focus regain). Diff would otherwise skip
+    // any cell where prev === next, so any drift between our model and the
+    // physical terminal stays drifted forever. Full repaint reasserts
+    // physical truth by writing every cell from the React-rendered next
+    // buffer, regardless of equality.
+    if (forceFullRepaint) {
       return this.renderFullFrame(next)
     }
 
