@@ -14,11 +14,58 @@ function buildExtractPrompt(transcript: string): string {
   return [
     "You are extracting durable memories from the current session. Input: the last N assistant+user messages. Output: JSON array of candidates with shape:",
     "[ { \"name\": \"<slug>\", \"description\": \"<one-line>\", \"type\": \"user\"|\"feedback\"|\"project\"|\"reference\", \"body\": \"<the memory content>\" } ]",
-    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references. Output ONLY valid JSON, no prose.",
+    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references.",
+    "Output ONLY a single JSON array. No prose before or after. No markdown code fences (no ```json, no ```). The very first character must be `[` and the very last must be `]`.",
     "",
     "--- TRANSCRIPT ---",
     transcript,
   ].join("\n");
+}
+
+/**
+ * Locate the first balanced top-level JSON array in `text` and return its
+ * substring, or null if none is found. Walks string literals (with backslash
+ * escapes) so brackets inside quoted strings don't unbalance the scan.
+ *
+ * Mirrors codex's tolerant input parsing in memory_trace.rs:128-145, which
+ * skips non-JSON-starting lines and parses the first JSON-looking value it
+ * finds. We extract a single top-level array because the extractor prompt
+ * specifies an array and we only ever consume one.
+ */
+function extractFirstJsonArray(text: string): string | null {
+  let i = 0;
+  while (i < text.length && text[i] !== "[") i += 1;
+  if (i >= text.length) return null;
+  const start = i;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "[") {
+      depth += 1;
+    } else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
 }
 
 const EXTRACT_MEMORY_TYPES: ReadonlySet<string> = new Set([
@@ -32,7 +79,27 @@ export function parseExtractedMemoryCandidates(
   raw: string,
   memoryDir: string,
 ): readonly MemoryCandidate[] {
-  const parsed = JSON.parse(raw);
+  // Two-stage parse, matching codex's tolerant input pattern: try the whole
+  // string first; on failure, scan for the first balanced JSON array and
+  // parse that. Handles the common model failure modes:
+  //   1. JSON followed by trailing prose ("[...]\nThese are the memories...")
+  //   2. Markdown-fenced JSON ("```json\n[...]\n```")
+  //   3. JSON preceded by a short preface ("Here is the JSON:\n[...]")
+  // If both passes fail, throw the original parse error so the caller can
+  // surface it to telemetry and we don't silently swallow a real malformed
+  // response.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (firstErr) {
+    const candidate = extractFirstJsonArray(raw);
+    if (candidate === null) throw firstErr;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      throw firstErr;
+    }
+  }
   if (!Array.isArray(parsed)) {
     throw new Error("extractor response was not a JSON array");
   }

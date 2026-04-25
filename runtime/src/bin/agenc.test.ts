@@ -1093,6 +1093,37 @@ describe("parseExtractedMemoryCandidates", () => {
   it("throws when top-level is not an array", () => {
     expect(() => parseExtractedMemoryCandidates("{}", "/mem")).toThrow();
   });
+
+  it("recovers when the model appends prose after the JSON array", () => {
+    // Real failure mode from the wild: position 3 (line 2 column 1) means
+    // JSON.parse consumed `[]\n` and then choked on prose on line 2.
+    const raw = `[{"name":"foo","description":"d","type":"user","body":"x x x"}]
+These are the memories I extracted.`;
+    const out = parseExtractedMemoryCandidates(raw, "/mem");
+    expect(out.length).toBe(1);
+    expect(out[0]!.frontmatter.name).toBe("foo");
+  });
+
+  it("recovers when the model wraps the JSON in a markdown fence", () => {
+    const raw = '```json\n[{"name":"bar","description":"d","type":"feedback","body":"abc"}]\n```';
+    const out = parseExtractedMemoryCandidates(raw, "/mem");
+    expect(out.length).toBe(1);
+    expect(out[0]!.frontmatter.name).toBe("bar");
+  });
+
+  it("ignores brackets inside string literals when locating the array", () => {
+    // The fallback bracket-balance walk has to honor string literals so
+    // tokens like `"]"` don't close the array prematurely.
+    const raw = 'Sure, here you go:\n[{"name":"baz","description":"has ] and \\" inside","type":"project","body":"y y y"}]';
+    const out = parseExtractedMemoryCandidates(raw, "/mem");
+    expect(out.length).toBe(1);
+    expect(out[0]!.frontmatter.name).toBe("baz");
+  });
+
+  it("throws the original error when no JSON array can be found", () => {
+    expect(() => parseExtractedMemoryCandidates("totally not json", "/mem"))
+      .toThrow(/JSON/);
+  });
 });
 
 describe("system-prompt assembly: project instructions + memory", () => {

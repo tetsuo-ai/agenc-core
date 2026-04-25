@@ -263,11 +263,21 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       tty,
     });
 
-    if (request.timeoutMs !== undefined && request.timeoutMs > 0) {
-      const timeoutMs = Math.min(request.timeoutMs, this.maxTimeoutMs);
+    // Hard timeout: explicit `timeoutMs` always wins. When unset, non-tty
+    // calls fall back to `maxTimeoutMs` so abandoned processes (yield-and-
+    // forget) eventually get reaped — codex/exec.rs always enforces a
+    // timeout. Tty sessions are intentionally long-lived (write_stdin
+    // interaction) and stay opt-in.
+    const explicitTimeoutMs =
+      request.timeoutMs !== undefined && request.timeoutMs > 0
+        ? Math.min(request.timeoutMs, this.maxTimeoutMs)
+        : null;
+    const effectiveTimeoutMs =
+      explicitTimeoutMs ?? (tty ? null : this.maxTimeoutMs);
+    if (effectiveTimeoutMs !== null) {
       entry.hardTimeout = setTimeout(() => {
         this.forceTerminate(entry);
-      }, timeoutMs);
+      }, effectiveTimeoutMs);
       entry.hardTimeout.unref?.();
     }
 
