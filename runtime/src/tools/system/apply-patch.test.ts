@@ -8,6 +8,10 @@ import {
   createApplyPatchTool,
   type ApplyPatchRunner,
 } from "./apply-patch.js";
+import {
+  clearSessionReadState,
+  seedSessionReadState,
+} from "./filesystem.js";
 
 describe("apply_patch tool", () => {
   let root = "";
@@ -515,5 +519,130 @@ describe("apply_patch tool", () => {
     expect(message).toContain("File contents around line");
     expect(message).toContain("first");
     expect(message).toContain("Hints:");
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Read-before-write enforcement (openclaude FileEditTool parity:
+  // FileEditTool.ts:276-286, prompt.ts:4-8). The structural rule that
+  // makes models self-correct: cannot patch an existing file unless
+  // the model has called system.readFile on it earlier in the session.
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("read-before-write enforcement", () => {
+    const sessionId = "test-session-rbw";
+
+    afterEach(() => {
+      clearSessionReadState(sessionId);
+    });
+
+    test("rejects Update File when target was not previously read in the session", async () => {
+      await writeFile(join(root, "untouched.txt"), "alpha\nbeta\n", "utf8");
+      const tool = createApplyPatchTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Update File: untouched.txt\n" +
+          "@@\n" +
+          " alpha\n" +
+          "-beta\n" +
+          "+gamma\n" +
+          "*** End Patch",
+        cwd: root,
+        __agencSessionId: sessionId,
+      });
+      expect(result.isError).toBe(true);
+      const message = String(result.content);
+      expect(message).toContain("file must be fully read before patching");
+      expect(message).toContain("untouched.txt");
+      expect(message).toContain("system.readFile");
+      // Tool name must be the prerequisite step, not "apply_patch retry".
+      expect(message).toContain("re-issue the apply_patch call");
+      // The file must NOT have been modified.
+      const after = await readFile(join(root, "untouched.txt"), "utf8");
+      expect(after).toBe("alpha\nbeta\n");
+    });
+
+    test("allows Update File once the target has been read in the session", async () => {
+      const path = join(root, "ready.txt");
+      const content = "alpha\nbeta\n";
+      await writeFile(path, content, "utf8");
+      // Simulate a prior `system.readFile` (full read) for this session.
+      seedSessionReadState(sessionId, [
+        { path, content, viewKind: "full" },
+      ]);
+      const tool = createApplyPatchTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Update File: ready.txt\n" +
+          "@@\n" +
+          " alpha\n" +
+          "-beta\n" +
+          "+gamma\n" +
+          "*** End Patch",
+        cwd: root,
+        __agencSessionId: sessionId,
+      });
+      expect(result.isError).toBeUndefined();
+      const after = await readFile(path, "utf8");
+      expect(after).toBe("alpha\ngamma\n");
+    });
+
+    test("Add File does not require a prior read (creating new files is exempt)", async () => {
+      const tool = createApplyPatchTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Add File: brand-new.txt\n" +
+          "+hello\n" +
+          "*** End Patch",
+        cwd: root,
+        __agencSessionId: sessionId,
+      });
+      expect(result.isError).toBeUndefined();
+      const after = await readFile(join(root, "brand-new.txt"), "utf8");
+      expect(after).toBe("hello\n");
+    });
+
+    test("Update File targeting a non-existent path skips the read check (parser failure surfaces later with a clearer error)", async () => {
+      const tool = createApplyPatchTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Update File: does-not-exist.txt\n" +
+          "@@\n" +
+          " whatever\n" +
+          "*** End Patch",
+        cwd: root,
+        __agencSessionId: sessionId,
+      });
+      // Should fail — but NOT with the read-before-write error. The
+      // downstream "Failed to read file to update" error is more useful.
+      expect(result.isError).toBe(true);
+      const message = String(result.content);
+      expect(message).not.toContain("must be fully read before patching");
+    });
+
+    test("headless / no-session-id calls bypass the gate (test fixtures, embedded contexts)", async () => {
+      // Existing tests don't pass __agencSessionId; the gate must
+      // remain a no-op for them so headless dispatch keeps working.
+      await writeFile(join(root, "headless.txt"), "alpha\nbeta\n", "utf8");
+      const tool = createApplyPatchTool({ allowedPaths: [root] });
+      const result = await tool.execute({
+        patch:
+          "*** Begin Patch\n" +
+          "*** Update File: headless.txt\n" +
+          "@@\n" +
+          " alpha\n" +
+          "-beta\n" +
+          "+gamma\n" +
+          "*** End Patch",
+        cwd: root,
+        // No __agencSessionId.
+      });
+      expect(result.isError).toBeUndefined();
+      const after = await readFile(join(root, "headless.txt"), "utf8");
+      expect(after).toBe("alpha\ngamma\n");
+    });
   });
 });

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import {
+  hasSessionRead,
   resolveToolAllowedPaths,
   safePath,
 } from "./filesystem.js";
@@ -86,7 +87,8 @@ Important:
 - Include an Add/Delete/Update header for every file operation.
 - Prefix new lines with +, including every line when creating a file.
 - File references must be relative, never absolute.
-- Put the complete patch body in the patch argument.`;
+- Put the complete patch body in the patch argument.
+- For \`*** Update File:\`, you MUST have called \`system.readFile\` on the target path (without offset/limit) earlier in the session. The tool will reject the patch with an actionable error if you have not. After a seek-failure error, re-read the file before retrying — invented context lines drift from the live file content.`;
 
 interface AddFileOperation {
   readonly kind: "add";
@@ -838,6 +840,55 @@ async function applyPatchInProcess(opts: {
   }
 }
 
+/**
+ * Read-before-write gate. For every `*** Update File:` operation in the
+ * patch, verify the target file was read with `system.readFile` (full
+ * view) in the current session. If not, reject the patch with the same
+ * actionable error format the filesystem tools use. Mirrors openclaude
+ * `FileEditTool` (FileEditTool.ts:276-286 + prompt.ts:4-8) where the
+ * pre-read requirement is the structural defense against blind edits.
+ *
+ * Skipped when:
+ *   - No `__agencSessionId` was injected (headless / unit-test path).
+ *   - The operation is `*** Add File:` (creating new — no read needed).
+ *   - The operation is `*** Delete File:` (no patch context to invent).
+ *   - The target file does not exist on disk (treated as Add for read
+ *     purposes — the patch will fail later with a clearer "file not
+ *     found" error if Update is attempted on a non-existent path).
+ */
+async function enforceReadBeforePatch(opts: {
+  readonly patch: string;
+  readonly cwd: string;
+  readonly sessionId: string | undefined;
+}): Promise<string | null> {
+  if (opts.sessionId === undefined) return null;
+  let operations: PatchOperation[];
+  try {
+    operations = parsePatchOperations(opts.patch);
+  } catch {
+    // Parse will fail again in the runner with a more useful error;
+    // don't pre-empt that path here.
+    return null;
+  }
+  for (const op of operations) {
+    if (op.kind !== "update") continue;
+    const absolutePath = resolvePatchTarget(opts.cwd, op.path);
+    const targetExists = await stat(absolutePath)
+      .then((s) => s.isFile())
+      .catch(() => false);
+    if (!targetExists) continue;
+    if (!hasSessionRead(opts.sessionId, absolutePath)) {
+      return (
+        `apply_patch: file must be fully read before patching it. ` +
+        `Call system.readFile on "${op.path}" without offset/limit, ` +
+        `then re-issue the apply_patch call with context lines that ` +
+        `match the file you just read.`
+      );
+    }
+  }
+  return null;
+}
+
 async function validatePatchPaths(opts: {
   readonly cwd: string;
   readonly patch: string;
@@ -926,6 +977,26 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
         args,
       });
       if (validationError) return errorResult(validationError);
+
+      // Read-before-write enforcement (openclaude FileEditTool parity:
+      // src/tools/FileEditTool/prompt.ts:4-8 + FileEditTool.ts:276-286).
+      // The single highest-leverage defense against models inventing
+      // context lines they never verified is the structural rule: a
+      // patch against an existing file is rejected unless that file
+      // was first read with `system.readFile` in the same session.
+      // Forces the model to put the literal pre-edit bytes in its
+      // context window before generating the next patch — which is
+      // what self-correction needs.
+      // Skipped for `*** Add File:` (creating a new file — no prior
+      // read possible) and for `*** Delete File:` (no patch context
+      // to invent). Only `*** Update File:` / `*** Move to:` paths
+      // need the read.
+      const readEnforcementError = await enforceReadBeforePatch({
+        patch,
+        cwd: resolve(cwd),
+        sessionId: asNonEmptyString(args.__agencSessionId),
+      });
+      if (readEnforcementError) return errorResult(readEnforcementError);
 
       const timeoutMs =
         typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
