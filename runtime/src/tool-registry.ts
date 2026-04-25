@@ -239,7 +239,10 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "exec_command",
   "write_stdin",
   "apply_patch",
-  "update_plan",
+  // `TodoWrite` is the verbatim openclaude port; codex `update_plan`
+  // is intentionally not shipped — `/plan` itself is openclaude-derived
+  // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
+  // tool is openclaude `TodoWrite`.
   "TodoWrite",
   "EnterPlanMode",
   "ExitPlanMode",

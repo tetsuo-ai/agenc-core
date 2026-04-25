@@ -1,21 +1,51 @@
+/**
+ * Planning tool surface — verbatim port of openclaude `TodoWriteTool`
+ * (`src/tools/TodoWriteTool/TodoWriteTool.ts`) plus the openclaude
+ * `EnterPlanMode` / `ExitPlanMode` workflow tools.
+ *
+ * Upstream contract (do not deviate):
+ *
+ *   - Tool name:       `TodoWrite`            (openclaude `TODO_WRITE_TOOL_NAME`)
+ *   - Schema:          `{ todos: TodoItem[] }` where each item is
+ *                      `{ content, status, activeForm }` — all required.
+ *   - Tool result:     literal sentence
+ *                      `"Todos have been modified successfully. Ensure that
+ *                       you continue to use the todo list to track your
+ *                       progress. Please proceed with the current tasks if
+ *                       applicable"` (openclaude `mapToolResultToToolResultBlockParam`).
+ *   - Plan mode:       `TodoWrite` is metadata-only and IS permitted in
+ *                      plan mode (openclaude classifier
+ *                      `SAFE_YOLO_ALLOWLISTED_TOOLS`).
+ *   - Transcript:      tool-call/tool-result cells are suppressed
+ *                      (openclaude `renderToolUseMessage()` returns null,
+ *                      `renderToolResultMessage` is omitted). The plan
+ *                      panel (`PlanProgress.tsx`) is the sole user-visible
+ *                      surface, which in AgenC is wired via the
+ *                      `plan_started` / `plan_item_completed` event pair
+ *                      emitted by the workflow controller.
+ *
+ * Codex `update_plan` is intentionally NOT shipped here — `/plan` itself
+ * is an openclaude port (see `runtime/src/commands/plan.ts:4`) so the
+ * matching checklist tool is openclaude `TodoWrite`. Mixing codex and
+ * openclaude planning surfaces causes the duplicate-render and
+ * raw-JSON-result bugs that surfaced in scrollback.
+ */
 import type { PermissionModeRegistry } from "../../permissions/mode.js";
 import { transitionPermissionMode } from "../../permissions/mode.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
-import { safeStringify } from "../types.js";
 
-type PlanStepStatus = "pending" | "in_progress" | "completed";
+type TodoStatus = "pending" | "in_progress" | "completed";
 
-export interface PlanStep {
-  readonly step: string;
-  readonly status: PlanStepStatus;
-  readonly activeForm?: string;
+export interface TodoItem {
+  readonly content: string;
+  readonly status: TodoStatus;
+  readonly activeForm: string;
 }
 
 export interface PlanState {
-  readonly explanation?: string;
-  readonly plan: readonly PlanStep[];
+  readonly todos: readonly TodoItem[];
   readonly updatedAt: string;
 }
 
@@ -40,19 +70,22 @@ export interface PlanningToolOptions {
   readonly workflowController?: WorkflowToolController;
 }
 
-function okResult(data: unknown): ToolResult {
-  return { content: safeStringify(data) };
-}
-
-function errorResult(message: string): ToolResult {
-  return { content: safeStringify({ error: message }), isError: true };
-}
+/**
+ * Verbatim openclaude `TodoWriteTool.mapToolResultToToolResultBlockParam`
+ * base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
+ */
+const TODO_WRITE_RESULT_MESSAGE =
+  "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable";
 
 function textResult(content: string, metadata?: Record<string, unknown>): ToolResult {
   return {
     content,
     ...(metadata !== undefined ? { metadata } : {}),
   };
+}
+
+function errorResult(message: string): ToolResult {
+  return { content: message, isError: true };
 }
 
 function metadata(
@@ -81,76 +114,47 @@ function toOptionalString(value: unknown): string | undefined {
     : undefined;
 }
 
-function normalizeStatus(value: unknown): PlanStepStatus | undefined {
+function normalizeStatus(value: unknown): TodoStatus | undefined {
   if (value === "pending" || value === "in_progress" || value === "completed") {
     return value;
   }
   return undefined;
 }
 
-function parsePlanSteps(value: unknown): readonly PlanStep[] | { readonly error: string } {
+/**
+ * Mirrors openclaude `TodoListSchema` / `TodoItemSchema` validation
+ * (`src/utils/todo/types.ts:8-17`):
+ *   - `content`     non-empty string (required)
+ *   - `status`      enum `pending|in_progress|completed` (required)
+ *   - `activeForm`  non-empty string (required)
+ */
+function parseTodoList(value: unknown): readonly TodoItem[] | { readonly error: string } {
   if (!Array.isArray(value)) {
-    return { error: "plan must be an array of { step, status } entries" };
+    return { error: "todos must be an array of { content, status, activeForm } entries" };
   }
-  const plan: PlanStep[] = [];
-  let inProgressCount = 0;
-  for (const [index, raw] of value.entries()) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      return { error: `plan[${index}] must be an object` };
-    }
-    const record = raw as Record<string, unknown>;
-    const step = toOptionalString(record.step);
-    const status = normalizeStatus(record.status);
-    if (!step) return { error: `plan[${index}].step must be a non-empty string` };
-    if (!status) {
-      return {
-        error:
-          `plan[${index}].status must be one of pending, in_progress, completed`,
-      };
-    }
-    if (status === "in_progress") inProgressCount += 1;
-    plan.push({ step, status });
-  }
-  if (inProgressCount > 1) {
-    return { error: "at most one plan item may be in_progress" };
-  }
-  return plan;
-}
-
-function parseTodoSteps(value: unknown): readonly PlanStep[] | { readonly error: string } {
-  if (!Array.isArray(value)) {
-    return { error: "todos must be an array of { content, status } entries" };
-  }
-  const plan: PlanStep[] = [];
-  let inProgressCount = 0;
+  const todos: TodoItem[] = [];
   for (const [index, raw] of value.entries()) {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
       return { error: `todos[${index}] must be an object` };
     }
     const record = raw as Record<string, unknown>;
-    const step = toOptionalString(record.content);
-    const status = normalizeStatus(record.status);
-    const activeForm = toOptionalString(record.activeForm);
-    if (!step) {
-      return { error: `todos[${index}].content must be a non-empty string` };
+    const content = toOptionalString(record.content);
+    if (!content) {
+      return { error: `todos[${index}].content cannot be empty` };
     }
+    const status = normalizeStatus(record.status);
     if (!status) {
       return {
-        error:
-          `todos[${index}].status must be one of pending, in_progress, completed`,
+        error: `todos[${index}].status must be one of pending, in_progress, completed`,
       };
     }
-    if (status === "in_progress") inProgressCount += 1;
-    plan.push({
-      step,
-      status,
-      ...(activeForm !== undefined ? { activeForm } : {}),
-    });
+    const activeForm = toOptionalString(record.activeForm);
+    if (!activeForm) {
+      return { error: `todos[${index}].activeForm cannot be empty` };
+    }
+    todos.push({ content, status, activeForm });
   }
-  if (inProgressCount > 1) {
-    return { error: "at most one todo may be in_progress" };
-  }
-  return plan;
+  return todos;
 }
 
 function inputPlan(args: Record<string, unknown>): string | undefined {
@@ -222,72 +226,32 @@ async function updatePermissionMode(params: {
 
 export function createPlanningTools(options: PlanningToolOptions = {}): readonly Tool[] {
   let state: PlanState = {
-    plan: [],
+    todos: [],
     updatedAt: new Date(0).toISOString(),
   };
 
-  const updatePlanTool: Tool = {
-    name: "update_plan",
-    description:
-      "Update the current short execution plan. Use exactly one in_progress item while work is active; mark items completed as they finish.",
-    metadata: metadata("update_plan"),
-    inputSchema: {
-      type: "object",
-      properties: {
-        explanation: { type: "string" },
-        plan: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              step: { type: "string" },
-              status: {
-                type: "string",
-                enum: ["pending", "in_progress", "completed"],
-              },
-            },
-            required: ["step", "status"],
-            additionalProperties: false,
-          },
-        },
-      },
-      required: ["plan"],
-      additionalProperties: false,
-    },
-    async execute(args) {
-      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
-      if (registry && registry.current().mode === "plan") {
-        return errorResult(
-          "update_plan is a TODO/checklist tool and is not allowed in Plan mode",
-        );
-      }
-      const plan = parsePlanSteps(args.plan);
-      if ("error" in plan) return errorResult(plan.error);
-      state = {
-        ...(toOptionalString(args.explanation)
-          ? { explanation: toOptionalString(args.explanation) }
-          : {}),
-        plan,
-        updatedAt: new Date().toISOString(),
-      };
-      options.workflowController?.emitPlanUpdated?.(state);
-      return okResult({
-        message: "Plan updated.",
-        ...state,
-      });
-    },
-  };
-
+  /**
+   * Verbatim openclaude `TodoWriteTool` (`TodoWriteTool.ts:31-115`).
+   *
+   * Description string is openclaude `DESCRIPTION` (`prompt.ts:184`).
+   *
+   * Tool result content is openclaude
+   * `mapToolResultToToolResultBlockParam`'s `base` sentence
+   * (`TodoWriteTool.ts:105`). The verification-nudge variant is
+   * deliberately not ported — it depends on openclaude's verification
+   * agent and feature flag plumbing that AgenC does not run.
+   */
   const todoWriteTool: Tool = {
     name: "TodoWrite",
     description:
-      "Todo-list alias. Prefer update_plan for new AgenC runtime behavior; use this only when a todo-list-shaped workflow is requested.",
+      "Update the todo list for the current session. To be used proactively and often to track progress and pending tasks. Make sure that at least one task is in_progress at all times. Always provide both content (imperative) and activeForm (present continuous) for each task.",
     metadata: metadata("TodoWrite"),
     inputSchema: {
       type: "object",
       properties: {
         todos: {
           type: "array",
+          description: "The updated todo list",
           items: {
             type: "object",
             properties: {
@@ -298,7 +262,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
               },
               activeForm: { type: "string" },
             },
-            required: ["content", "status"],
+            required: ["content", "status", "activeForm"],
             additionalProperties: false,
           },
         },
@@ -307,23 +271,14 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
       additionalProperties: false,
     },
     async execute(args) {
-      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
-      if (registry && registry.current().mode === "plan") {
-        return errorResult(
-          "TodoWrite is a TODO/checklist tool and is not allowed in Plan mode",
-        );
-      }
-      const todos = parseTodoSteps(args.todos);
+      const todos = parseTodoList(args.todos);
       if ("error" in todos) return errorResult(todos.error);
       state = {
-        plan: todos,
+        todos,
         updatedAt: new Date().toISOString(),
       };
       options.workflowController?.emitPlanUpdated?.(state);
-      return okResult({
-        message: "Todo list updated through update_plan compatibility state.",
-        ...state,
-      });
+      return textResult(TODO_WRITE_RESULT_MESSAGE);
     },
   };
 
@@ -440,10 +395,5 @@ ${plan}`,
     },
   };
 
-  return [
-    updatePlanTool,
-    todoWriteTool,
-    enterPlanTool,
-    exitPlanTool,
-  ];
+  return [todoWriteTool, enterPlanTool, exitPlanTool];
 }

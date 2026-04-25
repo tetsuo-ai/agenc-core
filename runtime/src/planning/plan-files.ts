@@ -297,38 +297,6 @@ export async function copyPlanForFork(
   return targetPath;
 }
 
-export function formatPlanMarkdownFromSteps(state: {
-  readonly explanation?: string;
-  readonly plan: readonly {
-    readonly step: string;
-    readonly status: "pending" | "in_progress" | "completed";
-  }[];
-  readonly updatedAt?: string;
-}): string {
-  const lines = ["# AgenC Plan", ""];
-  if (state.explanation && state.explanation.trim().length > 0) {
-    lines.push("## Context", "", state.explanation.trim(), "");
-  }
-  lines.push("## Steps", "");
-  if (state.plan.length === 0) {
-    lines.push("- [ ] No plan items written yet.");
-  } else {
-    for (const item of state.plan) {
-      const marker =
-        item.status === "completed"
-          ? "x"
-          : item.status === "in_progress"
-            ? "-"
-            : " ";
-      lines.push(`- [${marker}] ${item.step}`);
-    }
-  }
-  if (state.updatedAt) {
-    lines.push("", `Updated: ${state.updatedAt}`);
-  }
-  return `${lines.join("\n")}\n`;
-}
-
 export function formatPlanText(planContent: string, planPath: string): string {
   return [
     "Current Plan",

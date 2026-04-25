@@ -74,15 +74,19 @@ describe("tool-registry dynamic and deferred catalog", () => {
     // dropped — the canonical OpenClaude-parity names are the only entries.
     expect(registeredNames).not.toContain("workflow.enterPlan");
     expect(registeredNames).not.toContain("workflow.exitPlan");
+    // `update_plan` is the codex-only checklist name. AgenC's `/plan`
+    // surface is openclaude-derived, so the only checklist tool we
+    // ship is openclaude `TodoWrite`.
+    expect(registeredNames).not.toContain("update_plan");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toContain("exec_command");
     expect(visibleNames).toContain("write_stdin");
-    expect(visibleNames).toContain("update_plan");
     expect(visibleNames).toContain("apply_patch");
     expect(visibleNames).toContain("TodoWrite");
     expect(visibleNames).toContain("EnterPlanMode");
     expect(visibleNames).toContain("ExitPlanMode");
+    expect(visibleNames).not.toContain("update_plan");
     expect(visibleNames).toContain("system.searchTools");
     expect(visibleNames).not.toContain("system.bash");
     expect(visibleNames).not.toContain("system.readFile");
@@ -177,7 +181,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     );
   });
 
-  test("update_plan and TodoWrite mutate in-memory state and emit events but never overwrite the plan file", async () => {
+  test("TodoWrite returns the verbatim openclaude tool_result sentence and emits a plan event without ever writing the plan file", async () => {
     const emittedPlans: unknown[] = [];
     const writtenPlans: string[] = [];
     const registry = buildToolRegistry({
@@ -191,69 +195,39 @@ describe("tool-registry dynamic and deferred catalog", () => {
         },
       },
     });
-
-    const update = await registry.dispatch({
-      id: "plan-1",
-      name: "update_plan",
-      arguments: JSON.stringify({
-        explanation: "wire tools",
-        plan: [
-          { step: "Inspect registry", status: "completed" },
-          { step: "Add compatibility alias", status: "in_progress" },
-        ],
-      }),
-    });
-    expect(update.isError).toBeUndefined();
-    expect(JSON.parse(update.content)).toMatchObject({
-      message: "Plan updated.",
-      explanation: "wire tools",
-      plan: [
-        { step: "Inspect registry", status: "completed" },
-        { step: "Add compatibility alias", status: "in_progress" },
-      ],
-    });
-    expect(emittedPlans).toHaveLength(1);
 
     const todo = await registry.dispatch({
       id: "todo-1",
       name: "TodoWrite",
       arguments: JSON.stringify({
         todos: [
-          { content: "Ship alias", status: "completed" },
-          { content: "Run tests", status: "pending" },
+          { content: "Ship parity", status: "in_progress", activeForm: "Shipping parity" },
+          { content: "Run tests", status: "pending", activeForm: "Running tests" },
         ],
       }),
     });
     expect(todo.isError).toBeUndefined();
-    expect(JSON.parse(todo.content)).toMatchObject({
-      message: "Todo list updated through update_plan compatibility state.",
-      plan: [
-        { step: "Ship alias", status: "completed" },
-        { step: "Run tests", status: "pending" },
-      ],
-    });
-    expect(emittedPlans).toHaveLength(2);
+    // Verbatim openclaude `TodoWriteTool.mapToolResultToToolResultBlockParam`
+    // base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
+    expect(todo.content).toBe(
+      "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable",
+    );
+    expect(emittedPlans).toHaveLength(1);
 
-    // Bug A regression: neither tool may persist to the plan file.
-    // Codex's update_plan is in-memory only (broadcast as PlanUpdate
-    // events); openclaude's TodoWrite is in-memory only. We were the
-    // only one persisting and that overwrote the user's authored plan.
+    // OpenClaude's TodoWrite is in-memory only. Persisting to the plan
+    // file would overwrite the user-authored plan.
     expect(writtenPlans).toHaveLength(0);
   });
 
-  test("update_plan is rejected in plan mode (matches codex contract)", async () => {
+  test("TodoWrite is permitted in plan mode (openclaude classifier classifies it as metadata-only)", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "plan" }),
     );
-    const writtenPlans: string[] = [];
     const emittedPlans: unknown[] = [];
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
       workflowController: {
         getPermissionModeRegistry: () => permissionRegistry,
-        writePlan: async (content) => {
-          writtenPlans.push(content);
-        },
         emitPlanUpdated: (state) => {
           emittedPlans.push(state);
         },
@@ -261,106 +235,59 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     const result = await registry.dispatch({
-      id: "plan-rejected",
-      name: "update_plan",
-      arguments: JSON.stringify({
-        plan: [{ step: "Should not run", status: "pending" }],
-      }),
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain(
-      "update_plan is a TODO/checklist tool and is not allowed in Plan mode",
-    );
-    expect(writtenPlans).toHaveLength(0);
-    expect(emittedPlans).toHaveLength(0);
-  });
-
-  test("TodoWrite is rejected in plan mode", async () => {
-    const permissionRegistry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({ mode: "plan" }),
-    );
-    const writtenPlans: string[] = [];
-    const emittedPlans: unknown[] = [];
-    const registry = buildToolRegistry({
-      workspaceRoot: "/tmp",
-      workflowController: {
-        getPermissionModeRegistry: () => permissionRegistry,
-        writePlan: async (content) => {
-          writtenPlans.push(content);
-        },
-        emitPlanUpdated: (state) => {
-          emittedPlans.push(state);
-        },
-      },
-    });
-
-    const result = await registry.dispatch({
-      id: "todo-rejected",
+      id: "todo-plan-mode",
       name: "TodoWrite",
       arguments: JSON.stringify({
         todos: [
-          { content: "Should not run", status: "pending", activeForm: "Running" },
-        ],
-      }),
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain(
-      "TodoWrite is a TODO/checklist tool and is not allowed in Plan mode",
-    );
-    expect(writtenPlans).toHaveLength(0);
-    expect(emittedPlans).toHaveLength(0);
-  });
-
-  test("TodoWrite round-trips activeForm in returned state", async () => {
-    const emittedPlans: unknown[] = [];
-    const registry = buildToolRegistry({
-      workspaceRoot: "/tmp",
-      workflowController: {
-        emitPlanUpdated: (state) => {
-          emittedPlans.push(state);
-        },
-      },
-    });
-
-    const result = await registry.dispatch({
-      id: "todo-active-form",
-      name: "TodoWrite",
-      arguments: JSON.stringify({
-        todos: [
-          { content: "Run tests", status: "in_progress", activeForm: "Running tests" },
-          { content: "Build", status: "pending" },
+          { content: "Plan task", status: "in_progress", activeForm: "Planning task" },
         ],
       }),
     });
     expect(result.isError).toBeUndefined();
-    const body = JSON.parse(result.content) as {
-      plan: Array<{ step: string; status: string; activeForm?: string }>;
-    };
-    expect(body.plan).toEqual([
-      { step: "Run tests", status: "in_progress", activeForm: "Running tests" },
-      { step: "Build", status: "pending" },
-    ]);
-    // Empty/missing activeForm must not be coerced to "" — must be omitted.
-    expect("activeForm" in body.plan[1]!).toBe(false);
+    expect(result.content).toContain("Todos have been modified successfully");
     expect(emittedPlans).toHaveLength(1);
   });
 
-  test("update_plan schema does not accept activeForm (codex parity)", () => {
+  test("TodoWrite schema requires content/status/activeForm and rejects extras (openclaude parity)", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
-    const updatePlan = registry.tools.find((t) => t.name === "update_plan");
-    expect(updatePlan).toBeDefined();
-    const items = (updatePlan!.inputSchema as {
+    const todoWrite = registry.tools.find((t) => t.name === "TodoWrite");
+    expect(todoWrite).toBeDefined();
+    const items = (todoWrite!.inputSchema as {
       properties: {
-        plan: {
+        todos: {
           items: {
             properties: Record<string, unknown>;
+            required: string[];
             additionalProperties: boolean;
           };
         };
       };
-    }).properties.plan.items;
+    }).properties.todos.items;
     expect(items.additionalProperties).toBe(false);
-    expect(Object.keys(items.properties)).toEqual(["step", "status"]);
+    expect(Object.keys(items.properties).sort()).toEqual([
+      "activeForm",
+      "content",
+      "status",
+    ]);
+    expect(items.required.sort()).toEqual(["activeForm", "content", "status"]);
+  });
+
+  test("TodoWrite rejects todos missing activeForm", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const result = await registry.dispatch({
+      id: "todo-missing-active-form",
+      name: "TodoWrite",
+      arguments: JSON.stringify({
+        todos: [{ content: "Run tests", status: "in_progress" }],
+      }),
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("activeForm");
+  });
+
+  test("update_plan is no longer registered (codex name dropped in favor of openclaude TodoWrite)", () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    expect(registry.tools.find((t) => t.name === "update_plan")).toBeUndefined();
   });
 
   test("OpenClaude-style EnterPlanMode/ExitPlanMode drive the live permission-mode registry", async () => {

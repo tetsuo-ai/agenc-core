@@ -234,7 +234,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           "exec_command",
           "write_stdin",
           "apply_patch",
-          "update_plan",
           "TodoWrite",
           "EnterPlanMode",
           "ExitPlanMode",

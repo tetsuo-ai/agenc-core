@@ -243,6 +243,17 @@ const SILENT_TOOL_NAMES = new Set([
   "ToolSearch",
   "tool_search",
   "system.searchTools",
+  // OpenClaude `TodoWriteTool.renderToolUseMessage` returns null and the
+  // tool omits `renderToolResultMessage` entirely (see openclaude
+  // `Tool.ts:572-574`: "Omit for tools whose results are surfaced
+  // elsewhere (e.g., TodoWrite updates the todo panel, not the
+  // transcript)"). AgenC's equivalent of the openclaude todo panel is
+  // the `PlanProgress` cell wired through the `plan_started` /
+  // `plan_item_completed` event pair the workflow controller emits.
+  // Suppressing the generic tool-call/tool-result cells here is what
+  // collapses the previously triple-rendered `update_plan` block down
+  // to one cell.
+  "TodoWrite",
 ]);
 
 const ASSISTANT_LIFECYCLE_CHATTER = [

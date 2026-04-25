@@ -25,14 +25,13 @@ function statusMarker(status: string): string {
 
 function renderPlanState(state: PlanState): string {
   const lines: string[] = [];
-  if (state.explanation && state.explanation.trim().length > 0) {
-    lines.push(state.explanation.trim(), "");
-  }
-  if (state.plan.length === 0) {
-    lines.push("(no plan items)");
+  if (state.todos.length === 0) {
+    lines.push("(no todo items)");
   } else {
-    for (const item of state.plan) {
-      lines.push(`${statusMarker(item.status)} ${item.step}`);
+    for (const item of state.todos) {
+      const summary =
+        item.status === "in_progress" ? item.activeForm : item.content;
+      lines.push(`${statusMarker(item.status)} ${summary}`);
     }
   }
   return lines.join("\n");
@@ -132,8 +131,8 @@ export function buildWorkflowToolController(
           ? activeTurnId
           : typeof sessionId === "string" && sessionId.length > 0
             ? sessionId
-            : "update-plan";
-      const planItemId = `update_plan-${turnId}`;
+            : "todo-write";
+      const planItemId = `TodoWrite-${turnId}`;
       emit(session, {
         type: "plan_started",
         payload: {
