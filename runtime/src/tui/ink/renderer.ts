@@ -127,23 +127,11 @@ export default function createRenderer(
     // node's pixels. hasRemovedChild only shields direct siblings.
     // Normal-flow removals don't paint cross-subtree and are fine.
     const absoluteRemoved = consumeAbsoluteRemovedFlag()
-    // Disable the blit fast path unconditionally. The fast path copies cells
-    // from the previous frame's screen when a node is "clean" (not dirty
-    // and same layout). Several drift paths leave the previous screen in a
-    // state that does NOT match what the React tree currently describes —
-    // e.g. selection-overlay leftovers, dim styling pinned by an earlier
-    // styleId match, content that was supposed to vanish but happens to
-    // sit under a clean parent. When the fast path then copies those stale
-    // cells into the new screen, the cell-level diff sees prev == next and
-    // emits nothing, so the terminal continues to show the stale state
-    // forever. Forcing a full descent is more expensive but correct: every
-    // visible cell each frame comes from the React tree, not the previous
-    // buffer. Performance tradeoff is acceptable — render cost is dominated
-    // by Yoga layout, not by cell writes.
-    void absoluteRemoved
-    void prevScreen
     renderNodeToOutput(node, output, {
-      prevScreen: undefined,
+      prevScreen:
+        absoluteRemoved || options.prevFrameContaminated
+          ? undefined
+          : prevScreen,
     })
 
     const renderedScreen = output.get()
