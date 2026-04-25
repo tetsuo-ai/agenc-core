@@ -47,6 +47,90 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("coalesces deltas + tool_call + final agent_message into a single assistant row (regression: TUI-doubled-text)", () => {
+    // Real failure mode from a `--yolo + /plan` session against
+    // grok-4.20-0309-non-reasoning: the model emits deltas, then a
+    // tool_call_started, then the terminal `agent_message`. Pre-fix,
+    // `tool_call_started`'s `markAssistantComplete()` cleared
+    // `activeAssistantIndex` and the terminal `agent_message` couldn't
+    // find the streaming row, so it pushed a brand-new row with the
+    // full final text — the user saw the assistant text rendered
+    // twice in a row before the tool cell. Mirrors openclaude's
+    // atomic streamingText→onMessage transition (utils/messages.ts:2980-2985)
+    // which never lets the streaming preview and the final message
+    // coexist for the same content.
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-coalesce" } },
+      { type: "agent_message_delta", payload: { delta: "I'll write the plan file." } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "call-1",
+          toolName: "system.writeFile",
+          args: '{"path":"/home/u/.agenc/plans/foo.md","content":"hi"}',
+        },
+      },
+      { type: "agent_message", payload: { message: "I'll write the plan file." } },
+      {
+        type: "tool_call_completed",
+        payload: { callId: "call-1", result: '{"ok":true}', isError: false },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    const assistantRows = messages.filter((m) => m.kind === "assistant");
+    expect(assistantRows).toHaveLength(1);
+    expect(assistantRows[0]).toMatchObject({
+      kind: "assistant",
+      turnId: "turn-coalesce",
+      content: "I'll write the plan file.",
+      isComplete: true,
+    });
+    // The tool cell still renders.
+    expect(messages.filter((m) => m.kind === "tool_call")).toHaveLength(1);
+  });
+
+  test("final agent_message without preceding deltas still creates one row", () => {
+    // Sanity: providers that don't emit `agent_message_delta` at all
+    // (final-only) must still produce exactly one assistant row.
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-final-only" } },
+      { type: "agent_message", payload: { message: "Done." } },
+    ];
+    const messages = eventsToMessages(events);
+    const assistantRows = messages.filter((m) => m.kind === "assistant");
+    expect(assistantRows).toHaveLength(1);
+    expect(assistantRows[0]).toMatchObject({
+      content: "Done.",
+      isComplete: true,
+    });
+  });
+
+  test("each turn's assistant message gets its own row (no cross-turn fold)", () => {
+    // Two-turn conversation. The per-turn `lastAssistantIndexByTurn`
+    // map must NOT collapse turn 2's final message into turn 1's row.
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-1" } },
+      { type: "agent_message_delta", payload: { delta: "first" } },
+      { type: "agent_message", payload: { message: "first response" } },
+      { type: "turn_complete", payload: { turnId: "turn-1" } },
+      { type: "turn_started", payload: { turnId: "turn-2" } },
+      { type: "agent_message_delta", payload: { delta: "second" } },
+      { type: "agent_message", payload: { message: "second response" } },
+    ];
+    const messages = eventsToMessages(events);
+    const assistantRows = messages.filter((m) => m.kind === "assistant");
+    expect(assistantRows).toHaveLength(2);
+    expect(assistantRows[0]).toMatchObject({
+      turnId: "turn-1",
+      content: "first response",
+    });
+    expect(assistantRows[1]).toMatchObject({
+      turnId: "turn-2",
+      content: "second response",
+    });
+  });
+
   test("hides provider lifecycle assistant chatter in the normal transcript", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_started", payload: { turnId: "turn-tools" } },

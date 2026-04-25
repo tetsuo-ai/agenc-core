@@ -354,6 +354,14 @@ export function eventsToMessages(
   const fallbackTurnCounter = { value: 0 };
   let currentTurnId = `${FALLBACK_TURN_PREFIX}${fallbackTurnCounter.value}`;
   let activeAssistantIndex: number | null = null;
+  // Per-turn last assistant row index. Survives `markAssistantComplete()`
+  // (which clears `activeAssistantIndex` on `tool_call_started`) so the
+  // terminal `agent_message` event for the same turn can coalesce back
+  // into the streaming row instead of pushing a duplicate. Mirrors
+  // openclaude's atomic streamingText→onMessage transition
+  // (utils/messages.ts:2980-2985) where the streaming preview clears in
+  // the same dispatch as `onMessage(message)` so the two never coexist.
+  const lastAssistantIndexByTurn = new Map<string, number>();
   let pendingAssistantLifecycleText:
     | {
         readonly turnId: string;
@@ -416,6 +424,7 @@ export function eventsToMessages(
         isComplete: false,
       });
       activeAssistantIndex = messages.length - 1;
+      lastAssistantIndexByTurn.set(turnId, activeAssistantIndex);
       return;
     }
     const prev = messages[activeAssistantIndex]!;
@@ -715,13 +724,35 @@ export function eventsToMessages(
         }
         pendingAssistantLifecycleText = null;
         const turnId = ensureTurnId(currentTurnId);
-        if (
+        // Resolve the row to coalesce into. Prefer `activeAssistantIndex`
+        // if still pinned to this turn; otherwise fall back to the
+        // per-turn last-assistant index — which survives the
+        // `markAssistantComplete()` call inside `tool_call_started` so
+        // the terminal `agent_message` for this turn can still merge
+        // into the streaming row instead of pushing a duplicate.
+        // Mirrors openclaude's atomic streamingText→onMessage transition
+        // (utils/messages.ts:2980-2985).
+        let candidateIndex: number | null =
           activeAssistantIndex !== null &&
           messages[activeAssistantIndex]?.kind === "assistant" &&
           messages[activeAssistantIndex]?.turnId === turnId
-        ) {
-          const prev = messages[activeAssistantIndex]!;
-          messages[activeAssistantIndex] = {
+            ? activeAssistantIndex
+            : null;
+        if (candidateIndex === null) {
+          const fallback = lastAssistantIndexByTurn.get(turnId);
+          if (fallback !== undefined) {
+            const candidate = messages[fallback];
+            if (
+              candidate?.kind === "assistant" &&
+              candidate.turnId === turnId
+            ) {
+              candidateIndex = fallback;
+            }
+          }
+        }
+        if (candidateIndex !== null) {
+          const prev = messages[candidateIndex]!;
+          messages[candidateIndex] = {
             ...prev,
             content:
               event.payload.message.length > 0
@@ -731,6 +762,7 @@ export function eventsToMessages(
             isComplete: true,
           };
           activeAssistantIndex = null;
+          lastAssistantIndexByTurn.set(turnId, candidateIndex);
         } else {
           messages.push({
             id: event.id ?? `assistant-${turnId}-${timestamp}`,
@@ -740,6 +772,7 @@ export function eventsToMessages(
             timestamp,
             isComplete: true,
           });
+          lastAssistantIndexByTurn.set(turnId, messages.length - 1);
         }
         break;
       }
