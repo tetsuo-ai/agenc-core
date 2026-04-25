@@ -811,111 +811,6 @@ function evaluateSubcommand(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Plan-mode and mode-based gating
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Best-effort read-only detector used only for plan mode gating. True
- * when every subcommand's first token is in the sandbox-safe set AND
- * no redirection chars appear. Plan mode denies everything that isn't
- * read-only.
- */
-/**
- * Quote-aware scan for any write-redirect operator. Matches openclaude's
- * `hasShellRedirection` operator set at
- * `src/tools/BashTool/modeValidation.ts:58-74`:
- *   `>`, `>>`, `>|`, `&>`, `&>>`, `1>`, `1>>`, `2>`, `2>>`.
- *
- * Walks the command, skipping single- and double-quoted regions and
- * backslash-escaped characters so tokens like `'a > b'` or `"a > b"`
- * aren't treated as redirects. Returns true on the first match.
- *
- * Not detected (matches upstream's set):
- *   - `<` input redirect alone — does not write.
- *   - `<<` heredoc / `<<<` here-string — body is data, not a write target;
- *     the dangerous `cat > foo << EOF` form is caught by the `>` rule.
- *   - `<>` read-write — rare; also not in upstream's set.
- *
- * Not stripped: `> /dev/null`, `< /dev/null`, `2>&1`. Upstream strips
- * these via `stripSafeRedirections` before its bare check; the AgenC
- * plan-mode gate is conservative-by-design — even `cmd > /dev/null` is
- * a write and plan mode is supposed to be reading.
- */
-function hasWriteRedirection(command: string): boolean {
-  let i = 0;
-  const n = command.length;
-  let inSingle = false;
-  let inDouble = false;
-  while (i < n) {
-    const c = command[i]!;
-    if (inSingle) {
-      if (c === "'") inSingle = false;
-      i += 1;
-      continue;
-    }
-    if (inDouble) {
-      if (c === "\\" && i + 1 < n) {
-        i += 2;
-        continue;
-      }
-      if (c === '"') inDouble = false;
-      i += 1;
-      continue;
-    }
-    if (c === "'") {
-      inSingle = true;
-      i += 1;
-      continue;
-    }
-    if (c === '"') {
-      inDouble = true;
-      i += 1;
-      continue;
-    }
-    if (c === "\\" && i + 1 < n) {
-      i += 2;
-      continue;
-    }
-    // `&>`, `&>>`
-    if (c === "&" && command[i + 1] === ">") return true;
-    // `1>`, `1>>`, `2>`, `2>>` (only when the digit is preceded by
-    // whitespace / start so we don't false-positive on `cat foo1>bar`
-    // — upstream's shell-quote tokenizer naturally separates the digit,
-    // we approximate by requiring a preceding word-boundary char).
-    if (
-      (c === "1" || c === "2") &&
-      command[i + 1] === ">" &&
-      (i === 0 || /\s/.test(command[i - 1] ?? ""))
-    ) {
-      return true;
-    }
-    // `>`, `>>`, `>|`
-    if (c === ">") return true;
-    i += 1;
-  }
-  return false;
-}
-
-function looksReadOnly(command: string): boolean {
-  // Hard reject: any write redirection short-circuits the safe-command
-  // allowlist. `cat > /etc/passwd` does NOT become read-only just
-  // because `cat` is in SANDBOX_SAFE_COMMANDS. Mirrors openclaude
-  // `hasShellRedirection` (modeValidation.ts:58-74).
-  if (hasWriteRedirection(command)) return false;
-  // Command substitution / variable expansion is unbounded execution.
-  if (/[`$]/.test(command)) return false;
-  const parts = splitCommand(command);
-  if (parts.length === 0) return false;
-  for (const part of parts) {
-    const firstTok = getFirstCommandToken(part);
-    if (firstTok === null) return false;
-    if (!SANDBOX_SAFE_COMMANDS.has(firstTok)) return false;
-    if (EXCLUDED_SANDBOX_COMMANDS.has(firstTok)) return false;
-  }
-  return true;
-}
-
-// ─────────────────────────────────────────────────────────────────────
 // Aggregation
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1016,14 +911,14 @@ export async function bashToolHasPermission(
   appState = context.getAppState();
   ctx = appState.toolPermissionContext;
 
-  // Plan mode: deny anything that isn't clearly read-only.
-  if (ctx.mode === "plan" && !looksReadOnly(input.command)) {
-    return {
-      behavior: "deny",
-      message: `Command \`${input.command}\` is not read-only and the runtime is in plan mode.`,
-      decisionReason: { type: "mode", mode: "plan" },
-    };
-  }
+  // Plan-mode enforcement is upstream-faithful: openclaude's
+  // `checkPermissionMode` (BashTool/modeValidation.ts:168-205) has no
+  // plan branch — `mode === "plan"` falls through to the normal
+  // permission flow. Bash redirects, mkdir, mv, rm in plan mode are
+  // discouraged by the system prompt only. The single hard gate is the
+  // plan-file write allowlist in `tools/system/filesystem.ts`. Earlier
+  // AgenC versions hard-blocked here via `looksReadOnly`; that block
+  // was non-upstream and is removed for strict parity.
 
   // Split into subcommands (regex-based, quote-aware).
   const subcommands = splitCommand(input.command);
@@ -1061,14 +956,8 @@ export async function bashToolHasPermission(
   appState = context.getAppState();
   ctx = appState.toolPermissionContext;
 
-  // Re-check plan mode — user may have entered it mid-split.
-  if (ctx.mode === "plan" && !looksReadOnly(input.command)) {
-    return {
-      behavior: "deny",
-      message: `Command \`${input.command}\` is not read-only and the runtime is in plan mode.`,
-      decisionReason: { type: "mode", mode: "plan" },
-    };
-  }
+  // (Removed second plan-mode re-check — not present upstream; see the
+  // first block above for the rationale.)
 
   // Per-subcommand evaluation.
   const subresults: BashSubcommandResult[] = [];

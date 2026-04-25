@@ -202,6 +202,41 @@ export function getPlanFilePath(ctx: PlanFileContext = {}): string {
   return pathForSlug(ctx, getPlanSlug(ctx));
 }
 
+/**
+ * Does `absolutePath` belong to the current session's plan-file family?
+ *
+ * Mirrors openclaude `isSessionPlanFile`
+ * (`/home/tetsuo/git/openclaude/src/utils/permissions/filesystem.ts:254`):
+ *
+ *     const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
+ *     return path.startsWith(expectedPrefix) && path.endsWith('.md')
+ *
+ * The prefix match (rather than exact equality) covers both the main
+ * plan file `<plansDir>/<slug>.md` and per-agent plans
+ * `<plansDir>/<slug>-agent-<agentId>.md`. The `.md` suffix guards
+ * against directory-traversal corner cases like `<slug>../../etc/passwd`.
+ *
+ * The `.slugs.json` index itself is NOT a plan file — its name does not
+ * end in `.md` so the suffix check excludes it.
+ *
+ * Used by the filesystem tools to allowlist plan-file writes regardless
+ * of the workspace allowlist, matching openclaude's
+ * `checkEditableInternalPath` carve-out (filesystem.ts:1488-1506) which
+ * fires before the workspace-write check and bypasses dangerous-path
+ * heuristics (the plan dir lives under `~/.agenc`/`~/.claude` which is
+ * normally treated as dangerous).
+ */
+export function isSessionPlanFile(
+  absolutePath: string,
+  ctx: PlanFileContext = {},
+): boolean {
+  if (typeof absolutePath !== "string" || absolutePath.length === 0) {
+    return false;
+  }
+  const expectedPrefix = join(getPlansDirectory(ctx), getPlanSlug(ctx));
+  return absolutePath.startsWith(expectedPrefix) && absolutePath.endsWith(".md");
+}
+
 export function getPlan(ctx: PlanFileContext = {}): string | null {
   const path = getPlanFilePath(ctx);
   try {

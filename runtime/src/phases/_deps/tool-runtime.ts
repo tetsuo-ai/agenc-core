@@ -716,11 +716,33 @@ export class StreamingToolExecutor {
                 message: `approval required for ${ctx.toolName} but no resolver is wired`,
               });
             },
-            dispatch: async () =>
-              dispatchWithInjectedArgs(this.registry, dispatchCall, {
+            dispatch: async () => {
+              // Plumb the session id so filesystem tools can resolve
+              // the active plan-file path (openclaude parity:
+              // `checkEditableInternalPath` allowlists plan files
+              // outside the workspace root). Sub-agents already
+              // receive this through `injectChildToolArgs` in
+              // `agents/run-agent.ts`; the main-session dispatch
+              // uses the conversationId here. Cast mirrors the
+              // pattern at `planFileContextForApproval` above —
+              // SessionLike's interface intentionally doesn't
+              // enumerate `conversationId`.
+              const sessionWithId = session as
+                | { readonly conversationId?: unknown }
+                | undefined;
+              const sessionId =
+                typeof sessionWithId?.conversationId === "string" &&
+                sessionWithId.conversationId.length > 0
+                  ? sessionWithId.conversationId
+                  : null;
+              return dispatchWithInjectedArgs(this.registry, dispatchCall, {
                 __onProgress: onProgress,
                 __callId: tool.toolCall.id,
-              }),
+                ...(sessionId !== null
+                  ? { __agencSessionId: sessionId }
+                  : {}),
+              });
+            },
           });
         } catch (err) {
           dispatchResult = {

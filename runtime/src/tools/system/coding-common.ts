@@ -7,14 +7,62 @@ import {
   resolve as resolvePath,
 } from "node:path";
 
+import {
+  isSessionPlanFile,
+  type PlanFileContext,
+} from "../../planning/plan-files.js";
 import type { Logger } from "../../utils/logger.js";
 import { runCommand } from "../../utils/process.js";
 import type { Tool, ToolCatalogEntry, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import {
+  canonicalizePath,
   resolveToolAllowedPaths,
   safePath,
 } from "./filesystem.js";
+
+/**
+ * Optional plan-file allowlist context derived from injected tool args.
+ * When the dispatcher injects `__agencSessionId`, the filesystem tools
+ * can resolve the active session's plan file path via plan-files.ts and
+ * allowlist it regardless of the workspace allowlist — mirrors
+ * openclaude's `checkEditableInternalPath` carve-out
+ * (utils/permissions/filesystem.ts:1488-1506).
+ */
+function planFileContextFromArgs(
+  args: Record<string, unknown>,
+): PlanFileContext | null {
+  const sessionId =
+    typeof args.__agencSessionId === "string" &&
+    args.__agencSessionId.trim().length > 0
+      ? args.__agencSessionId
+      : null;
+  if (sessionId === null) return null;
+  const ctx: PlanFileContext = { sessionId };
+  if (
+    typeof process.env.AGENC_HOME === "string" &&
+    process.env.AGENC_HOME.length > 0
+  ) {
+    return { ...ctx, agencHome: process.env.AGENC_HOME };
+  }
+  return ctx;
+}
+
+/**
+ * True when `targetPath` belongs to the active session's plan-file
+ * family AND the request carries enough session context to identify it.
+ * Centralises the "is this a plan-file write that bypasses the
+ * workspace allowlist" decision so writeFile / appendFile / editFile /
+ * mkdir / delete / move all stay in sync.
+ */
+export function isPlanFileWriteAllowed(
+  args: Record<string, unknown>,
+  targetPath: string,
+): boolean {
+  const ctx = planFileContextFromArgs(args);
+  if (ctx === null) return false;
+  return isSessionPlanFile(targetPath, ctx);
+}
 
 export const SESSION_ADVERTISED_TOOL_NAMES_ARG = "__agencAdvertisedToolNames";
 
@@ -142,10 +190,33 @@ export async function resolveWorkspacePath(params: {
   }
   const allowedPaths = resolveToolAllowedPaths(params.config.allowedPaths, params.args);
   const safe = await safePath(rawPath, allowedPaths);
-  if (!safe.safe) {
+  if (safe.safe) return safe.resolved;
+
+  // Plan-file allowlist (openclaude parity, filesystem.ts:1488-1506).
+  // When the rejection is for a path outside the workspace AND the
+  // target is the active session's plan file, allow it — that's the
+  // only writable target outside the workspace root, and the same
+  // carve-out applies in plan mode and outside (mode-agnostic, matches
+  // openclaude's `checkEditableInternalPath` which has no mode gate).
+  // Defence-in-depth: still reject the obvious unsafe shapes that
+  // safePath would have caught (null bytes, traversal, length).
+  if (
+    typeof rawPath !== "string" ||
+    rawPath.length === 0 ||
+    rawPath.includes("\0") ||
+    /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(rawPath)
+  ) {
     return { error: safe.reason ?? "Path is outside allowed directories" };
   }
-  return safe.resolved;
+  try {
+    const canonical = (await canonicalizePath(rawPath)).normalize("NFC");
+    if (isPlanFileWriteAllowed(params.args, canonical)) {
+      return canonical;
+    }
+  } catch {
+    // canonicalize threw — fall through to the original rejection.
+  }
+  return { error: safe.reason ?? "Path is outside allowed directories" };
 }
 
 export interface ResolvedSearchTarget {

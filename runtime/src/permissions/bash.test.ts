@@ -426,7 +426,14 @@ describe("bashToolHasPermission", () => {
     }
   });
 
-  test("plan mode + non-read-only command is denied", async () => {
+  test("plan mode does not hard-block non-read-only commands (upstream parity)", async () => {
+    // OpenClaude's `checkPermissionMode`
+    // (BashTool/modeValidation.ts:168-205) has no plan branch; bash
+    // redirects in plan mode fall through to the normal permission flow
+    // and rely on the system prompt to discourage the model. AgenC
+    // matches: no hard "plan mode → deny non-read-only" gate. The only
+    // hard plan-mode gate is the plan-file allowlist in
+    // tools/system/filesystem.ts.
     const ctx = makeCtx({
       mode: "plan",
       alwaysAllowRules: { userSettings: ["Bash"] },
@@ -436,51 +443,7 @@ describe("bashToolHasPermission", () => {
       { command: "echo hi > /tmp/x" },
       evalCtx,
     );
-    expect(result.behavior).toBe("deny");
-    if (result.behavior === "deny") {
-      expect(result.decisionReason.type).toBe("mode");
-      if (result.decisionReason.type === "mode") {
-        expect(result.decisionReason.mode).toBe("plan");
-      }
-    }
-  });
-
-  test("plan mode + read-only command is evaluated normally (passthrough→ask)", async () => {
-    const ctx = makeCtx({ mode: "plan" });
-    const evalCtx = makeEvaluatorCtx(ctx);
-    const result = await bashToolHasPermission({ command: "ls" }, evalCtx);
-    // No allow rule in the empty ctx, but plan mode doesn't force deny.
     expect(result.behavior).not.toBe("deny");
-  });
-
-  test("I-3 race: context mutation mid-eval is respected", async () => {
-    const start = makeCtx({ mode: "default" });
-    const afterShift = makeCtx({
-      mode: "plan",
-      alwaysDenyRules: { userSettings: [] },
-    });
-    const evalCtx = makeEvaluatorCtx(start);
-    let calls = 0;
-    const origGetAppState = evalCtx.getAppState;
-    const wrappedCtx: ToolEvaluatorContext = {
-      getAppState: () => {
-        calls++;
-        // Simulate user hitting Shift+Tab AFTER the first read.
-        if (calls >= 2) {
-          return { toolPermissionContext: afterShift };
-        }
-        return origGetAppState();
-      },
-    };
-    const result = await bashToolHasPermission(
-      { command: "echo hi > /tmp/x" },
-      wrappedCtx,
-    );
-    expect(result.behavior).toBe("deny");
-    if (result.behavior === "deny") {
-      expect(result.decisionReason.type).toBe("mode");
-    }
-    expect(calls).toBeGreaterThanOrEqual(2);
   });
 
   test("three subcommand aggregation (allow/ask/allow) resolves to ask", async () => {

@@ -62,6 +62,10 @@ function resolveSessionWorkspaceRoot(entry?: string): string {
   return process.env.AGENC_WORKSPACE ?? process.cwd();
 }
 import { addLineNumbers } from "./_deps/line-numbers.js";
+import {
+  isSessionPlanFile,
+  type PlanFileContext,
+} from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { normalizeOverescapedToolText } from "./_deps/overescaped-text.js";
@@ -578,6 +582,10 @@ function expandHomeDirectory(rawPath: string): string {
  * until it finds one that exists, canonicalizes it, then recomposes
  * the remaining segments.
  */
+export async function canonicalizePath(targetPath: string): Promise<string> {
+  return canonicalize(targetPath);
+}
+
 async function canonicalize(targetPath: string): Promise<string> {
   const abs = resolve(targetPath);
   try {
@@ -728,6 +736,32 @@ export function resolveToolAllowedPaths(
 }
 
 /** Validate and resolve a path argument from tool input. */
+/**
+ * Build the optional plan-file context from injected tool args. Returns
+ * null when the dispatcher didn't plumb `__agencSessionId` (e.g.,
+ * headless tests, embedded contexts), in which case the plan-file
+ * carve-out below is a no-op.
+ */
+function planFileContextFromArgs(
+  args: Record<string, unknown> | undefined,
+): PlanFileContext | null {
+  if (!args) return null;
+  const sessionId =
+    typeof args.__agencSessionId === "string" &&
+    args.__agencSessionId.trim().length > 0
+      ? args.__agencSessionId
+      : null;
+  if (sessionId === null) return null;
+  const ctx: PlanFileContext = { sessionId };
+  if (
+    typeof process.env.AGENC_HOME === "string" &&
+    process.env.AGENC_HOME.length > 0
+  ) {
+    return { ...ctx, agencHome: process.env.AGENC_HOME };
+  }
+  return ctx;
+}
+
 async function validatePath(
   input: unknown,
   allowedPaths: readonly string[],
@@ -741,10 +775,38 @@ async function validatePath(
     input,
     args ? resolveToolAllowedPaths(allowedPaths, args) : allowedPaths,
   );
-  if (!result.safe) {
-    return [null, errorResult(`Access denied: ${result.reason}`)];
+  if (result.safe) return [result.resolved, null];
+
+  // Plan-file allowlist (openclaude parity, filesystem.ts:1488-1506).
+  // When the rejection is for a path outside the workspace allowlist
+  // and the target is the active session's plan file, allow it. Same
+  // shape as openclaude's `checkEditableInternalPath`: mode-agnostic,
+  // bypasses workspace allowlist, retains all other safety checks
+  // (null bytes, traversal, length — those rejected upstream of here).
+  const planCtx = planFileContextFromArgs(args);
+  if (planCtx !== null && !hasUnsafeShape(input)) {
+    try {
+      const canonical = (await canonicalize(input)).normalize("NFC");
+      if (isSessionPlanFile(canonical, planCtx)) {
+        return [canonical, null];
+      }
+    } catch {
+      // canonicalize threw — fall through to the original rejection.
+    }
   }
-  return [result.resolved, null];
+  return [null, errorResult(`Access denied: ${result.reason}`)];
+}
+
+/**
+ * Cheap pre-canonicalize sanity check that mirrors the early
+ * `safePath` rejections (null bytes, traversal segments, length cap)
+ * so we don't relax those defences under the plan-file carve-out.
+ */
+function hasUnsafeShape(rawPath: string): boolean {
+  if (rawPath.includes("\0")) return true;
+  if (hasTraversalSegment(rawPath)) return true;
+  if (resolve(rawPath).length > MAX_PATH_LENGTH) return true;
+  return false;
 }
 
 const VALID_ENCODINGS = new Set(["utf-8", "base64"]);
