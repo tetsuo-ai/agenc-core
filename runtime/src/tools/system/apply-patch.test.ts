@@ -420,4 +420,66 @@ describe("apply_patch tool", () => {
     expect(result.content).toContain("patch target is outside allowed directories");
     expect(runner).not.toHaveBeenCalled();
   });
+
+  test("matches and updates a file written with CRLF line endings", async () => {
+    // Files authored on Windows / from clipboard often have CRLF; the
+    // patch text from the model is LF. Without normalizing the file's
+    // endings before seek, every fallback (rstrip/trim/unicode) fails
+    // because the file's lines end with \r and the pattern's don't.
+    await writeFile(
+      join(root, "crlf.txt"),
+      "alpha\r\nbeta\r\ngamma\r\n",
+      "utf8",
+    );
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: crlf.txt\n" +
+        "@@\n" +
+        " alpha\n" +
+        "-beta\n" +
+        "+BETA\n" +
+        " gamma\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const written = await readFile(join(root, "crlf.txt"), "utf8");
+    // Original CRLF endings preserved on write.
+    expect(written).toBe("alpha\r\nBETA\r\ngamma\r\n");
+  });
+
+  test("seek failure error includes file context and hints", async () => {
+    await writeFile(
+      join(root, "target.txt"),
+      "first\nsecond\nthird\n",
+      "utf8",
+    );
+    const tool = createApplyPatchTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: target.txt\n" +
+        "@@\n" +
+        " first\n" +
+        "-NOT-IN-FILE\n" +
+        "+replacement\n" +
+        " third\n" +
+        "*** End Patch",
+      cwd: root,
+    });
+
+    expect(result.isError).toBe(true);
+    const message = String(result.content);
+    expect(message).toContain("apply_patch: failed to locate");
+    expect(message).toContain("target.txt");
+    expect(message).toContain("Patch expected");
+    expect(message).toContain("File contents around line");
+    expect(message).toContain("first");
+    expect(message).toContain("Hints:");
+  });
 });

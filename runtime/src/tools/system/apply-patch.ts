@@ -57,6 +57,12 @@ Example:
 *** Delete File: obsolete.txt
 *** End Patch
 
+Context lines (prefixed with a space) are how the tool finds where to apply each hunk.
+- By default, include up to 3 lines of unchanged code immediately above and below each change.
+- If 3 lines is not enough to uniquely identify the snippet inside the file, expand the @@ header to name the enclosing class or function (e.g. @@ class Foo: or @@ def bar():). Multiple @@ headers in a row narrow the scope progressively.
+- For trailing edits, include "*** End of File" as the last line of the hunk so the tool biases toward the end of the file when locating the match.
+- Match is byte-for-byte first; whitespace, dash/quote/NBSP variants are forgiven as fallbacks. Prefer copying the existing lines verbatim — invented context drifts.
+
 Important:
 - Include an Add/Delete/Update header for every file operation.
 - Prefix new lines with +, including every line when creating a file.
@@ -510,11 +516,8 @@ function seekSequence(
   if (pattern.length === 0) return startIndex;
   if (pattern.length > lines.length) return null;
 
-  const searchStart =
-    endOfFile && lines.length >= pattern.length
-      ? lines.length - pattern.length
-      : startIndex;
   const searchEnd = lines.length - pattern.length;
+  const eofIndex = lines.length - pattern.length;
 
   const passes: ReadonlyArray<(value: string) => string> = [
     (value) => value,
@@ -523,16 +526,31 @@ function seekSequence(
     normalizeForFuzzyMatch,
   ];
 
-  for (const project of passes) {
-    for (let i = searchStart; i <= searchEnd; i += 1) {
-      let matched = true;
-      for (let j = 0; j < pattern.length; j += 1) {
-        if (project(lines[i + j] ?? "") !== project(pattern[j] ?? "")) {
-          matched = false;
-          break;
-        }
+  const matchAt = (
+    i: number,
+    project: (value: string) => string,
+  ): boolean => {
+    for (let j = 0; j < pattern.length; j += 1) {
+      if (project(lines[i + j] ?? "") !== project(pattern[j] ?? "")) {
+        return false;
       }
-      if (matched) return i;
+    }
+    return true;
+  };
+
+  for (const project of passes) {
+    // When the patch hunk has *** End of File, try the end-of-file
+    // position first — codex/seek_sequence.rs:29-33 does the same. This
+    // matters for trailing edits where the final block of the file is
+    // ambiguously similar to earlier text; without the EOF bias we'd
+    // match an earlier occurrence and write the new lines in the wrong
+    // location, then the next hunk's seek fails.
+    if (endOfFile && eofIndex >= startIndex) {
+      if (matchAt(eofIndex, project)) return eofIndex;
+    }
+    for (let i = startIndex; i <= searchEnd; i += 1) {
+      if (i === eofIndex && endOfFile) continue; // already tried above
+      if (matchAt(i, project)) return i;
     }
   }
   return null;
@@ -556,7 +574,13 @@ function computeReplacements(
       );
       if (contextIndex === null) {
         throw new Error(
-          `Failed to find context '${chunk.changeContext}' in ${path}`,
+          buildSeekFailureMessage(
+            originalLines,
+            [chunk.changeContext],
+            lineIndex,
+            path,
+            "context line",
+          ),
         );
       }
       lineIndex = contextIndex + 1;
@@ -589,7 +613,13 @@ function computeReplacements(
 
     if (found === null) {
       throw new Error(
-        `Failed to find expected lines in ${path}:\n${chunk.oldLines.join("\n")}`,
+        buildSeekFailureMessage(
+          originalLines,
+          chunk.oldLines,
+          lineIndex,
+          path,
+          "expected lines",
+        ),
       );
     }
 
@@ -598,6 +628,54 @@ function computeReplacements(
   }
 
   return replacements.sort(([lhs], [rhs]) => lhs - rhs);
+}
+
+/**
+ * Build a seek-failure message that lets the model self-correct. The
+ * previous "Failed to find expected lines in <path>:\n<lines>" form
+ * told the model the lookup failed but not what was already in the
+ * file at the expected location, what transformations were tried, or
+ * which line of the pattern first diverged. Including those puts the
+ * patch author in a position to fix the next attempt.
+ */
+function buildSeekFailureMessage(
+  originalLines: readonly string[],
+  pattern: readonly string[],
+  startIndex: number,
+  path: string,
+  what: string,
+): string {
+  const lines: string[] = [];
+  lines.push(`apply_patch: failed to locate ${what} in ${path}.`);
+  lines.push("");
+  lines.push("Patch expected (after exact / rstrip / trim / unicode-normalize fallbacks):");
+  for (const p of pattern) {
+    lines.push(`  | ${p}`);
+  }
+  // Show what's actually in the file near where the search began so the
+  // model can see the divergence (whitespace, line ending, character
+  // substitution, content drift).
+  const windowStart = Math.max(0, startIndex);
+  const windowEnd = Math.min(
+    originalLines.length,
+    windowStart + pattern.length + 6,
+  );
+  if (windowStart < originalLines.length) {
+    lines.push("");
+    lines.push(
+      `File contents around line ${windowStart + 1}-${windowEnd} (1-indexed):`,
+    );
+    for (let i = windowStart; i < windowEnd; i += 1) {
+      lines.push(`  ${(i + 1).toString().padStart(4)} | ${originalLines[i] ?? ""}`);
+    }
+  }
+  // Hint the most common authoring mistakes so the model knows what to
+  // re-check before retrying.
+  lines.push("");
+  lines.push(
+    "Hints: re-read the target lines verbatim (including indentation), confirm the file actually contains them, expand the @@ context header to disambiguate, and avoid normalizing typographic characters (—, “”, NBSP) — they're matched, but exact byte-for-byte content is preferred.",
+  );
+  return lines.join("\n");
 }
 
 function applyReplacements(
@@ -619,14 +697,24 @@ async function deriveUpdatedContent(
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to read file to update ${absolutePath}: ${message}`);
   });
-  const originalLines = originalContent.split("\n");
+  // Normalize the FILE's line endings before split so seekSequence can
+  // match patches authored with LF against files written with CRLF. The
+  // patch envelope was already CRLF→LF normalized in normalizePatchEnvelope;
+  // without doing the same to the file, a CRLF file makes every fallback
+  // pass fail (rstrip/trim/Unicode normalize the pattern but the file's
+  // line still ends in \r). Detect the original ending so we can restore
+  // it on write — Windows users expect their CRLF endings preserved.
+  const usedCrlf = /\r\n/.test(originalContent);
+  const normalizedContent = originalContent.replace(/\r\n?/gu, "\n");
+  const originalLines = normalizedContent.split("\n");
   if (originalLines.at(-1) === "") originalLines.pop();
 
   const replacements = computeReplacements(originalLines, absolutePath, chunks);
   const newLines = applyReplacements(originalLines, replacements);
   if (newLines.length === 0) return "";
   if (newLines.at(-1) !== "") newLines.push("");
-  return newLines.join("\n");
+  const joined = newLines.join("\n");
+  return usedCrlf ? joined.replace(/\n/g, "\r\n") : joined;
 }
 
 async function writeFileCreatingParents(
