@@ -11,6 +11,7 @@ import { csi } from './csi.js'
  * DEC private mode numbers
  */
 export const DEC = {
+  AUTOWRAP: 7,
   CURSOR_VISIBLE: 25,
   ALT_SCREEN: 47,
   ALT_SCREEN_CLEAR: 1049,
@@ -37,6 +38,12 @@ export function decreset(mode: number): string {
 // Pre-generated sequences for common modes
 export const BSU = decset(DEC.SYNCHRONIZED_UPDATE)
 export const ESU = decreset(DEC.SYNCHRONIZED_UPDATE)
+// DECAWM: cursor stays at the last column instead of wrapping to the next
+// line on the next write. Disabling autowrap during a frame write means
+// border cells at the right edge can't trigger a wrap → scroll → edge
+// residue chain. See terminal.ts:writeDiffToTerminal for the wrap.
+export const AUTOWRAP_OFF = decreset(DEC.AUTOWRAP)
+export const AUTOWRAP_ON = decset(DEC.AUTOWRAP)
 export const EBP = decset(DEC.BRACKETED_PASTE)
 export const DBP = decreset(DEC.BRACKETED_PASTE)
 export const EFE = decset(DEC.FOCUS_EVENTS)

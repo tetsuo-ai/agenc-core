@@ -4,7 +4,7 @@ import { coerce, gte } from './vendored/semver.js'
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
 import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
-import { BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
+import { AUTOWRAP_OFF, AUTOWRAP_ON, BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
 import { link } from './termio/osc.js'
 
 export type Progress = {
@@ -228,8 +228,19 @@ export function writeDiffToTerminal(
   // DEC 2026 (e.g. tmux) AND the cost matters (high-frequency alt-screen).
   const useSync = !skipSyncMarkers
 
+  // Disable DECAWM (autowrap) for the duration of the frame write. Writing
+  // a character to the terminal's last column normally puts the cursor in
+  // a "pending wrap" state — the next non-cursor-move write wraps to the
+  // next line, scrolls the viewport, or leaves edge residue depending on
+  // the terminal. Borders of full-width popups land exactly on that last
+  // column, so any cell we emit afterwards (BSU end, cursor restore,
+  // selection overlay) can corrupt the right edge. Disabling autowrap
+  // around our atomic frame write means cursor advancement past the last
+  // column stays at the last column — no wraparound, no scroll, no
+  // residue. Restored at end of the buffer so unrelated stdout writers
+  // (subprocess output, console.log) still see normal autowrap behavior.
   // Buffer all writes into a single string to avoid multiple write calls
-  let buffer = useSync ? BSU : ''
+  let buffer = (useSync ? BSU : '') + AUTOWRAP_OFF
 
   for (const patch of diff) {
     switch (patch.type) {
@@ -268,6 +279,11 @@ export function writeDiffToTerminal(
     }
   }
 
+  // Re-enable autowrap before closing the synchronized update. Any
+  // unrelated stdout writer (subprocess output, console.log) running
+  // outside our renderer expects DECAWM=on; leaving it off would break
+  // shell output and other tools that share the terminal.
+  buffer += AUTOWRAP_ON
   // Add synchronized update end and flush buffer
   if (useSync) buffer += ESU
   terminal.stdout.write(buffer)
