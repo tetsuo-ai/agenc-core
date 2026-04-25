@@ -63,6 +63,17 @@ export {
 export { createSleepTool } from "./sleep.js";
 
 export {
+  createMonitorTool,
+  type MonitorToolConfig,
+} from "./monitor.js";
+
+export {
+  createEnterWorktreeTool,
+  createExitWorktreeTool,
+  type WorktreeToolConfig,
+} from "./worktree.js";
+
+export {
   type BashToolConfig,
   type BashToolInput,
   type BashExecutionResult,

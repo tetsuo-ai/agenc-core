@@ -31,6 +31,9 @@ import {
   createPlanningTools,
   createApplyPatchTool,
   createSleepTool,
+  createMonitorTool,
+  createEnterWorktreeTool,
+  createExitWorktreeTool,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
@@ -402,6 +405,12 @@ export function buildToolRegistry(
       allowedPaths: [options.workspaceRoot],
     }),
     createSleepTool(),
+    createMonitorTool({
+      cwd: options.workspaceRoot,
+      unifiedExecManager,
+    }),
+    createEnterWorktreeTool({ cwd: options.workspaceRoot }),
+    createExitWorktreeTool({ cwd: options.workspaceRoot }),
     ...createPlanningTools({
       ...(options.workflowController !== undefined
         ? { workflowController: options.workflowController }
