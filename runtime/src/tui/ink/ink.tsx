@@ -838,7 +838,16 @@ export default class Ink {
     // becomes frontFrame (= next frame's prevScreen). If we applied the
     // selection overlay, that buffer has inverted cells. selActive/hlActive
     // are only ever true in alt-screen; in main-screen this is false→false.
-    this.prevFrameContaminated = selActive || hlActive;
+    //
+    // Also propagate forceFullRepaint to the NEXT frame whenever this
+    // frame had a layout shift OR was itself a forced full repaint. The
+    // first frame after a layout change is at high risk of producing
+    // stale-cell drift (e.g. a removed-and-then-added React subtree, a
+    // popup closing, a streaming insert that flips heights). Flagging the
+    // next frame to also do a full repaint gives the renderer a second
+    // opportunity to reconverge with the terminal's physical state.
+    this.prevFrameContaminated =
+      selActive || hlActive || forceFullRepaint;
 
     // A ScrollBox has pendingScrollDelta left to drain — schedule the next
     // frame. MUST NOT call this.scheduleRender() here: we're inside a
