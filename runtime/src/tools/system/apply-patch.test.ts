@@ -320,7 +320,14 @@ describe("apply_patch tool", () => {
     );
   });
 
-  test("rejects git unified diffs with apply_patch grammar guidance", async () => {
+  test("rejects git unified diffs with codex's verbatim Begin Patch parser error", async () => {
+    // Codex parity: the AgenC-invented `looksLikeGitUnifiedDiff` early-return
+    // is gone. Codex's parser does not special-case git diffs — they fail
+    // the same validate_patch_markers check as any other malformed input,
+    // returning the verbatim parser error string from
+    // `codex-rs/apply-patch/src/parser.rs:289-291` with the codex handler
+    // prefix `"apply_patch verification failed: "` from
+    // `core/src/tools/handlers/apply_patch.rs:448-450`.
     const runner = vi.fn<ApplyPatchRunner>();
     const tool = createApplyPatchTool({ allowedPaths: [root], runner });
 
@@ -336,9 +343,45 @@ describe("apply_patch tool", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("not a git unified diff");
-    expect(result.content).toContain("*** Begin Patch");
+    expect(result.content).toBe(
+      "apply_patch verification failed: The first line of the patch must be '*** Begin Patch'",
+    );
     expect(runner).not.toHaveBeenCalled();
+  });
+
+  test("tolerates leading whitespace on the *** End Patch terminator (codex parser parity)", async () => {
+    // The Grok failure pattern from session conv-mof0lxho: model emitted
+    // ` *** End Patch` (leading space) because the surrounding hunk lines
+    // also start with whitespace. Codex's parser uses `.trim()` on the
+    // first/last marker lines (`apply-patch/src/parser.rs:282-283`), so
+    // the patch is accepted; AgenC's previous strict `===` check rejected
+    // it and the model retried 12 times.
+    const runner = vi.fn<ApplyPatchRunner>().mockResolvedValue({
+      stdout: "ok",
+      stderr: "",
+      exitCode: 0,
+    });
+    const tool = createApplyPatchTool({ allowedPaths: [root], runner });
+
+    const result = await tool.execute({
+      patch:
+        "*** Begin Patch\n" +
+        "*** Update File: untouched.txt\n" +
+        "@@\n" +
+        " alpha\n" +
+        "-beta\n" +
+        "+gamma\n" +
+        " *** End Patch", // leading space — codex tolerates, AgenC must too
+      cwd: root,
+    });
+
+    // The parser-level marker check passes; the call proceeds to the
+    // runner. (Whether the runner subsequently succeeds depends on the
+    // hunk content; the assertion here is just that the marker check
+    // does NOT reject with the parse error.)
+    expect(result.content).not.toContain(
+      "The last line of the patch must be '*** End Patch'",
+    );
   });
 
   test("rejects absolute patch paths", async () => {
@@ -490,7 +533,11 @@ describe("apply_patch tool", () => {
     expect(written).toBe("#ifndef AGENC_AST_H\n#define AGENC_AST_H 2\n#endif\n");
   });
 
-  test("seek failure error includes file context and hints", async () => {
+  test("seek failure error matches codex's verbatim 'Failed to find expected lines' format", async () => {
+    // Verbatim from codex `apply-patch/src/lib.rs:518-522`:
+    //   "Failed to find expected lines in {path}:\n{old_lines.join('\n')}"
+    // The previous AgenC enhancement (Patch expected / File contents around
+    // line / Hints) was a deliberate divergence. Removed for codex parity.
     await writeFile(
       join(root, "target.txt"),
       "first\nsecond\nthird\n",
@@ -513,12 +560,15 @@ describe("apply_patch tool", () => {
 
     expect(result.isError).toBe(true);
     const message = String(result.content);
-    expect(message).toContain("apply_patch: failed to locate");
+    // Codex error format: "Failed to find expected lines in <path>:\n<lines>"
+    expect(message).toContain("Failed to find expected lines in");
     expect(message).toContain("target.txt");
-    expect(message).toContain("Patch expected");
-    expect(message).toContain("File contents around line");
-    expect(message).toContain("first");
-    expect(message).toContain("Hints:");
+    expect(message).toContain("first\nNOT-IN-FILE\nthird");
+    // The AgenC-specific diagnostic chrome must NOT be present.
+    expect(message).not.toContain("apply_patch: failed to locate");
+    expect(message).not.toContain("Patch expected");
+    expect(message).not.toContain("File contents around line");
+    expect(message).not.toContain("Hints:");
   });
 
   // ─────────────────────────────────────────────────────────────────────

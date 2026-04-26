@@ -2,7 +2,6 @@ import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
-import { safeStringify } from "../types.js";
 import {
   hasSessionRead,
   resolveToolAllowedPaths,
@@ -155,8 +154,20 @@ export interface ApplyPatchToolConfig {
   readonly runner?: ApplyPatchRunner;
 }
 
+/**
+ * Codex parity: errors flow through `FunctionCallError::RespondToModel(String)`
+ * which serializes as a plain-text `InputText` content item in the
+ * `FunctionCallOutputPayload` (see codex
+ * `core/src/tools/handlers/apply_patch.rs:448-462` and `core/src/tools/context.rs:255`).
+ * No JSON envelope. The model reads the error string directly.
+ *
+ * Parse-time errors carry codex's `"apply_patch verification failed: "`
+ * prefix (handlers/apply_patch.rs:448-450) inside the error string itself,
+ * baked in by `extractPatchPaths`. Path-safety / read-before-write errors
+ * have no codex parallel and stay un-prefixed.
+ */
 function errorResult(message: string): ToolResult {
-  return { content: safeStringify({ error: message }), isError: true };
+  return { content: message, isError: true };
 }
 
 function textResult(content: string): ToolResult {
@@ -268,26 +279,41 @@ function normalizePatchEnvelope(patch: string): string {
   return normalizeAddFileLines(normalized);
 }
 
-function looksLikeGitUnifiedDiff(patch: string): boolean {
-  return (
-    /^diff --git /mu.test(patch) ||
-    (/^--- [ab]\//mu.test(patch) && /^\+\+\+ [ab]\//mu.test(patch))
-  );
-}
-
+/**
+ * Verbatim port of codex `apply-patch/src/parser.rs:validate_patch_markers`
+ * (lines 280-296). Both first and last non-empty lines are `.trim()`-compared
+ * to the marker strings, which is what tolerates Grok-style ` *** End Patch`
+ * (leading whitespace from a hunk-context misread). AgenC's previous
+ * `lines.includes("*** End Patch")` strict check was the AgenC-side drift
+ * that caused the 12-retry loop in session conv-mof0lxho.
+ *
+ * Drops the AgenC-invented `looksLikeGitUnifiedDiff` early-return and the
+ * "empty patch path in header" check — codex's parser does not have either.
+ * Empty patches surface from the runner as codex's `"No files were modified."`
+ * (lib.rs:267).
+ */
 function extractPatchPaths(patch: string): string[] | { error: string } {
   const lines = patch.replace(/\r\n?/gu, "\n").split("\n");
-  if (looksLikeGitUnifiedDiff(patch)) {
+  const firstLine = (lines[0] ?? "").trim();
+  // Mirror codex's `last_line` semantics: take the literal last line of the
+  // input. `normalizePatchEnvelope` already `trimEnd`s the patch, so any
+  // trailing newline is stripped before this point and the last element is
+  // the actual terminator line.
+  const lastLine = (lines[lines.length - 1] ?? "").trim();
+  if (firstLine !== "*** Begin Patch") {
+    // Verbatim from codex parser.rs:289-291; codex handler prefixes parse
+    // errors with "apply_patch verification failed: " (handlers/apply_patch.rs:448).
     return {
       error:
-        "apply_patch expects the AgenC patch grammar, not a git unified diff. Retry with *** Begin Patch, *** Add File/Update File/Delete File headers, and *** End Patch.",
+        "apply_patch verification failed: The first line of the patch must be '*** Begin Patch'",
     };
   }
-  if (lines[0] !== "*** Begin Patch") {
-    return { error: "patch must start with *** Begin Patch" };
-  }
-  if (!lines.includes("*** End Patch")) {
-    return { error: "patch must end with *** End Patch" };
+  if (lastLine !== "*** End Patch") {
+    // Verbatim from codex parser.rs:292-294 + handler prefix.
+    return {
+      error:
+        "apply_patch verification failed: The last line of the patch must be '*** End Patch'",
+    };
   }
 
   const paths: string[] = [];
@@ -295,14 +321,8 @@ function extractPatchPaths(patch: string): string[] | { error: string } {
     const match = PATCH_PATH_HEADER.exec(line);
     if (!match) continue;
     const target = match[2]?.trim();
-    if (!target) {
-      return { error: `empty patch path in header: ${line}` };
-    }
+    if (!target) continue;
     paths.push(target);
-  }
-
-  if (paths.length === 0) {
-    return { error: "patch does not contain any file operations" };
   }
   return paths;
 }
@@ -610,14 +630,9 @@ function computeReplacements(
         false,
       );
       if (contextIndex === null) {
+        // Verbatim from codex `apply-patch/src/lib.rs:461-466`.
         throw new Error(
-          buildSeekFailureMessage(
-            originalLines,
-            [chunk.changeContext],
-            lineIndex,
-            path,
-            "context line",
-          ),
+          `Failed to find context '${chunk.changeContext}' in ${path}`,
         );
       }
       lineIndex = contextIndex + 1;
@@ -649,14 +664,9 @@ function computeReplacements(
     }
 
     if (found === null) {
+      // Verbatim from codex `apply-patch/src/lib.rs:518-522`.
       throw new Error(
-        buildSeekFailureMessage(
-          originalLines,
-          chunk.oldLines,
-          lineIndex,
-          path,
-          "expected lines",
-        ),
+        `Failed to find expected lines in ${path}:\n${chunk.oldLines.join("\n")}`,
       );
     }
 
@@ -665,54 +675,6 @@ function computeReplacements(
   }
 
   return replacements.sort(([lhs], [rhs]) => lhs - rhs);
-}
-
-/**
- * Build a seek-failure message that lets the model self-correct. The
- * previous "Failed to find expected lines in <path>:\n<lines>" form
- * told the model the lookup failed but not what was already in the
- * file at the expected location, what transformations were tried, or
- * which line of the pattern first diverged. Including those puts the
- * patch author in a position to fix the next attempt.
- */
-function buildSeekFailureMessage(
-  originalLines: readonly string[],
-  pattern: readonly string[],
-  startIndex: number,
-  path: string,
-  what: string,
-): string {
-  const lines: string[] = [];
-  lines.push(`apply_patch: failed to locate ${what} in ${path}.`);
-  lines.push("");
-  lines.push("Patch expected (after exact / rstrip / trim / unicode-normalize fallbacks):");
-  for (const p of pattern) {
-    lines.push(`  | ${p}`);
-  }
-  // Show what's actually in the file near where the search began so the
-  // model can see the divergence (whitespace, line ending, character
-  // substitution, content drift).
-  const windowStart = Math.max(0, startIndex);
-  const windowEnd = Math.min(
-    originalLines.length,
-    windowStart + pattern.length + 6,
-  );
-  if (windowStart < originalLines.length) {
-    lines.push("");
-    lines.push(
-      `File contents around line ${windowStart + 1}-${windowEnd} (1-indexed):`,
-    );
-    for (let i = windowStart; i < windowEnd; i += 1) {
-      lines.push(`  ${(i + 1).toString().padStart(4)} | ${originalLines[i] ?? ""}`);
-    }
-  }
-  // Hint the most common authoring mistakes so the model knows what to
-  // re-check before retrying.
-  lines.push("");
-  lines.push(
-    "Hints: re-read the target lines verbatim (including indentation), confirm the file actually contains them, expand the @@ context header to disambiguate, and avoid normalizing typographic characters (—, “”, NBSP) — they're matched, but exact byte-for-byte content is preferred.",
-  );
-  return lines.join("\n");
 }
 
 function applyReplacements(
