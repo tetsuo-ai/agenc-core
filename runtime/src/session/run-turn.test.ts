@@ -63,6 +63,7 @@ import type {
   LLMProvider,
   LLMResponse,
   LLMTool,
+  LLMToolCall,
   StreamProgressCallback,
 } from "../llm/types.js";
 import { StreamModelError } from "../phases/stream-model.js";
@@ -943,6 +944,101 @@ describe("runTurn — live sampling request contract", () => {
       expect(planCompleted[0].msg.payload.finalText).toContain("1. Inspect");
       expect(planCompleted[0].msg.payload.finalText).toContain("2. Patch");
     }
+  });
+
+  test("plan mode retries when provider returns assistant text without a tool call", async () => {
+    const ctx = mkCtx();
+    (ctx as unknown as {
+      sessionConfiguration: {
+        permissionContext: { mode: string };
+      };
+    }).sessionConfiguration = {
+      permissionContext: { mode: "plan" },
+    };
+
+    const exitPlanTool: LLMTool = {
+      type: "function",
+      function: {
+        name: "ExitPlanMode",
+        description: "exit plan mode",
+        parameters: { type: "object" },
+      },
+    };
+    const seenMessages: LLMMessage[][] = [];
+    let calls = 0;
+    const provider: LLMProvider = {
+      name: "stub-provider",
+      chat: async () => ({
+        content: "",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async (messages) => {
+        seenMessages.push(messages.map((message) => ({ ...message })));
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content:
+              "Questions for you:\n1. Which path should I take?\n\nReply with preferences.",
+            toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        }
+        if (calls === 2) {
+          return {
+            content: "",
+            toolCalls: [
+              {
+                id: "exit-plan",
+                name: "ExitPlanMode",
+                arguments: JSON.stringify({ plan: "## Plan\n\nUse tools." }),
+              },
+            ],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            model: "test-model",
+            finishReason: "tool_calls",
+          };
+        }
+        return {
+          content: "Plan mode exited.",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+      healthCheck: async () => true,
+    };
+    const registry = {
+      tools: [],
+      toLLMTools: () => [exitPlanTool],
+      dispatch: async (toolCall: LLMToolCall) => {
+        if (toolCall.name === "ExitPlanMode") {
+          (ctx as unknown as {
+            sessionConfiguration: {
+              permissionContext: { mode: string };
+            };
+          }).sessionConfiguration.permissionContext.mode = "bypassPermissions";
+        }
+        return { content: "exited", isError: false };
+      },
+    } as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+
+    await drain(session.runTurn("plan this", { ctx }));
+
+    expect(calls).toBe(3);
+    const secondRequestText = seenMessages[1]
+      ?.map((message) => String(message.content))
+      .join("\n");
+    expect(secondRequestText).toContain(
+      "Plan mode requires this step to end with a tool call.",
+    );
+    expect(secondRequestText).not.toContain("Reply with preferences");
   });
 });
 

@@ -60,6 +60,7 @@ export type ContinueReason =
   | "max_output_tokens_recovery"
   | "stop_hook_blocking"
   | "token_budget_continuation"
+  | "plan_tool_required"
   | "continuation_nudge";
 
 export interface Continue {
@@ -374,6 +375,10 @@ export interface TurnState {
    *  (stop-hook blocking cap). Wired in T8; incremented each time a
    *  stop hook returns blocking, reset on success. */
   stopHookBlockingCount: number;
+
+  /** Plan-mode guard retries after a provider ignores the tool-only
+   *  contract and returns plain assistant text. */
+  planToolRequiredRetryCount: number;
 }
 
 // I-30 (per-turn config snapshot) lives on `TurnContext.configSnapshot`
@@ -441,6 +446,7 @@ export function buildInitialTurnState(
     transition: undefined,
     stopHookActive: undefined,
     stopHookBlockingCount: 0,
+    planToolRequiredRetryCount: 0,
   };
 }
 

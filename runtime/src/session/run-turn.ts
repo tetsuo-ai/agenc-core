@@ -139,6 +139,8 @@ class RegularTurnTask implements SessionTask {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
+const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
+
 function buildSeedMessages(
   opts: RunTurnOptions,
   userMessage: string,
@@ -595,6 +597,50 @@ function buildSamplingRequestContract(
   );
 }
 
+function removeLastAssistantMessage(state: TurnState): void {
+  const last = state.messages.at(-1);
+  if (last?.role === "assistant") {
+    state.messages.pop();
+  }
+}
+
+function enforcePlanModeToolBoundary(
+  state: TurnState,
+  ctx: TurnContext,
+  request: StreamModelRequestContract,
+): void {
+  if (!planModeHelpers.isPlanMode(ctx)) return;
+  if (request.tools.length === 0) return;
+  if (state.toolUseBlocks.length > 0) {
+    state.planToolRequiredRetryCount = 0;
+    return;
+  }
+
+  const assistant = state.assistantMessages.at(-1);
+  const assistantText = assistant?.text?.trim() ?? "";
+  if (assistantText.length === 0) return;
+
+  state.planToolRequiredRetryCount += 1;
+  if (state.planToolRequiredRetryCount > MAX_PLAN_TOOL_REQUIRED_RETRIES) {
+    throw new StreamModelError(
+      new Error(
+        "plan_mode_tool_required: provider returned assistant text without a tool call",
+      ),
+    );
+  }
+
+  removeLastAssistantMessage(state);
+  state.assistantMessages = [];
+  state.toolUseBlocks = [];
+  state.needsFollowUp = false;
+  state.messages.push({
+    role: "user",
+    content:
+      "Plan mode requires this step to end with a tool call. Do not ask questions or request approval in assistant text. If you need user input, call AskUserQuestion with concrete options. If the plan is ready for approval, call ExitPlanMode. If you need more context, call a read-only tool.",
+  });
+  state.transition = { reason: "plan_tool_required" };
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Codex port: sampling request orchestration
 // ─────────────────────────────────────────────────────────────────────
@@ -684,6 +730,7 @@ async function tryRunSamplingRequest(
   let streamModelError: StreamModelError | null = null;
   try {
     await streamModel(state, ctx, session, request, signal);
+    enforcePlanModeToolBoundary(state, ctx, request);
   } catch (error) {
     if (error instanceof StreamModelError) {
       streamModelError = error;
