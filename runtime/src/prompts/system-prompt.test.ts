@@ -1,24 +1,28 @@
 /**
- * Tests for the 15-section system prompt assembly + dynamic boundary.
+ * Tests for the openclaude-derived system prompt assembly + dynamic boundary.
  *
- * Covers (≥15):
+ * Covers:
  *   1.  simple_intro emits expected content
  *   2.  simple_system emits expected content
  *   3.  simple_doing_tasks emits expected content
  *   4.  actions section emits expected content
  *   5.  using_your_tools section emits expected content
- *   6.  tone_and_style emits expected content
- *   7.  output_efficiency emits expected content
- *   8.  env info populates cwd / model / platform
- *   9.  env info tolerates missing git branch
- *   10. language section off when language unset
- *   11. output_style section on when provided
- *   12. mcp_instructions aggregates connected servers
- *   13. assembleSystemPrompt places SYSTEM_PROMPT_DYNAMIC_BOUNDARY exactly once
- *   14. assembleSystemPrompt static prefix is stable across repeated calls
- *   15. AGENC_SIMPLE truthy → ultra-minimal prompt
- *   16. assembleSystemPrompt with all optional inputs is coherent
- *   17. assembleSystemPrompt with empty dynamic tail is coherent
+ *   6.  agent_tool section gates on system.agent.delegate
+ *   7.  tone_and_style emits expected content
+ *   8.  output_efficiency emits expected content
+ *   9.  env info populates cwd / model / platform
+ *   10. env info tolerates missing git branch
+ *   11. language section off when language unset
+ *   12. output_style section on when provided
+ *   13. mcp_instructions aggregates connected servers
+ *   14. assembleSystemPrompt places SYSTEM_PROMPT_DYNAMIC_BOUNDARY exactly once
+ *   15. assembleSystemPrompt static prefix is stable across repeated calls
+ *   16. AGENC_SIMPLE truthy → ultra-minimal prompt
+ *   17. assembleSystemPrompt with all optional inputs is coherent
+ *   18. assembleSystemPrompt with empty dynamic tail is coherent
+ *   19. permissions section injected when permissionContext is supplied
+ *   20. AGENC.md instruction-file guard is present
+ *   21. dynamic sections reload instead of reusing stale process-global cache
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -34,23 +38,16 @@ import {
   assembleSystemPrompt,
   buildEnvInfoSection,
   getActionsSection,
-  getAmbitionVsPrecisionSection,
-  getEditingConstraintsSection,
-  getFinalAnswerVerbositySection,
-  getFrontendTasksSection,
+  getAgentToolSection,
   getLanguageSection,
   getMcpInstructionsSection,
-  getOrchestrationSection,
   getOutputEfficiencySection,
   getOutputStyleSection,
-  getResponsivenessSection,
   getSimpleDoingTasksSection,
   getSimpleIntroSection,
   getSimpleSystemSection,
   getSimpleToneAndStyleSection,
-  getToolGuidelinesSection,
   getUsingYourToolsSection,
-  getValidatingYourWorkSection,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 
@@ -133,14 +130,27 @@ describe("static section emitters", () => {
     const s = getSimpleSystemSection();
     expect(s.startsWith("# System")).toBe(true);
     expect(s).toContain("<system-reminder>");
-    expect(s).toContain("prompt-injection");
+    expect(s).toContain("prompt injection");
+    // AgenC-specific instruction-file guard.
+    expect(s).toContain("AgenC uses AGENC.md as its instruction file");
   });
 
   test("simple_doing_tasks describes task execution protocol", () => {
     const s = getSimpleDoingTasksSection();
     expect(s).toContain("# Doing tasks");
-    expect(s).toContain("Do not propose changes to code you have not read");
+    // Lifted from openclaude — top-level instruction.
+    expect(s).toContain(
+      "do not propose changes to code you haven't read",
+    );
+    // Lifted from openclaude `USER_TYPE === 'ant'` faithful-reporting bullet.
     expect(s).toContain("Report outcomes faithfully");
+    // Lifted from openclaude code-style sub-bullets.
+    expect(s).toContain("Default to writing no comments");
+    // Openclaude-specific slash-commands and bug-report bullets must be gone.
+    expect(s).not.toContain("/help");
+    expect(s).not.toContain("/issue");
+    expect(s).not.toContain("/share");
+    expect(s).not.toContain("OpenClaude");
   });
 
   test("actions section calls out destructive-op confirmation", () => {
@@ -148,6 +158,9 @@ describe("static section emitters", () => {
     expect(s).toContain("# Executing actions with care");
     expect(s).toContain("Destructive operations");
     expect(s).toContain("force-push");
+    // AgenC adapted from openclaude's `CLAUDE.md` reference → `AGENC.md`.
+    expect(s).toContain("AGENC.md");
+    expect(s).not.toContain("CLAUDE.md");
   });
 
   test("using_your_tools renders the CRITICAL bash-vs-dedicated-tools block pointing at the openclaude-derived file/search tools", () => {
@@ -160,7 +173,6 @@ describe("static section emitters", () => {
       "Glob",
       "Grep",
       "TodoWrite",
-      "system.searchTools",
     ]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
@@ -170,11 +182,7 @@ describe("static section emitters", () => {
       "Do NOT use the exec_command to run commands when a relevant dedicated tool is provided",
     );
     expect(s).toContain("This is CRITICAL");
-    // The new openclaude-derived first-class tools (lifted into AgenC).
-    // FileRead/Edit/Write/Glob/Grep replace the previous deferred
-    // `system.readFile`/`system.editFile`/`system.writeFile`/`system.glob`/
-    // `system.grep` mentions — they're now visible by default in
-    // tool-registry.ts.
+    // The openclaude-derived first-class tools (lifted into AgenC).
     expect(s).toContain("To read files use FileRead instead of cat, head, tail, or sed");
     expect(s).toContain("To edit files use Edit instead of sed or awk");
     expect(s).toContain(
@@ -186,7 +194,6 @@ describe("static section emitters", () => {
     );
     // apply_patch is dropped — Edit/Write cover all supported file mutations.
     expect(s).not.toContain("apply_patch");
-    expect(s).not.toContain("For multi-file atomic patches");
     expect(s).toContain(
       "Reserve using the exec_command exclusively for system commands and terminal operations",
     );
@@ -252,207 +259,25 @@ describe("static section emitters", () => {
     );
   });
 
-  test("editing_constraints renders the AgenC-adapted ## Editing constraints when Edit/Write are enabled", () => {
-    const tools = new Set(["Edit", "Write", "exec_command"]);
-    const s = getEditingConstraintsSection(tools);
+  test("agent_tool renders standard delegation prose when system.agent.delegate is enabled", () => {
+    const s = getAgentToolSection(new Set(["system.agent.delegate"]));
     expect(s).not.toBeNull();
     const text = String(s);
-    expect(text).toContain("## Editing constraints");
-    // AgenC-adapted bullet pointing at Edit/Write instead of codex's
-    // apply_patch — the rule that prevents the model from using
-    // `cat >> docs/feature-matrix.md` style shell-redirect file mutations.
+    expect(text).toContain("# Subagents");
+    expect(text).toContain("system.agent.delegate");
     expect(text).toContain(
-      "Always use Edit for in-place file edits and Write for new files. Do not use cat, sed, awk, or any other shell commands when creating or editing files",
+      "Use the system.agent.delegate tool with specialized agents when the task at hand matches the agent's description",
     );
     expect(text).toContain(
-      "Do not use Python to read/write files when a simple shell command, Edit, or Write would suffice",
-    );
-    // apply_patch is gone from this section — we ship Edit/Write instead.
-    expect(text).not.toContain("apply_patch");
-    expect(text).toContain("You may be in a dirty git worktree");
-    // Nested dirty-worktree sub-bullets (rendered via prependBullets nesting).
-    expect(text).toContain(
-      "NEVER revert existing changes you did not make unless explicitly requested",
-    );
-    expect(text).toContain(
-      "**NEVER** use destructive commands like `git reset --hard`",
-    );
-    expect(text).toContain("**ALWAYS** prefer using non-interactive git commands");
-  });
-
-  test("editing_constraints renders when only Edit is enabled (Write absent)", () => {
-    const s = getEditingConstraintsSection(new Set(["Edit", "exec_command"]));
-    expect(s).not.toBeNull();
-    expect(String(s)).toContain("## Editing constraints");
-  });
-
-  test("editing_constraints renders when only Write is enabled (Edit absent)", () => {
-    const s = getEditingConstraintsSection(new Set(["Write", "exec_command"]));
-    expect(s).not.toBeNull();
-    expect(String(s)).toContain("## Editing constraints");
-  });
-
-  test("editing_constraints returns null when neither Edit nor Write is enabled (gated)", () => {
-    expect(getEditingConstraintsSection(new Set(["exec_command"]))).toBeNull();
-    expect(getEditingConstraintsSection(new Set())).toBeNull();
-  });
-
-  test("tool_guidelines renders the AgenC-adapted # Tool Guidelines (## Shell commands only) when a shell is enabled", () => {
-    const tools = new Set(["exec_command"]);
-    const s = getToolGuidelinesSection(tools);
-    expect(s).not.toBeNull();
-    const text = String(s);
-    expect(text).toContain("# Tool Guidelines");
-    expect(text).toContain("## Shell commands");
-    // Codex gpt-5.2 base_instructions:250 — verbatim, kept under shell guidance.
-    expect(text).toContain(
-      "When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster",
-    );
-    expect(text).toContain(
-      "Do not use python scripts to attempt to output larger chunks of a file",
-    );
-    // The codex `multi_tool_use.parallel` reference is adapted to AgenC's
-    // parallel mechanism (multiple tool calls in the same assistant message).
-    expect(text).toContain("Make multiple tool calls in the same assistant message");
-    // The codex `## apply_patch` subsection is dropped — AgenC ships
-    // Edit/Write whose own tool descriptions carry per-tool guidance.
-    expect(text).not.toContain("## apply_patch");
-    expect(text).not.toContain("apply_patch");
-    expect(text).not.toContain("*** Begin Patch");
-    expect(text).not.toContain("*** End Patch");
-    expect(text).not.toContain("*** Add File:");
-    expect(text).not.toContain("*** Delete File:");
-    expect(text).not.toContain("*** Update File:");
-  });
-
-  test("tool_guidelines still renders when shell is enabled alongside the visible Edit/Write tools", () => {
-    const s = getToolGuidelinesSection(
-      new Set(["exec_command", "Edit", "Write"]),
-    );
-    expect(s).not.toBeNull();
-    const text = String(s);
-    expect(text).toContain("# Tool Guidelines");
-    expect(text).toContain("## Shell commands");
-    expect(text).not.toContain("## apply_patch");
-    expect(text).not.toContain("apply_patch");
-  });
-
-  test("tool_guidelines returns null when no shell tool is available", () => {
-    expect(getToolGuidelinesSection(new Set())).toBeNull();
-    // Edit/Write alone (no shell) should not produce # Tool Guidelines —
-    // the section is shell-scoped now that the apply_patch subsection is gone.
-    expect(getToolGuidelinesSection(new Set(["Edit", "Write"]))).toBeNull();
-  });
-
-  test("responsiveness renders codex gpt-5.2 ## Responsiveness header verbatim", () => {
-    const s = getResponsivenessSection();
-    expect(s).toContain("## Responsiveness");
-    // Codex gpt-5.2 publishes the heading with no body — mirror that exactly.
-    expect(s.trim()).toBe("## Responsiveness");
-  });
-
-  test("validating_your_work renders codex gpt-5.2 ## Validating your work verbatim", () => {
-    const s = getValidatingYourWorkSection();
-    expect(s).toContain("## Validating your work");
-    // Verbatim line from codex gpt-5.2 base_instructions:138.
-    expect(s).toContain(
-      "If the codebase has tests, or the ability to build or run tests, consider using them to verify changes once your work is complete.",
-    );
-    // Verbatim line from codex gpt-5.2 base_instructions:140.
-    expect(s).toContain(
-      "When testing, your philosophy should be to start as specific as possible to the code you changed",
-    );
-    // The non-interactive vs interactive bullet pair.
-    expect(s).toContain(
-      "When running in non-interactive approval modes like **never** or **on-failure**",
-    );
-    expect(s).toContain(
-      "When working in interactive approval modes like **untrusted**, or **on-request**",
+      "avoid duplicating work that subagents are already doing",
     );
   });
 
-  test("ambition_vs_precision renders codex gpt-5.2 ## Ambition vs. precision verbatim", () => {
-    const s = getAmbitionVsPrecisionSection();
-    expect(s).toContain("## Ambition vs. precision");
-    // Verbatim line from codex gpt-5.2 base_instructions:154.
-    expect(s).toContain(
-      "For tasks that have no prior context (i.e. the user is starting something brand new), you should feel free to be ambitious and demonstrate creativity with your implementation.",
-    );
-    // Verbatim line from codex gpt-5.2 base_instructions:156 — surgical precision rule.
-    expect(s).toContain(
-      "If you're operating in an existing codebase, you should make sure you do exactly what the user asks with surgical precision.",
-    );
-    expect(s).toContain("gold-plating");
-  });
-
-  test("frontend_tasks renders codex gpt-5.4 ## Frontend tasks verbatim", () => {
-    const s = getFrontendTasksSection();
-    expect(s).toContain("## Frontend tasks");
-    // Verbatim opening line from codex gpt-5.4 base_instructions:55.
-    expect(s).toContain(
-      `When doing frontend design tasks, avoid collapsing into "AI slop" or safe, average-looking layouts.`,
-    );
-    // Bullet content checks — each major bullet from upstream.
-    expect(s).toContain(
-      "Typography: Use expressive, purposeful fonts and avoid default stacks (Inter, Roboto, Arial, system).",
-    );
-    expect(s).toContain("avoid purple-on-white defaults");
-    expect(s).toContain("useEffectEvent, startTransition, and useDeferredValue");
-    // Verbatim closing exception from codex gpt-5.4 base_instructions:65.
-    expect(s).toContain(
-      "Exception: If working within an existing website or design system, preserve the established patterns, structure, and visual language.",
-    );
-  });
-
-  test("final_answer_verbosity renders codex gpt-5.2 **Verbosity** block verbatim", () => {
-    const s = getFinalAnswerVerbositySection();
-    expect(s).toContain("**Verbosity**");
-    // Verbatim line from codex gpt-5.2 base_instructions:227 — the
-    // tiny/small change compactness rule.
-    expect(s).toContain(
-      "Tiny/small single-file change (≤ ~10 lines): 2–5 sentences or ≤3 bullets.",
-    );
-    expect(s).toContain("Medium change (single area or a few files): ≤6 bullets");
-    expect(s).toContain("Large/multi-file change: Summarize per file with 1–2 bullets");
-    // Verbatim never-do clause from codex gpt-5.2 base_instructions:230.
-    expect(s).toContain(
-      `Never include "before/after" pairs, full method bodies, or large/scrolling code blocks in the final message.`,
-    );
-  });
-
-  test("orchestration renders codex orchestrator.md verbatim when system.agent.delegate is enabled", () => {
-    const tools = new Set(["system.agent.delegate"]);
-    const s = getOrchestrationSection(tools);
-    expect(s).not.toBeNull();
-    const text = String(s);
-    expect(text).toContain("## Orchestration");
-    // Verbatim opening bullet from orchestrator.md:1.
-    expect(text).toContain(
-      "If the user makes a simple request (such as asking for the time) which you can fulfill by running a terminal command (such as `date`), you should do so.",
-    );
-    // Verbatim co-builder bullet from orchestrator.md:2.
-    expect(text).toContain(
-      "Treat the user as an equal co-builder; preserve the user's intent and coding style rather than rewriting everything.",
-    );
-    // User Updates Spec sub-section from orchestrator.md:7-9.
-    expect(text).toContain("### User Updates Spec");
-    expect(text).toContain("heads‑down note");
-    // Reviews section from orchestrator.md:19-21.
-    expect(text).toContain("# Reviews");
-    expect(text).toContain(
-      "When the user asks for a review, you default to a code-review mindset.",
-    );
-    // General guidelines closing block from orchestrator.md:37-43.
-    expect(text).toContain("## General guidelines");
-    expect(text).toContain(
-      "Prefer multiple sub-agents to parallelize your work.",
-    );
-    expect(text).toContain("**wait for them before yielding**");
-  });
-
-  test("orchestration returns null when system.agent.delegate is not enabled (gated)", () => {
-    expect(getOrchestrationSection(new Set())).toBeNull();
-    expect(getOrchestrationSection(new Set(["exec_command", "Edit", "Write"]))).toBeNull();
+  test("agent_tool returns null when system.agent.delegate is not enabled (gated)", () => {
+    expect(getAgentToolSection(new Set())).toBeNull();
+    expect(
+      getAgentToolSection(new Set(["exec_command", "Edit", "Write"])),
+    ).toBeNull();
   });
 
   test("tone_and_style bans emojis + colons before tool calls", () => {
@@ -460,12 +285,17 @@ describe("static section emitters", () => {
     expect(s).toContain("# Tone and style");
     expect(s).toContain("emojis");
     expect(s).toContain("Do not use a colon before tool calls");
+    // owner/repo#123 GitHub-link guidance (neutral, not openclaude's
+    // anthropics/claude-code#100 example).
+    expect(s).toContain("owner/repo#123");
+    expect(s).not.toContain("anthropics/claude-code");
   });
 
   test("output_efficiency emphasizes brevity", () => {
     const s = getOutputEfficiencySection();
     expect(s).toContain("# Output efficiency");
     expect(s).toContain("concise");
+    expect(s).toContain("Lead with the answer or action");
   });
 });
 
@@ -604,6 +434,27 @@ describe("assembleSystemPrompt", () => {
     expect(sections[2]).toContain("# Environment");
   });
 
+  test("agent_tool section appears in static head when system.agent.delegate is enabled", async () => {
+    const { text, sections } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      enabledToolNames: new Set([
+        "exec_command",
+        "Edit",
+        "Write",
+        "system.agent.delegate",
+      ]),
+      envForSimpleMode: {},
+    });
+    expect(text).toContain("# Subagents");
+    expect(text).toContain("system.agent.delegate");
+    // It lives in the cacheable head, not the dynamic tail.
+    const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(
+      sections.slice(0, boundaryIdx).some((s) => s.includes("# Subagents")),
+    ).toBe(true);
+  });
+
   test("all optional inputs produce a coherent combined output", async () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,
@@ -611,17 +462,23 @@ describe("assembleSystemPrompt", () => {
       projectInstructions: "# Project\nThis is AGENC.md content.",
       memoryPrompt: "# Memory\nUser prefers dark mode.",
       agentsEnabled: true,
-      enabledToolNames: new Set(["Bash", "Read", "Edit", "AskUserQuestion"]),
+      enabledToolNames: new Set([
+        "exec_command",
+        "FileRead",
+        "Edit",
+        "Write",
+        "Glob",
+        "Grep",
+        "TodoWrite",
+        "AskUserQuestion",
+        "system.agent.delegate",
+      ]),
       language: "French",
       outputStyle: { name: "terse", prompt: "Minimize words." },
       mcpServers: [
         { name: "searchsrv", instructions: "Use for web search." },
       ],
       scratchpadDir: "/tmp/agenc-scratchpad",
-      functionResultClearingEnabled: true,
-      numericLengthAnchors: true,
-      tokenBudgetEnabled: true,
-      summarizeToolResults: true,
       provider: "xai",
       envForSimpleMode: {},
     });
@@ -637,11 +494,10 @@ describe("assembleSystemPrompt", () => {
     expect(text).toContain("# MCP Server Instructions");
     expect(text).toContain("## searchsrv");
     expect(text).toContain("# Scratchpad Directory");
-    expect(text).toContain("# Function Result Clearing");
-    expect(text).toContain("Length limits");
-    expect(text).toContain("token target");
+    // Agent tool section also rendered when system.agent.delegate is visible.
+    expect(text).toContain("# Subagents");
     expect(text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
-    expect(sections.length).toBeGreaterThan(10);
+    expect(sections.length).toBeGreaterThan(8);
   });
 
   test("permissions section is injected when a permissionContext is supplied", async () => {
@@ -733,11 +589,13 @@ describe("assembleSystemPrompt", () => {
     const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     const tail = sections.slice(boundaryIdx + 1);
     expect(tail.some((s) => s.startsWith("# Environment"))).toBe(true);
-    // Language / output_style / MCP / scratchpad / frc / numeric / token /
-    // brief / summarize are all absent when their inputs are off.
+    // Language / output_style / MCP / scratchpad are all absent when their
+    // inputs are off.
     expect(text).not.toContain("# Language");
     expect(text).not.toContain("# Output Style:");
     expect(text).not.toContain("# MCP Server Instructions");
     expect(text).not.toContain("# Scratchpad Directory");
+    // Agent tool gated off without system.agent.delegate.
+    expect(text).not.toContain("# Subagents");
   });
 });
