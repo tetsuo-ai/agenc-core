@@ -38,6 +38,18 @@ export {
 } from "./planning.js";
 
 export {
+  ASK_USER_QUESTION_TOOL_NAME,
+  createAskUserQuestionTool,
+  parseAskUserQuestionInput,
+  recordAskUserQuestionResponse,
+  clearAskUserQuestionResponse,
+  clearAskUserQuestionResponsesForTest,
+  type AskUserQuestion,
+  type AskUserQuestionInput,
+  type AskUserQuestionOption,
+} from "./ask-user-question.js";
+
+export {
   createBashTool,
   isCommandAllowed,
   validateShellCommand,

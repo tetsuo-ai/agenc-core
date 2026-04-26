@@ -85,6 +85,22 @@ describe("classifyToolApproval", () => {
       }).kind,
     ).toBe("needs_approval");
   });
+
+  test("interactive tools need approval even when read-only", () => {
+    const interactiveTool: Tool = {
+      ...readTool,
+      name: "AskUserQuestion",
+      requiresApproval: true,
+      requiresUserInteraction: () => true,
+    };
+
+    expect(
+      classifyToolApproval(interactiveTool, {
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+      }).kind,
+    ).toBe("needs_approval");
+  });
 });
 
 describe("defaultRetryPolicy + attemptWithRetry", () => {

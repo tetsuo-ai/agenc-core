@@ -267,6 +267,10 @@ export function classifyToolApproval(
   const sandboxBypass =
     opts.sandboxMode === "danger_full_access" && opts.approvalPolicy === "never";
 
+  if (tool.requiresUserInteraction?.() === true) {
+    return { kind: "needs_approval", reason: "tool requires user interaction" };
+  }
+
   switch (opts.approvalPolicy) {
     case "never":
       return { kind: "skip", bypassSandbox: sandboxBypass };

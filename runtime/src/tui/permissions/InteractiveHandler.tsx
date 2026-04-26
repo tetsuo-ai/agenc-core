@@ -36,6 +36,10 @@ import {
   type ApprovalDecision,
 } from "./ApprovalOverlay.js";
 import { useOptionalAgenCAppState } from "../state/AppState.js";
+import {
+  ASK_USER_QUESTION_TOOL_NAME,
+} from "../../tools/system/ask-user-question.js";
+import { AskUserQuestionOverlay } from "./AskUserQuestionOverlay.js";
 
 // ───────────────────────────────────────────────────────────────────────
 // Public types
@@ -413,6 +417,24 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
           source: "user",
         } as ResolverPayload, "user");
       };
+
+      if (request.toolName === ASK_USER_QUESTION_TOOL_NAME) {
+        disposeRef.current = overlayContext.push(
+          <AskUserQuestionOverlay
+            requestId={request.requestId}
+            input={request.toolInput}
+            onResolve={(decision) => {
+              settleIfFresh({ ...decision, source: "user" }, "user");
+            }}
+            abortSignal={abortSignal}
+          />,
+        );
+        staleTimer = setInterval(() => {
+          if (cancelledRef.current || request.resolveOnce.isResolved()) return;
+          dropIfStale("stale");
+        }, STALE_WATCH_INTERVAL_MS);
+        return;
+      }
 
       disposeRef.current = overlayContext.push(
         <ApprovalOverlay
