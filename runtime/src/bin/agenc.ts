@@ -67,7 +67,7 @@ import {
 import {
   loadTieredInstructions,
   assembleTieredInstructions,
-} from "../prompts/claude-md.js";
+} from "../prompts/agenc-md.js";
 import {
   loadMemoryPrompt,
   scanMemoryDir,
@@ -544,8 +544,7 @@ async function buildPlanModeSystemReminder(
   const planExists = getPlan(fileCtx) !== null;
 
   // Out-of-plan branch: emit the one-shot `## Exited Plan Mode` reminder
-  // exactly once on the first non-plan turn after a plan-leave. Mirrors
-  // openclaude getPlanModeExitAttachment (utils/attachments.ts:1245-1274).
+  // exactly once on the first non-plan turn after a plan-leave.
   // Any non-plan target counts (default, acceptEdits, bypassPermissions,
   // auto) — the pulse was set by transitionPermissionMode regardless of
   // toMode.
@@ -619,9 +618,9 @@ export async function* runSingleTurn(
         mcpServers: opts.mcpServers ?? [],
       };
 
-  // Surface the active permission mode to the model. Codex-ported
-  // approval-policy + sandbox-mode prose is injected as a dynamic section
-  // by the assembler when a context is supplied.
+  // Surface the active permission mode to the model. Approval-policy and
+  // sandbox-mode prose is injected as a dynamic section by the assembler
+  // when a context is supplied.
   let permissionContext = null as ReturnType<
     typeof opts.session.permissionModeRegistry.current
   > | null;

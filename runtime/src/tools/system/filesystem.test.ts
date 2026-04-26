@@ -802,6 +802,20 @@ describe("snapshotTopRecentReads", () => {
     clearSessionReadState(sessionId);
   });
 
+  it("does not treat processed partial views as valid read gates", () => {
+    seedRead(sessionId, [
+      {
+        path: "/ws/injected.ts",
+        content: "processed",
+        timestamp: 10,
+        viewKind: "partial",
+        isPartialView: true,
+      },
+    ]);
+
+    expect(hasSessionRead(sessionId, "/ws/injected.ts")).toBe(false);
+  });
+
   it("returns top-N by most recent timestamp, newest first", () => {
     seedRead(sessionId, [
       { path: "/ws/a.ts", content: "A", timestamp: 100, viewKind: "full" },
@@ -873,9 +887,15 @@ describe("snapshotTopRecentReads", () => {
     expect(out).toEqual([]);
   });
 
-  it("preserves viewKind in the exported snapshot", () => {
+  it("preserves read-view metadata in the exported snapshot", () => {
     seedRead(sessionId, [
-      { path: "/ws/x.ts", content: "x", timestamp: 1, viewKind: "line_window" },
+      {
+        path: "/ws/x.ts",
+        content: "x",
+        timestamp: 1,
+        viewKind: "partial",
+        isPartialView: true,
+      },
     ]);
     const out = snapshotTopRecentReads({
       sessionId,
@@ -883,6 +903,7 @@ describe("snapshotTopRecentReads", () => {
       perFileBudgetChars: 100,
       totalBudgetChars: 100,
     });
-    expect(out[0]?.viewKind).toBe("line_window");
+    expect(out[0]?.viewKind).toBe("partial");
+    expect(out[0]?.isPartialView).toBe(true);
   });
 });

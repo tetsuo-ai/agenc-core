@@ -274,7 +274,7 @@ agenc-core/runtime/src/
   prompts/
     system-prompt.ts             # openclaude-port: getSystemPrompt()
     project-instructions.ts      # openclaude-port: ancestor walk + @include
-    claude-md.ts                 # openclaude-port: 4-tier memory file loader
+    agenc-md.ts                  # AgenC 4-tier instruction file loader
     sections.ts                  # openclaude-port: cached vs volatile sections
     memory/
       loader.ts                  # openclaude-port: loadMemoryPrompt()
@@ -300,7 +300,7 @@ agenc-core/runtime/src/
     profiles.ts                  # codex-port: named profile overrides
     store.ts                     # snapshot + reload + subscribers (I-30/I-47)
     env.ts                       # env var resolution
-    # note: the ancestor walker for AGENTS.md/CLAUDE.md actually lives
+    # note: the ancestor walker for AGENC.md actually lives
     # at `prompts/project-instructions.ts`; the config/ tree owns the
     # TOML surface only.
   mcp-client/                    # existing + extensions

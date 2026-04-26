@@ -18,16 +18,16 @@ import {
   resolveIncludes,
   type TierEntry,
   type TieredInstructions,
-} from "./claude-md.js";
+} from "./agenc-md.js";
 
 const POSIX = platform() !== "win32";
 const posixTest = POSIX ? test : test.skip;
 
-describe("claude-md (T10-B tiered + @include)", () => {
+describe("agenc-md (T10-B tiered + @include)", () => {
   let tmp = "";
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "agenc-claude-md-"));
+    tmp = mkdtempSync(join(tmpdir(), "agenc-md-"));
   });
   afterEach(() => {
     if (tmp) rmSync(tmp, { recursive: true, force: true });

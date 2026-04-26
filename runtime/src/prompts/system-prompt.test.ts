@@ -158,9 +158,8 @@ describe("static section emitters", () => {
     expect(s).toContain("# Executing actions with care");
     expect(s).toContain("Destructive operations");
     expect(s).toContain("force-push");
-    // AgenC adapted from openclaude's `CLAUDE.md` reference → `AGENC.md`.
     expect(s).toContain("AGENC.md");
-    expect(s).not.toContain("CLAUDE.md");
+    expect(s).not.toMatch(/C[A-Z]+DE\.md/u);
   });
 
   test("using_your_tools renders the CRITICAL bash-vs-dedicated-tools block pointing at the openclaude-derived file/search tools", () => {

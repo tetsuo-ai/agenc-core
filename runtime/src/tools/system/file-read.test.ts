@@ -101,6 +101,7 @@ describe("FileRead tool", () => {
     expect(hasSessionRead(sessionId, file)).toBe(true);
     const snap = getSessionReadSnapshot(sessionId, file);
     expect(snap?.viewKind).toBe("partial");
+    expect(snap?.isPartialView).not.toBe(true);
     expect(snap?.readOffset).toBe(2);
     expect(snap?.readLimit).toBe(2);
   });

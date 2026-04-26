@@ -217,7 +217,7 @@ flowchart TB
     PreInit --> LoadConfig
     LoadConfig["config/loader.ts<br/>TOML + profile + env"]
     LoadPrompt["prompts/system-prompt.ts<br/>15 sections + dynamic boundary"]
-    LoadAgentsMD["prompts/project-instructions.ts<br/>ancestor walk: AGENTS.md → CLAUDE.md<br/>@include + 4-tier precedence<br/><b>I-75: @include paths boundary-validated (extends I-71)<br/>I-80+I-81: line-ending normalize + UTF-8 BOM strip on read</b>"]
+    LoadAgentsMD["prompts/project-instructions.ts<br/>ancestor walk: AGENC.md<br/>@include + 4-tier precedence<br/><b>I-75: @include paths boundary-validated (extends I-71)<br/>I-80+I-81: line-ending normalize + UTF-8 BOM strip on read</b>"]
     LoadMemory["prompts/memory/loader.ts<br/>global + per-project MEMORY.md<br/>4 types: user/feedback/project/reference"]
     LoadMCP["mcp-client/manager.ts<br/>stdio + SSE + HTTP servers<br/>30s wait per server<br/><b>I-73: reject namespace-shadowing tool names<br/>I-74: SHA-256 catalog supply-chain validation<br/>I-76: cap response at 5MB</b>"]
     MCPStartupBranch{"Server responds?<br/>(I-6 fail-soft by default)"}

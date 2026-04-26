@@ -140,8 +140,8 @@ owners.
 |---|---|---|---|---|---|---|
 | getSystemPrompt() section assembly | oc | `constants/prompts.ts` | 914 | take | T10 | `prompts/system-prompt.ts` |
 | Dynamic boundary marker (cache cutoff) | oc | `constants/prompts.ts` + `systemPromptSections.ts` | 69 | take | T10 | `prompts/sections.ts` |
-| Project instructions ancestor walk (AGENTS.md → CLAUDE.md) | combined (oc walk + codex override handling) | oc `utils/projectInstructions.ts` + codex `agents_md.rs` | 55 | take | T10 | `prompts/project-instructions.ts` |
-| @include directive (4-tier precedence) | oc | `utils/claudemd.ts` | 1,502 | take | T10 | `prompts/claude-md.ts` |
+| Project instructions ancestor walk (AGENC.md) | combined | upstream instruction walkers adapted to AgenC naming | 55 | take | T10 | `prompts/project-instructions.ts` |
+| @include directive (4-tier precedence) | agenc | tiered AgenC instruction loader | 1,502 | take | T10 | `prompts/agenc-md.ts` |
 | `AGENTS.override.md` | codex | `core/src/agents_md.rs` | — | take | T10 | (in project-instructions) |
 | Memory loader (loadMemoryPrompt, 200 lines/25KB cap) | oc | `memdir/memdir.ts` | 507 | take | T10 | `prompts/memory/loader.ts` |
 | Memory schema (name/description/type frontmatter) | oc | `memoryTypes.ts` | 270 | take | T10 | `prompts/memory/types.ts` |

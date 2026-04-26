@@ -110,6 +110,12 @@ interface SessionReadSnapshot {
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
   /**
+   * True only for processed/auto-injected content whose displayed bytes
+   * should not authorize a later write. Normal user-initiated `FileRead`
+   * calls, including offset/limit reads, leave this false/undefined.
+   */
+  readonly isPartialView?: boolean;
+  /**
    * For partial reads (`viewKind === "partial"`), the exact line offset
    * the model passed. Stored so a subsequent read with the identical
    * `(offset, limit)` and unchanged mtime can serve from the cache stub
@@ -125,6 +131,7 @@ export interface SessionReadSeedEntry {
   readonly content?: string | null;
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
+  readonly isPartialView?: boolean;
 }
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();
@@ -188,6 +195,7 @@ function persistLocalFileHistorySnapshot(
       content: snapshot.content ?? null,
       timestamp: snapshot.timestamp,
       viewKind: snapshot.viewKind ?? "legacy_unknown",
+      ...(snapshot.isPartialView === true ? { isPartialView: true } : {}),
       recordedAt: Date.now(),
     });
     if (entries.length > LOCAL_FILE_HISTORY_MAX_ENTRIES) {
@@ -216,6 +224,8 @@ function loadPersistedSessionReadSnapshot(
       if (typeof entry !== "object" || entry === null) continue;
       const content = (entry as { content?: unknown }).content;
       const viewKind = (entry as { viewKind?: unknown }).viewKind;
+      const isPartialView =
+        (entry as { isPartialView?: unknown }).isPartialView === true;
       const timestampValue = (entry as { timestamp?: unknown }).timestamp;
       const recordedAtValue = (entry as { recordedAt?: unknown }).recordedAt;
       const timestamp =
@@ -233,6 +243,7 @@ function loadPersistedSessionReadSnapshot(
             viewKind === "legacy_unknown"
               ? viewKind
               : "legacy_unknown",
+          ...(isPartialView ? { isPartialView: true } : {}),
         };
       }
       if (content === null) {
@@ -246,6 +257,7 @@ function loadPersistedSessionReadSnapshot(
             viewKind === "legacy_unknown"
               ? viewKind
               : "legacy_unknown",
+          ...(isPartialView ? { isPartialView: true } : {}),
         };
       }
     }
@@ -324,6 +336,7 @@ export function seedSessionReadState(
         ? { timestamp: entry.timestamp }
         : {}),
       viewKind: entry.viewKind ?? "legacy_unknown",
+      ...(entry.isPartialView === true ? { isPartialView: true } : {}),
     });
   }
 }
@@ -332,7 +345,8 @@ export function hasSessionRead(
   sessionId: string | undefined,
   canonicalPath: string,
 ): boolean {
-  return rehydrateSessionReadSnapshot(sessionId, canonicalPath) !== undefined;
+  const snapshot = rehydrateSessionReadSnapshot(sessionId, canonicalPath);
+  return snapshot !== undefined && snapshot.isPartialView !== true;
 }
 
 export function getSessionReadSnapshot(
@@ -372,6 +386,7 @@ export interface SessionReadSnapshotExport {
   readonly content: string;
   readonly timestamp: number;
   readonly viewKind?: SessionReadViewKind;
+  readonly isPartialView?: boolean;
 }
 
 /**
@@ -412,6 +427,7 @@ export function snapshotTopRecentReads(params: {
       content: snapshot.content,
       timestamp: snapshot.timestamp,
       ...(snapshot.viewKind ? { viewKind: snapshot.viewKind } : {}),
+      ...(snapshot.isPartialView === true ? { isPartialView: true } : {}),
     });
   }
   entries.sort((a, b) => b.timestamp - a.timestamp);

@@ -407,8 +407,8 @@ else                               → WebSocketTransport
 | File | LOC | Purpose |
 |---|---|---|
 | `constants/prompts.ts` | 914 | Main system prompt assembly via `getSystemPrompt()` returning `string[]`; static + dynamic sections; caching boundary marker; env injection |
-| `utils/projectInstructions.ts` | 55 | `findProjectInstructionFilePathInAncestors()` — walk CWD → root for AGENTS.md then CLAUDE.md |
-| `utils/claudemd.ts` | 1,502 | Memory file loader; @include directive; 4-tier precedence (Managed → User → Project → Local) |
+| `utils/projectInstructions.ts` | 55 | Ancestor-walk behavior adapted to AgenC instruction files |
+| `utils/claudemd.ts` | 1,502 | Memory file loader behavior adapted as `agenc-md`; @include directive; 4-tier precedence (Managed → User → Project → Local) |
 | `memdir/memdir.ts` | 507 | Memory typing; truncation; `loadMemoryPrompt()` entrypoint; 200 lines / 25KB cap |
 | `constants/systemPromptSections.ts` | 69 | Section registry; `systemPromptSection()` cached vs `DANGEROUS_uncachedSystemPromptSection()` volatile |
 | `utils/attachments.ts` (partial) | 1,800+ | Memory attachment rules + relevant memory surfacing per turn |
@@ -435,10 +435,10 @@ else                               → WebSocketTransport
 
 - Walk CWD → filesystem root, stop at first match per tier
 - Precedence:
-  1. Managed `/etc/claude-code/CLAUDE.md` (policy)
-  2. User `~/.claude/CLAUDE.md`
-  3. Project (walk CWD→root): AGENTS.md (preferred) or CLAUDE.md; then `.claude/CLAUDE.md`; then `.claude/rules/*.md` sorted
-  4. Local: `CLAUDE.local.md` (gitignored)
+  1. Managed `/etc/agenc/AGENC.md` (policy)
+  2. User `~/.agenc/AGENC.md`
+  3. Project (walk CWD→root): `AGENC.md`
+  4. Local: `AGENC.local.md` (gitignored)
 - **Nested worktree:** skip checked-in files from parent repo, allow `.local` from main repo.
 
 ### @include semantics
@@ -454,11 +454,11 @@ else                               → WebSocketTransport
 
 ### Hidden variants
 
-- `CLAUDE_CODE_SIMPLE` env: ultra-minimal one-line prompt
+- `AGENC_SIMPLE_PROMPT` env: ultra-minimal one-line prompt
 - Feature gates: PROACTIVE, KAIROS, CACHED_MICROCOMPACT, VERIFICATION_AGENT, TOKEN_BUDGET, EXPERIMENTAL_SKILL_SEARCH, TEAMMEM
 - Undercover mode (Ant-internal): strips model names
 
-**AgenC destination:** `runtime/src/prompts/system-prompt.ts`, `project-instructions.ts`, `memory/loader.ts`, `memory/attachments.ts`, `memory/claude-md.ts`.
+**AgenC destination:** `runtime/src/prompts/system-prompt.ts`, `project-instructions.ts`, `memory/loader.ts`, `memory/attachments.ts`, `agenc-md.ts`.
 
 ---
 
