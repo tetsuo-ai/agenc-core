@@ -38,6 +38,10 @@ import { isPlanMode } from "./plan-mode.js";
 import type { TurnContext } from "./turn-context.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import {
+  _resetAttachmentTrackingStateForTest,
+  getAttachmentTrackingState,
+} from "./attachment-state.js";
+import {
   createEmptyToolPermissionContext,
   type PermissionMode,
   type ToolPermissionContext,
@@ -430,6 +434,92 @@ describe("Session permission-context sync", () => {
     );
 
     expect(session.sessionConfiguration.permissionContext?.mode).toBe("plan");
+  });
+});
+
+describe("Session attachment exit-pulse wiring", () => {
+  it("flips needsPlanModeExitAttachment on plan→non-plan transition", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    const session = buildSession({
+      services: { permissionModeRegistry: registry },
+    });
+
+    // Fresh tracking state — no pending pulse before transition.
+    const before = getAttachmentTrackingState(session);
+    expect(before.needsPlanModeExitAttachment).toBe(false);
+
+    await registry.update(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+
+    expect(
+      getAttachmentTrackingState(session).needsPlanModeExitAttachment,
+    ).toBe(true);
+
+    _resetAttachmentTrackingStateForTest(session);
+  });
+
+  it("flips needsAutoModeExitAttachment on auto→non-auto transition", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "auto" }),
+    );
+    const session = buildSession({
+      services: { permissionModeRegistry: registry },
+    });
+
+    expect(
+      getAttachmentTrackingState(session).needsAutoModeExitAttachment,
+    ).toBe(false);
+
+    await registry.update(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+
+    expect(
+      getAttachmentTrackingState(session).needsAutoModeExitAttachment,
+    ).toBe(true);
+
+    _resetAttachmentTrackingStateForTest(session);
+  });
+
+  it("does not raise the plan-exit flag for plan→plan no-op transitions", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    const session = buildSession({
+      services: { permissionModeRegistry: registry },
+    });
+
+    await registry.update(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+
+    expect(
+      getAttachmentTrackingState(session).needsPlanModeExitAttachment,
+    ).toBe(false);
+
+    _resetAttachmentTrackingStateForTest(session);
+  });
+
+  it("does not raise the plan-exit flag when entering plan mode", async () => {
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "default" }),
+    );
+    const session = buildSession({
+      services: { permissionModeRegistry: registry },
+    });
+
+    await registry.update(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+
+    expect(
+      getAttachmentTrackingState(session).needsPlanModeExitAttachment,
+    ).toBe(false);
+
+    _resetAttachmentTrackingStateForTest(session);
   });
 });
 
