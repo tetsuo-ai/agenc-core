@@ -21,9 +21,7 @@ describe("plan mode instructions", () => {
     expect(prompt).toContain("FileRead");
     expect(prompt).toContain("Grep");
     expect(prompt).toContain("Write");
-    expect(prompt).not.toContain("system.readFile");
     expect(prompt).not.toContain("system.grep");
-    expect(prompt).not.toContain("system.writeFile");
     expect(prompt).toContain("AskUserQuestion");
     expect(prompt).toContain("ExitPlanMode");
     expect(prompt).toContain("AGENC.MD");
@@ -46,7 +44,6 @@ describe("plan mode instructions", () => {
     expect(prompt).toContain("Phase 4: Final Plan");
     expect(prompt).toContain("Phase 5: Call ExitPlanMode");
     expect(prompt).toContain("Edit");
-    expect(prompt).not.toContain("system.editFile");
   });
 
   test("sparse reminders preserve approval and question rules", () => {

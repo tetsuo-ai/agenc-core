@@ -607,7 +607,7 @@ describe("ApprovalOverlay", () => {
       },
       {
         requestId: "req-2",
-        toolName: "system.writeFile",
+        toolName: "Write",
         toolInput: { path: "/tmp/x.txt", content: "hello" },
         turnId: "turn-1",
         message: "second",

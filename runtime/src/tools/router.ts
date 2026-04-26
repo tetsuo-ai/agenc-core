@@ -346,7 +346,7 @@ export class ToolRouter {
    *
    * Accepts either a `ToolName` struct or a string. A string is parsed
    * via `parseToolName` — which splits on the first dot, so
-   * `"system.readFile"` becomes `{namespace: "system", name: "readFile"}`
+   * `"FileRead"` becomes `{namespace: "system", name: "readFile"}`
    * and uses the namespaced path below.
    */
   findSpec(toolName: ToolName | string): ConfiguredToolSpec | undefined {

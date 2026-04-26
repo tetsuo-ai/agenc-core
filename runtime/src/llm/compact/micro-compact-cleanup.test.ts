@@ -80,14 +80,14 @@ describe('microcompact cleanup wiring', () => {
     const context = {
       clearProviderResponseId: vi.fn(),
     }
-    // Use the gut runtime's actual compactable tool name (`system.readFile`)
+    // Use the gut runtime's actual compactable tool name (`FileRead`)
     // so `collectCompactableToolIds` recognizes the tool_use entries via the
     // built-in `COMPACTABLE_TOOLS` set. Upstream openclaude's `'Read'` name
     // doesn't match the live registry-aligned constants in `_deps/tool-names.ts`.
     const messages: Message[] = [
-      assistantToolUse('tool-1', 'system.readFile', old),
+      assistantToolUse('tool-1', 'FileRead', old),
       userToolResult('tool-1', 'old tool output'),
-      assistantToolUse('tool-2', 'system.readFile', old),
+      assistantToolUse('tool-2', 'FileRead', old),
       userToolResult('tool-2', 'recent tool output'),
     ]
 

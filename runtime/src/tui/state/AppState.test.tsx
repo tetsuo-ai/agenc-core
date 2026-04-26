@@ -105,7 +105,7 @@ describe("AgenCAppStateProvider", () => {
         });
         permissionQueueOps.push({
           requestId: "req-2",
-          toolName: "system.writeFile",
+          toolName: "Write",
           toolInput: { path: "/tmp/out.txt", content: "hello" },
           turnId: "turn-1",
           message: "second",

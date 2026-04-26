@@ -8,7 +8,7 @@ import { QuickJsCodeModeService } from "./tools/code-mode/service.js";
 describe("T7 tool-registry ConcurrencyClass tagging", () => {
   test("read-only fs tools get SharedRead + isReadOnly=true", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
-    const readFile = registry.tools.find((t) => t.name === "system.readFile");
+    const readFile = registry.tools.find((t) => t.name === "FileRead");
     expect(readFile?.concurrencyClass?.kind).toBe("shared_read");
     expect(readFile?.isReadOnly).toBe(true);
     expect(readFile?.supportsParallelToolCalls).toBe(true);
@@ -16,7 +16,7 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
 
   test("write fs tools get Exclusive + requiresApproval=true", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
-    const writeFile = registry.tools.find((t) => t.name === "system.writeFile");
+    const writeFile = registry.tools.find((t) => t.name === "Write");
     expect(writeFile?.concurrencyClass?.kind).toBe("exclusive");
     expect(writeFile?.requiresApproval).toBe(true);
     expect(writeFile?.supportsParallelToolCalls).toBe(false);
@@ -51,9 +51,9 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("exec_command");
     expect(registeredNames).toContain("write_stdin");
     expect(registeredNames).toContain("system.bash");
-    expect(registeredNames).toContain("system.readFile");
-    expect(registeredNames).toContain("system.writeFile");
-    expect(registeredNames).toContain("system.editFile");
+    expect(registeredNames).toContain("FileRead");
+    expect(registeredNames).toContain("Write");
+    expect(registeredNames).toContain("Edit");
     expect(registeredNames).toContain("system.grep");
     expect(registeredNames).toContain("system.glob");
     expect(registeredNames).toContain("system.gitStatus");
@@ -80,9 +80,9 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).not.toContain("update_plan");
     expect(visibleNames).toContain("system.searchTools");
     expect(visibleNames).not.toContain("system.bash");
-    expect(visibleNames).not.toContain("system.readFile");
-    expect(visibleNames).not.toContain("system.writeFile");
-    expect(visibleNames).not.toContain("system.editFile");
+    expect(visibleNames).toContain("FileRead");
+    expect(visibleNames).toContain("Write");
+    expect(visibleNames).toContain("Edit");
     expect(visibleNames).not.toContain("system.grep");
     expect(visibleNames).not.toContain("system.glob");
     expect(visibleNames).not.toContain("system.gitStatus");
@@ -145,31 +145,13 @@ describe("tool-registry dynamic and deferred catalog", () => {
     );
   });
 
-  test("searchTools selection loads deferred AgenC compatibility file tools", async () => {
+  test("first-class file tools are visible without searchTools discovery", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 
-    expect(registry.toLLMTools().map((tool) => tool.function.name)).not.toContain(
-      "system.readFile",
-    );
-
-    const result = await registry.dispatch({
-      id: "search-select-read",
-      name: "system.searchTools",
-      arguments: JSON.stringify({ query: "select:system.readFile" }),
-    });
-
-    const body = JSON.parse(result.content) as {
-      loaded: string[];
-      results: Array<{ name: string; selected: boolean }>;
-    };
-    expect(body.loaded).toContain("system.readFile");
-    expect(body.results).toContainEqual(
-      expect.objectContaining({ name: "system.readFile", selected: true }),
-    );
-    expect(registry.getDiscoveredToolNames?.().has("system.readFile")).toBe(true);
     expect(registry.toLLMTools().map((tool) => tool.function.name)).toContain(
-      "system.readFile",
+      "FileRead",
     );
+    expect(registry.getDiscoveredToolNames?.().has("FileRead")).toBe(false);
   });
 
   test("TodoWrite returns the verbatim openclaude tool_result sentence and emits a plan event without ever writing the plan file", async () => {

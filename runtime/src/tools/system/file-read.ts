@@ -362,9 +362,10 @@ async function readTextFile(
   }
 
   // Record the read in session state. Partial reads carry
-  // `viewKind: "partial"` so the `Edit`/`Write` read-before-write gate
-  // (filesystem.ts:isFullSessionRead) does NOT accept them as a full
-  // pre-read.
+  // `viewKind: "partial"` for range-aware dedup and snapshot checks, but
+  // still satisfy the read-before-write gate. Openclaude only blocks
+  // auto-injected processed partial views; AgenC does not populate that
+  // path here.
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: sliced.content,
     timestamp:

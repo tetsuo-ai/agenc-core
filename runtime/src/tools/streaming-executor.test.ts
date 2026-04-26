@@ -58,8 +58,8 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       registry: mockRegistry(async (call) => ({ content: `ok-${call.id}` })),
     });
     for (const id of ["a", "b", "c"]) {
-      exec.setConcurrencyClassFor("system.readFile", SHARED_READ);
-      exec.addTool(makeBlock(id, "system.readFile"), makeCall(id, "system.readFile"));
+      exec.setConcurrencyClassFor("FileRead", SHARED_READ);
+      exec.addTool(makeBlock(id, "FileRead"), makeCall(id, "FileRead"));
     }
     exec.close();
     const results: string[] = [];
@@ -82,11 +82,11 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       onSiblingAbort: () => {},
     });
     exec.setConcurrencyClassFor("system.bash", EXCLUSIVE);
-    exec.setConcurrencyClassFor("system.readFile", SHARED_READ);
+    exec.setConcurrencyClassFor("FileRead", SHARED_READ);
     exec.addTool(makeBlock("bash1", "system.bash"), makeCall("bash1", "system.bash"));
     exec.addTool(
-      makeBlock("read1", "system.readFile"),
-      makeCall("read1", "system.readFile"),
+      makeBlock("read1", "FileRead"),
+      makeCall("read1", "FileRead"),
     );
     exec.close();
     const results: string[] = [];
@@ -120,14 +120,14 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
         return { content: "ok" };
       }),
     });
-    exec.setConcurrencyClassFor("system.writeFile", EXCLUSIVE);
+    exec.setConcurrencyClassFor("Write", EXCLUSIVE);
     exec.addTool(
-      makeBlock("w1", "system.writeFile"),
-      makeCall("w1", "system.writeFile"),
+      makeBlock("w1", "Write"),
+      makeCall("w1", "Write"),
     );
     exec.addTool(
-      makeBlock("w2", "system.writeFile"),
-      makeCall("w2", "system.writeFile"),
+      makeBlock("w2", "Write"),
+      makeCall("w2", "Write"),
     );
     exec.discard("fallback");
 
@@ -145,7 +145,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     const abortCtl = new AbortController();
     abortCtl.abort("mode_changed");
     const writeTool = testTool({
-      name: "system.writeFile",
+      name: "Write",
       concurrencyClass: EXCLUSIVE,
     });
     const exec = new StreamingToolExecutor({
@@ -154,8 +154,8 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     });
 
     exec.addTool(
-      makeBlock("m1", "system.writeFile"),
-      makeCall("m1", "system.writeFile"),
+      makeBlock("m1", "Write"),
+      makeCall("m1", "Write"),
     );
     exec.close();
 
@@ -172,7 +172,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     let active = 0;
     let peak = 0;
     const tool: Tool = {
-      name: "system.readFile",
+      name: "FileRead",
       description: "conditionally parallel",
       inputSchema: { type: "object" },
       concurrencyClass: SHARED_READ,
@@ -193,12 +193,12 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       }, [tool]),
     });
     exec.addTool(
-      makeBlock("unsafe", "system.readFile"),
-      { id: "unsafe", name: "system.readFile", arguments: '{"safe":false}' },
+      makeBlock("unsafe", "FileRead"),
+      { id: "unsafe", name: "FileRead", arguments: '{"safe":false}' },
     );
     exec.addTool(
-      makeBlock("safe", "system.readFile"),
-      { id: "safe", name: "system.readFile", arguments: '{"safe":true}' },
+      makeBlock("safe", "FileRead"),
+      { id: "safe", name: "FileRead", arguments: '{"safe":true}' },
     );
     exec.close();
 
@@ -253,15 +253,15 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
         return { content: `r-${call.id}` };
       }),
     });
-    exec.setConcurrencyClassFor("system.writeFile", EXCLUSIVE);
-    exec.setConcurrencyClassFor("system.readFile", SHARED_READ);
+    exec.setConcurrencyClassFor("Write", EXCLUSIVE);
+    exec.setConcurrencyClassFor("FileRead", SHARED_READ);
     exec.addTool(
-      makeBlock("x1", "system.writeFile"),
-      makeCall("x1", "system.writeFile"),
+      makeBlock("x1", "Write"),
+      makeCall("x1", "Write"),
     );
     exec.addTool(
-      makeBlock("r1", "system.readFile"),
-      makeCall("r1", "system.readFile"),
+      makeBlock("r1", "FileRead"),
+      makeCall("r1", "FileRead"),
     );
     exec.close();
 
@@ -298,10 +298,10 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
         return { content: "done" };
       }),
     });
-    exec.setConcurrencyClassFor("system.readFile", SHARED_READ);
+    exec.setConcurrencyClassFor("FileRead", SHARED_READ);
     exec.addTool(
-      makeBlock("p1", "system.readFile"),
-      makeCall("p1", "system.readFile"),
+      makeBlock("p1", "FileRead"),
+      makeCall("p1", "FileRead"),
     );
     exec.close();
 
@@ -325,7 +325,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
     // turn loop ends instead of sending REJECT_MESSAGE to the model.
     const parent = new AbortController();
     const readTool = testTool({
-      name: "system.readFile",
+      name: "FileRead",
       concurrencyClass: SHARED_READ,
     });
     const exec = new StreamingToolExecutor({
@@ -344,8 +344,8 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
       parentAbortController: parent,
     });
     exec.addTool(
-      makeBlock("r1", "system.readFile"),
-      makeCall("r1", "system.readFile"),
+      makeBlock("r1", "FileRead"),
+      makeCall("r1", "FileRead"),
     );
     exec.close();
     // Drain — this triggers abort and lets the bubble-up run.
@@ -367,7 +367,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
       concurrencyClass: EXCLUSIVE,
     });
     const readTool = testTool({
-      name: "system.readFile",
+      name: "FileRead",
       concurrencyClass: SHARED_READ,
     });
     const exec = new StreamingToolExecutor({
@@ -385,8 +385,8 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
       makeCall("bash1", "system.bash"),
     );
     exec.addTool(
-      makeBlock("read1", "system.readFile"),
-      makeCall("read1", "system.readFile"),
+      makeBlock("read1", "FileRead"),
+      makeCall("read1", "FileRead"),
     );
     exec.close();
     for await (const _r of exec.getRemainingResults()) void _r;
@@ -400,7 +400,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
     // natural completion.
     const abortCtl = new AbortController();
     const writeTool = testTool({
-      name: "system.writeFile",
+      name: "Write",
       concurrencyClass: EXCLUSIVE,
       interruptBehavior: () => "block",
     });
@@ -412,8 +412,8 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
     });
     abortCtl.abort("interrupt");
     exec.addTool(
-      makeBlock("w1", "system.writeFile"),
-      makeCall("w1", "system.writeFile"),
+      makeBlock("w1", "Write"),
+      makeCall("w1", "Write"),
     );
     exec.close();
 
@@ -431,7 +431,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
     // reason === 'interrupt' → user_interrupted terminal result.
     const abortCtl = new AbortController();
     const writeTool = testTool({
-      name: "system.writeFile",
+      name: "Write",
       concurrencyClass: EXCLUSIVE,
       interruptBehavior: () => "cancel",
     });
@@ -443,8 +443,8 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
     });
     abortCtl.abort("interrupt");
     exec.addTool(
-      makeBlock("w1", "system.writeFile"),
-      makeCall("w1", "system.writeFile"),
+      makeBlock("w1", "Write"),
+      makeCall("w1", "Write"),
     );
     exec.close();
 

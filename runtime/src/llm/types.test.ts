@@ -6,15 +6,15 @@ describe("validateToolCallDetailed", () => {
   test("normalizes plain-string file arguments for readFile", () => {
     const result = validateToolCallDetailed({
       id: "call-1",
-      name: "system.readFile",
+      name: "FileRead",
       arguments: "PLAN.MD",
     });
 
     expect(result.failure).toBeUndefined();
     expect(result.toolCall).toEqual({
       id: "call-1",
-      name: "system.readFile",
-      arguments: JSON.stringify({ path: "PLAN.MD" }),
+      name: "FileRead",
+      arguments: JSON.stringify({ file_path: "PLAN.MD" }),
     });
   });
 
@@ -51,14 +51,14 @@ describe("validateToolCallDetailed", () => {
   test("keeps malformed structured file arguments from being rewrapped as a fake path", () => {
     const result = validateToolCallDetailed({
       id: "call-3",
-      name: "system.readFile",
+      name: "FileRead",
       arguments: "{}\nPLAN.MD",
     });
 
     expect(result.failure).toBeUndefined();
     expect(result.toolCall).toEqual({
       id: "call-3",
-      name: "system.readFile",
+      name: "FileRead",
       arguments: JSON.stringify({}),
     });
   });

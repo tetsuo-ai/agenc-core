@@ -65,7 +65,7 @@ describe("grok adapter utils", () => {
     });
 
     const { tools } = slimTools([
-      makeTool("system.readFile"),
+      makeTool("FileRead"),
       makeTool("system.bash"),
       makeTool("exec_command"),
       makeTool("write_stdin"),
@@ -74,10 +74,10 @@ describe("grok adapter utils", () => {
 
     expect(tools.map((tool) => tool.function.name)).toEqual([
       "exec_command",
+      "FileRead",
       "system.searchTools",
       "write_stdin",
       "system.bash",
-      "system.readFile",
     ]);
   });
 

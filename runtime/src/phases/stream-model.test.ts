@@ -272,7 +272,7 @@ describe("streamModel — live assistant text sanitization", () => {
     streamedDispatchCalls.length = 0;
     const registry = mkRegistry([
       {
-        name: "system.readFile",
+        name: "FileRead",
         description: "reads a file",
         inputSchema: { type: "object" },
         concurrencyClass: { kind: "shared_read" as const },
@@ -288,7 +288,7 @@ describe("streamModel — live assistant text sanitization", () => {
         toolCalls: [
           {
             id: "tool-1",
-            name: "system.readFile",
+            name: "FileRead",
             arguments: JSON.stringify({ path: "/tmp/demo.txt" }),
           },
         ],
@@ -299,7 +299,7 @@ describe("streamModel — live assistant text sanitization", () => {
         toolCalls: [
           {
             id: "tool-1",
-            name: "system.readFile",
+            name: "FileRead",
             arguments: JSON.stringify({ path: "/tmp/demo.txt" }),
           },
         ],
@@ -332,7 +332,7 @@ describe("streamModel — live assistant text sanitization", () => {
     streamedDispatchCalls.length = 0;
     const registry = mkRegistry([
       {
-        name: "system.readFile",
+        name: "FileRead",
         description: "reads a file",
         inputSchema: { type: "object" },
         execute: async () => ({ content: "file contents" }),
@@ -345,7 +345,7 @@ describe("streamModel — live assistant text sanitization", () => {
         toolCalls: [
           {
             id: "tool-bad",
-            name: "system.readFile",
+            name: "FileRead",
             arguments: "[",
           } as unknown as LLMToolCall,
         ],
@@ -355,7 +355,7 @@ describe("streamModel — live assistant text sanitization", () => {
         toolCalls: [
           {
             id: "tool-bad",
-            name: "system.readFile",
+            name: "FileRead",
             arguments: "[",
           } as unknown as LLMToolCall,
         ],

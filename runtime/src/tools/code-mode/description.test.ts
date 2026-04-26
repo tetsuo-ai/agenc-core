@@ -24,9 +24,7 @@ describe("code-mode description helpers", () => {
   });
 
   test("normalizes tool names as JavaScript identifiers", () => {
-    expect(normalizeCodeModeIdentifier("system.readFile")).toBe(
-      "system_readFile",
-    );
+    expect(normalizeCodeModeIdentifier("FileRead")).toBe("FileRead");
     expect(normalizeCodeModeIdentifier("mcp.ologs/get-profile")).toBe(
       "mcp_ologs_get_profile",
     );

@@ -954,7 +954,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
       decisionAtTurnId: "t1",
     }));
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: {},
       execute: async () => {
@@ -965,7 +965,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
-      invocation: makeInvocation("c1", "system.writeFile"),
+      invocation: makeInvocation("c1", "Write"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
       requestApproval,
@@ -980,7 +980,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     const { context } = buildEvaluatorContext("default");
     let executed = 0;
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: {},
       execute: async () => {
@@ -999,7 +999,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
-      invocation: makeInvocation("c1", "system.writeFile"),
+      invocation: makeInvocation("c1", "Write"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
       eventLog: log,
@@ -1013,11 +1013,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
 
   test("deny rule short-circuits before execute()", async () => {
     const { context } = buildEvaluatorContext("default", {
-      alwaysDenyRules: { session: ["system.writeFile"] },
+      alwaysDenyRules: { session: ["Write"] },
     });
     let executed = 0;
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: {},
       execute: async () => {
@@ -1036,7 +1036,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
-      invocation: makeInvocation("c1", "system.writeFile"),
+      invocation: makeInvocation("c1", "Write"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
       eventLog: log,
@@ -1049,11 +1049,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
 
   test("allow rule lets execute() run under default mode", async () => {
     const { context } = buildEvaluatorContext("default", {
-      alwaysAllowRules: { session: ["system.writeFile"] },
+      alwaysAllowRules: { session: ["Write"] },
     });
     let executed = 0;
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: {},
       execute: async () => {
@@ -1064,7 +1064,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
-      invocation: makeInvocation("c1", "system.writeFile"),
+      invocation: makeInvocation("c1", "Write"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
     });
@@ -1103,11 +1103,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
 
   test("mid-execution plan-mode transition aborts in-flight write-capable tool", async () => {
     const { context, registry } = buildEvaluatorContext("default", {
-      alwaysAllowRules: { session: ["system.writeFile"] },
+      alwaysAllowRules: { session: ["Write"] },
     });
     const abortCtl = new AbortController();
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: {},
       execute: (args) =>
@@ -1130,7 +1130,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
       signal: abortCtl.signal,
       currentTurnId: "t1",
       tool,
-      invocation: makeInvocation("c1", "system.writeFile"),
+      invocation: makeInvocation("c1", "Write"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
       modeChangeRegistry: registry,
@@ -1153,11 +1153,11 @@ describe("T11 W3-B — permission evaluator integration", () => {
 
   test("mode-change subscription is removed on normal completion (no leak)", async () => {
     const { context, registry } = buildEvaluatorContext("default", {
-      alwaysAllowRules: { session: ["system.readFile"] },
+      alwaysAllowRules: { session: ["FileRead"] },
     });
     const abortCtl = new AbortController();
     const tool: Tool = {
-      name: "system.readFile",
+      name: "FileRead",
       description: "",
       inputSchema: {},
       execute: async () => ({ content: "ok" }),
@@ -1168,7 +1168,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     const out = await runToolUse("{}", {
       currentTurnId: "t1",
       tool,
-      invocation: makeInvocation("c1", "system.readFile"),
+      invocation: makeInvocation("c1", "FileRead"),
       canUseTool: hasPermissionsToUseTool,
       permissionContext: context,
       modeChangeRegistry: registry,
@@ -1215,13 +1215,13 @@ describe("T11 W3-B — permission evaluator integration", () => {
 
   test("defaultCheckModeStillAllowed: plan mode strips write-capable tools", () => {
     const writeTool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: {},
       execute: async () => ({ content: "" }),
     };
     const readTool: Tool = {
-      name: "system.readFile",
+      name: "FileRead",
       description: "",
       inputSchema: {},
       execute: async () => ({ content: "" }),

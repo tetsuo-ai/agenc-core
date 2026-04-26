@@ -106,10 +106,9 @@ interface ToolCallValidationResult {
 const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   exec_command: "cmd",
   "system.bash": "command",
-  "system.readFile": "path",
-  "system.writeFile": "path",
-  "system.appendFile": "path",
-  "system.editFile": "path",
+  FileRead: "file_path",
+  Write: "file_path",
+  Edit: "file_path",
   "system.listDir": "path",
   "system.stat": "path",
   "system.mkdir": "path",

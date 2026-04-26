@@ -394,11 +394,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         return { content: successText(file_path, false) };
       }
 
-      // Read-before-write enforcement. AgenC's session read tracker
-      // only records full reads as `viewKind: "full"` — `hasSessionRead`
-      // returns true only for those. Partial line-windowed reads are
-      // tracked separately and treated as "not yet read" here, matching
-      // openclaude's `isPartialView` rejection (FileEditTool.ts:276).
+      // Read-before-write enforcement. User-initiated `FileRead`
+      // calls satisfy the gate even when they use offset/limit, matching
+      // openclaude's gate semantics. AgenC does not currently seed
+      // auto-injected processed content into this state.
       //
       // Skipped when no sessionId was injected (headless / unit-test
       // path) so unit tests don't have to fake a session lifecycle.

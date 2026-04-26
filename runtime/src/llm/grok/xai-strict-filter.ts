@@ -667,7 +667,7 @@ export interface XaiResponseAnomaly {
  *   - "(Continuing with tool calls to bootstrap.)"
  *   - "Next, I'll run the test"
  *   - "Let me invoke system.bash"
- *   - "Going to call system.writeFile"
+ *   - "Going to call Write"
  */
 const PROMISE_LANGUAGE_RE =
   /\b(?:I\s+will\s+(?:call|invoke|run|execute)|I[''']?ll\s+(?:call|invoke|run|execute)|now\s+(?:executing|running|invoking|calling)|continuing\s+with\s+(?:tool|the\s+tool|tools)|next,?\s+I[''']?ll\s+(?:call|invoke|run|execute)|let\s+me\s+(?:run|call|invoke|execute)|going\s+to\s+(?:call|run|invoke|execute))/i;
