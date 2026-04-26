@@ -9,9 +9,12 @@ import {
 } from "./agent-mentions.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 
-function makeOpts(userInput: string | null): GetAttachmentsOptions {
+function makeOpts(
+  userInput: string | null,
+  sessionKey: object = {},
+): GetAttachmentsOptions {
   return {
-    sessionKey: {},
+    sessionKey,
     userInput,
     loadedTools: [],
     messages: [],
@@ -86,5 +89,35 @@ describe("agentMentionsProducer", () => {
       {} as never,
     );
     expect(out).toEqual([]);
+  });
+
+  test("filters mentions of unknown agents when registry is populated", async () => {
+    const sessionKey = {
+      agentDefinitions: {
+        activeAgents: [
+          { agentType: "explore" },
+          { agentType: "code-reviewer" },
+        ],
+      },
+    };
+    const out = await agentMentionsProducer(
+      makeOpts("ask @agent-explore and @agent-ghost", sessionKey),
+      {} as never,
+    );
+    expect(out).toEqual([{ kind: "agent_mention", agentType: "explore" }]);
+  });
+
+  test("emits all mentions when the registry is empty (headless / pre-bootstrap)", async () => {
+    // Empty registry == agent definitions not yet plumbed; permissive
+    // fallback so unit tests and bare-options invocations don't drop.
+    const sessionKey = { agentDefinitions: { activeAgents: [] } };
+    const out = await agentMentionsProducer(
+      makeOpts("ask @agent-explore and @agent-ghost", sessionKey),
+      {} as never,
+    );
+    expect(out).toEqual([
+      { kind: "agent_mention", agentType: "explore" },
+      { kind: "agent_mention", agentType: "ghost" },
+    ]);
   });
 });
