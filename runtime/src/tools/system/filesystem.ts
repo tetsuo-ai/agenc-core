@@ -125,6 +125,22 @@ interface SessionReadSnapshot {
   readonly readOffset?: number;
   /** For partial reads, the exact line limit the model passed. */
   readonly readLimit?: number;
+  /**
+   * Raw disk bytes captured at read time, independent of any line-prefix
+   * formatting applied to `content`. Populated only on full reads (no
+   * offset/limit) so that downstream consumers can compute exact diffs
+   * when the file is later mutated.
+   *
+   * Used by the per-turn changed-files attachment producer
+   * (`runtime/src/prompts/attachments/changed-files.ts`) to detect
+   * mid-session edits and emit `edited_text_file` snippets.
+   *
+   * Hand-port of openclaude `FileState.content` semantics — openclaude's
+   * `FileStateCache` always stores raw bytes (`fileStateCache.ts:4-15`).
+   * AgenC's `content` field carries the formatted display content; this
+   * additional field carries the pre-format raw bytes.
+   */
+  readonly rawContent?: string;
 }
 
 export interface SessionReadSeedEntry {
@@ -133,6 +149,8 @@ export interface SessionReadSeedEntry {
   readonly timestamp?: number;
   readonly viewKind?: SessionReadViewKind;
   readonly isPartialView?: boolean;
+  /** See `SessionReadSnapshot.rawContent`. */
+  readonly rawContent?: string;
 }
 
 const sessionReadState = new Map<string, Map<string, SessionReadSnapshot>>();

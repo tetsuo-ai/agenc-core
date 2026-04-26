@@ -64,6 +64,8 @@ import {
   getPrepareContextTerminal,
   prepareContext,
 } from "../phases/prepare-context.js";
+import { getAttachments } from "../prompts/attachments/orchestrator.js";
+import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import {
   buildCompactedRolloutItem,
   buildPostCompactMessages,
@@ -577,6 +579,38 @@ export function buildPrompt(
  * T5 version reads the static tool registry; T7 + T9 + T10 add the
  * dynamic filters as their subsystems land.
  */
+/**
+ * Extract the most recent user-channel message text for the per-turn
+ * attachments orchestrator. Walks backwards through the projected query
+ * messages, returning the first user message's text or null if none
+ * exist (e.g. opening-turn replays where the rolled-back projection is
+ * empty).
+ */
+function extractLastUserText(messages: ReadonlyArray<LLMMessage>): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "user") continue;
+    if (typeof message.content === "string") {
+      return message.content.length > 0 ? message.content : null;
+    }
+    if (Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (
+          part &&
+          typeof part === "object" &&
+          (part as { type?: unknown }).type === "text" &&
+          typeof (part as { text?: unknown }).text === "string"
+        ) {
+          const text = (part as { text: string }).text;
+          if (text.length > 0) return text;
+        }
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
 export function builtTools(session: Session, _ctx: TurnContext): ReadonlyArray<LLMTool> {
   return session.services.registry.toLLMTools();
 }
@@ -709,6 +743,38 @@ async function tryRunSamplingRequest(
       terminal: prepareTerminal.terminal,
     };
   }
+  // Per-turn attachments orchestrator (openclaude `getAttachments()`
+  // parity, ported into AgenC). Runs after `prepareContext` projects
+  // the post-compaction history onto `state.messagesForQuery` and
+  // before `buildSamplingRequestContract` snapshots it for the model
+  // request. Each registered producer reads cross-turn state via
+  // `attachment-state.ts` and emits zero or more attachments. The
+  // attachments are converted to user-channel `LLMMessage`s and
+  // prepended to `state.messagesForQuery` so they ride into the model
+  // request through the existing build path. Producer registry lives
+  // in `runtime/src/prompts/attachments/orchestrator.ts`; it is empty
+  // until the per-category producer files land.
+  const attachments = await getAttachments({
+    sessionKey: session,
+    userInput: extractLastUserText(state.messagesForQuery),
+    loadedTools: builtTools(session, ctx),
+    messages: state.messagesForQuery,
+    permissionContext:
+      session.permissionModeRegistry.current(),
+    cwd: ctx.cwd,
+    subagentDepth: ctx.depth,
+    signal,
+  });
+  if (attachments.length > 0) {
+    const attachmentMessages = attachmentsToMessages(attachments);
+    if (attachmentMessages.length > 0) {
+      state.messagesForQuery = [
+        ...attachmentMessages,
+        ...state.messagesForQuery,
+      ];
+    }
+  }
+
   const request = buildSamplingRequestContract(state, session, ctx);
 
   // Plan-mode stream state (T11). When the turn's collaboration mode is
