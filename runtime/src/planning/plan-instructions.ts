@@ -43,18 +43,11 @@ function planFileInfo(input: PlanModeInstructionInput): string {
 }
 
 function planModeHeader(input: PlanModeInstructionInput): string {
-  return `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+  return `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received.
 
-## AgenC Context
+The active plan file is available at ${input.planFilePath}.${planFileInfo(input)}
 
-- AgenC uses AGENC.MD as its project instruction file.
-- AgenC plan files live under <AGENC_HOME>/plans and the active plan file for this session is listed below.
-- The only writable target in plan mode is the active AgenC plan file.
-
-## Plan File Info:
-${planFileInfo(input)}
-
-You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.`;
+In plan mode you should first build your plan by writing it to the plan file. You should build your plan incrementally by writing to the plan file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.`;
 }
 
 function planPhase4Section(): string {
@@ -74,11 +67,11 @@ function buildPhasedInstructions(input: PlanModeInstructionInput): string {
 ## Plan Workflow
 
 ### Phase 1: Initial Understanding
-Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions.
+Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions. Critical: In this phase you should only use read-only exploration tools.
 
 1. Focus on understanding the user's request and the code associated with their request. Actively search for existing functions, utilities, and patterns that can be reused - avoid proposing new code when suitable implementations already exist.
 
-2. Use read-only tools to efficiently explore the codebase. Prefer ${READ_ONLY_TOOL_NAMES}. If ${PLAN_AGENT_TOOL_NAME} or another AgenC delegate tool is available, you may use it for bounded read-only exploration, but keep each delegated question specific.
+2. Use read-only tools to efficiently explore the codebase. Prefer ${READ_ONLY_TOOL_NAMES}. If ${PLAN_AGENT_TOOL_NAME} is available, you may use it for bounded read-only exploration, but keep each delegated question specific.
 
 ### Phase 2: Design
 Goal: Design an implementation approach.
@@ -88,7 +81,6 @@ Use the context from Phase 1 to design the implementation. If a delegate/plannin
 When designing:
 - Provide comprehensive background context from Phase 1 exploration including filenames and code path traces
 - Describe requirements and constraints
-- Prefer existing AgenC runtime/TUI patterns over new abstractions
 - Keep the scope aligned with the user's request
 
 ### Phase 3: Review
@@ -101,11 +93,11 @@ ${planPhase4Section()}
 
 ### Phase 5: Call ${EXIT_PLAN_MODE_TOOL_NAME}
 At the very end of your turn, once you have asked the user questions and are happy with your final plan file - you should always call ${EXIT_PLAN_MODE_TOOL_NAME} to indicate to the user that you are done planning.
-This is critical - your turn should only end with either using the ${ASK_USER_QUESTION_TOOL_NAME} tool OR calling ${EXIT_PLAN_MODE_TOOL_NAME}. Do not stop unless it is for one of those two reasons.
+This is critical - your turn should only end with either using the ${ASK_USER_QUESTION_TOOL_NAME} tool OR calling ${EXIT_PLAN_MODE_TOOL_NAME}. Do not stop unless it's for these 2 reasons
 
 **Important:** Use ${ASK_USER_QUESTION_TOOL_NAME} ONLY to clarify requirements or choose between approaches. Use ${EXIT_PLAN_MODE_TOOL_NAME} to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no ${ASK_USER_QUESTION_TOOL_NAME}. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use ${EXIT_PLAN_MODE_TOOL_NAME}.
 
-NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the ${ASK_USER_QUESTION_TOOL_NAME} tool. Do not make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.`;
+NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using the ${ASK_USER_QUESTION_TOOL_NAME} tool. Don't make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.`;
 }
 
 function buildInterviewInstructions(input: PlanModeInstructionInput): string {
@@ -113,24 +105,24 @@ function buildInterviewInstructions(input: PlanModeInstructionInput): string {
 
 ## Iterative Planning Workflow
 
-You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you cannot make alone, and write your findings into the plan file as you go. The plan file above is the ONLY file you may edit - it starts as a rough skeleton and gradually becomes the final plan.
+You are pair-planning with the user. Explore the code to build context, ask the user questions when you hit decisions you can't make alone, and write your findings into the plan file as you go. The plan file (above) is the ONLY file you may edit - it starts as a rough skeleton and gradually becomes the final plan.
 
 ### The Loop
 
 Repeat this cycle until the plan is complete:
 
-1. **Explore** - Use ${READ_ONLY_TOOL_NAMES} to read code. Look for existing functions, utilities, and patterns to reuse. If ${PLAN_AGENT_TOOL_NAME} or another AgenC delegate tool is available, you may use it to parallelize complex read-only searches without filling your context, though for straightforward queries direct tools are simpler.
-2. **Update the plan file** - After each discovery, immediately capture what you learned. Do not wait until the end.
-3. **Ask the user** - When you hit an ambiguity or decision you cannot resolve from code alone, use ${ASK_USER_QUESTION_TOOL_NAME}. Then go back to step 1.
+1. **Explore** - Use ${READ_ONLY_TOOL_NAMES} and the ${PLAN_AGENT_TOOL_NAME} tool to read code. Look for existing functions, utilities, and patterns to reuse - avoid proposing new code when suitable implementations already exist.
+2. **Update the plan file** - After each discovery, immediately capture what you learned. Don't wait until the end.
+3. **Ask the user** - When you hit an ambiguity or decision you can't resolve from code alone, use ${ASK_USER_QUESTION_TOOL_NAME}. Then go back to step 1.
 
 ### First Turn
 
-Start by quickly scanning a few key files to form an initial understanding of the task scope. Then write a skeleton plan with headers and rough notes and ask the user your first round of questions. Do not explore exhaustively before engaging the user.
+Start by quickly scanning a few key files to form an initial understanding of the task scope. Then write a skeleton plan (headers and rough notes) and ask the user your first round of questions. Don't explore exhaustively before engaging the user.
 
 ### Asking Good Questions
 
 - Never ask what you could find out by reading the code
-- Batch related questions together in ${ASK_USER_QUESTION_TOOL_NAME} calls
+- Batch related questions together (use multi-question ${ASK_USER_QUESTION_TOOL_NAME} calls)
 - Focus on things only the user can answer: requirements, preferences, tradeoffs, edge case priorities
 - Scale depth to the task - a vague feature request needs many rounds; a focused bug fix may need one or none
 
@@ -146,7 +138,7 @@ Your plan file should be divided into clear sections using markdown headers, bas
 
 ### When to Converge
 
-Your plan is ready when you have addressed all ambiguities and it covers: what to change, which files to modify, what existing code to reuse (with file paths), and how to verify the changes. Call ${EXIT_PLAN_MODE_TOOL_NAME} when the plan is ready for approval.
+Your plan is ready when you've addressed all ambiguities and it covers: what to change, which files to modify, what existing code to reuse (with file paths), and how to verify the changes. Call ${EXIT_PLAN_MODE_TOOL_NAME} when the plan is ready for approval.
 
 ### Ending Your Turn
 
@@ -158,7 +150,10 @@ Your turn should only end by either:
 }
 
 function buildSubAgentInstructions(input: PlanModeInstructionInput): string {
-  return `${planModeHeader(input)}
+  return `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits, run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received (for example, to make edits). Instead, you should:
+
+The active plan file is available at ${input.planFilePath}.${planFileInfo(input)}
+In plan mode you should first build your plan by writing it to the plan file. You should build your plan incrementally by writing to the plan file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
 
 Answer the user's query comprehensively, using ${ASK_USER_QUESTION_TOOL_NAME} if you need to ask the user clarifying questions. If you use ${ASK_USER_QUESTION_TOOL_NAME}, ask all clarifying questions you need to fully understand the user's intent before proceeding.`;
 }
@@ -203,9 +198,9 @@ export function buildPlanModeInstructions(
   } else if (reminderType === "sparse") {
     const workflowDescription =
       workflow === "interview"
-        ? "Follow iterative workflow: explore codebase, interview user, write to the AgenC plan file incrementally."
+        ? "Follow iterative workflow: explore codebase, interview user, write to plan incrementally."
         : "Follow the 5-phase workflow.";
-    body = `Plan mode still active (see full instructions earlier in conversation). Read-only except the AgenC plan file (${input.planFilePath}). ${workflowDescription} End turns with ${ASK_USER_QUESTION_TOOL_NAME} (for clarifications) or ${EXIT_PLAN_MODE_TOOL_NAME} (for plan approval). Never ask about plan approval via text or ${ASK_USER_QUESTION_TOOL_NAME}.`;
+    body = `Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${input.planFilePath}). ${workflowDescription} End turns with ${ASK_USER_QUESTION_TOOL_NAME} (for clarifications) or ${EXIT_PLAN_MODE_TOOL_NAME} (for plan approval). Never ask about plan approval via text or ${ASK_USER_QUESTION_TOOL_NAME}.`;
   } else {
     body =
       workflow === "phased"

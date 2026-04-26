@@ -1507,7 +1507,19 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     expect(prompts[0]).toContain("Plan mode is active");
     expect(prompts[0]).toContain("MUST NOT make any edits");
     expect(prompts[0]).toContain(join(agencHome, "plans"));
+    expect(prompts[0]).toContain("The active plan file is available at");
+    expect(prompts[0]).toContain(
+      "In plan mode you should first build your plan by writing it to the plan file.",
+    );
+    expect(prompts[0]).toContain(
+      "Batch related questions together (use multi-question AskUserQuestion calls)",
+    );
+    expect(prompts[0]).toContain("Your turn should only end by either:");
+    expect(prompts[0]).toContain(
+      "Using AskUserQuestion to gather more information",
+    );
     expect(prompts[0]).toContain("ExitPlanMode");
+    expect(prompts[0]).not.toContain("## AgenC Context");
   });
 
   it("injects the one-shot ## Exited Plan Mode reminder when pendingPlanModeExitReminder is set", async () => {
