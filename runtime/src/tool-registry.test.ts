@@ -326,12 +326,46 @@ describe("tool-registry dynamic and deferred catalog", () => {
       arguments: JSON.stringify({ plan: "# Edited Plan\n\nDo it better." }),
     });
     expect(exitedResult.isError).toBeUndefined();
-    expect(exitedResult.content).toContain("Approved Plan");
+    expect(exitedResult.content).toContain("Approved Plan (edited by user)");
     expect(exitedResult.content).toContain("# Edited Plan");
     expect(permissionRegistry.current().mode).toBe("acceptEdits");
     expect(syncCount).toBe(2);
     expect(warnings).toEqual(["mode_changed_to_plan", "mode_exited_plan"]);
     expect(exited).toBe(true);
+  });
+
+  test("ExitPlanMode exposes OpenClaude-style approved-plan metadata", async () => {
+    const permissionRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    let plan = "# Original Plan\n\nDo it.";
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        getPermissionModeRegistry: () => permissionRegistry,
+        syncPermissionContext: async () => {},
+        getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+        readPlan: () => plan,
+        writePlan: async (content) => {
+          plan = content;
+        },
+      },
+    });
+    const exitPlanMode = registry.tools.find((tool) => tool.name === "ExitPlanMode");
+
+    const result = await exitPlanMode?.execute({
+      plan: "# Edited Plan\n\nDo it better.",
+    });
+
+    expect(result?.isError).toBeUndefined();
+    expect(result?.content).toContain("Approved Plan (edited by user)");
+    expect(result?.metadata).toMatchObject({
+      plan: "# Edited Plan\n\nDo it better.",
+      filePath: "/tmp/agenc/plans/plan.md",
+      planFilePath: "/tmp/agenc/plans/plan.md",
+      planWasEdited: true,
+      isAgent: false,
+    });
   });
 
   test("searchTools suggests deferred tools but only explicit selection loads schema", async () => {

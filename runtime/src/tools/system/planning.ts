@@ -372,22 +372,26 @@ Remember: DO NOT write or edit any files except the plan file.`,
         return textResult("User has approved exiting plan mode. You can now proceed.", {
           plan: null,
           isAgent: false,
-          ...(filePath !== undefined ? { filePath } : {}),
+          ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
           ...result,
         });
       }
+      const approvedPlanHeading =
+        editedPlan !== undefined
+          ? "Approved Plan (edited by user)"
+          : "Approved Plan";
       return textResult(
         `User has approved your plan. You can now start coding. Start with updating your todo list if applicable
 
 Your plan has been saved to: ${filePath ?? "(unknown)"}
 You can refer back to it if needed during implementation.
 
-## Approved Plan:
+## ${approvedPlanHeading}:
 ${plan}`,
         {
           plan,
           isAgent: false,
-          ...(filePath !== undefined ? { filePath } : {}),
+          ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
           ...(editedPlan !== undefined ? { planWasEdited: true } : {}),
           ...result,
         },

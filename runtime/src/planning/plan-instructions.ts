@@ -24,19 +24,22 @@ export interface PlanModeInstructionInput {
   readonly includeReentryReminder?: boolean;
 }
 
-const READ_ONLY_TOOL_NAMES =
-  "system.readFile, system.glob, system.grep, system.listDir, system.stat";
+const READ_TOOL_NAME = "FileRead";
+const GLOB_TOOL_NAME = "Glob";
+const GREP_TOOL_NAME = "Grep";
+const WRITE_TOOL_NAME = "Write";
+const EDIT_TOOL_NAME = "Edit";
+
+const READ_ONLY_TOOL_NAMES = `${READ_TOOL_NAME}, ${GLOB_TOOL_NAME}, ${GREP_TOOL_NAME}`;
 
 const PLAN_AGENT_TOOL_NAME = "system.agent.delegate";
 const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
 const EXIT_PLAN_MODE_TOOL_NAME = "ExitPlanMode";
-const FILE_WRITE_TOOL_NAME = "system.writeFile";
-const FILE_EDIT_TOOL_NAME = "system.editFile";
 
 function planFileInfo(input: PlanModeInstructionInput): string {
   return input.planExists
-    ? `A plan file already exists at ${input.planFilePath}. You can read it and make incremental edits using ${FILE_EDIT_TOOL_NAME}.`
-    : `No plan file exists yet. You should create your plan at ${input.planFilePath} using ${FILE_WRITE_TOOL_NAME}.`;
+    ? `A plan file already exists at ${input.planFilePath}. You can read it and make incremental edits using ${EDIT_TOOL_NAME}.`
+    : `No plan file exists yet. You should create your plan at ${input.planFilePath} using ${WRITE_TOOL_NAME}.`;
 }
 
 function planModeHeader(input: PlanModeInstructionInput): string {

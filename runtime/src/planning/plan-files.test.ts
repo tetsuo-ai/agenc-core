@@ -18,10 +18,13 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   clearAllPlanSlugs,
+  copyPlanForResume,
+  getPlan,
   getPlanFilePath,
   getPlansDirectory,
   isSessionPlanFile,
   setPlanSlug,
+  writePlanSync,
 } from "./plan-files.js";
 
 describe("isSessionPlanFile", () => {
@@ -108,5 +111,34 @@ describe("isSessionPlanFile", () => {
     // @ts-expect-error — defensive runtime check coverage
     expect(isSessionPlanFile(undefined, { sessionId: "session-A", agencHome }))
       .toBe(false);
+  });
+
+  test("restores persisted slug after the in-memory cache is cleared", () => {
+    const sessionId = "session-persisted";
+    const slug = "steady-bridge-deadbeef";
+    setPlanSlug({ sessionId, agencHome }, slug);
+    clearAllPlanSlugs();
+
+    expect(getPlanFilePath({ sessionId, agencHome })).toBe(
+      join(getPlansDirectory({ sessionId, agencHome }), `${slug}.md`),
+    );
+    expect(isSessionPlanFile(
+      getPlanFilePath({ sessionId, agencHome }),
+      { sessionId, agencHome },
+    )).toBe(true);
+  });
+
+  test("copies plan content for resumed sessions while preserving independent slugs", () => {
+    const source = { sessionId: "session-source", agencHome };
+    const target = { sessionId: "session-target", agencHome };
+    setPlanSlug(source, "source-plan-11111111");
+    setPlanSlug(target, "target-plan-22222222");
+    writePlanSync(source, "# Plan\n\nOriginal content.");
+
+    const copiedPath = copyPlanForResume(source, target);
+
+    expect(copiedPath).toBe(getPlanFilePath(target));
+    expect(getPlan(target)).toBe("# Plan\n\nOriginal content.");
+    expect(getPlanFilePath(source)).not.toBe(getPlanFilePath(target));
   });
 });
