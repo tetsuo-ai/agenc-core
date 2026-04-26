@@ -14,6 +14,12 @@ describe("plan mode instructions", () => {
       workflow: "interview",
     });
 
+    expect(prompt).toContain(
+      "The active plan file is available at /tmp/agenc/plans/session.md.",
+    );
+    expect(prompt).toContain(
+      "In plan mode you should first build your plan by writing it to the plan file.",
+    );
     expect(prompt).toContain("Iterative Planning Workflow");
     expect(prompt).toContain("First Turn");
     expect(prompt).toContain("Asking Good Questions");
@@ -24,8 +30,17 @@ describe("plan mode instructions", () => {
     expect(prompt).not.toContain("system.grep");
     expect(prompt).toContain("AskUserQuestion");
     expect(prompt).toContain("ExitPlanMode");
-    expect(prompt).toContain("AGENC.MD");
-    expect(prompt).toContain("<AGENC_HOME>/plans");
+    expect(prompt).toContain(
+      "Batch related questions together (use multi-question AskUserQuestion calls)",
+    );
+    expect(prompt).toContain("Your turn should only end by either:");
+    expect(prompt).toContain("Using AskUserQuestion to gather more information");
+    expect(prompt).toContain(
+      "Calling ExitPlanMode when the plan is ready for approval",
+    );
+    expect(prompt).not.toContain("## AgenC Context");
+    expect(prompt).not.toContain("AGENC.MD");
+    expect(prompt).not.toContain("<AGENC_HOME>/plans");
     expect(prompt).not.toMatch(/C[A-Z]+DE\.md/u);
     expect(prompt).not.toContain("AGENTS.md");
     expect(prompt).not.toContain("Claude");
@@ -56,6 +71,8 @@ describe("plan mode instructions", () => {
     expect(prompt).toContain("Plan mode still active");
     expect(prompt).toContain("AskUserQuestion");
     expect(prompt).toContain("ExitPlanMode");
+    expect(prompt).toContain("Read-only except plan file");
+    expect(prompt).not.toContain("AgenC plan file");
     expect(prompt).toContain("Never ask about plan approval via text");
   });
 
