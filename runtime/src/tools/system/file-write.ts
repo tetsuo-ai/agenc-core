@@ -52,8 +52,7 @@ import {
   getSessionReadSnapshot,
   hasSessionRead,
   recordSessionRead,
-  resolveToolAllowedPaths,
-  safePath,
+  safePathAllowingSessionPlanFile,
   SESSION_ID_ARG,
   type SessionReadViewKind,
 } from "./filesystem.js";
@@ -217,11 +216,11 @@ export function createFileWriteTool(
       const cwd = cwdArg ?? allowedPaths[0] ?? process.cwd();
       const absoluteInput = resolve(cwd, filePath);
 
-      const effectiveAllowedPaths = resolveToolAllowedPaths(
+      const safe = await safePathAllowingSessionPlanFile(
+        absoluteInput,
         allowedPaths,
         rawArgs,
       );
-      const safe = await safePath(absoluteInput, effectiveAllowedPaths);
       if (!safe.safe) {
         return errorResult(
           `file_path is outside allowed directories: ${filePath}` +

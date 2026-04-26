@@ -29,8 +29,14 @@ import {
 import {
   clearSessionReadState,
   recordSessionRead,
+  SESSION_AGENC_HOME_ARG,
   SESSION_ID_ARG,
 } from "./filesystem.js";
+import {
+  clearAllPlanSlugs,
+  getPlanFilePath,
+  setPlanSlug,
+} from "../../planning/plan-files.js";
 
 const SESSION_ID = "edit-tool-test-session";
 
@@ -45,6 +51,7 @@ describe("Edit tool", () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
     clearSessionReadState(SESSION_ID);
+    clearAllPlanSlugs();
   });
 
   test("exposes the openclaude tool name", () => {
@@ -76,6 +83,38 @@ describe("Edit tool", () => {
     expect(typeof result.content).toBe("string");
     expect(result.content).toContain("has been updated successfully");
     await expect(readFile(file, "utf8")).resolves.toBe("goodbye world\n");
+  });
+
+  test("edits the active session plan file outside the workspace root", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-edit-home-"));
+    try {
+      setPlanSlug({ agencHome, sessionId: SESSION_ID }, "ivory-bridge-aaed0227");
+      const planPath = getPlanFilePath({ agencHome, sessionId: SESSION_ID });
+      const original = "# Plan\n\n- [ ] Verify allowlist\n";
+      await writeFile(planPath, original, "utf8");
+      const fileStats = await stat(planPath);
+      recordSessionRead(SESSION_ID, planPath, {
+        content: original,
+        timestamp: fileStats.mtimeMs,
+        viewKind: "full",
+      });
+      const tool = createFileEditTool({ allowedPaths: [root] });
+
+      const result = await tool.execute({
+        file_path: planPath,
+        old_string: "Verify allowlist",
+        new_string: "Verify plan edits",
+        [SESSION_ID_ARG]: SESSION_ID,
+        [SESSION_AGENC_HOME_ARG]: agencHome,
+      });
+
+      expect(result.isError).toBeUndefined();
+      await expect(readFile(planPath, "utf8")).resolves.toContain(
+        "Verify plan edits",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   test("rejects edit when the file was not read in this session", async () => {

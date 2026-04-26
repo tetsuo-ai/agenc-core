@@ -50,8 +50,7 @@ import { addLineNumbers } from "./_deps/line-numbers.js";
 import {
   recordSessionRead,
   resolveSessionId,
-  resolveToolAllowedPaths,
-  safePath,
+  safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -306,8 +305,11 @@ async function resolveAndCheck(
       ? args.cwd
       : config.allowedPaths[0] ?? process.cwd();
   const absolute = isAbsolute(rawPath) ? rawPath : resolve(cwdArg, rawPath);
-  const allowedPaths = resolveToolAllowedPaths(config.allowedPaths, args);
-  const safe = await safePath(absolute, allowedPaths);
+  const safe = await safePathAllowingSessionPlanFile(
+    absolute,
+    config.allowedPaths,
+    args,
+  );
   if (!safe.safe) {
     return { err: errorResult(`Access denied: ${safe.reason}`) };
   }

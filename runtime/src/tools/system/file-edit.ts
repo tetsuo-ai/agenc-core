@@ -48,8 +48,7 @@ import {
   getSessionReadSnapshot,
   hasSessionRead,
   resolveSessionId,
-  resolveToolAllowedPaths,
-  safePath,
+  safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
 
 export const FILE_EDIT_TOOL_NAME = "Edit";
@@ -304,12 +303,6 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
-      // Path safety. Honors per-session extra roots via the same
-      // helper used by filesystem.ts.
-      const allowedPaths = resolveToolAllowedPaths(
-        config.allowedPaths,
-        rawArgs,
-      );
       // Resolve relative paths against the first allowed root before
       // safePath so a workspace-relative `src/foo.ts` is accepted by
       // the same allowlist that absolute paths run through.
@@ -324,7 +317,11 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // existing parent — so creation under an allowed root still
       // resolves correctly. Same trick filesystem.ts uses for
       // writeFile creates.
-      const safe = await safePath(candidatePath, allowedPaths);
+      const safe = await safePathAllowingSessionPlanFile(
+        candidatePath,
+        config.allowedPaths,
+        rawArgs,
+      );
       if (!safe.safe) {
         return errorResult(`Access denied: ${safe.reason}`);
       }

@@ -58,6 +58,7 @@ import {
   type PermissionRequestHook,
   type SandboxMode,
 } from "../../tools/orchestrator.js";
+import { SESSION_AGENC_HOME_ARG } from "../../tools/system/filesystem.js";
 
 interface ToolDispatchResultLike {
   readonly content: string;
@@ -738,6 +739,9 @@ export class StreamingToolExecutor {
               return dispatchWithInjectedArgs(this.registry, dispatchCall, {
                 __onProgress: onProgress,
                 __callId: tool.toolCall.id,
+                ...(this.liveOptions?.agencHome !== undefined
+                  ? { [SESSION_AGENC_HOME_ARG]: this.liveOptions.agencHome }
+                  : {}),
                 ...(sessionId !== null
                   ? { __agencSessionId: sessionId }
                   : {}),
