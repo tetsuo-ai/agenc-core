@@ -186,6 +186,72 @@ describe("AskUserQuestionOverlay", () => {
     unmount();
   });
 
+  test("renders model options that provide previews without descriptions", async () => {
+    const onResolve = vi.fn<[AskUserQuestionDecision], void>();
+    const { emitter, getText, unmount } = await mount(
+      <AskUserQuestionOverlay
+        requestId="ask-preview-fallback"
+        input={{
+          questions: [
+            {
+              header: "Priority",
+              question: "Which milestone should come first?",
+              options: [
+                {
+                  label: "M1 first",
+                  preview: "Complete reader/lexer before parser.",
+                },
+                {
+                  label: "M2 first",
+                  preview: "Focus on AST and grammar early.",
+                },
+              ],
+            },
+          ],
+        }}
+        onResolve={onResolve}
+        abortSignal={new AbortController().signal}
+      />,
+    );
+
+    expect(getText()).toContain("Answer questions");
+    expect(getText()).toContain("M1 first");
+    expect(getText()).toContain("Complete reader/lexer before parser.");
+
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await new Promise((r) => setTimeout(r, 20));
+    emitter.emit("input", makeKeyEvent({ sequence: "s" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onResolve).toHaveBeenCalledWith({ behavior: "allow" });
+    unmount();
+  });
+
+  test("auto-denies unrecoverably invalid payloads instead of blocking input", async () => {
+    const onResolve = vi.fn<[AskUserQuestionDecision], void>();
+    const { getText, unmount } = await mount(
+      <AskUserQuestionOverlay
+        requestId="ask-invalid"
+        input={{
+          questions: [
+            {
+              header: "Bad",
+              question: "Pick one",
+              options: [{ preview: "Missing label" }, { label: "Valid" }],
+            },
+          ],
+        }}
+        onResolve={onResolve}
+        abortSignal={new AbortController().signal}
+      />,
+    );
+
+    expect(getText()).toContain("Invalid AskUserQuestion input");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onResolve).toHaveBeenCalledWith({ behavior: "deny" });
+    unmount();
+  });
+
   test("Escape denies the request", async () => {
     const onResolve = vi.fn<[AskUserQuestionDecision], void>();
     const { emitter, unmount } = await mount(

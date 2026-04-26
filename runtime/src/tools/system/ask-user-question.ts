@@ -146,7 +146,9 @@ export function parseAskUserQuestionInput(
         };
       }
       const label = nonEmptyString(optionRecord.label);
-      const description = nonEmptyString(optionRecord.description);
+      const preview = nonEmptyString(optionRecord.preview);
+      const description =
+        nonEmptyString(optionRecord.description) ?? preview ?? label;
       if (label === null) {
         return {
           ok: false,
@@ -156,7 +158,7 @@ export function parseAskUserQuestionInput(
       if (description === null) {
         return {
           ok: false,
-          error: `questions[${questionIndex}].options[${optionIndex}].description is required`,
+          error: `questions[${questionIndex}].options[${optionIndex}] must include a label, description, or preview`,
         };
       }
       if (seenLabels.has(label)) {
@@ -169,9 +171,7 @@ export function parseAskUserQuestionInput(
       options.push({
         label,
         description,
-        ...(typeof optionRecord.preview === "string"
-          ? { preview: optionRecord.preview }
-          : {}),
+        ...(preview !== null ? { preview } : {}),
       });
     }
     questions.push({
@@ -281,7 +281,7 @@ const inputSchema = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["label", "description"],
+              required: ["label"],
               properties: {
                 label: { type: "string" },
                 description: { type: "string" },
