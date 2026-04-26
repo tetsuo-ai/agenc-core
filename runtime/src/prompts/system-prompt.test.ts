@@ -34,6 +34,7 @@ import {
   assembleSystemPrompt,
   buildEnvInfoSection,
   getActionsSection,
+  getEditingConstraintsSection,
   getLanguageSection,
   getMcpInstructionsSection,
   getOutputEfficiencySection,
@@ -42,6 +43,7 @@ import {
   getSimpleIntroSection,
   getSimpleSystemSection,
   getSimpleToneAndStyleSection,
+  getToolGuidelinesSection,
   getUsingYourToolsSection,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
@@ -142,23 +144,50 @@ describe("static section emitters", () => {
     expect(s).toContain("force-push");
   });
 
-  test("using_your_tools surfaces Codex-primary exec/apply_patch guidance", () => {
+  test("using_your_tools renders the openclaude CRITICAL bash-vs-dedicated-tools block (verbatim port)", () => {
     const tools = new Set([
       "exec_command",
       "write_stdin",
       "apply_patch",
+      "TodoWrite",
       "system.searchTools",
     ]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    expect(s).toContain("apply_patch as the primary editing tool");
-    expect(s).toContain("Use exec_command for terminal work");
-    expect(s).toContain("exec_command with tty=true");
+    // OpenClaude `getUsingYourToolsSection` lead bullet (BASH_TOOL_NAME →
+    // exec_command for AgenC). The CRITICAL framing is the load-bearing
+    // upstream wording that prevents the model from rationalizing a file
+    // write through a shell redirect.
+    expect(s).toContain(
+      "Do NOT use the exec_command to run commands when a relevant dedicated tool is provided",
+    );
+    expect(s).toContain("This is CRITICAL");
+    // OpenClaude providedToolSubitems, with FILE_EDIT_TOOL_NAME and
+    // FILE_WRITE_TOOL_NAME both mapped to apply_patch.
+    expect(s).toContain("To read files use system.readFile instead of cat, head, tail, or sed");
+    expect(s).toContain("To edit files use apply_patch instead of sed or awk");
+    expect(s).toContain(
+      "To create files use apply_patch (with a `*** Add File:` operation) instead of cat with heredoc or echo redirection",
+    );
+    expect(s).toContain("To search for files use system.glob instead of find or ls");
+    expect(s).toContain(
+      "To search the content of files, use system.grep instead of grep or rg",
+    );
+    expect(s).toContain(
+      "Reserve using the exec_command exclusively for system commands and terminal operations",
+    );
+    // TodoWrite bullet from openclaude (taskToolName → TodoWrite).
+    expect(s).toContain("Break down and manage your work with the TodoWrite tool");
+    // exec_command + write_stdin interactive-session bullet.
+    expect(s).toContain("call exec_command with tty=true");
     expect(s).toContain("use write_stdin with that session_id");
-    expect(s).toContain("parallel");
+    // Verbatim openclaude parallel-tool-calls sentence.
+    expect(s).toContain(
+      "You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel",
+    );
   });
 
-  test("using_your_tools treats system.* file tools as compatibility tools", () => {
+  test("using_your_tools points file ops at apply_patch even when system.* compatibility tools are loaded", () => {
     const tools = new Set([
       "exec_command",
       "system.readFile",
@@ -169,25 +198,102 @@ describe("static section emitters", () => {
       "apply_patch",
     ]);
     const s = getUsingYourToolsSection(tools);
-    expect(s).toContain("Use system.writeFile/system.editFile only as AgenC compatibility tools");
-    expect(s).toContain("Normal code changes should go through apply_patch");
-    expect(s).toContain("Use exec_command for terminal work");
-    expect(s).toContain("Do not answer with only proposed code or prose");
+    // No more "compatibility tool" bullet — openclaude routes edits/writes
+    // through the same dedicated-tool rule, and AgenC's apply_patch
+    // handles both edits and `*** Add File:` creates.
+    expect(s).not.toContain("compatibility tools");
+    expect(s).toContain("To edit files use apply_patch");
+    expect(s).toContain("To create files use apply_patch");
   });
 
-  test("using_your_tools falls back to shell guidance when exec_command is unavailable", () => {
+  test("using_your_tools substitutes the shell-tool name when exec_command is unavailable", () => {
     const tools = new Set(["system.bash"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    expect(s).toContain("Use the shell/bash tool for terminal work");
-    expect(s).not.toContain("Use exec_command for terminal work");
+    expect(s).toContain(
+      "Do NOT use the system.bash to run commands when a relevant dedicated tool is provided",
+    );
+    expect(s).toContain(
+      "Reserve using the system.bash exclusively for system commands",
+    );
+    expect(s).not.toContain("exec_command");
   });
 
-  test("using_your_tools omits edit guidance without apply_patch", () => {
-    const tools = new Set(["Read", "Edit"]);
+  test("using_your_tools omits apply_patch sub-bullets when apply_patch is not enabled", () => {
+    const tools = new Set(["exec_command"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    expect(s).not.toContain("primary editing tool");
+    expect(s).toContain("To read files use system.readFile");
+    expect(s).not.toContain("apply_patch");
+  });
+
+  test("editing_constraints renders codex gpt-5.4 ## Editing constraints verbatim when apply_patch is enabled", () => {
+    const tools = new Set(["apply_patch", "exec_command"]);
+    const s = getEditingConstraintsSection(tools);
+    expect(s).not.toBeNull();
+    const text = String(s);
+    expect(text).toContain("## Editing constraints");
+    // Verbatim line from codex gpt-5.4 base_instructions:31 — the rule that
+    // would have prevented the model from using `cat >> docs/feature-matrix.md`
+    // in the failing scrollback session.
+    expect(text).toContain(
+      "Always use apply_patch for manual code edits. Do not use cat or any other commands when creating or editing files",
+    );
+    expect(text).toContain(
+      "Do not use Python to read/write files when a simple shell command or apply_patch would suffice",
+    );
+    expect(text).toContain("You may be in a dirty git worktree");
+    // Nested dirty-worktree sub-bullets (rendered via prependBullets nesting).
+    expect(text).toContain(
+      "NEVER revert existing changes you did not make unless explicitly requested",
+    );
+    expect(text).toContain(
+      "**NEVER** use destructive commands like `git reset --hard`",
+    );
+    expect(text).toContain("**ALWAYS** prefer using non-interactive git commands");
+  });
+
+  test("editing_constraints returns null without apply_patch (gated)", () => {
+    expect(getEditingConstraintsSection(new Set(["exec_command"]))).toBeNull();
+  });
+
+  test("tool_guidelines renders codex gpt-5.2 # Tool Guidelines verbatim when shell + apply_patch are enabled", () => {
+    const tools = new Set(["exec_command", "apply_patch"]);
+    const s = getToolGuidelinesSection(tools);
+    expect(s).not.toBeNull();
+    const text = String(s);
+    expect(text).toContain("# Tool Guidelines");
+    expect(text).toContain("## Shell commands");
+    // Codex gpt-5.2 base_instructions:250 — verbatim.
+    expect(text).toContain(
+      "When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster",
+    );
+    expect(text).toContain(
+      "Do not use python scripts to attempt to output larger chunks of a file",
+    );
+    // The codex `multi_tool_use.parallel` reference is adapted to AgenC's
+    // parallel mechanism (multiple tool calls in the same assistant message).
+    expect(text).toContain("Make multiple tool calls in the same assistant message");
+    expect(text).toContain("## apply_patch");
+    expect(text).toContain("*** Begin Patch");
+    expect(text).toContain("*** End Patch");
+    expect(text).toContain("*** Add File:");
+    expect(text).toContain("*** Delete File:");
+    expect(text).toContain("*** Update File:");
+    expect(text).toContain("You must include a header with your intended action");
+  });
+
+  test("tool_guidelines drops apply_patch subsection when apply_patch is unavailable", () => {
+    const s = getToolGuidelinesSection(new Set(["exec_command"]));
+    expect(s).not.toBeNull();
+    const text = String(s);
+    expect(text).toContain("# Tool Guidelines");
+    expect(text).toContain("## Shell commands");
+    expect(text).not.toContain("## apply_patch");
+  });
+
+  test("tool_guidelines returns null when no shell and no apply_patch", () => {
+    expect(getToolGuidelinesSection(new Set())).toBeNull();
   });
 
   test("tone_and_style bans emojis + colons before tool calls", () => {

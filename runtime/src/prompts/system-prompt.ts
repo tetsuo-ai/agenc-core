@@ -324,44 +324,203 @@ Examples that warrant confirmation:
 Do not use destructive shortcuts to bypass obstacles. Investigate unexpected state (unfamiliar files, branches, lockfiles) rather than deleting it — it may represent in-progress work.`;
 }
 
-/** 5. using_your_tools — tool invocation conventions. */
+/** 5. using_your_tools — tool invocation conventions.
+ *
+ * Verbatim port of openclaude `constants/prompts.ts:getUsingYourToolsSection`
+ * (lines 291-313 of `src/constants/prompts.ts`). Tool name interpolations
+ * mapped to the AgenC catalog:
+ *
+ *   `${BASH_TOOL_NAME}`       → `exec_command`
+ *   `${FILE_READ_TOOL_NAME}`  → `system.readFile`
+ *   `${FILE_EDIT_TOOL_NAME}`  → `apply_patch`
+ *   `${FILE_WRITE_TOOL_NAME}` → `apply_patch`   (apply_patch handles `*** Add File:`)
+ *   `${GLOB_TOOL_NAME}`       → `system.glob`
+ *   `${GREP_TOOL_NAME}`       → `system.grep`
+ *   `${taskToolName}`         → `TodoWrite`
+ *
+ * Wording is otherwise unchanged. The deferred-tool reality (system.* file
+ * tools live behind `system.searchTools`) is handled by the model loading
+ * them via search; the parallel-tool-calls bullet is the openclaude verbatim
+ * sentence.
+ */
 export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): string {
-  const items: Array<string | string[]> = [];
   const hasTool = (...names: readonly string[]): boolean =>
     names.some((name) => enabledTools.has(name));
 
-  const hasExecCommand = hasTool("exec_command");
-  if (hasTool("apply_patch")) {
-    items.push(
-      `For source-code edits, use apply_patch as the primary editing tool. Pass the full *** Begin Patch / *** End Patch body as the patch argument. The patch uses AgenC grammar, not a git unified diff: do not include diff --git, --- a/file, or +++ b/file headers. Do not use shell redirection, heredocs, sed -i, or perl -i for source edits.`,
+  const hasShell = hasTool("exec_command", "bash", "Bash", "system.bash", "shell");
+  const shellName = enabledTools.has("exec_command")
+    ? "exec_command"
+    : enabledTools.has("bash")
+      ? "bash"
+      : enabledTools.has("Bash")
+        ? "Bash"
+        : enabledTools.has("system.bash")
+          ? "system.bash"
+          : "shell";
+  const hasApplyPatch = hasTool("apply_patch");
+  const hasTodoWrite = hasTool("TodoWrite");
+
+  const items: Array<string | string[]> = [];
+
+  if (hasShell) {
+    const subItems: string[] = [];
+    subItems.push(
+      `To read files use system.readFile instead of cat, head, tail, or sed`,
     );
-    items.push(
-      `Use system.writeFile/system.editFile only as AgenC compatibility tools when explicitly needed or after loading them through system.searchTools. Normal code changes should go through apply_patch.`,
-    );
-  }
-  if (hasExecCommand) {
-    items.push(
-      `Use exec_command for terminal work: inspecting files, running rg/git/build/test commands, and validating changes. Keep commands focused and use the working directory that matches the repository you are editing.`,
-    );
-    if (hasTool("write_stdin")) {
-      items.push(
-        `For interactive or long-running terminal sessions, call exec_command with tty=true. If it returns a session_id, use write_stdin with that session_id to send input or chars="" to poll for more output.`,
+    if (hasApplyPatch) {
+      subItems.push(
+        `To edit files use apply_patch instead of sed or awk`,
+      );
+      subItems.push(
+        `To create files use apply_patch (with a \`*** Add File:\` operation) instead of cat with heredoc or echo redirection`,
       );
     }
-  } else if (hasTool("bash", "Bash", "system.bash", "shell")) {
+    subItems.push(
+      `To search for files use system.glob instead of find or ls`,
+    );
+    subItems.push(
+      `To search the content of files, use system.grep instead of grep or rg`,
+    );
+    subItems.push(
+      `Reserve using the ${shellName} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${shellName} tool for these if it is absolutely necessary.`,
+    );
+
     items.push(
-      `Use the shell/bash tool for terminal work: inspecting files, running rg/git/build/test commands, and validating changes.`,
+      `Do NOT use the ${shellName} to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:`,
+    );
+    items.push(subItems);
+  }
+
+  if (hasTodoWrite) {
+    items.push(
+      `Break down and manage your work with the TodoWrite tool. These tools are helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with the task. Do not batch up multiple tasks before marking them as completed.`,
+    );
+  }
+
+  if (hasShell && enabledTools.has("write_stdin")) {
+    items.push(
+      `For interactive or long-running terminal sessions, call ${shellName} with tty=true. If it returns a session_id, use write_stdin with that session_id to send input or chars="" to poll for more output.`,
     );
   }
 
   items.push(
-    `For coding tasks, inspect and modify files with tools. Do not answer with only proposed code or prose when the user asked you to make the change.`,
-  );
-  items.push(
-    `You can call multiple tools in a single response. Independent tool calls should run in parallel; sequential calls should remain sequential when they depend on each other.`,
+    `You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.`,
   );
 
   return joinSection("# Using your tools", items);
+}
+
+/**
+ * Editing constraints — verbatim port of codex `gpt-5.4` base_instructions
+ * lines 27-42 (the `## Editing constraints` block under `# Personality`).
+ *
+ * Source-of-truth: `codex-rs/models-manager/models.json` — the
+ * `base_instructions` field for slug `gpt-5.4`. Exact text reproduced
+ * here so AgenC sees the same constraint set codex models follow.
+ */
+export function getEditingConstraintsSection(
+  enabledTools: ReadonlySet<string>,
+): string | null {
+  if (!enabledTools.has("apply_patch")) return null;
+  const items: Array<string | string[]> = [
+    `Default to ASCII when editing or creating files. Only introduce non-ASCII or other Unicode characters when there is a clear justification and the file already uses them.`,
+    `Add succinct code comments that explain what is going on if code is not self-explanatory. You should not add comments like "Assigns the value to the variable", but a brief comment might be useful ahead of a complex code block that the user would otherwise have to spend time parsing out. Usage of these comments should be rare.`,
+    `Always use apply_patch for manual code edits. Do not use cat or any other commands when creating or editing files. Formatting commands or bulk edits don't need to be done with apply_patch.`,
+    `Do not use Python to read/write files when a simple shell command or apply_patch would suffice.`,
+    `You may be in a dirty git worktree.`,
+    [
+      `NEVER revert existing changes you did not make unless explicitly requested, since these changes were made by the user.`,
+      `If asked to make a commit or code edits and there are unrelated changes to your work or changes that you didn't make in those files, don't revert those changes.`,
+      `If the changes are in files you've touched recently, you should read carefully and understand how you can work with the changes rather than reverting them.`,
+      `If the changes are in unrelated files, just ignore them and don't revert them.`,
+    ],
+    `Do not amend a commit unless explicitly requested to do so.`,
+    `While you are working, you might notice unexpected changes that you didn't make. It's likely the user made them, or were autogenerated. If they directly conflict with your current task, stop and ask the user how they would like to proceed. Otherwise, focus on the task at hand.`,
+    `**NEVER** use destructive commands like \`git reset --hard\` or \`git checkout --\` unless specifically requested or approved by the user.`,
+    `You struggle using the git interactive console. **ALWAYS** prefer using non-interactive git commands.`,
+  ];
+  return joinSection("## Editing constraints", items);
+}
+
+/**
+ * Tool Guidelines — verbatim port of codex `gpt-5.2` base_instructions
+ * lines 244-289 (the `# Tool Guidelines` block, including `## Shell
+ * commands` and `## apply_patch` subsections).
+ *
+ * Source-of-truth: `codex-rs/models-manager/models.json` — the
+ * `base_instructions` field for slug `gpt-5.2`. The apply_patch envelope
+ * description is reproduced here in addition to being in the tool's own
+ * `description` field, because codex puts it in the system prompt for
+ * gpt-5.2 and models follow it more reliably from the system prompt.
+ *
+ * One adaptation: codex's `multi_tool_use.parallel` reference (an
+ * OpenAI-side construct) becomes "make multiple tool calls in the same
+ * assistant message" — AgenC's parallel mechanism.
+ */
+export function getToolGuidelinesSection(
+  enabledTools: ReadonlySet<string>,
+): string | null {
+  const hasShell = ["exec_command", "bash", "Bash", "system.bash", "shell"].some(
+    (n) => enabledTools.has(n),
+  );
+  const hasApplyPatch = enabledTools.has("apply_patch");
+  if (!hasShell && !hasApplyPatch) return null;
+
+  const blocks: string[] = ["# Tool Guidelines"];
+
+  if (hasShell) {
+    blocks.push(
+      `## Shell commands
+
+When using the shell, you must adhere to the following guidelines:
+
+- When searching for text or files, prefer using \`rg\` or \`rg --files\` respectively because \`rg\` is much faster than alternatives like \`grep\`. (If the \`rg\` command is not found, then use alternatives.)
+- Do not use python scripts to attempt to output larger chunks of a file.
+- Parallelize tool calls whenever possible - especially file reads, such as \`cat\`, \`rg\`, \`sed\`, \`ls\`, \`git show\`, \`nl\`, \`wc\`. Make multiple tool calls in the same assistant message to run them in parallel.`,
+    );
+  }
+
+  if (hasApplyPatch) {
+    blocks.push(
+      `## apply_patch
+
+Use the \`apply_patch\` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
+
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
+
+Within that envelope, you get a sequence of file operations.
+You MUST include a header to specify the action you are taking.
+Each operation starts with one of three headers:
+
+*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
+*** Delete File: <path> - remove an existing file. Nothing follows.
+*** Update File: <path> - patch an existing file in place (optionally with a rename).
+
+Example patch:
+
+\`\`\`
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+\`\`\`
+
+It is important to remember:
+
+- You must include a header with your intended action (Add/Delete/Update)
+- You must prefix new lines with \`+\` even when creating a new file`,
+    );
+  }
+
+  return blocks.join("\n\n");
 }
 
 /** 6. simple_tone_and_style — response shape. */
@@ -654,8 +813,16 @@ export async function assembleSystemPrompt(
     opts.outputStyle === null || opts.outputStyle === undefined
       ? getSimpleDoingTasksSection()
       : null,
+    // codex `gpt-5.4` ## Editing constraints — sits right under doing-tasks
+    // so the apply_patch / dirty-worktree / no-destructive rules land
+    // before the action/tool sections that exercise them.
+    getEditingConstraintsSection(enabledTools),
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
+    // codex `gpt-5.2` # Tool Guidelines (## Shell commands + ## apply_patch).
+    // Slotted right after `using_your_tools` so the model sees the per-tool
+    // rules immediately after the cross-tool ones.
+    getToolGuidelinesSection(enabledTools),
     getPlanningSection(),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
