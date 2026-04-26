@@ -38,10 +38,31 @@ export interface AttachmentTrackingState {
   lastEmittedDate?: string;
   /** Hash of the deferred-tools set last announced. */
   lastDeferredToolsHash?: string;
+  /**
+   * Full set of deferred-tool names last announced. Stored alongside the
+   * hash so the producer can compute added/removed deltas without
+   * rescanning the message history (openclaude reconstructs prior state
+   * from prior `deferred_tools_delta` attachments in the transcript;
+   * AgenC tracks it directly here).
+   */
+  lastDeferredToolsSet?: ReadonlySet<string>;
   /** Hash of the agent listing last announced. */
   lastAgentListingHash?: string;
+  /**
+   * Map of agent type → rendered description line last announced. Same
+   * rationale as `lastDeferredToolsSet`: kept for direct delta computation
+   * across turns instead of replaying message history.
+   */
+  lastAgentListingSet?: ReadonlyMap<string, string>;
   /** Hash of the MCP server instructions last announced. */
   lastMcpInstructionsHash?: string;
+  /**
+   * Map of MCP server name → instruction block last announced. Same
+   * rationale as `lastDeferredToolsSet`. MCP instructions are immutable
+   * for the lifetime of a connection (set once at handshake), so the
+   * diff key is the server name.
+   */
+  lastMcpInstructionsMap?: ReadonlyMap<string, string>;
   /**
    * One-shot reminder content set by external runtime producers. Cleared
    * by `critical-reminder.ts` on emission. When populated, the next

@@ -18,9 +18,27 @@ describe("attachment-state", () => {
     expect(state.hasExitedAutoModeInSession).toBe(false);
     expect(state.lastEmittedDate).toBeUndefined();
     expect(state.lastDeferredToolsHash).toBeUndefined();
+    expect(state.lastDeferredToolsSet).toBeUndefined();
     expect(state.lastAgentListingHash).toBeUndefined();
+    expect(state.lastAgentListingSet).toBeUndefined();
     expect(state.lastMcpInstructionsHash).toBeUndefined();
+    expect(state.lastMcpInstructionsMap).toBeUndefined();
     expect(state.pendingCriticalReminder).toBeUndefined();
+    _resetAttachmentTrackingStateForTest(sessionKey);
+  });
+
+  test("delta tracking sets/maps survive across calls", () => {
+    const sessionKey = {};
+    const a = getAttachmentTrackingState(sessionKey);
+    a.lastDeferredToolsSet = new Set(["foo", "bar"]);
+    a.lastAgentListingSet = new Map([["explore", "- explore: ..."]]);
+    a.lastMcpInstructionsMap = new Map([["fs", "## fs\nuse it"]]);
+    const b = getAttachmentTrackingState(sessionKey);
+    expect(b).toBe(a);
+    expect(b.lastDeferredToolsSet).toBe(a.lastDeferredToolsSet);
+    expect([...(b.lastDeferredToolsSet ?? [])]).toEqual(["foo", "bar"]);
+    expect(b.lastAgentListingSet?.get("explore")).toBe("- explore: ...");
+    expect(b.lastMcpInstructionsMap?.get("fs")).toBe("## fs\nuse it");
     _resetAttachmentTrackingStateForTest(sessionKey);
   });
 

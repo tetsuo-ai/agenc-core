@@ -25,6 +25,18 @@ import type { LLMMessage, LLMTool } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AttachmentTrackingState } from "../../session/attachment-state.js";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
+import { agentListingDeltaProducer } from "./agent-listing-delta.js";
+import { autoModeProducer } from "./auto-mode.js";
+import { criticalReminderProducer } from "./critical-reminder.js";
+import { dateChangeProducer } from "./date-change.js";
+import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
+import { mcpInstructionsDeltaProducer } from "./mcp-delta.js";
+import { outputStyleProducer } from "./output-style.js";
+import { planModeProducer } from "./plan-mode.js";
+import { changedFilesProducer } from "./changed-files.js";
+import { nestedMemoryProducer } from "./nested-memory.js";
+import { relevantMemoryProducer } from "./relevant-memory.js";
+import { agentMentionsProducer } from "./agent-mentions.js";
 import type { Attachment } from "./types.js";
 
 /**
@@ -46,6 +58,17 @@ export interface GetAttachmentsOptions {
    * deferred-tools delta hash.
    */
   readonly loadedTools: readonly LLMTool[];
+  /**
+   * Names of deferred tools that have been discovered (loaded into the
+   * visible catalog) via `system.searchTools` so far this session. Drives
+   * the deferred-tools delta producer's diff. Optional — when omitted,
+   * the producer treats the discovered set as empty (matches openclaude
+   * bootstraps with no ToolSearch tool registered).
+   *
+   * Sourced at the call site from
+   * `session.services.registry.getDiscoveredToolNames?.() ?? new Set()`.
+   */
+  readonly discoveredToolNames?: ReadonlySet<string>;
   /**
    * Conversation history projected for the next model request, post-
    * compaction. Producers scan this for prior `<system-reminder>` markers
@@ -83,25 +106,25 @@ export type AttachmentProducer = (
  * call-site wiring are otherwise complete.
  */
 const PRODUCERS: readonly AttachmentProducer[] = [
-  // Phase 2 — Mode pulses (registered in their own commits):
-  //   plan_mode      → ./plan-mode.ts
-  //   auto_mode      → ./auto-mode.ts
+  // Phase 2 — Mode pulses:
+  planModeProducer,
+  autoModeProducer,
   //
   // Phase 3 — Mid-session deltas:
-  //   deferred_tools_delta   → ./deferred-tools-delta.ts
-  //   agent_listing_delta    → ./agent-listing-delta.ts
-  //   mcp_instructions_delta → ./mcp-delta.ts
+  deferredToolsDeltaProducer,
+  agentListingDeltaProducer,
+  mcpInstructionsDeltaProducer,
   //
   // Phase 4 — System reminders:
-  //   date_change                 → ./date-change.ts
-  //   critical_system_reminder    → ./critical-reminder.ts
-  //   output_style                → ./output-style.ts
+  dateChangeProducer,
+  criticalReminderProducer,
+  outputStyleProducer,
   //
   // Phase 5 — Memory + file injections:
-  //   edited_text_file / edited_image_file → ./changed-files.ts
-  //   nested_memory                        → ./nested-memory.ts
-  //   relevant_memories                    → ./relevant-memory.ts
-  //   agent_mention                        → ./agent-mentions.ts
+  changedFilesProducer,
+  nestedMemoryProducer,
+  relevantMemoryProducer,
+  agentMentionsProducer,
 ];
 
 /**

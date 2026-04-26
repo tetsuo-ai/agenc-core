@@ -758,6 +758,8 @@ async function tryRunSamplingRequest(
     sessionKey: session,
     userInput: extractLastUserText(state.messagesForQuery),
     loadedTools: builtTools(session, ctx),
+    discoveredToolNames:
+      session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
     messages: state.messagesForQuery,
     permissionContext:
       session.permissionModeRegistry.current(),

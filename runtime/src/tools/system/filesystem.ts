@@ -376,6 +376,43 @@ export function getSessionReadSnapshot(
 }
 
 /**
+ * Iterate all in-memory session-read snapshots for the given session.
+ *
+ * Used by the per-turn changed-files attachment producer
+ * (`runtime/src/prompts/attachments/changed-files.ts`) to walk every
+ * file the model has read this session and emit diff snippets for any
+ * that have been mutated since the last read.
+ *
+ * Iterates only the in-memory `sessionReadState` map; persisted local
+ * history snapshots are intentionally not enumerated — they are loaded
+ * lazily on demand via {@link getSessionReadSnapshot}. The producer
+ * iterates the live read set, which is the openclaude
+ * `cacheKeys(toolUseContext.readFileState)` parity surface.
+ */
+export function forEachSessionRead(
+  sessionId: string | undefined,
+  fn: (canonicalPath: string, snapshot: SessionReadSnapshot) => void,
+): void {
+  if (!sessionId || sessionId.trim().length === 0) return;
+  const fileMap = sessionReadState.get(sessionId);
+  if (!fileMap) return;
+  for (const [path, snapshot] of fileMap) {
+    fn(path, snapshot);
+  }
+}
+
+/** Drop a single file's recorded snapshot. Used on ENOENT eviction. */
+export function dropSessionReadSnapshot(
+  sessionId: string | undefined,
+  canonicalPath: string,
+): void {
+  if (!sessionId || sessionId.trim().length === 0) return;
+  const fileMap = sessionReadState.get(sessionId);
+  if (!fileMap) return;
+  fileMap.delete(canonicalPath);
+}
+
+/**
  * Clear all recorded reads for a session. Called from the gateway when
  * a session is closed so the map does not grow without bound on
  * long-running daemons.
