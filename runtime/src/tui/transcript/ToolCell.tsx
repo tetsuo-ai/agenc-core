@@ -196,31 +196,23 @@ function classifyTool(toolName: string | undefined): ToolFamily {
   if (!toolName) return "generic";
   const normalized = toolName.toLowerCase();
   if (
-    normalized === "system.readfile" ||
-    normalized === "system.read_file" ||
+    normalized === "fileread" ||
     normalized === "readfile" ||
     normalized === "read_file"
   ) {
     return "read";
   }
   if (
-    normalized === "system.writefile" ||
-    normalized === "system.write_file" ||
+    normalized === "write" ||
     normalized === "writefile" ||
-    normalized === "write_file" ||
-    normalized === "system.appendfile" ||
-    normalized === "system.append_file" ||
-    normalized === "appendfile" ||
-    normalized === "append_file"
+    normalized === "write_file"
   ) {
     return "write";
   }
   if (
-    normalized === "system.editfile" ||
-    normalized === "system.edit_file" ||
+    normalized === "edit" ||
     normalized === "editfile" ||
-    normalized === "edit_file" ||
-    normalized === "edit"
+    normalized === "edit_file"
   ) {
     return "edit";
   }

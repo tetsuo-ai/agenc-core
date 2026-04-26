@@ -11,14 +11,14 @@ import type { Tool } from "./types.js";
 import { EventLog } from "../session/event-log.js";
 
 const readTool: Tool = {
-  name: "system.readFile",
+  name: "FileRead",
   description: "",
   inputSchema: {},
   execute: async () => ({ content: "ok" }),
 };
 
 const writeTool: Tool = {
-  name: "system.writeFile",
+  name: "Write",
   description: "",
   inputSchema: {},
   execute: async () => ({ content: "ok" }),
@@ -59,7 +59,7 @@ describe("ToolRouter", () => {
       { tool: readTool, supportsParallelToolCalls: true },
       { tool: writeTool, supportsParallelToolCalls: false },
     ]);
-    expect(router.findSpec("system.readFile")?.tool).toBe(readTool);
+    expect(router.findSpec("FileRead")?.tool).toBe(readTool);
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
@@ -113,7 +113,7 @@ describe("ToolRouter", () => {
     ]);
     expect(
       router.toolSupportsParallel({
-        toolName: { name: "system.readFile" },
+        toolName: { name: "FileRead" },
         callId: "c1",
         payload: { kind: "function", arguments: "" },
       }),
@@ -126,7 +126,7 @@ describe("ToolRouter", () => {
     ]);
     expect(
       router.toolSupportsParallel({
-        toolName: { name: "system.writeFile" },
+        toolName: { name: "Write" },
         callId: "c2",
         payload: { kind: "function", arguments: "" },
       }),
@@ -274,12 +274,12 @@ describe("buildToolCall — ResponseItem variants", () => {
     const item: RouterResponseItem = {
       type: "function_call",
       callId: "c1",
-      name: "system.readFile",
+      name: "FileRead",
       arguments: '{"path":"/tmp"}',
     };
     const call = await buildToolCall(undefined, item);
     expect(call).not.toBeNull();
-    expect(call!.toolName.name).toBe("system.readFile");
+    expect(call!.toolName.name).toBe("FileRead");
     expect(call!.callId).toBe("c1");
     expect(call!.payload.kind).toBe("function");
     if (call!.payload.kind === "function") {
@@ -395,7 +395,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     const router = new ToolRouter([
       { tool: readTool, supportsParallelToolCalls: true },
     ]);
-    const inv = makeInvocation({ name: "system.readFile" }, "c1");
+    const inv = makeInvocation({ name: "FileRead" }, "c1");
     const result = await router.dispatchToolCallWithCodeMode(
       inv,
       {},
@@ -423,7 +423,7 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
     const router = new ToolRouter([
       { tool: readTool, supportsParallelToolCalls: true },
     ]);
-    const inv = makeInvocation({ name: "system.readFile" }, "c3");
+    const inv = makeInvocation({ name: "FileRead" }, "c3");
     const result = await router.dispatchToolCallWithCodeMode(
       inv,
       {},
@@ -517,7 +517,7 @@ describe("ToolRouter.fromConfig", () => {
 
     const specs = router.getSpecs();
     const names = new Set(specs.map((s) => s.tool.name));
-    expect(names.has("system.readFile")).toBe(true);
+    expect(names.has("FileRead")).toBe(true);
     expect(names.has("mcp.db.query")).toBe(true);
     expect(names.has("mcp.db.migrate")).toBe(true);
     expect(names.has("dyn.echo")).toBe(true);
@@ -552,20 +552,20 @@ describe("ToolRouter.fromConfig", () => {
       deferredMcpTools: new Map([["mcp.x.hidden", deferred]]),
     });
     const visible = router.modelVisibleSpecs().map((t) => t.function.name);
-    expect(visible).toContain("system.readFile");
+    expect(visible).toContain("FileRead");
     expect(visible).not.toContain("mcp.x.hidden");
   });
 });
 
 describe("createDiffConsumer", () => {
   test("records + compares identical inputs returns empty diff", () => {
-    const consumer = createDiffConsumer("system.editFile");
+    const consumer = createDiffConsumer("Edit");
     consumer.record("path", "/tmp/a");
     expect(consumer.compare("path", "/tmp/a")).toBe("");
   });
 
   test("records + compares different inputs returns unified diff", () => {
-    const consumer = createDiffConsumer("system.editFile");
+    const consumer = createDiffConsumer("Edit");
     consumer.record("content", "line1\nline2");
     const diff = consumer.compare("content", "line1\nline2-edited");
     expect(diff).toContain("-line2");
@@ -574,15 +574,15 @@ describe("createDiffConsumer", () => {
   });
 
   test("compare without prior record returns null", () => {
-    const consumer = createDiffConsumer("system.editFile");
+    const consumer = createDiffConsumer("Edit");
     expect(consumer.compare("unknown", "x")).toBeNull();
   });
 
   test("ToolRouter.createDiffConsumer returns the same shape", () => {
     const router = new ToolRouter([]);
-    const consumer = router.createDiffConsumer({ name: "system.editFile" });
+    const consumer = router.createDiffConsumer({ name: "Edit" });
     expect(typeof consumer.record).toBe("function");
     expect(typeof consumer.compare).toBe("function");
-    expect(consumer.toolName).toBe("system.editFile");
+    expect(consumer.toolName).toBe("Edit");
   });
 });

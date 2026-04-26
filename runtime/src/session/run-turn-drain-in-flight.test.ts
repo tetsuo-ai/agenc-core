@@ -151,10 +151,10 @@ describe("drainInFlight — openclaude parity (T6)", () => {
         return { content: `real-${call.id}` };
       }),
     });
-    exec.setConcurrencyClassFor("system.writeFile", EXCLUSIVE);
+    exec.setConcurrencyClassFor("Write", EXCLUSIVE);
     exec.addTool(
-      { type: "tool_use", id: "w1", name: "system.writeFile", input: {} },
-      { id: "w1", name: "system.writeFile", arguments: "{}" },
+      { type: "tool_use", id: "w1", name: "Write", input: {} },
+      { id: "w1", name: "Write", arguments: "{}" },
     );
 
     const state = mkState();

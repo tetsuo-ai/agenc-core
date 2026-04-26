@@ -97,9 +97,8 @@ describe("FileRead tool", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toBe("2→b\n3→c");
 
-    // Partial reads must NOT satisfy the apply_patch read-before-write
-    // gate: hasSessionRead requires viewKind === "full".
-    expect(hasSessionRead(sessionId, file)).toBe(false);
+    // User-initiated partial reads satisfy the read-before-write gate.
+    expect(hasSessionRead(sessionId, file)).toBe(true);
     const snap = getSessionReadSnapshot(sessionId, file);
     expect(snap?.viewKind).toBe("partial");
     expect(snap?.readOffset).toBe(2);

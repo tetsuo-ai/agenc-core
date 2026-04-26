@@ -218,8 +218,8 @@ describe("bootstrapLocalRuntimeSession", () => {
       );
       expect(boot.registry.tools.map((tool) => tool.name)).toEqual(
         expect.arrayContaining([
-          "system.readFile",
-          "system.writeFile",
+          "FileRead",
+          "Write",
           "system.bash",
           extraTool.name,
         ]),
@@ -240,8 +240,8 @@ describe("bootstrapLocalRuntimeSession", () => {
           extraTool.name,
         ]),
       );
-      expect(providerToolNames).not.toContain("system.readFile");
-      expect(providerToolNames).not.toContain("system.writeFile");
+      expect(providerToolNames).toContain("FileRead");
+      expect(providerToolNames).toContain("Write");
       expect(providerToolNames).not.toContain("system.bash");
       expect(createProviderSpy).toHaveBeenCalledWith(
         "grok",

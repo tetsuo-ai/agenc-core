@@ -577,15 +577,15 @@ export class FileHistory {
 
 export interface FileHistorySidecarOpts {
   readonly fileHistory: FileHistory;
-  /** Tool names that mutate files. Defaults to AgenC's system.editFile
-   *  + system.writeFile. T7 wires per-tool concurrency classes; this
+  /** Tool names that mutate files. Defaults to AgenC's first-class
+   *  Edit + Write tools. T7 wires per-tool concurrency classes; this
    *  sidecar picks based on tool name prefix match. */
   readonly editToolNames?: ReadonlyArray<string>;
 }
 
 const DEFAULT_EDIT_TOOL_NAMES: ReadonlyArray<string> = [
-  "system.editFile",
-  "system.writeFile",
+  "Edit",
+  "Write",
 ];
 
 export class FileHistorySidecar implements Sidecar {

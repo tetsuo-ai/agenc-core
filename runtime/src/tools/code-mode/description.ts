@@ -11,7 +11,7 @@ const PRAGMA_PREFIX = "// @exec:";
 const EXEC_DESCRIPTION_TEMPLATE = `Run JavaScript code to orchestrate and compose AgenC tool calls.
 - Evaluates the provided JavaScript in an isolated QuickJS runtime, not Node.
 - All nested tools are available on the global \`tools\` object, for example \`await tools.exec_command({ cmd: "pwd" })\`.
-- Tool names are exposed as normalized JavaScript identifiers. For example, \`system.readFile\` is \`tools.system_readFile(...)\`.
+- Tool names are exposed as normalized JavaScript identifiers. For example, \`FileRead\` is \`tools.FileRead(...)\`.
 - Nested tool methods take either a string or an object as their input argument.
 - Nested tools return the tool's code-mode result, usually an object for structured tools or a string for text tools.
 - Runs raw JavaScript only. Do not pass markdown fences.

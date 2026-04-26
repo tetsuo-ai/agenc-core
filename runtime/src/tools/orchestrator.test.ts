@@ -22,7 +22,7 @@ import {
 import type { Tool } from "./types.js";
 
 const readTool: Tool = {
-  name: "system.readFile",
+  name: "FileRead",
   description: "",
   inputSchema: {},
   execute: async () => ({ content: "ok" }),
@@ -30,7 +30,7 @@ const readTool: Tool = {
 };
 
 const writeTool: Tool = {
-  name: "system.writeFile",
+  name: "Write",
   description: "",
   inputSchema: {},
   execute: async () => ({ content: "ok" }),
@@ -72,7 +72,7 @@ describe("classifyToolApproval", () => {
     const res = classifyToolApproval(readTool, {
       approvalPolicy: "never",
       sandboxMode: "workspace_write",
-      toolDenylist: new Set(["system.readFile"]),
+      toolDenylist: new Set(["FileRead"]),
     });
     expect(res.kind).toBe("forbidden");
   });

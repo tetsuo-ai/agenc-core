@@ -34,8 +34,7 @@ import {
   createEnterWorktreeTool,
   createExitWorktreeTool,
   // Openclaude-derived file/search tools (lifted into AgenC).
-  // These shadow the deferred system.readFile/system.editFile/system.writeFile/
-  // system.glob/system.grep family that used to live in filesystem.ts/coding.ts.
+  // These are the canonical file-content and search surface.
   createFileReadTool,
   createFileEditTool,
   createFileWriteTool,
@@ -234,15 +233,14 @@ function specForTool(tool: Tool): ConfiguredToolSpec {
 const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   exec_command: "cmd",
   "system.bash": "command",
-  "system.readFile": "path",
-  "system.writeFile": "path",
-  "system.appendFile": "path",
-  "system.editFile": "path",
+  [FILE_READ_TOOL_NAME]: "file_path",
+  [FILE_WRITE_TOOL_NAME]: "file_path",
+  [FILE_EDIT_TOOL_NAME]: "file_path",
   "system.listDir": "path",
   "system.stat": "path",
   "system.mkdir": "path",
   "system.delete": "path",
-  "system.glob": "pattern",
+  [GLOB_TOOL_NAME]: "pattern",
   exec: "code",
 };
 
@@ -250,10 +248,7 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "exec_command",
   "write_stdin",
   // Openclaude-derived file/search tools, lifted into AgenC and now
-  // first-class visible. Replace the `system.readFile`/`system.editFile`/
-  // `system.writeFile`/`system.glob`/`system.grep` deferred AgenC family
-  // that the model couldn't see by default — that mismatch was the root
-  // cause of the cat-everywhere failure mode.
+  // first-class visible.
   FILE_READ_TOOL_NAME,
   FILE_EDIT_TOOL_NAME,
   FILE_WRITE_TOOL_NAME,

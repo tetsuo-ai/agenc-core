@@ -209,25 +209,14 @@ describe("static section emitters", () => {
   });
 
   test("using_your_tools omits per-tool bullets when those tools are not in the visible catalog", () => {
-    // No FileRead/Edit/Write/Glob/Grep, only legacy deferred system.*
-    // (which the prompt no longer references — the model can't see them
-    // by default, so prompting their use is the original visibility-mismatch
-    // bug we fixed).
-    const tools = new Set([
-      "exec_command",
-      "system.readFile",
-      "system.editFile",
-      "system.writeFile",
-      "system.glob",
-      "system.grep",
-    ]);
+    const tools = new Set(["exec_command"]);
     const s = getUsingYourToolsSection(tools);
-    // The deferred system.* tools should NOT appear in the prompt anymore.
-    expect(s).not.toContain("system.readFile");
-    expect(s).not.toContain("system.editFile");
-    expect(s).not.toContain("system.writeFile");
-    expect(s).not.toContain("system.glob");
-    expect(s).not.toContain("system.grep");
+    // Dedicated file/search bullets only appear when those tools are visible.
+    expect(s).not.toContain("FileRead");
+    expect(s).not.toContain("Edit");
+    expect(s).not.toContain("Write");
+    expect(s).not.toContain("Glob");
+    expect(s).not.toContain("Grep");
     // apply_patch is no longer referenced anywhere in the prompt.
     expect(s).not.toContain("apply_patch");
   });

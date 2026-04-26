@@ -67,9 +67,7 @@ export {
 } from "./worktree.js";
 
 // Openclaude-derived file/search tools (lifted into AgenC; free to modify).
-// These shadow the deferred `system.readFile`/`system.editFile`/
-// `system.writeFile`/`system.glob`/`system.grep` family that used to live
-// in filesystem.ts/coding.ts — those have been removed.
+// These are the canonical first-class file/search surface.
 export {
   createFileReadTool,
   FILE_READ_TOOL_NAME,

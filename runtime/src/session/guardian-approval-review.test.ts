@@ -207,14 +207,14 @@ function mkApprovalCtx(session: Session, turn: TurnContext): ApprovalCtx {
       clear: () => {},
     },
     callId: "call-guardian-1",
-    toolName: { name: "system.writeFile" },
+    toolName: { name: "Write" },
     payload: { kind: "function", arguments: "{\"path\":\"file.txt\"}" },
     source: "direct",
   };
   return {
     invocation,
     callId: invocation.callId,
-    toolName: "system.writeFile",
+    toolName: "Write",
     turnId: turn.subId,
     retryReason: "tool requires approval",
   };

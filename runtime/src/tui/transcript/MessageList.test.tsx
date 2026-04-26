@@ -219,7 +219,7 @@ describe("MessageList", () => {
     unmount();
   });
 
-  test("renders system.readFile tool_result without head-tail elision", async () => {
+  test("renders FileRead tool_result without head-tail elision", async () => {
     const content = [
       "1→# AgenC Shell Implementation Plan",
       "2→",
@@ -235,7 +235,7 @@ describe("MessageList", () => {
           mkMsg({
             id: "read-1",
             kind: "tool_result",
-            toolName: "system.readFile",
+            toolName: "FileRead",
             content,
             isError: false,
           }),
@@ -243,7 +243,7 @@ describe("MessageList", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("system.readFile");
+    expect(frame).toContain("FileRead");
     expect(frame).toContain("1→#");
     expect(frame).toContain("AgenC");
     expect(frame).toContain("Implementation");
@@ -263,7 +263,7 @@ describe("MessageList", () => {
           mkMsg({
             id: "write-json",
             kind: "tool_call",
-            toolName: "system.writeFile",
+            toolName: "Write",
             toolArgs: { path: "include/agenc/exec.h" },
             toolResultContent:
               '{"path":"include/agenc/exec.h","bytesWritten":171}',
@@ -396,7 +396,7 @@ describe("MessageList", () => {
           mkMsg({
             id: "read",
             kind: "tool_call",
-            toolName: "system.readFile",
+            toolName: "FileRead",
             toolArgs: { path: "src/App.tsx" },
             toolResultContent: "1→export const App = () => null",
             isComplete: true,
@@ -404,7 +404,7 @@ describe("MessageList", () => {
           mkMsg({
             id: "write",
             kind: "tool_call",
-            toolName: "system.writeFile",
+            toolName: "Write",
             toolArgs: {
               path: "src/App.tsx",
               content: "export const App = () => <main />;\n",
@@ -415,7 +415,7 @@ describe("MessageList", () => {
           mkMsg({
             id: "edit",
             kind: "tool_call",
-            toolName: "system.editFile",
+            toolName: "Edit",
             toolArgs: {
               path: "src/App.tsx",
               old_string: "export const App = () => null",

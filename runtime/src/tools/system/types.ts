@@ -415,10 +415,10 @@ export interface BashExecutionResult {
 /**
  * Default deny list of commands that grant capabilities BEYOND what the
  * daemon-running user already has. The agent already has full read/write
- * access to the user's files via `system.writeFile` and `system.readFile`,
+ * access to the user's files via `Write` and `FileRead`,
  * so denying ordinary developer tools (rm, chmod, python, node, curl,
  * tee, awk, etc.) is security theater: the agent could trash files just
- * as easily by writing garbage with `system.writeFile`. The only useful
+ * as easily by writing garbage with `Write`. The only useful
  * denials are commands that escalate privilege or damage the system in
  * ways file I/O cannot.
  *

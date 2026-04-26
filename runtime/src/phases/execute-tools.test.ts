@@ -345,7 +345,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     let active = 0;
     let peak = 0;
     const tool: Tool & { supportsParallelToolCalls?: boolean; concurrencyClass?: unknown } = {
-      name: "system.readFile",
+      name: "FileRead",
       description: "read-only",
       inputSchema: { type: "object" },
       supportsParallelToolCalls: true,
@@ -367,7 +367,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
 
     const calls: LLMToolCall[] = Array.from({ length: 6 }, (_, idx) => ({
       id: `c-${idx}`,
-      name: "system.readFile",
+      name: "FileRead",
       arguments: "{}",
     }));
     const state = mkState({ toolCalls: calls });
@@ -473,7 +473,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
   test("W4 deny rule short-circuits tool.execute() via the evaluator", async () => {
     let executed = 0;
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: { type: "object" },
       execute: async () => {
@@ -496,7 +496,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     // result instead of dispatching `tool.execute()`.
     const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
       mode: "default",
-      alwaysDenyRules: { session: ["system.writeFile"] },
+      alwaysDenyRules: { session: ["Write"] },
     });
     const registry = new PermissionModeRegistry(permCtx);
 
@@ -510,7 +510,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
 
     const call: LLMToolCall = {
       id: "c-deny",
-      name: "system.writeFile",
+      name: "Write",
       arguments: "{}",
     };
     const state = mkState({ toolCalls: [call] });
@@ -531,7 +531,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
   test("W4 allow rule passes through to tool.execute()", async () => {
     let executed = 0;
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "",
       inputSchema: { type: "object" },
       execute: async () => {
@@ -543,7 +543,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const log = new EventLog();
     const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
       mode: "default",
-      alwaysAllowRules: { session: ["system.writeFile"] },
+      alwaysAllowRules: { session: ["Write"] },
     });
     const registry = new PermissionModeRegistry(permCtx);
 
@@ -557,7 +557,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
 
     const call: LLMToolCall = {
       id: "c-allow",
-      name: "system.writeFile",
+      name: "Write",
       arguments: "{}",
     };
     const state = mkState({ toolCalls: [call] });
@@ -576,7 +576,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     // evaluator still sees a valid reference and no throw escapes.
     let executed = 0;
     const tool: Tool = {
-      name: "system.readFile",
+      name: "FileRead",
       description: "",
       inputSchema: { type: "object" },
       execute: async () => {
@@ -588,7 +588,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     const log = new EventLog();
     const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
       mode: "default",
-      alwaysAllowRules: { session: ["system.readFile"] },
+      alwaysAllowRules: { session: ["FileRead"] },
     });
     const registry = new PermissionModeRegistry(permCtx);
 
@@ -603,7 +603,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
 
     const call: LLMToolCall = {
       id: "c-default",
-      name: "system.readFile",
+      name: "FileRead",
       arguments: "{}",
     };
     const state = mkState({ toolCalls: [call] });
@@ -824,7 +824,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
   test("aborted signals still drain terminal tool results for queued calls", async () => {
     let executed = 0;
     const tool: Tool = {
-      name: "system.writeFile",
+      name: "Write",
       description: "write tool",
       inputSchema: { type: "object" },
       execute: async () => {
@@ -840,7 +840,7 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       toolCalls: [
         {
           id: "c-abort",
-          name: "system.writeFile",
+          name: "Write",
           arguments: "{}",
         },
       ],

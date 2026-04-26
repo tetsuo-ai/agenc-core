@@ -660,6 +660,6 @@ describe("MCPManager", () => {
       serverName: "github",
       toolName: "listIssues",
     });
-    expect(manager.resolveMcpToolInfo("system.readFile")).toBeUndefined();
+    expect(manager.resolveMcpToolInfo("FileRead")).toBeUndefined();
   });
 });

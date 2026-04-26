@@ -85,15 +85,15 @@ describe("ToolCallRuntime (parallel.rs port)", () => {
 
 describe("classify + defaultConcurrencyClassFor", () => {
   test("read-only fs tools → SharedRead", () => {
-    expect(defaultConcurrencyClassFor("system.readFile").kind).toBe("shared_read");
-    expect(isReadOnlyFilesystemTool("system.readFile")).toBe(true);
+    expect(defaultConcurrencyClassFor("FileRead").kind).toBe("shared_read");
+    expect(isReadOnlyFilesystemTool("FileRead")).toBe(true);
   });
 
   test("write fs tools → Exclusive", () => {
-    expect(defaultConcurrencyClassFor("system.writeFile").kind).toBe(
+    expect(defaultConcurrencyClassFor("Write").kind).toBe(
       "exclusive",
     );
-    expect(isWriteFilesystemTool("system.writeFile")).toBe(true);
+    expect(isWriteFilesystemTool("Write")).toBe(true);
   });
 
   test("bash → BackgroundTerminal", () => {

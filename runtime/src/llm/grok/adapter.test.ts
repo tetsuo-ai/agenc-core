@@ -218,7 +218,7 @@ describe("GrokProvider incremental continuation", () => {
         toolCalls: [
           {
             id: "call_read_plan",
-            name: "system.readFile",
+            name: "FileRead",
             arguments: JSON.stringify({ path: "PLAN.md" }),
           },
         ],
@@ -226,7 +226,7 @@ describe("GrokProvider incremental continuation", () => {
       {
         role: "tool",
         toolCallId: "call_read_plan",
-        toolName: "system.readFile",
+        toolName: "FileRead",
         content: largeReadResult,
       },
     ] satisfies LLMMessage[]);

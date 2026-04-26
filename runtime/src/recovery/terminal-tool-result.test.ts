@@ -11,7 +11,7 @@ import {
 describe("terminal-tool-result", () => {
   test("buildTerminalToolResult by cause", () => {
     const out = buildTerminalToolResult({
-      toolCall: { id: "c1", name: "system.readFile", arguments: "{}" },
+      toolCall: { id: "c1", name: "FileRead", arguments: "{}" },
       cause: "timeout",
       elapsedMs: 30000,
     });
@@ -56,7 +56,7 @@ describe("terminal-tool-result", () => {
       assistantMessages: [],
       toolUseBlocks: [
         { type: "tool_use", id: "tc-1", name: "system.bash", input: { command: "ls" } },
-        { type: "tool_use", id: "tc-2", name: "system.readFile", input: { path: "x" } },
+        { type: "tool_use", id: "tc-2", name: "FileRead", input: { path: "x" } },
       ],
       toolResults: [
         {

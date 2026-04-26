@@ -66,7 +66,7 @@ describe("eventsToMessages", () => {
         type: "tool_call_started",
         payload: {
           callId: "call-1",
-          toolName: "system.writeFile",
+          toolName: "Write",
           args: '{"path":"/home/u/.agenc/plans/foo.md","content":"hi"}',
         },
       },
@@ -170,7 +170,7 @@ describe("eventsToMessages", () => {
       { type: "agent_message_delta", payload: { delta: "." } },
       {
         type: "tool_call_started",
-        payload: { callId: "call-2", toolName: "system.readFile", args: "{}" },
+        payload: { callId: "call-2", toolName: "FileRead", args: "{}" },
       },
       { type: "agent_message", payload: { message: "Calling tool." } },
       {
@@ -203,7 +203,7 @@ describe("eventsToMessages", () => {
         type: "tool_call_started",
         payload: {
           callId: "call-1",
-          toolName: "system.writeFile",
+          toolName: "Write",
           args: '{"path":"note.txt"}',
         },
       },
@@ -221,7 +221,7 @@ describe("eventsToMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       kind: "tool_call",
-      toolName: "system.writeFile",
+      toolName: "Write",
     });
   });
 
@@ -234,7 +234,7 @@ describe("eventsToMessages", () => {
         type: "tool_call_started",
         payload: {
           callId: "call-1",
-          toolName: "system.readFile",
+          toolName: "FileRead",
           args: '{"path":"README.md"}',
         },
       },
@@ -244,7 +244,7 @@ describe("eventsToMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       kind: "tool_call",
-      toolName: "system.readFile",
+      toolName: "FileRead",
     });
     expect(messages.some((message) => message.content.includes("Calling"))).toBe(
       false,
@@ -489,7 +489,7 @@ describe("eventsToMessages", () => {
         type: "warning",
         payload: {
           cause: "tool_routing_classified",
-          message: "system.readFile -> readonly",
+          message: "FileRead -> readonly",
         },
       },
       {
@@ -556,7 +556,7 @@ describe("eventsToMessages", () => {
         type: "tool_call_started",
         payload: {
           callId: "read-1",
-          toolName: "system.readFile",
+          toolName: "FileRead",
           args: '{"path":"README.md"}',
         },
       },
@@ -564,7 +564,7 @@ describe("eventsToMessages", () => {
         type: "tool_progress",
         payload: {
           callId: "read-1",
-          toolName: "system.readFile",
+          toolName: "FileRead",
           chunk: "reading README.md",
           stream: "status",
         },
@@ -583,7 +583,7 @@ describe("eventsToMessages", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       kind: "tool_call",
-      toolName: "system.readFile",
+      toolName: "FileRead",
       toolArgs: { path: "README.md" },
       toolProgressContent: "reading README.md",
       toolResultContent: "1→# AgenC\n2→runtime",
@@ -599,7 +599,7 @@ describe("eventsToMessages", () => {
         type: "tool_progress",
         payload: {
           callId: "late-1",
-          toolName: "system.writeFile",
+          toolName: "Write",
           chunk: "writing CMakeLists.txt",
           stream: "status",
         },
@@ -618,7 +618,7 @@ describe("eventsToMessages", () => {
     expect(messages).toHaveLength(2);
     expect(messages[1]).toMatchObject({
       kind: "tool_result",
-      toolName: "system.writeFile",
+      toolName: "Write",
       toolResultContent: '{"path":"CMakeLists.txt","bytesWritten":42}',
       isError: false,
     });

@@ -374,10 +374,10 @@ function renderToolBody(tool: string, args: unknown): React.ReactElement {
     case "system.bash":
       return <BashRequest args={args} />;
     case "write_file":
-    case "system.writeFile":
+    case "Write":
       return <WriteFileRequest args={args} />;
     case "edit_file":
-    case "system.editFile":
+    case "Edit":
       return <EditFileRequest args={args} />;
     default:
       return <GenericRequest args={args} />;

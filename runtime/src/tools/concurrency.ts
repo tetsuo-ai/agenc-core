@@ -258,24 +258,25 @@ export function classify(
 // Convenience classifier helpers for built-in AgenC tools.
 // ─────────────────────────────────────────────────────────────────────
 
-/** Read-only filesystem tools (readFile, listDir, stat, glob, grep). */
+/** Read-only filesystem tools (FileRead, listDir, stat, glob, grep). */
 export function isReadOnlyFilesystemTool(name: string): boolean {
   return (
-    name === "system.readFile" ||
+    name === "FileRead" ||
     name === "system.listDir" ||
     name === "system.stat" ||
+    name === "Glob" ||
+    name === "Grep" ||
     name === "system.glob" ||
     name === "system.grep" ||
     name === "system.findFiles"
   );
 }
 
-/** Write filesystem tools (writeFile, editFile, appendFile, delete, move, mkdir). */
+/** Write filesystem tools (Write, Edit, delete, move, mkdir). */
 export function isWriteFilesystemTool(name: string): boolean {
   return (
-    name === "system.writeFile" ||
-    name === "system.editFile" ||
-    name === "system.appendFile" ||
+    name === "Write" ||
+    name === "Edit" ||
     name === "system.delete" ||
     name === "system.move" ||
     name === "system.mkdir"

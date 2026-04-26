@@ -7,10 +7,10 @@
  *
  * Behavior preserved from upstream:
  *   - Creates a new file or overwrites an existing one.
- *   - Read-before-overwrite: existing files require a prior full
- *     `system.readFile` (or equivalent session read) in the same
+ *   - Read-before-overwrite: existing files require a prior
+ *     `FileRead` (or equivalent session read) in the same
  *     session before the write is accepted. This is the same
- *     structural defense `Edit` and `system.writeFile` use against
+ *     structural defense `Edit` and `Write` use against
  *     blind edits.
  *   - Modification-since-read: if the file was read previously but
  *     has changed on disk since that read (content-level compare,
@@ -63,7 +63,7 @@ export const FILE_WRITE_TOOL_NAME = "Write";
 /**
  * Verbatim wording from openclaude `src/tools/FileWriteTool/prompt.ts`,
  * lightly adapted: the upstream "Edit tool" reference is kept (AgenC
- * exposes `Edit` and `system.editFile` for incremental edits), and the
+ * exposes `Edit` for incremental edits), and the
  * pre-read instruction is generalized away from the exact
  * `FILE_READ_TOOL_NAME` constant since AgenC doesn't pin a single
  * read-tool name in this description.
@@ -272,7 +272,7 @@ export function createFileWriteTool(
         // (CRLF-normalized) against the snapshot the session captured
         // at read time. This mirrors openclaude's check (which uses
         // mtime + content fallback) but uses AgenC's content-compare
-        // semantics for parity with `system.writeFile` / `system.editFile`.
+        // semantics for parity with `Write` / `Edit`.
         const snapshot = getSessionReadSnapshot(sessionId, absolutePath);
         if (
           snapshot?.content != null &&
@@ -330,8 +330,8 @@ export function createFileWriteTool(
 
       // Record the post-write content as the session's view of the
       // file so subsequent overwrites/edits in the same session do
-      // not need an extra explicit read. Matches `system.writeFile`'s
-      // post-write `recordSessionRead` (filesystem.ts:1599).
+      // not need an extra explicit read. Matches the canonical write
+      // path's post-write `recordSessionRead`.
       if (sessionId !== undefined) {
         let mtimeMs: number = Date.now();
         try {
