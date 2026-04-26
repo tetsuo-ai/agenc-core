@@ -9,6 +9,8 @@
 
 import type { Logger } from "../utils/logger.js";
 import type { FunctionCallOutputContentItem } from "./context.js";
+import type { PermissionResult } from "../permissions/types.js";
+import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 
 // Lean-rebuild stubs: the Solana protocol types, wallet types, and
 // the full PolicyEngine surface have all been removed. Tools that used
@@ -155,6 +157,21 @@ export interface Tool {
   /** Orchestrator hint: `true` → under `on_request` policy the tool
    *  always requires user approval. */
   readonly requiresApproval?: boolean;
+  /**
+   * OpenClaude parity: tools that must collect interactive user input
+   * can force an approval/user-interaction prompt even when the current
+   * permission mode would otherwise bypass normal approvals.
+   */
+  readonly requiresUserInteraction?: () => boolean;
+  /**
+   * Optional OpenClaude-style permission hook. The permissions evaluator
+   * calls this before the generic mode gate so tools can request asks,
+   * denies, or updated inputs based on their own arguments.
+   */
+  readonly checkPermissions?: (
+    input: unknown,
+    context: ToolEvaluatorContext,
+  ) => PermissionResult | Promise<PermissionResult>;
   /**
    * Openclaude parity: how this tool should respond to a user
    * 'interrupt' abort (typed message mid-turn). `'cancel'` → the

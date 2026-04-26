@@ -62,6 +62,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("TodoWrite");
     expect(registeredNames).toContain("EnterPlanMode");
     expect(registeredNames).toContain("ExitPlanMode");
+    expect(registeredNames).toContain("AskUserQuestion");
     // The legacy `workflow.enterPlan` / `workflow.exitPlan` aliases were
     // dropped — the canonical OpenClaude-parity names are the only entries.
     expect(registeredNames).not.toContain("workflow.enterPlan");
@@ -77,6 +78,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("TodoWrite");
     expect(visibleNames).toContain("EnterPlanMode");
     expect(visibleNames).toContain("ExitPlanMode");
+    expect(visibleNames).toContain("AskUserQuestion");
     expect(visibleNames).not.toContain("update_plan");
     expect(visibleNames).toContain("system.searchTools");
     expect(visibleNames).not.toContain("system.bash");
@@ -88,6 +90,19 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).not.toContain("system.gitStatus");
     expect(visibleNames).not.toContain("system.symbolSearch");
     expect(visibleNames).not.toContain("system.repoInventory");
+  });
+
+  test("AskUserQuestion is marked as an interactive planning tool", () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+    const askUserQuestion = registry.tools.find(
+      (tool) => tool.name === "AskUserQuestion",
+    );
+
+    expect(askUserQuestion).toBeDefined();
+    expect(askUserQuestion?.requiresUserInteraction?.()).toBe(true);
+    expect(askUserQuestion?.isReadOnly).toBe(true);
+    expect(askUserQuestion?.supportsParallelToolCalls).toBe(false);
+    expect(askUserQuestion?.metadata?.family).toBe("planning");
   });
 
   test("exec_command dispatch accepts Codex-style cmd/workdir arguments", async () => {

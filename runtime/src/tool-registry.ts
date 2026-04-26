@@ -29,6 +29,7 @@ import {
   createExecCommandTool,
   createWriteStdinTool,
   createPlanningTools,
+  createAskUserQuestionTool,
   createSleepTool,
   createMonitorTool,
   createEnterWorktreeTool,
@@ -261,6 +262,7 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "TodoWrite",
   "EnterPlanMode",
   "ExitPlanMode",
+  "AskUserQuestion",
   "system.agent.delegate",
   "system.searchTools",
   "exec",
@@ -435,6 +437,7 @@ export function buildToolRegistry(
     createGrepTool({
       allowedPaths: [options.workspaceRoot],
     }),
+    createAskUserQuestionTool(),
     createSleepTool(),
     createMonitorTool({
       cwd: options.workspaceRoot,
