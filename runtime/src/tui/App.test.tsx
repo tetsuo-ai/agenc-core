@@ -840,4 +840,63 @@ describe("App", () => {
     });
     unmount();
   });
+
+  test("AskUserQuestion renders its picker instead of the generic approval banner", async () => {
+    const session = {
+      ...createFakeSession("default"),
+      cwd: "/tmp/agenc-workspace",
+      activeTurn: { unsafePeek: () => ({ turnId: "turn-ask" }) },
+    } as SessionLike & {
+      services: SessionLike["services"] & {
+        approvalResolver?: {
+          request(ctx: Record<string, unknown>): Promise<{ readonly kind: string }>;
+        };
+      };
+    };
+    const { stdout, stdin, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+    );
+    await new Promise((r) => setTimeout(r, 30));
+
+    const decision = session.services.approvalResolver?.request({
+      callId: "ask-regression",
+      toolName: "AskUserQuestion",
+      turnId: "turn-ask",
+      invocation: {
+        payload: {
+          kind: "function",
+          arguments: JSON.stringify({
+            questions: [
+              {
+                header: "Approach",
+                question: "Which planner interview behavior should AgenC use?",
+                options: [
+                  {
+                    label: "OpenClaude picker (Recommended)",
+                    description: "Show multiple-choice questions in the TUI.",
+                  },
+                  {
+                    label: "No picker",
+                    description: "Keep plan mode approval-only.",
+                  },
+                ],
+              },
+            ],
+          }),
+        },
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 80));
+    const text = collectText(getRoot(stdout));
+
+    expect(text).toContain("Answer questions");
+    expect(text).toContain("Which planner interview behavior should AgenC use?");
+    expect(text).toContain("OpenClaude picker (Recommended)");
+    expect(text).not.toContain("Approval pending");
+
+    stdin.write("\x1b");
+    await expect(decision).resolves.toEqual({ kind: "denied" });
+    unmount();
+  });
 });

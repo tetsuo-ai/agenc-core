@@ -61,6 +61,7 @@ import { slashCommandOpensPicker } from "../picker-intents.js";
 import { useAgenCAppState } from "../state/AppState.js";
 import { modeValueColor, theme } from "../theme.js";
 import type { PermissionMode } from "../../permissions/types.js";
+import { ASK_USER_QUESTION_TOOL_NAME } from "../../tools/system/ask-user-question.js";
 import {
   getPasteStore,
   type PasteEvent,
@@ -320,6 +321,13 @@ export const Composer: React.FC<ComposerProps> = ({
   const mode = appState?.mode ?? "default";
   const isStreaming = appState?.isStreaming ?? false;
   const pendingRequestCount = appState?.pendingRequests.length ?? 0;
+  const hasPendingAskUserQuestion =
+    appState?.pendingRequests.some(
+      (request) => request.toolName === ASK_USER_QUESTION_TOOL_NAME,
+    ) ?? false;
+  const genericPendingRequestCount = hasPendingAskUserQuestion
+    ? 0
+    : pendingRequestCount;
   const hasPendingTurn = isStreaming || pendingRequestCount > 0;
   const activeTurnElapsedMs = useActiveTurnElapsedMs(hasPendingTurn);
 
@@ -979,7 +987,7 @@ export const Composer: React.FC<ComposerProps> = ({
   // approval to draw the eye to.
   const accentColor = modeValueColor(mode as PermissionMode, {
     colors,
-    pendingRequestCount,
+    pendingRequestCount: genericPendingRequestCount,
     isStreaming,
   }) as Color;
   const submitKey = getDisplayForCommand("chat:submit", "chat") ?? "Enter";
@@ -1075,7 +1083,7 @@ export const Composer: React.FC<ComposerProps> = ({
   );
 
   const activityLine = useMemo(() => {
-    if (pendingRequestCount > 0) {
+    if (genericPendingRequestCount > 0) {
       return {
         color: colors.warning,
         text: `Approval pending (${approvalDecisionKeys})`,
@@ -1094,8 +1102,8 @@ export const Composer: React.FC<ComposerProps> = ({
     cancelKey,
     colors.muted,
     colors.warning,
+    genericPendingRequestCount,
     isStreaming,
-    pendingRequestCount,
   ]);
 
   const statusLine = useMemo(() => {
