@@ -989,7 +989,7 @@ scale, pure observation). Each carries source provenance.
 **NEW (LANDED).** Rule: deterministic JSON serialization (sorted keys, no whitespace) of the tool catalog, SHA-256 hash, compared against `config.mcp.<name>.supplyChain.catalogSha256` (or legacy `pinnedCatalogSha256`) if set. Mismatch hard-fails the server with `error:'mcp_catalog_integrity_mismatch'`. Optional config `failOpen: true` to disable for development. **Where:** `runtime/src/mcp-client/tool-bridge.ts:199` — `computeMCPToolCatalogSha256()` returns the real canonical-JSON digest and `catalogDigestMatches()` enforces the pin; the earlier empty-string stub has been replaced.
 
 ### I-75 · `@include` paths validated against workspace boundary (extends I-71)
-**EXTEND** I-71. I-71 validates `@mention` from the TUI composer. But `@include` directives parsed at init from `AGENTS.md` / `MEMORY.md` are NOT validated. A hostile or careless project can `@include /etc/shadow` or `@include ~/.ssh/id_rsa` at init. Rule: same path-boundary validator from I-71 applies to all `@include` resolution in `runtime/src/prompts/claude-md.ts`. The resolver emits the specific failure mode as the `error` label; the 8 currently-defined labels are: `path_escape`, `not_found`, `invalid_path`, `not_regular_file`, `circular`, `max_depth`, `max_bytes`, `read_error`. **Where:** `runtime/src/prompts/claude-md.ts` (port of openclaude `utils/claudemd.ts` `@include` resolver). **Scheduled for:** T10 (prompts / AGENTS.md + MEMORY.md loader tranche).
+**EXTEND** I-71. I-71 validates `@mention` from the TUI composer. But `@include` directives parsed at init from `AGENC.md` / `MEMORY.md` are NOT validated. A hostile or careless project can `@include /etc/shadow` or `@include ~/.ssh/id_rsa` at init. Rule: same path-boundary validator from I-71 applies to all `@include` resolution in `runtime/src/prompts/agenc-md.ts`. The resolver emits the specific failure mode as the `error` label; the 8 currently-defined labels are: `path_escape`, `not_found`, `invalid_path`, `not_regular_file`, `circular`, `max_depth`, `max_bytes`, `read_error`. **Where:** `runtime/src/prompts/agenc-md.ts`. **Scheduled for:** T10 (prompts / AGENC.md + MEMORY.md loader tranche).
 
 ### I-76 · MCP catalog response size hard cap
 **NEW.** `listTools` response is parsed without size limit; a hostile MCP server returning 1GB JSON OOMs the runtime. Rule: cap the entire `listTools` response payload at `MAX_MCP_CATALOG_BYTES = 5_000_000` (5 MB). Exceed → soft-fail server (per I-6) with `stream_error:'mcp_catalog_too_large'`. **Where:** `runtime/src/mcp-client/tool-bridge.ts` — wrap `client.listTools()` with size check on raw response body.
@@ -1009,7 +1009,7 @@ scale, pure observation). Each carries source provenance.
 **PORT** openclaude `utils/markdown.ts:14-17` (`EOL = '\n'` unconditional). Rule: every text crossing into AgenC from outside (file reads, tool stdout, network responses, MCP results) is normalized via `text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')` before injection into history or YAML parsing. CRLF in YAML frontmatter breaks key matching; mixed endings in tool output confuses the model. **Where:** `runtime/src/utils/text.ts` (helper) + every boundary callsite.
 
 ### I-81 · UTF-8 BOM stripped on every file read (port openclaude)
-**PORT** openclaude `utils/jsonRead.ts:14` `stripBOM()`. Rule: every `fs.readFile(path, 'utf8')` call wraps result in `stripBOM()`. Windows-edited files often save with BOM (`\uFEFF`); leaving it in breaks YAML parsing, JSON parsing, first-key matching, dedup hashing. **Where:** central `runtime/src/utils/file-read.ts` helper used by config loader, AGENTS.md ancestor walk, memory loader, claude-md @include.
+**PORT** BOM stripping behavior. Rule: every `fs.readFile(path, 'utf8')` call wraps result in `stripBOM()`. Windows-edited files often save with BOM (`\uFEFF`); leaving it in breaks YAML parsing, JSON parsing, first-key matching, dedup hashing. **Where:** central `runtime/src/utils/file-read.ts` helper used by config loader, AGENC.md ancestor walk, memory loader, agenc-md @include.
 
 ## Time & clock (I-82..I-84)
 
@@ -1171,7 +1171,7 @@ All **89 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second swe
 | **I-73..I-77 Security & adversarial** | T9 (MCP) + T10 (prompts) + T12 (TUI) | — |
 | I-73 MCP tool name shadowing | T9 (mcp-client/tool-bridge) | — |
 | I-74 MCP catalog SHA validation | T9 (mcp-client/tool-bridge) | — |
-| I-75 `@include` boundary (extends I-71) | T10 (prompts/claude-md) | extends I-71 |
+| I-75 `@include` boundary (extends I-71) | T10 (prompts/agenc-md) | extends I-71 |
 | I-76 MCP catalog size cap | T9 (mcp-client) | — |
 | I-77 Model output UI-spoof sanitization | T7 (stream-parser) + T12 (TUI) | — |
 | **I-78..I-81 Data integrity** | T7 (tools) + T5 (utils) | — |

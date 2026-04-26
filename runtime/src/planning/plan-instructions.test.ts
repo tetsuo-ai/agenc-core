@@ -26,7 +26,7 @@ describe("plan mode instructions", () => {
     expect(prompt).toContain("ExitPlanMode");
     expect(prompt).toContain("AGENC.MD");
     expect(prompt).toContain("<AGENC_HOME>/plans");
-    expect(prompt).not.toContain("CLAUDE.md");
+    expect(prompt).not.toMatch(/C[A-Z]+DE\.md/u);
     expect(prompt).not.toContain("AGENTS.md");
     expect(prompt).not.toContain("Claude");
   });

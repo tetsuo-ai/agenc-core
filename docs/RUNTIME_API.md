@@ -876,6 +876,6 @@ AgentCapabilities.AGGREGATOR  // 1n << 9n
 
 ## Links
 
-- [CLAUDE.md](../CLAUDE.md) — Comprehensive type signatures and architecture
+- [AGENC.md](../AGENC.md) — Comprehensive type signatures and architecture
 - [SDK README](https://github.com/tetsuo-ai/agenc-sdk/blob/main/README.md) — SDK usage documentation
 - [Architecture](architecture.md) — System architecture overview

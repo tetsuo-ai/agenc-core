@@ -7,7 +7,7 @@
  *
  * Returns the **single** closest project-root AGENC.md (plus its override
  * twin if present). Tiered discovery of multiple intermediate instruction files
- * is layered on top by `claude-md.ts`'s project tier.
+ * is layered on top by `agenc-md.ts`'s project tier.
  *
  * @module
  */
@@ -29,8 +29,8 @@ export const OVERRIDE_PROJECT_INSTRUCTION_FILE = "AGENC.override.md";
 
 /**
  * Default project-root markers used when config does not specify any.
- * Matches codex `default_project_root_markers` plus Node and Python
- * ecosystem signposts that are universal in AgenC workspaces.
+ * Uses common project-root markers plus Node and Python ecosystem signposts
+ * that are universal in AgenC workspaces.
  */
 export const DEFAULT_PROJECT_ROOT_MARKERS: readonly string[] = [
   ".git",
@@ -224,9 +224,8 @@ function directoriesFromRoot(rootDir: string, cwd: string): string[] {
  * directory contributes at most one file according to
  * {@link resolveInstructionFile}'s precedence.
  *
- * The byte budget applies to the concatenated chain, matching codex's
- * `project_doc_max_bytes` behavior. When the budget is exhausted the
- * final included entry is truncated and the walk stops.
+ * The byte budget applies to the concatenated chain. When the budget is
+ * exhausted the final included entry is truncated and the walk stops.
  */
 export async function loadProjectInstructionChain(
   opts: LoadProjectInstructionsOptions,

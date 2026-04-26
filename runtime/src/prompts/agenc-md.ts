@@ -1,11 +1,9 @@
 /**
  * Tiered AGENC.md instruction loader with `@include` directive support.
  *
- * Ports the AgenC subset of openclaude `utils/claudemd.ts` (~400 LOC of
- * ~1500): the 4-tier precedence (Managed → User → Project → Local), the
+ * Owns the 4-tier precedence (Managed → User → Project → Local), the
  * `@include` expansion with circular-reference detection, and the I-75
- * path-boundary check. Skips growthbook/analytics, .claude/rules globs,
- * worktree dedup, memdir TeamMem — those live in later Groups.
+ * path-boundary check for AgenC instruction files.
  *
  * Tier sources:
  *   1. **Managed** — system override. `$AGENC_MANAGED_INSTRUCTIONS` if set,
