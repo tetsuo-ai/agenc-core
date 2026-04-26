@@ -619,6 +619,18 @@ export async function* runSingleTurn(
         mcpServers: opts.mcpServers ?? [],
       };
 
+  // Surface the active permission mode to the model. Codex-ported
+  // approval-policy + sandbox-mode prose is injected as a dynamic section
+  // by the assembler when a context is supplied.
+  let permissionContext = null as ReturnType<
+    typeof opts.session.permissionModeRegistry.current
+  > | null;
+  try {
+    permissionContext = opts.session.permissionModeRegistry.current();
+  } catch {
+    permissionContext = null;
+  }
+
   const assembled = await assemble({
     session: opts.session,
     ctx: opts.ctx,
@@ -627,6 +639,7 @@ export async function* runSingleTurn(
     mcpServers: [...turnInputs.mcpServers],
     enabledToolNames: turnInputs.enabledToolNames,
     provider: opts.provider,
+    permissionContext,
   });
 
   const selectedMemories = selectRelevantMemoriesForTurn(

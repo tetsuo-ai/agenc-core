@@ -74,6 +74,14 @@ export {
 } from "./worktree.js";
 
 export {
+  createToolSuggestTool,
+  TOOL_SUGGEST_TOOL_NAME,
+  type DiscoverableToolType,
+  type ToolSuggestConfig,
+  type ToolSuggestEntry,
+} from "./tool-suggest.js";
+
+export {
   type BashToolConfig,
   type BashToolInput,
   type BashExecutionResult,

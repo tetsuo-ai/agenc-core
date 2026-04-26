@@ -47,6 +47,7 @@ const PRIORITY_TOOL_NAMES = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
   "system.searchTools",
+  "tool_suggest",
   "system.agent.delegate",
   "desktop.bash",
   "desktop.screenshot",

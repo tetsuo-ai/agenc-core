@@ -34,7 +34,9 @@ import {
   createMonitorTool,
   createEnterWorktreeTool,
   createExitWorktreeTool,
+  createToolSuggestTool,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
+  TOOL_SUGGEST_TOOL_NAME,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/index.js";
@@ -248,6 +250,7 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "ExitPlanMode",
   "system.agent.delegate",
   "system.searchTools",
+  TOOL_SUGGEST_TOOL_NAME,
   "exec",
   "wait",
 ]);
@@ -414,6 +417,12 @@ export function buildToolRegistry(
     }),
     createEnterWorktreeTool({ cwd: options.workspaceRoot }),
     createExitWorktreeTool({ cwd: options.workspaceRoot }),
+    // Verbatim port of codex `tool_suggest` (tool_discovery.rs).
+    // TODO(codex-parity): wire this to a live discoverable-tools source
+    // (codex sources connectors+plugins from the app server). For now
+    // we register with an empty list so the tool appears in the schema
+    // without exposing any installable suggestions.
+    createToolSuggestTool({ discoverableTools: [] }),
     ...createPlanningTools({
       ...(options.workflowController !== undefined
         ? { workflowController: options.workflowController }

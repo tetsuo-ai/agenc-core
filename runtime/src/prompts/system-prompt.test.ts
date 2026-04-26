@@ -34,17 +34,23 @@ import {
   assembleSystemPrompt,
   buildEnvInfoSection,
   getActionsSection,
+  getAmbitionVsPrecisionSection,
   getEditingConstraintsSection,
+  getFinalAnswerVerbositySection,
+  getFrontendTasksSection,
   getLanguageSection,
   getMcpInstructionsSection,
+  getOrchestrationSection,
   getOutputEfficiencySection,
   getOutputStyleSection,
+  getResponsivenessSection,
   getSimpleDoingTasksSection,
   getSimpleIntroSection,
   getSimpleSystemSection,
   getSimpleToneAndStyleSection,
   getToolGuidelinesSection,
   getUsingYourToolsSection,
+  getValidatingYourWorkSection,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
 
@@ -296,6 +302,117 @@ describe("static section emitters", () => {
     expect(getToolGuidelinesSection(new Set())).toBeNull();
   });
 
+  test("responsiveness renders codex gpt-5.2 ## Responsiveness header verbatim", () => {
+    const s = getResponsivenessSection();
+    expect(s).toContain("## Responsiveness");
+    // Codex gpt-5.2 publishes the heading with no body — mirror that exactly.
+    expect(s.trim()).toBe("## Responsiveness");
+  });
+
+  test("validating_your_work renders codex gpt-5.2 ## Validating your work verbatim", () => {
+    const s = getValidatingYourWorkSection();
+    expect(s).toContain("## Validating your work");
+    // Verbatim line from codex gpt-5.2 base_instructions:138.
+    expect(s).toContain(
+      "If the codebase has tests, or the ability to build or run tests, consider using them to verify changes once your work is complete.",
+    );
+    // Verbatim line from codex gpt-5.2 base_instructions:140.
+    expect(s).toContain(
+      "When testing, your philosophy should be to start as specific as possible to the code you changed",
+    );
+    // The non-interactive vs interactive bullet pair.
+    expect(s).toContain(
+      "When running in non-interactive approval modes like **never** or **on-failure**",
+    );
+    expect(s).toContain(
+      "When working in interactive approval modes like **untrusted**, or **on-request**",
+    );
+  });
+
+  test("ambition_vs_precision renders codex gpt-5.2 ## Ambition vs. precision verbatim", () => {
+    const s = getAmbitionVsPrecisionSection();
+    expect(s).toContain("## Ambition vs. precision");
+    // Verbatim line from codex gpt-5.2 base_instructions:154.
+    expect(s).toContain(
+      "For tasks that have no prior context (i.e. the user is starting something brand new), you should feel free to be ambitious and demonstrate creativity with your implementation.",
+    );
+    // Verbatim line from codex gpt-5.2 base_instructions:156 — surgical precision rule.
+    expect(s).toContain(
+      "If you're operating in an existing codebase, you should make sure you do exactly what the user asks with surgical precision.",
+    );
+    expect(s).toContain("gold-plating");
+  });
+
+  test("frontend_tasks renders codex gpt-5.4 ## Frontend tasks verbatim", () => {
+    const s = getFrontendTasksSection();
+    expect(s).toContain("## Frontend tasks");
+    // Verbatim opening line from codex gpt-5.4 base_instructions:55.
+    expect(s).toContain(
+      `When doing frontend design tasks, avoid collapsing into "AI slop" or safe, average-looking layouts.`,
+    );
+    // Bullet content checks — each major bullet from upstream.
+    expect(s).toContain(
+      "Typography: Use expressive, purposeful fonts and avoid default stacks (Inter, Roboto, Arial, system).",
+    );
+    expect(s).toContain("avoid purple-on-white defaults");
+    expect(s).toContain("useEffectEvent, startTransition, and useDeferredValue");
+    // Verbatim closing exception from codex gpt-5.4 base_instructions:65.
+    expect(s).toContain(
+      "Exception: If working within an existing website or design system, preserve the established patterns, structure, and visual language.",
+    );
+  });
+
+  test("final_answer_verbosity renders codex gpt-5.2 **Verbosity** block verbatim", () => {
+    const s = getFinalAnswerVerbositySection();
+    expect(s).toContain("**Verbosity**");
+    // Verbatim line from codex gpt-5.2 base_instructions:227 — the
+    // tiny/small change compactness rule.
+    expect(s).toContain(
+      "Tiny/small single-file change (≤ ~10 lines): 2–5 sentences or ≤3 bullets.",
+    );
+    expect(s).toContain("Medium change (single area or a few files): ≤6 bullets");
+    expect(s).toContain("Large/multi-file change: Summarize per file with 1–2 bullets");
+    // Verbatim never-do clause from codex gpt-5.2 base_instructions:230.
+    expect(s).toContain(
+      `Never include "before/after" pairs, full method bodies, or large/scrolling code blocks in the final message.`,
+    );
+  });
+
+  test("orchestration renders codex orchestrator.md verbatim when system.agent.delegate is enabled", () => {
+    const tools = new Set(["system.agent.delegate"]);
+    const s = getOrchestrationSection(tools);
+    expect(s).not.toBeNull();
+    const text = String(s);
+    expect(text).toContain("## Orchestration");
+    // Verbatim opening bullet from orchestrator.md:1.
+    expect(text).toContain(
+      "If the user makes a simple request (such as asking for the time) which you can fulfill by running a terminal command (such as `date`), you should do so.",
+    );
+    // Verbatim co-builder bullet from orchestrator.md:2.
+    expect(text).toContain(
+      "Treat the user as an equal co-builder; preserve the user's intent and coding style rather than rewriting everything.",
+    );
+    // User Updates Spec sub-section from orchestrator.md:7-9.
+    expect(text).toContain("### User Updates Spec");
+    expect(text).toContain("heads‑down note");
+    // Reviews section from orchestrator.md:19-21.
+    expect(text).toContain("# Reviews");
+    expect(text).toContain(
+      "When the user asks for a review, you default to a code-review mindset.",
+    );
+    // General guidelines closing block from orchestrator.md:37-43.
+    expect(text).toContain("## General guidelines");
+    expect(text).toContain(
+      "Prefer multiple sub-agents to parallelize your work.",
+    );
+    expect(text).toContain("**wait for them before yielding**");
+  });
+
+  test("orchestration returns null when system.agent.delegate is not enabled (gated)", () => {
+    expect(getOrchestrationSection(new Set())).toBeNull();
+    expect(getOrchestrationSection(new Set(["exec_command", "apply_patch"]))).toBeNull();
+  });
+
   test("tone_and_style bans emojis + colons before tool calls", () => {
     const s = getSimpleToneAndStyleSection();
     expect(s).toContain("# Tone and style");
@@ -483,6 +600,33 @@ describe("assembleSystemPrompt", () => {
     expect(text).toContain("token target");
     expect(text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(sections.length).toBeGreaterThan(10);
+  });
+
+  test("permissions section is injected when a permissionContext is supplied", async () => {
+    const { createEmptyToolPermissionContext } = await import(
+      "../permissions/types.js"
+    );
+    const { text, sections } = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      permissionContext: createEmptyToolPermissionContext({ mode: "plan" }),
+      envForSimpleMode: {},
+    });
+
+    // Section header is present and lives in the dynamic tail.
+    expect(text).toContain("# Permission Mode: plan");
+    // Codex-ported sandbox + approval prose lands in the prompt.
+    expect(text).toContain("`sandbox_mode` is `read-only`");
+    expect(text).toContain("`approval_policy` is `unless-trusted`");
+    // Network-access placeholder is fully resolved.
+    expect(text).not.toContain("{{network_access}}");
+    // It sits after the dynamic boundary, not in the cacheable head.
+    const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+    expect(
+      sections
+        .slice(boundaryIdx + 1)
+        .some((s) => s.includes("# Permission Mode: plan")),
+    ).toBe(true);
   });
 
   test("system prompt rejects implicit non-AgenC instruction updates", async () => {
