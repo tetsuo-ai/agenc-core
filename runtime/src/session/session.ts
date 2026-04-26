@@ -366,6 +366,18 @@ export interface McpManager {
     toolName: string,
   ): { readonly serverName: string; readonly toolName: string } | undefined;
   getServerForTool?(namespacedName: string): string | undefined;
+  /**
+   * Names of all MCP servers currently bridged. Optional — exposed for
+   * the per-turn `mcp_instructions_delta` attachment producer
+   * (`runtime/src/prompts/attachments/mcp-delta.ts`).
+   */
+  getConnectedServers?(): readonly string[];
+  /**
+   * `InitializeResult.instructions` blob for a connected server, or
+   * `undefined` when the server didn't supply one. Optional — same
+   * consumer as `getConnectedServers`.
+   */
+  getServerInstructions?(name: string): string | undefined;
 }
 
 export interface McpServerInfo {

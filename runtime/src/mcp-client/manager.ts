@@ -94,6 +94,14 @@ export class MCPManager {
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
   private readonly promptBridges: Map<string, MCPPromptBridge> = new Map();
   /**
+   * Per-server `InitializeResult.instructions` blob captured at connect
+   * time. Consumed by the per-turn `mcp_instructions_delta` attachment
+   * producer (`runtime/src/prompts/attachments/mcp-delta.ts`) to detect
+   * mid-session server connect / disconnect / reconfigure events. Empty
+   * map for servers that don't supply an instructions blob.
+   */
+  private readonly serverInstructions: Map<string, string> = new Map();
+  /**
    * T6 gap #119: optional observer wired by the session layer so MCP
    * tool calls emit `mcp_tool_call_begin` / `mcp_tool_call_end` events
    * into the session event log. Manager stays session-free; the session
@@ -225,6 +233,7 @@ export class MCPManager {
     this.bridges.clear();
     this.resourceBridges.clear();
     this.promptBridges.clear();
+    this.serverInstructions.clear();
     this.logger.info("All MCP servers disconnected");
   }
 
@@ -266,6 +275,17 @@ export class MCPManager {
    */
   getConnectedServers(): string[] {
     return Array.from(this.bridges.keys());
+  }
+
+  /**
+   * Return the `InitializeResult.instructions` blob the server reported
+   * at connect time, or `undefined` if the server didn't supply one (or
+   * the bridge isn't connected). Read by the per-turn
+   * `mcp_instructions_delta` attachment producer to compute add/remove
+   * deltas across turns.
+   */
+  getServerInstructions(name: string): string | undefined {
+    return this.serverInstructions.get(name);
   }
 
   getConfiguredServers(): readonly MCPServerConfig[] {
@@ -348,6 +368,7 @@ export class MCPManager {
     const existing = this.bridges.get(name);
     if (existing) {
       this.bridges.delete(name);
+      this.serverInstructions.delete(name);
       try {
         await existing.dispose();
       } catch (error) {
@@ -504,6 +525,20 @@ export class MCPManager {
         throw new Error(
           `MCP server "${config.name}" connect abandoned (${startupGate.reason() ?? "cancelled"})`,
         );
+      }
+      // Capture the server's `InitializeResult.instructions` blob if any.
+      // The MCP SDK stores it after `client.connect()` completes; the
+      // value is immutable for the lifetime of the connection.
+      try {
+        const instructions = (
+          client as { getInstructions?: () => string | undefined }
+        ).getInstructions?.();
+        if (typeof instructions === "string" && instructions.length > 0) {
+          this.serverInstructions.set(config.name, instructions);
+        }
+      } catch {
+        // Best-effort capture — the producer simply emits no block for
+        // this server when the SDK call throws.
       }
       const rawBridge = await createToolBridge(
         client,

@@ -15,24 +15,21 @@
  * name → instruction block) instead of being reconstructed from prior
  * `mcp_instructions_delta` attachments in the message history.
  *
- * STATUS — MCP instructions surface gap:
+ * MCP instructions surface (capture path):
  *
- * AgenC's `MCPManager` (runtime/src/mcp-client/manager.ts) currently
- * exposes `getConnectedServers(): string[]` — server names only — and
- * does not surface the `InitializeResult.instructions` blob from the
- * stdio/sse transport. There is no public method to read instructions
- * per server today.
+ * AgenC's `MCPManager` (runtime/src/mcp-client/manager.ts) captures
+ * each server's `InitializeResult.instructions` blob at connect time
+ * via the MCP SDK's `client.getInstructions()` accessor and exposes
+ * the per-server map through `getServerInstructions(name)`. The
+ * session-side `McpManager` facade
+ * (`runtime/src/session/mcp-startup.ts:createSessionMcpService`)
+ * forwards both `getConnectedServers()` and `getServerInstructions()`
+ * to the live runtime manager, which is what this producer reads.
  *
- * This producer reads instructions defensively through an extended
- * `getServerInstructions(name): string | undefined` accessor on the
- * manager (probed via duck-typing), and through the per-bridge
- * `instructions` field if exposed. When neither is available — the
- * current state of AgenC — the producer iterates the server list,
- * finds no instructions, and emits nothing.
- *
- * To activate: extend `MCPManager` with a public method that returns
- * each connected server's `InitializeResult.instructions`. The producer
- * picks it up automatically without further wiring.
+ * Servers that don't advertise an instructions blob simply contribute
+ * nothing to the diff. Reconnects clear the prior entry on disconnect
+ * and re-capture on the new connection — the manager handles that;
+ * this producer only diffs the surfaced map.
  *
  * @module
  */

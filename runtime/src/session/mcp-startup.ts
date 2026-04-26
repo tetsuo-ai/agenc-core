@@ -319,6 +319,17 @@ export function createSessionMcpService(
       typeof manager.getServerForTool === "function"
         ? manager.getServerForTool.bind(manager)
         : undefined,
+    getConnectedServers:
+      typeof manager.getConnectedServers === "function"
+        ? manager.getConnectedServers.bind(manager)
+        : undefined,
+    getServerInstructions:
+      typeof (manager as { getServerInstructions?: unknown })
+        .getServerInstructions === "function"
+        ? (
+            manager as { getServerInstructions: (name: string) => string | undefined }
+          ).getServerInstructions.bind(manager)
+        : undefined,
   };
 }
 
