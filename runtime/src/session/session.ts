@@ -54,6 +54,7 @@ import {
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
+import { getAttachmentTrackingState } from "./attachment-state.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,
@@ -960,6 +961,20 @@ export class Session {
         ...resolvedRegistry.current(),
         mode: newMode,
       });
+    });
+    // Per-turn attachment exit-pulse wiring. The plan-mode and auto-mode
+    // attachment producers fire a one-shot exit reminder when these flags
+    // are set; the registry is the canonical event source for mode
+    // transitions, so flip the flags here. Mirrors openclaude
+    // `bootstrap/state.ts:1349-1363` where `handlePlanModeTransition`
+    // sets `pendingPlanModeExitReminder` on the same boundary.
+    resolvedRegistry.subscribeToModeChange((newMode, oldMode) => {
+      if (oldMode === "plan" && newMode !== "plan") {
+        getAttachmentTrackingState(this).needsPlanModeExitAttachment = true;
+      }
+      if (oldMode === "auto" && newMode !== "auto") {
+        getAttachmentTrackingState(this).needsAutoModeExitAttachment = true;
+      }
     });
   }
 

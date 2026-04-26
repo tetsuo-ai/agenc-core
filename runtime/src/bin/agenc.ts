@@ -75,14 +75,6 @@ import {
   injectAttachmentsIntoPrompt,
 } from "../prompts/memory/index.js";
 import {
-  getPlan,
-  getPlanFilePath,
-} from "../planning/plan-files.js";
-import {
-  buildPlanModeExitInstructions,
-  buildPlanModeInstructions,
-} from "../planning/plan-instructions.js";
-import {
   expandFileMentions,
   extractMentionAllowedRoots,
   formatFileMentionRejection,
@@ -523,64 +515,6 @@ export interface RunSingleTurnOpts {
   readonly assembleSystemPromptFn?: typeof assembleSystemPrompt;
 }
 
-async function buildPlanModeSystemReminder(
-  opts: RunSingleTurnOpts,
-): Promise<string | null> {
-  let planCtx = null as
-    | ReturnType<RunSingleTurnOpts["session"]["permissionModeRegistry"]["current"]>
-    | null;
-  try {
-    planCtx = opts.session.permissionModeRegistry.current();
-  } catch {
-    planCtx = null;
-  }
-  if (planCtx === null) return null;
-
-  const fileCtx = {
-    ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
-    sessionId: opts.session.conversationId,
-  };
-  const planFilePath = getPlanFilePath(fileCtx);
-  const planExists = getPlan(fileCtx) !== null;
-
-  // Out-of-plan branch: emit the one-shot `## Exited Plan Mode` reminder
-  // exactly once on the first non-plan turn after a plan-leave.
-  // Any non-plan target counts (default, acceptEdits, bypassPermissions,
-  // auto) — the pulse was set by transitionPermissionMode regardless of
-  // toMode.
-  if (planCtx.mode !== "plan") {
-    if (planCtx.pendingPlanModeExitReminder !== true) return null;
-    await opts.session.permissionModeRegistry.update({
-      ...planCtx,
-      pendingPlanModeExitReminder: false,
-    });
-    return `<system-reminder>
-${buildPlanModeExitInstructions({
-  planFilePath,
-  planExists,
-})}
-</system-reminder>`;
-  }
-
-  // In-plan branch: emit the standard plan-mode instructions, with the
-  // re-entry preface when this is a return after a previous exit.
-  const includeReentryReminder =
-    planCtx.hasExitedPlanModeInSession === true && planExists;
-  if (includeReentryReminder) {
-    await opts.session.permissionModeRegistry.update({
-      ...planCtx,
-      hasExitedPlanModeInSession: false,
-    });
-  }
-  return `<system-reminder>
-${buildPlanModeInstructions({
-  planFilePath,
-  planExists,
-  includeReentryReminder,
-})}
-</system-reminder>`;
-}
-
 /**
  * Drive a single LLM turn through the T10 pipeline:
  *   1. drain the I-47 config-reload latch (between-turn only)
@@ -646,14 +580,10 @@ export async function* runSingleTurn(
     opts.displayInput ?? opts.input,
     opts.session,
   );
-  let systemPrompt = injectAttachmentsIntoPrompt(
+  const systemPrompt = injectAttachmentsIntoPrompt(
     assembled.text,
     selectedMemories,
   );
-  const planModeReminder = await buildPlanModeSystemReminder(opts);
-  if (planModeReminder !== null) {
-    systemPrompt = `${systemPrompt}\n\n${planModeReminder}`;
-  }
 
   const iter = drive(opts.session, opts.ctx, opts.input, {
     systemPrompt,
