@@ -894,6 +894,9 @@ describe("App", () => {
     expect(text).toContain("Which planner interview behavior should AgenC use?");
     expect(text).toContain("OpenClaude picker (Recommended)");
     expect(text).not.toContain("Approval pending");
+    expect(text.indexOf("Answer questions")).toBeLessThan(
+      text.indexOf("Ask AgenC to do anything"),
+    );
 
     stdin.write("\x1b");
     await expect(decision).resolves.toEqual({ kind: "denied" });
