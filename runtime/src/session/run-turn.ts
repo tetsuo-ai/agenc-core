@@ -88,7 +88,12 @@ import {
   type TurnContext,
   type TurnContextItem,
 } from "./turn-context.js";
-import type { RunningTask } from "./tasks.js";
+import type {
+  SessionTask,
+  SessionTaskAbortContext,
+  SessionTaskRunContext,
+  RunningTask,
+} from "./tasks.js";
 import {
   buildInitialTurnState,
   resetIterationFields,
@@ -103,6 +108,31 @@ export interface RunTurnOptions {
   readonly signal?: AbortSignal;
   /** Optional transcript-facing text when the model-visible prompt was expanded. */
   readonly displayUserMessage?: string;
+}
+
+class RegularTurnTask implements SessionTask {
+  kind(): "regular" {
+    return "regular";
+  }
+
+  spanName(): string {
+    return "session_task.regular";
+  }
+
+  async run(_ctx: SessionTaskRunContext): Promise<null> {
+    // The current AgenC run-turn surface is an AsyncGenerator so the
+    // task body is driven by `runTurnKernelInner` below. The task
+    // object still owns the lifecycle metadata and abort hook so
+    // `Session.handleTaskAbort` can dispatch through the same concrete
+    // task interface as codex.
+    return null;
+  }
+
+  async abort(_ctx: SessionTaskAbortContext): Promise<void> {
+    // Regular turns observe cancellation via the merged AbortSignal in
+    // the phase loop. No extra teardown is needed at the task object
+    // boundary today.
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1074,16 +1104,7 @@ export async function* runTurnKernel(
     });
   };
   const emitTurnAborted = (reason: string): void => {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "turn_aborted",
-        payload: {
-          turnId: ctx.subId,
-          reason,
-        },
-      },
-    });
+    session.emitTurnAbortedOnce(ctx.subId, reason);
   };
   const referenceContextItem = toTurnContextItem(ctx);
 
@@ -1122,6 +1143,9 @@ export async function* runTurnKernel(
   const runningTask = await session.spawnTask({
     subId: ctx.subId,
     kind: "regular",
+    task: new RegularTurnTask(),
+    turnContext: ctx,
+    autoStart: false,
     startedAtMs: turnStartedAt,
   });
   const codeModeService = (

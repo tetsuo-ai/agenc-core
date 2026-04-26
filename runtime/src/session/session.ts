@@ -116,6 +116,7 @@ import type { CodeModeService } from "../tools/code-mode/types.js";
 import {
   createActiveTurnState,
   createDoneHandle,
+  createSessionTaskContext,
   isSteerable,
   nonSteerableTurnKindFrom,
   waitForDoneWithin,
@@ -849,6 +850,9 @@ export class Session {
   /** Seeded transcript event stream used by the TUI resume path. */
   private initialTranscriptEvents: readonly unknown[] = [];
 
+  /** Turn ids that have already emitted task-lifecycle abort events. */
+  private readonly emittedTaskAbortTurnIds = new Set<string>();
+
   /**
    * T11 W4: session-scoped denial tracking. Mutated in place by the
    * permission evaluator (matches openclaude's `Object.assign` contract)
@@ -1422,6 +1426,22 @@ export class Session {
     this.emit({ id: subId, msg });
   }
 
+  emitTurnAbortedOnce(turnId: string, reason: string): void {
+    if (this.emittedTaskAbortTurnIds.has(turnId)) return;
+    this.emittedTaskAbortTurnIds.add(turnId);
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "turn_aborted",
+        payload: { turnId, reason },
+      },
+    });
+  }
+
+  clearTurnAbortMarker(turnId: string): void {
+    this.emittedTaskAbortTurnIds.delete(turnId);
+  }
+
   /**
    * Session-owned MCP startup contract for the live runtime path.
    * Callers may construct the concrete manager, but attach/start
@@ -1686,39 +1706,64 @@ export class Session {
       // `abort_all_tasks(TurnAbortReason::Replaced)` before installing
       // the new task. This is the non-negotiable serialization point.
       await this.abortAllTasksLocked("replaced");
-
-      const abortController = opts.abortController ?? new AbortController();
-      const { done, resolveDone } = createDoneHandle();
-      const task: RunningTask = {
-        subId: opts.subId,
-        kind: opts.kind,
-        abortController,
-        done,
-        resolveDone,
-        startedAtMs: opts.startedAtMs ?? Date.now(),
-      };
-
-      // Upstream codex installs the new `ActiveTurn` under the
-      // `active_turn` lock at the end of `start_task`. The
-      // `taskDispatchLock` above guarantees no concurrent spawn runs
-      // between abort-old-tasks and install-new-task.
-      const turnState = new AsyncLock<ActiveTurnState>(createActiveTurnState());
-      if (opts.tokenUsageAtTurnStart !== undefined) {
-        const seeded = opts.tokenUsageAtTurnStart;
-        await turnState.with((s) => {
-          s.tokenUsageAtTurnStart = { ...seeded };
-        });
-      }
-      await this.activeTurn.swap({
-        turnId: task.subId,
-        startedAtMs: task.startedAtMs,
-        abortController,
-        tasks: new Map([[task.subId, task]]),
-        turnState,
-      });
-
-      return task;
+      return await this.startTask(opts);
     });
+  }
+
+  /**
+   * Upstream codex `tasks/mod.rs::start_task`. Installs the task under
+   * `activeTurn` after the caller has serialized the abort-then-start
+   * boundary.
+   */
+  private async startTask(opts: SpawnTaskOptions): Promise<RunningTask> {
+    const abortController = opts.abortController ?? new AbortController();
+    const { done, resolveDone } = createDoneHandle();
+    const taskObject = opts.task;
+    const turnContext = opts.turnContext;
+    const task: RunningTask = {
+      subId: opts.subId,
+      kind: taskObject?.kind() ?? opts.kind,
+      ...(taskObject !== undefined ? { task: taskObject } : {}),
+      ...(turnContext !== undefined ? { turnContext } : {}),
+      abortController,
+      done,
+      resolveDone,
+      startedAtMs: opts.startedAtMs ?? Date.now(),
+    };
+    const turnState = new AsyncLock<ActiveTurnState>(createActiveTurnState());
+    if (opts.tokenUsageAtTurnStart !== undefined) {
+      const seeded = opts.tokenUsageAtTurnStart;
+      await turnState.with((s) => {
+        s.tokenUsageAtTurnStart = { ...seeded };
+      });
+    }
+    await this.activeTurn.swap({
+      turnId: task.subId,
+      startedAtMs: task.startedAtMs,
+      abortController,
+      tasks: new Map([[task.subId, task]]),
+      turnState,
+    });
+
+    if (
+      taskObject !== undefined &&
+      turnContext !== undefined &&
+      opts.autoStart !== false
+    ) {
+      const sessionTaskContext = createSessionTaskContext(this);
+      task.handle = taskObject
+        .run({
+          session: sessionTaskContext,
+          turnContext,
+          input: opts.input ?? [],
+          signal: abortController.signal,
+        })
+        .finally(async () => {
+          await this.onTaskFinished(opts.subId);
+        });
+    }
+
+    return task;
   }
 
   /**
@@ -1731,21 +1776,21 @@ export class Session {
    * `resolveDone` so `handle_task_abort`'s awaiter unblocks.
    */
   async onTaskFinished(subId: string): Promise<void> {
-    await this.activeTurn.with(async (current) => {
-      if (current === null) return;
+    await this.activeTurn.update((current) => {
+      if (current === null) {
+        return { next: null, result: undefined };
+      }
       const task = current.tasks.get(subId);
       if (task !== undefined) {
         current.tasks.delete(subId);
         task.resolveDone();
+        this.clearTurnAbortMarker(subId);
       }
-      // Upstream: when the registry empties, `active` is cleared to
-      // None. The JS AsyncLock has no in-place setter, so swap to null
-      // AFTER draining this branch.
+      return {
+        next: current.tasks.size === 0 ? null : current,
+        result: undefined,
+      };
     });
-    const current = this.activeTurn.unsafePeek();
-    if (current !== null && current.tasks.size === 0) {
-      await this.activeTurn.swap(null);
-    }
   }
 
   /**
@@ -1796,9 +1841,23 @@ export class Session {
     turnId: string,
     reason: TurnAbortReason,
   ): Promise<boolean> {
-    const current = this.activeTurn.unsafePeek();
-    if (current === null || !current.tasks.has(turnId)) return false;
-    await this.abortAllTasks(reason);
+    const taken = await this.activeTurn.update((current) => {
+      if (current === null || !current.tasks.has(turnId)) {
+        return { next: current, result: null };
+      }
+      return { next: null, result: current };
+    });
+    if (taken === null) return false;
+    const tasks = Array.from(taken.tasks.values());
+    await Promise.all(tasks.map((task) => this.handleTaskAbort(task, reason)));
+    await taken.turnState.with((ts) => {
+      ts.pendingApprovals.clear();
+      ts.pendingRequestPermissions.clear();
+      ts.pendingUserInput.clear();
+      ts.pendingElicitations.clear();
+      ts.pendingDynamicTools.clear();
+      ts.pendingInput.length = 0;
+    });
     return true;
   }
 
@@ -1814,13 +1873,21 @@ export class Session {
     task: RunningTask,
     reason: TurnAbortReason,
   ): Promise<void> {
-    void reason; // kept for parity / future telemetry emission
     if (task.abortController.signal.aborted) {
       task.resolveDone();
       return;
     }
     task.abortController.abort(reason);
     await waitForDoneWithin(task.done, GRACEFUL_INTERRUPTION_TIMEOUT_MS);
+    if (task.task !== undefined && task.turnContext !== undefined) {
+      await task.task.abort({
+        session: createSessionTaskContext(this),
+        turnContext: task.turnContext,
+      });
+    }
+    if (reason === "interrupted") {
+      this.emitTurnAbortedOnce(task.subId, reason);
+    }
     // Ensure `done` settles even if the task never flipped it on its
     // own — callers awaiting `task.done` must progress after abort.
     task.resolveDone();

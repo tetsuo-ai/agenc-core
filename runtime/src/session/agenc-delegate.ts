@@ -44,7 +44,7 @@ import {
   parseReviewOutput,
   recordReviewExitRollout,
 } from "./review.js";
-import type { TaskKind } from "./tasks.js";
+import type { RunningTask, SpawnTaskOptions } from "./tasks.js";
 import { AsyncQueue, BehaviorSubject } from "./_deps/utils.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -100,17 +100,7 @@ export interface AgenCDelegateSessionLike extends AgenCDelegateEventSink {
   /** Upstream codex `Session::spawn_task`. Used so the delegate's
    *  review turn participates in the Wave 2 task lifecycle (replace-
    *  on-new-turn, abort cascade, done promise). */
-  spawnTask(opts: {
-    readonly subId: string;
-    readonly kind: TaskKind;
-    readonly abortController?: AbortController;
-    readonly startedAtMs?: number;
-  }): Promise<{
-    readonly subId: string;
-    readonly kind: TaskKind;
-    readonly abortController: AbortController;
-    readonly done: Promise<void>;
-  }>;
+  spawnTask(opts: SpawnTaskOptions): Promise<RunningTask>;
   /** Upstream codex `Session::on_task_finished`. Called by the
    *  delegate on every termination path so the task drains cleanly. */
   onTaskFinished(subId: string): Promise<void>;

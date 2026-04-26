@@ -68,7 +68,12 @@
  * @module
  */
 
-import type { TaskKind } from "./tasks.js";
+import type {
+  SessionTask,
+  SessionTaskAbortContext,
+  SessionTaskRunContext,
+  TaskKind,
+} from "./tasks.js";
 import type {
   AgenCDelegateSessionLike,
   AgenCReviewOneShotOutcome,
@@ -912,34 +917,13 @@ export async function spawnReviewTask(
   const parentContext = resolveSpawnReviewParentContext(session, opts);
   const config = opts.config ?? parentContext.config;
   const input = opts.input ?? renderReviewTaskInput(opts.request);
-  const task = await session.spawnTask({
-    subId: opts.subId,
-    kind: "review",
-    abortController,
-    startedAtMs: opts.startedAtMs,
-  });
-  if (task.kind !== "review") {
-    // Defensive: upstream codex `spawn_task` never rewrites the kind,
-    // but the JS surface is structural, so surface a clear contract
-    // violation instead of silently proceeding.
-    throw new Error(
-      `spawnReviewTask: session.spawnTask returned unexpected kind=${task.kind}`,
-    );
-  }
-  if (opts.manager !== undefined) {
-    opts.manager.register({
-      subId: task.subId,
-      abortController: task.abortController,
-      request: opts.request,
-    });
-  }
   const request: AgenCReviewOneShotRequest = {
-    subId: task.subId,
+    subId: opts.subId,
     config,
     parentContext,
     input,
     request: opts.request,
-    signal: task.abortController.signal,
+    signal: abortController.signal,
     registerTask: false,
     recordExitRollout: true,
     ...(opts.reviewerModel !== undefined
@@ -958,16 +942,36 @@ export async function spawnReviewTask(
       : {}),
     ...(opts.reuseKey !== undefined ? { reuseKey: opts.reuseKey } : {}),
   };
+  const reviewTask = new ReviewSessionTask(session, request, opts.manager);
+  if (opts.manager !== undefined) {
+    opts.manager.register({
+      subId: opts.subId,
+      abortController,
+      request: opts.request,
+    });
+  }
+  const task = await session.spawnTask({
+    subId: opts.subId,
+    kind: "review",
+    task: reviewTask,
+    turnContext: parentContext,
+    abortController,
+    startedAtMs: opts.startedAtMs,
+  });
+  if (task.kind !== "review") {
+    // Defensive: upstream codex `spawn_task` never rewrites the kind,
+    // but the JS surface is structural, so surface a clear contract
+    // violation instead of silently proceeding.
+    throw new Error(
+      `spawnReviewTask: session.spawnTask returned unexpected kind=${task.kind}`,
+    );
+  }
   session.sendEvent(task.subId, {
     type: "entered_review_mode",
     payload: opts.request,
   });
-  const outcome = runSpawnedReviewTask(
-    session,
-    task.subId,
-    request,
-    opts.manager,
-  );
+  const outcome = (task.handle ??
+    Promise.resolve(null)) as Promise<AgenCReviewOneShotOutcome | null>;
   return {
     subId: task.subId,
     kind: "review",
@@ -976,6 +980,37 @@ export async function spawnReviewTask(
     outcome,
     request: opts.request,
   };
+}
+
+class ReviewSessionTask implements SessionTask {
+  constructor(
+    private readonly session: SessionLike,
+    private readonly request: AgenCReviewOneShotRequest,
+    private readonly manager: ReviewManager | undefined,
+  ) {}
+
+  kind(): "review" {
+    return "review";
+  }
+
+  spanName(): string {
+    return "session_task.review";
+  }
+
+  async run(
+    _ctx: SessionTaskRunContext,
+  ): Promise<AgenCReviewOneShotOutcome | null> {
+    return await runSpawnedReviewTask(
+      this.session,
+      this.request.subId,
+      this.request,
+      this.manager,
+    );
+  }
+
+  async abort(_ctx: SessionTaskAbortContext): Promise<void> {
+    this.manager?.take(this.request.subId);
+  }
 }
 
 function resolveSpawnReviewParentContext(
@@ -1100,6 +1135,5 @@ async function runSpawnedReviewTask(
     return null;
   } finally {
     manager?.take(subId);
-    await session.onTaskFinished(subId);
   }
 }

@@ -32,9 +32,16 @@ import {
 } from "./turn-context.js";
 import {
   GRACEFUL_INTERRUPTION_TIMEOUT_MS,
+  acceptMailboxDeliveryForCurrentTurn,
+  acceptsMailboxDeliveryForCurrentTurn,
   createActiveTurnState,
   createDoneHandle,
+  deferMailboxDeliveryToNextTurn,
+  prependPendingInput,
+  pushPendingInput,
+  takePendingInput,
   waitForDoneWithin,
+  type SessionTask,
 } from "./tasks.js";
 import type { LLMProvider } from "../llm/types.js";
 import { ToolRouter } from "../tools/router.js";
@@ -194,6 +201,20 @@ describe("tasks.ts primitives", () => {
     });
   });
 
+  it("pending-input helpers mirror upstream TurnState queue operations", () => {
+    const s = createActiveTurnState();
+    pushPendingInput(s, "b");
+    prependPendingInput(s, ["a"]);
+    expect(takePendingInput(s)).toEqual(["a", "b"]);
+    expect(takePendingInput(s)).toEqual([]);
+
+    expect(acceptsMailboxDeliveryForCurrentTurn(s)).toBe(true);
+    deferMailboxDeliveryToNextTurn(s);
+    expect(acceptsMailboxDeliveryForCurrentTurn(s)).toBe(false);
+    acceptMailboxDeliveryForCurrentTurn(s);
+    expect(acceptsMailboxDeliveryForCurrentTurn(s)).toBe(true);
+  });
+
   it("createDoneHandle resolves when resolveDone fires", async () => {
     const { done, resolveDone } = createDoneHandle();
     let resolved = false;
@@ -224,6 +245,93 @@ describe("tasks.ts primitives", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("Session.spawnTask registry lifecycle", () => {
+  it("starts SessionTask.run when a concrete task is supplied", async () => {
+    const session = buildSession();
+    let ran = false;
+    const task: SessionTask = {
+      kind: () => "regular",
+      spanName: () => "session_task.regular",
+      run: async () => {
+        ran = true;
+        return null;
+      },
+      abort: async () => {},
+    };
+
+    await session.spawnTask({
+      subId: "turn-A",
+      kind: "regular",
+      task,
+      turnContext: { subId: "turn-A" } as never,
+    });
+    await flush();
+
+    expect(ran).toBe(true);
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+
+  it("calls SessionTask.abort through handleTaskAbort", async () => {
+    const session = buildSession();
+    let aborted = false;
+    const task: SessionTask = {
+      kind: () => "regular",
+      spanName: () => "session_task.regular",
+      run: async () =>
+        await new Promise<null>(() => {
+          /* keep task pending until abort */
+        }),
+      abort: async () => {
+        aborted = true;
+      },
+    };
+
+    await session.spawnTask({
+      subId: "turn-A",
+      kind: "regular",
+      task,
+      turnContext: { subId: "turn-A" } as never,
+    });
+    await session.abortAllTasks("interrupted");
+
+    expect(aborted).toBe(true);
+    expect(session.activeTurn.unsafePeek()).toBeNull();
+  });
+
+  it("abortAllTasks emits a single turn_aborted event for interrupted tasks", async () => {
+    const session = buildSession();
+    const events: Event[] = [];
+    const unsubscribe = session.eventLog.subscribe((event) => events.push(event));
+    try {
+      const task: SessionTask = {
+        kind: () => "regular",
+        spanName: () => "session_task.regular",
+        run: async () =>
+          await new Promise<null>(() => {
+            /* keep task pending until abort */
+          }),
+        abort: async () => {},
+      };
+
+      await session.spawnTask({
+        subId: "turn-A",
+        kind: "regular",
+        task,
+        turnContext: { subId: "turn-A" } as never,
+      });
+      await session.abortAllTasks("interrupted");
+      session.emitTurnAbortedOnce("turn-A", "interrupted");
+
+      const aborted = events.filter((event) => event.msg.type === "turn_aborted");
+      expect(aborted).toHaveLength(1);
+      expect(aborted[0]?.msg).toEqual({
+        type: "turn_aborted",
+        payload: { turnId: "turn-A", reason: "interrupted" },
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("registers the task under its subId and fills the activeTurn slot", async () => {
     const session = buildSession();
     const task = await session.spawnTask({ subId: "turn-A", kind: "regular" });
@@ -256,6 +364,21 @@ describe("Session.spawnTask registry lifecycle", () => {
     await session.onTaskFinished("turn-A");
     await watcher;
     expect(resolved).toBe(true);
+  });
+
+  it("finish racing with a new spawn never clears the newer active turn", async () => {
+    const session = buildSession();
+    await session.spawnTask({ subId: "turn-A", kind: "regular" });
+
+    await Promise.all([
+      session.onTaskFinished("turn-A"),
+      session.spawnTask({ subId: "turn-B", kind: "regular" }),
+    ]);
+
+    const active = session.activeTurn.unsafePeek();
+    expect(active?.turnId).toBe("turn-B");
+    expect(active?.tasks.has("turn-B")).toBe(true);
+    await session.onTaskFinished("turn-B");
   });
 
   it("abortAllTasks clears the registry AND fires each task's AbortController", async () => {

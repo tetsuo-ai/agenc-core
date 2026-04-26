@@ -5,6 +5,8 @@
  *   - Manual `/compact` dispatcher (does NOT route through
  *     `autoCompactIfNeeded`; circuit-breaker bypass is intentional
  *     per feature-matrix.md:196 and annotated in manual-compact.ts).
+ *     The source lineage is AgenC's local ../opencode-compatible
+ *     compaction contract, not the codex task subsystem.
  *   - Stage-6 `prepareContext` auto-compact gating (does NOT fire when
  *     `runPreSamplingCompact` already compacted this turn — one-
  *     compact-per-turn contract matching codex run_pre_sampling_compact
@@ -57,8 +59,9 @@ describe("manual compact (T4 #2) — circuit-breaker bypass is intentional", () 
     // Require the documented rationale so the bypass can't drift back
     // to an undocumented one-off in future refactors.
     expect(src).toMatch(
-      /INTENTIONAL.*manual.*`\/compact`.*compactConversation\s+directly/is,
+      /INTENTIONAL.*manual.*`\/compact`.*`compactConversation`\s+directly/is,
     );
+    expect(src).toMatch(/\.\.\/opencode session compaction contract/);
     expect(src).toMatch(/circuit[\s-]?breaker/i);
     expect(src).toMatch(/feature-matrix\.md:196/);
   });

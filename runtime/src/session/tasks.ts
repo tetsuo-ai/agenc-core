@@ -39,6 +39,9 @@
  */
 
 import type { AsyncLock } from "../utils/async-lock.js";
+import type { Session } from "./session.js";
+import type { TurnContext } from "./turn-context.js";
+import type { PhaseEvent } from "../phases/events.js";
 
 /**
  * Upstream codex `tasks/mod.rs::TaskKind`. String-union keeps JS
@@ -70,6 +73,40 @@ export type TurnAbortReason = "interrupted" | "replaced" | "review_ended";
  */
 export type MailboxDeliveryPhase = "current_turn" | "next_turn";
 
+export interface SessionTaskContext {
+  readonly session: Session;
+  cloneSession(): Session;
+}
+
+export function createSessionTaskContext(session: Session): SessionTaskContext {
+  return {
+    session,
+    cloneSession: () => session,
+  };
+}
+
+export interface SessionTaskRunContext {
+  readonly session: SessionTaskContext;
+  readonly turnContext: TurnContext;
+  readonly input: readonly unknown[];
+  readonly signal: AbortSignal;
+  readonly emit?: (event: PhaseEvent) => void;
+}
+
+export interface SessionTaskAbortContext {
+  readonly session: SessionTaskContext;
+  readonly turnContext: TurnContext;
+}
+
+export interface SessionTask {
+  kind(): TaskKind;
+  spanName(): string;
+  run(ctx: SessionTaskRunContext): Promise<unknown>;
+  abort(ctx: SessionTaskAbortContext): Promise<void>;
+}
+
+export type AnySessionTask = SessionTask;
+
 /**
  * Upstream codex `state/turn.rs::RunningTask`. Fields:
  *
@@ -92,6 +129,9 @@ export type MailboxDeliveryPhase = "current_turn" | "next_turn";
 export interface RunningTask {
   readonly subId: string;
   readonly kind: TaskKind;
+  readonly task?: AnySessionTask;
+  readonly turnContext?: TurnContext;
+  handle?: Promise<unknown>;
   readonly abortController: AbortController;
   readonly done: Promise<void>;
   readonly resolveDone: () => void;
@@ -251,6 +291,46 @@ export function createActiveTurnState(): ActiveTurnState {
   };
 }
 
+export function pushPendingInput(
+  state: ActiveTurnState,
+  input: unknown,
+): void {
+  state.pendingInput.push(input);
+}
+
+export function prependPendingInput(
+  state: ActiveTurnState,
+  input: readonly unknown[],
+): void {
+  if (input.length === 0) return;
+  state.pendingInput = [...input, ...state.pendingInput];
+}
+
+export function takePendingInput(state: ActiveTurnState): unknown[] {
+  if (state.pendingInput.length === 0) return [];
+  const pending = state.pendingInput;
+  state.pendingInput = [];
+  return pending;
+}
+
+export function acceptMailboxDeliveryForCurrentTurn(
+  state: ActiveTurnState,
+): void {
+  state.mailboxDeliveryPhase = "current_turn";
+}
+
+export function deferMailboxDeliveryToNextTurn(
+  state: ActiveTurnState,
+): void {
+  state.mailboxDeliveryPhase = "next_turn";
+}
+
+export function acceptsMailboxDeliveryForCurrentTurn(
+  state: ActiveTurnState,
+): boolean {
+  return state.mailboxDeliveryPhase === "current_turn";
+}
+
 /**
  * Upstream codex `tasks/mod.rs:62` — graceful interruption timeout
  * before force-aborting. Keep the same ms budget so behavior matches.
@@ -264,6 +344,10 @@ export const GRACEFUL_INTERRUPTION_TIMEOUT_MS = 100;
 export interface SpawnTaskOptions {
   readonly subId: string;
   readonly kind: TaskKind;
+  readonly task?: AnySessionTask;
+  readonly turnContext?: TurnContext;
+  readonly input?: readonly unknown[];
+  readonly autoStart?: boolean;
   readonly startedAtMs?: number;
   /**
    * Optional externally-supplied controller. When omitted, spawnTask

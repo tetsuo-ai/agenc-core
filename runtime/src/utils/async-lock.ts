@@ -55,6 +55,23 @@ export class AsyncLock<T> {
   }
 
   /**
+   * Atomically derive a replacement value from the current value and
+   * return a caller-defined result from the same critical section.
+   */
+  async update<R>(
+    fn: (current: T) => { readonly next: T; readonly result: R } | Promise<{
+      readonly next: T;
+      readonly result: R;
+    }>,
+  ): Promise<R> {
+    return this.with(async (current) => {
+      const { next, result } = await fn(current);
+      this.value = next;
+      return result;
+    });
+  }
+
+  /**
    * Read the guarded value without taking the lock. Use only when you
    * KNOW no concurrent writer can run (e.g. during single-threaded
    * setup or post-shutdown cleanup). For all other reads, use `with`.

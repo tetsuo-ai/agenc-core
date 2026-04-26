@@ -180,12 +180,13 @@ export async function runManualCompact(
     //     auto-compact limit even though the user asked to compact now.
     //   - Circuit breaker targets retry storms from auto-compact loops;
     //     a user-invoked manual attempt should proceed on its own merits.
-    // openclaude's `/compact` command does the same (commands/compact.ts
-    // calls compactConversation directly) and this routing maps to
-    // feature-matrix.md:196 (T4-owned manual compact). The I-18 shrink
-    // assertion and I-2 previous_response_id clear still run because
-    // `compactConversation` enforces the former internally and
-    // `runPostCompactCleanup` (below) enforces the latter.
+    // AgenC's compact pipeline is kept aligned with the local
+    // ../opencode session compaction contract: manual compaction is an
+    // explicit user action and must bypass the auto overflow threshold.
+    // This routing maps to feature-matrix.md:196 (T4-owned manual
+    // compact). The I-18 shrink assertion and I-2 previous_response_id
+    // clear still run because `compactConversation` enforces the former
+    // internally and `runPostCompactCleanup` (below) enforces the latter.
     const result = await compactConversation(
       messagesForCompact,
       context,
