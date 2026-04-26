@@ -88,6 +88,8 @@ describe("FileRead tool", () => {
     const snap = getSessionReadSnapshot(sessionId, file);
     expect(snap?.viewKind).toBe("full");
     expect(snap?.content).toBe("one\ntwo\nthree\n");
+    // Full reads carry raw bytes for the changed-files attachment producer.
+    expect(snap?.rawContent).toBe("one\ntwo\nthree\n");
   });
 
   test("offset/limit produces a partial view + sets viewKind=partial", async () => {
@@ -111,6 +113,9 @@ describe("FileRead tool", () => {
     expect(snap?.isPartialView).not.toBe(true);
     expect(snap?.readOffset).toBe(2);
     expect(snap?.readLimit).toBe(2);
+    // Partial reads do not anchor the changed-files diff — there is no
+    // full-file content to diff against — so rawContent stays unset.
+    expect(snap?.rawContent).toBeUndefined();
   });
 
   test("reads the active session plan file outside the workspace root", async () => {

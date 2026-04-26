@@ -379,6 +379,11 @@ async function readTextFile(
     ...(sliced.isPartial && opts.limit !== undefined
       ? { readLimit: opts.limit }
       : {}),
+    // Full reads carry the raw disk bytes for the per-turn changed-files
+    // attachment producer to compute exact diffs on later mutation.
+    // Partial reads intentionally skip rawContent — without the full file
+    // there is nothing to diff against.
+    ...(sliced.isPartial ? {} : { rawContent: text }),
   });
 
   if (sliced.content.length === 0) {
@@ -452,7 +457,9 @@ async function readImageFile(
 
   // Record the read with no text content (binary). Use `viewKind: "full"`
   // — there is no "partial image" concept and we want subsequent reads
-  // of the same image to dedup if the session needs the gate.
+  // of the same image to dedup if the session needs the gate. The
+  // changed-files producer uses `rawContent` (base64 here) as the diff
+  // anchor for image edits.
   recordSessionRead(sessionId, resolvedPath.canonical, {
     content: null,
     timestamp:
@@ -460,6 +467,7 @@ async function readImageFile(
         ? fileStats.mtimeMs
         : Date.now(),
     viewKind: "full",
+    rawContent: base64,
   });
 
   // The `FunctionCallOutputContentItem` shape (port of codex

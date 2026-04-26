@@ -28,6 +28,7 @@ import {
 } from "./file-edit.js";
 import {
   clearSessionReadState,
+  getSessionReadSnapshot,
   recordSessionRead,
   SESSION_AGENC_HOME_ARG,
   SESSION_ID_ARG,
@@ -83,6 +84,13 @@ describe("Edit tool", () => {
     expect(typeof result.content).toBe("string");
     expect(result.content).toContain("has been updated successfully");
     await expect(readFile(file, "utf8")).resolves.toBe("goodbye world\n");
+    // Post-write snapshot refresh: rawContent and timestamp now reflect
+    // the on-disk state so the changed-files attachment producer does
+    // not fire a spurious diff for the edit we just made.
+    const refreshed = getSessionReadSnapshot(SESSION_ID, file);
+    expect(refreshed?.rawContent).toBe("goodbye world\n");
+    expect(refreshed?.content).toBe("goodbye world\n");
+    expect(refreshed?.viewKind).toBe("full");
   });
 
   test("edits the active session plan file outside the workspace root", async () => {

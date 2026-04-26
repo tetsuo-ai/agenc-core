@@ -149,11 +149,16 @@ function buildSnapshot(
   mtimeMs: number,
 ): {
   readonly content: string;
+  readonly rawContent: string;
   readonly timestamp: number;
   readonly viewKind: SessionReadViewKind;
 } {
   return {
     content,
+    // Post-write content IS the raw bytes on disk; populating rawContent
+    // here keeps the changed-files producer from firing a spurious diff
+    // on the next turn for the file we just wrote.
+    rawContent: content,
     timestamp: Number.isFinite(mtimeMs) ? mtimeMs : Date.now(),
     viewKind: "full",
   };

@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createFileWriteTool } from "./file-write.js";
 import {
   clearSessionReadState,
+  getSessionReadSnapshot,
   recordSessionRead,
   seedSessionReadState,
   SESSION_AGENC_HOME_ARG,
@@ -54,6 +55,10 @@ describe("Write tool", () => {
       `File created successfully at: ${target}`,
     );
     await expect(readFile(target, "utf8")).resolves.toBe("hello\nworld\n");
+    // Post-write snapshot anchors the changed-files attachment producer.
+    const snap = getSessionReadSnapshot(sessionId, target);
+    expect(snap?.rawContent).toBe("hello\nworld\n");
+    expect(snap?.viewKind).toBe("full");
   });
 
   test("creates the active session plan file outside the workspace root", async () => {

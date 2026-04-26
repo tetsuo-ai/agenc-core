@@ -47,6 +47,7 @@ import type {
 import {
   getSessionReadSnapshot,
   hasSessionRead,
+  recordSessionRead,
   resolveSessionId,
   safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
@@ -227,6 +228,37 @@ async function writeFileCreatingParents(
   await writeFile(absolutePath, content, "utf8");
 }
 
+/**
+ * Record the post-write content as the session's view of the file so the
+ * per-turn changed-files attachment producer
+ * (`runtime/src/prompts/attachments/changed-files.ts`) does not fire a
+ * spurious diff on the next turn for the file we just wrote.
+ *
+ * Best-effort — a failed stat falls back to wall-clock time, and a
+ * missing sessionId is a no-op (matches openclaude's
+ * `recordOnDiskWriteForFreshState` defensive shape).
+ */
+async function snapshotPostWrite(
+  sessionId: string | undefined,
+  absolutePath: string,
+  content: string,
+): Promise<void> {
+  if (sessionId === undefined) return;
+  let mtimeMs: number = Date.now();
+  try {
+    const post = await stat(absolutePath);
+    if (Number.isFinite(post.mtimeMs)) mtimeMs = post.mtimeMs;
+  } catch {
+    // Fall back to wall clock.
+  }
+  recordSessionRead(sessionId, absolutePath, {
+    content,
+    rawContent: content,
+    timestamp: mtimeMs,
+    viewKind: "full",
+  });
+}
+
 function applyEdit(
   fileContent: string,
   oldString: string,
@@ -363,6 +395,11 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           const message = err instanceof Error ? err.message : String(err);
           return errorResult(`Failed to create file: ${message}`);
         }
+        await snapshotPostWrite(
+          resolveSessionId(rawArgs),
+          absoluteFilePath,
+          new_string,
+        );
         return { content: `Created file ${file_path}.` };
       }
 
@@ -388,6 +425,11 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           const message = err instanceof Error ? err.message : String(err);
           return errorResult(`Failed to write file: ${message}`);
         }
+        await snapshotPostWrite(
+          resolveSessionId(rawArgs),
+          absoluteFilePath,
+          new_string,
+        );
         return { content: successText(file_path, false) };
       }
 
@@ -485,6 +527,8 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         const message = err instanceof Error ? err.message : String(err);
         return errorResult(`Failed to write file: ${message}`);
       }
+
+      await snapshotPostWrite(sessionId, absoluteFilePath, updated);
 
       // TODO(file-edit): wire LSP didChange/didSave notifications when
       // AgenC adds an LSP integration. Openclaude's FileEditTool.ts:493-514
