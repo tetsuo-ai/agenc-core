@@ -42,6 +42,40 @@ describe("AskUserQuestion tool", () => {
     );
   });
 
+  test("normalizes model question options that omit descriptions", () => {
+    const parsed = parseAskUserQuestionInput({
+      questions: [
+        {
+          header: "Priority",
+          question: "Which milestone should come first?",
+          options: [
+            {
+              label: "M1 first",
+              preview: "Complete reader/lexer before parser.",
+            },
+            {
+              label: "M2 first",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.input.questions[0]?.options).toEqual([
+      {
+        label: "M1 first",
+        description: "Complete reader/lexer before parser.",
+        preview: "Complete reader/lexer before parser.",
+      },
+      {
+        label: "M2 first",
+        description: "M2 first",
+      },
+    ]);
+  });
+
   test("rejects malformed or ambiguous payloads", () => {
     expect(parseAskUserQuestionInput({ questions: [] })).toEqual({
       ok: false,

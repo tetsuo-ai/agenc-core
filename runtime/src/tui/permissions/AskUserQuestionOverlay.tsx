@@ -174,6 +174,11 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
   }, [setActiveContext]);
 
   useEffect(() => {
+    if (parsed.ok) return;
+    queueMicrotask(() => resolveOnce({ behavior: "deny" }));
+  }, [parsed, resolveOnce]);
+
+  useEffect(() => {
     if (abortSignal.aborted) {
       queueMicrotask(() => resolveOnce({ behavior: "abort" }));
       return;
