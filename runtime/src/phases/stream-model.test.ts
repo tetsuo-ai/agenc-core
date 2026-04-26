@@ -266,6 +266,86 @@ describe("streamModel — live assistant text sanitization", () => {
     });
   });
 
+  test("requires a tool choice in plan mode when tools are available", async () => {
+    const ctx = mkCtx("plan");
+    const state = mkState(ctx);
+    const registry = mkRegistry([
+      {
+        name: "AskUserQuestion",
+        description: "asks the user a question",
+        inputSchema: { type: "object" },
+        execute: async () => ({ content: "answered" }),
+      },
+    ]);
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = mkProvider(async (_messages, _onChunk, options) => {
+      seenOptions.push(options ?? {});
+      return {
+        content: "",
+        toolCalls: [
+          {
+            id: "tool-1",
+            name: "AskUserQuestion",
+            arguments: JSON.stringify({ questions: [] }),
+          },
+        ],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "tool_calls",
+      };
+    });
+    const { session } = mkSession(provider, null, registry);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "plan this" }]),
+        tools: registry.toLLMTools(),
+      },
+    );
+
+    expect(seenOptions[0]?.toolChoice).toBe("required");
+  });
+
+  test("does not require tool choice outside plan mode", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const registry = mkRegistry([
+      {
+        name: "AskUserQuestion",
+        description: "asks the user a question",
+        inputSchema: { type: "object" },
+        execute: async () => ({ content: "answered" }),
+      },
+    ]);
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = mkProvider(async (_messages, _onChunk, options) => {
+      seenOptions.push(options ?? {});
+      return {
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider, null, registry);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "hello" }]),
+        tools: registry.toLLMTools(),
+      },
+    );
+
+    expect(seenOptions[0]?.toolChoice).toBeUndefined();
+  });
+
   test("dispatches streamed tool calls before chatStream resolves", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

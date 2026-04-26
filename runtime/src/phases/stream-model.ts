@@ -137,10 +137,14 @@ function buildProviderOptions(
   signal: AbortSignal,
 ): LLMChatOptions {
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
+  const planMode = isPlanMode(ctx);
   return {
     signal,
     tools: request.tools,
     parallelToolCalls: request.parallelToolCalls,
+    ...(planMode && request.tools.length > 0
+      ? { toolChoice: "required" as const }
+      : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort:
       ctx.reasoningEffort && ctx.reasoningEffort !== "none"
