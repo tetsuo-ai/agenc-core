@@ -326,6 +326,220 @@ describe("useQuery", () => {
     unmount();
   });
 
+  test("coalesces streaming assistant deltas in the TUI event buffer", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "turn-stream" } },
+    });
+    session.emitEventLog({
+      id: "evt-2",
+      seq: 2,
+      msg: { type: "agent_message_delta", payload: { delta: "Hel" } },
+    });
+    session.emitEventLog({
+      id: "evt-3",
+      seq: 3,
+      msg: { type: "agent_message_delta", payload: { delta: "lo" } },
+    });
+    session.emitEventLog({
+      id: "evt-4",
+      seq: 4,
+      msg: { type: "agent_message_delta", payload: { delta: "!" } },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(2);
+    expect(latest!.events[1]).toMatchObject({
+      type: "agent_message_delta",
+      payload: { delta: "Hello!" },
+    });
+    unmount();
+  });
+
+  test("commits final assistant messages by replacing the active delta preview", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "turn-final" } },
+    });
+    session.emitEventLog({
+      id: "evt-2",
+      seq: 2,
+      msg: { type: "agent_message_delta", payload: { delta: "draft" } },
+    });
+    session.emitEventLog({
+      id: "evt-3",
+      seq: 3,
+      msg: { type: "agent_message", payload: { message: "final" } },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(2);
+    expect(latest!.events[1]).toMatchObject({
+      type: "agent_message",
+      payload: { message: "final" },
+    });
+    expect(
+      latest!.events.some((event) => event.type === "agent_message_delta"),
+    ).toBe(false);
+    unmount();
+  });
+
+  test("bounds repeated tool progress for the same progress slot", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "turn-progress" } },
+    });
+    session.emitEventLog({
+      id: "evt-2",
+      seq: 2,
+      msg: {
+        type: "tool_progress",
+        payload: {
+          callId: "call-1",
+          toolName: "exec_command",
+          stream: "stdout",
+          chunk: "a",
+        },
+      },
+    });
+    session.emitEventLog({
+      id: "evt-3",
+      seq: 3,
+      msg: {
+        type: "tool_progress",
+        payload: {
+          callId: "call-1",
+          toolName: "exec_command",
+          stream: "stdout",
+          chunk: "b",
+        },
+      },
+    });
+    session.emitEventLog({
+      id: "evt-4",
+      seq: 4,
+      msg: {
+        type: "tool_progress",
+        payload: {
+          callId: "call-1",
+          toolName: "exec_command",
+          stream: "status",
+          chunk: "old",
+        },
+      },
+    });
+    session.emitEventLog({
+      id: "evt-5",
+      seq: 5,
+      msg: {
+        type: "tool_progress",
+        payload: {
+          callId: "call-1",
+          toolName: "exec_command",
+          stream: "status",
+          chunk: "new",
+        },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(3);
+    expect(latest!.events[1]).toMatchObject({
+      type: "tool_progress",
+      payload: { chunk: "ab", stream: "stdout" },
+    });
+    expect(latest!.events[2]).toMatchObject({
+      type: "tool_progress",
+      payload: { chunk: "new", stream: "status" },
+    });
+    unmount();
+  });
+
+  test("trims TUI history to the previous compact boundary", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "turn-1" } },
+    });
+    session.emitEventLog({
+      id: "evt-2",
+      seq: 2,
+      msg: { type: "user_message", payload: { message: "old" } },
+    });
+    session.emitEventLog({
+      id: "evt-3",
+      seq: 3,
+      msg: {
+        type: "context_compacted",
+        payload: { turnId: "turn-1", summary: "first compact" },
+      },
+    });
+    session.emitEventLog({
+      id: "evt-4",
+      seq: 4,
+      msg: { type: "user_message", payload: { message: "kept" } },
+    });
+    session.emitEventLog({
+      id: "evt-5",
+      seq: 5,
+      msg: {
+        type: "context_compacted",
+        payload: { turnId: "turn-1", summary: "second compact" },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(2);
+    expect(latest!.events[0]).toMatchObject({
+      type: "user_message",
+      payload: { message: "kept" },
+    });
+    expect(latest!.events[1]).toMatchObject({
+      type: "context_compacted",
+      payload: { summary: "second compact" },
+    });
+    unmount();
+  });
+
   test("dedupes repeated hydrated transcript envelopes on mount", async () => {
     const duplicate = {
       id: "evt-1",
