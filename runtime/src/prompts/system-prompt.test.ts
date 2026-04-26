@@ -150,50 +150,63 @@ describe("static section emitters", () => {
     expect(s).toContain("force-push");
   });
 
-  test("using_your_tools renders the openclaude CRITICAL bash-vs-dedicated-tools block (verbatim port)", () => {
+  test("using_your_tools renders the CRITICAL bash-vs-dedicated-tools block pointing at the openclaude-derived file/search tools", () => {
     const tools = new Set([
       "exec_command",
       "write_stdin",
       "apply_patch",
+      "FileRead",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
       "TodoWrite",
       "system.searchTools",
     ]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    // OpenClaude `getUsingYourToolsSection` lead bullet (BASH_TOOL_NAME →
-    // exec_command for AgenC). The CRITICAL framing is the load-bearing
-    // upstream wording that prevents the model from rationalizing a file
+    // CRITICAL framing prevents the model from rationalizing a file
     // write through a shell redirect.
     expect(s).toContain(
       "Do NOT use the exec_command to run commands when a relevant dedicated tool is provided",
     );
     expect(s).toContain("This is CRITICAL");
-    // OpenClaude providedToolSubitems, with FILE_EDIT_TOOL_NAME and
-    // FILE_WRITE_TOOL_NAME both mapped to apply_patch.
-    expect(s).toContain("To read files use system.readFile instead of cat, head, tail, or sed");
-    expect(s).toContain("To edit files use apply_patch instead of sed or awk");
+    // The new openclaude-derived first-class tools (lifted into AgenC).
+    // FileRead/Edit/Write/Glob/Grep replace the previous deferred
+    // `system.readFile`/`system.editFile`/`system.writeFile`/`system.glob`/
+    // `system.grep` mentions — they're now visible by default in
+    // tool-registry.ts.
+    expect(s).toContain("To read files use FileRead instead of cat, head, tail, or sed");
+    expect(s).toContain("To edit files use Edit instead of sed or awk");
     expect(s).toContain(
-      "To create files use apply_patch (with a `*** Add File:` operation) instead of cat with heredoc or echo redirection",
+      "To create files use Write instead of cat with heredoc or echo redirection",
     );
-    expect(s).toContain("To search for files use system.glob instead of find or ls");
+    expect(s).toContain("To search for files use Glob instead of find or ls");
     expect(s).toContain(
-      "To search the content of files, use system.grep instead of grep or rg",
+      "To search the content of files, use Grep instead of grep or rg",
     );
+    // apply_patch becomes the rare-case multi-file atomic-patch tool.
+    expect(s).toContain("For multi-file atomic patches");
+    expect(s).toContain("apply_patch");
     expect(s).toContain(
       "Reserve using the exec_command exclusively for system commands and terminal operations",
     );
-    // TodoWrite bullet from openclaude (taskToolName → TodoWrite).
+    // TodoWrite bullet (taskToolName → TodoWrite).
     expect(s).toContain("Break down and manage your work with the TodoWrite tool");
     // exec_command + write_stdin interactive-session bullet.
     expect(s).toContain("call exec_command with tty=true");
     expect(s).toContain("use write_stdin with that session_id");
-    // Verbatim openclaude parallel-tool-calls sentence.
+    // Parallel-tool-calls sentence.
     expect(s).toContain(
       "You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel",
     );
   });
 
-  test("using_your_tools points file ops at apply_patch even when system.* compatibility tools are loaded", () => {
+  test("using_your_tools omits per-tool bullets when those tools are not in the visible catalog", () => {
+    // No FileRead/Edit/Write/Glob/Grep, only legacy deferred system.*
+    // (which the prompt no longer references — the model can't see them
+    // by default, so prompting their use is the original visibility-mismatch
+    // bug we fixed).
     const tools = new Set([
       "exec_command",
       "system.readFile",
@@ -204,12 +217,14 @@ describe("static section emitters", () => {
       "apply_patch",
     ]);
     const s = getUsingYourToolsSection(tools);
-    // No more "compatibility tool" bullet — openclaude routes edits/writes
-    // through the same dedicated-tool rule, and AgenC's apply_patch
-    // handles both edits and `*** Add File:` creates.
-    expect(s).not.toContain("compatibility tools");
-    expect(s).toContain("To edit files use apply_patch");
-    expect(s).toContain("To create files use apply_patch");
+    // The deferred system.* tools should NOT appear in the prompt anymore.
+    expect(s).not.toContain("system.readFile");
+    expect(s).not.toContain("system.editFile");
+    expect(s).not.toContain("system.writeFile");
+    expect(s).not.toContain("system.glob");
+    expect(s).not.toContain("system.grep");
+    // apply_patch is still mentioned (it IS visible in this set).
+    expect(s).toContain("apply_patch");
   });
 
   test("using_your_tools substitutes the shell-tool name when exec_command is unavailable", () => {
@@ -225,12 +240,18 @@ describe("static section emitters", () => {
     expect(s).not.toContain("exec_command");
   });
 
-  test("using_your_tools omits apply_patch sub-bullets when apply_patch is not enabled", () => {
+  test("using_your_tools omits per-tool bullets when no openclaude-derived tools are enabled (shell-only mode)", () => {
     const tools = new Set(["exec_command"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    expect(s).toContain("To read files use system.readFile");
+    // No FileRead/Edit/Write/Glob/Grep/apply_patch in the visible set →
+    // all per-tool sub-bullets are omitted; only the generic "reserve
+    // shell for system commands" guidance remains.
+    expect(s).not.toContain("FileRead");
     expect(s).not.toContain("apply_patch");
+    expect(s).toContain(
+      "Reserve using the exec_command exclusively for system commands",
+    );
   });
 
   test("editing_constraints renders codex gpt-5.4 ## Editing constraints verbatim when apply_patch is enabled", () => {

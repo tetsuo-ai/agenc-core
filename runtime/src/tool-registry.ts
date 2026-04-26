@@ -35,6 +35,19 @@ import {
   createEnterWorktreeTool,
   createExitWorktreeTool,
   createToolSuggestTool,
+  // Openclaude-derived file/search tools (lifted into AgenC).
+  // These shadow the deferred system.readFile/system.editFile/system.writeFile/
+  // system.glob/system.grep family that used to live in filesystem.ts/coding.ts.
+  createFileReadTool,
+  createFileEditTool,
+  createFileWriteTool,
+  createGlobTool,
+  createGrepTool,
+  FILE_READ_TOOL_NAME,
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+  GLOB_TOOL_NAME,
+  GREP_TOOL_NAME,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
   TOOL_SUGGEST_TOOL_NAME,
 } from "./tools/system/index.js";
@@ -241,7 +254,17 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "exec_command",
   "write_stdin",
   "apply_patch",
-  // `TodoWrite` is the verbatim openclaude port; codex `update_plan`
+  // Openclaude-derived file/search tools, lifted into AgenC and now
+  // first-class visible. Replace the `system.readFile`/`system.editFile`/
+  // `system.writeFile`/`system.glob`/`system.grep` deferred AgenC family
+  // that the model couldn't see by default — that mismatch was the root
+  // cause of the cat-everywhere failure mode.
+  FILE_READ_TOOL_NAME,
+  FILE_EDIT_TOOL_NAME,
+  FILE_WRITE_TOOL_NAME,
+  GLOB_TOOL_NAME,
+  GREP_TOOL_NAME,
+  // `TodoWrite` is the openclaude port; codex `update_plan`
   // is intentionally not shipped — `/plan` itself is openclaude-derived
   // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
   // tool is openclaude `TodoWrite`.
@@ -408,6 +431,22 @@ export function buildToolRegistry(
         : {}),
     }),
     createApplyPatchTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
+    // Openclaude-derived file/search tools (lifted, now AgenC-owned).
+    createFileReadTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
+    createFileEditTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
+    createFileWriteTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
+    createGlobTool({
+      allowedPaths: [options.workspaceRoot],
+    }),
+    createGrepTool({
       allowedPaths: [options.workspaceRoot],
     }),
     createSleepTool(),

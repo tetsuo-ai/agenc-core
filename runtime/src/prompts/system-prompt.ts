@@ -360,29 +360,47 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
           ? "system.bash"
           : "shell";
   const hasApplyPatch = hasTool("apply_patch");
+  const hasFileRead = hasTool("FileRead");
+  const hasFileEdit = hasTool("Edit");
+  const hasFileWrite = hasTool("Write");
+  const hasGlob = hasTool("Glob");
+  const hasGrep = hasTool("Grep");
   const hasTodoWrite = hasTool("TodoWrite");
 
   const items: Array<string | string[]> = [];
 
   if (hasShell) {
     const subItems: string[] = [];
-    subItems.push(
-      `To read files use system.readFile instead of cat, head, tail, or sed`,
-    );
-    if (hasApplyPatch) {
+    if (hasFileRead) {
       subItems.push(
-        `To edit files use apply_patch instead of sed or awk`,
-      );
-      subItems.push(
-        `To create files use apply_patch (with a \`*** Add File:\` operation) instead of cat with heredoc or echo redirection`,
+        `To read files use FileRead instead of cat, head, tail, or sed`,
       );
     }
-    subItems.push(
-      `To search for files use system.glob instead of find or ls`,
-    );
-    subItems.push(
-      `To search the content of files, use system.grep instead of grep or rg`,
-    );
+    if (hasFileEdit) {
+      subItems.push(
+        `To edit files use Edit instead of sed or awk`,
+      );
+    }
+    if (hasFileWrite) {
+      subItems.push(
+        `To create files use Write instead of cat with heredoc or echo redirection`,
+      );
+    }
+    if (hasApplyPatch) {
+      subItems.push(
+        `For multi-file atomic patches (rare), use apply_patch with the *** Begin Patch / *** End Patch envelope. For single-file edits, prefer Edit; for new files, prefer Write.`,
+      );
+    }
+    if (hasGlob) {
+      subItems.push(
+        `To search for files use Glob instead of find or ls`,
+      );
+    }
+    if (hasGrep) {
+      subItems.push(
+        `To search the content of files, use Grep instead of grep or rg`,
+      );
+    }
     subItems.push(
       `Reserve using the ${shellName} exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the ${shellName} tool for these if it is absolutely necessary.`,
     );

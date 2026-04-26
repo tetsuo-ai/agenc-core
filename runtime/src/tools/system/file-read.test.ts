@@ -1,0 +1,179 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
+
+import { createFileReadTool, FILE_READ_TOOL_NAME } from "./file-read.js";
+import {
+  clearSessionReadState,
+  getSessionReadSnapshot,
+  hasSessionRead,
+} from "./filesystem.js";
+
+describe("FileRead tool", () => {
+  let root = "";
+  const sessionId = "sess-file-read-test";
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-file-read-"));
+  });
+
+  afterEach(async () => {
+    if (root) await rm(root, { recursive: true, force: true });
+    root = "";
+    clearSessionReadState(sessionId);
+  });
+
+  test("reads a small text file and returns content with line numbers", async () => {
+    const file = join(root, "hello.txt");
+    await writeFile(file, "alpha\nbeta\ngamma\n", "utf8");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({ file_path: file });
+
+    expect(result.isError).toBeUndefined();
+    // Trailing empty line from `\n` end-of-file is preserved by split.
+    expect(result.content).toBe("1→alpha\n2→beta\n3→gamma\n4→");
+    expect(tool.name).toBe(FILE_READ_TOOL_NAME);
+  });
+
+  test("rejects a file that exceeds the token budget", async () => {
+    const file = join(root, "big.txt");
+    // 4-char token estimate × cap of 100 → need ~401 chars to exceed.
+    const big = "abcd".repeat(150);
+    await writeFile(file, big, "utf8");
+    const tool = createFileReadTool({
+      allowedPaths: [root],
+      maxTokens: 100,
+    });
+
+    const result = await tool.execute({ file_path: file });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("exceeds maximum allowed tokens");
+    // Plain-text envelope: no JSON wrapping.
+    expect(() => JSON.parse(result.content)).toThrow();
+  });
+
+  test("rejects an unreadable path with plain-text error", async () => {
+    const tool = createFileReadTool({ allowedPaths: [root] });
+    const result = await tool.execute({
+      file_path: join(root, "does-not-exist.txt"),
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("does not exist");
+    expect(() => JSON.parse(result.content)).toThrow();
+  });
+
+  test("records the read in session state when sessionId is provided", async () => {
+    const file = join(root, "logged.txt");
+    await writeFile(file, "one\ntwo\nthree\n", "utf8");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: file,
+      __agencSessionId: sessionId,
+    });
+    expect(result.isError).toBeUndefined();
+
+    expect(hasSessionRead(sessionId, file)).toBe(true);
+    const snap = getSessionReadSnapshot(sessionId, file);
+    expect(snap?.viewKind).toBe("full");
+    expect(snap?.content).toBe("one\ntwo\nthree\n");
+  });
+
+  test("offset/limit produces a partial view + sets viewKind=partial", async () => {
+    const file = join(root, "many-lines.txt");
+    await writeFile(file, "a\nb\nc\nd\ne\nf\n", "utf8");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: file,
+      offset: 2,
+      limit: 2,
+      __agencSessionId: sessionId,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("2→b\n3→c");
+
+    // Partial reads must NOT satisfy the apply_patch read-before-write
+    // gate: hasSessionRead requires viewKind === "full".
+    expect(hasSessionRead(sessionId, file)).toBe(false);
+    const snap = getSessionReadSnapshot(sessionId, file);
+    expect(snap?.viewKind).toBe("partial");
+    expect(snap?.readOffset).toBe(2);
+    expect(snap?.readLimit).toBe(2);
+  });
+
+  test("image read returns contentItems with input_image", async () => {
+    const file = join(root, "tiny.png");
+    // Smallest valid PNG header bytes (1×1 transparent pixel).
+    const png = Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082",
+      "hex",
+    );
+    await writeFile(file, png);
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({ file_path: file });
+    expect(result.isError).toBeUndefined();
+    expect(result.contentItems).toBeDefined();
+    expect(result.contentItems?.length).toBe(2);
+    const imageItem = result.contentItems?.find(
+      (item) => item.type === "input_image",
+    );
+    expect(imageItem).toBeDefined();
+    if (imageItem && imageItem.type === "input_image") {
+      expect(imageItem.image_url.startsWith("data:image/png;base64,")).toBe(
+        true,
+      );
+    }
+    expect(result.metadata?.mediaType).toBe("image/png");
+  });
+
+  test("binary file (non-image, non-PDF) returns an error", async () => {
+    const file = join(root, "bundle.zip");
+    await writeFile(file, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0]));
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({ file_path: file });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("cannot read binary files");
+  });
+
+  test("rejects paths outside allowedPaths", async () => {
+    const otherRoot = await mkdtemp(join(tmpdir(), "agenc-file-read-other-"));
+    try {
+      const file = join(otherRoot, "leaked.txt");
+      await writeFile(file, "secret", "utf8");
+      const tool = createFileReadTool({ allowedPaths: [root] });
+
+      const result = await tool.execute({ file_path: file });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("Access denied");
+    } finally {
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("PDF schema is accepted but PDF reads are not yet implemented", async () => {
+    const file = join(root, "doc.pdf");
+    await writeFile(file, "%PDF-1.4\n", "utf8");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({ file_path: file, pages: "1-2" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("PDF reading is not yet implemented");
+  });
+
+  test("text file with embedded null bytes is rejected as binary", async () => {
+    const file = join(root, "weird.txt");
+    await writeFile(file, Buffer.from([0x68, 0x65, 0x00, 0x6c, 0x6f]));
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({ file_path: file });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("cannot read binary files");
+  });
+});

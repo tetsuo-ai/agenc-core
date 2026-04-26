@@ -43,6 +43,12 @@ const PRIORITY_TOOL_NAMES = new Set([
   "exec_command",
   "write_stdin",
   "apply_patch",
+  // Openclaude-derived file/search tools (lifted into AgenC).
+  "FileRead",
+  "Edit",
+  "Write",
+  "Glob",
+  "Grep",
   "TodoWrite",
   "EnterPlanMode",
   "ExitPlanMode",

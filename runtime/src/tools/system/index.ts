@@ -81,6 +81,40 @@ export {
   type ToolSuggestEntry,
 } from "./tool-suggest.js";
 
+// Openclaude-derived file/search tools (lifted into AgenC; free to modify).
+// These shadow the deferred `system.readFile`/`system.editFile`/
+// `system.writeFile`/`system.glob`/`system.grep` family that used to live
+// in filesystem.ts/coding.ts — those have been removed.
+export {
+  createFileReadTool,
+  FILE_READ_TOOL_NAME,
+  type FileReadToolConfig,
+} from "./file-read.js";
+
+export {
+  createFileEditTool,
+  FILE_EDIT_TOOL_NAME,
+  type FileEditToolConfig,
+} from "./file-edit.js";
+
+export {
+  createFileWriteTool,
+  FILE_WRITE_TOOL_NAME,
+  type FileWriteToolConfig,
+} from "./file-write.js";
+
+export {
+  createGlobTool,
+  GLOB_TOOL_NAME,
+  type GlobToolConfig,
+} from "./glob.js";
+
+export {
+  createGrepTool,
+  GREP_TOOL_NAME,
+  type GrepToolConfig,
+} from "./grep.js";
+
 export {
   type BashToolConfig,
   type BashToolInput,
