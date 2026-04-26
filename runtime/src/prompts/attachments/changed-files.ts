@@ -53,9 +53,26 @@ const DIFF_SNIPPET_MAX_BYTES = 16_000;
 /** Diff structuredPatch timeout, ms (matches openclaude default). */
 const DIFF_TIMEOUT_MS = 1_000;
 
-/** Pull the canonical session id off the opaque session-key object. */
+/**
+ * Pull the canonical session id off the opaque session-key object.
+ *
+ * Production sessions are Session instances whose canonical id is on
+ * `conversationId` — that's the value the dispatcher injects as
+ * `__agencSessionId` into every filesystem-tool call, so it's the same
+ * key under which the session-read state is recorded. Tests sometimes
+ * pass a bare `{ sessionId: "..." }` shape; accept that as a fallback.
+ */
 function resolveSessionId(opts: GetAttachmentsOptions): string | undefined {
-  const key = opts.sessionKey as { sessionId?: unknown };
+  const key = opts.sessionKey as {
+    conversationId?: unknown;
+    sessionId?: unknown;
+  };
+  if (
+    typeof key.conversationId === "string" &&
+    key.conversationId.trim().length > 0
+  ) {
+    return key.conversationId;
+  }
   if (typeof key.sessionId === "string" && key.sessionId.trim().length > 0) {
     return key.sessionId;
   }

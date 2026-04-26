@@ -65,8 +65,22 @@ interface MemoryFileLoad {
   readonly mtimeMs: number;
 }
 
+/**
+ * Pull the canonical session id off the opaque session-key object.
+ * Production sessions expose `conversationId`; test fixtures sometimes
+ * use `{ sessionId }` directly — accept both.
+ */
 function readSessionId(opts: GetAttachmentsOptions): string | undefined {
-  const key = opts.sessionKey as { sessionId?: unknown };
+  const key = opts.sessionKey as {
+    conversationId?: unknown;
+    sessionId?: unknown;
+  };
+  if (
+    typeof key.conversationId === "string" &&
+    key.conversationId.length > 0
+  ) {
+    return key.conversationId;
+  }
   if (typeof key.sessionId === "string" && key.sessionId.length > 0) {
     return key.sessionId;
   }

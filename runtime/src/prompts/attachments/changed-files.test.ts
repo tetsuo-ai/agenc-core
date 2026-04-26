@@ -148,4 +148,31 @@ describe("changedFilesProducer", () => {
     const out = await changedFilesProducer(makeOpts(), {} as never);
     expect(out).toEqual([]);
   });
+
+  test("resolves session id from conversationId (live Session shape)", async () => {
+    // Production sessions expose `conversationId`, not `sessionId`.
+    // Pin the fallback so a real Session sessionKey lights up the
+    // producer instead of silently returning early.
+    const path = join(tmpDir, "session-shape.txt");
+    const before = "x\ny\n";
+    writeFileSync(path, before);
+    const recordedTimestamp = Date.now() - 60_000;
+    recordSessionRead(sessionId, path, {
+      rawContent: before,
+      timestamp: recordedTimestamp,
+      viewKind: "full",
+    });
+    const after = "x\nY-modified\n";
+    await writeFile(path, after);
+    const future = new Date();
+    await utimes(path, future, future);
+
+    const opts: GetAttachmentsOptions = {
+      ...makeOpts(),
+      sessionKey: { conversationId: sessionId },
+    };
+    const out = await changedFilesProducer(opts, {} as never);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.kind).toBe("edited_text_file");
+  });
 });

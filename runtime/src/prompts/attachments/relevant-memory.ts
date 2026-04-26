@@ -41,9 +41,11 @@ import type {
 /**
  * Optional per-session fields the producer reads off the opaque
  * `sessionKey` object. Wired by the bootstrap when memory is enabled
- * for the session.
+ * for the session. Production sessions expose `conversationId`; test
+ * fixtures sometimes set `sessionId` directly. Either is accepted.
  */
 interface MemoryAwareSessionKey {
+  readonly conversationId?: string;
   readonly sessionId?: string;
   readonly memoryDir?: string;
 }
@@ -51,7 +53,17 @@ interface MemoryAwareSessionKey {
 function readMemoryAwareKey(
   opts: GetAttachmentsOptions,
 ): MemoryAwareSessionKey {
-  return opts.sessionKey as MemoryAwareSessionKey;
+  const raw = opts.sessionKey as MemoryAwareSessionKey;
+  const id =
+    typeof raw.conversationId === "string" && raw.conversationId.length > 0
+      ? raw.conversationId
+      : typeof raw.sessionId === "string" && raw.sessionId.length > 0
+        ? raw.sessionId
+        : undefined;
+  return {
+    ...(id !== undefined ? { sessionId: id } : {}),
+    ...(typeof raw.memoryDir === "string" ? { memoryDir: raw.memoryDir } : {}),
+  };
 }
 
 function buildMemoryHeader(path: string, mtimeMs: number): string {
