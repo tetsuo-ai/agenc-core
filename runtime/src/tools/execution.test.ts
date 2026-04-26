@@ -1233,15 +1233,8 @@ describe("T11 W3-B — permission evaluator integration", () => {
       inputSchema: {},
       execute: async () => ({ content: "" }),
     };
-    const applyPatchTool: Tool = {
-      name: "apply_patch",
-      description: "",
-      inputSchema: {},
-      execute: async () => ({ content: "" }),
-    };
     expect(defaultCheckModeStillAllowed(writeTool, {}, "plan")).toBe(false);
     expect(defaultCheckModeStillAllowed(execTool, {}, "plan")).toBe(false);
-    expect(defaultCheckModeStillAllowed(applyPatchTool, {}, "plan")).toBe(false);
     expect(defaultCheckModeStillAllowed(readTool, {}, "plan")).toBe(true);
     // Non-plan transitions do not retroactively abort.
     expect(defaultCheckModeStillAllowed(writeTool, {}, "acceptEdits")).toBe(

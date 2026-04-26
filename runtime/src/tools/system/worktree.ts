@@ -30,7 +30,7 @@
  *     keeps cwd stable for the session — tool-side "switch cwd" would
  *     race with concurrent tool calls. Instead the worktree session
  *     records `worktreePath` and exposes it via the workflow controller
- *     so subsequent `exec_command` / `apply_patch` invocations that
+ *     so subsequent `exec_command` / `Edit` / `Write` invocations that
  *     accept an explicit `cwd` / `workdir` arg can target it. The
  *     "session is now working in the worktree" prompt text is
  *     preserved so the model reads the upstream contract; if the model
@@ -420,7 +420,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
       const message =
         `Created worktree at ${worktreePath}${branchInfo}. The session is now working in the worktree. ` +
         `Use ExitWorktree to leave mid-session, or exit the session to be prompted. ` +
-        `Pass \`cwd: "${worktreePath}"\` to exec_command and apply_patch invocations that should target the worktree.`;
+        `Pass \`cwd: "${worktreePath}"\` to exec_command, Edit, and Write invocations that should target the worktree.`;
       return okResult(
         {
           worktreePath,

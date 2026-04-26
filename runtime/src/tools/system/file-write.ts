@@ -10,8 +10,8 @@
  *   - Read-before-overwrite: existing files require a prior full
  *     `system.readFile` (or equivalent session read) in the same
  *     session before the write is accepted. This is the same
- *     structural defense `apply_patch` and `system.writeFile` use
- *     against blind edits.
+ *     structural defense `Edit` and `system.writeFile` use against
+ *     blind edits.
  *   - Modification-since-read: if the file was read previously but
  *     has changed on disk since that read (content-level compare,
  *     matching AgenC's existing snapshot semantics), the write is
@@ -63,11 +63,10 @@ export const FILE_WRITE_TOOL_NAME = "Write";
 /**
  * Verbatim wording from openclaude `src/tools/FileWriteTool/prompt.ts`,
  * lightly adapted: the upstream "Edit tool" reference is kept (AgenC
- * already exposes `apply_patch` and `system.editFile` for incremental
- * edits, and the Edit tool will land on the same surface), and the
- * pre-read instruction is generalized away from the exact `FILE_READ_TOOL_NAME`
- * constant since AgenC doesn't pin a single read-tool name in this
- * description.
+ * exposes `Edit` and `system.editFile` for incremental edits), and the
+ * pre-read instruction is generalized away from the exact
+ * `FILE_READ_TOOL_NAME` constant since AgenC doesn't pin a single
+ * read-tool name in this description.
  */
 const FILE_WRITE_DESCRIPTION = `Writes a file to the local filesystem.
 
@@ -263,7 +262,7 @@ export function createFileWriteTool(
       // when the existing file was not read in this session. Headless
       // invocations (no `__agencSessionId`) bypass the gate so unit
       // tests and embedded contexts keep working — same convention as
-      // `apply_patch`'s gate.
+      // `Edit`'s gate.
       if (existed && sessionId !== undefined) {
         if (!hasSessionRead(sessionId, absolutePath)) {
           return errorResult(READ_REQUIRED_MESSAGE);

@@ -233,7 +233,6 @@ describe("bootstrapLocalRuntimeSession", () => {
         expect.arrayContaining([
           "exec_command",
           "write_stdin",
-          "apply_patch",
           "TodoWrite",
           "EnterPlanMode",
           "ExitPlanMode",

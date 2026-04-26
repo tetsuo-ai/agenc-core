@@ -104,7 +104,6 @@ interface ToolCallValidationResult {
 }
 
 const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
-  apply_patch: "patch",
   exec_command: "cmd",
   "system.bash": "command",
   "system.readFile": "path",

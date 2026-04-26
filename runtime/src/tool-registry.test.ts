@@ -22,14 +22,6 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     expect(writeFile?.supportsParallelToolCalls).toBe(false);
   });
 
-  test("apply_patch gets Exclusive + requiresApproval=true", () => {
-    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
-    const applyPatch = registry.tools.find((t) => t.name === "apply_patch");
-    expect(applyPatch?.concurrencyClass?.kind).toBe("exclusive");
-    expect(applyPatch?.requiresApproval).toBe(true);
-    expect(applyPatch?.supportsParallelToolCalls).toBe(false);
-  });
-
   test("bash tool gets BackgroundTerminal + requiresApproval=true", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const bash = registry.tools.find((t) => t.name === "system.bash");
@@ -82,7 +74,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toContain("exec_command");
     expect(visibleNames).toContain("write_stdin");
-    expect(visibleNames).toContain("apply_patch");
     expect(visibleNames).toContain("TodoWrite");
     expect(visibleNames).toContain("EnterPlanMode");
     expect(visibleNames).toContain("ExitPlanMode");

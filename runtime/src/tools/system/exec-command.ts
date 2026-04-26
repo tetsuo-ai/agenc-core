@@ -3,10 +3,6 @@ import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import type { BashToolConfig } from "./types.js";
 import {
-  createApplyPatchTool,
-  type ApplyPatchRunner,
-} from "./apply-patch.js";
-import {
   UnifiedExecError,
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
@@ -14,12 +10,9 @@ import {
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
-  readonly applyPatchRunner?: ApplyPatchRunner;
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
 }
 
-const APPLY_PATCH_HEREDOC_RE =
-  /^\s*apply_patch\s+<<\s*['"]?([A-Za-z0-9_.-]+)['"]?\s*\n([\s\S]*?)\n\1\s*$/u;
 const PLAIN_INTERACTIVE_SHELL_RE =
   /^\s*(?:(?:\/[\w.-]+)+\/)?(?:bash|dash|ksh|sh|zsh)(?:\s+-[A-Za-z]*[il][A-Za-z]*)*\s*$/u;
 
@@ -33,11 +26,6 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
     : undefined;
-}
-
-function extractApplyPatchHeredoc(command: string): string | undefined {
-  const match = APPLY_PATCH_HEREDOC_RE.exec(command);
-  return match?.[2];
 }
 
 function asBoolean(value: unknown): boolean | undefined {
@@ -67,16 +55,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       env: config?.env,
       maxTimeoutMs: config?.maxTimeoutMs,
     });
-  const applyPatch = createApplyPatchTool({
-    allowedPaths: config?.allowedPaths ?? [config?.cwd ?? process.cwd()],
-    ...(config?.applyPatchRunner !== undefined
-      ? { runner: config.applyPatchRunner }
-      : {}),
-  });
   return {
     name: "exec_command",
     description:
-      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use apply_patch, not shell redirection, for source-file edits.",
+      "Run a shell command in the current AgenC workspace and return captured stdout/stderr. Use this for inspection, tests, builds, and other terminal work. Use Edit or Write for source-file edits.",
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -178,17 +160,6 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       const workdir = asString(args.workdir) ?? asString(args.cwd);
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
-      const applyPatchBody = extractApplyPatchHeredoc(cmd);
-      if (applyPatchBody !== undefined) {
-        return applyPatch.execute({
-          patch: applyPatchBody,
-          ...(workdir !== undefined ? { cwd: workdir } : {}),
-          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-          ...(args.__abortSignal !== undefined
-            ? { __abortSignal: args.__abortSignal }
-            : {}),
-        });
-      }
 
       if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
         const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({

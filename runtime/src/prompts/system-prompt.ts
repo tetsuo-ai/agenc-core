@@ -9,6 +9,14 @@
  * env info, memory, project instructions, MCP server instructions, output
  * style overrides, and feature-gated extras.
  *
+ * Tool-surface note: AgenC has dropped `apply_patch` (the codex envelope
+ * tool) and uses the openclaude-derived `Edit` tool for in-place file
+ * edits and `Write` for new files. Sections that were previously verbatim
+ * codex ports (`getEditingConstraintsSection`, `getToolGuidelinesSection`,
+ * `getUsingYourToolsSection`) have been adapted to point at Edit/Write
+ * instead of apply_patch. Multi-file atomic patches are no longer
+ * available in exchange for grammar reliability across providers.
+ *
  * Depends on:
  *   - `config/env.resolveSimpleMode()` — drives the AGENC_SIMPLE short-path
  *   - `prompts/project-instructions` (optional, passed in by the caller)
@@ -328,22 +336,22 @@ Do not use destructive shortcuts to bypass obstacles. Investigate unexpected sta
 
 /** 5. using_your_tools — tool invocation conventions.
  *
- * Verbatim port of openclaude `constants/prompts.ts:getUsingYourToolsSection`
+ * Adapted from openclaude `constants/prompts.ts:getUsingYourToolsSection`
  * (lines 291-313 of `src/constants/prompts.ts`). Tool name interpolations
- * mapped to the AgenC catalog:
+ * mapped to AgenC's visible openclaude-derived catalog:
  *
  *   `${BASH_TOOL_NAME}`       → `exec_command`
- *   `${FILE_READ_TOOL_NAME}`  → `system.readFile`
- *   `${FILE_EDIT_TOOL_NAME}`  → `apply_patch`
- *   `${FILE_WRITE_TOOL_NAME}` → `apply_patch`   (apply_patch handles `*** Add File:`)
- *   `${GLOB_TOOL_NAME}`       → `system.glob`
- *   `${GREP_TOOL_NAME}`       → `system.grep`
+ *   `${FILE_READ_TOOL_NAME}`  → `FileRead`
+ *   `${FILE_EDIT_TOOL_NAME}`  → `Edit`
+ *   `${FILE_WRITE_TOOL_NAME}` → `Write`
+ *   `${GLOB_TOOL_NAME}`       → `Glob`
+ *   `${GREP_TOOL_NAME}`       → `Grep`
  *   `${taskToolName}`         → `TodoWrite`
  *
- * Wording is otherwise unchanged. The deferred-tool reality (system.* file
- * tools live behind `system.searchTools`) is handled by the model loading
- * them via search; the parallel-tool-calls bullet is the openclaude verbatim
- * sentence.
+ * The codex `apply_patch` envelope tool is no longer wired into AgenC, so
+ * the multi-file atomic-patch sub-bullet has been removed. Edit/Write
+ * (already shipped, visible by default in `tool-registry.ts`) cover all
+ * supported file mutations. Wording is otherwise unchanged from upstream.
  */
 export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): string {
   const hasTool = (...names: readonly string[]): boolean =>
@@ -359,7 +367,6 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
         : enabledTools.has("system.bash")
           ? "system.bash"
           : "shell";
-  const hasApplyPatch = hasTool("apply_patch");
   const hasFileRead = hasTool("FileRead");
   const hasFileEdit = hasTool("Edit");
   const hasFileWrite = hasTool("Write");
@@ -384,11 +391,6 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
     if (hasFileWrite) {
       subItems.push(
         `To create files use Write instead of cat with heredoc or echo redirection`,
-      );
-    }
-    if (hasApplyPatch) {
-      subItems.push(
-        `For multi-file atomic patches (rare), use apply_patch with the *** Begin Patch / *** End Patch envelope. For single-file edits, prefer Edit; for new files, prefer Write.`,
       );
     }
     if (hasGlob) {
@@ -431,22 +433,26 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
 }
 
 /**
- * Editing constraints — verbatim port of codex `gpt-5.4` base_instructions
+ * Editing constraints — adapted from codex `gpt-5.4` base_instructions
  * lines 27-42 (the `## Editing constraints` block under `# Personality`).
  *
- * Source-of-truth: `codex-rs/models-manager/models.json` — the
- * `base_instructions` field for slug `gpt-5.4`. Exact text reproduced
- * here so AgenC sees the same constraint set codex models follow.
+ * Source-of-truth for the original wording: `codex-rs/models-manager/models.json`,
+ * `base_instructions` field for slug `gpt-5.4`. AgenC has modified the
+ * tool-naming bullets so they point at the openclaude-derived `Edit` and
+ * `Write` tools that AgenC ships visible by default, instead of codex's
+ * `apply_patch` envelope tool (which AgenC no longer exposes). The remaining
+ * constraints (ASCII default, comments hygiene, dirty-worktree handling,
+ * destructive-git rules) are unchanged from upstream codex.
  */
 export function getEditingConstraintsSection(
   enabledTools: ReadonlySet<string>,
 ): string | null {
-  if (!enabledTools.has("apply_patch")) return null;
+  if (!enabledTools.has("Edit") && !enabledTools.has("Write")) return null;
   const items: Array<string | string[]> = [
     `Default to ASCII when editing or creating files. Only introduce non-ASCII or other Unicode characters when there is a clear justification and the file already uses them.`,
     `Add succinct code comments that explain what is going on if code is not self-explanatory. You should not add comments like "Assigns the value to the variable", but a brief comment might be useful ahead of a complex code block that the user would otherwise have to spend time parsing out. Usage of these comments should be rare.`,
-    `Always use apply_patch for manual code edits. Do not use cat or any other commands when creating or editing files. Formatting commands or bulk edits don't need to be done with apply_patch.`,
-    `Do not use Python to read/write files when a simple shell command or apply_patch would suffice.`,
+    `Always use Edit for in-place file edits and Write for new files. Do not use cat, sed, awk, or any other shell commands when creating or editing files. Formatting commands or bulk edits don't need to go through Edit/Write.`,
+    `Do not use Python to read/write files when a simple shell command, Edit, or Write would suffice.`,
     `You may be in a dirty git worktree.`,
     [
       `NEVER revert existing changes you did not make unless explicitly requested, since these changes were made by the user.`,
@@ -463,19 +469,20 @@ export function getEditingConstraintsSection(
 }
 
 /**
- * Tool Guidelines — verbatim port of codex `gpt-5.2` base_instructions
- * lines 244-289 (the `# Tool Guidelines` block, including `## Shell
- * commands` and `## apply_patch` subsections).
+ * Tool Guidelines — adapted from codex `gpt-5.2` base_instructions
+ * lines 244-289 (the `# Tool Guidelines` block).
  *
- * Source-of-truth: `codex-rs/models-manager/models.json` — the
- * `base_instructions` field for slug `gpt-5.2`. The apply_patch envelope
- * description is reproduced here in addition to being in the tool's own
- * `description` field, because codex puts it in the system prompt for
- * gpt-5.2 and models follow it more reliably from the system prompt.
+ * Source-of-truth for the original wording: `codex-rs/models-manager/models.json`,
+ * `base_instructions` field for slug `gpt-5.2`. AgenC's adaptation drops
+ * codex's `## apply_patch` subsection entirely because the `apply_patch`
+ * envelope tool is no longer exposed in AgenC — file mutations go through
+ * the openclaude-derived `Edit`/`Write` tools, whose own descriptions
+ * carry their per-tool guidance. Only `## Shell commands` is preserved.
  *
- * One adaptation: codex's `multi_tool_use.parallel` reference (an
- * OpenAI-side construct) becomes "make multiple tool calls in the same
- * assistant message" — AgenC's parallel mechanism.
+ * One additional adaptation kept from the original port: codex's
+ * `multi_tool_use.parallel` reference (an OpenAI-side construct) becomes
+ * "make multiple tool calls in the same assistant message" — AgenC's
+ * parallel mechanism.
  */
 export function getToolGuidelinesSection(
   enabledTools: ReadonlySet<string>,
@@ -483,62 +490,19 @@ export function getToolGuidelinesSection(
   const hasShell = ["exec_command", "bash", "Bash", "system.bash", "shell"].some(
     (n) => enabledTools.has(n),
   );
-  const hasApplyPatch = enabledTools.has("apply_patch");
-  if (!hasShell && !hasApplyPatch) return null;
+  if (!hasShell) return null;
 
   const blocks: string[] = ["# Tool Guidelines"];
 
-  if (hasShell) {
-    blocks.push(
-      `## Shell commands
+  blocks.push(
+    `## Shell commands
 
 When using the shell, you must adhere to the following guidelines:
 
 - When searching for text or files, prefer using \`rg\` or \`rg --files\` respectively because \`rg\` is much faster than alternatives like \`grep\`. (If the \`rg\` command is not found, then use alternatives.)
 - Do not use python scripts to attempt to output larger chunks of a file.
 - Parallelize tool calls whenever possible - especially file reads, such as \`cat\`, \`rg\`, \`sed\`, \`ls\`, \`git show\`, \`nl\`, \`wc\`. Make multiple tool calls in the same assistant message to run them in parallel.`,
-    );
-  }
-
-  if (hasApplyPatch) {
-    blocks.push(
-      `## apply_patch
-
-Use the \`apply_patch\` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
-
-*** Begin Patch
-[ one or more file sections ]
-*** End Patch
-
-Within that envelope, you get a sequence of file operations.
-You MUST include a header to specify the action you are taking.
-Each operation starts with one of three headers:
-
-*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
-*** Delete File: <path> - remove an existing file. Nothing follows.
-*** Update File: <path> - patch an existing file in place (optionally with a rename).
-
-Example patch:
-
-\`\`\`
-*** Begin Patch
-*** Add File: hello.txt
-+Hello world
-*** Update File: src/app.py
-*** Move to: src/main.py
-@@ def greet():
--print("Hi")
-+print("Hello, world!")
-*** Delete File: obsolete.txt
-*** End Patch
-\`\`\`
-
-It is important to remember:
-
-- You must include a header with your intended action (Add/Delete/Update)
-- You must prefix new lines with \`+\` even when creating a new file`,
-    );
-  }
+  );
 
   return blocks.join("\n\n");
 }
@@ -728,7 +692,7 @@ When the user asks for a review, you default to a code-review mindset. Your resp
 - You struggle using the git interactive console. **ALWAYS** prefer using non-interactive git commands.
 
 - Unless you are otherwise instructed, prefer using \`rg\` or \`rg --files\` respectively when searching because \`rg\` is much faster than alternatives like \`grep\`. If the \`rg\` command is not found, then use alternatives.
-- Try to use apply_patch for single file edits, but it is fine to explore other options to make the edit if it does not work well. Do not use apply_patch for changes that are auto-generated (i.e. generating package.json or running a lint or format command like gofmt) or when scripting is more efficient (such as search and replacing a string across a codebase).
+- Try to use Edit for single file edits and Write for new files, but it is fine to explore other options to make the edit if it does not work well. Do not use Edit/Write for changes that are auto-generated (i.e. generating package.json or running a lint or format command like gofmt) or when scripting is more efficient (such as search and replacing a string across a codebase).
 <!-- - Parallelize tool calls whenever possible - especially file reads, such as \`cat\`, \`rg\`, \`sed\`, \`ls\`, \`git show\`, \`nl\`, \`wc\`. Use \`multi_tool_use.parallel\` to parallelize tool calls and only this. -->
 - Use the plan tool to explain to the user what you are going to do
     - Only use it for more complex tasks, do not use it for straightforward tasks (roughly the easiest 40%).
@@ -1031,18 +995,21 @@ export async function assembleSystemPrompt(
     getValidatingYourWorkSection(),
     // codex `gpt-5.2` ## Ambition vs. precision — scope discipline rule.
     getAmbitionVsPrecisionSection(),
-    // codex `gpt-5.4` ## Editing constraints — sits right under doing-tasks
-    // so the apply_patch / dirty-worktree / no-destructive rules land
-    // before the action/tool sections that exercise them.
+    // codex `gpt-5.4` ## Editing constraints (AgenC-adapted to Edit/Write) —
+    // sits right under doing-tasks so the file-edit / dirty-worktree /
+    // no-destructive rules land before the action/tool sections that
+    // exercise them.
     getEditingConstraintsSection(enabledTools),
     // codex `gpt-5.4` ## Frontend tasks — UI design opinions. Slotted
     // before tone/style so style-related guidance is grouped together.
     getFrontendTasksSection(),
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
-    // codex `gpt-5.2` # Tool Guidelines (## Shell commands + ## apply_patch).
-    // Slotted right after `using_your_tools` so the model sees the per-tool
-    // rules immediately after the cross-tool ones.
+    // codex `gpt-5.2` # Tool Guidelines (## Shell commands only — AgenC's
+    // adaptation drops the codex `## apply_patch` subsection because AgenC
+    // ships the openclaude-derived Edit/Write tools instead). Slotted right
+    // after `using_your_tools` so the model sees the per-tool rules
+    // immediately after the cross-tool ones.
     getToolGuidelinesSection(enabledTools),
     // codex `core/templates/agents/orchestrator.md` — orchestrator agent
     // template. Gated on `system.agent.delegate` so it only renders when

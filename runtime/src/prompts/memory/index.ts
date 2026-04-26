@@ -63,12 +63,3 @@ export {
   ATTACHMENT_MAX_BYTES_PER_SESSION,
 } from "./attachments.js";
 
-// Codex 4-stage memory pipeline prompts (verbatim ports). Stage-1 and
-// stage-2 are NOT YET WIRED to a runtime — landed for future implementation.
-// See `./codex-pipeline.ts` header for the full pipeline architecture.
-export {
-  STAGE_ONE_INPUT_PROMPT,
-  STAGE_ONE_SYSTEM_PROMPT,
-  CONSOLIDATION_PROMPT,
-  READ_PATH_PROMPT,
-} from "./codex-pipeline.js";

@@ -1090,7 +1090,6 @@ const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "exec_command",
   "write_stdin",
   "system.bash",
-  "apply_patch",
   "system.writeFile",
   "system.editFile",
   "system.delete",

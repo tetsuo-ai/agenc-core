@@ -1,11 +1,11 @@
 /**
  * Tests for the discriminated-union `ToolOutput` port (context.ts).
  *
- * Covers the 6 variants (function / mcp / exec / apply_patch /
- * tool_search / aborted), the variant → text flattener (`toText`),
- * the variant → LLMMessage projector (`toResponseItem`), the
- * telemetry preview helper, the image-detail sanitizer, and the
- * exec-variant 400KB truncation cap.
+ * Covers the 5 variants (function / mcp / exec / tool_search /
+ * aborted), the variant → text flattener (`toText`), the variant →
+ * LLMMessage projector (`toResponseItem`), the telemetry preview
+ * helper, the image-detail sanitizer, and the exec-variant 400KB
+ * truncation cap.
  *
  * @module
  */
@@ -14,7 +14,6 @@ import { describe, expect, test } from "vitest";
 
 import {
   abortedToolOutput,
-  applyPatchToolOutput,
   codeModeResult,
   contentItemsToCodeModeResult,
   contentItemsToText,
@@ -166,20 +165,6 @@ describe("ToolOutput variants", () => {
     );
   });
 
-  test("apply_patch variant: preserves diff verbatim", () => {
-    const diff = "--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new\n";
-    const out = applyPatchToolOutput({
-      callId: "c1",
-      toolName,
-      payload,
-      diff,
-      durationMs: 5,
-    });
-    expect(out.variant?.kind).toBe("apply_patch");
-    expect(toText(out)).toBe(diff);
-    expect(successForLogging(out)).toBe(true);
-  });
-
   test("tool_search variant: exposes tools array and serializes to JSON", () => {
     const tools = [
       { name: "read", description: "read a file" },
@@ -290,17 +275,6 @@ describe("toResponseItem projection", () => {
     expect(s.result.isError).toBe(true);
   });
 
-  test("apply_patch variant → content is the diff", () => {
-    const diff = "--- a\n+++ b\n@@\n-old\n+new\n";
-    const out = applyPatchToolOutput({
-      callId: "c1",
-      toolName,
-      payload,
-      diff,
-      durationMs: 0,
-    });
-    expect(toResponseItem(out).content).toBe(diff);
-  });
 });
 
 describe("telemetryPreview", () => {
@@ -503,18 +477,6 @@ describe("codeModeResult", () => {
       original_token_count: 9,
       output: "stdout body",
     });
-  });
-
-  test("apply_patch result is suppressed to an empty object", () => {
-    const out = applyPatchToolOutput({
-      callId: "c1",
-      toolName,
-      payload,
-      diff: "--- a\n+++ b\n@@\n-old\n+new\n",
-      durationMs: 0,
-    });
-
-    expect(codeModeResult(out)).toEqual({});
   });
 
   test("tool_search result returns the tools array", () => {

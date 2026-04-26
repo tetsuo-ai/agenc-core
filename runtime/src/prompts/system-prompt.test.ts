@@ -154,7 +154,6 @@ describe("static section emitters", () => {
     const tools = new Set([
       "exec_command",
       "write_stdin",
-      "apply_patch",
       "FileRead",
       "Edit",
       "Write",
@@ -185,9 +184,9 @@ describe("static section emitters", () => {
     expect(s).toContain(
       "To search the content of files, use Grep instead of grep or rg",
     );
-    // apply_patch becomes the rare-case multi-file atomic-patch tool.
-    expect(s).toContain("For multi-file atomic patches");
-    expect(s).toContain("apply_patch");
+    // apply_patch is dropped — Edit/Write cover all supported file mutations.
+    expect(s).not.toContain("apply_patch");
+    expect(s).not.toContain("For multi-file atomic patches");
     expect(s).toContain(
       "Reserve using the exec_command exclusively for system commands and terminal operations",
     );
@@ -214,7 +213,6 @@ describe("static section emitters", () => {
       "system.writeFile",
       "system.glob",
       "system.grep",
-      "apply_patch",
     ]);
     const s = getUsingYourToolsSection(tools);
     // The deferred system.* tools should NOT appear in the prompt anymore.
@@ -223,8 +221,8 @@ describe("static section emitters", () => {
     expect(s).not.toContain("system.writeFile");
     expect(s).not.toContain("system.glob");
     expect(s).not.toContain("system.grep");
-    // apply_patch is still mentioned (it IS visible in this set).
-    expect(s).toContain("apply_patch");
+    // apply_patch is no longer referenced anywhere in the prompt.
+    expect(s).not.toContain("apply_patch");
   });
 
   test("using_your_tools substitutes the shell-tool name when exec_command is unavailable", () => {
@@ -244,9 +242,9 @@ describe("static section emitters", () => {
     const tools = new Set(["exec_command"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
-    // No FileRead/Edit/Write/Glob/Grep/apply_patch in the visible set →
-    // all per-tool sub-bullets are omitted; only the generic "reserve
-    // shell for system commands" guidance remains.
+    // No FileRead/Edit/Write/Glob/Grep in the visible set → all per-tool
+    // sub-bullets are omitted; only the generic "reserve shell for system
+    // commands" guidance remains.
     expect(s).not.toContain("FileRead");
     expect(s).not.toContain("apply_patch");
     expect(s).toContain(
@@ -254,21 +252,23 @@ describe("static section emitters", () => {
     );
   });
 
-  test("editing_constraints renders codex gpt-5.4 ## Editing constraints verbatim when apply_patch is enabled", () => {
-    const tools = new Set(["apply_patch", "exec_command"]);
+  test("editing_constraints renders the AgenC-adapted ## Editing constraints when Edit/Write are enabled", () => {
+    const tools = new Set(["Edit", "Write", "exec_command"]);
     const s = getEditingConstraintsSection(tools);
     expect(s).not.toBeNull();
     const text = String(s);
     expect(text).toContain("## Editing constraints");
-    // Verbatim line from codex gpt-5.4 base_instructions:31 — the rule that
-    // would have prevented the model from using `cat >> docs/feature-matrix.md`
-    // in the failing scrollback session.
+    // AgenC-adapted bullet pointing at Edit/Write instead of codex's
+    // apply_patch — the rule that prevents the model from using
+    // `cat >> docs/feature-matrix.md` style shell-redirect file mutations.
     expect(text).toContain(
-      "Always use apply_patch for manual code edits. Do not use cat or any other commands when creating or editing files",
+      "Always use Edit for in-place file edits and Write for new files. Do not use cat, sed, awk, or any other shell commands when creating or editing files",
     );
     expect(text).toContain(
-      "Do not use Python to read/write files when a simple shell command or apply_patch would suffice",
+      "Do not use Python to read/write files when a simple shell command, Edit, or Write would suffice",
     );
+    // apply_patch is gone from this section — we ship Edit/Write instead.
+    expect(text).not.toContain("apply_patch");
     expect(text).toContain("You may be in a dirty git worktree");
     // Nested dirty-worktree sub-bullets (rendered via prependBullets nesting).
     expect(text).toContain(
@@ -280,18 +280,31 @@ describe("static section emitters", () => {
     expect(text).toContain("**ALWAYS** prefer using non-interactive git commands");
   });
 
-  test("editing_constraints returns null without apply_patch (gated)", () => {
-    expect(getEditingConstraintsSection(new Set(["exec_command"]))).toBeNull();
+  test("editing_constraints renders when only Edit is enabled (Write absent)", () => {
+    const s = getEditingConstraintsSection(new Set(["Edit", "exec_command"]));
+    expect(s).not.toBeNull();
+    expect(String(s)).toContain("## Editing constraints");
   });
 
-  test("tool_guidelines renders codex gpt-5.2 # Tool Guidelines verbatim when shell + apply_patch are enabled", () => {
-    const tools = new Set(["exec_command", "apply_patch"]);
+  test("editing_constraints renders when only Write is enabled (Edit absent)", () => {
+    const s = getEditingConstraintsSection(new Set(["Write", "exec_command"]));
+    expect(s).not.toBeNull();
+    expect(String(s)).toContain("## Editing constraints");
+  });
+
+  test("editing_constraints returns null when neither Edit nor Write is enabled (gated)", () => {
+    expect(getEditingConstraintsSection(new Set(["exec_command"]))).toBeNull();
+    expect(getEditingConstraintsSection(new Set())).toBeNull();
+  });
+
+  test("tool_guidelines renders the AgenC-adapted # Tool Guidelines (## Shell commands only) when a shell is enabled", () => {
+    const tools = new Set(["exec_command"]);
     const s = getToolGuidelinesSection(tools);
     expect(s).not.toBeNull();
     const text = String(s);
     expect(text).toContain("# Tool Guidelines");
     expect(text).toContain("## Shell commands");
-    // Codex gpt-5.2 base_instructions:250 — verbatim.
+    // Codex gpt-5.2 base_instructions:250 — verbatim, kept under shell guidance.
     expect(text).toContain(
       "When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster",
     );
@@ -301,26 +314,34 @@ describe("static section emitters", () => {
     // The codex `multi_tool_use.parallel` reference is adapted to AgenC's
     // parallel mechanism (multiple tool calls in the same assistant message).
     expect(text).toContain("Make multiple tool calls in the same assistant message");
-    expect(text).toContain("## apply_patch");
-    expect(text).toContain("*** Begin Patch");
-    expect(text).toContain("*** End Patch");
-    expect(text).toContain("*** Add File:");
-    expect(text).toContain("*** Delete File:");
-    expect(text).toContain("*** Update File:");
-    expect(text).toContain("You must include a header with your intended action");
+    // The codex `## apply_patch` subsection is dropped — AgenC ships
+    // Edit/Write whose own tool descriptions carry per-tool guidance.
+    expect(text).not.toContain("## apply_patch");
+    expect(text).not.toContain("apply_patch");
+    expect(text).not.toContain("*** Begin Patch");
+    expect(text).not.toContain("*** End Patch");
+    expect(text).not.toContain("*** Add File:");
+    expect(text).not.toContain("*** Delete File:");
+    expect(text).not.toContain("*** Update File:");
   });
 
-  test("tool_guidelines drops apply_patch subsection when apply_patch is unavailable", () => {
-    const s = getToolGuidelinesSection(new Set(["exec_command"]));
+  test("tool_guidelines still renders when shell is enabled alongside the visible Edit/Write tools", () => {
+    const s = getToolGuidelinesSection(
+      new Set(["exec_command", "Edit", "Write"]),
+    );
     expect(s).not.toBeNull();
     const text = String(s);
     expect(text).toContain("# Tool Guidelines");
     expect(text).toContain("## Shell commands");
     expect(text).not.toContain("## apply_patch");
+    expect(text).not.toContain("apply_patch");
   });
 
-  test("tool_guidelines returns null when no shell and no apply_patch", () => {
+  test("tool_guidelines returns null when no shell tool is available", () => {
     expect(getToolGuidelinesSection(new Set())).toBeNull();
+    // Edit/Write alone (no shell) should not produce # Tool Guidelines —
+    // the section is shell-scoped now that the apply_patch subsection is gone.
+    expect(getToolGuidelinesSection(new Set(["Edit", "Write"]))).toBeNull();
   });
 
   test("responsiveness renders codex gpt-5.2 ## Responsiveness header verbatim", () => {
@@ -431,7 +452,7 @@ describe("static section emitters", () => {
 
   test("orchestration returns null when system.agent.delegate is not enabled (gated)", () => {
     expect(getOrchestrationSection(new Set())).toBeNull();
-    expect(getOrchestrationSection(new Set(["exec_command", "apply_patch"]))).toBeNull();
+    expect(getOrchestrationSection(new Set(["exec_command", "Edit", "Write"]))).toBeNull();
   });
 
   test("tone_and_style bans emojis + colons before tool calls", () => {

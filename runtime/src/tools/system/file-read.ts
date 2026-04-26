@@ -24,14 +24,15 @@
  *     leaking unprintable bytes into the conversation.
  *   - `offset` / `limit` produce a partial line view. Partial reads
  *     are recorded with `viewKind: "partial"` in the session-read
- *     tracker so apply_patch's read-before-patch gate still rejects
+ *     tracker so `Edit`/`Write`'s read-before-write gate still rejects
  *     edits made off a partial view.
  *   - Successful reads that DO yield content are recorded with the
  *     content snapshot so AgenC's compaction-aware re-injection helpers
  *     (`snapshotTopRecentReads`) can rebuild context after a compact.
  *
  * The error envelope is plain text in `content` with `isError: true` —
- * codex shape, not JSON-wrapped. Mirrors `apply-patch.ts:errorResult`.
+ * codex shape, not JSON-wrapped. Matches the envelope used by `Edit`
+ * and `Write`.
  *
  * @module
  */
@@ -299,8 +300,7 @@ async function resolveAndCheck(
     return { err: errorResult("file_path must be a non-empty string") };
   }
   // Resolve relative paths against either an explicit `cwd` arg, the
-  // first allowed path, or process.cwd() as a last resort. Mirrors how
-  // apply-patch.ts:execute defaults `cwd`.
+  // first allowed path, or process.cwd() as a last resort.
   const cwdArg =
     typeof args.cwd === "string" && args.cwd.trim().length > 0
       ? args.cwd
@@ -345,7 +345,7 @@ async function readTextFile(
   const buffer = await readFile(resolvedPath.canonical);
   if (isBinaryContent(buffer)) {
     return errorResult(
-      "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. apply_patch's parser, hex viewer, or shell tooling) for binary file analysis.",
+      "This tool cannot read binary files. The file contains non-text bytes. Use a different tool (e.g. a hex viewer or shell tooling) for binary file analysis.",
     );
   }
 
@@ -362,7 +362,7 @@ async function readTextFile(
   }
 
   // Record the read in session state. Partial reads carry
-  // `viewKind: "partial"` so apply_patch's read-before-write gate
+  // `viewKind: "partial"` so the `Edit`/`Write` read-before-write gate
   // (filesystem.ts:isFullSessionRead) does NOT accept them as a full
   // pre-read.
   recordSessionRead(sessionId, resolvedPath.canonical, {

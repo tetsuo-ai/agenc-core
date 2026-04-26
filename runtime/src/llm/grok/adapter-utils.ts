@@ -42,7 +42,6 @@ const TOOL_METADATA_KEYS = new Set([
 const PRIORITY_TOOL_NAMES = new Set([
   "exec_command",
   "write_stdin",
-  "apply_patch",
   // Openclaude-derived file/search tools (lifted into AgenC).
   "FileRead",
   "Edit",
@@ -53,7 +52,6 @@ const PRIORITY_TOOL_NAMES = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
   "system.searchTools",
-  "tool_suggest",
   "system.agent.delegate",
   "desktop.bash",
   "desktop.screenshot",

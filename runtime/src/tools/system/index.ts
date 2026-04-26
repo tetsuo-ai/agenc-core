@@ -38,13 +38,6 @@ export {
 } from "./planning.js";
 
 export {
-  createApplyPatchTool,
-  type ApplyPatchRunner,
-  type ApplyPatchRunnerResult,
-  type ApplyPatchToolConfig,
-} from "./apply-patch.js";
-
-export {
   createBashTool,
   isCommandAllowed,
   validateShellCommand,
@@ -72,14 +65,6 @@ export {
   createExitWorktreeTool,
   type WorktreeToolConfig,
 } from "./worktree.js";
-
-export {
-  createToolSuggestTool,
-  TOOL_SUGGEST_TOOL_NAME,
-  type DiscoverableToolType,
-  type ToolSuggestConfig,
-  type ToolSuggestEntry,
-} from "./tool-suggest.js";
 
 // Openclaude-derived file/search tools (lifted into AgenC; free to modify).
 // These shadow the deferred `system.readFile`/`system.editFile`/

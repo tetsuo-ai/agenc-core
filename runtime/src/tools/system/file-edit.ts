@@ -25,8 +25,8 @@
  *   - `.ipynb` files are rejected with a notebook-tool hint.
  *
  * Errors are returned as plain text in `ToolResult.content` with
- * `isError: true` — no JSON envelope, mirroring AgenC's existing
- * `apply_patch` error envelope.
+ * `isError: true` — no JSON envelope, matching the codex-style envelope
+ * used elsewhere in AgenC's tool surface.
  *
  * @module
  */
@@ -92,11 +92,8 @@ const UNICODE_SPACE_RE = /[  -   　]/gu;
 /**
  * Normalize curly quotes, Unicode dashes, and exotic spaces to their
  * ASCII equivalents. Lifted from openclaude `utils.ts` `normalizeQuotes`,
- * extended with the dash/space passes that AgenC's apply_patch fuzzy
- * matcher already uses (apply-patch.ts:548-561). Keeping the surface
- * the same across both tools so a model that learned "the file has
- * smart quotes, my old_string has ASCII" behavior on apply_patch
- * keeps working on Edit.
+ * extended with dash/space passes so a model whose `old_string` is
+ * pure ASCII can still match against typographic file content.
  */
 function normalizeQuotes(str: string): string {
   return str
@@ -308,14 +305,14 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       }
 
       // Path safety. Honors per-session extra roots via the same
-      // helper used by filesystem.ts and apply-patch.ts.
+      // helper used by filesystem.ts.
       const allowedPaths = resolveToolAllowedPaths(
         config.allowedPaths,
         rawArgs,
       );
       // Resolve relative paths against the first allowed root before
-      // safePath so a workspace-relative `src/foo.ts` is accepted the
-      // same way apply_patch handles relative patch targets.
+      // safePath so a workspace-relative `src/foo.ts` is accepted by
+      // the same allowlist that absolute paths run through.
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(

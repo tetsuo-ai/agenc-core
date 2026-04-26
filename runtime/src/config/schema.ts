@@ -89,7 +89,6 @@ export interface ShellEnvironmentPolicy {
 export interface ToolsConfig {
   readonly web_search?: boolean;
   readonly view_image?: boolean;
-  readonly include_apply_patch?: boolean;
   readonly [k: string]: unknown;
 }
 

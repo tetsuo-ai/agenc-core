@@ -502,7 +502,7 @@ describe("MessageList", () => {
   test("renders shell write policy failures as compact blocked cells", async () => {
     const result = JSON.stringify({
       error:
-        "shell_workspace_file_write_disallowed: Workflow implementation turns must use structured file tools for project file authoring. Use `apply_patch` for source edits instead of shell redirection. Blocked target(s): /repo/CMakeLists.txt",
+        "shell_workspace_file_write_disallowed: Workflow implementation turns must use structured file tools for project file authoring. Use `Edit` or `Write` for source edits instead of shell redirection. Blocked target(s): /repo/CMakeLists.txt",
     });
     const { unmount, stdout } = await mount(
       <MessageList
@@ -524,41 +524,13 @@ describe("MessageList", () => {
     const frame = latestFrameText(stdout);
     expect(frame).toContain("● Blocked(shell write)");
     expect(frame).toContain("Blocked target: /repo/CMakeLists.txt");
-    expect(frame).toContain("Use apply_patch for source edits");
+    // Match the recommendation in two halves: the rendered text wraps
+    // across lines at the terminal-width boundary, so we can't assert
+    // the full sentence as a single substring.
+    expect(frame).toContain("Use Edit (or Write for new files) for");
+    expect(frame).toContain("source edits");
     expect(frame).not.toContain("Workflow implementation turns");
     expect(frame).not.toContain("cat > CMakeLists.txt");
-    unmount();
-  });
-
-  test("renders apply_patch failures as a colored diff preview without raw patch markers", async () => {
-    const patch =
-      "*** Begin Patch\n*** Add File: CMakeLists.txt\n+cmake_minimum_required(VERSION 3.16)\n+project(example)\n";
-    const { unmount, stdout } = await mount(
-      <MessageList
-        messages={[
-          mkMsg({
-            id: "patch-failed",
-            kind: "tool_call",
-            toolName: "apply_patch",
-            toolArgs: { patch },
-            toolResultContent: JSON.stringify({
-              error:
-                "Invalid patch hunk on line 3: 'cmake_minimum_required(VERSION 3.16)' is not a valid hunk header.",
-            }),
-            isComplete: true,
-            isError: true,
-          }),
-        ]}
-      />,
-    );
-    const frame = latestFrameText(stdout);
-    expect(frame).toContain("● Patch Failed(CMakeLists.txt)");
-    expect(frame).toContain("create · CMakeLists.txt");
-    expect(frame).toContain("+cmake_minimum_required");
-    expect(frame).toContain("+project(example)");
-    expect(frame).toContain("Invalid patch hunk");
-    expect(frame).not.toContain("*** Begin Patch");
-    expect(frame).not.toContain("*** Add File");
     unmount();
   });
 

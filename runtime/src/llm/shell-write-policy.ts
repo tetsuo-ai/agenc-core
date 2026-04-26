@@ -433,7 +433,7 @@ function buildPolicyMessage(blockedTargets: readonly string[]): string {
   return (
     "shell_workspace_file_write_disallowed: Workflow implementation turns " +
     "must use structured file tools for project file authoring. Use " +
-    "`apply_patch` for source edits, or `system.writeFile`, `system.editFile`, " +
+    "`Edit` for in-place edits, `Write` for new files, " +
     "`system.appendFile`, `desktop.text_editor`, `system.mkdir`, or `system.move` instead of " +
     "shell redirection, heredocs, `tee`, `cp`, `mv`, `ln`, `touch`, `install`, " +
     "`rm`, `rmdir`, `truncate`, `dd`, `sed -i`, or `perl -i` for workspace files. " +

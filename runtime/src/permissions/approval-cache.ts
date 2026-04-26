@@ -74,9 +74,8 @@ export interface WithCachedApprovalOpts<K> {
  *   - Keys are hashed via stable JSON so equivalent objects collide.
  *   - `withCachedApproval` short-circuits when ALL keys are already
  *     `approved_for_session`. (A partial hit — some keys approved but
- *     not all — does NOT short-circuit, matching the codex rule for
- *     `apply_patch`-style multi-file approvals where every target
- *     must be covered.)
+ *     not all — does NOT short-circuit, matching the rule for
+ *     multi-file approvals where every target must be covered.)
  *   - When the user responds `approved_for_session`, every key in the
  *     request is written with that decision so a future subset hit
  *     can short-circuit.

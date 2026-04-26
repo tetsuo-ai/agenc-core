@@ -2,14 +2,14 @@
  * Tool dispatch context types.
  *
  * Hand-port of codex `core/src/tools/context.rs` (584 LOC). The codex
- * trait `ToolOutput` has 7 concrete impls (`CallToolResult`,
- * `McpToolOutput`, `FunctionToolOutput`, `ApplyPatchToolOutput`,
- * `ToolSearchOutput`, `AbortedToolOutput`, `ExecCommandToolOutput`)
- * each with a distinct payload shape. AgenC collapses
- * `CallToolResult`/`McpToolOutput` into one `mcp` variant and keeps
- * the rest 1:1 so downstream consumers (TUI rendering, rollout replay,
- * MCP annotation pass-through, code_mode projection) can switch on
- * `kind` without re-parsing strings.
+ * trait `ToolOutput` has multiple concrete impls (`CallToolResult`,
+ * `McpToolOutput`, `FunctionToolOutput`, `ToolSearchOutput`,
+ * `AbortedToolOutput`, `ExecCommandToolOutput`) each with a distinct
+ * payload shape. AgenC collapses `CallToolResult`/`McpToolOutput` into
+ * one `mcp` variant and keeps the rest 1:1 so downstream consumers
+ * (TUI rendering, rollout replay, MCP annotation pass-through,
+ * code_mode projection) can switch on `kind` without re-parsing
+ * strings.
  *
  * The public `ToolOutput` interface stays backwards compatible: the
  * old flat envelope now represents the `function` variant. Call sites
@@ -361,8 +361,6 @@ interface ToolOutputVariantCommon {
  *   - `exec`          — `ExecCommandToolOutput` (context.rs:350-455).
  *                       Keeps `rawOutput: Buffer` + exitCode + wall
  *                       time + token-based truncation.
- *   - `apply_patch`   — `ApplyPatchToolOutput` (context.rs:277-310).
- *                       Preserves the diff text as-is.
  *   - `tool_search`   — `ToolSearchOutput` (context.rs:185-224).
  *   - `aborted`       — `AbortedToolOutput` (context.rs:312-347).
  *                       Dispatches on the payload variant.
@@ -394,11 +392,6 @@ export type ToolOutputVariant =
       readonly originalTokenCount?: number;
       readonly sessionCommand?: ReadonlyArray<string>;
       readonly maxOutputBytes?: number;
-      readonly isError: boolean;
-    } & ToolOutputVariantCommon)
-  | ({
-      readonly kind: "apply_patch";
-      readonly diff: string;
       readonly isError: boolean;
     } & ToolOutputVariantCommon)
   | ({
@@ -452,8 +445,8 @@ export interface ToolOutput {
   readonly postToolUseResponse?: unknown;
   /**
    * Discriminated-union payload preserving per-variant shape
-   * (MCP annotations, exec raw bytes, apply-patch diff, etc.). Absent
-   * on legacy constructions (treated as `function`).
+   * (MCP annotations, exec raw bytes, etc.). Absent on legacy
+   * constructions (treated as `function`).
    */
   readonly variant?: ToolOutputVariant;
 }
@@ -536,39 +529,6 @@ function buildFunctionToolOutput(opts: {
     ...(opts.postToolUseResponse !== undefined
       ? { postToolUseResponse: opts.postToolUseResponse }
       : {}),
-    variant,
-  };
-}
-
-/**
- * Port of codex `ApplyPatchToolOutput::from_text` (context.rs:282-284).
- */
-export function applyPatchToolOutput(opts: {
-  readonly callId: string;
-  readonly toolName: ToolName;
-  readonly payload: ToolPayload;
-  readonly diff: string;
-  readonly durationMs: number;
-  readonly metadata?: Record<string, unknown>;
-}): ToolOutput {
-  const variant: ToolOutputVariant = {
-    kind: "apply_patch",
-    callId: opts.callId,
-    toolName: opts.toolName,
-    payload: opts.payload,
-    diff: opts.diff,
-    isError: false,
-    durationMs: opts.durationMs,
-    ...(opts.metadata ? { metadata: opts.metadata } : {}),
-  };
-  return {
-    callId: opts.callId,
-    toolName: opts.toolName,
-    payload: opts.payload,
-    content: opts.diff,
-    isError: false,
-    durationMs: opts.durationMs,
-    ...(opts.metadata ? { metadata: opts.metadata } : {}),
     variant,
   };
 }
@@ -820,8 +780,6 @@ export function toText(output: ToolOutput): string {
       return mcpResponseText(variant);
     case "exec":
       return execResponseText(variant);
-    case "apply_patch":
-      return variant.diff;
     case "tool_search":
       return JSON.stringify(variant.tools);
     case "aborted":
@@ -848,8 +806,6 @@ export function successForLogging(output: ToolOutput): boolean {
     case "mcp":
       return !variant.isError;
     case "exec":
-      return true;
-    case "apply_patch":
       return true;
     case "tool_search":
       return true;
@@ -983,8 +939,6 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
       };
     case "exec":
       return { ...base, content: execResponseText(variant) };
-    case "apply_patch":
-      return { ...base, content: variant.diff };
     case "tool_search": {
       const tools = variant.tools;
       return {
@@ -1051,8 +1005,6 @@ export function codeModeResult(output: ToolOutput): unknown {
       return mcpStructuredContentToCodeModeResult(variant.structured);
     case "exec":
       return execCodeModeResult(variant);
-    case "apply_patch":
-      return {};
     case "tool_search":
       return cloneSerializable(variant.tools, "tool_search result");
     case "aborted":

@@ -87,19 +87,6 @@ function readRawStringField(value: unknown, keys: readonly string[]): string | u
   return undefined;
 }
 
-function isApplyPatchToolName(toolName: string | undefined): boolean {
-  return toolName !== undefined && toolName.toLowerCase().replace(/_/gu, "") === "applypatch";
-}
-
-function extractPatchTarget(toolArgs: unknown): string | undefined {
-  const patch = readStringField(toolArgs, ["patch"]);
-  if (!patch) return undefined;
-  const header =
-    /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/mu.exec(patch) ??
-    /^diff --git a\/(.+?) b\/.+$/mu.exec(patch);
-  return header?.[1]?.trim();
-}
-
 function compactJson(value: unknown): string {
   if (value === undefined || value === null) return "";
   let rendered: string;
@@ -187,7 +174,7 @@ function summarizeShellWriteBlock(
   const target = targetMatch?.[1]?.trim() ?? "workspace file";
   return {
     target: "shell write",
-    detail: `Blocked target: ${target}. Use apply_patch for source edits.`,
+    detail: `Blocked target: ${target}. Use Edit (or Write for new files) for source edits.`,
   };
 }
 
@@ -233,8 +220,7 @@ function classifyTool(toolName: string | undefined): ToolFamily {
     normalized === "system.edit_file" ||
     normalized === "editfile" ||
     normalized === "edit_file" ||
-    normalized === "apply_patch" ||
-    normalized === "applypatch"
+    normalized === "edit"
   ) {
     return "edit";
   }
@@ -270,9 +256,6 @@ function toolTarget(
   toolArgs: unknown,
 ): string {
   if (family === "mcp" && toolName) return displayMcpName(toolName);
-  if (isApplyPatchToolName(toolName)) {
-    return extractPatchTarget(toolArgs) ?? "patch";
-  }
   if (family === "exec") {
     const command = readStringField(toolArgs, ["command", "cmd"]);
     return command ? compactJson(command) : toolName ?? "exec";
@@ -398,10 +381,6 @@ function toolTitle(
   shellWriteBlocked: boolean,
 ): string {
   if (shellWriteBlocked) return "Blocked";
-  if (isApplyPatchToolName(toolName)) {
-    if (isError) return "Patch Failed";
-    return isComplete ? "Applied Patch" : "Applying Patch";
-  }
   switch (family) {
     case "read":
       if (isError) return "Read Failed";
@@ -425,19 +404,12 @@ function toolTitle(
   }
 }
 
-function patchPreviewLines(toolName: string | undefined, toolArgs: unknown) {
-  if (!isApplyPatchToolName(toolName)) return [];
-  const patch = readStringField(toolArgs, ["patch"]);
-  return patch ? renderDiffDisplayLines(patch) : [];
-}
-
 function sourceMutationPreviewLines(
   family: ToolFamily,
   toolName: string | undefined,
   toolArgs: unknown,
 ): ReturnType<typeof renderSourceMutationDisplayLines> {
   if (family !== "write" && family !== "edit") return [];
-  if (isApplyPatchToolName(toolName)) return [];
   const filePath = readStringField(toolArgs, ["path", "file_path"]);
   if (!filePath) return [];
   const normalized = String(toolName ?? "").toLowerCase();
@@ -562,20 +534,14 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     () => summarizeShellWriteBlock(result),
     [result],
   );
-  const patchLines = useMemo(
-    () => patchPreviewLines(toolName, toolArgs),
-    [toolArgs, toolName],
-  );
   const mutationLines = useMemo(
     () =>
-      patchLines.length > 0
-        ? []
-        : sourceMutationPreviewLines(
-            presentation.family,
-            toolName,
-            toolArgs,
-          ),
-    [patchLines.length, presentation.family, toolArgs, toolName],
+      sourceMutationPreviewLines(
+        presentation.family,
+        toolName,
+        toolArgs,
+      ),
+    [presentation.family, toolArgs, toolName],
   );
   const diffDetailLines = useMemo(
     () =>
@@ -633,11 +599,6 @@ export const ToolCell: React.FC<ToolCellProps> = ({
         {target.length > 0 ? <Text dim>{`(${target})`}</Text> : null}
         {showArgs ? <Text dim>{` ${presentation.argsSummary}`}</Text> : null}
       </Box>
-      {patchLines.length > 0 ? (
-        <Box flexDirection="column" marginLeft={2}>
-          <DisplayLineBlock lines={patchLines} />
-        </Box>
-      ) : null}
       {mutationLines.length > 0 ? (
         <Box flexDirection="column" marginLeft={2}>
           <DisplayLineBlock lines={mutationLines} />

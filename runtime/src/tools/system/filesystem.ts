@@ -1475,7 +1475,7 @@ function createWriteFileTool(
     description:
       "Write content to a file. Creates parent directories if needed. Gated by path allowlist and size limits. " +
       "If the file already exists, you MUST call system.readFile without offset/limit first in this session — the runtime will " +
-      "reject the write otherwise. For source-code edits, prefer apply_patch. Use this compatibility tool mainly for creating new files or complete rewrites.",
+      "reject the write otherwise. For source-code edits, prefer Edit (or Write for new files). Use this compatibility tool mainly for creating new files or complete rewrites.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1531,7 +1531,7 @@ function createWriteFileTool(
           return errorResult(
             `File must be fully read before writing to it. ` +
               `Call system.readFile on "${args.path}" without offset/limit before calling system.writeFile. ` +
-              `For source-code edits, use apply_patch instead of system.writeFile.`,
+              `For source-code edits, use Edit instead of system.writeFile.`,
           );
         }
 
@@ -1762,13 +1762,13 @@ function createEditFileTool(
 ): Tool {
   return {
     name: "system.editFile",
-    // Marked deferred: apply_patch is the canonical edit path. system.editFile
-    // remains available via system.searchTools for cases where a single
-    // string replacement is genuinely simpler than authoring a patch hunk —
-    // matches openclaude's "FileEditTool is the dedicated edit tool, BashTool
-    // is the fallback" precedence flipped to AgenC's apply_patch-primary
-    // model. Loaded on demand via select:system.editFile so the default
-    // visible catalog stays Codex-small.
+    // Marked deferred: `Edit` is the canonical edit path. system.editFile
+    // remains available via system.searchTools for cases where the
+    // compatibility surface is genuinely needed — matches openclaude's
+    // "FileEditTool is the dedicated edit tool, BashTool is the fallback"
+    // precedence preserved in AgenC. Loaded on demand via
+    // select:system.editFile so the default visible catalog stays
+    // Codex-small.
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -1779,7 +1779,7 @@ function createEditFileTool(
       deferred: true,
     },
     description:
-      "Single-string replacement in an existing file (apply_patch fallback). For source-code edits, prefer apply_patch — this tool exists for cases where a one-shot find/replace is genuinely simpler. " +
+      "Single-string replacement in an existing file (compatibility tool). For source-code edits, prefer Edit — this tool exists for cases where the deferred system.* surface is required. " +
       "This only sends the diff (old_string → new_string), so it does not " +
       "expose the model to JSON-escape mistakes in nested string literals like #include directives, shell " +
       "single-quotes, or printf format strings. The file must exist and must have been read in this session " +
@@ -1887,7 +1887,7 @@ function createEditFileTool(
               `Call system.readFile on "${args.path}" before calling system.editFile. ` +
               `A line-windowed read (via offset/limit) is sufficient — the Read-before-Edit rule ` +
               `only requires that you have seen the current contents before generating the edit. ` +
-              `For source-code edits, use apply_patch instead.`,
+              `For source-code edits, use Edit instead.`,
           );
         }
 

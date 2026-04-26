@@ -29,12 +29,10 @@ import {
   createExecCommandTool,
   createWriteStdinTool,
   createPlanningTools,
-  createApplyPatchTool,
   createSleepTool,
   createMonitorTool,
   createEnterWorktreeTool,
   createExitWorktreeTool,
-  createToolSuggestTool,
   // Openclaude-derived file/search tools (lifted into AgenC).
   // These shadow the deferred system.readFile/system.editFile/system.writeFile/
   // system.glob/system.grep family that used to live in filesystem.ts/coding.ts.
@@ -49,7 +47,6 @@ import {
   GLOB_TOOL_NAME,
   GREP_TOOL_NAME,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
-  TOOL_SUGGEST_TOOL_NAME,
 } from "./tools/system/index.js";
 import type { BashExecObserver } from "./tools/system/types.js";
 import type { WorkflowToolController } from "./tools/system/index.js";
@@ -235,7 +232,6 @@ function specForTool(tool: Tool): ConfiguredToolSpec {
 }
 
 const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
-  apply_patch: "patch",
   exec_command: "cmd",
   "system.bash": "command",
   "system.readFile": "path",
@@ -253,7 +249,6 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
 const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "exec_command",
   "write_stdin",
-  "apply_patch",
   // Openclaude-derived file/search tools, lifted into AgenC and now
   // first-class visible. Replace the `system.readFile`/`system.editFile`/
   // `system.writeFile`/`system.glob`/`system.grep` deferred AgenC family
@@ -273,7 +268,6 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "ExitPlanMode",
   "system.agent.delegate",
   "system.searchTools",
-  TOOL_SUGGEST_TOOL_NAME,
   "exec",
   "wait",
 ]);
@@ -372,7 +366,7 @@ export interface BuildToolRegistryOptions {
  * Registers: filesystem (readFile, writeFile, editFile, appendFile,
  * listDir, stat, mkdir, delete, move, glob, grep), coding helpers,
  * http (fetch/get/post/browse/extractLinks/htmlToMarkdown), bash,
- * Codex-style apply_patch, and planning tools.
+ * and planning tools.
  *
  * The default visible set stays small. Heavy AgenC-owned git/symbol
  * inventory tools are registered as deferred entries and load through
@@ -430,9 +424,6 @@ export function buildToolRegistry(
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
-    createApplyPatchTool({
-      allowedPaths: [options.workspaceRoot],
-    }),
     // Openclaude-derived file/search tools (lifted, now AgenC-owned).
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
@@ -456,12 +447,6 @@ export function buildToolRegistry(
     }),
     createEnterWorktreeTool({ cwd: options.workspaceRoot }),
     createExitWorktreeTool({ cwd: options.workspaceRoot }),
-    // Verbatim port of codex `tool_suggest` (tool_discovery.rs).
-    // TODO(codex-parity): wire this to a live discoverable-tools source
-    // (codex sources connectors+plugins from the app server). For now
-    // we register with an empty list so the tool appears in the schema
-    // without exposing any installable suggestions.
-    createToolSuggestTool({ discoverableTools: [] }),
     ...createPlanningTools({
       ...(options.workflowController !== undefined
         ? { workflowController: options.workflowController }

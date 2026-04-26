@@ -34,7 +34,7 @@ describe("ApprovalStore<K>", () => {
     expect(store.get({ cmd: "pwd" })).toBeUndefined();
   });
 
-  test("setMany writes each key independently (apply_patch style)", () => {
+  test("setMany writes each key independently (multi-file approval style)", () => {
     const store = new ApprovalStore<string>();
     store.setMany(["a.txt", "b.txt", "c.txt"], approvedForSession);
     for (const k of ["a.txt", "b.txt", "c.txt"]) {
