@@ -54,6 +54,7 @@ import { safeStringify } from "../types.js";
 const MAX_LIST_ENTRIES = 10_000;
 const MAX_PATH_LENGTH = 4096;
 export const SESSION_ALLOWED_ROOTS_ARG = "__agencSessionAllowedRoots";
+export const SESSION_AGENC_HOME_ARG = "__agencHome";
 export type SessionReadViewKind =
   | "full"
   | "partial"
@@ -685,6 +686,13 @@ function planFileContextFromArgs(
       : null;
   if (sessionId === null) return null;
   const ctx: PlanFileContext = { sessionId };
+  const injectedAgencHome = args[SESSION_AGENC_HOME_ARG];
+  if (
+    typeof injectedAgencHome === "string" &&
+    injectedAgencHome.trim().length > 0
+  ) {
+    return { ...ctx, agencHome: injectedAgencHome };
+  }
   if (
     typeof process.env.AGENC_HOME === "string" &&
     process.env.AGENC_HOME.length > 0
@@ -692,6 +700,28 @@ function planFileContextFromArgs(
     return { ...ctx, agencHome: process.env.AGENC_HOME };
   }
   return ctx;
+}
+
+export async function safePathAllowingSessionPlanFile(
+  targetPath: string,
+  allowedPaths: readonly string[],
+  args: Record<string, unknown>,
+): Promise<{ safe: boolean; resolved: string; reason?: string }> {
+  const result = await safePath(targetPath, resolveToolAllowedPaths(allowedPaths, args));
+  if (result.safe) return result;
+
+  const planCtx = planFileContextFromArgs(args);
+  if (planCtx !== null && !hasUnsafeShape(targetPath)) {
+    try {
+      const canonical = (await canonicalize(targetPath)).normalize("NFC");
+      if (isSessionPlanFile(canonical, planCtx)) {
+        return { safe: true, resolved: canonical };
+      }
+    } catch {
+      // canonicalize threw — fall through to the original rejection.
+    }
+  }
+  return result;
 }
 
 async function validatePath(

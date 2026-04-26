@@ -16,7 +16,13 @@ import {
   clearSessionReadState,
   recordSessionRead,
   seedSessionReadState,
+  SESSION_AGENC_HOME_ARG,
 } from "./filesystem.js";
+import {
+  clearAllPlanSlugs,
+  getPlanFilePath,
+  setPlanSlug,
+} from "../../planning/plan-files.js";
 
 describe("Write tool", () => {
   let root = "";
@@ -28,6 +34,7 @@ describe("Write tool", () => {
 
   afterEach(async () => {
     clearSessionReadState(sessionId);
+    clearAllPlanSlugs();
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
   });
@@ -47,6 +54,40 @@ describe("Write tool", () => {
       `File created successfully at: ${target}`,
     );
     await expect(readFile(target, "utf8")).resolves.toBe("hello\nworld\n");
+  });
+
+  test("creates the active session plan file outside the workspace root", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-write-home-"));
+    try {
+      setPlanSlug({ agencHome, sessionId }, "ivory-bridge-aaed0227");
+      const planPath = getPlanFilePath({ agencHome, sessionId });
+      const tool = createFileWriteTool({ allowedPaths: [root] });
+
+      const result = await tool.execute({
+        file_path: planPath,
+        content: "# Plan\n\n- [ ] Fix plan file writes\n",
+        __agencSessionId: sessionId,
+        [SESSION_AGENC_HOME_ARG]: agencHome,
+      });
+
+      expect(result.isError).toBeUndefined();
+      await expect(readFile(planPath, "utf8")).resolves.toContain(
+        "Fix plan file writes",
+      );
+
+      const rejected = await tool.execute({
+        file_path: join(agencHome, "plans", "not-active.md"),
+        content: "# Not active\n",
+        __agencSessionId: sessionId,
+        [SESSION_AGENC_HOME_ARG]: agencHome,
+      });
+      expect(rejected.isError).toBe(true);
+      expect(String(rejected.content)).toContain(
+        "file_path is outside allowed directories",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   test("overwrites a previously-read existing file", async () => {

@@ -9,7 +9,13 @@ import {
   clearSessionReadState,
   getSessionReadSnapshot,
   hasSessionRead,
+  SESSION_AGENC_HOME_ARG,
 } from "./filesystem.js";
+import {
+  clearAllPlanSlugs,
+  getPlanFilePath,
+  setPlanSlug,
+} from "../../planning/plan-files.js";
 
 describe("FileRead tool", () => {
   let root = "";
@@ -23,6 +29,7 @@ describe("FileRead tool", () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
     clearSessionReadState(sessionId);
+    clearAllPlanSlugs();
   });
 
   test("reads a small text file and returns content with line numbers", async () => {
@@ -104,6 +111,28 @@ describe("FileRead tool", () => {
     expect(snap?.isPartialView).not.toBe(true);
     expect(snap?.readOffset).toBe(2);
     expect(snap?.readLimit).toBe(2);
+  });
+
+  test("reads the active session plan file outside the workspace root", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-read-home-"));
+    try {
+      setPlanSlug({ agencHome, sessionId }, "ivory-bridge-aaed0227");
+      const planPath = getPlanFilePath({ agencHome, sessionId });
+      await writeFile(planPath, "# Plan\n\n- [ ] Verify tool allowlist\n", "utf8");
+      const tool = createFileReadTool({ allowedPaths: [root] });
+
+      const result = await tool.execute({
+        file_path: planPath,
+        __agencSessionId: sessionId,
+        [SESSION_AGENC_HOME_ARG]: agencHome,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toContain("Verify tool allowlist");
+      expect(hasSessionRead(sessionId, planPath)).toBe(true);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   test("image read returns contentItems with input_image", async () => {

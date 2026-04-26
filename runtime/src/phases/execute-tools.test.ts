@@ -9,7 +9,7 @@
  *   3. `AGENC_MAX_TOOL_USE_CONCURRENCY=2` caps parallel dispatch.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -32,8 +32,11 @@ import {
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
   clearAllPlanSlugs,
+  getPlanFilePath,
+  setPlanSlug,
   writePlanSync,
 } from "../planning/plan-files.js";
+import { createFileWriteTool } from "../tools/system/file-write.js";
 import {
   ensureStreamingToolExecutor,
   executeTools,
@@ -568,6 +571,49 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(state.messages.length).toBe(1);
     expect(state.messages[0]!.role).toBe("tool");
     expect(state.messages[0]!.content).toBe("wrote-file");
+  });
+
+  test("main dispatch injects session context so Write can create the active plan file", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "agenc-plan-workspace-"));
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-plan-home-"));
+    tempDirs.push(workspaceRoot, agencHome);
+    process.env.AGENC_HOME = agencHome;
+    setPlanSlug({ agencHome, sessionId: "conv-1" }, "ivory-bridge-aaed0227");
+    const planPath = getPlanFilePath({ agencHome, sessionId: "conv-1" });
+
+    const log = new EventLog();
+    const permCtx: ToolPermissionContext = createEmptyToolPermissionContext({
+      mode: "default",
+      alwaysAllowRules: { session: ["Write"] },
+    });
+    const permissionRegistry = new PermissionModeRegistry(permCtx);
+    const toolRegistry = mkRegistry([
+      createFileWriteTool({ allowedPaths: [workspaceRoot] }),
+    ]);
+    const session = mkSession({
+      log,
+      registry: toolRegistry,
+      permissionModeRegistry: permissionRegistry,
+      withDenialTracking: true,
+    });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "write-plan",
+          name: "Write",
+          arguments: JSON.stringify({
+            file_path: planPath,
+            content: "# Plan\n\n- [ ] Fix plan write access\n",
+          }),
+        },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toContain("File created successfully");
+    expect(readFileSync(planPath, "utf8")).toContain("Fix plan write access");
   });
 
   test("W4 session without denialTracking still runs via evaluator fallback", async () => {
