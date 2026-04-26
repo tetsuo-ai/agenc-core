@@ -570,6 +570,16 @@ function TUIRoot({
         <MessageList messages={messages} isStreaming={isStreaming} />
       </Box>
 
+      {/* overlay stack rendered above the composer so modals stay inside
+          the visible viewport while the transcript flexes around them. */}
+      {overlay.overlays.length > 0 ? (
+        <Box flexDirection="column" flexShrink={0} width="100%">
+          {overlay.overlays.map((entry) => (
+            <OverlayFrame key={entry.id}>{entry.node}</OverlayFrame>
+          ))}
+        </Box>
+      ) : null}
+
       {/* composer region (bottom) */}
       <Box flexDirection="column" flexShrink={0} width="100%">
         {transcriptMode ? (
@@ -599,12 +609,6 @@ function TUIRoot({
 
       {/* invisible orchestrators — one per pending permission request */}
       {permissionHandlers}
-
-      {/* overlay stack rendered after the main column so modals appear
-          last in document order (Ink has no absolute positioning) */}
-      {overlay.overlays.map((entry) => (
-        <OverlayFrame key={entry.id}>{entry.node}</OverlayFrame>
-      ))}
     </Box>
   );
 }
