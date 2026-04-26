@@ -5,8 +5,9 @@
  * transition helpers from `permissionSetup.ts` / `bootstrap/state.ts` into a
  * self-contained module with no global state. All session state that
  * openclaude stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
- * instead (`autoModeActive`, `hasExitedPlanModeInSession`, `prePlanMode`,
- * `strippedDangerousRules`).
+ * instead (`autoModeActive`, `prePlanMode`, `strippedDangerousRules`).
+ * Plan-mode exit-reminder bookkeeping lives separately on
+ * AttachmentTrackingState (`runtime/src/session/attachment-state.ts`).
  *
  * Exports:
  *   - Mode constants + predicates
@@ -230,11 +231,10 @@ function isBypassConsentAccepted(
 /**
  * Centralises every state transition when switching permission modes. Side
  * effects are limited to returning a possibly-modified context — all
- * session state (plan-mode stash, auto-mode-active flag,
- * hasExitedPlanModeInSession) lives on the context instead of hidden
- * globals. The caller is responsible for attaching `mode` to the returned
- * context (this matches openclaude's invariant that `transitionPermissionMode`
- * never sets the mode itself).
+ * session state (plan-mode stash, auto-mode-active flag) lives on the
+ * context instead of hidden globals. The caller is responsible for
+ * attaching `mode` to the returned context (this matches openclaude's
+ * invariant that `transitionPermissionMode` never sets the mode itself).
  *
  * Throws if entering auto mode while the gate is disabled, mirroring
  * openclaude's hard error at permissionSetup.ts:629 — this is what makes the
@@ -308,17 +308,15 @@ export function transitionPermissionMode(
   let next = ctx;
 
   // Plan-mode enter: stash prePlanMode (and optionally strip dangerous
-  // rules if the caller wants plan-with-auto semantics). Also clear any
-  // pending plan-mode-exit reminder pulse — a quick toggle out and back
-  // must not surface an exit reminder for an exit the model never saw.
-  // Mirrors openclaude bootstrap/state.ts:1355-1357.
+  // rules if the caller wants plan-with-auto semantics). The plan-mode
+  // exit-reminder one-shot lives on AttachmentTrackingState now — the
+  // attachment producer clears its own `needsPlanModeExitAttachment`
+  // flag eagerly on plan re-entry so a quick toggle out and back does
+  // not surface an exit reminder for an exit the model never saw.
   if (toMode === "plan" && fromMode !== "plan") {
     next = prepareContextForPlanMode(next, {
       shouldUseAutoInPlan: shouldPlanUseAutoMode(),
     });
-    if (next.pendingPlanModeExitReminder === true) {
-      next = { ...next, pendingPlanModeExitReminder: false };
-    }
   }
 
   // Auto-mode enter: verify the gate is live, flip the active flag, and
@@ -343,11 +341,12 @@ export function transitionPermissionMode(
     };
   }
 
-  // Plan-mode leave: clear stash, mark hasExitedPlanModeInSession (sticky,
-  // gates re-entry reminder) AND set the one-shot
-  // pendingPlanModeExitReminder pulse so the next turn injects the
-  // `## Exited Plan Mode` system-reminder. Mirrors openclaude's
-  // handlePlanModeTransition (bootstrap/state.ts:1349-1363).
+  // Plan-mode leave: clear the prePlanMode stash and any auto-mode
+  // residue. The exit-reminder pulse and the sticky
+  // `hasExitedPlanModeInSession` flag both live on AttachmentTrackingState
+  // now — Session subscribes to the registry and flips
+  // `needsPlanModeExitAttachment` on this same boundary; the attachment
+  // producer maintains the sticky re-entry flag.
   if (fromMode === "plan" && toMode !== "plan") {
     if (toMode !== "auto" && next.autoModeActive === true) {
       next = {
@@ -358,8 +357,6 @@ export function transitionPermissionMode(
     next = {
       ...next,
       prePlanMode: undefined,
-      hasExitedPlanModeInSession: true,
-      pendingPlanModeExitReminder: true,
     };
   }
 

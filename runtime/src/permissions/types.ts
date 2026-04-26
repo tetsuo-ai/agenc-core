@@ -357,23 +357,6 @@ export interface ToolPermissionContext {
    */
   readonly autoModeActive?: boolean;
   /**
-   * True once the user has left plan mode at least once in the current
-   * session. Used to gate the re-entry guidance attachment on the next
-   * plan-mode entry. Equivalent to openclaude's `setHasExitedPlanMode`.
-   * Sticky for the session; cleared by `bin/agenc.ts` after the re-entry
-   * reminder fires.
-   */
-  readonly hasExitedPlanModeInSession?: boolean;
-  /**
-   * One-shot pulse: true on the turn immediately following a plan-mode
-   * leave, consumed exactly once by `bin/agenc.ts` to inject the
-   * `## Exited Plan Mode` system-reminder, then cleared. Cleared eagerly
-   * by the FSM on plan re-entry (a quick toggle out and back must not
-   * surface an exit reminder for an exit the model never saw).
-   * Equivalent to openclaude's `setNeedsPlanModeExitAttachment`.
-   */
-  readonly pendingPlanModeExitReminder?: boolean;
-  /**
    * Session-scoped allowlist of workspace directories in which the user
    * has accepted `bypassPermissions` mode. The evaluator consults this
    * alongside `config.bypassPermissionsModeAcceptedIn`.

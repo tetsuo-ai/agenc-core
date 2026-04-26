@@ -967,7 +967,7 @@ export class Session {
     // are set; the registry is the canonical event source for mode
     // transitions, so flip the flags here. Mirrors openclaude
     // `bootstrap/state.ts:1349-1363` where `handlePlanModeTransition`
-    // sets `pendingPlanModeExitReminder` on the same boundary.
+    // raises the equivalent pulse on the same boundary.
     resolvedRegistry.subscribeToModeChange((newMode, oldMode) => {
       if (oldMode === "plan" && newMode !== "plan") {
         getAttachmentTrackingState(this).needsPlanModeExitAttachment = true;
