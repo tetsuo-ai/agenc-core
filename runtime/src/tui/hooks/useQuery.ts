@@ -79,6 +79,19 @@ interface ResetPayload {
   readonly liveTurnId: string | null;
 }
 
+type AgentMessageDeltaEnvelope = Extract<
+  TranscriptEventEnvelope,
+  { readonly type: "agent_message_delta" }
+>;
+type AgentMessageEnvelope = Extract<
+  TranscriptEventEnvelope,
+  { readonly type: "agent_message" }
+>;
+type ToolProgressEnvelope = Extract<
+  TranscriptEventEnvelope,
+  { readonly type: "tool_progress" }
+>;
+
 type QueryAction =
   | {
       readonly kind: "reset";
@@ -124,34 +137,160 @@ function transcriptEventSeq(event: TranscriptSourceEvent): number | null {
   return "seq" in event && typeof event.seq === "number" ? event.seq : null;
 }
 
+function isAgentMessageDeltaEvent(
+  event: TranscriptSourceEvent,
+): event is AgentMessageDeltaEnvelope {
+  return event.type === "agent_message_delta";
+}
+
+function isAgentMessageEvent(
+  event: TranscriptSourceEvent,
+): event is AgentMessageEnvelope {
+  return event.type === "agent_message";
+}
+
+function isToolProgressEvent(
+  event: TranscriptSourceEvent,
+): event is ToolProgressEnvelope {
+  return event.type === "tool_progress";
+}
+
+function isCompactBoundaryEvent(event: TranscriptSourceEvent): boolean {
+  return event.type === "context_compacted";
+}
+
+function findLastCompactBoundaryIndex(
+  events: readonly TranscriptSourceEvent[],
+): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (isCompactBoundaryEvent(events[index]!)) return index;
+  }
+  return -1;
+}
+
+function rebuildSeenEventKeys(
+  events: readonly TranscriptSourceEvent[],
+): Set<string> {
+  const seenEventKeys = new Set<string>();
+  for (const event of events) {
+    if (transcriptEventSeq(event) !== null) continue;
+    const key = transcriptEventKey(event);
+    if (key !== null) seenEventKeys.add(key);
+  }
+  return seenEventKeys;
+}
+
+function sameProgressSlot(
+  left: ToolProgressEnvelope,
+  right: ToolProgressEnvelope,
+): boolean {
+  return (
+    left.payload.callId === right.payload.callId &&
+    left.payload.toolName === right.payload.toolName &&
+    (left.payload.stream ?? "status") === (right.payload.stream ?? "status") &&
+    left.payload.processId === right.payload.processId
+  );
+}
+
+function bufferTranscriptEvent(
+  events: readonly TranscriptSourceEvent[],
+  event: TranscriptSourceEvent,
+): {
+  readonly events: TranscriptSourceEvent[];
+  readonly rebuiltSeenKeys: boolean;
+} {
+  if (isCompactBoundaryEvent(event)) {
+    const previousBoundary = findLastCompactBoundaryIndex(events);
+    const retained =
+      previousBoundary >= 0 ? events.slice(previousBoundary + 1) : [...events];
+    return {
+      events: [...retained, event],
+      rebuiltSeenKeys: previousBoundary >= 0,
+    };
+  }
+
+  const last = events.at(-1);
+  if (
+    last &&
+    isAgentMessageDeltaEvent(last) &&
+    isAgentMessageDeltaEvent(event)
+  ) {
+    return {
+      events: [
+        ...events.slice(0, -1),
+        {
+          ...event,
+          payload: { delta: `${last.payload.delta}${event.payload.delta}` },
+        },
+      ],
+      rebuiltSeenKeys: false,
+    };
+  }
+
+  if (last && isAgentMessageDeltaEvent(last) && isAgentMessageEvent(event)) {
+    return {
+      events: [...events.slice(0, -1), event],
+      rebuiltSeenKeys: false,
+    };
+  }
+
+  if (
+    last &&
+    isToolProgressEvent(last) &&
+    isToolProgressEvent(event) &&
+    sameProgressSlot(last, event)
+  ) {
+    const stream = event.payload.stream ?? "status";
+    const chunk =
+      stream === "stdout" || stream === "stderr"
+        ? `${last.payload.chunk}${event.payload.chunk}`
+        : event.payload.chunk;
+    return {
+      events: [
+        ...events.slice(0, -1),
+        {
+          ...event,
+          payload: {
+            ...event.payload,
+            chunk,
+          },
+        },
+      ],
+      rebuiltSeenKeys: false,
+    };
+  }
+
+  return { events: [...events, event], rebuiltSeenKeys: false };
+}
+
 function buildEventIndex(events: readonly TranscriptSourceEvent[]): {
   readonly events: TranscriptSourceEvent[];
   readonly seenEventKeys: Set<string>;
   readonly lastEventSeq: number;
 } {
-  const seenEventKeys = new Set<string>();
-  const deduped: TranscriptSourceEvent[] = [];
+  const dedupeKeys = new Set<string>();
+  let buffered: TranscriptSourceEvent[] = [];
   let lastEventSeq = 0;
   for (const event of events) {
     const seq = transcriptEventSeq(event);
     if (seq !== null && seq <= lastEventSeq) {
       continue;
     }
-    const key = transcriptEventKey(event);
+    const key = seq === null ? transcriptEventKey(event) : null;
     if (key !== null) {
-      if (seenEventKeys.has(key)) {
+      if (dedupeKeys.has(key)) {
         continue;
       }
-      seenEventKeys.add(key);
+      dedupeKeys.add(key);
     }
     if (seq !== null) {
       lastEventSeq = Math.max(lastEventSeq, seq);
     }
-    deduped.push(event);
+    buffered = bufferTranscriptEvent(buffered, event).events;
   }
   return {
-    events: deduped,
-    seenEventKeys,
+    events: buffered,
+    seenEventKeys: rebuildSeenEventKeys(buffered),
     lastEventSeq,
   };
 }
@@ -229,11 +368,14 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
       if (eventSeq !== null && eventSeq <= state.lastEventSeq) {
         return state;
       }
-      const eventKey = transcriptEventKey(event);
+      const eventKey = eventSeq === null ? transcriptEventKey(event) : null;
       if (eventKey !== null && state.seenEventKeys.has(eventKey)) {
         return state;
       }
-      const nextSeenEventKeys = new Set(state.seenEventKeys);
+      const buffered = bufferTranscriptEvent(state.events, event);
+      const nextSeenEventKeys = buffered.rebuiltSeenKeys
+        ? rebuildSeenEventKeys(buffered.events)
+        : new Set(state.seenEventKeys);
       if (eventKey !== null) {
         nextSeenEventKeys.add(eventKey);
       }
@@ -241,7 +383,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
         eventSeq !== null ? Math.max(state.lastEventSeq, eventSeq) : state.lastEventSeq;
       if (event.type === "turn_start" || event.type === "turn_started") {
         return {
-          events: [...state.events, event],
+          events: buffered.events,
           isStreaming: true,
           currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
           seenEventKeys: nextSeenEventKeys,
@@ -250,7 +392,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
       }
       if (event.type === "turn_complete" || event.type === "turn_aborted") {
         return {
-          events: [...state.events, event],
+          events: buffered.events,
           isStreaming: false,
           currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
           seenEventKeys: nextSeenEventKeys,
@@ -258,7 +400,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
         };
       }
       return {
-        events: [...state.events, event],
+        events: buffered.events,
         isStreaming: state.isStreaming,
         currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
         seenEventKeys: nextSeenEventKeys,
