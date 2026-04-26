@@ -105,4 +105,45 @@ describe("relevantMemoryProducer", () => {
     );
     expect(out).toEqual([]);
   });
+
+  test("derives memoryDir from opts.agencHome when sessionKey.memoryDir is absent", async () => {
+    // Lay out an agencHome with a memory/ subdir so the producer can
+    // resolve <agencHome>/memory.
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-relevant-mem-home-"));
+    try {
+      const memoryDir = join(agencHome, "memory");
+      // Mirror the real bootstrap layout: agencHome/memory/<file>.md.
+      const fs = await import("node:fs/promises");
+      await fs.mkdir(memoryDir, { recursive: true });
+      const content = `---
+name: derived
+description: agencHome path tokenA tokenB
+type: project
+---
+
+derived body
+`;
+      await fs.writeFile(join(memoryDir, "derived.md"), content);
+
+      // sessionKey lacks memoryDir — the producer must fall back to
+      // opts.agencHome and resolve agencHome/memory.
+      const altSessionId = `session-${Math.random().toString(36).slice(2)}`;
+      const altSessionKey = { sessionId: altSessionId };
+      const out = await relevantMemoryProducer(
+        {
+          ...makeOpts({ userInput: "asking about tokenA tokenB" }),
+          sessionKey: altSessionKey,
+          agencHome,
+        },
+        {} as never,
+      );
+      expect(out).toHaveLength(1);
+      if (out[0]?.kind !== "relevant_memories") throw new Error("kind");
+      expect(out[0].memories[0]?.path).toMatch(/derived\.md$/);
+      _resetAttachmentBudgetForTest(altSessionKey);
+      clearSessionReadState(altSessionId);
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
 });

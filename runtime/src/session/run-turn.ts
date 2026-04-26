@@ -754,6 +754,7 @@ async function tryRunSamplingRequest(
   // request through the existing build path. Producer registry lives
   // in `runtime/src/prompts/attachments/orchestrator.ts`; it is empty
   // until the per-category producer files land.
+  const agencHome = session.services.configStore?.agencHome;
   const attachments = await getAttachments({
     sessionKey: session,
     userInput: extractLastUserText(state.messagesForQuery),
@@ -766,6 +767,9 @@ async function tryRunSamplingRequest(
     cwd: ctx.cwd,
     subagentDepth: ctx.depth,
     signal,
+    ...(typeof agencHome === "string" && agencHome.length > 0
+      ? { agencHome }
+      : {}),
   });
   if (attachments.length > 0) {
     const attachmentMessages = attachmentsToMessages(attachments);

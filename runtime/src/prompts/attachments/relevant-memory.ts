@@ -27,6 +27,7 @@
  */
 
 import { stat } from "node:fs/promises";
+import { join } from "node:path";
 
 import { hasSessionRead } from "../../tools/system/filesystem.js";
 import { scanMemoryDir } from "../memory/scan.js";
@@ -76,7 +77,14 @@ function buildMemoryHeader(path: string, mtimeMs: number): string {
 
 export const relevantMemoryProducer: AttachmentProducer = async (opts) => {
   const key = readMemoryAwareKey(opts);
-  const memoryDir = key.memoryDir;
+  // memoryDir from the session-key shape wins (test fixtures use it
+  // directly). Otherwise, derive `<agencHome>/memory` from the option
+  // threaded by run-turn.ts; if neither is set, the producer skips.
+  const memoryDir =
+    key.memoryDir ??
+    (typeof opts.agencHome === "string" && opts.agencHome.length > 0
+      ? join(opts.agencHome, "memory")
+      : undefined);
   const sessionId = key.sessionId;
 
   if (typeof memoryDir !== "string" || memoryDir.length === 0) {

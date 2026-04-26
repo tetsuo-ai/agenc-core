@@ -50,6 +50,17 @@ export class ConfigStore {
   }
 
   /**
+   * AgenC home directory the store was constructed against, or
+   * `undefined` when no override was provided (the loader falls back to
+   * its internal env-resolved default in that case). Used by the
+   * per-turn relevant-memory attachment producer to derive
+   * `<agencHome>/memory` without re-resolving HOME.
+   */
+  get agencHome(): string | undefined {
+    return this.opts.home;
+  }
+
+  /**
    * Re-read TOML + env, recompute snapshot, notify subscribers.
    * Returns the new snapshot. Subscriber exceptions are isolated via try/catch
    * so one broken listener cannot poison the reload.
