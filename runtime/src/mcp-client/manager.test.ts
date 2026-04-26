@@ -177,6 +177,55 @@ describe("MCPManager", () => {
     expect(manager.getConnectedServers()).toEqual([]);
   });
 
+  it("captures InitializeResult.instructions from the SDK client and surfaces it via getServerInstructions", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    const mockClient = {
+      getInstructions: () => "Use this server to manage GitHub issues.",
+    };
+    mockCreateMCPConnection.mockResolvedValueOnce(mockClient);
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+
+    expect(manager.getServerInstructions("srv1")).toBe(
+      "Use this server to manage GitHub issues.",
+    );
+    expect(manager.getServerInstructions("unknown")).toBeUndefined();
+  });
+
+  it("ignores empty / missing instructions blobs from getInstructions()", async () => {
+    const bridge1 = makeMockBridge("srv1", ["a"]);
+    const bridge2 = makeMockBridge("srv2", ["b"]);
+    const clientWithEmpty = { getInstructions: () => "" };
+    const clientWithUndefined = { getInstructions: () => undefined };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(clientWithEmpty)
+      .mockResolvedValueOnce(clientWithUndefined);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(bridge1)
+      .mockResolvedValueOnce(bridge2);
+
+    const manager = new MCPManager([makeConfig("srv1"), makeConfig("srv2")]);
+    await manager.start();
+
+    expect(manager.getServerInstructions("srv1")).toBeUndefined();
+    expect(manager.getServerInstructions("srv2")).toBeUndefined();
+  });
+
+  it("clears the captured instructions map on stop()", async () => {
+    const bridge = makeMockBridge("srv1", ["a"]);
+    const client = { getInstructions: () => "ins" };
+    mockCreateMCPConnection.mockResolvedValueOnce(client);
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    await manager.start();
+    expect(manager.getServerInstructions("srv1")).toBe("ins");
+    await manager.stop();
+    expect(manager.getServerInstructions("srv1")).toBeUndefined();
+  });
+
   // --------------------------------------------------------------------------
   // stop()
   // --------------------------------------------------------------------------
