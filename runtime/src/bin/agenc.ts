@@ -25,14 +25,14 @@
  *   I-52 (AGENC_HOME / $HOME/.agenc writable precheck)
  */
 
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
 import {
   routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
+  type ContinueTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
 import type { LLMToolCall } from "../llm/types.js";
@@ -50,7 +50,6 @@ import type { Terminal } from "../session/turn-state.js";
 import {
   SchemaMismatchError,
   SessionLockedError,
-  getProjectDir,
 } from "../session/session-store.js";
 import {
   createBashExecObserverForSlot,
@@ -62,7 +61,6 @@ import {
 } from "./slash.js";
 import {
   ConfigStore,
-  resolveAgencHome as resolveAgencHomeFromEnv,
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
@@ -93,6 +91,10 @@ import {
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import type { MemoryEntry } from "../prompts/memory/types.js";
 import { enableConfigs } from "./_deps/config-init.js";
+import {
+  resolveLatestSessionId,
+  resolveResumeSessionId,
+} from "./resume-session.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -121,7 +123,8 @@ export function formatCliHelpText(): string {
     "  --help                                   Show this help text",
     `  --version                                Show version (${VERSION})`,
     "  --no-tui                                 Force one-shot CLI mode",
-    "  --resume <session-id>                    Resume a prior session in the TUI",
+    "  -c, --continue                           Continue the latest project session",
+    "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --provider <name>                        Override the startup model provider",
     "  --model <name>                           Override the startup model",
     "  --profile <name>                         Use a named config profile",
@@ -1350,26 +1353,32 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
  * session state and transcript before Ink mounts.
  */
 export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
-  const agencHome = resolveAgencHomeFromEnv(process.env);
-  // Fast-path lookup — we just need to confirm the id exists under
-  // `<agencHome>/sessions/<id>.json` OR in any per-project rollout
-  // directory. Per the task spec, treat a missing session as a hard
-  // fail so the caller sees `agenc: session not found: <id>` and exit 1.
-  const sessionPath = join(agencHome, "sessions", `${args.resumeId}.json`);
-  if (!existsSync(sessionPath)) {
-    // Look for the id inside any project rollout directory before
-    // giving up so resume still works regardless of where the session
-    // was recorded.
-    const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
-    const projectDir = getProjectDir(workspaceRoot);
-    const rolloutDir = join(projectDir, "sessions", args.resumeId);
-    if (!existsSync(rolloutDir)) {
+  const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+  const resolved = resolveResumeSessionId(workspaceRoot, args.resumeId);
+  switch (resolved.kind) {
+    case "ok":
+      return bootTUIEntry({ resumeId: resolved.sessionId });
+    case "ambiguous":
+      process.stderr.write(
+        `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
+      );
+      return 1;
+    case "none":
+    case "not_found":
       process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
       return 1;
-    }
   }
+}
 
-  return bootTUIEntry({ resumeId: args.resumeId });
+/** Continue the newest prior session for the current project. */
+export async function continueTUIEntry(_args: ContinueTUIArgs): Promise<number> {
+  const workspaceRoot = resolveWorkspaceFromEnv(process.env) ?? processCwd();
+  const resolved = resolveLatestSessionId(workspaceRoot);
+  if (resolved.kind !== "ok") {
+    process.stderr.write("agenc: no previous session found for this project\n");
+    return 1;
+  }
+  return bootTUIEntry({ resumeId: resolved.sessionId });
 }
 
 /**
@@ -1410,6 +1419,7 @@ export async function main(): Promise<number> {
     oneShotCLI: (userMessage: string) =>
       oneShotCLI(userMessage.length > 0 ? userMessage : null),
     resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args),
+    continueTUI: (args: ContinueTUIArgs) => continueTUIEntry(args),
   });
 }
 

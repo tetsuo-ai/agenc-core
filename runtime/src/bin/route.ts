@@ -7,11 +7,12 @@
  *
  *   1. **Piped stdin + argv**               → legacy one-shot path.
  *   2. **`--no-tui` flag**                  → force one-shot even in TTY.
- *   3. **`--resume <id>` flag**             → resume TUI with prior session.
- *   4. **TTY + no argv**                    → boot full Ink TUI.
- *   5. **TTY + argv + TTY stdout**          → boot TUI with pre-populated
+ *   3. **`--resume <id>` / `-r <id>` flag** → resume TUI with prior session.
+ *   4. **`--continue` / `-c` flag**         → resume latest project session.
+ *   5. **TTY + no argv**                    → boot full Ink TUI.
+ *   6. **TTY + argv + TTY stdout**          → boot TUI with pre-populated
  *                                             prompt in the composer.
- *   6. **Fallback**                         → one-shot.
+ *   7. **Fallback**                         → one-shot.
  *
  * Keeping this module provider-free (it only takes function handles for
  * the real implementations) means the test suite can drive every branch
@@ -51,12 +52,15 @@ export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
   "--version",
   "--yolo",
+  "--continue",
+  "-c",
   "--dangerously-bypass-approvals-and-sandbox",
   "--allow-dangerously-skip-permissions",
 ] as const);
 
 export const STARTUP_VALUE_FLAGS = Object.freeze([
   "--resume",
+  "-r",
   "--fork",
   "--provider",
   "--model",
@@ -115,6 +119,8 @@ export interface ResumeTUIArgs {
   readonly resumeId: string;
 }
 
+export interface ContinueTUIArgs {}
+
 export interface RouteCLIOptions {
   /** Full process argv (including the node + script entries). */
   readonly argv: readonly string[];
@@ -128,6 +134,8 @@ export interface RouteCLIOptions {
   readonly oneShotCLI: (userMessage: string) => Promise<number>;
   /** Resume a prior session through the TUI. Returns the exit code. */
   readonly resumeTUI: (args: ResumeTUIArgs) => Promise<number>;
+  /** Continue the newest prior session for this project. Returns the exit code. */
+  readonly continueTUI: (args: ContinueTUIArgs) => Promise<number>;
 }
 
 /**
@@ -142,10 +150,13 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
   // treat as the prompt (after stripping routing flags).
   const userArgv = opts.argv.slice(2);
   const hasNoTuiFlag = userArgv.includes("--no-tui");
-  const resumeId = extractFlagValue(userArgv, "--resume");
+  const hasContinueFlag =
+    userArgv.includes("--continue") || userArgv.includes("-c");
+  const resumeId =
+    extractFlagValue(userArgv, "--resume") ?? extractFlagValue(userArgv, "-r");
   const prompt = stripRoutingFlags(userArgv).join(" ").trim();
 
-  // 1. `--resume <id>` always boots through the TUI resume path. Errors
+  // 1. `--resume <id>` / `-r <id>` always boots through the TUI resume path. Errors
   //    inside `resumeTUI` (missing session, corrupt rollout, etc.) are
   //    surfaced via its return code; the caller owns emitting the
   //    `agenc: session not found: <id>` message.
@@ -153,26 +164,33 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
     return opts.resumeTUI({ resumeId });
   }
 
-  // 2. Piped stdin keeps the legacy one-shot path — scripts that pipe
+  // 2. `--continue` / `-c` is explicit resume of the latest project
+  //    session. It is deliberately separate from plain `agenc`, which
+  //    must always start a fresh conversation.
+  if (hasContinueFlag) {
+    return opts.continueTUI({});
+  }
+
+  // 3. Piped stdin keeps the legacy one-shot path — scripts that pipe
   //    into `agenc` must continue to work unchanged.
   if (!opts.isTTY) {
     return opts.oneShotCLI(prompt);
   }
 
-  // 3. `--no-tui` is an explicit operator override. Even inside a TTY
+  // 4. `--no-tui` is an explicit operator override. Even inside a TTY
   //    the caller gets the legacy single-shot path.
   if (hasNoTuiFlag) {
     return opts.oneShotCLI(prompt);
   }
 
-  // 4. Interactive TTY → boot the Ink TUI. Forward any argv prompt as
+  // 5. Interactive TTY → boot the Ink TUI. Forward any argv prompt as
   //    `initialPrompt` so the composer can pre-populate it (actual
   //    wiring through the composer reducer is a follow-up).
   if (opts.isStdoutTTY) {
     return opts.bootTUI(prompt.length > 0 ? { initialPrompt: prompt } : {});
   }
 
-  // 5. Fallback — stdout is not a TTY (captured pipe, CI runner, etc.)
+  // 6. Fallback — stdout is not a TTY (captured pipe, CI runner, etc.)
   //    so the TUI would scribble escape codes into logs. Fall back to
   //    the one-shot CLI.
   return opts.oneShotCLI(prompt);

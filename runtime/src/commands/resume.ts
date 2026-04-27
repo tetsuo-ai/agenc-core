@@ -90,6 +90,15 @@ export function readFirstUserPreview(path: string): string {
 function extractUserText(item: unknown): string | null {
   if (!item || typeof item !== "object") return null;
   const rec = item as Record<string, unknown>;
+  if (rec["type"] === "user_message") {
+    const payload = rec["payload"];
+    if (payload && typeof payload === "object") {
+      const message = (payload as Record<string, unknown>)["message"];
+      if (typeof message === "string") return message;
+    }
+    const message = rec["message"];
+    if (typeof message === "string") return message;
+  }
   // Try common shapes.
   if (typeof rec["content"] === "string" && rec["role"] === "user") {
     return rec["content"];
@@ -97,6 +106,10 @@ function extractUserText(item: unknown): string | null {
   const payload = rec["payload"];
   if (payload && typeof payload === "object") {
     return extractUserText(payload);
+  }
+  const msg = rec["msg"];
+  if (msg && typeof msg === "object") {
+    return extractUserText(msg);
   }
   // AgenC runtime rollout sometimes wraps ResponseItem; look for text fields.
   const text = rec["text"];

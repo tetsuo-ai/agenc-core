@@ -64,6 +64,26 @@ describe("resumeCommand helpers", () => {
     expect(readFirstUserPreview(file)).toBe("hello there world");
   });
 
+  it("readFirstUserPreview handles runtime user_message events", () => {
+    const file = join(workHome, "runtime-preview.jsonl");
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({ type: "session_meta", sessionId: "sess" }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: {
+            msg: {
+              type: "user_message",
+              payload: { message: "resume this runtime session" },
+            },
+          },
+        }),
+      ].join("\n"),
+    );
+    expect(readFirstUserPreview(file)).toBe("resume this runtime session");
+  });
+
   it("parseResumeArgs accepts --last and a session id", () => {
     expect(parseResumeArgs("")).toEqual({ last: false });
     expect(parseResumeArgs("--last")).toEqual({ last: true });

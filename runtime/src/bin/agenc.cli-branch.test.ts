@@ -16,6 +16,7 @@ import {
   routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
+  type ContinueTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
 import {
@@ -29,7 +30,8 @@ function makeHandles() {
   const bootTUI = vi.fn(async (_args: BootTUIArgs) => 0);
   const oneShotCLI = vi.fn(async (_msg: string) => 0);
   const resumeTUI = vi.fn(async (_args: ResumeTUIArgs) => 0);
-  return { bootTUI, oneShotCLI, resumeTUI };
+  const continueTUI = vi.fn(async (_args: ContinueTUIArgs) => 0);
+  return { bootTUI, oneShotCLI, resumeTUI, continueTUI };
 }
 
 const NODE = "/usr/bin/node";
@@ -37,7 +39,7 @@ const SCRIPT = "/opt/agenc/bin/agenc.js";
 
 describe("routeCLI (T12 Wave 5-B)", () => {
   it("piped stdin + argv routes to oneShotCLI with the argv prompt", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
       argv: [NODE, SCRIPT, "help", "me"],
       isTTY: false,
@@ -45,6 +47,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(exit).toBe(0);
     expect(oneShotCLI).toHaveBeenCalledWith("help me");
@@ -53,7 +56,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
   });
 
   it("TTY with no argv routes to bootTUI without an initialPrompt", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
       argv: [NODE, SCRIPT],
       isTTY: true,
@@ -61,6 +64,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(exit).toBe(0);
     expect(bootTUI).toHaveBeenCalledTimes(1);
@@ -72,7 +76,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
   });
 
   it("TTY with argv routes to bootTUI with initialPrompt populated", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
       argv: [NODE, SCRIPT, "build", "a", "game"],
       isTTY: true,
@@ -80,6 +84,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(exit).toBe(0);
     expect(bootTUI).toHaveBeenCalledWith({ initialPrompt: "build a game" });
@@ -87,7 +92,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
   });
 
   it("startup config flags are stripped before the TUI initialPrompt is built", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
       argv: [
         NODE,
@@ -109,6 +114,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(exit).toBe(0);
     expect(bootTUI).toHaveBeenCalledWith({ initialPrompt: "build a game" });
@@ -117,7 +123,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
   });
 
   it("--no-tui flag forces oneShotCLI even in an interactive TTY", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
       argv: [NODE, SCRIPT, "--no-tui", "hello"],
       isTTY: true,
@@ -125,6 +131,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(exit).toBe(0);
     expect(oneShotCLI).toHaveBeenCalledWith("hello");
@@ -132,7 +139,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
   });
 
   it("--resume <id> dispatches through resumeTUI", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({
       argv: [NODE, SCRIPT, "--resume", "abc-123"],
       isTTY: true,
@@ -140,6 +147,7 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(exit).toBe(0);
     expect(resumeTUI).toHaveBeenCalledWith({ resumeId: "abc-123" });
@@ -147,8 +155,25 @@ describe("routeCLI (T12 Wave 5-B)", () => {
     expect(oneShotCLI).not.toHaveBeenCalled();
   });
 
+  it("-r <id> dispatches through resumeTUI", async () => {
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
+    const exit = await routeCLI({
+      argv: [NODE, SCRIPT, "-r", "short-id"],
+      isTTY: true,
+      isStdoutTTY: true,
+      bootTUI,
+      oneShotCLI,
+      resumeTUI,
+      continueTUI,
+    });
+    expect(exit).toBe(0);
+    expect(resumeTUI).toHaveBeenCalledWith({ resumeId: "short-id" });
+    expect(bootTUI).not.toHaveBeenCalled();
+    expect(oneShotCLI).not.toHaveBeenCalled();
+  });
+
   it("--resume=<id> (equals form) also dispatches through resumeTUI", async () => {
-    const { bootTUI, oneShotCLI, resumeTUI } = makeHandles();
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     await routeCLI({
       argv: [NODE, SCRIPT, "--resume=def-456"],
       isTTY: true,
@@ -156,8 +181,41 @@ describe("routeCLI (T12 Wave 5-B)", () => {
       bootTUI,
       oneShotCLI,
       resumeTUI,
+      continueTUI,
     });
     expect(resumeTUI).toHaveBeenCalledWith({ resumeId: "def-456" });
+  });
+
+  it("--continue dispatches through continueTUI", async () => {
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
+    const exit = await routeCLI({
+      argv: [NODE, SCRIPT, "--continue"],
+      isTTY: true,
+      isStdoutTTY: true,
+      bootTUI,
+      oneShotCLI,
+      resumeTUI,
+      continueTUI,
+    });
+    expect(exit).toBe(0);
+    expect(continueTUI).toHaveBeenCalledWith({});
+    expect(bootTUI).not.toHaveBeenCalled();
+    expect(oneShotCLI).not.toHaveBeenCalled();
+    expect(resumeTUI).not.toHaveBeenCalled();
+  });
+
+  it("-c dispatches through continueTUI", async () => {
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
+    await routeCLI({
+      argv: [NODE, SCRIPT, "-c"],
+      isTTY: true,
+      isStdoutTTY: true,
+      bootTUI,
+      oneShotCLI,
+      resumeTUI,
+      continueTUI,
+    });
+    expect(continueTUI).toHaveBeenCalledWith({});
   });
 });
 
@@ -204,6 +262,7 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
   it("extractFlagValue handles both -- and --= forms", () => {
     expect(extractFlagValue(["--resume", "abc"], "--resume")).toBe("abc");
     expect(extractFlagValue(["--resume=abc"], "--resume")).toBe("abc");
+    expect(extractFlagValue(["-r", "abc"], "-r")).toBe("abc");
     expect(extractFlagValue(["--resume"], "--resume")).toBeNull();
     expect(
       extractFlagValue(["--resume", "--other", "abc"], "--resume"),
@@ -221,6 +280,13 @@ describe("extractFlagValue + stripRoutingFlags helpers", () => {
     expect(stripRoutingFlags(["--resume=abc", "world"])).toStrictEqual([
       "world",
     ]);
+    expect(stripRoutingFlags(["-r", "abc", "hello"])).toStrictEqual([
+      "hello",
+    ]);
+    expect(stripRoutingFlags(["--continue", "hello"])).toStrictEqual([
+      "hello",
+    ]);
+    expect(stripRoutingFlags(["-c", "hello"])).toStrictEqual(["hello"]);
     expect(
       stripRoutingFlags([
         "--provider",
