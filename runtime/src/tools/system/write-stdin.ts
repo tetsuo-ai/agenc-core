@@ -6,6 +6,10 @@ import {
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
 } from "../../unified-exec/index.js";
+import {
+  formatUnifiedExecToolContent,
+  unifiedExecCodeModeResult,
+} from "./exec-result-format.js";
 
 export interface WriteStdinToolConfig {
   readonly cwd?: string;
@@ -143,8 +147,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
         });
         const isError = output.exitCode !== null && output.exitCode !== 0;
         return {
-          content: safeStringify(output),
+          content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,
+          codeModeResult: unifiedExecCodeModeResult(output),
           metadata: {
             sessionId,
             ...(output.process_id !== undefined

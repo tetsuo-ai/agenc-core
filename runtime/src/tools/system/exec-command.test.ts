@@ -28,6 +28,21 @@ function completedExecOutput(stdout: string): ExecCommandToolOutput {
   };
 }
 
+function failedExecOutput(stderr: string, exitCode: number): ExecCommandToolOutput {
+  return {
+    output: stderr,
+    stdout: "",
+    stderr,
+    exitCode,
+    exit_code: exitCode,
+    durationMs: 12,
+    wall_time_seconds: 0.012,
+    timedOut: false,
+    truncated: false,
+    original_token_count: 3,
+  };
+}
+
 const require = createRequire(import.meta.url);
 const hasPtySupport = (() => {
   try {
@@ -114,6 +129,45 @@ describe("exec_command tool", () => {
         workdir: root,
       }),
     );
+    expect(result.content).toContain("Process exited with code 0");
+    expect(result.content).toContain("Output:\nran");
+    expect(result.codeModeResult).toMatchObject({
+      wall_time_seconds: 0.001,
+      exit_code: 0,
+      output: "ran",
+    });
+  });
+
+  test("returns Codex-style visible exit status for failed commands", async () => {
+    const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
+      async () => failedExecOutput("compiler failed\n", 2),
+    );
+    const manager: UnifiedExecProcessManagerLike = {
+      maxTimeoutMs: 30_000,
+      execCommand,
+      writeStdin: vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(
+        async () => completedExecOutput(""),
+      ),
+      closeAll: vi.fn<UnifiedExecProcessManagerLike["closeAll"]>(async () => {}),
+    };
+    const tool = createExecCommandTool({
+      cwd: root,
+      allowedPaths: [root],
+      unifiedExecManager: manager,
+    });
+
+    const result = await tool.execute({ cmd: "make", workdir: root });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Wall time: 0.0120 seconds");
+    expect(result.content).toContain("Process exited with code 2");
+    expect(result.content).toContain("Original token count: 3");
+    expect(result.content).toContain("Output:\ncompiler failed\n");
+    expect(result.codeModeResult).toMatchObject({
+      wall_time_seconds: 0.012,
+      exit_code: 2,
+      output: "compiler failed\n",
+    });
   });
 
   test("blocks shell redirection writes sent through write_stdin", async () => {
@@ -164,11 +218,12 @@ describe("exec_command tool", () => {
           tty: true,
           yield_time_ms: 250,
         });
-        const startedBody = JSON.parse(started.content) as {
-          session_id?: number;
-        };
+        const startedBody = started.codeModeResult as { session_id?: number };
         expect(started.isError).toBeUndefined();
         expect(startedBody.session_id).toEqual(expect.any(Number));
+        expect(started.content).toContain(
+          `Process running with session ID ${startedBody.session_id}`,
+        );
 
         const echoed = await writeStdin.execute({
           session_id: startedBody.session_id,
@@ -176,8 +231,8 @@ describe("exec_command tool", () => {
           yield_time_ms: 250,
         });
         expect(echoed.isError).toBeUndefined();
-        expect(JSON.parse(echoed.content)).toMatchObject({
-          stdout: expect.stringContaining("agenc-pty"),
+        expect(echoed.content).toContain("agenc-pty");
+        expect(echoed.codeModeResult).toMatchObject({
           session_id: startedBody.session_id,
         });
       } finally {

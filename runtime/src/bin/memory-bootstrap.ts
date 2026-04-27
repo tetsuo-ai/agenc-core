@@ -2,24 +2,91 @@ import { join } from "node:path";
 
 import type { Session } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
+import type { LLMMessage } from "../llm/types.js";
 import type {
   ExtractMemoriesFn,
   MemoryCandidate,
   TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
-import { memoryLayout } from "../prompts/memory/index.js";
+import { memoryLayout, scanMemoryDir } from "../prompts/memory/index.js";
 
 export const EXTRACT_MEMORIES_TIMEOUT_MS = 30_000;
 
-function buildExtractPrompt(transcript: string): string {
+function countModelVisibleMessages(messages: readonly LLMMessage[]): number {
+  let count = 0;
+  for (const message of messages) {
+    if (message.role === "user" || message.role === "assistant") count += 1;
+  }
+  return count;
+}
+
+function snapshotHistoryMessages(session: Session): readonly LLMMessage[] {
+  const maybeSession = session as Partial<
+    Pick<Session, "snapshotHistoryMessages">
+  >;
+  if (typeof maybeSession.snapshotHistoryMessages !== "function") return [];
+  try {
+    return maybeSession.snapshotHistoryMessages();
+  } catch {
+    return [];
+  }
+}
+
+async function formatExistingMemoryManifest(memoryDir: string): Promise<string> {
+  const scan = await scanMemoryDir(memoryDir, {
+    maxFiles: 200,
+    maxBytes: 25_000,
+  });
+  if (scan.entries.length === 0) return "";
+  const lines = scan.entries.map((entry) => {
+    const name = entry.frontmatter.name ?? entry.filePath;
+    const type = entry.frontmatter.type ?? "unknown";
+    const description = entry.frontmatter.description ?? "";
+    return description.length > 0
+      ? `- ${name} (${type}) — ${description}`
+      : `- ${name} (${type})`;
+  });
+  if (scan.truncated) {
+    lines.push(
+      `- Existing memory scan truncated (${scan.filesDropped} files, ${scan.bytesDropped} byte-capped entries dropped).`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function buildExtractPrompt(params: {
+  readonly transcript: string;
+  readonly newMessageCount: number;
+  readonly existingMemories: string;
+}): string {
+  const manifest =
+    params.existingMemories.length > 0
+      ? [
+          "",
+          "",
+          "## Existing memory files",
+          "",
+          params.existingMemories,
+          "",
+          "Check this list before emitting a duplicate candidate — update an existing topic semantically rather than creating a duplicate.",
+        ].join("\n")
+      : "";
+
   return [
-    "You are extracting durable memories from the current session. Input: the last N assistant+user messages. Output: JSON array of candidates with shape:",
-    "[ { \"name\": \"<slug>\", \"description\": \"<one-line>\", \"type\": \"user\"|\"feedback\"|\"project\"|\"reference\", \"body\": \"<the memory content>\" } ]",
-    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references.",
-    "Output ONLY a single JSON array. No prose before or after. No markdown code fences (no ```json, no ```). The very first character must be `[` and the very last must be `]`.",
+    `You are now acting as the memory extraction subagent. Analyze the most recent ~${params.newMessageCount} messages above and use them to update your persistent memory systems.`,
     "",
-    "--- TRANSCRIPT ---",
-    transcript,
+    "Available tools: none. AgenC owns memory writes in the parent runtime for this extraction path, so you must return JSON candidates only.",
+    "",
+    `You MUST only use content from the last ~${params.newMessageCount} messages to update your persistent memories. Do not waste any turns attempting to investigate or verify that content further — no grepping source files, no reading code to confirm a pattern exists, no git commands.` +
+      manifest,
+    "",
+    "Output: JSON array of candidates with shape:",
+    "[ { \"name\": \"<slug>\", \"description\": \"<one-line>\", \"type\": \"user\"|\"feedback\"|\"project\"|\"reference\", \"body\": \"<the memory content>\" } ]",
+    "Only extract non-ephemeral, user-specific, durable facts. Skip code patterns, ephemeral state, PR/commit references, tool outputs, task status, and the extraction instructions themselves.",
+    "Output ONLY a single JSON array. No prose before or after. No markdown code fences (no ```json, no ```). The very first character must be `[` and the very last must be `]`.",
+    ...(params.transcript.trim().length > 0
+      ? ["", "--- TRANSCRIPT FALLBACK ---", params.transcript]
+      : []),
   ].join("\n");
 }
 
@@ -169,6 +236,18 @@ export function buildExtractMemoriesViaSubagent(params: {
       const { control, registry } = (
         await import("./delegate-tool.js")
       ).ensureAgentControl(session);
+      const parentMessages = snapshotHistoryMessages(session);
+      const historyMessageCount = countModelVisibleMessages(parentMessages);
+      const newMessageCount =
+        historyMessageCount > 0
+          ? historyMessageCount
+          : transcript.trim().length > 0
+            ? 1
+            : 0;
+      if (newMessageCount === 0) return [];
+      const existingMemories = await formatExistingMemoryManifest(
+        params.memoryDir,
+      );
 
       const deadline = new Promise<never>((_, reject) => {
         setTimeout(
@@ -187,8 +266,14 @@ export function buildExtractMemoriesViaSubagent(params: {
         parentPath: "/root",
         control,
         registry,
-        taskPrompt: buildExtractPrompt(transcript),
+        taskPrompt: buildExtractPrompt({
+          transcript,
+          newMessageCount,
+          existingMemories,
+        }),
         role: "explorer",
+        forkMode: { kind: "full_history" },
+        toolAllowlist: [],
       });
 
       const outcome = await Promise.race([dispatch, deadline]);

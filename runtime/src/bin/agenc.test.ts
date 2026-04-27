@@ -988,9 +988,73 @@ describe("buildExtractMemoriesViaSubagent adapter", () => {
     const call = delegateFn.mock.calls[0]![0];
     expect(call.role).toBe("explorer");
     expect(call.parentPath).toBe("/root");
+    expect(call.forkMode).toEqual({ kind: "full_history" });
+    expect(call.toolAllowlist).toEqual([]);
     expect(call.taskPrompt).toMatch(/JSON array/);
     expect(call.taskPrompt).toMatch(/a transcript/);
+    expect(call.taskPrompt).toMatch(/memory extraction subagent/);
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("forks parent history instead of relying on a raw transcript paste", async () => {
+    const emit = vi.fn();
+    const session = {
+      emit,
+      nextInternalSubId: () => "sub-h",
+      snapshotHistoryMessages: () => [
+        { role: "user", content: "remember that I prefer focused diffs" },
+        { role: "assistant", content: "Noted." },
+      ],
+    } as never;
+    const delegateFn = vi.fn().mockResolvedValue({
+      kind: "sync_completed",
+      thread: { threadId: "t1", live: { agentPath: "/root/ex" } },
+      result: {
+        threadId: "t1",
+        outcome: "completed",
+        durationMs: 5,
+        finalMessage: "[]",
+        toolCallCount: 0,
+      },
+    });
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => session,
+      memoryDir: "/tmp/mem",
+      delegateFn: delegateFn as never,
+    });
+
+    await fn("", {
+      memoryDir: "/tmp/mem",
+      memoryMdPath: "/tmp/mem/MEMORY.md",
+    });
+
+    const call = delegateFn.mock.calls[0]![0];
+    expect(call.forkMode).toEqual({ kind: "full_history" });
+    expect(call.toolAllowlist).toEqual([]);
+    expect(call.taskPrompt).toContain("most recent ~2 messages above");
+    expect(call.taskPrompt).not.toContain("--- TRANSCRIPT ---");
+  });
+
+  it("does not spawn the extractor when both history and transcript are empty", async () => {
+    const session = {
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-empty",
+      snapshotHistoryMessages: () => [],
+    } as never;
+    const delegateFn = vi.fn();
+    const fn = buildExtractMemoriesViaSubagent({
+      session: () => session,
+      memoryDir: "/tmp/mem",
+      delegateFn: delegateFn as never,
+    });
+
+    const out = await fn("", {
+      memoryDir: "/tmp/mem",
+      memoryMdPath: "/tmp/mem/MEMORY.md",
+    });
+
+    expect(out).toEqual([]);
+    expect(delegateFn).not.toHaveBeenCalled();
   });
 
   it("emits memory_extract_parse_failed warning and returns [] on malformed JSON", async () => {

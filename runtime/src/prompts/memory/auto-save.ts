@@ -184,7 +184,27 @@ export function isMemoryWorthy(candidate: MemoryCandidate): boolean {
   if (body.length < 20) return false;
   if (candidate.frontmatter.name === undefined) return false;
   if (candidate.frontmatter.type === undefined) return false;
+  const instructionLikeText = [
+    candidate.frontmatter.name,
+    candidate.frontmatter.description ?? "",
+    body,
+  ].join("\n");
+  if (looksLikeExtractionInstruction(instructionLikeText)) return false;
   return true;
+}
+
+function looksLikeExtractionInstruction(text: string): boolean {
+  const patterns = [
+    /memory extraction subagent/i,
+    /extract(?:ing)? durable memories/i,
+    /durable memor(?:y|ies).{0,80}extract/i,
+    /Output ONLY a single JSON array/i,
+    /JSON array of candidates/i,
+    /--- TRANSCRIPT(?: FALLBACK)? ---/i,
+    /Your parent will see your final response/i,
+    /subagent spawned to complete a specific task/i,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
 }
 
 // ─────────────────────────────────────────────────────────────────────

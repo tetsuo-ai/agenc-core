@@ -143,6 +143,21 @@ describe("isMemoryWorthy", () => {
       }),
     ).toBe(true);
   });
+
+  test("rejects extraction-instruction artifacts", () => {
+    expect(
+      isMemoryWorthy({
+        filePath: "/t.md",
+        frontmatter: {
+          name: "agenc-durable-memories-extraction-task",
+          type: "project",
+          extra: {},
+        },
+        body:
+          "This records the memory extraction subagent task and says to output ONLY a single JSON array.",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("maybeAutoSaveMemory", () => {
