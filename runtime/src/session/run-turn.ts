@@ -646,6 +646,29 @@ export function buildPrompt(
 }
 
 /**
+ * Insert runtime context/attachment messages without moving the stable
+ * system-prompt prefix into the middle of the API transcript. OpenClaude keeps
+ * the system prompt separate from conversation messages; in AgenC the prompt
+ * is represented as leading `role: "system"` messages before provider wiring,
+ * so user-channel context belongs immediately after that leading prefix.
+ */
+export function insertContextMessagesAfterLeadingSystem(
+  messages: ReadonlyArray<LLMMessage>,
+  contextMessages: ReadonlyArray<LLMMessage>,
+): LLMMessage[] {
+  if (contextMessages.length === 0) return [...messages];
+  let insertAt = 0;
+  while (messages[insertAt]?.role === "system") {
+    insertAt += 1;
+  }
+  return [
+    ...messages.slice(0, insertAt),
+    ...contextMessages,
+    ...messages.slice(insertAt),
+  ];
+}
+
+/**
  * Port of AgenC runtime `built_tools` (turn.rs:1130-1268). Assembles the
  * tool list visible to the model. AgenC runtime threads through connectors,
  * MCP tools, skill injections, plan-mode restrictions, etc. AgenC's
@@ -852,10 +875,10 @@ async function tryRunSamplingRequest(
   if (attachments.length > 0) {
     const attachmentMessages = attachmentsToMessages(attachments);
     if (attachmentMessages.length > 0) {
-      state.messagesForQuery = [
-        ...attachmentMessages,
-        ...state.messagesForQuery,
-      ];
+      state.messagesForQuery = insertContextMessagesAfterLeadingSystem(
+        state.messagesForQuery,
+        attachmentMessages,
+      );
     }
   }
 

@@ -124,7 +124,7 @@ function buildProviderMessages(
   const baseInstructions = request.baseInstructions.trim();
   if (
     baseInstructions.length === 0 ||
-    input.some((message) => message.role === "system")
+    input[0]?.role === "system"
   ) {
     return input;
   }

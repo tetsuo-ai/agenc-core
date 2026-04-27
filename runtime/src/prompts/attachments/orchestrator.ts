@@ -10,8 +10,8 @@
  * Call site: `runtime/src/session/run-turn.ts:tryRunSamplingRequest`
  * between `prepareContext()` and `buildSamplingRequestContract()`. The
  * orchestrator's `Attachment[]` output is converted to `LLMMessage[]` via
- * `./messages.ts:attachmentsToMessages` and prepended to
- * `state.messagesForQuery`.
+ * `./messages.ts:attachmentsToMessages` and inserted after the leading
+ * system-prompt prefix in `state.messagesForQuery`.
  *
  * Producers are registered statically in `PRODUCERS` below — adding a new
  * producer means: (1) declare its variant in `./types.ts`, (2) implement
