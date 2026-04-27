@@ -6,6 +6,7 @@ import {
   type ToolRegistry,
 } from "../tool-registry.js";
 import { buildWorkflowToolController } from "./workflow-controller.js";
+import { createModelFacingTools } from "./model-facing-tools.js";
 
 export interface BootstrapToolRegistryOptions {
   readonly workspaceRoot: string;
@@ -22,6 +23,19 @@ export interface BootstrapToolRegistryOptions {
 export function buildBootstrapToolRegistry(
   options: BootstrapToolRegistryOptions,
 ): ToolRegistry {
+  const extraTools = [
+    ...(options.toolRegistryOptions?.extraTools ?? []),
+    ...createModelFacingTools({
+      workspaceRoot: options.workspaceRoot,
+      ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+      getSession: options.getSession,
+      ...(options.toolRegistryOptions?.unifiedExecManager !== undefined
+        ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }
+        : {}),
+      emitWarning: options.emitWarning,
+      env: process.env,
+    }),
+  ];
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
     mcpToolsProvider: options.mcpManager,
@@ -31,5 +45,6 @@ export function buildBootstrapToolRegistry(
       emitWarning: options.emitWarning,
     }),
     ...(options.toolRegistryOptions ?? {}),
+    extraTools,
   });
 }

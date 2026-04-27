@@ -24,7 +24,6 @@ import { safeStringify } from "./tools/types.js";
 import {
   createFilesystemTools,
   createCodingTools,
-  createHttpTools,
   createBashTool,
   createExecCommandTool,
   createWriteStdinTool,
@@ -362,8 +361,7 @@ export interface BuildToolRegistryOptions {
  *
  * Registers: filesystem (readFile, writeFile, editFile, appendFile,
  * listDir, stat, mkdir, delete, move, glob, grep), coding helpers,
- * http (fetch/get/post/browse/extractLinks/htmlToMarkdown), bash,
- * and planning tools.
+ * bash, and planning tools.
  *
  * The default visible set stays small. Heavy AgenC-owned git/symbol
  * inventory tools are registered as deferred entries and load through
@@ -398,9 +396,6 @@ export function buildToolRegistry(
           .getSpecs()
           .map((spec) => catalogEntryForTool(spec.tool, spec)),
       onDiscoverTools: markDiscovered,
-    }),
-    ...createHttpTools({
-      allowedDomains: ["*"],
     }),
     createExecCommandTool({
       cwd: options.workspaceRoot,
@@ -472,7 +467,7 @@ export function buildToolRegistry(
   // Tools without explicit metadata get sensible defaults:
   //   - readFile/listDir/stat/glob/grep → SharedRead + isReadOnly
   //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
-  //   - http.*                            → SharedRead (network reads)
+  //   - WebFetch/WebSearch                → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
   function currentMcpTools(): readonly Tool[] {
     return (options.mcpToolsProvider?.getTools() ?? []).map((tool) => {

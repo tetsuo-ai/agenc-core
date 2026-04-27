@@ -9,13 +9,6 @@
  */
 
 export {
-  createHttpTools,
-  isDomainAllowed,
-  type HttpToolConfig,
-  type HttpResponse,
-} from "./http.js";
-
-export {
   createFilesystemTools,
   isPathAllowed,
   recordSessionRead,

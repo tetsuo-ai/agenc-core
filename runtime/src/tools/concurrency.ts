@@ -283,9 +283,9 @@ export function isWriteFilesystemTool(name: string): boolean {
   );
 }
 
-/** Network tools (http.fetch/get/post/browse/extractLinks/htmlToMarkdown). */
+/** Network tools. Raw system HTTP tools are not exposed; product web tools are read-only. */
 export function isNetworkTool(name: string): boolean {
-  return name.startsWith("http.") || name === "system.browse";
+  return name === "WebFetch" || name === "WebSearch";
 }
 
 /** The bash tool family. Stays `background_terminal` — each invocation

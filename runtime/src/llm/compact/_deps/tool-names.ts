@@ -12,8 +12,8 @@ export const FILE_EDIT_TOOL_NAME = "Edit";
 export const GLOB_TOOL_NAME = "Glob";
 export const GREP_TOOL_NAME = "Grep";
 export const NOTEBOOK_EDIT_TOOL_NAME = "Edit";
-export const WEB_FETCH_TOOL_NAME = "system.httpFetch";
-export const WEB_SEARCH_TOOL_NAME = "system.httpFetch";
+export const WEB_FETCH_TOOL_NAME = "WebFetch";
+export const WEB_SEARCH_TOOL_NAME = "WebSearch";
 export const SHELL_TOOL_NAMES: readonly string[] = ["system.bash"];
 
 export const FILE_UNCHANGED_STUB =

@@ -362,6 +362,9 @@ export interface McpManager {
   effectiveServers(config: unknown, auth: unknown): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
   refreshFromConfig?(config: unknown): Promise<McpRefreshResult>;
+  getResources?(): Promise<ReadonlyArray<unknown>>;
+  getResourcesByServer?(name: string): Promise<ReadonlyArray<unknown>>;
+  readResource?(namespacedName: string): Promise<unknown | null>;
   /**
    * Live runtime readiness seam used by the delegate/subagent path.
    * Optional so compatibility shims remain structurally valid, but the

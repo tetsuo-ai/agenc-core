@@ -68,9 +68,13 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "Glob",
     "LSP",
     "ToolSearch",
+    "WebFetch",
+    "WebSearch",
     // MCP resource read
     "ListMcpResources",
     "ReadMcpResource",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
     // Task/agent metadata
     "TodoWrite",
     "TaskCreate",
@@ -79,10 +83,16 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "TaskList",
     "TaskStop",
     "TaskOutput",
+    "wait_agent",
+    "list_agents",
+    "resume_agent",
     // Plan-mode / UI
     "AskUserQuestion",
     "EnterPlanMode",
     "ExitPlanMode",
+    "VerifyPlanExecution",
+    "Brief",
+    "SendUserMessage",
     // Team coordination
     "TeamCreate",
     "TeamDelete",
