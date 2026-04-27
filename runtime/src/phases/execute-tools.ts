@@ -385,6 +385,7 @@ function recordCompletedToolCall(
         callId: toolCall.id,
         result: result.content,
         isError: result.isError === true,
+        ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
       },
     },
   }, {

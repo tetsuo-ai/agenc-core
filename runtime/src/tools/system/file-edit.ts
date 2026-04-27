@@ -44,6 +44,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -400,7 +401,15 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           absoluteFilePath,
           new_string,
         );
-        return { content: `Created file ${file_path}.` };
+        return {
+          content: `Created file ${file_path}.`,
+          metadata: buildFileMutationMetadata({
+            filePath: file_path,
+            operation: "create",
+            beforeText: "",
+            afterText: new_string,
+          }),
+        };
       }
 
       // Nonexistent file with non-empty old_string → error. The hint
@@ -430,7 +439,16 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
           absoluteFilePath,
           new_string,
         );
-        return { content: successText(file_path, false) };
+        return {
+          content: successText(file_path, false),
+          metadata: buildFileMutationMetadata({
+            filePath: file_path,
+            operation: "edit",
+            beforeText: snapshot.content,
+            afterText: new_string,
+            replacements: 1,
+          }),
+        };
       }
 
       // Read-before-write enforcement. User-initiated `FileRead`
@@ -535,7 +553,16 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // emits both events for incremental diagnostics; AgenC has no
       // LSP today so nothing to notify.
 
-      return { content: successText(file_path, replace_all) };
+      return {
+        content: successText(file_path, replace_all),
+        metadata: buildFileMutationMetadata({
+          filePath: file_path,
+          operation: "edit",
+          beforeText: snapshot.content,
+          afterText: updated,
+          replacements: matches,
+        }),
+      };
     },
   };
 }

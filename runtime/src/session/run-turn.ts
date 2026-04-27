@@ -1145,7 +1145,11 @@ export async function drainInFlight(
         close?: () => void;
         getRemainingResults?: () => AsyncIterable<{
           toolCall: { id: string; name: string };
-          result: { content: string; isError?: boolean };
+          result: {
+            content: string;
+            isError?: boolean;
+            metadata?: Record<string, unknown>;
+          };
           status: "completed" | "synthetic_error";
         }>;
       }
@@ -1170,6 +1174,9 @@ export async function drainInFlight(
                 callId,
                 result: result.content,
                 isError: result.isError === true,
+                ...(result.metadata !== undefined
+                  ? { metadata: result.metadata }
+                  : {}),
               },
             },
           },

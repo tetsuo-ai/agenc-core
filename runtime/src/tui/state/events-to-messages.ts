@@ -667,6 +667,9 @@ export function eventsToMessages(
             messages[callIndex] = {
               ...messages[callIndex]!,
               toolResultContent: truncateTranscriptText(event.result.content),
+              ...(event.result.metadata !== undefined
+                ? { toolResultMetadata: event.result.metadata }
+                : {}),
               isError: event.result.isError === true,
               isComplete: true,
               timestamp,
@@ -681,6 +684,9 @@ export function eventsToMessages(
               toolName: event.toolCall.name,
               toolArgs: safeJsonParse(event.toolCall.arguments),
               toolResultContent: resultContent,
+              ...(event.result.metadata !== undefined
+                ? { toolResultMetadata: event.result.metadata }
+                : {}),
               isError: event.result.isError === true,
               timestamp,
             });
@@ -1015,6 +1021,9 @@ export function eventsToMessages(
           messages[toolIndex!] = {
             ...toolMessage,
             toolResultContent: truncateTranscriptText(event.payload.result),
+            ...(event.payload.metadata !== undefined
+              ? { toolResultMetadata: event.payload.metadata }
+              : {}),
             isError: event.payload.isError,
             isComplete: true,
             timestamp,
@@ -1033,6 +1042,9 @@ export function eventsToMessages(
               ? { toolArgs: toolArgsByCallId.get(event.payload.callId) }
               : {}),
             toolResultContent: resultContent,
+            ...(event.payload.metadata !== undefined
+              ? { toolResultMetadata: event.payload.metadata }
+              : {}),
             isError: event.payload.isError,
             timestamp,
           });

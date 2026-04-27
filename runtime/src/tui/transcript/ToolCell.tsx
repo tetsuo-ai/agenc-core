@@ -15,7 +15,6 @@ import { renderHighlightedCodeLines, type HighlightedCodeLine } from "../render/
 import {
   looksLikeDiffText,
   renderDiffDisplayLines,
-  renderSourceMutationDisplayLines,
 } from "../render/diff-display.js";
 import { theme } from "../theme.js";
 
@@ -40,6 +39,7 @@ export interface ToolCellProps {
   readonly isComplete?: boolean;
   readonly isError?: boolean;
   readonly result?: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
   readonly progress?: string;
 }
 
@@ -59,6 +59,14 @@ interface NumberedCodeLine {
   readonly prefix: string;
   readonly text: string;
   readonly plainText: string;
+}
+
+interface FileMutationSummary {
+  readonly filePath: string;
+  readonly operation: "create" | "write" | "edit";
+  readonly additions: number;
+  readonly removals: number;
+  readonly replacements?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -267,41 +275,40 @@ function buildPresentation(
 ): ToolPresentation {
   const family = classifyTool(toolName);
   const target = toolTarget(family, toolName, toolArgs);
-  const argsSummary = compactJson(toolArgs);
   switch (family) {
     case "read":
       return {
         family,
         target,
-        argsSummary,
+        argsSummary: "",
         preserveResultLines: true,
       };
     case "write":
       return {
         family,
         target,
-        argsSummary,
+        argsSummary: "",
         preserveResultLines: false,
       };
     case "edit":
       return {
         family,
         target,
-        argsSummary,
+        argsSummary: "",
         preserveResultLines: false,
       };
     case "mcp":
       return {
         family,
         target,
-        argsSummary,
+        argsSummary: "",
         preserveResultLines: false,
       };
     case "search":
       return {
         family,
         target,
-        argsSummary,
+        argsSummary: "",
         preserveResultLines: false,
       };
     case "exec":
@@ -315,7 +322,7 @@ function buildPresentation(
       return {
         family,
         target,
-        argsSummary,
+        argsSummary: compactJson(toolArgs),
         preserveResultLines: false,
       };
   }
@@ -336,6 +343,89 @@ function normalizeResult(
   if (structured !== null) return structured.trimEnd();
   if (family === "mcp") return stripMcpEnvelope(sanitized);
   return sanitized.trimEnd();
+}
+
+function readFileMutationSummary(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): FileMutationSummary | null {
+  if (!isRecord(metadata)) return null;
+  const ui = metadata.ui;
+  if (!isRecord(ui) || ui.kind !== "file_mutation") return null;
+  const filePath = typeof ui.filePath === "string" ? ui.filePath : "";
+  const operation =
+    ui.operation === "create" ||
+    ui.operation === "write" ||
+    ui.operation === "edit"
+      ? ui.operation
+      : undefined;
+  const additions = typeof ui.additions === "number" ? ui.additions : undefined;
+  const removals = typeof ui.removals === "number" ? ui.removals : undefined;
+  const replacements =
+    typeof ui.replacements === "number" ? ui.replacements : undefined;
+  if (
+    !filePath ||
+    operation === undefined ||
+    additions === undefined ||
+    removals === undefined
+  ) {
+    return null;
+  }
+  return {
+    filePath,
+    operation,
+    additions,
+    removals,
+    ...(replacements !== undefined ? { replacements } : {}),
+  };
+}
+
+function pluralize(
+  count: number,
+  singular: string,
+  plural = `${singular}s`,
+): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function summarizeFileMutation(summary: FileMutationSummary): string {
+  if (summary.operation === "create") {
+    return summary.additions > 0
+      ? `Added ${pluralize(summary.additions, "line")}`
+      : "Created file";
+  }
+  const parts: string[] = [];
+  if (summary.additions > 0) {
+    parts.push(`Added ${pluralize(summary.additions, "line")}`);
+  }
+  if (summary.removals > 0) {
+    parts.push(
+      `${parts.length === 0 ? "Removed" : "removed"} ${pluralize(
+        summary.removals,
+        "line",
+      )}`,
+    );
+  }
+  if (parts.length > 0) return parts.join(", ");
+  if (summary.replacements !== undefined) {
+    return pluralize(summary.replacements, "replacement");
+  }
+  return "Updated file";
+}
+
+function compactToolErrorResult(family: ToolFamily, value: string): string {
+  if (value.includes("File has not been read yet")) {
+    return "File must be read first";
+  }
+  if (
+    value.includes("File does not exist") ||
+    value.includes("ENOENT") ||
+    value.startsWith("File not found")
+  ) {
+    return "File not found";
+  }
+  if (family === "edit") return "Error editing file";
+  if (family === "write") return "Error writing file";
+  return value;
 }
 
 function renderIndentedText(
@@ -394,48 +484,6 @@ function toolTitle(
       if (isError) return toolName ? `${toolName} Failed` : "Tool Failed";
       return toolName ?? (isComplete ? "Tool" : "Running Tool");
   }
-}
-
-function sourceMutationPreviewLines(
-  family: ToolFamily,
-  toolName: string | undefined,
-  toolArgs: unknown,
-): ReturnType<typeof renderSourceMutationDisplayLines> {
-  if (family !== "write" && family !== "edit") return [];
-  const filePath = readStringField(toolArgs, ["path", "file_path"]);
-  if (!filePath) return [];
-  const normalized = String(toolName ?? "").toLowerCase();
-
-  if (family === "write") {
-    const content = readRawStringField(toolArgs, ["content", "text", "body"]);
-    if (content === undefined) return [];
-    const mutationKind =
-      normalized.includes("append") ? "append" : "write";
-    return renderSourceMutationDisplayLines({
-      filePath,
-      mutationKind,
-      afterText: content,
-    });
-  }
-
-  const beforeText = readRawStringField(toolArgs, [
-    "old_string",
-    "oldString",
-    "before",
-  ]);
-  const afterText = readRawStringField(toolArgs, [
-    "new_string",
-    "newString",
-    "after",
-  ]);
-  if (beforeText === undefined || afterText === undefined) return [];
-  if (beforeText === afterText) return [];
-  return renderSourceMutationDisplayLines({
-    filePath,
-    mutationKind: "replace",
-    beforeText,
-    afterText,
-  });
 }
 
 function resultDiffLines(value: string): ReturnType<typeof renderDiffDisplayLines> {
@@ -532,6 +580,7 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   isComplete = false,
   isError = false,
   result,
+  metadata,
   progress,
 }) => {
   const presentation = useMemo(
@@ -550,21 +599,16 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     () => summarizeShellWriteBlock(result),
     [result],
   );
-  const mutationLines = useMemo(
-    () =>
-      sourceMutationPreviewLines(
-        presentation.family,
-        toolName,
-        toolArgs,
-      ),
-    [presentation.family, toolArgs, toolName],
+  const fileMutationSummary = useMemo(
+    () => readFileMutationSummary(metadata),
+    [metadata],
   );
   const diffDetailLines = useMemo(
     () =>
-      shellWriteBlock === null && normalizedResult.length > 0
+      shellWriteBlock === null && !isError && normalizedResult.length > 0
         ? resultDiffLines(normalizedResult)
         : [],
-    [normalizedResult, shellWriteBlock],
+    [isError, normalizedResult, shellWriteBlock],
   );
   const highlightedReadFilePath = readFilePathForHighlight(
     presentation.family,
@@ -598,9 +642,13 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   let detail = "";
   if (shellWriteBlock) {
     detail = shellWriteBlock.detail;
+  } else if (isError && normalizedResult.length > 0) {
+    detail = compactToolErrorResult(presentation.family, normalizedResult);
+  } else if (fileMutationSummary !== null) {
+    detail = summarizeFileMutation(fileMutationSummary);
   } else if (
     normalizedResult.length > 0 &&
-    !(mutationLines.length > 0 && presentation.family === "write" && !isError)
+    !(presentation.family === "write" && !isError)
   ) {
     detail = normalizedResult;
   } else if (normalizedProgress.length > 0) {
@@ -622,11 +670,6 @@ export const ToolCell: React.FC<ToolCellProps> = ({
         {target.length > 0 ? <Text dim>{`(${target})`}</Text> : null}
         {showArgs ? <Text dim>{` ${presentation.argsSummary}`}</Text> : null}
       </Box>
-      {mutationLines.length > 0 ? (
-        <Box flexDirection="column" marginLeft={2}>
-          <DisplayLineBlock lines={mutationLines} />
-        </Box>
-      ) : null}
       {diffDetailLines.length > 0 ? (
         <Box flexDirection="column" marginLeft={2}>
           <DisplayLineBlock lines={diffDetailLines} />

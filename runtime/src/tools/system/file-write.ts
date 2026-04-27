@@ -48,6 +48,7 @@ import type {
   ToolExecutionInjectedArgs,
   ToolResult,
 } from "../types.js";
+import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -244,6 +245,7 @@ export function createFileWriteTool(
       // file; any other failure is surfaced as a write error.
       let existed = false;
       let existingStat: { mtimeMs: number } | null = null;
+      let existingContentForUi = "";
       try {
         const result = await stat(absolutePath);
         if (result.isDirectory()) {
@@ -286,6 +288,7 @@ export function createFileWriteTool(
           try {
             const buffer = await readFile(absolutePath);
             onDisk = normalizeNewlines(buffer.toString("utf-8"));
+            existingContentForUi = onDisk;
           } catch (err) {
             const code = (err as NodeJS.ErrnoException)?.code;
             return errorResult(
@@ -297,6 +300,13 @@ export function createFileWriteTool(
           if (onDisk !== snapshot.content) {
             return errorResult(FILE_UNEXPECTEDLY_MODIFIED_MESSAGE);
           }
+        }
+      } else if (existed && existingStat !== null) {
+        try {
+          const buffer = await readFile(absolutePath);
+          existingContentForUi = normalizeNewlines(buffer.toString("utf-8"));
+        } catch {
+          existingContentForUi = "";
         }
       }
 
@@ -356,11 +366,19 @@ export function createFileWriteTool(
       // Plain-text result — AgenC runtime envelope. Matches AgenC's
       // `mapToolResultToToolResultBlockParam` (FileWriteTool.ts:421-435).
       void existingStat;
-      return successResult(
-        existed
-          ? `The file ${filePath} has been updated successfully.`
-          : `File created successfully at: ${filePath}`,
-      );
+      return {
+        ...successResult(
+          existed
+            ? `The file ${filePath} has been updated successfully.`
+            : `File created successfully at: ${filePath}`,
+        ),
+        metadata: buildFileMutationMetadata({
+          filePath,
+          operation: existed ? "write" : "create",
+          beforeText: existed ? existingContentForUi : "",
+          afterText: content,
+        }),
+      };
     },
   };
 }

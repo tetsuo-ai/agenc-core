@@ -76,6 +76,7 @@ export interface TranscriptMessage {
   readonly progressStream?: "stdout" | "stderr" | "status";
   readonly toolProgressContent?: string;
   readonly toolResultContent?: string;
+  readonly toolResultMetadata?: Readonly<Record<string, unknown>>;
   readonly timestamp: number;
   readonly slashInput?: string;
   readonly slashResult?: SlashCommandResult;
@@ -116,6 +117,15 @@ function lengthOf(value: string | readonly unknown[] | undefined): number {
   return 0;
 }
 
+function metadataLengthOf(value: Readonly<Record<string, unknown>> | undefined): number {
+  if (value === undefined) return 0;
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 1;
+  }
+}
+
 export function transcriptMutationKey(
   messages: readonly TranscriptMessage[],
   isStreaming: boolean = false,
@@ -136,6 +146,7 @@ export function transcriptMutationKey(
     tail.execTimedOut === true ? "timeout" : "",
     lengthOf(tail.toolProgressContent),
     lengthOf(tail.toolResultContent),
+    metadataLengthOf(tail.toolResultMetadata),
     lengthOf(tail.planEvents),
     tail.progressStream ?? "",
     tail.label ?? "",
@@ -236,6 +247,7 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
           isComplete={message.isComplete !== false}
           isError={message.isError === true}
           result={message.toolResultContent}
+          metadata={message.toolResultMetadata}
           progress={message.toolProgressContent ?? message.label}
         />
       );
@@ -283,6 +295,7 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
           isComplete
           isError={message.isError === true}
           result={message.toolResultContent ?? message.content}
+          metadata={message.toolResultMetadata}
         />
       );
 

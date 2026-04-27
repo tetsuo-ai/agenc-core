@@ -40,6 +40,7 @@ export interface ToolDispatchResult {
   readonly isError?: boolean;
   readonly codeModeResult?: unknown;
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
+  readonly metadata?: Record<string, unknown>;
 }
 
 export interface ToolRegistry {

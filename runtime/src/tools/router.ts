@@ -444,6 +444,7 @@ export class ToolRouter {
         isError: result.isError,
         codeModeResult: result.codeModeResult,
         contentItems: result.contentItems,
+        metadata: result.metadata,
       };
     } catch (err) {
       return {

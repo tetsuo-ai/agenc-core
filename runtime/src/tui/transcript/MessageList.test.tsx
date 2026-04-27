@@ -440,22 +440,98 @@ describe("MessageList", () => {
       "● Read(src/App.tsx)
         ⎿  1→export const App = () => null
       ● Write(src/App.tsx)
-        write · src/App.tsx
-        @@ write @@
-        +++ after
-        + export const App = () => <main />;
-        +
       ● Edit(src/App.tsx)
-        replace · src/App.tsx
-        @@ replace @@
-        --- before
-        - export const App = () => null
-        +++ after
-        + export const App = () => <main />
         ⎿  replaced 1 occurrence
       ● MCP(github.listIssues)
         ⎿  2 issues"
     `);
+    unmount();
+  });
+
+  test("renders file mutation details from result metadata, not raw edit args", async () => {
+    const oldString = "export const App = () => null";
+    const newString = "export const App = () => <main />";
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "edit-metadata",
+            kind: "tool_call",
+            toolName: "Edit",
+            toolArgs: {
+              path: "src/App.tsx",
+              old_string: oldString,
+              new_string: newString,
+            },
+            toolResultContent:
+              "The file src/App.tsx has been updated successfully.",
+            toolResultMetadata: {
+              ui: {
+                kind: "file_mutation",
+                filePath: "src/App.tsx",
+                operation: "edit",
+                additions: 1,
+                removals: 1,
+                replacements: 1,
+              },
+            },
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("● Edit(src/App.tsx)");
+    expect(frame).toContain("Added 1 line");
+    expect(frame).toContain("removed 1 line");
+    expect(frame).not.toContain("@@ replace @@");
+    expect(frame).not.toContain("--- before");
+    expect(frame).not.toContain("+++ after");
+    expect(frame).not.toContain(oldString);
+    expect(frame).not.toContain(newString);
+    unmount();
+  });
+
+  test("edit-heavy transcripts stay compact and do not render raw payload previews", async () => {
+    const oldString = "before-line\n".repeat(200);
+    const newString = "after-line\n".repeat(200);
+    const messages = Array.from({ length: 160 }, (_, index) =>
+      mkMsg({
+        id: `edit-${index}`,
+        kind: "tool_call",
+        toolName: "Edit",
+        toolArgs: {
+          path: `src/file-${index}.ts`,
+          old_string: oldString,
+          new_string: newString,
+        },
+        toolResultContent:
+          "The file src/file.ts has been updated successfully.",
+        toolResultMetadata: {
+          ui: {
+            kind: "file_mutation",
+            filePath: `src/file-${index}.ts`,
+            operation: "edit",
+            additions: 200,
+            removals: 200,
+            replacements: 1,
+          },
+        },
+        isComplete: true,
+      }),
+    );
+
+    const { unmount, stdout } = await mount(
+      <Box flexDirection="column" height={16}>
+        <MessageList messages={messages} />
+      </Box>,
+    );
+    const rendered = collectTextNodes(getRootNode(stdout)).join("\n");
+    expect(rendered).toContain("Added 200 lines");
+    expect(rendered).not.toContain("@@ replace @@");
+    expect(rendered).not.toContain("before-line");
+    expect(rendered).not.toContain("after-line");
+    expect(rendered.length).toBeLessThan(20_000);
     unmount();
   });
 
@@ -527,6 +603,39 @@ describe("MessageList", () => {
     expect(frame).not.toContain("@@ replace @@");
     expect(frame).not.toContain("--- before");
     expect(frame).not.toContain("+++ after");
+    unmount();
+  });
+
+  test("renders edit failures compactly without rejection diffs", async () => {
+    const oldString = "int builtin_eval(void) { return 0; }";
+    const newString = "int builtin_eval(void) { return 1; }";
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "edit-failure",
+            kind: "tool_call",
+            toolName: "Edit",
+            toolArgs: {
+              path: "src/builtins/special.c",
+              old_string: oldString,
+              new_string: newString,
+            },
+            toolResultContent: `String to replace not found in file.\nString: ${oldString}`,
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("● Edit Failed(src/builtins/special.c)");
+    expect(frame).toContain("Error editing file");
+    expect(frame).not.toContain("@@ replace @@");
+    expect(frame).not.toContain("--- before");
+    expect(frame).not.toContain("+++ after");
+    expect(frame).not.toContain(oldString);
+    expect(frame).not.toContain(newString);
     unmount();
   });
 

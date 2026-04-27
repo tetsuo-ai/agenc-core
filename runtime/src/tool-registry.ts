@@ -80,6 +80,7 @@ export interface ToolDispatchResult {
    */
   readonly codeModeResult?: unknown;
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
+  readonly metadata?: Record<string, unknown>;
 }
 
 export interface ToolRegistry {
@@ -575,6 +576,7 @@ export function buildToolRegistry(
           isError: result.isError,
           codeModeResult: result.codeModeResult,
           contentItems: result.contentItems,
+          metadata: result.metadata,
         };
       } catch (error) {
         return {

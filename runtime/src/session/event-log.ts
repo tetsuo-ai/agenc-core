@@ -386,6 +386,7 @@ export type EventMsg =
         readonly callId: string;
         readonly result: string;
         readonly isError: boolean;
+        readonly metadata?: Record<string, unknown>;
       };
     }
   | {

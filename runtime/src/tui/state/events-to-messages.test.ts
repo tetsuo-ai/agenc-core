@@ -90,6 +90,47 @@ describe("eventsToMessages", () => {
     expect(messages.filter((m) => m.kind === "tool_call")).toHaveLength(1);
   });
 
+  test("carries tool result metadata onto the coalesced tool row", () => {
+    const metadata = {
+      ui: {
+        kind: "file_mutation",
+        filePath: "src/App.tsx",
+        operation: "edit",
+        additions: 1,
+        removals: 1,
+        replacements: 1,
+      },
+    };
+    const messages = eventsToMessages([
+      { type: "turn_started", payload: { turnId: "turn-metadata" } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "call-edit",
+          toolName: "Edit",
+          args: '{"file_path":"src/App.tsx","old_string":"old","new_string":"new"}',
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call-edit",
+          result: "The file src/App.tsx has been updated successfully.",
+          isError: false,
+          metadata,
+        },
+      },
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "Edit",
+      toolResultMetadata: metadata,
+      isComplete: true,
+    });
+  });
+
   test("final agent_message without preceding deltas still creates one row", () => {
     // Sanity: providers that don't emit `agent_message_delta` at all
     // (final-only) must still produce exactly one assistant row.

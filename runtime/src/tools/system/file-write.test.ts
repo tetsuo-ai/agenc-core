@@ -54,6 +54,15 @@ describe("Write tool", () => {
     expect(String(result.content)).toBe(
       `File created successfully at: ${target}`,
     );
+    expect(result.metadata).toMatchObject({
+      ui: {
+        kind: "file_mutation",
+        filePath: target,
+        operation: "create",
+        additions: 2,
+        removals: 0,
+      },
+    });
     await expect(readFile(target, "utf8")).resolves.toBe("hello\nworld\n");
     // Post-write snapshot anchors the changed-files attachment producer.
     const snap = getSessionReadSnapshot(sessionId, target);
@@ -116,6 +125,15 @@ describe("Write tool", () => {
     expect(String(result.content)).toBe(
       `The file ${target} has been updated successfully.`,
     );
+    expect(result.metadata).toMatchObject({
+      ui: {
+        kind: "file_mutation",
+        filePath: target,
+        operation: "write",
+        additions: 1,
+        removals: 1,
+      },
+    });
     await expect(readFile(target, "utf8")).resolves.toBe("alpha\ngamma\n");
   });
 

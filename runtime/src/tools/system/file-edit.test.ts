@@ -83,6 +83,16 @@ describe("Edit tool", () => {
     expect(result.isError).toBeUndefined();
     expect(typeof result.content).toBe("string");
     expect(result.content).toContain("has been updated successfully");
+    expect(result.metadata).toMatchObject({
+      ui: {
+        kind: "file_mutation",
+        filePath: file,
+        operation: "edit",
+        additions: 1,
+        removals: 1,
+        replacements: 1,
+      },
+    });
     await expect(readFile(file, "utf8")).resolves.toBe("goodbye world\n");
     // Post-write snapshot refresh: rawContent and timestamp now reflect
     // the on-disk state so the changed-files attachment producer does
@@ -224,6 +234,16 @@ describe("Edit tool", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("All occurrences were successfully replaced");
+    expect(result.metadata).toMatchObject({
+      ui: {
+        kind: "file_mutation",
+        filePath: file,
+        operation: "edit",
+        additions: 2,
+        removals: 2,
+        replacements: 2,
+      },
+    });
     await expect(readFile(file, "utf8")).resolves.toBe("qux\nbar\nqux\n");
   });
 

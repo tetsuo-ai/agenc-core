@@ -1627,6 +1627,7 @@ export async function runToolUse(
         return {
           content: result.content,
           isError: result.isError,
+          metadata: result.metadata,
         } satisfies ToolDispatchResult;
       },
       {
@@ -1819,6 +1820,9 @@ export async function runToolUse(
     content: capped.capped,
     isError: finalDispatch.isError === true,
     durationMs: performance.now() - startedAt,
+    ...(finalDispatch.metadata !== undefined
+      ? { metadata: finalDispatch.metadata }
+      : {}),
   });
 }
 
@@ -1844,6 +1848,7 @@ export async function executeToolDispatch(
     content: output.content,
     isError: output.isError,
     codeModeResult: codeModeResult(output),
+    metadata: output.metadata ? { ...output.metadata } : undefined,
   };
 }
 

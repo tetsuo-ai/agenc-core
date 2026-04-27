@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   looksLikeDiffText,
   renderDiffDisplayLines,
-  renderSourceMutationDisplayLines,
 } from "./diff-display.js";
 
 describe("diff-display", () => {
@@ -19,23 +18,5 @@ describe("diff-display", () => {
     expect(looksLikeDiffText(diff)).toBe(true);
     expect(renderDiffDisplayLines(diff).some((line) => line.mode === "diff-add"))
       .toBe(true);
-  });
-
-  it("renders source mutation previews for write/edit tools", () => {
-    const lines = renderSourceMutationDisplayLines({
-      filePath: "src/app.ts",
-      mutationKind: "replace",
-      beforeText: "export const oldValue = 1;",
-      afterText: "export const newValue = 2;",
-    });
-
-    expect(lines.map((line) => [line.mode, line.text])).toEqual([
-      ["diff-header", "replace · src/app.ts"],
-      ["diff-hunk", "@@ replace @@"],
-      ["diff-section-remove", "--- before"],
-      ["diff-remove", "- export const oldValue = 1;"],
-      ["diff-section-add", "+++ after"],
-      ["diff-add", "+ export const newValue = 2;"],
-    ]);
   });
 });

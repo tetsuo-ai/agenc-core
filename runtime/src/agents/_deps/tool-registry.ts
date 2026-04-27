@@ -21,6 +21,7 @@ export type LLMToolCall = any;
 export interface ToolDispatchResult {
   readonly content: string;
   readonly isError?: boolean;
+  readonly metadata?: Record<string, unknown>;
 }
 
 export interface ToolRegistry {
