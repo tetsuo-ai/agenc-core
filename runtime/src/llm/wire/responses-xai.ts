@@ -302,11 +302,6 @@ function toXaiResponseInputItems(
         role,
         content: normalizedContent,
       });
-    } else if (toolCalls.length > 0) {
-      items.push({
-        role,
-        content: "Calling tool.",
-      });
     }
     for (const toolCall of toolCalls) {
       const functionData =
