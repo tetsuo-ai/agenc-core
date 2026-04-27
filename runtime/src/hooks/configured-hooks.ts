@@ -1,0 +1,722 @@
+import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { join } from "node:path";
+
+import type {
+  HookCommand,
+  HookEventName,
+  HooksMap,
+} from "../config/schema.js";
+import {
+  HOOK_EVENT_NAMES,
+  InvalidHooksConfigError,
+  validateHooksConfig,
+} from "../config/schema.js";
+import type {
+  HookPermissionBehavior,
+  PermissionDecisionHook,
+  PermissionDecisionResult,
+  PostToolUseFailureHook,
+  PostToolUseHook,
+  PreToolUseHook,
+} from "../tools/hooks.js";
+import type {
+  StopHookHandler,
+  StopHookOutcome,
+  StopRequest,
+} from "../phases/stop-hooks.js";
+import type {
+  HookResult,
+  PostCompactHookInput,
+  PreCompactHookInput,
+  SessionStartHookInput,
+} from "../llm/hooks/types.js";
+
+const DEFAULT_HOOK_TIMEOUT_MS = 60_000;
+const MAX_DIAGNOSTICS = 50;
+
+export type HookRunStatus =
+  | "success"
+  | "blocking"
+  | "non_blocking_error"
+  | "timeout"
+  | "skipped";
+
+export interface HookRunDiagnostic {
+  readonly id: string;
+  readonly event: HookEventName;
+  readonly matcher?: string;
+  readonly command: string;
+  readonly status: HookRunStatus;
+  readonly exitCode?: number;
+  readonly durationMs: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly error?: string;
+  readonly startedAtUnixMs: number;
+}
+
+export interface IndividualHookConfig {
+  readonly event: HookEventName;
+  readonly matcher?: string;
+  readonly command: HookCommand;
+  readonly source: "config";
+  readonly sourcePath: string;
+  readonly enabled: boolean;
+  readonly index: number;
+}
+
+export interface HookValidationIssue {
+  readonly level: "error" | "warning";
+  readonly message: string;
+}
+
+export interface HookInstallTarget {
+  readonly preToolUseHooks: PreToolUseHook[];
+  readonly postToolUseHooks: PostToolUseHook[];
+  readonly failureToolUseHooks: PostToolUseFailureHook[];
+  readonly permissionDecisionHooks: PermissionDecisionHook[];
+  readonly stopHooks: StopHookHandler[];
+  readonly stopFailureHooks: StopHookHandler[];
+  readonly addPreCompactHook?: (
+    hook: (
+      input: PreCompactHookInput,
+      signal?: AbortSignal,
+    ) => Promise<HookResult>,
+  ) => void;
+  readonly addPostCompactHook?: (
+    hook: (
+      input: PostCompactHookInput,
+      signal?: AbortSignal,
+    ) => Promise<HookResult>,
+  ) => void;
+  readonly addSessionStartHook?: (
+    hook: (
+      input: SessionStartHookInput,
+      signal?: AbortSignal,
+    ) => Promise<HookResult>,
+  ) => void;
+  readonly clearConfiguredLifecycleHooks?: () => void;
+}
+
+export interface ConfiguredHooksRuntimeOptions {
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly agencHome: string;
+  readonly shellPath: string;
+}
+
+interface CommandRunResult {
+  readonly status: HookRunStatus;
+  readonly exitCode?: number;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly durationMs: number;
+  readonly error?: string;
+}
+
+type HookSpecificOutput = {
+  readonly hookEventName?: string;
+  readonly permissionDecision?: HookPermissionBehavior;
+  readonly permissionDecisionReason?: string;
+  readonly updatedInput?: Record<string, unknown>;
+  readonly additionalContext?: string;
+  readonly decision?: {
+    readonly behavior?: string;
+    readonly updatedInput?: Record<string, unknown>;
+    readonly message?: string;
+  };
+};
+
+export class ConfiguredHooksRuntime {
+  private config: HooksMap | undefined;
+  private validationIssues: HookValidationIssue[] = [];
+  private disabled = false;
+  private diagnostics: HookRunDiagnostic[] = [];
+  private target: HookInstallTarget | null = null;
+
+  constructor(private readonly opts: ConfiguredHooksRuntimeOptions) {}
+
+  attachTarget(target: HookInstallTarget): void {
+    this.target = target;
+    this.rebuildTarget();
+  }
+
+  load(raw: HooksMap | undefined): void {
+    try {
+      this.config = validateHooksConfig(raw);
+      this.validationIssues = [];
+    } catch (err) {
+      this.config = undefined;
+      this.validationIssues = [
+        {
+          level: "error",
+          message:
+            err instanceof InvalidHooksConfigError
+              ? err.message
+              : `Invalid hooks config: ${String(err)}`,
+        },
+      ];
+    }
+    this.rebuildTarget();
+  }
+
+  setDisabled(disabled: boolean): void {
+    this.disabled = disabled;
+  }
+
+  isDisabled(): boolean {
+    return this.disabled;
+  }
+
+  listHooks(): readonly IndividualHookConfig[] {
+    return flattenHooks(this.config, this.sourcePath());
+  }
+
+  issues(): readonly HookValidationIssue[] {
+    return this.validationIssues;
+  }
+
+  latestDiagnostics(): readonly HookRunDiagnostic[] {
+    return this.diagnostics;
+  }
+
+  clearDiagnostics(): void {
+    this.diagnostics = [];
+  }
+
+  sourcePath(): string {
+    return join(this.opts.agencHome, "config.toml");
+  }
+
+  async testHook(
+    hook: IndividualHookConfig,
+    input: Record<string, unknown> = defaultHookInput(hook.event, this.opts.cwd),
+  ): Promise<HookRunDiagnostic> {
+    const result = await this.runCommandHook(hook, input);
+    return this.diagnostics.find((d) => d.id === result.id) ?? result;
+  }
+
+  private rebuildTarget(): void {
+    const target = this.target;
+    if (!target) return;
+    target.preToolUseHooks.length = 0;
+    target.postToolUseHooks.length = 0;
+    target.failureToolUseHooks.length = 0;
+    target.permissionDecisionHooks.length = 0;
+    target.stopHooks.length = 0;
+    target.stopFailureHooks.length = 0;
+    target.clearConfiguredLifecycleHooks?.();
+
+    for (const hook of this.listHooks()) {
+      if (!hook.enabled) continue;
+      switch (hook.event) {
+        case "PreToolUse":
+          target.preToolUseHooks.push(this.createPreToolUseHook(hook));
+          break;
+        case "PostToolUse":
+          target.postToolUseHooks.push(this.createPostToolUseHook(hook));
+          break;
+        case "PostToolUseFailure":
+          target.failureToolUseHooks.push(this.createFailureHook(hook));
+          break;
+        case "PermissionRequest":
+          target.permissionDecisionHooks.push(this.createPermissionHook(hook));
+          break;
+        case "Stop":
+          target.stopHooks.push(this.createStopHook(hook));
+          break;
+        case "StopFailure":
+          target.stopFailureHooks.push(this.createStopFailureHook(hook));
+          break;
+        case "PreCompact":
+          target.addPreCompactHook?.(this.createLifecycleHook(hook));
+          break;
+        case "PostCompact":
+          target.addPostCompactHook?.(this.createLifecycleHook(hook));
+          break;
+        case "SessionStart":
+          target.addSessionStartHook?.(this.createLifecycleHook(hook));
+          break;
+      }
+    }
+  }
+
+  private createPreToolUseHook(hook: IndividualHookConfig): PreToolUseHook {
+    return async ({ invocation, tool, args }) => {
+      const toolName = tool.name;
+      if (this.disabled || !matchesPattern(toolName, hook.matcher)) {
+        return { kind: "continue" };
+      }
+      const result = await this.runCommandHook(hook, {
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: args,
+        tool_use_id: invocation.callId,
+      });
+      if (result.status === "blocking") {
+        return { kind: "deny", reason: result.stderr || result.stdout };
+      }
+      if (result.status !== "success") return { kind: "continue" };
+      const specific = parseHookSpecificOutput(result.stdout);
+      const decision = specific?.permissionDecision;
+      const updatedInput = specific?.updatedInput;
+      return {
+        kind: "continue",
+        ...(updatedInput !== undefined ? { args: updatedInput } : {}),
+        ...(decision !== undefined
+          ? {
+              hookPermissionResult: {
+                behavior: decision,
+                ...(specific?.permissionDecisionReason !== undefined
+                  ? { message: specific.permissionDecisionReason }
+                  : {}),
+                ...(updatedInput !== undefined ? { updatedInput } : {}),
+              },
+            }
+          : {}),
+        ...(specific?.additionalContext !== undefined
+          ? { additionalContext: [specific.additionalContext] }
+          : {}),
+      };
+    };
+  }
+
+  private createPostToolUseHook(hook: IndividualHookConfig): PostToolUseHook {
+    return async ({ invocation, tool, args, result }) => {
+      const toolName = tool.name;
+      if (this.disabled || !matchesPattern(toolName, hook.matcher)) {
+        return { kind: "continue" };
+      }
+      const run = await this.runCommandHook(hook, {
+        hook_event_name: "PostToolUse",
+        tool_name: toolName,
+        tool_input: args,
+        tool_use_id: invocation.callId,
+        tool_response: result,
+        inputs: args,
+        response: result,
+      });
+      if (run.status === "blocking") {
+        return {
+          kind: "hook_blocking_error",
+          blockingError: run.stderr || run.stdout,
+        };
+      }
+      if (run.status !== "success") return { kind: "continue" };
+      const specific = parseHookSpecificOutput(run.stdout);
+      if (specific?.additionalContext) {
+        return {
+          kind: "additionalContext",
+          content: [specific.additionalContext],
+        };
+      }
+      return { kind: "continue" };
+    };
+  }
+
+  private createFailureHook(hook: IndividualHookConfig): PostToolUseFailureHook {
+    return async ({ invocation, tool, args, error, isInterrupt }) => {
+      const toolName = tool.name;
+      if (this.disabled || !matchesPattern(toolName, hook.matcher)) return;
+      await this.runCommandHook(hook, {
+        hook_event_name: "PostToolUseFailure",
+        tool_name: toolName,
+        tool_input: args,
+        tool_use_id: invocation.callId,
+        error: error instanceof Error ? error.message : String(error),
+        error_type: error instanceof Error ? error.name : "Error",
+        is_interrupt: isInterrupt === true,
+        is_timeout: false,
+      });
+    };
+  }
+
+  private createPermissionHook(
+    hook: IndividualHookConfig,
+  ): PermissionDecisionHook {
+    return async ({ toolName, args }) => {
+      if (this.disabled || !matchesPattern(toolName, hook.matcher)) {
+        return { kind: "pass" };
+      }
+      const run = await this.runCommandHook(hook, {
+        hook_event_name: "PermissionRequest",
+        tool_name: toolName,
+        tool_input: args,
+      });
+      if (run.status !== "success") return { kind: "pass" };
+      const decision = parsePermissionDecision(run.stdout);
+      if (!decision) return { kind: "pass" };
+      return decision;
+    };
+  }
+
+  private createStopHook(hook: IndividualHookConfig): StopHookHandler {
+    return {
+      name: hook.command.statusMessage ?? hook.command.command,
+      run: async (request) => {
+        if (this.disabled || !matchesPattern("", hook.matcher)) {
+          return allowStopOutcome();
+        }
+        const run = await this.runCommandHook(hook, stopInput("Stop", request));
+        if (run.status === "blocking") {
+          const reason = run.stderr || run.stdout || "Stop hook blocked.";
+          return {
+            shouldStop: false,
+            shouldBlock: true,
+            blockReason: firstLine(reason),
+            continuationFragments: [reason],
+          };
+        }
+        return allowStopOutcome();
+      },
+    };
+  }
+
+  private createStopFailureHook(hook: IndividualHookConfig): StopHookHandler {
+    return {
+      name: hook.command.statusMessage ?? hook.command.command,
+      run: async (request) => {
+        const error = classifyStopFailure(request);
+        if (this.disabled || !matchesPattern(error, hook.matcher)) {
+          return allowStopOutcome();
+        }
+        await this.runCommandHook(hook, {
+          ...stopInput("StopFailure", request),
+          error,
+        });
+        return allowStopOutcome();
+      },
+    };
+  }
+
+  private createLifecycleHook(
+    hook: IndividualHookConfig,
+  ): (
+    input: PreCompactHookInput | PostCompactHookInput | SessionStartHookInput,
+    signal?: AbortSignal,
+  ) => Promise<HookResult> {
+    return async (input, signal) => {
+      const matchQuery =
+        input.hook_event_name === "SessionStart" ? input.source : input.trigger;
+      if (this.disabled || !matchesPattern(matchQuery, hook.matcher)) {
+        return { succeeded: true, output: "", command: hook.command.command };
+      }
+      const run = await this.runCommandHook(
+        hook,
+        input as unknown as Record<string, unknown>,
+        signal,
+      );
+      const specific = parseHookSpecificOutput(run.stdout);
+      return {
+        succeeded: run.status === "success",
+        output: run.status === "success" ? run.stdout : run.stderr || run.stdout,
+        command: hook.command.statusMessage ?? hook.command.command,
+        ...(specific?.additionalContext !== undefined
+          ? { additionalContexts: [specific.additionalContext] }
+          : {}),
+      };
+    };
+  }
+
+  private async runCommandHook(
+    hook: IndividualHookConfig,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<HookRunDiagnostic> {
+    const startedAtUnixMs = Date.now();
+    if (this.disabled) {
+      const skipped = this.recordDiagnostic(hook, {
+        status: "skipped",
+        stdout: "",
+        stderr: "",
+        durationMs: 0,
+      }, startedAtUnixMs);
+      return skipped;
+    }
+    const result = await runShellCommand({
+      command: hook.command.command,
+      cwd: this.opts.cwd,
+      env: this.opts.env,
+      shellPath: this.opts.shellPath,
+      stdin: `${JSON.stringify(input)}\n`,
+      timeoutMs: hook.command.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,
+      signal,
+    });
+    return this.recordDiagnostic(hook, result, startedAtUnixMs);
+  }
+
+  private recordDiagnostic(
+    hook: IndividualHookConfig,
+    result: CommandRunResult,
+    startedAtUnixMs: number,
+  ): HookRunDiagnostic {
+    const diagnostic: HookRunDiagnostic = {
+      id: randomUUID(),
+      event: hook.event,
+      ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
+      command: hook.command.command,
+      status: result.status,
+      ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+      durationMs: result.durationMs,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      ...(result.error !== undefined ? { error: result.error } : {}),
+      startedAtUnixMs,
+    };
+    this.diagnostics = [diagnostic, ...this.diagnostics].slice(
+      0,
+      MAX_DIAGNOSTICS,
+    );
+    return diagnostic;
+  }
+}
+
+export function flattenHooks(
+  config: HooksMap | undefined,
+  sourcePath: string,
+): readonly IndividualHookConfig[] {
+  if (!config) return [];
+  const out: IndividualHookConfig[] = [];
+  for (const event of HOOK_EVENT_NAMES) {
+    const matchers = config[event] ?? [];
+    for (const matcher of matchers) {
+      const matcherEnabled = matcher.enabled !== false;
+      for (const command of matcher.hooks) {
+        out.push({
+          event,
+          ...(matcher.matcher !== undefined ? { matcher: matcher.matcher } : {}),
+          command,
+          source: "config",
+          sourcePath,
+          enabled: matcherEnabled && command.enabled !== false,
+          index: out.length,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+export function groupHooksByEvent(
+  hooks: readonly IndividualHookConfig[],
+): ReadonlyMap<HookEventName, readonly IndividualHookConfig[]> {
+  const map = new Map<HookEventName, IndividualHookConfig[]>();
+  for (const event of HOOK_EVENT_NAMES) map.set(event, []);
+  for (const hook of hooks) {
+    map.get(hook.event)?.push(hook);
+  }
+  return map;
+}
+
+export function hookDisplayText(hook: IndividualHookConfig): string {
+  return hook.command.statusMessage ?? hook.command.command;
+}
+
+export function matchesPattern(matchQuery: string, matcher?: string): boolean {
+  if (matcher === undefined || matcher.trim() === "" || matcher === "*") {
+    return true;
+  }
+  if (/^[a-zA-Z0-9_.|-]+$/.test(matcher)) {
+    if (matcher.includes("|")) {
+      return matcher.split("|").map((p) => p.trim()).includes(matchQuery);
+    }
+    return matchQuery === matcher;
+  }
+  try {
+    return new RegExp(matcher).test(matchQuery);
+  } catch {
+    return false;
+  }
+}
+
+function parseHookSpecificOutput(stdout: string): HookSpecificOutput | undefined {
+  const raw = stdout.trim();
+  if (!raw.startsWith("{")) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as {
+      hookSpecificOutput?: HookSpecificOutput;
+    } & HookSpecificOutput;
+    return parsed.hookSpecificOutput ?? parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function parsePermissionDecision(
+  stdout: string,
+): PermissionDecisionResult | undefined {
+  const specific = parseHookSpecificOutput(stdout);
+  const decision = specific?.decision;
+  if (!decision) return undefined;
+  if (decision.behavior === "allow") {
+    return {
+      kind: "allow",
+      ...(decision.updatedInput !== undefined
+        ? { updatedArgs: decision.updatedInput }
+        : {}),
+    };
+  }
+  if (decision.behavior === "deny") {
+    return {
+      kind: "deny",
+      ...(decision.message !== undefined ? { reason: decision.message } : {}),
+    };
+  }
+  return undefined;
+}
+
+async function runShellCommand(opts: {
+  readonly command: string;
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly shellPath: string;
+  readonly stdin: string;
+  readonly timeoutMs: number;
+  readonly signal?: AbortSignal;
+}): Promise<CommandRunResult> {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn(opts.shellPath, ["-c", opts.command], {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (
+      result: Omit<CommandRunResult, "durationMs" | "stdout" | "stderr">,
+    ) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        ...result,
+        stdout,
+        stderr,
+        durationMs: Date.now() - started,
+      });
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ status: "timeout", error: "hook timed out" });
+    }, opts.timeoutMs);
+    opts.signal?.addEventListener(
+      "abort",
+      () => {
+        child.kill("SIGTERM");
+        finish({ status: "skipped", error: "hook aborted" });
+      },
+      { once: true },
+    );
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", (err) => {
+      finish({
+        status: "non_blocking_error",
+        error: err.message,
+      });
+    });
+    child.on("close", (code) => {
+      if (code === 0) {
+        finish({ status: "success", exitCode: 0 });
+        return;
+      }
+      if (code === 2) {
+        finish({ status: "blocking", exitCode: 2 });
+        return;
+      }
+      finish({
+        status: "non_blocking_error",
+        ...(code !== null ? { exitCode: code } : {}),
+      });
+    });
+    child.stdin.on("error", () => {
+      // Hooks are allowed to exit without reading stdin. Keep the command's
+      // exit status authoritative instead of surfacing EPIPE as an unhandled
+      // process error.
+    });
+    child.stdin.end(opts.stdin);
+  });
+}
+
+function allowStopOutcome(): StopHookOutcome {
+  return {
+    shouldStop: true,
+    shouldBlock: false,
+    continuationFragments: [],
+  };
+}
+
+function stopInput(
+  event: "Stop" | "StopFailure",
+  request: StopRequest,
+): Record<string, unknown> {
+  return {
+    hook_event_name: event,
+    session_id: request.sessionId,
+    turn_id: request.turnId,
+    cwd: request.cwd,
+    model: request.model,
+    permission_mode: request.permissionMode,
+    stop_hook_active: request.stopHookActive,
+    last_assistant_message: request.lastAssistantMessage ?? "",
+  };
+}
+
+function classifyStopFailure(request: StopRequest): string {
+  const text = request.lastAssistantMessage ?? "";
+  if (/rate limit|429/i.test(text)) return "rate_limit";
+  if (/auth|api key|401|403/i.test(text)) return "authentication_failed";
+  if (/billing|quota/i.test(text)) return "billing_error";
+  if (/too long|max.*token|context/i.test(text)) return "max_output_tokens";
+  if (/server|500|502|503|504/i.test(text)) return "server_error";
+  if (/invalid request|400/i.test(text)) return "invalid_request";
+  return "unknown";
+}
+
+function defaultHookInput(
+  event: HookEventName,
+  cwd: string,
+): Record<string, unknown> {
+  switch (event) {
+    case "PreToolUse":
+    case "PostToolUse":
+    case "PostToolUseFailure":
+    case "PermissionRequest":
+      return {
+        hook_event_name: event,
+        tool_name: "Read",
+        tool_input: {},
+        tool_use_id: "test",
+      };
+    case "SessionStart":
+      return { hook_event_name: event, source: "startup", cwd };
+    case "Stop":
+    case "StopFailure":
+      return { hook_event_name: event, cwd, error: "unknown" };
+    case "PreCompact":
+      return {
+        hook_event_name: event,
+        trigger: "manual",
+        custom_instructions: null,
+      };
+    case "PostCompact":
+      return {
+        hook_event_name: event,
+        trigger: "manual",
+        compact_summary: "",
+      };
+  }
+}
+
+function firstLine(text: string): string {
+  return text.split(/\r?\n/, 1)[0]?.trim() || "Hook blocked.";
+}

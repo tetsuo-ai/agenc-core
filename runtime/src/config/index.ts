@@ -30,6 +30,7 @@ export type {
   ToolsConfig,
   ToolBudget,
   HookCommand,
+  HookEventName,
   HookMatcher,
   HooksMap,
   ExperimentsConfig,
@@ -49,9 +50,13 @@ export {
   resolveModelDisambiguated,
   isValidPermissionMode,
   validatePermissionsConfig,
+  validateHooksConfig,
+  normalizeHookEventName,
   AmbiguousModelError,
+  InvalidHooksConfigError,
   InvalidPermissionsConfigError,
   UnknownModelError,
+  HOOK_EVENT_NAMES,
   KNOWN_CONFIG_KEYS,
 } from "./schema.js";
 

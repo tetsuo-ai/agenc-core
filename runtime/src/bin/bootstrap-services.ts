@@ -55,6 +55,12 @@ import {
   processSessionStartHooks,
 } from "../llm/compact/_deps/hooks.js";
 import {
+  registerPostCompactHook,
+  registerPreCompactHook,
+  registerSessionStartHook,
+} from "../llm/hooks/index.js";
+import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import {
   evaluateStopHooks,
   executeStopFailureHooks,
   type StopHookHandler,
@@ -327,6 +333,16 @@ function createHooksService(): Hooks & {
   readonly postToolUseHooks: PostToolUseHook[];
   readonly failureToolUseHooks: PostToolUseFailureHook[];
   readonly permissionDecisionHooks: PermissionDecisionHook[];
+  addPreCompactHook(
+    hook: Parameters<typeof registerPreCompactHook>[0],
+  ): void;
+  addPostCompactHook(
+    hook: Parameters<typeof registerPostCompactHook>[0],
+  ): void;
+  addSessionStartHook(
+    hook: Parameters<typeof registerSessionStartHook>[0],
+  ): void;
+  clearConfiguredLifecycleHooks(): void;
   processSessionStart(
     ...args: Parameters<typeof processSessionStartHooks>
   ): ReturnType<typeof processSessionStartHooks>;
@@ -337,6 +353,7 @@ function createHooksService(): Hooks & {
   const postToolUseHooks: PostToolUseHook[] = [];
   const failureToolUseHooks: PostToolUseFailureHook[] = [];
   const permissionDecisionHooks: PermissionDecisionHook[] = [];
+  const lifecycleUnregisters: Array<() => void> = [];
 
   return {
     stopHooks,
@@ -345,6 +362,20 @@ function createHooksService(): Hooks & {
     postToolUseHooks,
     failureToolUseHooks,
     permissionDecisionHooks,
+    addPreCompactHook: (hook) => {
+      lifecycleUnregisters.push(registerPreCompactHook(hook));
+    },
+    addPostCompactHook: (hook) => {
+      lifecycleUnregisters.push(registerPostCompactHook(hook));
+    },
+    addSessionStartHook: (hook) => {
+      lifecycleUnregisters.push(registerSessionStartHook(hook));
+    },
+    clearConfiguredLifecycleHooks: () => {
+      for (const unregister of lifecycleUnregisters.splice(0)) {
+        unregister();
+      }
+    },
     startupWarnings: () => [],
     executePreCompact: async (...args: unknown[]) => {
       const first = recordOrEmpty(args[0]);
@@ -486,13 +517,26 @@ export function buildBootstrapSessionServices(
   const mcpConnectionManager = new BootstrapMcpConnectionManager(
     opts.mcpManager,
   );
+  const hooksService = createHooksService();
+  const hooksRuntime = new ConfiguredHooksRuntime({
+    cwd: opts.workspaceRoot,
+    env: opts.env,
+    agencHome: opts.agencHome,
+    shellPath: opts.env.SHELL ?? "/bin/sh",
+  });
+  hooksRuntime.attachTarget(hooksService);
+  hooksRuntime.load(opts.configStore.current().hooks);
+  const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
+    hooksRuntime.load(cfg.hooks);
+  });
 
   const services: SessionServices = {
     mcpConnectionManager,
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     unifiedExecManager: opts.unifiedExecManager,
     analyticsEventsClient,
-    hooks: createHooksService(),
+    hooks: hooksService,
+    hooksRuntime,
     rollout: rolloutRecorder,
     rolloutTrace,
     userShell: {
@@ -608,6 +652,8 @@ export function buildBootstrapSessionServices(
       return liveThread;
     },
     shutdown: () => {
+      unsubscribeHooksConfig();
+      hooksService.clearConfiguredLifecycleHooks();
       rolloutTrace.flush();
       rolloutTrace.close();
       services.shellSnapshotTx.complete();

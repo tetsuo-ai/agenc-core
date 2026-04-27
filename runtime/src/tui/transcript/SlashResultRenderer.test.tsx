@@ -174,4 +174,21 @@ describe("<SlashResultRenderer>", () => {
     expect(text).toContain("unknown command");
     unmount();
   });
+
+  test("/hooks text results render with the hooks panel title", async () => {
+    const { stdout, unmount } = await mount(
+      <SlashResultRenderer
+        input="/hooks"
+        result={{
+          kind: "text",
+          text: "AgenC Hooks\nSource: /tmp/config.toml\nState: enabled",
+        }}
+      />,
+    );
+    const text = collectText(getRootNode(stdout));
+    expect(text).toContain("AgenC Hooks");
+    expect(text).toContain("/hooks");
+    expect(text).toContain("Source:");
+    unmount();
+  });
 });
