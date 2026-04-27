@@ -498,6 +498,150 @@ describe("eventsToMessages", () => {
     expect(messages[0]?.planEvents).toHaveLength(3);
   });
 
+  test("suppresses typed plan legacy assistant passthrough", () => {
+    const leakedTodoPayload = [
+      {
+        content: "M5 plan created per PLAN.md",
+        status: "completed",
+        activeForm: "Completed M5 plan",
+      },
+      {
+        content: "Update feature-matrix.md with M5 entries",
+        status: "in_progress",
+        activeForm: "Updating feature-matrix.md",
+      },
+    ];
+    const planText = [
+      "## Implementation Sequence",
+      "1. Dynamic scope infra",
+      "",
+      "**Ready to implement? Confirm or adjust.**",
+      "",
+      "```json",
+      JSON.stringify(leakedTodoPayload, null, 2),
+      "```",
+    ].join("\n");
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-plan" } },
+      {
+        type: "plan_started",
+        payload: {
+          turnId: "turn-plan",
+          planItemId: "turn-plan-plan",
+          title: "M5 plan",
+        },
+      },
+      {
+        type: "agent_message_delta",
+        payload: { delta: "[plan:turn-plan-plan]" },
+      },
+      {
+        type: "plan_delta",
+        payload: {
+          turnId: "turn-plan",
+          planItemId: "turn-plan-plan",
+          delta: "Implementation Sequence",
+        },
+      },
+      {
+        type: "agent_message_delta",
+        payload: { delta: planText },
+      },
+      {
+        type: "plan_item_completed",
+        payload: {
+          turnId: "turn-plan",
+          planItemId: "turn-plan-plan",
+          finalText: "Implementation Sequence",
+        },
+      },
+      {
+        type: "agent_message",
+        payload: { message: `[plan:turn-plan-plan] ${planText}` },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "plan_progress",
+      turnId: "turn-plan",
+    });
+    expect(messages.map((message) => message.content).join("\n")).not.toContain(
+      "activeForm",
+    );
+    expect(messages.some((message) => message.kind === "assistant")).toBe(false);
+  });
+
+  test("keeps legacy plan assistant text when no typed plan events exist", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-legacy-plan" } },
+      {
+        type: "agent_message",
+        payload: { message: "[plan:legacy] 1. Explore\n2. Build" },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "assistant",
+      content: "[plan:legacy] 1. Explore\n2. Build",
+    });
+  });
+
+  test("strips leaked trailing TodoWrite JSON fences from completed assistant text", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-todo-leak" } },
+      {
+        type: "agent_message",
+        payload: {
+          message: [
+            "**Ready to implement? Confirm or adjust.**",
+            "",
+            "```json",
+            JSON.stringify([
+              {
+                content: "Create plan",
+                status: "completed",
+                activeForm: "Creating plan",
+              },
+            ]),
+            "```",
+          ].join("\n"),
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "assistant",
+      content: "**Ready to implement? Confirm or adjust.**",
+    });
+  });
+
+  test("does not strip ordinary trailing JSON fences", () => {
+    const content = [
+      "Here is the requested payload:",
+      "",
+      "```json",
+      JSON.stringify({ ok: true }),
+      "```",
+    ].join("\n");
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-json" } },
+      { type: "agent_message", payload: { message: content } },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "assistant",
+      content,
+    });
+  });
+
   test("filters internal lifecycle warnings out of the visible transcript", () => {
     const events: TranscriptSourceEvent[] = [
       {

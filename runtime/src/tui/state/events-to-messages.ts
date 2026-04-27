@@ -358,6 +358,66 @@ function formatSessionConfigured(
   return null;
 }
 
+const LEGACY_PLAN_SIGNAL_RE = /^\[plan:[^\]]+\]\s*/u;
+const TRAILING_TODO_WRITE_JSON_FENCE_RE =
+  /(?:^|\n)[ \t]*```(?:json|JSON)?[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*```[ \t]*$/u;
+
+function isTodoStatus(value: unknown): boolean {
+  return value === "pending" || value === "in_progress" || value === "completed";
+}
+
+function isTodoWriteItem(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.content === "string" &&
+    item.content.trim().length > 0 &&
+    isTodoStatus(item.status) &&
+    typeof item.activeForm === "string" &&
+    item.activeForm.trim().length > 0
+  );
+}
+
+function isTodoWritePayload(value: unknown): boolean {
+  const todos =
+    Array.isArray(value)
+      ? value
+      : typeof value === "object" &&
+          value !== null &&
+          !Array.isArray(value) &&
+          Array.isArray((value as Record<string, unknown>).todos)
+        ? ((value as Record<string, unknown>).todos as unknown[])
+        : null;
+  return todos !== null && todos.length > 0 && todos.every(isTodoWriteItem);
+}
+
+function stripTrailingTodoWriteJsonFence(content: string): string {
+  const match = TRAILING_TODO_WRITE_JSON_FENCE_RE.exec(content);
+  if (!match) return content;
+  const rawJson = match[1];
+  if (typeof rawJson !== "string" || rawJson.trim().length === 0) {
+    return content;
+  }
+  try {
+    if (!isTodoWritePayload(JSON.parse(rawJson))) {
+      return content;
+    }
+  } catch {
+    return content;
+  }
+  return content.slice(0, match.index).trimEnd();
+}
+
+function sanitizeAssistantTranscriptContent(content: string): string {
+  return stripTrailingTodoWriteJsonFence(content);
+}
+
+function isLegacyPlanSignal(content: string): boolean {
+  return LEGACY_PLAN_SIGNAL_RE.test(content);
+}
+
 export function eventsToMessages(
   events: readonly TranscriptSourceEvent[],
   options: EventsToMessagesOptions = {},
@@ -372,6 +432,8 @@ export function eventsToMessages(
   const pendingExecOutputByCallId = new Map<string, PendingExecOutput>();
   const toolNameByCallId = new Map<string, string>();
   const toolArgsByCallId = new Map<string, unknown>();
+  const typedPlanSeenTurnIds = new Set<string>();
+  const typedPlanActiveTurnIds = new Set<string>();
 
   const fallbackTurnCounter = { value: 0 };
   let currentTurnId = `${FALLBACK_TURN_PREFIX}${fallbackTurnCounter.value}`;
@@ -484,7 +546,11 @@ export function eventsToMessages(
       activeAssistantIndex = null;
       return;
     }
-    messages[activeAssistantIndex] = { ...prev, isComplete: true };
+    messages[activeAssistantIndex] = {
+      ...prev,
+      content: sanitizeAssistantTranscriptContent(prev.content),
+      isComplete: true,
+    };
     activeAssistantIndex = null;
   };
 
@@ -513,6 +579,20 @@ export function eventsToMessages(
     delta: string,
     timestamp: number,
   ): void => {
+    if (
+      options.includeHidden !== true &&
+      typedPlanActiveTurnIds.has(turnId)
+    ) {
+      return;
+    }
+    if (
+      options.includeHidden !== true &&
+      typedPlanSeenTurnIds.has(turnId) &&
+      isLegacyPlanSignal(delta)
+    ) {
+      typedPlanActiveTurnIds.add(turnId);
+      return;
+    }
     if (options.includeHidden === true) {
       flushPendingAssistantLifecycleText();
       appendAssistantDelta(turnId, id, delta, timestamp);
@@ -755,6 +835,15 @@ export function eventsToMessages(
         break;
       }
       case "agent_message": {
+        const turnId = ensureTurnId(currentTurnId);
+        if (
+          options.includeHidden !== true &&
+          typedPlanSeenTurnIds.has(turnId) &&
+          isLegacyPlanSignal(event.payload.message)
+        ) {
+          pendingAssistantLifecycleText = null;
+          break;
+        }
         if (
           isAssistantLifecycleChatter(event.payload.message) &&
           options.includeHidden !== true
@@ -763,7 +852,6 @@ export function eventsToMessages(
           break;
         }
         pendingAssistantLifecycleText = null;
-        const turnId = ensureTurnId(currentTurnId);
         // Resolve the row to coalesce into. Prefer `activeAssistantIndex`
         // if still pinned to this turn; otherwise fall back to the
         // per-turn last-assistant index — which survives the
@@ -796,7 +884,7 @@ export function eventsToMessages(
             ...prev,
             content:
               event.payload.message.length > 0
-                ? event.payload.message
+                ? sanitizeAssistantTranscriptContent(event.payload.message)
                 : prev.content,
             timestamp,
             isComplete: true,
@@ -808,7 +896,7 @@ export function eventsToMessages(
             id: event.id ?? `assistant-${turnId}-${timestamp}`,
             turnId,
             kind: "assistant",
-            content: event.payload.message,
+            content: sanitizeAssistantTranscriptContent(event.payload.message),
             timestamp,
             isComplete: true,
           });
@@ -1110,6 +1198,8 @@ export function eventsToMessages(
       }
       case "plan_started": {
         const turnId = ensureTurnId(event.payload.turnId);
+        typedPlanSeenTurnIds.add(turnId);
+        typedPlanActiveTurnIds.add(turnId);
         messages.push({
           id: event.id ?? `plan-progress-${turnId}`,
           turnId,
@@ -1123,6 +1213,8 @@ export function eventsToMessages(
       }
       case "plan_delta": {
         const turnId = ensureTurnId(event.payload.turnId);
+        typedPlanSeenTurnIds.add(turnId);
+        typedPlanActiveTurnIds.add(turnId);
         const existingIndex = planIndexByTurnId.get(turnId);
         if (existingIndex === undefined) {
           messages.push({
@@ -1146,6 +1238,8 @@ export function eventsToMessages(
       }
       case "plan_item_completed": {
         const turnId = ensureTurnId(event.payload.turnId);
+        typedPlanSeenTurnIds.add(turnId);
+        typedPlanActiveTurnIds.delete(turnId);
         const existingIndex = planIndexByTurnId.get(turnId);
         if (existingIndex === undefined) {
           messages.push({
@@ -1171,6 +1265,8 @@ export function eventsToMessages(
       }
       case "plan_exited": {
         const turnId = ensureTurnId(event.payload.turnId);
+        typedPlanSeenTurnIds.add(turnId);
+        typedPlanActiveTurnIds.delete(turnId);
         const existingIndex = planIndexByTurnId.get(turnId);
         if (existingIndex === undefined) {
           messages.push({
