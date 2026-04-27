@@ -28,6 +28,7 @@ import {
 
 type ToolFamily =
   | "read"
+  | "list"
   | "write"
   | "edit"
   | "mcp"
@@ -232,14 +233,18 @@ function classifyTool(toolName: string | undefined): ToolFamily {
     normalized === "system.grep" ||
     normalized === "grep" ||
     normalized === "system.glob" ||
-    normalized === "glob" ||
+    normalized === "glob"
+  ) {
+    return "search";
+  }
+  if (
     normalized === "system.listdir" ||
     normalized === "system.list_dir" ||
     normalized === "listdir" ||
     normalized === "list_dir" ||
     normalized === "ls"
   ) {
-    return "search";
+    return "list";
   }
   if (
     normalized === "bash" ||
@@ -281,6 +286,7 @@ function buildPresentation(
   const target = toolTarget(family, toolName, toolArgs);
   switch (family) {
     case "read":
+    case "list":
       return {
         family,
         target,
@@ -336,6 +342,8 @@ function familyFromTone(tone: ToolRenderTone | undefined): ToolFamily | null {
   switch (tone) {
     case "read":
       return "read";
+    case "list":
+      return "list";
     case "write":
       return "write";
     case "edit":
@@ -500,6 +508,9 @@ function toolTitle(
     case "read":
       if (isError) return "Read Failed";
       return isComplete ? "Read" : "Reading";
+    case "list":
+      if (isError) return "List Failed";
+      return isComplete ? "List" : "Listing";
     case "write":
       if (isError) return "Write Failed";
       return isComplete ? "Write" : "Writing";
@@ -584,7 +595,10 @@ function isSilentReadSearchFailure(
   family: ToolFamily,
   isError: boolean,
 ): boolean {
-  return isError && (family === "read" || family === "search");
+  return (
+    isError &&
+    (family === "read" || family === "search" || family === "list")
+  );
 }
 
 function readFilePathForHighlight(
@@ -762,6 +776,7 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   }
   const showArgs =
     shellWriteBlock === null &&
+    rendererPresentation === null &&
     presentation.family === "generic" &&
     presentation.argsSummary.length > 0 &&
     presentation.argsSummary !== "{}";

@@ -55,8 +55,68 @@ describe("tool renderers", () => {
 
   test("classifies tool tones for grouping", () => {
     expect(toolRendererTone("FileRead")).toBe("read");
+    expect(toolRendererTone("ListDir")).toBe("list");
     expect(toolRendererTone("Grep")).toBe("search");
     expect(toolRendererTone("WebFetch")).toBe("web");
     expect(toolRendererTone("mcp.github.listIssues")).toBe("mcp");
+  });
+
+  test("renders plan file writes as plan updates", () => {
+    const planPath = `${process.env.HOME ?? "/home/u"}/.agenc/plans/demo.md`;
+    expect(
+      renderToolPresentation({
+        toolName: "Write",
+        toolArgs: { path: planPath },
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "write",
+      title: "Updated Plan",
+      target: "",
+    });
+  });
+
+  test("renders interactive plan tools without raw argument chrome", () => {
+    expect(
+      renderToolPresentation({
+        toolName: "AskUserQuestion",
+        toolArgs: {
+          questions: [
+            {
+              header: "M5 scope",
+              question: "Prioritize M5 sub-tasks?",
+              options: [{ label: "Full plan" }, { label: "Compounds" }],
+            },
+          ],
+        },
+        result:
+          'User has answered your questions: Prioritize M5 sub-tasks? -> Full plan as-is. You can now continue with the user\'s answers in mind.',
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "plan",
+      title: "User Answered",
+      target: "",
+      detail: "Prioritize M5 sub-tasks? -> Full plan as-is",
+    });
+
+    expect(
+      renderToolPresentation({
+        toolName: "ExitPlanMode",
+        toolArgs: { plan: "raw plan argument should not render" },
+        result:
+          "User has approved your plan. You can now start coding.\n\n## Approved Plan:\nImplement M5.",
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "plan",
+      title: "Plan Approved",
+      target: "",
+      detail: "Implement M5.",
+      preserveResultLines: true,
+    });
   });
 });

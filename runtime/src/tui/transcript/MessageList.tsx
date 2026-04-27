@@ -40,6 +40,7 @@ import { PlanProgress, type PlanEvent } from "./PlanProgress.js";
 import { SlashResultRenderer } from "./SlashResultRenderer.js";
 import { ToolCell } from "./ToolCell.js";
 import { normalizeTranscriptMessages } from "./normalize.js";
+import { toolRendererTone } from "./tool-renderers.js";
 import type { SlashCommandResult } from "../_deps/commands.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -191,15 +192,105 @@ export function truncateUserMessageForDisplay(input: string): string {
   ].join("");
 }
 
+function groupedToolCounts(
+  groupedTools: NonNullable<TranscriptMessage["groupedTools"]>,
+): {
+  readonly reads: number;
+  readonly searches: number;
+  readonly lists: number;
+} {
+  let reads = 0;
+  let searches = 0;
+  let lists = 0;
+  for (const tool of groupedTools) {
+    const tone = toolRendererTone(tool.toolName);
+    if (tone === "read") reads += 1;
+    if (tone === "search") searches += 1;
+    if (tone === "list") lists += 1;
+  }
+  return { reads, searches, lists };
+}
+
+function groupedToolHint(
+  groupedTools: NonNullable<TranscriptMessage["groupedTools"]>,
+): string | null {
+  for (let index = groupedTools.length - 1; index >= 0; index -= 1) {
+    const target = groupedTools[index]?.target.trim();
+    if (target) return truncate(target, 300);
+  }
+  return null;
+}
+
+function groupedToolSummaryParts(
+  groupedTools: NonNullable<TranscriptMessage["groupedTools"]>,
+  isActive: boolean,
+): React.ReactNode[] {
+  const counts = groupedToolCounts(groupedTools);
+  const parts: React.ReactNode[] = [];
+  const pushPart = (
+    key: string,
+    verb: string,
+    count: number,
+    singular: string,
+    plural: string,
+  ): void => {
+    if (count <= 0) return;
+    if (parts.length > 0) {
+      parts.push(<Text key={`comma-${key}`}>, </Text>);
+    }
+    parts.push(
+      <Text key={key}>
+        {verb} <Text bold>{count}</Text> {count === 1 ? singular : plural}
+      </Text>,
+    );
+  };
+
+  pushPart(
+    "search",
+    isActive ? "Searching for" : "Searched for",
+    counts.searches,
+    "pattern",
+    "patterns",
+  );
+  pushPart(
+    "read",
+    isActive ? "Reading" : "Read",
+    counts.reads,
+    "file",
+    "files",
+  );
+  pushPart(
+    "list",
+    isActive ? "Listing" : "Listed",
+    counts.lists,
+    "directory",
+    "directories",
+  );
+
+  if (parts.length === 0) {
+    parts.push(
+      <Text key="tools">
+        {isActive ? "Using" : "Used"} <Text bold>{groupedTools.length}</Text>{" "}
+        {groupedTools.length === 1 ? "tool" : "tools"}
+      </Text>,
+    );
+  }
+  return parts;
+}
+
 /* ────────────────────────────────────────────────────────────────────── */
 /* Row dispatcher                                                          */
 /* ────────────────────────────────────────────────────────────────────── */
 
 interface MessageRowProps {
   readonly message: TranscriptMessage;
+  readonly verbose: boolean;
 }
 
-function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
+function MessageRow({
+  message,
+  verbose,
+}: MessageRowProps): React.ReactElement | null {
   switch (message.kind) {
     case "user":
       return (
@@ -248,6 +339,7 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
             {...(message.execTimedOut !== undefined
               ? { timedOut: message.execTimedOut }
               : {})}
+            verbose={verbose}
           />
         );
       }
@@ -266,31 +358,26 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
 
     case "tool_group": {
       const groupedTools = message.groupedTools ?? [];
+      const isActive = message.isComplete === false;
+      const hint = isActive ? groupedToolHint(groupedTools) : null;
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" marginTop={1}>
           <Box flexDirection="row">
-            <Text color={theme.colors.success}>{BLACK_CIRCLE}</Text>
+            <Text color={isActive ? theme.colors.dim : theme.colors.success}>
+              {BLACK_CIRCLE}
+            </Text>
             <Text> </Text>
-            <Text bold>Tools</Text>
-            <Text dim>{`(${message.content})`}</Text>
+            <Text dim={!isActive}>
+              {groupedToolSummaryParts(groupedTools, isActive)}
+              {isActive ? "…" : ""}
+            </Text>
           </Box>
-          <Box flexDirection="column">
-            {groupedTools.slice(0, 8).map((tool) => (
-              <Box key={tool.id} flexDirection="row">
-                <Text dim>{"  ⎿  "}</Text>
-                <Text dim>{tool.toolName}</Text>
-                {tool.target.length > 0 ? (
-                  <Text dim>{` ${truncate(tool.target, 96)}`}</Text>
-                ) : null}
-              </Box>
-            ))}
-            {groupedTools.length > 8 ? (
-              <Box flexDirection="row">
-                <Text dim>{"  ⎿  "}</Text>
-                <Text dim>{`+${groupedTools.length - 8} more`}</Text>
-              </Box>
-            ) : null}
-          </Box>
+          {hint ? (
+            <Box flexDirection="row">
+              <Text dim>{"  ⎿  "}</Text>
+              <Text dim>{hint}</Text>
+            </Box>
+          ) : null}
         </Box>
       );
     }
@@ -574,7 +661,7 @@ export const MessageList: React.FC<MessageListProps> = ({
                 cacheKey={transcriptMutationKey([message], isStreaming)}
                 freeze={message.isComplete !== false}
               >
-                <MessageRow message={message} />
+                <MessageRow message={message} verbose={verbose} />
               </OffscreenFreeze>
             </Box>
           );

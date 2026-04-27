@@ -1,5 +1,10 @@
+import { join, normalize, sep } from "node:path";
+
+import { resolveAgencHome } from "../../planning/plan-files.js";
+
 export type ToolRenderTone =
   | "read"
+  | "list"
   | "write"
   | "edit"
   | "search"
@@ -122,6 +127,14 @@ function pathTarget(ctx: ToolRenderContext): string {
   );
 }
 
+function isPlanFilePath(value: string): boolean {
+  if (value.trim().length === 0 || !value.endsWith(".md")) return false;
+  const normalized = normalize(value);
+  const planDir = normalize(join(resolveAgencHome(), "plans"));
+  if (normalized.startsWith(`${planDir}${sep}`)) return true;
+  return /(?:^|[/\\])\.agenc[/\\]plans[/\\][^/\\]+\.md$/u.test(normalized);
+}
+
 function commandTarget(ctx: ToolRenderContext): string {
   return compact(
     readStringField(ctx.toolArgs, ["command", "cmd", "script"]) ??
@@ -196,6 +209,60 @@ function commonResultDetail(ctx: ToolRenderContext): string | undefined {
   if (summary) return summary;
   if (isRecord(parsed) || Array.isArray(parsed)) return undefined;
   return ctx.result;
+}
+
+function metadataStringField(
+  ctx: ToolRenderContext,
+  keys: readonly string[],
+): string | undefined {
+  return readStringField(ctx.metadata, keys);
+}
+
+function questionTarget(ctx: ToolRenderContext): string {
+  const questions = readArrayField(ctx.toolArgs, ["questions"]);
+  const first = questions[0];
+  if (isRecord(first)) {
+    return compact(
+      readStringField(first, ["header", "question"]) ?? "question",
+      80,
+    );
+  }
+  return "question";
+}
+
+function userAnswerDetail(ctx: ToolRenderContext): string | undefined {
+  const parsed = parsedResult(ctx);
+  const answers =
+    readArrayField(parsed, ["answers"]).length > 0
+      ? undefined
+      : isRecord(parsed)
+        ? parsed.answers
+        : undefined;
+  if (isRecord(answers)) {
+    const lines = Object.entries(answers).map(
+      ([question, answer]) => `${question} -> ${String(answer)}`,
+    );
+    if (lines.length > 0) return lines.slice(0, 4).join("\n");
+  }
+  const text = ctx.result ?? "";
+  const match = /User has answered your questions?:\s*(.+?)\.\s*You can now continue/isu.exec(
+    text,
+  );
+  if (match?.[1]) return compact(match[1], 180);
+  return commonResultDetail(ctx);
+}
+
+function planApprovalDetail(ctx: ToolRenderContext): string | undefined {
+  const plan = metadataStringField(ctx, ["plan"]);
+  if (plan && plan.trim().length > 0) return plan;
+  const text = ctx.result ?? "";
+  const marker = /\n## Approved Plan(?: \(edited by user\))?:\n/iu.exec(text);
+  if (marker?.index !== undefined) {
+    return text.slice(marker.index + marker[0].length).trim();
+  }
+  const filePath = metadataStringField(ctx, ["filePath", "planFilePath"]);
+  if (filePath) return `Plan saved to: ${filePath}`;
+  return undefined;
 }
 
 function formatTaskList(ctx: ToolRenderContext): string | undefined {
@@ -298,20 +365,33 @@ function simpleRenderer(
 }
 
 const READ_RENDERER = simpleRenderer("read", "Read", pathTarget, "Reading");
+const LIST_RENDERER = simpleRenderer("list", "List", pathTarget, "Listing");
 const WRITE_RENDERER: ToolSpecificRenderer = {
-  renderToolUseMessage: (ctx) => ({
-    tone: "write",
-    title: titleFor("Write", ctx, "Writing"),
-    target: pathTarget(ctx),
-  }),
+  renderToolUseMessage: (ctx) => {
+    const target = pathTarget(ctx);
+    const isPlanFile = isPlanFilePath(target);
+    return {
+      tone: "write",
+      title: isPlanFile
+        ? titleFor("Updated Plan", ctx, "Updating Plan", "Plan Update Failed")
+        : titleFor("Write", ctx, "Writing"),
+      target: isPlanFile ? "" : target,
+    };
+  },
   renderToolUseErrorMessage: (ctx) => ({ detail: commonResultDetail(ctx) }),
 };
 const EDIT_RENDERER: ToolSpecificRenderer = {
-  renderToolUseMessage: (ctx) => ({
-    tone: "edit",
-    title: titleFor("Edit", ctx, "Editing"),
-    target: pathTarget(ctx),
-  }),
+  renderToolUseMessage: (ctx) => {
+    const target = pathTarget(ctx);
+    const isPlanFile = isPlanFilePath(target);
+    return {
+      tone: "edit",
+      title: isPlanFile
+        ? titleFor("Updated Plan", ctx, "Updating Plan", "Plan Update Failed")
+        : titleFor("Edit", ctx, "Editing"),
+      target: isPlanFile ? "" : target,
+    };
+  },
   renderToolUseErrorMessage: (ctx) => ({ detail: commonResultDetail(ctx) }),
 };
 const SEARCH_RENDERER = simpleRenderer("search", "Search", queryTarget, "Searching");
@@ -351,6 +431,34 @@ const VERIFY_PLAN_RENDERER = simpleRenderer(
   queryTarget,
   "Verifying Plan",
 );
+const ASK_USER_QUESTION_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: (ctx) => ({
+    tone: "plan",
+    title: titleFor("Asked User Question", ctx, "Asking User Question"),
+    target: questionTarget(ctx),
+  }),
+  renderToolResultMessage: (ctx) => ({
+    title: "User Answered",
+    target: "",
+    detail: userAnswerDetail(ctx),
+  }),
+  renderToolUseErrorMessage: () => ({ detail: undefined }),
+};
+const EXIT_PLAN_MODE_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: (ctx) => ({
+    tone: "plan",
+    title: titleFor("Plan Approved", ctx, "Requesting Plan Approval"),
+    target: "",
+  }),
+  renderToolResultMessage: (ctx) => ({
+    detail: planApprovalDetail(ctx),
+    preserveResultLines: true,
+  }),
+  renderToolUseErrorMessage: (ctx) => ({
+    title: "Plan Approval Failed",
+    detail: commonResultDetail(ctx),
+  }),
+};
 const BRIEF_RENDERER = simpleRenderer("agent", "Brief", queryTarget, "Sending Brief");
 const REPL_RENDERER = simpleRenderer("exec", "REPL", commandTarget, "Running REPL");
 const WORKFLOW_RENDERER = simpleRenderer(
@@ -368,8 +476,12 @@ const REMOTE_RENDERER = simpleRenderer(
 
 const REGISTERED_RENDERERS: readonly RegisteredToolRenderer[] = [
   {
-    names: ["FileRead", "Read", "ReadFile", "read_file", "ListDir", "ls"],
+    names: ["FileRead", "Read", "ReadFile", "read_file"],
     renderer: READ_RENDERER,
+  },
+  {
+    names: ["ListDir", "ls", "list_dir", "system.listdir", "system.list_dir"],
+    renderer: LIST_RENDERER,
   },
   {
     names: ["Write", "FileWrite", "write_file"],
@@ -419,6 +531,11 @@ const REGISTERED_RENDERERS: readonly RegisteredToolRenderer[] = [
   { names: ["RemoteTrigger"], renderer: REMOTE_RENDERER },
   { names: ["Brief", "SendUserMessage"], renderer: BRIEF_RENDERER },
   { names: ["VerifyPlanExecution"], renderer: VERIFY_PLAN_RENDERER },
+  { names: ["AskUserQuestion"], renderer: ASK_USER_QUESTION_RENDERER },
+  {
+    names: ["ExitPlanMode", "workflow.exitPlan"],
+    renderer: EXIT_PLAN_MODE_RENDERER,
+  },
   { names: ["REPL"], renderer: REPL_RENDERER },
 ];
 
@@ -460,6 +577,7 @@ export function renderToolPresentation(
 export function toolRendererTone(toolName: string | undefined): ToolRenderTone {
   const renderer = findRenderer(toolName);
   if (renderer === READ_RENDERER) return "read";
+  if (renderer === LIST_RENDERER) return "list";
   if (renderer === WRITE_RENDERER) return "write";
   if (renderer === EDIT_RENDERER) return "edit";
   if (renderer === SEARCH_RENDERER) return "search";
@@ -471,6 +589,8 @@ export function toolRendererTone(toolName: string | undefined): ToolRenderTone {
   if (renderer === SKILL_RENDERER) return "skill";
   if (renderer === NOTEBOOK_RENDERER) return "notebook";
   if (renderer === VERIFY_PLAN_RENDERER) return "plan";
+  if (renderer === ASK_USER_QUESTION_RENDERER) return "plan";
+  if (renderer === EXIT_PLAN_MODE_RENDERER) return "plan";
   if (renderer === WORKFLOW_RENDERER) return "schedule";
   return "generic";
 }
