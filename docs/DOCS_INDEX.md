@@ -11,6 +11,7 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md) - MARKET/TOOLS split and runtime marketplace routing
 - [../runtime/docs/compiled-job-phase1-launch-readiness.md](../runtime/docs/compiled-job-phase1-launch-readiness.md) - compiled marketplace Phase 1 runbook, retention posture, and launch checklist
 - [./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md) - supported public-wrapper devnet marketplace rehearsal path
+- [DECLASSIFICATION_DISPOSITION.md](./DECLASSIFICATION_DISPOSITION.md) - agenc-core public-scrub inventory and declassification disposition table
 - [./architecture/README.md](./architecture/README.md) - architecture-focused reading path
 
 ## Primary Package Docs
