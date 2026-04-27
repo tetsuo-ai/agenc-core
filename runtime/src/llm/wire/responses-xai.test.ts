@@ -5,7 +5,6 @@ import {
   buildXaiResponsesInputItems,
   buildXaiResponsesRequest,
   resolveXaiResponsesToolChoice,
-  sanitizeToDocumentedXaiResponsesParams,
   toXaiResponsesTools,
   XAI_ENCRYPTED_REASONING_INCLUDE,
 } from "./responses-xai.js";
@@ -161,20 +160,7 @@ describe("responses-xai wire shim", () => {
     });
   });
 
-  test("preserves required tool_choice and strips undocumented fields", () => {
+  test("preserves required tool_choice", () => {
     expect(resolveXaiResponsesToolChoice("required")).toBe("required");
-
-    const sanitized = sanitizeToDocumentedXaiResponsesParams({
-      model: "grok-4-fast",
-      input: [],
-      store: false,
-      unsupported_local_field: true,
-    });
-
-    expect(sanitized).toEqual({
-      model: "grok-4-fast",
-      input: [],
-      store: false,
-    });
   });
 });

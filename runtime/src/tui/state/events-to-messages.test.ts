@@ -552,6 +552,27 @@ describe("eventsToMessages", () => {
       {
         type: "warning",
         payload: {
+          cause: "mode_changed_to_plan",
+          message: "entered plan mode (stashed prev mode as bypassPermissions)",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
+          cause: "mode_exited_plan",
+          message: "exited plan mode (restored bypassPermissions)",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
+          cause: "mode_changed",
+          message: "permission mode default -> plan",
+        },
+      },
+      {
+        type: "warning",
+        payload: {
           cause: "mcp_auth_required",
           message: "MCP server needs authentication",
         },

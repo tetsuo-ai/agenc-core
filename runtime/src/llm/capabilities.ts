@@ -1,7 +1,3 @@
-import {
-  resolveDocumentedXaiModel,
-} from "./grok/xai-strict-filter.js";
-
 export interface ProviderModelCapabilities {
   readonly provider: string;
   readonly model: string;
@@ -185,14 +181,10 @@ function applyCapabilityOverrides(
 }
 
 function resolveGrokImageHistory(model: string): boolean {
-  const canonicalModel = resolveDocumentedXaiModel(model.trim());
-  if (canonicalModel === null) {
-    return false;
-  }
   // AgenC's Grok adapter auto-routes image-bearing turns through the
   // configured vision model when needed, but the imagine-* family is an
   // image/video output surface rather than normal text chat history.
-  return !canonicalModel.startsWith("grok-imagine");
+  return !model.trim().toLowerCase().startsWith("grok-imagine");
 }
 
 function resolveGrokReasoningEffort(model: string): boolean {

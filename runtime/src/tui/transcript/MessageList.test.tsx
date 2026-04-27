@@ -606,6 +606,39 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("suppresses failed read and search probes from the transcript", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "read-missing",
+            kind: "tool_call",
+            toolName: "FileRead",
+            toolArgs: { path: "src/state/arrays.h" },
+            toolResultContent: "File does not exist: src/state/arrays.h",
+            isComplete: true,
+            isError: true,
+          }),
+          mkMsg({
+            id: "search-enotdir",
+            kind: "tool_call",
+            toolName: "Grep",
+            toolArgs: { pattern: "foo", path: "src/app/main.c" },
+            toolResultContent: "spawn ENOTDIR",
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).not.toContain("Read Failed");
+    expect(frame).not.toContain("Search Failed");
+    expect(frame).not.toContain("src/state/arrays.h");
+    expect(frame).not.toContain("spawn ENOTDIR");
+    unmount();
+  });
+
   test("renders edit failures compactly without rejection diffs", async () => {
     const oldString = "int builtin_eval(void) { return 0; }";
     const newString = "int builtin_eval(void) { return 1; }";

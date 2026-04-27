@@ -14,9 +14,6 @@ import type {
   LLMTool,
   LLMToolChoice,
 } from "../types.js";
-import {
-  DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
-} from "../grok/xai-strict-filter.js";
 
 export const XAI_ENCRYPTED_REASONING_INCLUDE =
   "reasoning.encrypted_content";
@@ -24,16 +21,6 @@ export const XAI_ENCRYPTED_REASONING_INCLUDE =
 export interface XaiResponsesInputBuildResult {
   readonly input: Record<string, unknown>[];
   readonly hasImages: boolean;
-}
-
-export function sanitizeToDocumentedXaiResponsesParams(
-  params: Record<string, unknown>,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(params).filter(([key]) =>
-      DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS.has(key)
-    ),
-  );
 }
 
 export function normalizeXaiResponsesToolChoice(

@@ -513,6 +513,13 @@ function isNoOpEditFailure(
   );
 }
 
+function isSilentReadSearchFailure(
+  family: ToolFamily,
+  isError: boolean,
+): boolean {
+  return isError && (family === "read" || family === "search");
+}
+
 function readFilePathForHighlight(
   family: ToolFamily,
   target: string,
@@ -618,12 +625,13 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     normalizedResult,
     highlightedReadFilePath,
   );
-  const suppressCell = isNoOpEditFailure(
-    presentation.family,
-    toolArgs,
-    normalizedResult,
-    isError,
-  );
+  const suppressCell =
+    isNoOpEditFailure(
+      presentation.family,
+      toolArgs,
+      normalizedResult,
+      isError,
+    ) || isSilentReadSearchFailure(presentation.family, isError);
   if (suppressCell) return null;
 
   const statusColor = isError

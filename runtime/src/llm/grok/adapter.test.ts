@@ -1,11 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { LLMMessage } from "../types.js";
+import type { LLMMessage, LLMTool } from "../types.js";
 import { GrokProvider } from "./adapter.js";
 
 function buildXaiResponse(id: string, text: string): Record<string, unknown> {
   return {
     id,
+    status: "completed",
+    incomplete_details: null,
     model: "grok-4-fast",
     output_text: text,
     output: [
@@ -22,6 +24,22 @@ function buildXaiResponse(id: string, text: string): Record<string, unknown> {
     },
   };
 }
+
+const TEST_TOOL: LLMTool = {
+  type: "function",
+  function: {
+    name: "FileRead",
+    description: "Read a file.",
+    parameters: {
+      type: "object",
+      properties: {
+        file_path: { type: "string" },
+      },
+      required: ["file_path"],
+      additionalProperties: false,
+    },
+  },
+};
 
 function withResponse<T>(data: T) {
   return {
@@ -243,5 +261,106 @@ describe("GrokProvider incremental continuation", () => {
     expect(String(functionCallOutput?.output)).toContain(
       "implementation is wrong until the plan and decision log are updated together.",
     );
+  });
+
+  test("does not retry completed text responses with tool_choice none", async () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      tools: [TEST_TOOL],
+    });
+    const text =
+      "**Extending ShellState for M5: Adding shopt map. Writing shopt.h first.**";
+    const requestBodies: Record<string, unknown>[] = [];
+    const create = vi.fn((params: Record<string, unknown>) => {
+      requestBodies.push(params);
+      return withResponse(buildXaiResponse("resp_text", text));
+    });
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    const result = await provider.chat([
+      { role: "user", content: "read state" },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_read_state",
+            name: "FileRead",
+            arguments: JSON.stringify({ file_path: "include/agenc/state.h" }),
+          },
+        ],
+      },
+      {
+        role: "tool",
+        toolCallId: "call_read_state",
+        toolName: "FileRead",
+        content: "state header",
+      },
+    ]);
+
+    expect(result.content).toBe(text);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(requestBodies[0]?.tool_choice).not.toBe("none");
+  });
+
+  test("does not replace streamed text with a tool-disabled retry", async () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+      tools: [TEST_TOOL],
+    });
+    const text =
+      "**Extending ShellState for M5: Adding shopt map. Writing shopt.h first.**";
+    const create = vi.fn(() =>
+      withResponse(
+        streamFromEvents([
+          {
+            type: "response.output_text.delta",
+            delta: text,
+          },
+          {
+            type: "response.completed",
+            response: buildXaiResponse("resp_stream_text", text),
+          },
+        ]),
+      )
+    );
+    (provider as any).client = {
+      responses: { create },
+    };
+    const chunks: string[] = [];
+
+    const result = await provider.chatStream(
+      [
+        { role: "user", content: "read state" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_read_state",
+              name: "FileRead",
+              arguments: JSON.stringify({ file_path: "include/agenc/state.h" }),
+            },
+          ],
+        },
+        {
+          role: "tool",
+          toolCallId: "call_read_state",
+          toolName: "FileRead",
+          content: "state header",
+        },
+      ],
+      (chunk) => {
+        if (chunk.content.length > 0) chunks.push(chunk.content);
+      },
+    );
+
+    expect(result.content).toBe(text);
+    expect(chunks).toEqual([text]);
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });
