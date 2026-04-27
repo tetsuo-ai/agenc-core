@@ -33,6 +33,7 @@ import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
 import { mcpInstructionsDeltaProducer } from "./mcp-delta.js";
 import { outputStyleProducer } from "./output-style.js";
 import { planModeProducer } from "./plan-mode.js";
+import { verifyPlanReminderProducer } from "./verify-plan-reminder.js";
 import { changedFilesProducer } from "./changed-files.js";
 import { nestedMemoryProducer } from "./nested-memory.js";
 import { relevantMemoryProducer } from "./relevant-memory.js";
@@ -116,6 +117,7 @@ export type AttachmentProducer = (
 const PRODUCERS: readonly AttachmentProducer[] = [
   // Phase 2 — Mode pulses:
   planModeProducer,
+  verifyPlanReminderProducer,
   autoModeProducer,
   //
   // Phase 3 — Mid-session deltas:

@@ -5,7 +5,7 @@
  * `src/utils/attachments.ts:441-718`, restricted to the subset of variants
  * that have an AgenC analog. Variants tied to features AgenC doesn't ship
  * (`ultrathink_effort`, `bagel_console_errors`, `buddy_intro`,
- * `lsp_diagnostics`, `ide_selection`, `verified_plan_reminder`,
+ * `lsp_diagnostics`, `ide_selection`,
  * `structured_output`, `skill_*`) are intentionally absent — when AgenC
  * adds the underlying feature, the variant lands here alongside its
  * producer.
@@ -91,6 +91,14 @@ export interface PlanModeExitAttachment {
   readonly kind: "plan_mode_exit";
   readonly planFilePath: string;
   readonly planExists: boolean;
+}
+
+/**
+ * Post-plan implementation reminder.
+ * Source: AgenC `attachments.ts:655`.
+ */
+export interface VerifyPlanReminderAttachment {
+  readonly kind: "verify_plan_reminder";
 }
 
 /**
@@ -223,6 +231,7 @@ export type Attachment =
   | PlanModeAttachment
   | PlanModeReentryAttachment
   | PlanModeExitAttachment
+  | VerifyPlanReminderAttachment
   | AutoModeAttachment
   | AutoModeExitAttachment
   | DateChangeAttachment

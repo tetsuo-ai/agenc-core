@@ -80,6 +80,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         `<system-reminder>\n${planModeExitBody(attachment.planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
     }
+    case "verify_plan_reminder": {
+      return userContextMessage(
+        wrapSystemReminder(
+          `You have completed implementing the plan. Please verify directly (NOT via the Agent tool or an agent) that all plan items were completed correctly.`,
+        ),
+      );
+    }
     case "auto_mode": {
       return userContextMessage(
         `<system-reminder>\n${autoModeBody(attachment.variant)}\n</system-reminder>`,

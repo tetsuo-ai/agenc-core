@@ -10,6 +10,7 @@
  */
 import { describe, expect, test } from "vitest";
 
+import type { LLMMessage } from "../../llm/types.js";
 import {
   _resetAttachmentTrackingStateForTest,
   getAttachmentTrackingState,
@@ -34,6 +35,21 @@ function makeOpts(
     signal: new AbortController().signal,
     ...partial,
   };
+}
+
+function planModeExitMarker(): LLMMessage {
+  return {
+    role: "user",
+    content: "<system-reminder>\n## Exited plan mode\n</system-reminder>",
+    runtimeOnly: { mergeBoundary: "user_context" },
+  };
+}
+
+function humanTurns(count: number): LLMMessage[] {
+  return Array.from({ length: count }, (_, i) => ({
+    role: "user",
+    content: `turn ${i + 1}`,
+  }));
 }
 
 describe("attachments orchestrator — live producer registry", () => {
@@ -83,6 +99,28 @@ describe("attachments orchestrator — live producer registry", () => {
 
     const second = await getAttachments(makeOpts({ sessionKey }));
     expect(second.some((a) => a.kind === "plan_mode_exit")).toBe(false);
+
+    _resetAttachmentTrackingStateForTest(sessionKey);
+  });
+
+  test("verify_plan_reminder is registered and renders through the live pipeline", async () => {
+    const sessionKey = {};
+    const out = await getAttachments(
+      makeOpts({
+        sessionKey,
+        messages: [planModeExitMarker(), ...humanTurns(10)],
+      }),
+    );
+
+    expect(out.some((a) => a.kind === "verify_plan_reminder")).toBe(true);
+    const messages = attachmentsToMessages(out);
+    expect(
+      messages.some(
+        (message) =>
+          typeof message.content === "string" &&
+          message.content.includes("Please verify directly"),
+      ),
+    ).toBe(true);
 
     _resetAttachmentTrackingStateForTest(sessionKey);
   });

@@ -99,6 +99,19 @@ describe("attachmentsToMessages", () => {
     expect(exit[0]?.content).toContain(planFilePath);
   });
 
+  test("renders verify_plan_reminder with AgenC-safe direct verification prose", () => {
+    const out = attachmentsToMessages([{ kind: "verify_plan_reminder" }]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toContain(
+      "You have completed implementing the plan",
+    );
+    expect(out[0]?.content).toContain("Please verify directly");
+    expect(out[0]?.content).toContain("NOT via the Agent tool or an agent");
+    expect(out[0]?.content).not.toContain("VerifyPlanExecution");
+    expect(out[0]?.content).toContain("<system-reminder>");
+  });
+
   test("renders auto_mode and auto_mode_exit", () => {
     const full = attachmentsToMessages([
       { kind: "auto_mode", variant: "full" },
