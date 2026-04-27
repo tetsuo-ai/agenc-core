@@ -213,7 +213,7 @@ describe("createProvider", () => {
       env: {
         LMSTUDIO_BASE_URL: undefined,
         LMSTUDIO_MODEL: "qwen2.5-coder:7b",
-        OPENAI_BASE_URL: "https://wrong.openai.example/v1",
+        OPENAI_BASE_URL: undefined,
         OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
@@ -228,7 +228,7 @@ describe("createProvider", () => {
       name: "lmstudio",
       env: {
         OPENAI_BASE_URL: "http://localhost:1234/v1",
-        OPENAI_API_KEY: undefined,
+        OPENAI_API_KEY: "local-token",
       },
       model: "qwen2.5-coder:7b",
       expectedBaseURL: "http://localhost:1234/v1",
@@ -236,7 +236,7 @@ describe("createProvider", () => {
       expectedUseResponsesApi: false,
       expectedInstance: LMStudioProvider,
       assertApiKey: true,
-      expectedApiKey: undefined,
+      expectedApiKey: "local-token",
     },
     {
       name: "lmstudio",
@@ -494,7 +494,7 @@ describe("createProvider", () => {
     },
   );
 
-  test("does not reuse OPENAI_API_KEY as LMStudio auth state", () => {
+  test("uses OPENAI_API_KEY as LMStudio-compatible auth fallback", () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: "sk-openai",
@@ -504,7 +504,7 @@ describe("createProvider", () => {
       () => createProvider("lmstudio", {}),
     );
 
-    expect(readProviderFactoryOptions(provider).apiKey).not.toBe("sk-openai");
+    expect(readProviderFactoryOptions(provider).apiKey).toBe("sk-openai");
   });
 
   test("'grok' without apiKey throws explanatory error", () => {

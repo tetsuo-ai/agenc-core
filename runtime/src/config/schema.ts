@@ -267,6 +267,8 @@ export interface ProviderConfig {
   readonly api_key_env?: string;
   readonly base_url?: string;
   readonly default_model?: string;
+  readonly context_window_tokens?: number;
+  readonly max_output_tokens?: number;
   readonly capability_overrides?: ProviderCapabilityOverrides;
 }
 

@@ -35,6 +35,7 @@ import {
   resolveProvider,
   resolveProfileName,
   resolveProviderApiKey,
+  resolveProviderBaseURL,
   resolveModel,
   resolveWorkspace,
   resolveSimpleMode,
@@ -124,6 +125,8 @@ describe("schema: normalizeRawConfig", () => {
           api_key_env: "OPENROUTER_TOKEN",
           base_url: "https://router.example/v1",
           default_model: "openai/gpt-5-mini",
+          context_window_tokens: 400_000,
+          max_output_tokens: 128_000,
           capability_overrides: {
             acceptsThinkingHistory: true,
           },
@@ -139,6 +142,8 @@ describe("schema: normalizeRawConfig", () => {
       api_key_env: "OPENROUTER_TOKEN",
       base_url: "https://router.example/v1",
       default_model: "openai/gpt-5-mini",
+      context_window_tokens: 400_000,
+      max_output_tokens: 128_000,
       capability_overrides: {
         acceptsThinkingHistory: true,
       },
@@ -213,6 +218,8 @@ describe("provider resolution (T13)", () => {
           api_key_env: "CUSTOM_OPENROUTER_KEY",
           base_url: "https://router.example/v1",
           default_model: "openai/gpt-5-mini",
+          context_window_tokens: 400_000,
+          max_output_tokens: 128_000,
         },
       },
     });
@@ -227,6 +234,21 @@ describe("provider resolution (T13)", () => {
       apiKey: "or-custom",
       baseURL: "https://router.example/v1",
       defaultModel: "openai/gpt-5-mini",
+      contextWindowTokens: 400_000,
+      maxOutputTokens: 128_000,
+    });
+  });
+
+  test("resolveProviderSettings lets OPENAI env configure local compatible endpoints", () => {
+    const settings = resolveProviderSettings("lmstudio", defaultConfig(), {
+      OPENAI_API_KEY: "local-token",
+      OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+    });
+
+    expect(settings).toMatchObject({
+      provider: "lmstudio",
+      apiKey: "local-token",
+      baseURL: "http://127.0.0.1:8000/v1",
     });
   });
 
@@ -1013,7 +1035,24 @@ describe("env: resolvers", () => {
     expect(resolveProviderApiKey("anthropic", { ANTHROPIC_API_KEY: "a" })).toBe(
       "a",
     );
+    expect(resolveProviderApiKey("lmstudio", { OPENAI_API_KEY: "local" })).toBe(
+      "local",
+    );
     expect(resolveProviderApiKey("ollama", {})).toBeUndefined();
+  });
+
+  test("resolveProviderBaseURL returns provider-specific URL or local compatible fallback", () => {
+    expect(
+      resolveProviderBaseURL("lmstudio", {
+        OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+      }),
+    ).toBe("http://127.0.0.1:8000/v1");
+    expect(
+      resolveProviderBaseURL("lmstudio", {
+        LMSTUDIO_BASE_URL: "http://127.0.0.1:1234/v1",
+        OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+      }),
+    ).toBe("http://127.0.0.1:1234/v1");
   });
 });
 

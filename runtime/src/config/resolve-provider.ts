@@ -1,6 +1,7 @@
 import {
   resolveProvider as resolveEnvProvider,
   resolveProviderApiKey as resolveEnvProviderApiKey,
+  resolveProviderBaseURL as resolveEnvProviderBaseURL,
   type EnvSnapshot,
 } from "./env.js";
 import type {
@@ -63,6 +64,8 @@ export interface ResolvedProviderSettings {
   readonly apiKey?: string;
   readonly baseURL?: string;
   readonly defaultModel?: string;
+  readonly contextWindowTokens?: number;
+  readonly maxOutputTokens?: number;
   readonly capabilityOverrides?: ProviderCapabilityOverrides;
 }
 
@@ -112,22 +115,39 @@ export function resolveProviderSettings(
   const apiKey =
     (apiKeyEnvVar ? env[apiKeyEnvVar] : undefined) ??
     resolveEnvProviderApiKey(slug, env);
+  const envBaseURL = resolveEnvProviderBaseURL(slug, env);
+  const configuredBaseURL = providerConfig?.base_url?.trim();
+  const baseURL = envBaseURL ?? configuredBaseURL;
+  const contextWindowTokens = positiveInteger(
+    providerConfig?.context_window_tokens,
+  );
+  const maxOutputTokens = positiveInteger(providerConfig?.max_output_tokens);
   return {
     provider: slug,
     ...(apiKeyEnvVar ? { apiKeyEnvVar } : {}),
     ...(apiKey ? { apiKey } : {}),
-    ...(providerConfig?.base_url?.trim()
-      ? { baseURL: providerConfig.base_url.trim() }
-      : {}),
+    ...(baseURL ? { baseURL } : {}),
     ...(providerConfig?.default_model?.trim()
       ? { defaultModel: providerConfig.default_model.trim() }
       : {
           defaultModel: BUILT_IN_PROVIDER_DEFAULT_MODELS[slug],
         }),
+    ...(contextWindowTokens !== undefined
+      ? { contextWindowTokens }
+      : {}),
+    ...(maxOutputTokens !== undefined
+      ? { maxOutputTokens }
+      : {}),
     ...(providerConfig?.capability_overrides
       ? { capabilityOverrides: providerConfig.capability_overrides }
       : {}),
   };
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
 }
 
 export function buildProviderModelCatalog(

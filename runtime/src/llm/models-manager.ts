@@ -9,54 +9,15 @@ import {
   resolveProviderCapabilityEntry,
   type ProviderCapabilityRegistryEntry,
 } from "./capabilities.js";
+import {
+  ModelMetadataResolver,
+  type ModelMetadataResolverOptions,
+  type ResolvedModelMetadata,
+} from "./model-metadata.js";
 import type { ModelsManager } from "../session/session.js";
 import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
 
 const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT = 95;
-
-function inferContextWindow(
-  provider: string,
-  model: string,
-): number | undefined {
-  const normalizedProvider = normalizeProviderSlug(provider);
-  const normalizedModel = model.trim().toLowerCase();
-  switch (normalizedProvider) {
-    case "grok":
-      return 256_000;
-    case "openai":
-      return /(?:^|[/:])(gpt-5|o3|o4|o1)(?:$|[-_.:])/.test(normalizedModel)
-        ? 1_000_000
-        : 128_000;
-    case "anthropic":
-      return 200_000;
-    case "openrouter":
-      return /(?:gpt-5|o3|o4|o1|gemini-2\.5)/.test(normalizedModel)
-        ? 1_000_000
-        : 200_000;
-    case "groq":
-    case "deepseek":
-      return 128_000;
-    case "gemini":
-      return 1_000_000;
-    default:
-      return undefined;
-  }
-}
-
-function inferMaxOutputTokens(
-  provider: string,
-  model: string,
-): number | undefined {
-  const normalizedProvider = normalizeProviderSlug(provider);
-  const normalizedModel = model.trim().toLowerCase();
-  if (normalizedProvider === "openai" && /(?:^|[/:])gpt-5(?:$|[-_.:])/.test(normalizedModel)) {
-    return 128_000;
-  }
-  if (normalizedProvider === "grok") {
-    return 32_768;
-  }
-  return undefined;
-}
 
 function inferReasoningLevels(
   caps: ProviderCapabilityRegistryEntry,
@@ -70,7 +31,7 @@ function buildModelInfo(params: {
   readonly provider: string;
   readonly model: string;
   readonly config: AgenCConfig;
-  readonly usedFallbackModelMetadata: boolean;
+  readonly metadata: ResolvedModelMetadata;
 }): ModelInfo {
   const overrides = readProviderConfig(params.config, params.provider)
     ?.capability_overrides;
@@ -82,14 +43,14 @@ function buildModelInfo(params: {
   const supportedReasoningLevels = inferReasoningLevels(caps);
   return {
     slug: params.model,
-    ...(inferContextWindow(params.provider, params.model) !== undefined
-      ? { contextWindow: inferContextWindow(params.provider, params.model) }
+    ...(params.metadata.contextWindow !== undefined
+      ? { contextWindow: params.metadata.contextWindow }
       : {}),
-    ...(inferMaxOutputTokens(params.provider, params.model) !== undefined
-      ? { maxOutputTokens: inferMaxOutputTokens(params.provider, params.model) }
+    ...(params.metadata.maxOutputTokens !== undefined
+      ? { maxOutputTokens: params.metadata.maxOutputTokens }
       : {}),
     effectiveContextWindowPercent:
-      params.usedFallbackModelMetadata
+      params.metadata.usedFallbackModelMetadata
         ? 100
         : DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
     supportedReasoningLevels,
@@ -98,7 +59,7 @@ function buildModelInfo(params: {
       : {}),
     defaultReasoningSummary: "auto",
     truncationPolicy: "off",
-    usedFallbackModelMetadata: params.usedFallbackModelMetadata,
+    usedFallbackModelMetadata: params.metadata.usedFallbackModelMetadata,
   };
 }
 
@@ -107,14 +68,18 @@ export class StaticModelsManager implements ModelsManager {
   private readonly config: AgenCConfig;
   private readonly fallbackProvider?: string;
   private readonly availableModels: readonly ModelInfo[];
+  private readonly metadataResolver: ModelMetadataResolver;
+  private readonly modelInfoCache = new Map<string, Promise<ModelInfo>>();
 
   constructor(params: {
     readonly config: AgenCConfig;
     readonly fallbackProvider?: string;
+    readonly metadata?: ModelMetadataResolverOptions;
   }) {
     this.config = params.config;
     this.fallbackProvider = normalizeProviderSlug(params.fallbackProvider);
     this.catalog = buildProviderModelCatalog(params.config);
+    this.metadataResolver = new ModelMetadataResolver(params.metadata);
     this.availableModels = Object.freeze(
       Object.entries(this.catalog).flatMap(([provider, models]) =>
         models.map((model) =>
@@ -122,7 +87,11 @@ export class StaticModelsManager implements ModelsManager {
             provider,
             model,
             config: this.config,
-            usedFallbackModelMetadata: false,
+            metadata: this.metadataResolver.resolveSync({
+              provider,
+              model,
+              config: this.config,
+            }),
           }),
         ),
       ),
@@ -132,11 +101,9 @@ export class StaticModelsManager implements ModelsManager {
   async getModelInfo(modelSlug: string): Promise<ModelInfo> {
     const trimmed = modelSlug.trim();
     if (trimmed.length === 0) {
-      return buildModelInfo({
+      return await this.resolveModelInfo({
         provider: this.fallbackProvider ?? "grok",
         model: "unknown-model",
-        config: this.config,
-        usedFallbackModelMetadata: true,
       });
     }
 
@@ -144,11 +111,9 @@ export class StaticModelsManager implements ModelsManager {
     if (explicitSeparator > 0) {
       const provider = trimmed.slice(0, explicitSeparator);
       const model = trimmed.slice(explicitSeparator + 1);
-      return buildModelInfo({
+      return await this.resolveModelInfo({
         provider,
         model,
-        config: this.config,
-        usedFallbackModelMetadata: false,
       });
     }
 
@@ -158,21 +123,17 @@ export class StaticModelsManager implements ModelsManager {
         config: this.config,
         catalog: this.catalog,
       });
-      return buildModelInfo({
+      return await this.resolveModelInfo({
         provider: resolved.provider,
         model: resolved.model,
-        config: this.config,
-        usedFallbackModelMetadata: false,
       });
     } catch {
-      return buildModelInfo({
+      return await this.resolveModelInfo({
         provider:
           this.fallbackProvider ??
           normalizeProviderSlug(this.config.model_provider) ??
           "grok",
         model: trimmed,
-        config: this.config,
-        usedFallbackModelMetadata: true,
       });
     }
   }
@@ -183,5 +144,33 @@ export class StaticModelsManager implements ModelsManager {
 
   async listModels(): Promise<ReadonlyArray<ModelInfo>> {
     return this.availableModels;
+  }
+
+  private async resolveModelInfo(params: {
+    readonly provider: string;
+    readonly model: string;
+  }): Promise<ModelInfo> {
+    const key = `${params.provider}:${params.model}`;
+    const cached = this.modelInfoCache.get(key);
+    if (cached) return await cached;
+    const resolved = this.buildResolvedModelInfo(params);
+    this.modelInfoCache.set(key, resolved);
+    return await resolved;
+  }
+
+  private async buildResolvedModelInfo(params: {
+    readonly provider: string;
+    readonly model: string;
+  }): Promise<ModelInfo> {
+    return buildModelInfo({
+      provider: params.provider,
+      model: params.model,
+      config: this.config,
+      metadata: await this.metadataResolver.resolve({
+        provider: params.provider,
+        model: params.model,
+        config: this.config,
+      }),
+    });
   }
 }

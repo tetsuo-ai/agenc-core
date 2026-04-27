@@ -749,6 +749,12 @@ export async function bootstrapLocalRuntimeSession(
       extra: {
         emitWarning: emitProviderWarning,
         onCapabilityDrift: handleCapabilityDrift,
+        ...(providerSettings?.contextWindowTokens !== undefined
+          ? { contextWindowTokens: providerSettings.contextWindowTokens }
+          : {}),
+        ...(providerSettings?.maxOutputTokens !== undefined
+          ? { maxTokens: providerSettings.maxOutputTokens }
+          : {}),
       },
     },
   );
@@ -782,6 +788,10 @@ export async function bootstrapLocalRuntimeSession(
   const modelsManager = new StaticModelsManager({
     config: startup.config,
     fallbackProvider: resolvedProvider,
+    metadata: {
+      fetchImpl: globalThis.fetch.bind(globalThis),
+      env,
+    },
   });
   // Register the live (model, ModelsManager) pair so sync helpers like
   // `getUpgradeMessage` (post-compact stdout breadcrumb, status hints)

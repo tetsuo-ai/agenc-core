@@ -1,7 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { mergeConfigs, defaultConfig } from "../config/index.js";
 import { StaticModelsManager } from "./models-manager.js";
+import { CONSERVATIVE_CONTEXT_WINDOW_TOKENS } from "./model-metadata.js";
+
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 describe("StaticModelsManager", () => {
   it("returns concrete metadata for known built-in models", async () => {
@@ -49,6 +57,182 @@ describe("StaticModelsManager", () => {
 
     const info = await manager.getModelInfo("custom-local-model");
     expect(info.slug).toBe("custom-local-model");
+    expect(info.usedFallbackModelMetadata).toBe(true);
+    expect(info.effectiveContextWindowPercent).toBe(100);
+  });
+
+  it("uses explicit provider context metadata before fetching anything", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "lmstudio",
+        model: "qwen3.6-35b-a3b-fp8",
+        providers: {
+          lmstudio: {
+            default_model: "qwen3.6-35b-a3b-fp8",
+            context_window_tokens: 262_144,
+            max_output_tokens: 32_768,
+          },
+        },
+      }),
+      fallbackProvider: "lmstudio",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("qwen3.6-35b-a3b-fp8");
+    expect(info.contextWindow).toBe(262_144);
+    expect(info.maxOutputTokens).toBe(32_768);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reads live OpenAI-compatible endpoint metadata for vLLM-style models", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("http://127.0.0.1:8000/v1/models");
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        "Bearer local-token",
+      );
+      return jsonResponse({
+        data: [
+          {
+            id: "qwen3.6-35b-a3b-fp8",
+            max_model_len: 262_144,
+            max_output_tokens: 65_536,
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "lmstudio",
+        model: "qwen3.6-35b-a3b-fp8",
+        providers: {
+          lmstudio: {
+            default_model: "qwen3.6-35b-a3b-fp8",
+          },
+        },
+      }),
+      fallbackProvider: "lmstudio",
+      metadata: {
+        fetchImpl,
+        env: {
+          OPENAI_API_KEY: "local-token",
+          OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+        },
+      },
+    });
+
+    const info = await manager.getModelInfo("qwen3.6-35b-a3b-fp8");
+    expect(info.contextWindow).toBe(262_144);
+    expect(info.maxOutputTokens).toBe(65_536);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+  });
+
+  it("uses OpenRouter registry metadata for OpenRouter models", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe("https://openrouter.ai/api/v1/models");
+      return jsonResponse({
+        data: [
+          {
+            id: "x-ai/grok-code-fast-1",
+            context_length: 256_000,
+            top_provider: {
+              max_completion_tokens: 64_000,
+            },
+          },
+        ],
+      });
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openrouter",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("openrouter:x-ai/grok-code-fast-1");
+    expect(info.contextWindow).toBe(256_000);
+    expect(info.maxOutputTokens).toBe(64_000);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+  });
+
+  it("falls back to models.dev metadata when provider live metadata is unavailable", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url === "https://api.openai.com/v1/models") {
+        return jsonResponse({ data: [] });
+      }
+      if (url === "https://models.dev/api.json") {
+        return jsonResponse({
+          openai: {
+            models: {
+              "gpt-test-model": {
+                limit: {
+                  context: 321_000,
+                  output: 12_345,
+                },
+              },
+            },
+          },
+        });
+      }
+      return jsonResponse({});
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("openai:gpt-test-model");
+    expect(info.contextWindow).toBe(321_000);
+    expect(info.maxOutputTokens).toBe(12_345);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+  });
+
+  it("falls back to LiteLLM metadata after models.dev misses", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url === "https://api.groq.com/openai/v1/models") {
+        return jsonResponse({ data: [] });
+      }
+      if (url === "https://models.dev/api.json") {
+        return jsonResponse({});
+      }
+      if (
+        url ===
+        "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+      ) {
+        return jsonResponse({
+          "groq/custom-groq": {
+            max_input_tokens: 99_999,
+            max_output_tokens: 7_777,
+          },
+        });
+      }
+      return jsonResponse({});
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "groq",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("groq:custom-groq");
+    expect(info.contextWindow).toBe(99_999);
+    expect(info.maxOutputTokens).toBe(7_777);
+    expect(info.usedFallbackModelMetadata).toBe(false);
+  });
+
+  it("uses a conservative fallback when all metadata sources miss", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ data: [] }));
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "lmstudio",
+      metadata: { fetchImpl },
+    });
+
+    const info = await manager.getModelInfo("lmstudio:missing-local-model");
+    expect(info.contextWindow).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
     expect(info.usedFallbackModelMetadata).toBe(true);
     expect(info.effectiveContextWindowPercent).toBe(100);
   });
