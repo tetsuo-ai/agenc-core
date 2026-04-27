@@ -35,12 +35,19 @@ export interface EnvSnapshot {
   readonly GROK_API_KEY?: string;
   readonly AGENC_XAI_API_KEY?: string;
   readonly OPENAI_API_KEY?: string;
+  readonly OPENAI_BASE_URL?: string;
   readonly ANTHROPIC_API_KEY?: string;
+  readonly ANTHROPIC_BASE_URL?: string;
   readonly LMSTUDIO_API_KEY?: string;
+  readonly LMSTUDIO_BASE_URL?: string;
   readonly OPENROUTER_API_KEY?: string;
+  readonly OPENROUTER_BASE_URL?: string;
   readonly GROQ_API_KEY?: string;
+  readonly GROQ_BASE_URL?: string;
   readonly DEEPSEEK_API_KEY?: string;
+  readonly DEEPSEEK_BASE_URL?: string;
   readonly GEMINI_API_KEY?: string;
+  readonly GEMINI_BASE_URL?: string;
   readonly HOME?: string;
   readonly [k: string]: string | undefined;
 }
@@ -121,7 +128,7 @@ export function resolveProviderApiKey(
     case "anthropic":
       return readNonEmpty(e.ANTHROPIC_API_KEY);
     case "lmstudio":
-      return readNonEmpty(e.LMSTUDIO_API_KEY);
+      return readNonEmpty(e.LMSTUDIO_API_KEY) ?? readNonEmpty(e.OPENAI_API_KEY);
     case "openrouter":
       return readNonEmpty(e.OPENROUTER_API_KEY);
     case "groq":
@@ -130,6 +137,33 @@ export function resolveProviderApiKey(
       return readNonEmpty(e.DEEPSEEK_API_KEY);
     case "gemini":
       return readNonEmpty(e.GEMINI_API_KEY);
+    default:
+      return undefined;
+  }
+}
+
+export function resolveProviderBaseURL(
+  provider: string,
+  env: EnvSnapshot = process.env,
+): string | undefined {
+  const e = readEnv(env);
+  switch (normalizeProvider(provider)) {
+    case "openai":
+      return readNonEmpty(e.OPENAI_BASE_URL);
+    case "anthropic":
+      return readNonEmpty(e.ANTHROPIC_BASE_URL);
+    case "lmstudio":
+      return (
+        readNonEmpty(e.LMSTUDIO_BASE_URL) ?? readNonEmpty(e.OPENAI_BASE_URL)
+      );
+    case "openrouter":
+      return readNonEmpty(e.OPENROUTER_BASE_URL);
+    case "groq":
+      return readNonEmpty(e.GROQ_BASE_URL);
+    case "deepseek":
+      return readNonEmpty(e.DEEPSEEK_BASE_URL);
+    case "gemini":
+      return readNonEmpty(e.GEMINI_BASE_URL);
     default:
       return undefined;
   }
