@@ -429,6 +429,7 @@ function sourceMutationPreviewLines(
     "after",
   ]);
   if (beforeText === undefined || afterText === undefined) return [];
+  if (beforeText === afterText) return [];
   return renderSourceMutationDisplayLines({
     filePath,
     mutationKind: "replace",
@@ -439,6 +440,29 @@ function sourceMutationPreviewLines(
 
 function resultDiffLines(value: string): ReturnType<typeof renderDiffDisplayLines> {
   return looksLikeDiffText(value) ? renderDiffDisplayLines(value) : [];
+}
+
+function isNoOpEditFailure(
+  family: ToolFamily,
+  toolArgs: unknown,
+  normalizedResult: string,
+  isError: boolean,
+): boolean {
+  if (!isError || family !== "edit") return false;
+  const beforeText = readRawStringField(toolArgs, [
+    "old_string",
+    "oldString",
+    "before",
+  ]);
+  const afterText = readRawStringField(toolArgs, [
+    "new_string",
+    "newString",
+    "after",
+  ]);
+  if (beforeText !== undefined && beforeText === afterText) return true;
+  return normalizedResult.includes(
+    "No changes to make: old_string and new_string are exactly the same.",
+  );
 }
 
 function readFilePathForHighlight(
@@ -550,6 +574,13 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     normalizedResult,
     highlightedReadFilePath,
   );
+  const suppressCell = isNoOpEditFailure(
+    presentation.family,
+    toolArgs,
+    normalizedResult,
+    isError,
+  );
+  if (suppressCell) return null;
 
   const statusColor = isError
     ? theme.colors.error

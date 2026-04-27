@@ -499,6 +499,37 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("suppresses no-op edit failures from the transcript", async () => {
+    const unchanged = "int builtin_eval(void) { return 0; }";
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "edit-noop",
+            kind: "tool_call",
+            toolName: "Edit",
+            toolArgs: {
+              path: "src/builtins/special.c",
+              old_string: unchanged,
+              new_string: unchanged,
+            },
+            toolResultContent:
+              "No changes to make: old_string and new_string are exactly the same.",
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).not.toContain("Edit Failed");
+    expect(frame).not.toContain("No changes to make");
+    expect(frame).not.toContain("@@ replace @@");
+    expect(frame).not.toContain("--- before");
+    expect(frame).not.toContain("+++ after");
+    unmount();
+  });
+
   test("renders shell write policy failures as compact blocked cells", async () => {
     const result = JSON.stringify({
       error:
