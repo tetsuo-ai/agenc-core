@@ -190,6 +190,7 @@ export function isMemoryWorthy(candidate: MemoryCandidate): boolean {
     body,
   ].join("\n");
   if (looksLikeExtractionInstruction(instructionLikeText)) return false;
+  if (looksLikeEphemeralTaskState(instructionLikeText)) return false;
   return true;
 }
 
@@ -203,6 +204,18 @@ function looksLikeExtractionInstruction(text: string): boolean {
     /--- TRANSCRIPT(?: FALLBACK)? ---/i,
     /Your parent will see your final response/i,
     /subagent spawned to complete a specific task/i,
+  ];
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function looksLikeEphemeralTaskState(text: string): boolean {
+  const patterns = [
+    /\bcurrent (?:task|status|state|implementation|milestone)\b/i,
+    /\b(?:in[- ]progress|starting|next step|positioned for|ready for code changes)\b/i,
+    /\bapproved plan\b/i,
+    /\btodo(?: list)? tracked\b/i,
+    /\b(?:step|phase)\s+\d+\s+(?:active|starting|in[- ]progress|complete|completed)\b/i,
+    /\bcreating\s+[\w./-]+\s+for\b/i,
   ];
   return patterns.some((pattern) => pattern.test(text));
 }

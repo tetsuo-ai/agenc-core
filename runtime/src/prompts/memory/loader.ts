@@ -1,11 +1,17 @@
 /**
- * Memory loader — assembles `MEMORY.md` + ordered topic files into a
- * bounded prompt fragment the runtime injects as system-context.
+ * Memory loader — emits a bounded memory-policy prompt fragment.
  *
- * Hand-port of AgenC `memdir/memdir.ts` load path (line 272-316
- * `buildMemoryPrompt` subset). Differs:
+ * Detailed memory content is intentionally NOT injected here. The
+ * upstream contract uses the memory prompt as policy/discovery context
+ * and surfaces detailed memory files through the per-turn relevant
+ * memory attachment producer. Keeping this loader content-free prevents
+ * stale `MEMORY.md` task indexes from being interpreted as active work
+ * after `/clear`.
+ *
+ * Differs:
  *   - Async from the start: runtime is async-first, no sync-reads.
- *   - Line AND byte caps (TODO.MD §T10-C: 200 lines / 25KB).
+ *   - Line AND byte caps (TODO.MD §T10-C: 200 lines / 25KB), applied
+ *     to the small policy fragment.
  *   - Lock registry (`memoryWriteLocks`) lives here — every writer
  *     (auto-save, manual edit, CLI) shares the same `AsyncLock<void>`
  *     keyed by absolute file path to satisfy I-29.
@@ -20,10 +26,8 @@
 
 import { readTextFile } from "../_deps/file-read.js";
 import { AsyncLock } from "../_deps/async-lock.js";
-import { scanMemoryIndex } from "./scan.js";
-import { parseFrontmatter, type MemoryEntry } from "./types.js";
+import type { MemoryEntry } from "./types.js";
 import { withFsLock, type FsLockOpts } from "./fs-lock.js";
-import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { memoryLayout } from "./layout.js";
 
@@ -47,7 +51,7 @@ export interface LoadMemoryOpts {
 export interface LoadedMemory {
   /** Concatenated text ready to splice into the system prompt. */
   readonly text: string;
-  /** Ordered list of loaded memory entries. */
+  /** Detailed entries loaded into the base prompt. Intentionally empty. */
   readonly entries: readonly MemoryEntry[];
   /** True when either cap fired. */
   readonly truncated: boolean;
@@ -58,9 +62,10 @@ export interface LoadedMemory {
 }
 
 /**
- * Load `MEMORY.md` and the topic files it points to, concatenated
- * into a single prompt fragment. Stops appending when either cap
- * trips. Missing index or empty dir returns a zero-byte result.
+ * Load memory policy for the system prompt. `MEMORY.md`,
+ * `memory_summary.md`, and detailed topic files remain durable
+ * retrieval inputs, but their content is not injected here. Missing
+ * memory files return a zero-byte result.
  */
 export async function loadMemoryPrompt(
   opts: LoadMemoryOpts,
@@ -97,7 +102,6 @@ export async function loadMemoryPrompt(
     };
   }
 
-  const indexPaths = await scanMemoryIndex(opts.memoryMdPath);
   const entries: MemoryEntry[] = [];
 
   let accumulated = "";
@@ -128,75 +132,45 @@ export async function loadMemoryPrompt(
     return true;
   };
 
-  if (summaryText.trim().length > 0) {
-    const header = `# memory_summary.md\n${summaryText.replace(/\n+$/, "")}\n\n`;
-    if (!appendChunk(header)) {
-      const available = Math.max(0, maxBytes - byteCount);
-      if (available > 0) {
-        const sliced = header.slice(0, available);
-        const cutAt = sliced.lastIndexOf("\n");
-        const safe = cutAt > 0 ? sliced.slice(0, cutAt) : sliced;
-        accumulated += safe;
-        lineCount += countNewlines(safe);
-        byteCount += Buffer.byteLength(safe, "utf8");
-      }
-      return {
-        text: accumulated,
-        entries,
-        truncated: true,
-        lineCount,
-        byteCount,
-      };
-    }
-  }
+  const appendTruncatedChunk = (chunk: string): void => {
+    let remainingLines = Math.max(0, maxLines - lineCount);
+    let remainingBytes = Math.max(0, maxBytes - byteCount);
+    if (remainingLines === 0 || remainingBytes === 0) return;
 
-  // Then include the handbook/index itself.
-  if (indexText.trim().length > 0) {
-    const header = `# MEMORY.md\n${indexText.replace(/\n+$/, "")}\n\n`;
-    if (!appendChunk(header)) {
-      // Even the index overflows — truncate it to fit.
-      const available = Math.max(0, maxBytes - byteCount);
-      if (available > 0) {
-        const sliced = header.slice(0, available);
-        const cutAt = sliced.lastIndexOf("\n");
-        const safe = cutAt > 0 ? sliced.slice(0, cutAt) : sliced;
-        accumulated += safe;
-        lineCount += countNewlines(safe);
-        byteCount += Buffer.byteLength(safe, "utf8");
-      }
-      return {
-        text: accumulated,
-        entries,
-        truncated: true,
-        lineCount,
-        byteCount,
-      };
+    let safe = "";
+    // Split after newlines so line accounting stays exact.
+    const pieces = chunk.match(/[^\n]*\n|[^\n]+/g) ?? [];
+    for (const piece of pieces) {
+      const pieceLines = countNewlines(piece);
+      const pieceBytes = Buffer.byteLength(piece, "utf8");
+      if (pieceLines > remainingLines || pieceBytes > remainingBytes) break;
+      safe += piece;
+      remainingLines -= pieceLines;
+      remainingBytes -= pieceBytes;
     }
-  }
+    if (safe.length === 0 && remainingBytes > 0) {
+      const sliced = chunk.slice(0, remainingBytes);
+      const cutAt = sliced.lastIndexOf("\n");
+      safe = cutAt > 0 ? sliced.slice(0, cutAt) : sliced;
+    }
+    accumulated += safe;
+    lineCount += countNewlines(safe);
+    byteCount += Buffer.byteLength(safe, "utf8");
+  };
 
-  // Now append each referenced topic file in order.
-  for (const path of indexPaths) {
-    let raw: string;
-    let mtimeMs = 0;
-    try {
-      raw = await readTextFile(path);
-      const stats = await stat(path);
-      mtimeMs = stats.mtimeMs;
-    } catch {
-      continue;
-    }
-    const parsed = parseFrontmatter(raw);
-    if (parsed === null) continue;
-    const entry: MemoryEntry = {
-      filePath: path,
-      frontmatter: parsed.frontmatter,
-      body: parsed.body,
-      mtimeMs,
-      byteLength: Buffer.byteLength(raw, "utf8"),
-    };
-    const chunk = `## ${parsed.frontmatter.name ?? path}\n${parsed.body}\n\n`;
-    if (!appendChunk(chunk)) break;
-    entries.push(entry);
+  const policy = [
+    "# Memory",
+    "",
+    `AgenC has durable memory available at ${opts.memoryDir}. Relevant memories are surfaced as per-turn attachments when they clearly match the user's request.`,
+    "",
+    "Do not treat memory as active task state. Memory may be stale; verify file, function, flag, and current-status claims against the workspace before acting on them.",
+    "",
+    "`MEMORY.md` and `memory_summary.md` are retrieval indexes. Their contents are not injected into this base prompt.",
+    "",
+  ].join("\n");
+
+  if (!appendChunk(policy)) {
+    appendTruncatedChunk(policy);
   }
 
   return {

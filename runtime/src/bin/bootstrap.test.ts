@@ -126,10 +126,12 @@ describe("readStartupCliFlags", () => {
         "--permission-mode",
         "plan",
         "--yolo",
+        "--autonomous",
       ]),
     ).toMatchObject({
       permissionMode: "plan",
       allowDangerouslySkipPermissions: true,
+      autonomousMode: true,
     });
 
     expect(

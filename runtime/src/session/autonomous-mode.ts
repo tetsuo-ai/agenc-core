@@ -10,15 +10,19 @@ export interface SessionSubmitOptions {
   readonly source?: SessionSubmitSource;
 }
 
-const AUTONOMOUS_PERMISSION_MODES: ReadonlySet<PermissionMode> =
-  new Set<PermissionMode>(["auto", "bypassPermissions"]);
-
-export function isAutonomousPermissionMode(
+function readPermissionMode(
   input: PermissionMode | ToolPermissionContext | null | undefined,
-): boolean {
-  if (input === null || input === undefined) return false;
-  const mode = typeof input === "string" ? input : input.mode;
-  return AUTONOMOUS_PERMISSION_MODES.has(mode);
+): PermissionMode | null {
+  if (input === null || input === undefined) return null;
+  return typeof input === "string" ? input : input.mode;
+}
+
+export function isAutonomousModeEnabled(params: {
+  readonly enabled: boolean | undefined;
+  readonly permissionContext?: PermissionMode | ToolPermissionContext | null;
+}): boolean {
+  if (params.enabled !== true) return false;
+  return readPermissionMode(params.permissionContext) !== "plan";
 }
 
 export function createAutonomousTickMessage(now: Date = new Date()): string {
@@ -47,6 +51,7 @@ export class AutonomousKeepaliveScheduler {
   private readonly onError?: (error: unknown) => void;
   private timer: TimerHandle | null = null;
   private disposed = false;
+  private contextBlocked = false;
 
   constructor(opts: AutonomousKeepaliveSchedulerOptions) {
     this.isActiveFn = opts.isActive;
@@ -64,11 +69,17 @@ export class AutonomousKeepaliveScheduler {
 
   isActive(): boolean {
     if (this.disposed) return false;
+    if (this.contextBlocked) return false;
     try {
       return this.isActiveFn();
     } catch {
       return false;
     }
+  }
+
+  setContextBlocked(blocked: boolean): void {
+    this.contextBlocked = blocked;
+    if (blocked) this.cancel();
   }
 
   scheduleNext(): void {

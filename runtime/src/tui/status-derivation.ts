@@ -72,6 +72,22 @@ function readCostUsd(session: object): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function readLastPromptTokens(session: object): number | undefined {
+  const services = (
+    session as {
+      readonly services?: {
+        readonly usageNoticeSidecar?: {
+          readonly getLastUsage?: () => TokenUsageSnapshot;
+        };
+      };
+    }
+  ).services;
+  const value = services?.usageNoticeSidecar?.getLastUsage?.().promptTokens;
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
 function readBudgetUsd(session: object): number | undefined {
   const services = (
     session as {
@@ -117,10 +133,11 @@ export function buildStatusLineSession(
       : undefined;
   const outputTokens =
     (usage?.completionTokens ?? 0) + (usage?.reasoningOutputTokens ?? 0);
+  const contextTokensUsed = readLastPromptTokens(session) ?? tokensUsed;
   const costUsd = readCostUsd(session);
   const budgetUsd = readBudgetUsd(session);
   const percent = contextPercent(
-    tokensUsed,
+    contextTokensUsed,
     readContextWindow(session, snapshot),
   );
   const raw = session as {

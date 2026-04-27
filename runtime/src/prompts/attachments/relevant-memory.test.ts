@@ -105,11 +105,25 @@ describe("relevantMemoryProducer", () => {
     expect(getMemoryCitations(sessionKey).length).toBeGreaterThan(0);
   });
 
-  test("returns [] when no memories overlap the user input tokens (and no other priorities)", async () => {
-    // We can't easily force "selector returns nothing" since the type
-    // bonus alone (project=3) makes everything score above 0. Instead
-    // prove the empty-userInput short-circuit + verify selector cap
-    // honors per-session bytes by exhausting budget.
+  test("returns [] when no memories clearly overlap the user input tokens", async () => {
+    writeMemory("alpha", "alpha body content", "shell milestone status");
+    const out = await relevantMemoryProducer(
+      makeOpts({ userInput: "tell me about database migrations" }),
+      getAttachmentTrackingState(sessionKey),
+    );
+    expect(out).toEqual([]);
+  });
+
+  test("returns [] for greeting prompts even when a memory mentions the addressee", async () => {
+    writeMemory("grok", "grok body content", "grok model behavior");
+    const out = await relevantMemoryProducer(
+      makeOpts({ userInput: "hello Grok" }),
+      getAttachmentTrackingState(sessionKey),
+    );
+    expect(out).toEqual([]);
+  });
+
+  test("returns [] for oversized memories even with lexical overlap", async () => {
     writeMemory("gigantic", "x".repeat(70_000), "huge");
     // Per-file cap is 4_000 bytes — file is dropped entirely.
     const out = await relevantMemoryProducer(

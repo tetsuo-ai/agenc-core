@@ -9,6 +9,11 @@ describe("buildStatusLineSession", () => {
       services: {
         costSidecar: { getTotalCostUsd: () => 1.25 },
         configStore: { current: () => ({ max_budget_usd: 5 }) },
+        usageNoticeSidecar: {
+          getLastUsage: () => ({
+            promptTokens: 400,
+          }),
+        },
       },
       state: {
         unsafePeek: () => ({
@@ -32,7 +37,7 @@ describe("buildStatusLineSession", () => {
       sessionId: "session-1234567890",
       tokensUsed: 500,
       outputTokens: 150,
-      contextPercent: 50,
+      contextPercent: 40,
       costUsd: 1.25,
       budgetUsd: 5,
       budgetRemainingUsd: 3.75,
@@ -59,4 +64,3 @@ describe("buildStatusLineSession", () => {
     });
   });
 });
-

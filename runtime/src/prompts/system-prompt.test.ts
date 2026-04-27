@@ -514,13 +514,14 @@ describe("assembleSystemPrompt", () => {
     ).toBe(true);
   });
 
-  test("autonomous work section is injected for bypass mode only", async () => {
+  test("autonomous work section requires explicit autonomous mode", async () => {
     const { createEmptyToolPermissionContext } = await import(
       "../permissions/types.js"
     );
     const active = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
+      autonomousMode: true,
       permissionContext: createEmptyToolPermissionContext({
         mode: "bypassPermissions",
       }),
@@ -529,14 +530,33 @@ describe("assembleSystemPrompt", () => {
     const inactive = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
+      autonomousMode: false,
+      permissionContext: createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+      }),
+      envForSimpleMode: {},
+    });
+    const plan = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      autonomousMode: true,
+      permissionContext: createEmptyToolPermissionContext({ mode: "plan" }),
+      envForSimpleMode: {},
+    });
+    const defaultMode = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
       permissionContext: createEmptyToolPermissionContext({ mode: "default" }),
       envForSimpleMode: {},
     });
 
-    expect(active.text).toContain("# Autonomous Work");
+    expect(active.text).toContain("# Autonomous work");
     expect(active.text).toContain("<tick>");
     expect(active.text).toContain("call Sleep");
-    expect(inactive.text).not.toContain("# Autonomous Work");
+    expect(active.text).toContain("MUST call Sleep");
+    expect(inactive.text).not.toContain("# Autonomous work");
+    expect(plan.text).not.toContain("# Autonomous work");
+    expect(defaultMode.text).not.toContain("# Autonomous work");
   });
 
   test("system prompt rejects implicit non-AgenC instruction updates", async () => {

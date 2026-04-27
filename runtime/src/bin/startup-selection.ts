@@ -37,6 +37,7 @@ export interface StartupCliFlags {
   readonly profile?: string;
   readonly permissionMode?: PermissionMode;
   readonly allowDangerouslySkipPermissions?: boolean;
+  readonly autonomousMode?: boolean;
 }
 
 export interface StartupSelection {
@@ -64,6 +65,8 @@ export function readStartupCliFlags(
     userArgv.includes("--yolo") ||
     userArgv.includes("--dangerously-bypass-approvals-and-sandbox") ||
     userArgv.includes("--allow-dangerously-skip-permissions");
+  const autonomousMode =
+    userArgv.includes("--autonomous") || userArgv.includes("--proactive");
   return Object.freeze({
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
@@ -72,6 +75,7 @@ export function readStartupCliFlags(
     ...(allowDangerouslySkipPermissions
       ? { allowDangerouslySkipPermissions: true }
       : {}),
+    ...(autonomousMode ? { autonomousMode: true } : {}),
   });
 }
 

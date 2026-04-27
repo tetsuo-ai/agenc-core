@@ -5,16 +5,29 @@ import {
   AUTONOMOUS_TICK_TAG,
   AutonomousKeepaliveScheduler,
   createAutonomousTickMessage,
-  isAutonomousPermissionMode,
+  isAutonomousModeEnabled,
 } from "./autonomous-mode.js";
 
 describe("autonomous mode helpers", () => {
-  test("recognizes only autonomous permission modes", () => {
-    expect(isAutonomousPermissionMode("auto")).toBe(true);
-    expect(isAutonomousPermissionMode("bypassPermissions")).toBe(true);
-    expect(isAutonomousPermissionMode("acceptEdits")).toBe(false);
-    expect(isAutonomousPermissionMode("plan")).toBe(false);
-    expect(isAutonomousPermissionMode(null)).toBe(false);
+  test("requires explicit autonomous mode and suppresses plan mode", () => {
+    expect(
+      isAutonomousModeEnabled({
+        enabled: true,
+        permissionContext: "bypassPermissions",
+      }),
+    ).toBe(true);
+    expect(
+      isAutonomousModeEnabled({
+        enabled: false,
+        permissionContext: "bypassPermissions",
+      }),
+    ).toBe(false);
+    expect(
+      isAutonomousModeEnabled({ enabled: true, permissionContext: "plan" }),
+    ).toBe(false);
+    expect(
+      isAutonomousModeEnabled({ enabled: true, permissionContext: null }),
+    ).toBe(true);
   });
 
   test("creates tick prompts with the expected XML tag", () => {
@@ -68,6 +81,34 @@ describe("autonomous mode helpers", () => {
     await Promise.resolve();
 
     expect(submitTick).not.toHaveBeenCalled();
+  });
+
+  test("scheduler blocks ticks while context is blocked", async () => {
+    const callbacks: Array<() => void> = [];
+    const clearTimeoutFn = vi.fn();
+    const submitTick = vi.fn(async (_message: string) => {});
+    const scheduler = new AutonomousKeepaliveScheduler({
+      isActive: () => true,
+      submitTick,
+      setTimeoutFn: ((callback: () => void) => {
+        callbacks.push(callback);
+        return callbacks.length as never;
+      }) as never,
+      clearTimeoutFn: clearTimeoutFn as never,
+    });
+
+    scheduler.scheduleNext();
+    scheduler.setContextBlocked(true);
+    expect(scheduler.isActive()).toBe(false);
+    expect(scheduler.isScheduled()).toBe(false);
+    expect(clearTimeoutFn).toHaveBeenCalledTimes(1);
+
+    scheduler.scheduleNext();
+    expect(callbacks).toHaveLength(1);
+
+    scheduler.setContextBlocked(false);
+    scheduler.scheduleNext();
+    expect(callbacks).toHaveLength(2);
   });
 
   test("scheduler uses the autonomous submit source", () => {

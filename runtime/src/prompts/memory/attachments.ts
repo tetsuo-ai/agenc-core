@@ -7,9 +7,9 @@
  *   - Caps from TODO.MD §T10-C: ≤5 files/turn, ≤4KB each, ≤60KB per
  *     session cumulative.
  *   - Relevance signal: keyword overlap between `name + description`
- *     and the user message, plus a type priority
- *     (feedback > project > reference > user). Ties broken by mtime
- *     (newest first).
+ *     and the user message. Type priority
+ *     (feedback > project > reference > user) and mtime are only
+ *     tie-breakers after a positive lexical match.
  *   - Per-session accumulation is tracked in a WeakMap so tests can
  *     instantiate fresh sessions without leaking prior selection budget.
  *
@@ -126,20 +126,21 @@ function tokenize(text: string): Set<string> {
   return out;
 }
 
-/**
- * Score a memory entry against the user message. Higher is more
- * relevant.
- *
- * Signal sources:
- *   - Keyword overlap between tokens(name + description) and
- *     tokens(user message). Each match adds 10 points.
- *   - Type priority (feedback > project > reference > user) adds 1–4.
- *   - Newer mtime breaks ties via a small fractional bump.
- */
-export function scoreMemory(
-  entry: MemoryEntry,
-  userMessage: string,
-): number {
+function hasEnoughRecallContext(userMessage: string): boolean {
+  const trimmed = userMessage.trim();
+  if (trimmed.length === 0) return false;
+  // Single-word prompts do not contain enough signal for meaningful recall.
+  if (!/\s/.test(trimmed)) return false;
+  // Deterministic equivalent of the upstream "only if clearly useful"
+  // selector for common salutations. Without this, a memory mentioning
+  // a model/person name could be recalled for "hello Grok".
+  if (/^(?:hi|hello|hey|yo|sup|thanks|thank you|ok|okay|cool|test)(?:\s+[\w.-]+)?[.!?]*$/i.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
+function memoryTokenOverlap(entry: MemoryEntry, userMessage: string): number {
   const userTokens = tokenize(userMessage);
   const hay = `${entry.frontmatter.name ?? ""} ${entry.frontmatter.description ?? ""}`;
   const memTokens = tokenize(hay);
@@ -147,6 +148,29 @@ export function scoreMemory(
   for (const t of memTokens) {
     if (userTokens.has(t)) overlap++;
   }
+  return overlap;
+}
+
+/**
+ * Score a memory entry against the user message. Higher is more
+ * relevant.
+ *
+ * Signal sources:
+ *   - Keyword overlap between tokens(name + description) and
+ *     tokens(user message). Each match adds 10 points. Zero overlap
+ *     means not relevant; type/recency never make a memory eligible by
+ *     themselves.
+ *   - Type priority (feedback > project > reference > user) adds 1-4
+ *     after a positive match.
+ *   - Newer mtime breaks ties via a small fractional bump.
+ */
+export function scoreMemory(
+  entry: MemoryEntry,
+  userMessage: string,
+): number {
+  if (!hasEnoughRecallContext(userMessage)) return 0;
+  const overlap = memoryTokenOverlap(entry, userMessage);
+  if (overlap === 0) return 0;
   const typeBonus =
     entry.frontmatter.type !== undefined
       ? TYPE_PRIORITY[entry.frontmatter.type]
@@ -187,6 +211,8 @@ export function selectRelevantMemoriesForTurn(
   const maxBytesPerSession =
     options?.maxBytesPerSession ?? ATTACHMENT_MAX_BYTES_PER_SESSION;
 
+  if (!hasEnoughRecallContext(userMessage)) return [];
+
   const budget = getBudget(sessionKey);
 
   // Filter out oversized individual files (respect per-file cap).
@@ -195,6 +221,7 @@ export function selectRelevantMemoriesForTurn(
   // Sort by score descending; mtime tiebreaker already in score.
   const scored = eligible
     .map((entry) => ({ entry, score: scoreMemory(entry, userMessage) }))
+    .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score);
 
   const picked: MemoryEntry[] = [];
