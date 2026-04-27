@@ -55,4 +55,33 @@ describe("buildGatewayChannelStatus", () => {
 
     expect(status.summary).toBe("Connector config differs from the live daemon state.");
   });
+
+  it("keeps abi attached for a hosted plugin still live after disk removal (pending restart)", () => {
+    // Regression: a non-telegram hosted plugin connector that was removed from
+    // disk but is still active in the live daemon must keep its ABI on the
+    // channel-status surface — the read of `targetConfig` alone would drop it
+    // and inconsistently hide ABI from a connector that is still running.
+    const status = buildGatewayChannelStatus("custom-plugin", {
+      targetConfig: undefined,
+      liveConfig: {
+        type: "plugin",
+        enabled: true,
+      },
+      active: true,
+      health: "healthy",
+      pendingRestart: true,
+      gatewayRunning: true,
+    });
+
+    expect(status.configured).toBe(false);
+    expect(status.active).toBe(true);
+    expect(status.pendingRestart).toBe(true);
+    expect(status.abi).toEqual({
+      plugin_api_version: "1.0.0",
+      host_api_version: "1.0.0",
+    });
+    expect(status.summary).toBe(
+      "Live daemon still has this connector active; restart required to remove it.",
+    );
+  });
 });

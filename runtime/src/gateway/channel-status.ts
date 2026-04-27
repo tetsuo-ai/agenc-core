@@ -41,9 +41,15 @@ export function buildGatewayChannelStatus(
   const configured = targetConfig !== undefined;
   const enabled = configured && targetConfig.enabled !== false;
   const mode = inferGatewayChannelMode(name, targetConfig);
-  const abi = isConnectorStatusCandidate(name, targetConfig)
-    ? buildGatewayConnectorAbiStatus()
-    : undefined;
+  // Hosted plugin connectors that have been removed from disk but are still
+  // running in the live daemon (pending restart) only show up via `liveConfig`
+  // — fall back to it so the ABI stays attached for the channel-status surface
+  // until the operator actually restarts.
+  const abi =
+    isConnectorStatusCandidate(name, targetConfig) ||
+    isConnectorStatusCandidate(name, params.liveConfig)
+      ? buildGatewayConnectorAbiStatus()
+      : undefined;
 
   let summary: string | undefined;
   if (params.pendingRestart && params.active && !configured) {
