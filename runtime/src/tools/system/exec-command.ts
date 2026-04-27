@@ -7,6 +7,10 @@ import {
   UnifiedExecProcessManager,
   type UnifiedExecProcessManagerLike,
 } from "../../unified-exec/index.js";
+import {
+  formatUnifiedExecToolContent,
+  unifiedExecCodeModeResult,
+} from "./exec-result-format.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -208,15 +212,10 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             : {}),
         });
         const isError = output.exitCode !== null && output.exitCode !== 0;
-        // Flatten the result content to plain text so the model sees the
-        // raw stdout/stderr instead of a JSON-encoded blob it has to
-        // re-parse. Mirrors openclaude's `BashTool` `tool_result.content`
-        // shape (plain string, structured flags on the result envelope).
-        // Structured fields (exitCode, durationMs, timedOut, etc.) move
-        // into `metadata` where in-process consumers can still read them.
         return {
-          content: output.output,
+          content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,
+          codeModeResult: unifiedExecCodeModeResult(output),
           metadata: {
             command: cmd,
             cwd: workdir ?? config?.cwd ?? process.cwd(),
