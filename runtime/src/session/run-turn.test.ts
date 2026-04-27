@@ -33,6 +33,7 @@ vi.mock("axios", () => {
 });
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
+  insertContextMessagesAfterLeadingSystem,
   isRetryableStreamError,
   maybeRunPreviousModelInlineCompact,
   runTurn,
@@ -70,6 +71,8 @@ import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { BudgetTracker } from "../llm/token-budget.js";
 import * as autoCompactModule from "../llm/compact/auto-compact.js";
+import { PermissionModeRegistry } from "../permissions/mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
 function mkCtx(): TurnContext {
   return {
@@ -238,6 +241,7 @@ function mkSession(opts: {
     [key: string]: unknown;
   };
   readonly configStore?: { current: () => unknown };
+  readonly permissionModeRegistry?: PermissionModeRegistry;
 }): {
   session: Session;
   events: Event[];
@@ -303,6 +307,9 @@ function mkSession(opts: {
     hooks: {
       executeStop: async () => ({}),
     },
+    ...(opts.permissionModeRegistry
+      ? { permissionModeRegistry: opts.permissionModeRegistry }
+      : {}),
     ...(opts.configStore ? { configStore: opts.configStore } : {}),
   } as unknown as SessionServices;
   const session = new Session({
@@ -1077,6 +1084,82 @@ describe("runTurn — live sampling request contract", () => {
       "Plan mode requires this step to end with a tool call.",
     );
     expect(secondRequestText).not.toContain("Reply with preferences");
+  });
+});
+
+describe("runTurn — model request context ordering", () => {
+  test("inserts attachment context after the leading system prompt", () => {
+    const messages: LLMMessage[] = [
+      { role: "system", content: "base prompt" },
+      { role: "user", content: "hello" },
+    ];
+    const attachments: LLMMessage[] = [
+      {
+        role: "user",
+        content: "<system-reminder>remember this</system-reminder>",
+        runtimeOnly: { mergeBoundary: "user_context" },
+      },
+    ];
+
+    expect(
+      insertContextMessagesAfterLeadingSystem(messages, attachments),
+    ).toEqual([
+      { role: "system", content: "base prompt" },
+      attachments[0],
+      { role: "user", content: "hello" },
+    ]);
+  });
+
+  test("plan-mode attachments do not move the system prompt mid-conversation", async () => {
+    const ctx = mkCtx();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan" }),
+    );
+    let seenMessages: LLMMessage[] = [];
+    const provider: LLMProvider = {
+      name: "stub-provider",
+      chat: async () => ({
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "test-model",
+        finishReason: "stop",
+      }),
+      chatStream: async (messages) => {
+        seenMessages = messages.map((message) => ({ ...message }));
+        return {
+          content: "ok",
+          toolCalls: [],
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+      healthCheck: async () => true,
+    };
+    const { session } = mkSession({
+      provider,
+      registry: mkRegistry(),
+      permissionModeRegistry,
+    });
+
+    await drain(
+      session.runTurn("hello", {
+        ctx,
+        systemPrompt: "Follow the local contract.",
+      }),
+    );
+
+    expect(seenMessages[0]).toEqual({
+      role: "system",
+      content: "Follow the local contract.",
+    });
+    expect(
+      seenMessages.filter((message) => message.role === "system"),
+    ).toHaveLength(1);
+    expect(seenMessages[1]?.role).toBe("user");
+    expect(String(seenMessages[1]?.content)).toContain("Plan mode is active");
+    expect(seenMessages.at(-1)).toEqual({ role: "user", content: "hello" });
   });
 });
 
