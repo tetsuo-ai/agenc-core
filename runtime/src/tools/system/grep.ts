@@ -20,7 +20,7 @@
 
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { runCommand } from "../../utils/process.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
@@ -184,7 +184,9 @@ function toRelativeIfInside(absPath: string, root: string): string {
 
 interface ResolvedTarget {
   readonly absolute: string;
+  readonly searchRoot: string;
   readonly displayPath: string;
+  readonly isDirectory: boolean;
 }
 
 async function resolveSearchPath(params: {
@@ -208,10 +210,21 @@ async function resolveSearchPath(params: {
   if (!safe.safe) {
     return { error: `Access denied: ${safe.reason}` };
   }
+  const targetStat = await stat(safe.resolved).catch(() => undefined);
+  if (!targetStat) {
+    return { error: `Path does not exist: ${candidate}` };
+  }
+  const isDirectory = targetStat.isDirectory();
   return {
     absolute: safe.resolved,
+    searchRoot: isDirectory ? safe.resolved : dirname(safe.resolved),
     displayPath: candidate,
+    isDirectory,
   };
+}
+
+function displayRootForTarget(target: ResolvedTarget): string {
+  return target.isDirectory ? target.absolute : target.searchRoot;
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -304,7 +317,7 @@ async function runRipgrepGrep(params: {
   const { opts, headLimit, target, signal } = params;
   const args = buildRipgrepArgs(opts);
   const result = await runCommand("rg", args, {
-    cwd: target.absolute,
+    cwd: target.searchRoot,
     maxBuffer: MAX_RIPGREP_BUFFER,
   });
   if (signal?.aborted) {
@@ -328,8 +341,10 @@ async function runRipgrepGrep(params: {
     return textResult("No matches found.");
   }
 
+  const displayRoot = displayRootForTarget(target);
+
   if (opts.outputMode === "files_with_matches") {
-    const relative = rawLines.map((p) => toRelativeIfInside(p, target.absolute));
+    const relative = rawLines.map((p) => toRelativeIfInside(p, displayRoot));
     const { items, truncated } = applyTruncation(relative, headLimit);
     const body = items.join("\n");
     return textResult(
@@ -344,7 +359,7 @@ async function runRipgrepGrep(params: {
       if (idx <= 0) return line;
       const filePart = line.substring(0, idx);
       const countPart = line.substring(idx);
-      return `${toRelativeIfInside(filePart, target.absolute)}${countPart}`;
+      return `${toRelativeIfInside(filePart, displayRoot)}${countPart}`;
     });
     const { items, truncated } = applyTruncation(counts, headLimit);
     const body = items.join("\n");
@@ -360,7 +375,7 @@ async function runRipgrepGrep(params: {
     const filePart = line.substring(0, idx);
     const rest = line.substring(idx);
     if (!isAbsolute(filePart)) return line;
-    return `${toRelativeIfInside(filePart, target.absolute)}${rest}`;
+    return `${toRelativeIfInside(filePart, displayRoot)}${rest}`;
   });
   const { items, truncated } = applyTruncation(rewritten, headLimit);
   const body = items.join("\n");
@@ -456,6 +471,19 @@ async function* walkFiles(
   }
 }
 
+async function* iterTargetFiles(
+  target: ResolvedTarget,
+  abortSignal?: AbortSignal,
+): AsyncGenerator<string> {
+  if (target.isDirectory) {
+    yield* walkFiles(target.absolute, abortSignal);
+    return;
+  }
+  if (!abortSignal?.aborted) {
+    yield target.absolute;
+  }
+}
+
 async function runFallbackGrep(params: {
   readonly pattern: string;
   readonly target: ResolvedTarget;
@@ -481,12 +509,13 @@ async function runFallbackGrep(params: {
   const fileMatches: string[] = [];
   const contentLines: string[] = [];
   let truncated = false;
+  const displayRoot = displayRootForTarget(target);
 
-  for await (const filePath of walkFiles(target.absolute, signal)) {
+  for await (const filePath of iterTargetFiles(target, signal)) {
     if (signal?.aborted) {
       return errorResult("Search aborted");
     }
-    const rel = toRelativeIfInside(filePath, target.absolute);
+    const rel = toRelativeIfInside(filePath, displayRoot);
     if (!matchesGlob(rel)) continue;
     let st;
     try {
@@ -687,7 +716,7 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
       const globs = rawGlob ? splitGlobs(rawGlob) : [];
 
       const signal = args.__abortSignal;
-      const cwdForProbe = target.absolute || process.cwd();
+      const cwdForProbe = target.searchRoot || process.cwd();
       const ripgrepReady = await isRipgrepAvailable(cwdForProbe);
 
       if (!ripgrepReady) {

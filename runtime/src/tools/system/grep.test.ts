@@ -70,6 +70,36 @@ describe("Grep tool", () => {
     expect(result.content).not.toContain("alpha");
   });
 
+  test("accepts a file path as the search target for content mode", async () => {
+    const target = join(root, "target.txt");
+    await writeFile(target, "alpha\nneedle\ngamma\n", "utf8");
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: target,
+      output_mode: "content",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("2:needle");
+  });
+
+  test("accepts a file path as the search target for files_with_matches", async () => {
+    const target = join(root, "hit.txt");
+    await writeFile(target, "needle\n", "utf8");
+    const tool = createGrepTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      pattern: "needle",
+      path: target,
+      output_mode: "files_with_matches",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content.split("\n").filter(Boolean)).toEqual(["hit.txt"]);
+  });
+
   test("output_mode=files_with_matches returns just paths", async () => {
     await writeFile(join(root, "hit.txt"), "needle\n", "utf8");
     await writeFile(join(root, "miss.txt"), "haystack\n", "utf8");
