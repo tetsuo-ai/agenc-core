@@ -71,6 +71,9 @@ import {
   buildPostCompactMessages,
 } from "../llm/compact/compact.js";
 import {
+  tokenCountWithEstimation,
+} from "../llm/compact/_deps/token-counts.js";
+import {
   streamModel,
   StreamModelError,
   type StreamModelRequestContract,
@@ -86,6 +89,7 @@ import {
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
+  modelContextWindow,
   toTurnContextItem,
   type TurnContext,
   type TurnContextItem,
@@ -142,6 +146,8 @@ class RegularTurnTask implements SessionTask {
 // ─────────────────────────────────────────────────────────────────────
 
 const MAX_PLAN_TOOL_REQUIRED_RETRIES = 2;
+const AUTOCOMPACT_NOTICE_BUFFER_TOKENS = 13_000;
+const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
 function buildSeedMessages(
   opts: RunTurnOptions,
@@ -177,6 +183,69 @@ function cumulativeUsage(acc: LLMUsage, next: LLMUsage | undefined): LLMUsage {
     completionTokens: acc.completionTokens + (next.completionTokens ?? 0),
     totalTokens: acc.totalTokens + (next.totalTokens ?? 0),
   };
+}
+
+function finitePositive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function getAutoCompactTokenLimit(ctx: TurnContext): number | undefined {
+  if (!isAutoCompactEnabledForNotices()) return undefined;
+
+  const explicit = finitePositive(
+    (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
+      .autoCompactTokenLimit,
+  );
+  if (explicit !== undefined) return explicit;
+
+  const effectiveWindow = finitePositive(modelContextWindow(ctx));
+  if (effectiveWindow === undefined) return undefined;
+  return Math.max(
+    1,
+    effectiveWindow > AUTOCOMPACT_NOTICE_BUFFER_TOKENS
+      ? effectiveWindow - AUTOCOMPACT_NOTICE_BUFFER_TOKENS
+      : effectiveWindow,
+  );
+}
+
+function isAutoCompactEnabledForNotices(): boolean {
+  const raw = process.env.DISABLE_AUTO_COMPACT ??
+    process.env.AGENC_DISABLE_AUTO_COMPACT;
+  if (raw === undefined) return true;
+  return !TRUTHY_ENV.has(raw.trim().toLowerCase());
+}
+
+function getMaxBudgetUsd(session: Session): number | undefined {
+  return finitePositive(
+    session.services.configStore?.current().max_budget_usd,
+  );
+}
+
+function buildUsageSnapshotForAttachments(
+  session: Session,
+  ctx: TurnContext,
+  messages: readonly LLMMessage[],
+) {
+  const sidecar = session.services.usageNoticeSidecar;
+  if (sidecar === undefined) return undefined;
+
+  const contextWindow = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
+  const autoCompactTokenLimit = getAutoCompactTokenLimit(ctx);
+  const maxBudgetUsd = getMaxBudgetUsd(session);
+  return sidecar.snapshot({
+    contextTokenEstimate: tokenCountWithEstimation(messages),
+    ...(contextWindow !== undefined ? { contextWindowTokens: contextWindow } : {}),
+    ...(autoCompactTokenLimit !== undefined ? { autoCompactTokenLimit } : {}),
+    ...(session.budgetTracker !== undefined
+      ? { budgetTracker: session.budgetTracker }
+      : {}),
+    ...(session.services.costSidecar !== undefined
+      ? { costSidecar: session.services.costSidecar }
+      : {}),
+    ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
+  });
 }
 
 function toResponseItem(message: LLMMessage): ResponseItem {
@@ -752,9 +821,13 @@ async function tryRunSamplingRequest(
   // attachments are converted to user-channel `LLMMessage`s and
   // prepended to `state.messagesForQuery` so they ride into the model
   // request through the existing build path. Producer registry lives
-  // in `runtime/src/prompts/attachments/orchestrator.ts`; it is empty
-  // until the per-category producer files land.
+  // in `runtime/src/prompts/attachments/orchestrator.ts`.
   const agencHome = session.services.configStore?.agencHome;
+  const usageSnapshot = buildUsageSnapshotForAttachments(
+    session,
+    ctx,
+    state.messagesForQuery,
+  );
   const attachments = await getAttachments({
     sessionKey: session,
     userInput: extractLastUserText(state.messagesForQuery),
@@ -767,6 +840,7 @@ async function tryRunSamplingRequest(
     cwd: ctx.cwd,
     subagentDepth: ctx.depth,
     signal,
+    ...(usageSnapshot !== undefined ? { usageSnapshot } : {}),
     ...(typeof agencHome === "string" && agencHome.length > 0
       ? { agencHome }
       : {}),
@@ -1436,6 +1510,7 @@ async function* runTurnKernelInner(
   const syncSessionState = async (): Promise<void> => {
     persistNewResponseItems();
     const durableHistory = state.messages.slice(durableHistoryStartIndex);
+    const autoCompactTokenLimit = getAutoCompactTokenLimit(ctx);
     await session.state.with((sessionState) => {
       sessionState.history = durableHistory.map((message) => ({
         ...message,
@@ -1451,10 +1526,18 @@ async function* runTurnKernelInner(
         ...(ctx.realtimeActive !== undefined
           ? { realtimeActive: ctx.realtimeActive }
           : {}),
+        ...(autoCompactTokenLimit !== undefined
+          ? { autoCompactTokenLimit }
+          : {}),
         ...(ctx.modelInfo.contextWindow !== undefined
           ? {
               contextWindow: ctx.modelInfo.contextWindow,
-              modelInfo: { contextWindow: ctx.modelInfo.contextWindow },
+              modelInfo: {
+                contextWindow: ctx.modelInfo.contextWindow,
+                ...(autoCompactTokenLimit !== undefined
+                  ? { autoCompactTokenLimit }
+                  : {}),
+              },
             }
           : {}),
       };

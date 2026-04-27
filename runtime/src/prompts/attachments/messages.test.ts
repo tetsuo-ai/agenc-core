@@ -157,6 +157,54 @@ describe("attachmentsToMessages", () => {
     expect(out[0]?.content).toContain("specific guidelines");
   });
 
+  test("renders token and budget notices as system reminders", () => {
+    const out = attachmentsToMessages([
+      {
+        kind: "token_usage",
+        used: 70_000,
+        total: 100_000,
+        remaining: 30_000,
+        percentUsed: 70,
+      },
+      {
+        kind: "budget_usd",
+        used: 1.25,
+        total: 5,
+        remaining: 3.75,
+        percentUsed: 25,
+      },
+      {
+        kind: "output_token_usage",
+        turn: 750,
+        session: 2_000,
+        budget: 4_000,
+      },
+      {
+        kind: "compaction_reminder",
+        used: 80_000,
+        threshold: 100_000,
+        remaining: 20_000,
+        percentUsed: 80,
+      },
+    ]);
+
+    expect(out).toHaveLength(4);
+    expect(out[0]?.content).toContain(
+      "Token usage: 70,000/100,000; 30,000 remaining",
+    );
+    expect(out[1]?.content).toContain(
+      "USD budget: $1.25/$5.00; $3.75 remaining",
+    );
+    expect(out[2]?.content).toContain(
+      "Output tokens — turn: 750 / 4,000 · session: 2,000",
+    );
+    expect(out[3]?.content).toContain("Auto-compact is enabled");
+    expect(out[3]?.content).toContain("automatic compaction");
+    for (const message of out) {
+      expect(message.content).toContain("<system-reminder>");
+    }
+  });
+
   test("renders deferred_tools_delta with added and removed lines", () => {
     const out = attachmentsToMessages([
       {

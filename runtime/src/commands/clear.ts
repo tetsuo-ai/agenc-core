@@ -90,8 +90,10 @@ export async function clearSession(session: Session): Promise<void> {
   for (const key of [
     "memorySidecar",
     "costSidecar",
+    "usageNoticeSidecar",
     "memory",
     "cost",
+    "usage-notices",
   ]) {
     if (svc[key]) maybeReset(svc[key]);
   }

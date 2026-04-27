@@ -778,12 +778,22 @@ export function llmMessageToEvent(message: LLMMessage): EventMsg | null {
 }
 
 export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
+  const extended = usage as LLMUsage & {
+    readonly cachedInputTokens?: number;
+    readonly reasoningOutputTokens?: number;
+  };
   return {
     type: "token_count",
     payload: {
       promptTokens: usage.promptTokens,
       completionTokens: usage.completionTokens,
       totalTokens: usage.totalTokens,
+      ...(extended.cachedInputTokens !== undefined
+        ? { cachedInputTokens: extended.cachedInputTokens }
+        : {}),
+      ...(extended.reasoningOutputTokens !== undefined
+        ? { reasoningOutputTokens: extended.reasoningOutputTokens }
+        : {}),
     },
   };
 }

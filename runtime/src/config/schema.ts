@@ -299,6 +299,7 @@ export interface AgenCConfig {
   readonly toolBudget?: ToolBudget;
   readonly stream_watchdog_timeout_ms?: number;
   readonly max_turns?: number;
+  readonly max_budget_usd?: number;
   readonly agenc_home?: string;
   readonly workspace?: string;
   readonly simpleMode?: boolean;
@@ -410,6 +411,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "toolBudget",
   "stream_watchdog_timeout_ms",
   "max_turns",
+  "max_budget_usd",
   "agenc_home",
   "workspace",
   "simpleMode",

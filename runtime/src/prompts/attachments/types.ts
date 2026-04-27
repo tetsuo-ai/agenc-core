@@ -8,7 +8,8 @@
  * `lsp_diagnostics`, `ide_selection`,
  * `structured_output`, `skill_*`) are intentionally absent — when AgenC
  * adds the underlying feature, the variant lands here alongside its
- * producer.
+ * producer. Provider-neutral usage/budget notices are AgenC runtime
+ * surfaces and intentionally do not mirror any provider account upsell.
  *
  * Attachment names use AgenC branding. Otherwise the prose, schema, and
  * gating logic match AgenC exactly.
@@ -148,6 +149,41 @@ export interface OutputStyleAttachment {
   readonly style: string;
 }
 
+/** Provider-neutral context-window usage notice. */
+export interface TokenUsageAttachment {
+  readonly kind: "token_usage";
+  readonly used: number;
+  readonly total: number;
+  readonly remaining: number;
+  readonly percentUsed: number;
+}
+
+/** Provider-neutral session USD budget notice. */
+export interface BudgetUsdAttachment {
+  readonly kind: "budget_usd";
+  readonly used: number;
+  readonly total: number;
+  readonly remaining: number;
+  readonly percentUsed: number;
+}
+
+/** Output-token usage notice for the current turn and session. */
+export interface OutputTokenUsageAttachment {
+  readonly kind: "output_token_usage";
+  readonly turn: number;
+  readonly session: number;
+  readonly budget: number | null;
+}
+
+/** Auto-compaction threshold reminder. */
+export interface CompactionReminderAttachment {
+  readonly kind: "compaction_reminder";
+  readonly used: number;
+  readonly threshold: number;
+  readonly remaining: number;
+  readonly percentUsed: number;
+}
+
 /**
  * Deferred-tool catalog delta (new tools loaded mid-session via
  * `system.searchTools`).
@@ -237,6 +273,10 @@ export type Attachment =
   | DateChangeAttachment
   | CriticalSystemReminderAttachment
   | OutputStyleAttachment
+  | TokenUsageAttachment
+  | BudgetUsdAttachment
+  | OutputTokenUsageAttachment
+  | CompactionReminderAttachment
   | DeferredToolsDeltaAttachment
   | AgentListingDeltaAttachment
   | McpInstructionsDeltaAttachment

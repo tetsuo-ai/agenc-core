@@ -407,7 +407,7 @@ function TUIRoot({
   const effectiveModel = liveModel ?? model;
   const statusLineSession = useMemo(
     () => buildStatusLineSession(session, mode, effectiveModel),
-    [mode, effectiveModel, session],
+    [mode, effectiveModel, session, events.length],
   );
   const handleCycleMode = useCallback((): void => {
     const registry = session.services.permissionModeRegistry;

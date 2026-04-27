@@ -129,6 +129,18 @@ export interface AttachmentTrackingState {
     readonly note: string;
     readonly rolloutIds: readonly string[];
   }>;
+  /**
+   * Last context-usage threshold bucket announced by usage notices.
+   * Cleared when usage drops below the first threshold, e.g. after
+   * compaction.
+   */
+  lastTokenUsageNoticeBucket?: number;
+  /**
+   * Last auto-compaction-threshold bucket announced by usage notices.
+   * Cleared when usage drops below the first threshold, e.g. after
+   * compaction.
+   */
+  lastCompactionNoticeBucket?: number;
 }
 
 const sessionAttachmentState = new WeakMap<object, AttachmentTrackingState>();

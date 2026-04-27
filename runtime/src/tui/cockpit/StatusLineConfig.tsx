@@ -14,7 +14,10 @@
  *   - `"cwd"`     — basename of the current working directory
  *   - `"git"`     — current git branch (cached 2 s)
  *   - `"tokens"`  — token count surfaced by the session state
+ *   - `"output"`  — output-token count surfaced by the session state
  *   - `"context"` — context % full (0–100)
+ *   - `"cost"`    — current session cost
+ *   - `"budget"`  — current session cost / configured budget
  *   - `"time"`    — local HH:MM
  *
  * Unknown keys resolve to an empty string so a typo in the operator's
@@ -58,7 +61,11 @@ export interface SessionLike {
   readonly mode?: string;
   readonly sessionId?: string;
   readonly tokensUsed?: number;
+  readonly outputTokens?: number;
   readonly contextPercent?: number;
+  readonly costUsd?: number;
+  readonly budgetUsd?: number;
+  readonly budgetRemainingUsd?: number;
 }
 
 export interface StatusLineConfigProps {
@@ -198,9 +205,26 @@ export async function resolveStatusItem(
       return typeof session.tokensUsed === "number" && session.tokensUsed > 0
         ? String(session.tokensUsed)
         : "0";
+    case "output":
+      return typeof session.outputTokens === "number" && session.outputTokens > 0
+        ? String(session.outputTokens)
+        : "0";
     case "context":
       if (typeof session.contextPercent !== "number") return "0";
       return `${Math.max(0, Math.min(100, Math.round(session.contextPercent)))}`;
+    case "cost":
+      return typeof session.costUsd === "number" && session.costUsd >= 0
+        ? String(session.costUsd)
+        : "";
+    case "budget":
+      if (typeof session.budgetUsd !== "number" || session.budgetUsd <= 0) {
+        return "";
+      }
+      return [
+        session.costUsd ?? 0,
+        session.budgetUsd,
+        session.budgetRemainingUsd ?? session.budgetUsd - (session.costUsd ?? 0),
+      ].join("/");
     case "time":
       return formatHHMM(new Date());
     default:
@@ -219,7 +243,10 @@ const LABEL_FOR: Readonly<Record<string, string>> = Object.freeze({
   cwd: "cwd",
   git: "git",
   tokens: "tokens",
+  output: "output",
   context: "context",
+  cost: "cost",
+  budget: "budget",
   time: "time",
 });
 
@@ -271,6 +298,25 @@ function formatTokenCount(raw: string): string {
   return String(Math.round(parsed));
 }
 
+function formatUsd(raw: string): string {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return raw || "—";
+  if (Math.abs(parsed) >= 1_000) return `$${(parsed / 1_000).toFixed(1)}k`;
+  return `$${parsed.toFixed(2)}`;
+}
+
+function formatBudget(raw: string): string {
+  const [usedRaw, totalRaw, remainingRaw] = raw.split("/");
+  const used = Number(usedRaw);
+  const total = Number(totalRaw);
+  const remaining = Number(remainingRaw);
+  if (!Number.isFinite(total) || total <= 0) return "—";
+  const core = `${formatUsd(String(used))}/${formatUsd(String(total))}`;
+  return Number.isFinite(remaining)
+    ? `${core} (${formatUsd(String(remaining))})`
+    : core;
+}
+
 function usageMeter(rawPercent: string): { readonly display: string; readonly color: string } {
   const parsed = Number(rawPercent);
   const percent = Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0;
@@ -301,6 +347,12 @@ function renderItemValue(item: ResolvedItem): { readonly text: string; readonly 
     }
     case "tokens":
       return { text: formatTokenCount(item.value), color: theme.colors.accent };
+    case "output":
+      return { text: formatTokenCount(item.value), color: theme.colors.info };
+    case "cost":
+      return { text: formatUsd(item.value), color: theme.colors.info };
+    case "budget":
+      return { text: formatBudget(item.value), color: theme.colors.warning };
     case "git":
       return { text: item.value || "—", color: theme.colors.secondary };
     case "cwd":

@@ -116,6 +116,38 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         ),
       );
     }
+    case "token_usage": {
+      return userContextMessage(
+        wrapSystemReminder(
+          `Token usage: ${formatNumber(attachment.used)}/${formatNumber(attachment.total)}; ${formatNumber(attachment.remaining)} remaining`,
+        ),
+      );
+    }
+    case "budget_usd": {
+      return userContextMessage(
+        wrapSystemReminder(
+          `USD budget: ${formatUsd(attachment.used)}/${formatUsd(attachment.total)}; ${formatUsd(attachment.remaining)} remaining`,
+        ),
+      );
+    }
+    case "output_token_usage": {
+      const turnText =
+        attachment.budget !== null
+          ? `${formatNumber(attachment.turn)} / ${formatNumber(attachment.budget)}`
+          : formatNumber(attachment.turn);
+      return userContextMessage(
+        wrapSystemReminder(
+          `Output tokens — turn: ${turnText} · session: ${formatNumber(attachment.session)}`,
+        ),
+      );
+    }
+    case "compaction_reminder": {
+      return userContextMessage(
+        wrapSystemReminder(
+          `Auto-compact is enabled. When the context window is nearly full, older messages will be automatically summarized so you can continue working seamlessly. There is no need to stop or rush — you have unlimited context through automatic compaction.`,
+        ),
+      );
+    }
     case "deferred_tools_delta": {
       const parts: string[] = [];
       if (attachment.addedNames.length > 0) {
@@ -212,6 +244,23 @@ function userContextMessage(text: string): LLMMessage {
 
 function wrapSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`;
+}
+
+function formatNumber(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 0,
+  }).format(Math.round(value));
+}
+
+function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 // ──────────────────────────────────────────────────────────────────────

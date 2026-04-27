@@ -9,6 +9,7 @@
 //   AGENC_WORKSPACE                                → workspace root
 //   AGENC_HOME                                     → ~/.agenc override
 //   AGENC_SIMPLE                                   → simple UI/mode
+//   AGENC_MAX_BUDGET_USD                           → session cost budget
 //
 // `applyEnvOverrides(config)` layers env values onto a base config and
 // returns a new frozen snapshot.
@@ -27,6 +28,7 @@ export interface EnvSnapshot {
   readonly AGENC_MODEL?: string;
   readonly AGENC_WORKSPACE?: string;
   readonly AGENC_SIMPLE?: string;
+  readonly AGENC_MAX_BUDGET_USD?: string;
   readonly XAI_API_KEY?: string;
   readonly GROK_API_KEY?: string;
   readonly AGENC_XAI_API_KEY?: string;
@@ -152,6 +154,12 @@ export function resolveWorkspace(
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
+function readPositiveNumber(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 /** AGENC_SIMPLE truthy → simple mode enabled. */
 export function resolveSimpleMode(env: EnvSnapshot = process.env): boolean {
   const e = readEnv(env);
@@ -188,6 +196,10 @@ export function applyEnvOverrides(
   }
   if (e.AGENC_SIMPLE !== undefined && e.AGENC_SIMPLE.length > 0) {
     override.simpleMode = TRUTHY.has(e.AGENC_SIMPLE.toLowerCase());
+  }
+  const maxBudgetUsd = readPositiveNumber(e.AGENC_MAX_BUDGET_USD);
+  if (maxBudgetUsd !== undefined) {
+    override.max_budget_usd = maxBudgetUsd;
   }
   // NOTE: API-key env vars (XAI_API_KEY / GROK_API_KEY / AGENC_XAI_API_KEY)
   // are intentionally NOT layered onto the config snapshot. `resolveApiKey`

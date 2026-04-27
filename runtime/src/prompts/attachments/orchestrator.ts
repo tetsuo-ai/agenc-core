@@ -24,6 +24,7 @@
 import type { LLMMessage, LLMTool } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AttachmentTrackingState } from "../../session/attachment-state.js";
+import type { UsageNoticeSnapshot } from "../../session/usage-notices.js";
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import { agentListingDeltaProducer } from "./agent-listing-delta.js";
 import { autoModeProducer } from "./auto-mode.js";
@@ -33,6 +34,7 @@ import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
 import { mcpInstructionsDeltaProducer } from "./mcp-delta.js";
 import { outputStyleProducer } from "./output-style.js";
 import { planModeProducer } from "./plan-mode.js";
+import { usageNoticesProducer } from "./usage-notices.js";
 import { verifyPlanReminderProducer } from "./verify-plan-reminder.js";
 import { changedFilesProducer } from "./changed-files.js";
 import { nestedMemoryProducer } from "./nested-memory.js";
@@ -92,6 +94,8 @@ export interface GetAttachmentsOptions {
    * `session.services.configStore?.agencHome`.
    */
   readonly agencHome?: string;
+  /** Provider-neutral token/cost/context snapshot built by the session sidecar. */
+  readonly usageSnapshot?: UsageNoticeSnapshot;
 }
 
 /**
@@ -129,6 +133,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   dateChangeProducer,
   criticalReminderProducer,
   outputStyleProducer,
+  usageNoticesProducer,
   //
   // Phase 5 — Memory + file injections:
   changedFilesProducer,

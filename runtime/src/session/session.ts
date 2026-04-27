@@ -52,6 +52,8 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
+import type { CostSidecar } from "./cost.js";
+import type { UsageNoticeSidecar } from "./usage-notices.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
@@ -183,8 +185,12 @@ export interface SessionState {
   previousTurnSettings?: {
     readonly model: string;
     readonly realtimeActive?: boolean;
+    readonly contextWindow?: number;
+    readonly autoCompactTokenLimit?: number;
+    readonly modelInfo?: {
       readonly contextWindow?: number;
-      readonly modelInfo?: { readonly contextWindow?: number };
+      readonly autoCompactTokenLimit?: number;
+    };
   };
   /** Resume/fork baseline turn context from rollout reconstruction. */
   referenceContextItem?: TurnContextItem;
@@ -600,6 +606,8 @@ export interface SessionServices {
    * a ConfigStore, and commands already prefer `ctx.configStore` when set.
    */
   readonly configStore?: ConfigStore;
+  readonly costSidecar?: CostSidecar;
+  readonly usageNoticeSidecar?: UsageNoticeSidecar;
 }
 
 /**

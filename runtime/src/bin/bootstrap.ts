@@ -56,6 +56,7 @@ import { SidecarManager } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
+import { UsageNoticeSidecar } from "../session/usage-notices.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
@@ -1136,7 +1137,14 @@ export async function bootstrapLocalRuntimeSession(
             }),
         });
         await costSidecar.loadFromDisk();
+        (s.services as { costSidecar?: CostSidecar }).costSidecar =
+          costSidecar;
         sidecarManager.register(costSidecar);
+
+        const usageNoticeSidecar = new UsageNoticeSidecar();
+        (s.services as { usageNoticeSidecar?: UsageNoticeSidecar })
+          .usageNoticeSidecar = usageNoticeSidecar;
+        sidecarManager.register(usageNoticeSidecar);
 
         const extractMemoriesFn = buildExtractMemoriesViaSubagent({
           session: () => (shutdownStarted ? null : s),

@@ -1116,6 +1116,7 @@ required = true
           "file-history",
           "error-log",
           "cost",
+          "usage-notices",
           "memory-auto-save",
         ]),
       );

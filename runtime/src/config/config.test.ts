@@ -931,6 +931,14 @@ describe("env: resolvers", () => {
     expect(out.simpleMode).toBe(true);
   });
 
+  test("applyEnvOverrides propagates AGENC_MAX_BUDGET_USD", () => {
+    const base = defaultConfig();
+    const out = applyEnvOverrides(base, {
+      AGENC_MAX_BUDGET_USD: "12.50",
+    });
+    expect(out.max_budget_usd).toBe(12.5);
+  });
+
   test("applyEnvOverrides: AGENC_SIMPLE=false yields simpleMode=false", () => {
     const base = defaultConfig();
     const out = applyEnvOverrides(base, { AGENC_SIMPLE: "no" });

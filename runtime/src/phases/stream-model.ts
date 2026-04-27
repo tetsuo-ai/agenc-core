@@ -581,6 +581,10 @@ export async function streamModel(
   // completion tokens back into the tracker before boundary truth is
   // resolved.
   if (response.usage) {
+    const cached = (response.usage as { cachedInputTokens?: number })
+      .cachedInputTokens;
+    const reasoning = (response.usage as { reasoningOutputTokens?: number })
+      .reasoningOutputTokens;
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -589,6 +593,8 @@ export async function streamModel(
           promptTokens: response.usage.promptTokens,
           completionTokens: response.usage.completionTokens,
           totalTokens: response.usage.totalTokens,
+          ...(cached !== undefined ? { cachedInputTokens: cached } : {}),
+          ...(reasoning !== undefined ? { reasoningOutputTokens: reasoning } : {}),
         },
       },
     });

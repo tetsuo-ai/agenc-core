@@ -76,6 +76,10 @@ export class BudgetTracker {
     return Math.max(0, this.totalBudget - this.emitted);
   }
 
+  get budget(): number | null {
+    return this.totalBudget;
+  }
+
   get confirmedTokens(): number {
     return this.confirmedOutputTokens;
   }

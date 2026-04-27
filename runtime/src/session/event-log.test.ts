@@ -8,6 +8,7 @@ import {
   isDurableEvent,
   KNOWN_EVENT_TYPES,
   ROLLOUT_SCHEMA_VERSION,
+  usageToTokenCountEvent,
 } from "./event-log.js";
 
 describe("EventLog", () => {
@@ -211,5 +212,32 @@ describe("I-4 durable event classification", () => {
         msg: { type: "agent_message_delta", payload: { delta: "x" } },
       }),
     ).toBe(false);
+  });
+});
+
+describe("usageToTokenCountEvent", () => {
+  test("preserves cached and reasoning token extras", () => {
+    expect(
+      usageToTokenCountEvent({
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        cachedInputTokens: 3,
+        reasoningOutputTokens: 2,
+      } as unknown as {
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+      }),
+    ).toEqual({
+      type: "token_count",
+      payload: {
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        cachedInputTokens: 3,
+        reasoningOutputTokens: 2,
+      },
+    });
   });
 });

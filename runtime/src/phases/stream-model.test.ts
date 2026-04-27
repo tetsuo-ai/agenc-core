@@ -247,7 +247,7 @@ describe("streamModel — live assistant text sanitization", () => {
         finishReason: "stop",
       };
     });
-    const { session } = mkSession(provider);
+    const { session, events } = mkSession(provider);
     const state = mkState(ctx);
 
     await streamModel(
@@ -714,7 +714,7 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
         finishReason: "stop",
       };
     });
-    const { session } = mkSession(provider);
+    const { session, events } = mkSession(provider);
 
     const state1 = mkState(ctx);
     await streamModel(
@@ -729,6 +729,18 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
       totalTokens: 300,
       cachedInputTokens: 10,
       reasoningOutputTokens: 5,
+    });
+    expect(
+      events.find((event) => event.msg.type === "token_count")?.msg,
+    ).toEqual({
+      type: "token_count",
+      payload: {
+        promptTokens: 100,
+        completionTokens: 200,
+        totalTokens: 300,
+        cachedInputTokens: 10,
+        reasoningOutputTokens: 5,
+      },
     });
 
     // Second call — a distinct TurnState to model a continuation

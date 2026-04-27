@@ -241,6 +241,30 @@ describe("StatusLineConfig", () => {
     unmount();
   });
 
+  test("component renders output tokens, cost, and budget", async () => {
+    const { stdout, unmount } = await mount(
+      <StatusLineConfig
+        items={["output", "cost", "budget"]}
+        session={{
+          outputTokens: 4_321,
+          costUsd: 1.25,
+          budgetUsd: 5,
+          budgetRemainingUsd: 3.75,
+        }}
+        cwd="/home/user/myproject"
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("output");
+    expect(text).toContain("4.3k");
+    expect(text).toContain("cost");
+    expect(text).toContain("$1.25");
+    expect(text).toContain("budget");
+    expect(text).toContain("$1.25/$5.00 ($3.75)");
+    unmount();
+  });
+
   test("component remains a single clipped row on narrow terminals", async () => {
     const { stdout, unmount } = await mount(
       <StatusLineConfig
