@@ -5,9 +5,8 @@
  * `$ command` widget: a single semantic Bash(command) header, optional
  * indented stdout / stderr lines, and a compact status note.
  *
- * When stdout/stderr exceed the head/tail budget, the middle is collapsed to
- * an "… (N lines elided) …" marker so long logs do not dominate the
- * transcript.
+ * When stdout/stderr exceed the visible budget, output is collapsed so long
+ * logs do not dominate the transcript.
  *
  * @module
  */
@@ -23,9 +22,8 @@ import { sanitizeTranscriptText } from "./sanitize.js";
 /* Pure helpers                                                            */
 /* ────────────────────────────────────────────────────────────────────── */
 
-const DEFAULT_KEEP_HEAD = 5;
-const DEFAULT_KEEP_TAIL = 5;
-const MAX_LINES_BEFORE_COLLAPSE = DEFAULT_KEEP_HEAD + DEFAULT_KEEP_TAIL + 5;
+const DEFAULT_KEEP_HEAD = 3;
+const DEFAULT_KEEP_TAIL = 0;
 const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
 
 /**
@@ -44,13 +42,14 @@ export function collapseOutput(
   // Use `split('\n')` instead of a regex so we preserve the exact
   // per-line content (blank lines included).
   const lines = sanitized.split("\n");
-  if (lines.length <= MAX_LINES_BEFORE_COLLAPSE) {
+  const visibleBudget = keepHead + keepTail;
+  if (visibleBudget <= 0 || lines.length <= visibleBudget + 1) {
     return sanitized;
   }
   const head = lines.slice(0, keepHead);
-  const tail = lines.slice(lines.length - keepTail);
+  const tail = keepTail > 0 ? lines.slice(lines.length - keepTail) : [];
   const elided = lines.length - keepHead - keepTail;
-  const marker = `... (${elided} lines elided) ...`;
+  const marker = `... +${elided} ${elided === 1 ? "line" : "lines"} (Ctrl+O to expand)`;
   return [...head, marker, ...tail].join("\n");
 }
 
@@ -86,6 +85,7 @@ export interface ExecCellProps {
    * budget. Takes priority over `exitCode` in the status badge.
    */
   readonly timedOut?: boolean;
+  readonly verbose?: boolean;
 }
 
 interface StatusBadge {
@@ -133,12 +133,18 @@ export const ExecCell: React.FC<ExecCellProps> = (props) => {
     [props.command],
   );
   const collapsedStdout = useMemo(
-    () => collapseOutput(props.stdout ?? ""),
-    [props.stdout],
+    () =>
+      props.verbose
+        ? sanitizeTranscriptText(props.stdout ?? "")
+        : collapseOutput(props.stdout ?? ""),
+    [props.stdout, props.verbose],
   );
   const collapsedStderr = useMemo(
-    () => collapseOutput(props.stderr ?? ""),
-    [props.stderr],
+    () =>
+      props.verbose
+        ? sanitizeTranscriptText(props.stderr ?? "")
+        : collapseOutput(props.stderr ?? ""),
+    [props.stderr, props.verbose],
   );
 
   const hasStdout = collapsedStdout.length > 0;

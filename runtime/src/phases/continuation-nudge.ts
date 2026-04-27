@@ -37,6 +37,8 @@ const CONTINUATION_SIGNALS: RegExp[] = [
   /\bnow i('ll| will) (do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|go|proceed)\b/,
   /\blet me (go ahead and |now )?(do|create|write|edit|update|fix|implement|add|run|check|make|build|set up|proceed)\b/,
   /\btime to (do|create|write|edit|update|fix|implement|add|run|check|make|build|get started|begin)\b/,
+  /\b(continuing|proceeding|executing|starting|moving on to)\b.{0,120}\b(do|create|write|edit|update|fix|implement|add|run|check|make|build|test|verify|wire|parse|dispatch|execute)\b/,
+  /\b(source|eval|tests?|edits?|tool calls?|verification)\b.{0,80}\b(incoming|next|queued|sequential)\b/,
 ];
 
 const SHORT_TEXT_SIGNALS: RegExp[] = [

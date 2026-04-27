@@ -69,4 +69,25 @@ describe("continuationNudge", () => {
       content: "Continue with the task. Use the appropriate tools to proceed.",
     });
   });
+
+  test("nudges when the model promises execution without emitting tool calls", async () => {
+    const state = mkState();
+    state.assistantMessages = [
+      {
+        uuid: "a2",
+        role: "assistant",
+        text: [
+          "Build clean. Continuing M5 parameter array dispatch without stopping.",
+          "Executing shopt in src/builtins/shell.c.",
+          "Source/eval/shopt/tests incoming sequential tool calls.",
+        ].join("\n"),
+        toolCalls: [],
+      },
+    ];
+
+    await continuationNudge(state, mkCtx(), mkSession());
+
+    expect(state.transition?.reason).toBe("continuation_nudge");
+    expect(state.continuationNudgeCount).toBe(1);
+  });
 });

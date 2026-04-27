@@ -32,21 +32,61 @@ function isReadSearchTool(message: TranscriptMessage): boolean {
   if (message.kind !== "tool_call") return false;
   if (message.isError === true) return false;
   const tone = toolRendererTone(message.toolName);
-  return tone === "read" || tone === "search";
+  return tone === "read" || tone === "search" || tone === "list";
+}
+
+function isEditFailure(message: TranscriptMessage): boolean {
+  if (message.kind !== "tool_call") return false;
+  if (message.isError !== true) return false;
+  return toolRendererTone(message.toolName) === "edit";
+}
+
+function collapseRepeatedEditFailures(
+  messages: readonly TranscriptMessage[],
+): TranscriptMessage[] {
+  const out: TranscriptMessage[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index]!;
+    if (!isEditFailure(message)) {
+      out.push(message);
+      index += 1;
+      continue;
+    }
+
+    const target = toolTarget(message);
+    const group: TranscriptMessage[] = [];
+    while (
+      index < messages.length &&
+      isEditFailure(messages[index]!) &&
+      toolTarget(messages[index]!) === target
+    ) {
+      group.push(messages[index]!);
+      index += 1;
+    }
+
+    out.push(group.at(-1) ?? message);
+  }
+  return out;
 }
 
 function readSearchLabel(group: readonly TranscriptMessage[]): string {
   let reads = 0;
   let searches = 0;
+  let lists = 0;
   for (const message of group) {
     const tone = toolRendererTone(message.toolName);
     if (tone === "read") reads += 1;
     if (tone === "search") searches += 1;
+    if (tone === "list") lists += 1;
   }
   const parts: string[] = [];
   if (reads > 0) parts.push(`${reads} read${reads === 1 ? "" : "s"}`);
   if (searches > 0) {
     parts.push(`${searches} search${searches === 1 ? "" : "es"}`);
+  }
+  if (lists > 0) {
+    parts.push(`${lists} list${lists === 1 ? "" : "s"}`);
   }
   return parts.join(", ");
 }
@@ -247,7 +287,9 @@ export function normalizeTranscriptMessages(
   if (options.verbose === true) return [...messages];
   return collapseTeammateShutdowns(
     collapseBackgroundShellNotifications(
-      collapseHookSummaries(collapseReadSearchGroups(messages)),
+      collapseHookSummaries(
+        collapseReadSearchGroups(collapseRepeatedEditFailures(messages)),
+      ),
     ),
   );
 }

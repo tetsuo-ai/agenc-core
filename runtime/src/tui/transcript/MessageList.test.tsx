@@ -291,6 +291,83 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("renders plan interaction tools without raw JSON argument dumps", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "ask-question",
+            kind: "tool_call",
+            toolName: "AskUserQuestion",
+            toolArgs: {
+              questions: [
+                {
+                  header: "M5 scope",
+                  question: "Prioritize M5 sub-tasks?",
+                  options: [{ label: "Full plan" }, { label: "Compounds" }],
+                },
+              ],
+            },
+            toolResultContent:
+              "User has answered your questions: Prioritize M5 sub-tasks? -> Full plan as-is. You can now continue with the user's answers in mind.",
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "exit-plan",
+            kind: "tool_call",
+            toolName: "ExitPlanMode",
+            toolArgs: {
+              plan: "raw argument should not show",
+            },
+            toolResultContent:
+              "User has approved your plan. You can now start coding.\n\n## Approved Plan:\nImplement M5.",
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("● User Answered");
+    expect(frame).toContain("Prioritize M5 sub-tasks?");
+    expect(frame).toContain("● Plan Approved");
+    expect(frame).toContain("Implement M5.");
+    expect(frame).not.toContain('"questions"');
+    expect(frame).not.toContain("raw argument should not show");
+    unmount();
+  });
+
+  test("truncates shell output in chat mode with transcript expansion hint", async () => {
+    const stderr = Array.from(
+      { length: 12 },
+      (_, index) => `error line ${index + 1}`,
+    ).join("\n");
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "exec-long",
+            kind: "tool_call",
+            toolName: "exec_command",
+            toolArgs: { cmd: "make -C build" },
+            execCommand: "make -C build",
+            execStderr: stderr,
+            execExitCode: 2,
+            execDurationMs: 100,
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("error line 1");
+    expect(frame).toContain("error line 3");
+    expect(frame).toContain("... +9 lines");
+    expect(frame).toContain("Ctrl+O");
+    expect(frame).not.toContain("error line 12");
+    unmount();
+  });
+
   test("renders a warning with the ⚠ glyph", async () => {
     const { unmount, stdout } = await mount(
       <MessageList
@@ -445,6 +522,133 @@ describe("MessageList", () => {
       ● MCP(github.listIssues)
         ⎿  2 issues"
     `);
+    unmount();
+  });
+
+  test("collapses read/search bursts to one upstream-style summary row", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "read-1",
+            kind: "tool_call",
+            toolName: "FileRead",
+            toolArgs: { path: "src/a.ts" },
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "read-2",
+            kind: "tool_call",
+            toolName: "FileRead",
+            toolArgs: { path: "src/b.ts" },
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "grep-1",
+            kind: "tool_call",
+            toolName: "Grep",
+            toolArgs: { pattern: "TODO" },
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Searched for 1 pattern");
+    expect(frame).toContain("Read 2 files");
+    expect(frame).not.toContain("FileRead");
+    expect(frame).not.toContain("src/a.ts");
+    expect(frame).not.toContain("+");
+    unmount();
+  });
+
+  test("active read/search groups show only the latest hint", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "read-1",
+            kind: "tool_call",
+            toolName: "FileRead",
+            toolArgs: { path: "src/a.ts" },
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "read-2",
+            kind: "tool_call",
+            toolName: "FileRead",
+            toolArgs: { path: "src/b.ts" },
+            isComplete: false,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Reading 2 files");
+    expect(frame).toContain("src/b.ts");
+    expect(frame).not.toContain("src/a.ts");
+    expect(frame).not.toContain("FileRead");
+    unmount();
+  });
+
+  test("collapses directory listings as listed directories", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "list-1",
+            kind: "tool_call",
+            toolName: "ListDir",
+            toolArgs: { path: "src" },
+            isComplete: true,
+          }),
+          mkMsg({
+            id: "list-2",
+            kind: "tool_call",
+            toolName: "ls",
+            toolArgs: { path: "tests" },
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Listed 2 directories");
+    expect(frame).not.toContain("Read 2 files");
+    expect(frame).not.toContain("ListDir");
+    expect(frame).not.toContain("tests");
+    unmount();
+  });
+
+  test("renders plan file writes as plan updates without the raw plan path", async () => {
+    const planPath = `${process.env.HOME ?? "/home/u"}/.agenc/plans/demo.md`;
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "plan-write",
+            kind: "tool_call",
+            toolName: "Write",
+            toolArgs: { path: planPath },
+            toolResultMetadata: {
+              ui: {
+                kind: "file_mutation",
+                filePath: planPath,
+                operation: "write",
+                additions: 59,
+                removals: 0,
+              },
+            },
+            isComplete: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("● Updated Plan");
+    expect(frame).toContain("Added 59 lines");
+    expect(frame).not.toContain(planPath);
+    expect(frame).not.toContain("Write(");
     unmount();
   });
 

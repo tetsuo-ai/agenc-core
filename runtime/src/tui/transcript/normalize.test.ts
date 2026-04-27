@@ -58,6 +58,72 @@ describe("normalizeTranscriptMessages", () => {
     expect(normalizeTranscriptMessages(raw, { verbose: true })).toEqual(raw);
   });
 
+  test("collapses directory listings without counting them as reads", () => {
+    const messages = normalizeTranscriptMessages([
+      msg({
+        id: "list-1",
+        kind: "tool_call",
+        toolName: "ListDir",
+        toolArgs: { path: "src" },
+        isComplete: true,
+      }),
+      msg({
+        id: "list-2",
+        kind: "tool_call",
+        toolName: "ls",
+        toolArgs: { path: "tests" },
+        isComplete: true,
+      }),
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_group",
+      content: "2 lists",
+      groupedTools: [
+        { toolName: "ListDir", target: "src" },
+        { toolName: "ls", target: "tests" },
+      ],
+    });
+  });
+
+  test("collapses repeated edit failures against the same file", () => {
+    const messages = normalizeTranscriptMessages([
+      msg({
+        id: "edit-1",
+        kind: "tool_call",
+        toolName: "Edit",
+        toolArgs: { path: "src/expand/parameter.c" },
+        toolResultContent: "Error editing file",
+        isError: true,
+        isComplete: true,
+      }),
+      msg({
+        id: "edit-2",
+        kind: "tool_call",
+        toolName: "Edit",
+        toolArgs: { path: "src/expand/parameter.c" },
+        toolResultContent: "Error editing file",
+        isError: true,
+        isComplete: true,
+      }),
+      msg({
+        id: "edit-3",
+        kind: "tool_call",
+        toolName: "Edit",
+        toolArgs: { path: "src/expand/other.c" },
+        toolResultContent: "Error editing file",
+        isError: true,
+        isComplete: true,
+      }),
+    ]);
+
+    expect(messages.map((message) => message.id)).toEqual([
+      "edit-2",
+      "edit-3",
+    ]);
+  });
+
   test("collapses hook and teammate summaries", () => {
     const messages = normalizeTranscriptMessages([
       msg({
