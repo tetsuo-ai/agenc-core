@@ -54,6 +54,7 @@ import {
 import type { BudgetTracker } from "../llm/token-budget.js";
 import type { CostSidecar } from "./cost.js";
 import type { UsageNoticeSidecar } from "./usage-notices.js";
+import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
@@ -608,6 +609,7 @@ export interface SessionServices {
   readonly configStore?: ConfigStore;
   readonly costSidecar?: CostSidecar;
   readonly usageNoticeSidecar?: UsageNoticeSidecar;
+  readonly hooksRuntime?: ConfiguredHooksRuntime;
 }
 
 /**

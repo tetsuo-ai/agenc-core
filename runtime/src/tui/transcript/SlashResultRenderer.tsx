@@ -54,6 +54,48 @@ export interface SlashResultProps {
  */
 const PROMPT_SIGIL = "\u25B8"; // ▸
 
+function isHooksCommand(input: string): boolean {
+  return input.trim().startsWith("/hooks");
+}
+
+function HooksResultBlock(props: {
+  readonly input: string;
+  readonly text: string;
+}): React.ReactElement {
+  const lines = props.text.split(/\r?\n/);
+  const title = lines[0] ?? "AgenC Hooks";
+  const body = lines.slice(1);
+  return (
+    <Box borderStyle="round" paddingX={1} flexDirection="column">
+      <Box flexDirection="row">
+        <Text color={theme.colors.primary}>{title}</Text>
+        <Text color={theme.colors.dim}>{` · ${props.input}`}</Text>
+      </Box>
+      {body.map((line, index) => {
+        const trimmed = line.trim();
+        if (trimmed === "") return <Text key={index}> </Text>;
+        if (/^[A-Za-z]+: /.test(trimmed)) {
+          const [label, ...rest] = trimmed.split(": ");
+          return (
+            <Box key={index} flexDirection="row">
+              <Text color={theme.colors.accent}>{`${label}: `}</Text>
+              <Text>{rest.join(": ")}</Text>
+            </Box>
+          );
+        }
+        if (trimmed.startsWith("#")) {
+          return (
+            <Text key={index} color={theme.colors.dim}>
+              {line}
+            </Text>
+          );
+        }
+        return <Text key={index}>{line}</Text>;
+      })}
+    </Box>
+  );
+}
+
 export const SlashResultRenderer: React.FC<SlashResultProps> = ({
   input,
   result,
@@ -73,6 +115,9 @@ export const SlashResultRenderer: React.FC<SlashResultProps> = ({
 
   switch (result.kind) {
     case "text":
+      if (isHooksCommand(input)) {
+        return <HooksResultBlock input={input} text={result.text} />;
+      }
       return (
         <Box borderStyle="round" paddingX={1} flexDirection="column">
           <Text color={theme.colors.dim}>{input}</Text>

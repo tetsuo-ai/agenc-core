@@ -117,14 +117,31 @@ export interface HookCommand {
   readonly type: "command";
   readonly command: string;
   readonly timeout_ms?: number;
+  readonly enabled?: boolean;
+  readonly statusMessage?: string;
 }
 
 export interface HookMatcher {
   readonly matcher?: string;
+  readonly enabled?: boolean;
   readonly hooks: readonly HookCommand[];
 }
 
 export type HooksMap = Readonly<Record<string, readonly HookMatcher[]>>;
+
+export const HOOK_EVENT_NAMES = Object.freeze([
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PermissionRequest",
+  "SessionStart",
+  "Stop",
+  "StopFailure",
+  "PreCompact",
+  "PostCompact",
+] as const);
+
+export type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
 
 export interface ExperimentsConfig {
   readonly [k: string]: boolean | string | number;
@@ -773,6 +790,154 @@ export function validateOutputStyleConfig(
   }
 
   return Object.freeze(out as PartialOutputStyleConfig);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Hooks block validation
+// ─────────────────────────────────────────────────────────────────────
+
+const HOOK_EVENT_ALIASES: Readonly<Record<string, HookEventName>> =
+  Object.freeze({
+    PreToolUse: "PreToolUse",
+    preToolUse: "PreToolUse",
+    PostToolUse: "PostToolUse",
+    postToolUse: "PostToolUse",
+    PostToolUseFailure: "PostToolUseFailure",
+    postToolUseFailure: "PostToolUseFailure",
+    PermissionRequest: "PermissionRequest",
+    permissionRequest: "PermissionRequest",
+    SessionStart: "SessionStart",
+    sessionStart: "SessionStart",
+    Stop: "Stop",
+    stop: "Stop",
+    StopFailure: "StopFailure",
+    stopFailure: "StopFailure",
+    PreCompact: "PreCompact",
+    preCompact: "PreCompact",
+    PostCompact: "PostCompact",
+    postCompact: "PostCompact",
+  });
+
+export function normalizeHookEventName(raw: string): HookEventName | undefined {
+  return HOOK_EVENT_ALIASES[raw];
+}
+
+export class InvalidHooksConfigError extends Error {
+  readonly field: string;
+  constructor(field: string, detail: string) {
+    super(`Invalid hooks.${field}: ${detail}`);
+    this.name = "InvalidHooksConfigError";
+    this.field = field;
+  }
+}
+
+function validateOptionalBoolean(
+  value: unknown,
+  field: string,
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") {
+    throw new InvalidHooksConfigError(field, "expected boolean");
+  }
+  return value;
+}
+
+function validateOptionalString(
+  value: unknown,
+  field: string,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new InvalidHooksConfigError(field, "expected string");
+  }
+  return value;
+}
+
+function validateHookCommand(raw: unknown, field: string): HookCommand {
+  if (!isPlainObject(raw)) {
+    throw new InvalidHooksConfigError(field, "expected command object");
+  }
+  if (raw.type !== "command") {
+    throw new InvalidHooksConfigError(`${field}.type`, "expected \"command\"");
+  }
+  if (typeof raw.command !== "string" || raw.command.trim().length === 0) {
+    throw new InvalidHooksConfigError(
+      `${field}.command`,
+      "expected non-empty string",
+    );
+  }
+  const timeout = raw.timeout_ms;
+  if (
+    timeout !== undefined &&
+    (typeof timeout !== "number" ||
+      !Number.isInteger(timeout) ||
+      timeout <= 0)
+  ) {
+    throw new InvalidHooksConfigError(
+      `${field}.timeout_ms`,
+      "expected positive integer milliseconds",
+    );
+  }
+  const out: { -readonly [K in keyof HookCommand]: HookCommand[K] } = {
+    type: "command",
+    command: raw.command,
+  };
+  if (timeout !== undefined) out.timeout_ms = timeout as number;
+  const enabled = validateOptionalBoolean(raw.enabled, `${field}.enabled`);
+  if (enabled !== undefined) out.enabled = enabled;
+  const statusMessage = validateOptionalString(
+    raw.statusMessage,
+    `${field}.statusMessage`,
+  );
+  if (statusMessage !== undefined) out.statusMessage = statusMessage;
+  return Object.freeze(out as HookCommand);
+}
+
+function validateHookMatcher(raw: unknown, field: string): HookMatcher {
+  if (!isPlainObject(raw)) {
+    throw new InvalidHooksConfigError(field, "expected matcher object");
+  }
+  const hooks = raw.hooks;
+  if (!Array.isArray(hooks)) {
+    throw new InvalidHooksConfigError(`${field}.hooks`, "expected array");
+  }
+  const out: { -readonly [K in keyof HookMatcher]: HookMatcher[K] } = {
+    hooks: Object.freeze(
+      hooks.map((hook, index) =>
+        validateHookCommand(hook, `${field}.hooks.${index}`),
+      ),
+    ),
+  };
+  const matcher = validateOptionalString(raw.matcher, `${field}.matcher`);
+  if (matcher !== undefined) out.matcher = matcher;
+  const enabled = validateOptionalBoolean(raw.enabled, `${field}.enabled`);
+  if (enabled !== undefined) out.enabled = enabled;
+  return Object.freeze(out as HookMatcher);
+}
+
+export function validateHooksConfig(raw: unknown): HooksMap | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainObject(raw)) {
+    throw new InvalidHooksConfigError("", "expected plain object");
+  }
+  const out: Record<string, HookMatcher[]> = {};
+  for (const [eventKey, matchers] of Object.entries(raw)) {
+    const eventName = normalizeHookEventName(eventKey);
+    if (eventName === undefined) {
+      throw new InvalidHooksConfigError(
+        eventKey,
+        `unsupported event; expected one of ${HOOK_EVENT_NAMES.join(", ")}`,
+      );
+    }
+    if (!Array.isArray(matchers)) {
+      throw new InvalidHooksConfigError(eventKey, "expected matcher array");
+    }
+    const normalized = matchers.map((matcher, index) =>
+      validateHookMatcher(matcher, `${eventKey}.${index}`),
+    );
+    out[eventName] = [...(out[eventName] ?? []), ...normalized];
+  }
+  return deepFreeze(out) as HooksMap;
 }
 
 // ─────────────────────────────────────────────────────────────────────

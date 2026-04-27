@@ -11,11 +11,13 @@ import {
   AgenCConfig,
   resolveModelDisambiguated,
   AmbiguousModelError,
+  InvalidHooksConfigError,
   InvalidPermissionsConfigError,
   InvalidStatusLineConfigError,
   UnknownModelError,
   isValidPermissionMode,
   validatePermissionsConfig,
+  validateHooksConfig,
   validateStatusLineConfig,
   validateOutputStyleConfig,
   KNOWN_CONFIG_KEYS,
@@ -390,6 +392,50 @@ describe("schema: statusLine / outputStyle block (T12)", () => {
   test("statusLine is registered as a known key, not deferred", () => {
     expect(KNOWN_CONFIG_KEYS.includes("statusLine")).toBe(true);
     expect(DEFERRED_SETTINGS_KEYS.includes("statusLine")).toBe(false);
+  });
+});
+
+describe("schema: hooks block", () => {
+  test("validateHooksConfig accepts command hooks and normalizes event aliases", () => {
+    const out = validateHooksConfig({
+      preToolUse: [
+        {
+          matcher: "Read|Grep",
+          hooks: [
+            {
+              type: "command",
+              command: "node hook.js",
+              timeout_ms: 5000,
+              statusMessage: "scan",
+            },
+          ],
+        },
+      ],
+    });
+    expect(out?.PreToolUse).toHaveLength(1);
+    expect(out?.PreToolUse?.[0]?.matcher).toBe("Read|Grep");
+    expect(out?.PreToolUse?.[0]?.hooks[0]?.command).toBe("node hook.js");
+    expect(Object.isFrozen(out)).toBe(true);
+  });
+
+  test("validateHooksConfig rejects unsupported hook types", () => {
+    expect(() =>
+      validateHooksConfig({
+        PreToolUse: [
+          {
+            hooks: [{ type: "prompt", prompt: "stop" }],
+          },
+        ],
+      }),
+    ).toThrow(InvalidHooksConfigError);
+  });
+
+  test("validateHooksConfig rejects unknown events", () => {
+    expect(() =>
+      validateHooksConfig({
+        Banana: [{ hooks: [{ type: "command", command: "true" }] }],
+      }),
+    ).toThrow(InvalidHooksConfigError);
   });
 });
 

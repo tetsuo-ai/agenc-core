@@ -39,6 +39,7 @@ import forkCommand from "./fork.js";
 import planCommand from "./plan.js";
 import permissionsCommand from "./permissions.js";
 import configCommand from "./config.js";
+import hooksCommand from "./hooks.js";
 import modelCommand from "./model.js";
 import providerCommand from "./provider.js";
 import compactCommand from "./compact.js";
@@ -263,6 +264,7 @@ export function buildDefaultRegistry(): CommandRegistry {
     providerCommand,
     permissionsCommand,
     configCommand,
+    hooksCommand,
     helpCommand,
     statusCommand,
     initCommand,
