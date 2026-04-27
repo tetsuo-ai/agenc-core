@@ -53,7 +53,6 @@ describe("responses-xai wire shim", () => {
       hasImages: false,
       input: [
         { role: "user", content: "run echo" },
-        { role: "assistant", content: "Calling tool." },
         {
           type: "function_call",
           call_id: "call_echo",
