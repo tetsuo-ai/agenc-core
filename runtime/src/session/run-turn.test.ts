@@ -424,6 +424,44 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(firstUserContent).toBe("expanded model-visible prompt");
   });
 
+  test("can suppress user_message events for internal meta turns", async () => {
+    const seenMessages: LLMMessage[][] = [];
+    const ctx = mkCtx();
+    const { session, events } = mkSession({
+      provider: {
+        ...mkProvider({ content: "hi" }),
+        chatStream: async (
+          messages: LLMMessage[],
+          _onChunk: StreamProgressCallback,
+          _options,
+        ): Promise<LLMResponse> => {
+          seenMessages.push(messages);
+          return {
+            content: "hi",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+    });
+
+    await drain(
+      session.runTurn("<tick>12:00:00 PM</tick>", {
+        ctx,
+        displayUserMessage: null,
+      }),
+    );
+
+    expect(events.some((e) => e.msg.type === "user_message")).toBe(false);
+    const firstUserContent = seenMessages[0]?.find(
+      (message) => message.role === "user",
+    )?.content;
+    expect(firstUserContent).toBe("<tick>12:00:00 PM</tick>");
+  });
+
   test("emits turn_complete on happy-path termination", async () => {
     const ctx = mkCtx();
     const { session, events } = mkSession({

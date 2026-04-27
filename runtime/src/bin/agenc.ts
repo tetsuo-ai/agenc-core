@@ -38,6 +38,12 @@ import {
 import type { LLMToolCall } from "../llm/types.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { Session } from "../session/session.js";
+import {
+  AUTONOMOUS_SUBMIT_SOURCE,
+  AutonomousKeepaliveScheduler,
+  isAutonomousPermissionMode,
+  type SessionSubmitOptions,
+} from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { runTurn } from "../session/run-turn.js";
 import type { Terminal } from "../session/turn-state.js";
@@ -490,8 +496,11 @@ export interface RunSingleTurnOpts {
   readonly ctx: TurnContext;
   readonly input: string;
   readonly agencHome?: string;
-  /** Transcript-facing prompt when `input` has model-only attachments injected. */
-  readonly displayInput?: string;
+  /**
+   * Transcript-facing prompt when `input` has model-only attachments injected.
+   * `null` suppresses the visible user-message event for internal meta turns.
+   */
+  readonly displayInput?: string | null;
   /** T10: config snapshot + latch so `maybeReloadConfigBetweenTurns` can drain SIGUSR1. */
   readonly configStore: ConfigStore;
   readonly configReloadLatch: ConfigReloadLatch;
@@ -742,10 +751,43 @@ function installTuiSessionContract(params: {
   const configReloadLatch: ConfigReloadLatch = { requested: false };
   let sessionRef: Session | null = params.session;
   installSignalHandlers(() => sessionRef, configReloadLatch);
+  const autonomousKeepalive = new AutonomousKeepaliveScheduler({
+    isActive: () =>
+      isAutonomousPermissionMode(params.session.permissionModeRegistry.current()),
+    submitTick: (tick) =>
+      params.session.submit(tick, { source: AUTONOMOUS_SUBMIT_SOURCE }),
+    onError: (error) => {
+      params.session.emit({
+        id: params.session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "autonomous_keepalive_failed",
+            message:
+              error instanceof Error ? error.message : String(error),
+          },
+        },
+      });
+    },
+  });
 
   params.session.installTurnDriverHooks({
-    submit: async (message: string) => {
-      const runPromptTurn = async (prompt: string): Promise<void> => {
+    submit: async (message: string, submitOpts?: SessionSubmitOptions) => {
+      const isAutonomousTick =
+        submitOpts?.source === AUTONOMOUS_SUBMIT_SOURCE;
+      if (!isAutonomousTick) autonomousKeepalive.cancel();
+      if (
+        isAutonomousTick &&
+        !isAutonomousPermissionMode(params.session.permissionModeRegistry.current())
+      ) {
+        return;
+      }
+
+      let completedPromptTurn = false;
+      const runPromptTurn = async (
+        prompt: string,
+        opts: { readonly suppressDisplay?: boolean } = {},
+      ): Promise<void> => {
         const expanded = await expandPromptFileMentions({
           session: params.session,
           configStore: params.configStore,
@@ -765,7 +807,7 @@ function installTuiSessionContract(params: {
           session: params.session,
           ctx,
           input: expanded.input,
-          displayInput: expanded.displayInput,
+          displayInput: opts.suppressDisplay === true ? null : expanded.displayInput,
           agencHome: params.agencHome,
           configStore: params.configStore,
           configReloadLatch,
@@ -774,6 +816,7 @@ function installTuiSessionContract(params: {
         })) {
           params.session.emitPhaseEvent(event);
         }
+        completedPromptTurn = true;
       };
 
       const emitSlashResult = (
@@ -828,6 +871,7 @@ function installTuiSessionContract(params: {
             return;
           case "passthrough":
             await runPromptTurn(slash.input);
+            if (completedPromptTurn) autonomousKeepalive.scheduleNext();
             return;
           case "unknown":
           case "blocked_by_bridge":
@@ -840,16 +884,19 @@ function installTuiSessionContract(params: {
             emitSlashResult(message, slash.result);
             if (slash.result.kind === "prompt") {
               await runPromptTurn(slash.result.content);
+              if (completedPromptTurn) autonomousKeepalive.scheduleNext();
               return;
             }
             if (slash.result.kind === "exit") {
+              autonomousKeepalive.dispose();
               activeInkUnmount?.();
             }
             return;
         }
       }
 
-      await runPromptTurn(message);
+      await runPromptTurn(message, { suppressDisplay: isAutonomousTick });
+      if (completedPromptTurn) autonomousKeepalive.scheduleNext();
     },
     flushEventLog: () => {
       params.session.rolloutStore?.flushDurable();
@@ -858,6 +905,7 @@ function installTuiSessionContract(params: {
 
   return () => {
     sessionRef = null;
+    autonomousKeepalive.dispose();
     params.session.installTurnDriverHooks(null);
   };
 }

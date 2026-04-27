@@ -514,6 +514,31 @@ describe("assembleSystemPrompt", () => {
     ).toBe(true);
   });
 
+  test("autonomous work section is injected for bypass mode only", async () => {
+    const { createEmptyToolPermissionContext } = await import(
+      "../permissions/types.js"
+    );
+    const active = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      permissionContext: createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+      }),
+      envForSimpleMode: {},
+    });
+    const inactive = await assembleSystemPrompt({
+      session: fakeSession,
+      ctx: fakeCtx(),
+      permissionContext: createEmptyToolPermissionContext({ mode: "default" }),
+      envForSimpleMode: {},
+    });
+
+    expect(active.text).toContain("# Autonomous Work");
+    expect(active.text).toContain("<tick>");
+    expect(active.text).toContain("call Sleep");
+    expect(inactive.text).not.toContain("# Autonomous Work");
+  });
+
   test("system prompt rejects implicit non-AgenC instruction updates", async () => {
     const { text } = await assembleSystemPrompt({
       session: fakeSession,

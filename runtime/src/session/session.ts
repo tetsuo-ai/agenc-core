@@ -52,6 +52,7 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import type { BudgetTracker } from "../llm/token-budget.js";
+import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { UsageNoticeSidecar } from "./usage-notices.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
@@ -676,7 +677,10 @@ export interface SessionOpts {
 }
 
 export interface SessionTurnDriverHooks {
-  readonly submit: (message: string) => Promise<void>;
+  readonly submit: (
+    message: string,
+    opts?: SessionSubmitOptions,
+  ) => Promise<void>;
   readonly flushEventLog?: () => Promise<void> | void;
 }
 
@@ -1390,12 +1394,12 @@ export class Session {
     }
   }
 
-  async submit(message: string): Promise<void> {
+  async submit(message: string, opts: SessionSubmitOptions = {}): Promise<void> {
     const hooks = this.turnDriverHooks;
     if (hooks === null) {
       throw new Error("Session submit hook is not installed");
     }
-    const run = this.submitQueue.then(() => hooks.submit(message));
+    const run = this.submitQueue.then(() => hooks.submit(message, opts));
     this.submitQueue = run.catch(() => {
       /* keep the queue alive for the next submit */
     });

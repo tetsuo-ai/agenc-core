@@ -41,6 +41,10 @@ import { platform as osPlatform, type as osType, release as osRelease } from "no
 
 import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import {
+  AUTONOMOUS_TICK_TAG,
+  isAutonomousPermissionMode,
+} from "../session/autonomous-mode.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
@@ -507,6 +511,24 @@ Use this directory for temporary files instead of /tmp:
 The scratchpad is session-specific and isolated from the user's project.`;
 }
 
+export function getAutonomousWorkSection(
+  permissionContext: ToolPermissionContext | null,
+): string | null {
+  if (!isAutonomousPermissionMode(permissionContext)) return null;
+  return `# Autonomous Work
+
+You are running autonomously. You may receive \`<${AUTONOMOUS_TICK_TAG}>\` prompts that keep you alive between turns. Treat each tick as "you're awake, continue useful work now." The time inside the tick is the user's current local time.
+
+A tick is not a request for commentary. If work remains, continue by using the appropriate tools. Do not respond with only a status message when there is a concrete next action.
+
+Use the Sleep tool to control pacing when waiting for slow processes or when there is temporarily nothing useful to do. If a tick arrives and there is no useful action to take, call Sleep instead of writing idle status text.
+
+Bias toward action:
+- Read files, search code, run tests, and make local edits without asking when the next step is routine and reversible.
+- If you are choosing between reasonable low-risk approaches, pick one and continue.
+- Pause for destructive, irreversible, shared-system, or data-exfiltration actions unless the user explicitly authorized that specific action.`;
+}
+
 /**
  * summarize_tool_results — static reminder to write down important info
  * from tool results before they may be cleared.
@@ -634,6 +656,11 @@ export async function assembleSystemPrompt(
       "permissions",
       () => getPermissionsSection(opts.permissionContext ?? null),
       "permission mode can change mid-session via /mode and bypass toggles",
+    ),
+    DANGEROUS_uncachedSystemPromptSection(
+      "autonomous_work",
+      () => getAutonomousWorkSection(opts.permissionContext ?? null),
+      "autonomous keepalive follows the live permission mode",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",

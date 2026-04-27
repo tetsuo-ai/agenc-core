@@ -112,8 +112,12 @@ export interface RunTurnOptions {
   readonly systemPrompt?: string;
   readonly history?: readonly LLMMessage[];
   readonly signal?: AbortSignal;
-  /** Optional transcript-facing text when the model-visible prompt was expanded. */
-  readonly displayUserMessage?: string;
+  /**
+   * Optional transcript-facing text when the model-visible prompt was
+   * expanded. `null` suppresses the user-message transcript event for
+   * internal meta turns such as autonomous keepalive ticks.
+   */
+  readonly displayUserMessage?: string | null;
 }
 
 class RegularTurnTask implements SessionTask {
@@ -1569,13 +1573,15 @@ async function* runTurnKernelInner(
   // invocation. Continuation turns (needsFollowUp=true) stay inside the
   // same generator so this fires once per user-initiated turn, not per
   // phase iteration.
-  session.emit({
-    id: session.nextInternalSubId(),
-    msg: {
-      type: "user_message",
-      payload: { message: opts.displayUserMessage ?? userMessage },
-    },
-  });
+  if (opts.displayUserMessage !== null) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "user_message",
+        payload: { message: opts.displayUserMessage ?? userMessage },
+      },
+    });
+  }
   persistNewResponseItems();
 
   // AgenC runtime: run_pre_sampling_compact before any phase runs. Returns
@@ -2029,7 +2035,7 @@ export function runTurn(
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         signal?: AbortSignal;
-        displayUserMessage?: string;
+        displayUserMessage?: string | null;
       },
     ) => AsyncGenerator<PhaseEvent, Terminal>;
   };
