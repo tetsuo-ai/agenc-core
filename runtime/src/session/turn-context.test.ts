@@ -15,7 +15,7 @@ import {
   applySessionConfiguration,
   buildPerTurnConfig,
   buildTurnContext,
-  codexHome,
+  agencHome,
   deepFreeze,
   deriveFileSystemSandboxPolicyForMode,
   deriveNetworkSandboxPolicyForMode,
@@ -168,9 +168,9 @@ describe("SessionConfiguration helpers", () => {
   test("compat home accessor returns the stored home value", () => {
     const sc: SessionConfiguration = {
       ...mkSessionConfiguration(),
-      codexHome: "/home/u/.agenc",
+      agencHome: "/home/u/.agenc",
     };
-    expect(codexHome(sc)).toBe("/home/u/.agenc");
+    expect(agencHome(sc)).toBe("/home/u/.agenc");
   });
 
   test("threadConfigSnapshot returns a fresh shallow copy", () => {

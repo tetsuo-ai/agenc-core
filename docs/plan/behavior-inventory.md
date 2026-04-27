@@ -148,7 +148,7 @@ Delete AgenC's dead `runtime/src/llm/compact/` (12 files, 1,690 LOC, zero extern
 src/bootstrap/state.ts         — markPostCompaction, getSdkBetas, getInvokedSkillsForAgent
 src/utils/forkedAgent.ts       — runForkedAgent (cache-prefix sharing)
 src/utils/hooks.ts             — executePreCompactHooks, executePostCompactHooks
-src/services/api/claude.ts     — queryModelWithStreaming, getMaxOutputTokensForModel
+src/services/api/streaming.ts     — queryModelWithStreaming, getMaxOutputTokensForModel
 src/services/api/errors.ts     — getPromptTooLongTokenGap
 src/services/SessionMemory/    — memory extraction utilities
 src/tools/FileReadTool/        — post-compact file restoration
@@ -228,7 +228,7 @@ src/services/autoFix/          — auto-fix retry logic (in toolHooks.ts)
 **Selection (transportUtils:16):**
 
 ```
-if CLAUDE_CODE_USE_CCR_V2=1        → SSETransport
+if AGENC_USE_CCR_V2=1        → SSETransport
 else if POST_FOR_SESSION_INGRESS=1 → HybridTransport
 else                               → WebSocketTransport
 ```
@@ -402,13 +402,13 @@ else                               → WebSocketTransport
 
 ## 8. System prompts + project instructions (Tranche 10)
 
-**Source:** `AgenC/src/constants/prompts.ts` + `src/utils/projectInstructions.ts` + `src/utils/claudemd.ts` + `src/memdir/memdir.ts`
+**Source:** `AgenC/src/constants/prompts.ts` + `src/utils/projectInstructions.ts` + `src/utils/agenc-md.ts` + `src/memdir/memdir.ts`
 
 | File | LOC | Purpose |
 |---|---|---|
 | `constants/prompts.ts` | 914 | Main system prompt assembly via `getSystemPrompt()` returning `string[]`; static + dynamic sections; caching boundary marker; env injection |
 | `utils/projectInstructions.ts` | 55 | Ancestor-walk behavior adapted to AgenC instruction files |
-| `utils/claudemd.ts` | 1,502 | Memory file loader behavior adapted as `agenc-md`; @include directive; 4-tier precedence (Managed → User → Project → Local) |
+| `utils/agenc-md.ts` | 1,502 | Memory file loader behavior adapted as `agenc-md`; @include directive; 4-tier precedence (Managed → User → Project → Local) |
 | `memdir/memdir.ts` | 507 | Memory typing; truncation; `loadMemoryPrompt()` entrypoint; 200 lines / 25KB cap |
 | `constants/systemPromptSections.ts` | 69 | Section registry; `systemPromptSection()` cached vs `DANGEROUS_uncachedSystemPromptSection()` volatile |
 | `utils/attachments.ts` (partial) | 1,800+ | Memory attachment rules + relevant memory surfacing per turn |
@@ -487,7 +487,7 @@ Core responsibilities: append-only JSONL with write-queue batching, UUID dedup, 
 | `memoryTypes.ts` | 270 | 4 types + frontmatter schema + UI prompt |
 | `memoryScan.ts` | 102 | Directory scanner; read frontmatter; newest-first; cap 200 files |
 | `memdir/memdir.ts` | 21KB | Memory prompt builder; auto-save; team sync |
-| `paths.ts` | 250+ | `~/.claude/projects/<slug>/memory/` with override |
+| `paths.ts` | 250+ | `~/.agenc/projects/<slug>/memory/` with override |
 | `sessionMemory.ts` | 300+ | Auto-extract on token/tool thresholds |
 
 ### Schema
@@ -557,7 +557,7 @@ Forked subagent runs `extractMemories`.
    c. `tool.checkPermissions()` (bash subcommands, file safety)
    d. `deny`
    e. `tool.requiresUserInteraction()` → force ask even in bypass
-   f/g. Content-specific rules, `.git/`, `.claude/` — bypass-immune
+   f/g. Content-specific rules, `.git/`, `.agenc/` — bypass-immune
 2. **Mode check**
    a. `bypassPermissions` or `plan+bypassAvailable` → `allow`
    b. Entire tool allowed rule → `allow`
@@ -603,7 +603,7 @@ permissions.defaultMode: ExternalPermissionMode
 features.autoMode: boolean
 ```
 
-Precedence: `$CLAUDE_USER_DIR/settings.json` → `.claude/settings.json` → `.claude/settings.local.json` → CLI args → policy settings.
+Precedence: `$AGENC_HOME/settings.json` → `.agenc/settings.json` → `.agenc/settings.local.json` → CLI args → policy settings.
 
 **AgenC destination:** `runtime/src/permissions/{evaluator,context,mode,sandbox,rules,approval,classifier}.ts` + `runtime/src/tui/permissions/InteractiveHandler.tsx`.
 

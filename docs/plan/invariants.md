@@ -346,16 +346,16 @@ message satisfying ALL triggers, assert `WithheldGate413` is taken.
 
 **Rule:** While streaming from any provider, a watchdog times the
 gap since the last received event. If gap exceeds
-`STREAM_IDLE_TIMEOUT_MS` (default 90,000 — matches AgenC `claude.ts:1898`), abort the stream with
+`STREAM_IDLE_TIMEOUT_MS` (default 90,000 — matches AgenC stream watchdog), abort the stream with
 `abortReason='stream_idle'`, emit I-8 `stream_error`, route to
 `AbortRecovery → Phase3` (transient — SDK retry attempts a
 reconnect).
 
-**Source:** **PORT** from AgenC `services/api/claude.ts:1894-2433`
+**Source:** **PORT** from AgenC streaming API watchdog
 (`streamWatchdogEnabled`, `streamWatchdogFiredAt`,
 `streamIdleAborted`) + AgenC runtime `client.rs:1146`
 (`stream_idle_timeout_ms` from provider info). AgenC gates
-behind `CLAUDE_ENABLE_STREAM_WATCHDOG` env var; **AgenC ships
+behind `AGENC_ENABLE_STREAM_WATCHDOG` env var; **AgenC ships
 default-on** because silent provider stalls are pure latency burn.
 
 **Why:** Provider connections can hold open while the upstream
@@ -1014,7 +1014,7 @@ scale, pure observation). Each carries source provenance.
 ## Time & clock (I-82..I-84)
 
 ### I-82 · Monotonic clock for all deadline arithmetic (port AgenC)
-**PORT** AgenC `services/api/claude.ts:1933` (`performance.now()` for watchdog). Rule: every deadline / elapsed-time calculation uses `performance.now()` (or `process.hrtime.bigint()`), not `Date.now()`. Wall clock is for display + event-log timestamps only. NTP corrections, `date` set, suspend/resume, container clock skew all break wall-clock arithmetic; monotonic clock is immune. **Where:** I-9 timeouts, I-11 watchdog, I-22 budget check, OAuth refresh, all SDK retries. **Test:** mock `Date.now()` to jump backward 5s mid-stream; assert watchdog timing unaffected.
+**PORT** AgenC streaming API watchdog (`performance.now()` for watchdog). Rule: every deadline / elapsed-time calculation uses `performance.now()` (or `process.hrtime.bigint()`), not `Date.now()`. Wall clock is for display + event-log timestamps only. NTP corrections, `date` set, suspend/resume, container clock skew all break wall-clock arithmetic; monotonic clock is immune. **Where:** I-9 timeouts, I-11 watchdog, I-22 budget check, OAuth refresh, all SDK retries. **Test:** mock `Date.now()` to jump backward 5s mid-stream; assert watchdog timing unaffected.
 
 ### I-83 · Event-log batches detect long delays (suspend/resume)
 **NEW.** A laptop closes mid-batch; system resumes 8 hours later; the deferred 100ms flush callback fires, attributing all events in the batch to "8 hours ago" by `Date.now()`. Rule: every batch carries `batchOpenedAt: monotonicMs` (per I-82). On flush, if `performance.now() - batchOpenedAt > 10_000` (10s), abandon the batch + emit `warning:'event_log_batch_delayed'` + emit a sentinel `system_resumed_from(durationMs)` event so reconstruction can reason about the gap. **Where:** `runtime/src/session/session-store.ts` batch flush.
@@ -1217,7 +1217,7 @@ invariant number in its description.
 | I-8 | NEW | Event log error emission as invariant; AgenC tags errors inline |
 | I-9 | PORT AgenC runtime | `tools/registry.rs:561` `timeout_ms` |
 | I-10 | DOCUMENT AgenC | `query.ts:1101-1209` implicit order made explicit |
-| I-11 | PORT AgenC | `services/api/claude.ts:1894-2433` watchdog, default-on in AgenC |
+| I-11 | PORT AgenC | AgenC streaming API watchdog watchdog, default-on in AgenC |
 | I-12 | NEW | Neither AgenC nor AgenC runtime handles ENOSPC explicitly |
 | I-13 | NEW | Mid-stream provider switch is multi-provider specific |
 | I-14 | NEW | `previous_response_id` server-side expiration retry |

@@ -185,7 +185,7 @@ function buildMcpServerInstructions(
  * `customSystemPrompt` / `appendSystemPrompt` overrides.
  *
  * Notes vs. upstream:
- *   - No `CLAUDE_CODE_SIMPLE` short-path: gut runtime exposes the same
+ *   - No `AGENC_SIMPLE` short-path: gut runtime exposes the same
  *     gating via `AGENC_SIMPLE`, but compact does not need the minimal
  *     output (cache reuse is what matters). The full sectioned prompt
  *     is built unconditionally here.

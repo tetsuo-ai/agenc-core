@@ -375,10 +375,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         );
       }
 
-      // Mirror AgenC `EnterWorktreeTool.call:90-94`: create the
-      // worktree under `.agenc/worktrees/<slug>` (AgenC uses
-      // `.claude/worktrees/`; we substitute `.agenc` for parity with
-      // the rest of the AgenC layout).
+      // Create the worktree under AgenC's internal worktree directory.
       const worktreePath = resolve(mainRepoRoot, ".agenc", "worktrees", slug);
       const branch = slug;
       const originalHeadCommit = await getCurrentHeadCommit(mainRepoRoot);

@@ -49,8 +49,8 @@ export interface LoadedTranscript {
  *  - Collects `type: "marble-origami-snapshot"` entries last-wins:
  *    later entries supersede earlier ones, again mirroring the
  *    AgenC shape.
- *  - All other entry types (rollout `event_msg`, plain Claude
- *    transcript messages, `summary`, etc.) are ignored. The rollout
+ *  - All other entry types (rollout `event_msg`, plain transcript
+ *    messages, `summary`, etc.) are ignored. The rollout
  *    history reconstruction path lives in
  *    `session/rollout-reconstruction.ts` and is invoked directly by
  *    bootstrap from `RolloutStore.readAll()`; we deliberately do not

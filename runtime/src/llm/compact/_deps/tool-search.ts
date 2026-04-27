@@ -8,8 +8,8 @@
  *      whether the post-compact tools list should include
  *      `ToolSearchTool` + MCP tools with deferred-loading semantics.
  *
- * Compared to the upstream AgenC / claude-code helpers, the gut
- * runtime is in a different state:
+ * Compared to the full helper surface, the gut runtime is in a different
+ * state:
  *
  *   - The gut runtime DOES have a `tool_search` subsystem (see
  *     `src/tools/router.ts`, `src/tools/context.ts` — variant kind
@@ -39,7 +39,7 @@
  *
  *   - `isToolSearchEnabled` and `isToolSearchEnabledOptimistic` honor
  *     the upstream env-var contract (`ENABLE_TOOL_SEARCH`,
- *     `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`) and the model-support
+ *     `AGENC_DISABLE_EXPERIMENTAL_BETAS`) and the model-support
  *     check (haiku models do not support `tool_reference`). They also
  *     check that `ToolSearchTool` is actually present in the tools
  *     list (matching upstream's `isToolSearchToolAvailable` gate).
@@ -68,8 +68,8 @@ const TOOL_SEARCH_TOOL_NAME = "ToolSearch";
 const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = ["haiku"] as const;
 
 /**
- * Match upstream `isEnvTruthy` exactly (claude utils/envUtils.ts):
- * accepts `1`, `true`, `yes`, `on` (case-insensitive) as truthy.
+ * AgenC truthy parser: accepts `1`, `true`, `yes`, `on`
+ * (case-insensitive) as truthy.
  */
 function isEnvTruthy(value: string | undefined): boolean {
   if (!value) return false;
@@ -83,9 +83,8 @@ function isEnvTruthy(value: string | undefined): boolean {
 }
 
 /**
- * Match upstream `isEnvDefinedFalsy` (claude utils/envUtils.ts): only
- * fires when the env var is set to a recognized falsy value, NOT when
- * it is unset.
+ * AgenC defined-falsy parser: only fires when the env var is set to a
+ * recognized falsy value, NOT when it is unset.
  */
 function isEnvDefinedFalsy(value: string | undefined): boolean {
   if (value === undefined) return false;
@@ -221,7 +220,7 @@ export function extractDiscoveredToolNames(
  *
  * Operators can set `ENABLE_TOOL_SEARCH=true` to opt in if they have
  * wired a provider that understands the upstream contract end to
- * end. The kill switch `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=true`
+ * end. The kill switch `AGENC_DISABLE_EXPERIMENTAL_BETAS=true`
  * always wins.
  */
 export async function isToolSearchEnabled(
@@ -229,7 +228,7 @@ export async function isToolSearchEnabled(
   tools?: ReadonlyArray<ToolLike>,
   ..._rest: unknown[]
 ): Promise<boolean> {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+  if (isEnvTruthy(process.env.AGENC_DISABLE_EXPERIMENTAL_BETAS)) {
     return false;
   }
 
@@ -252,7 +251,7 @@ export async function isToolSearchEnabled(
  * upstream env-only fast path.
  */
 export function isToolSearchEnabledOptimistic(): boolean {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+  if (isEnvTruthy(process.env.AGENC_DISABLE_EXPERIMENTAL_BETAS)) {
     return false;
   }
   const enableValue = process.env.ENABLE_TOOL_SEARCH;

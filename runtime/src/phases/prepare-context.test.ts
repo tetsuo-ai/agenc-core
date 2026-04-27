@@ -299,16 +299,16 @@ function mkUsageAssistantMsg(finalContextTokens: number): LLMMessage {
 describe("prepareContext Stage 7 blocking-limit parity", () => {
   const originalDisableAutoCompact = process.env.DISABLE_AUTO_COMPACT;
   const originalBlockingLimitOverride =
-    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
+    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
   const originalUserType = process.env.USER_TYPE;
-  const originalMaxContext = process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
-  const originalAutoCompactPct = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+  const originalMaxContext = process.env.AGENC_MAX_CONTEXT_TOKENS;
+  const originalAutoCompactPct = process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE;
 
   beforeEach(() => {
     delete process.env.DISABLE_AUTO_COMPACT;
-    delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
-    delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
-    delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+    delete process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
+    delete process.env.AGENC_MAX_CONTEXT_TOKENS;
+    delete process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE;
     delete process.env.USER_TYPE;
     vi.restoreAllMocks();
   });
@@ -320,10 +320,10 @@ describe("prepareContext Stage 7 blocking-limit parity", () => {
       delete process.env.DISABLE_AUTO_COMPACT;
     }
     if (originalBlockingLimitOverride !== undefined) {
-      process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE =
+      process.env.AGENC_BLOCKING_LIMIT_OVERRIDE =
         originalBlockingLimitOverride;
     } else {
-      delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
+      delete process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
     }
     if (originalUserType !== undefined) {
       process.env.USER_TYPE = originalUserType;
@@ -331,21 +331,21 @@ describe("prepareContext Stage 7 blocking-limit parity", () => {
       delete process.env.USER_TYPE;
     }
     if (originalMaxContext !== undefined) {
-      process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = originalMaxContext;
+      process.env.AGENC_MAX_CONTEXT_TOKENS = originalMaxContext;
     } else {
-      delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+      delete process.env.AGENC_MAX_CONTEXT_TOKENS;
     }
     if (originalAutoCompactPct !== undefined) {
-      process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = originalAutoCompactPct;
+      process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = originalAutoCompactPct;
     } else {
-      delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE;
+      delete process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE;
     }
     vi.restoreAllMocks();
   });
 
   test("hard blocking-limit preempts when auto compact recovery is not owning the turn", async () => {
     process.env.DISABLE_AUTO_COMPACT = "1";
-    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = "50";
+    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE = "50";
     vi.spyOn(autoCompactModule, "calculateTokenWarningState").mockReturnValue({
       percentLeft: 0,
       isAboveWarningThreshold: true,
@@ -370,7 +370,7 @@ describe("prepareContext Stage 7 blocking-limit parity", () => {
   });
 
   test("skip cases do not preempt for compact/session_memory, reactive compact, or context collapse recovery owners", async () => {
-    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = "50";
+    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE = "50";
 
     const compactState = mkState([mkUserMsg(repeat(400))]);
     await prepareContext(
@@ -436,7 +436,7 @@ describe("prepareContext Stage 7 blocking-limit parity", () => {
   });
 
   test("successful compaction on this iteration skips blocking preempt and carries taskBudgetRemaining forward", async () => {
-    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = "1";
+    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE = "1";
     const appendRollout = vi.fn();
     const compactionResult = {
       boundaryMarker: { role: "system", content: "boundary" },
@@ -509,7 +509,7 @@ describe("prepareContext Stage 7 blocking-limit parity", () => {
   });
 
   test("circuit-breaker blocks after repeated auto-compact failures while still above auto-compact threshold", async () => {
-    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = "1000000";
+    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE = "1000000";
 
     vi.spyOn(autoCompactModule, "autoCompactIfNeeded").mockResolvedValue({
       wasCompacted: false,

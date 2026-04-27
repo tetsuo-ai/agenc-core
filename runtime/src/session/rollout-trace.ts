@@ -97,7 +97,7 @@ const PAYLOADS_DIR_NAME = "payloads";
 export type AgentThreadId = string;
 
 /** Upstream `AgenC runtimeTurnId`. Kept as a bare string here. */
-export type CodexTurnId = string;
+export type AgenCTurnId = string;
 
 /** Upstream `CompactionId`. Kept as a bare string here. */
 export type CompactionId = string;
@@ -132,7 +132,7 @@ export interface RawPayloadRef {
 /** Event envelope context supplied by producers. */
 export interface RawTraceEventContext {
   readonly threadId?: AgentThreadId;
-  readonly codexTurnId?: CodexTurnId;
+  readonly agencTurnId?: AgenCTurnId;
 }
 
 /**
@@ -156,8 +156,8 @@ export type RawTraceEventPayload =
       readonly metadataPayload?: RawPayloadRef;
     }
   | {
-      readonly type: "codex_turn_started";
-      readonly codexTurnId: CodexTurnId;
+      readonly type: "agenc_turn_started";
+      readonly agencTurnId: AgenCTurnId;
       readonly threadId: AgentThreadId;
     };
 
@@ -168,7 +168,7 @@ export interface RawTraceEvent {
   readonly wallTimeUnixMs: number;
   readonly rolloutId: string;
   readonly threadId?: AgentThreadId;
-  readonly codexTurnId?: CodexTurnId;
+  readonly agencTurnId?: AgenCTurnId;
   readonly payload: RawTraceEventPayload;
 }
 
@@ -338,8 +338,8 @@ export class TraceWriter {
       wallTimeUnixMs: Date.now(),
       rolloutId: this.manifest.rolloutId,
       ...(context.threadId !== undefined ? { threadId: context.threadId } : {}),
-      ...(context.codexTurnId !== undefined
-        ? { codexTurnId: context.codexTurnId }
+      ...(context.agencTurnId !== undefined
+        ? { agencTurnId: context.agencTurnId }
         : {}),
       payload,
     };
@@ -555,16 +555,16 @@ export class RolloutTraceRecorder {
    * lets trace-focused integration tests produce valid reducer inputs
    * without exercising the full session loop.
    */
-  recordCodexTurnStarted(
+  recordAgenCTurnStarted(
     threadId: AgentThreadId,
-    codexTurnId: CodexTurnId,
+    agencTurnId: AgenCTurnId,
   ): void {
     if (!this.writer) return;
     this.appendWithContextBestEffort(
-      { threadId, codexTurnId },
+      { threadId, agencTurnId },
       {
-        type: "codex_turn_started",
-        codexTurnId,
+        type: "agenc_turn_started",
+        agencTurnId,
         threadId,
       },
     );
@@ -583,7 +583,7 @@ export class RolloutTraceRecorder {
    */
   codeCellTraceContext(_: {
     readonly threadId: AgentThreadId;
-    readonly codexTurnId: CodexTurnId;
+    readonly agencTurnId: AgenCTurnId;
     readonly runtimeCellId: string;
   }): CodeCellTraceContext {
     return DISABLED_CODE_CELL_CONTEXT;
@@ -605,7 +605,7 @@ export class RolloutTraceRecorder {
    */
   inferenceTraceContext(_: {
     readonly threadId: AgentThreadId;
-    readonly codexTurnId: CodexTurnId;
+    readonly agencTurnId: AgenCTurnId;
     readonly model: string;
     readonly providerName: string;
   }): InferenceTraceContext {
@@ -618,7 +618,7 @@ export class RolloutTraceRecorder {
    */
   compactionTraceContext(_: {
     readonly threadId: AgentThreadId;
-    readonly codexTurnId: CodexTurnId;
+    readonly agencTurnId: AgenCTurnId;
     readonly compactionId: CompactionId;
     readonly model: string;
     readonly providerName: string;

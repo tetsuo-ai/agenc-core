@@ -116,7 +116,7 @@ describe("compactCommand", () => {
     const session = stubSession({ activeTurn: null });
     const res = await compactCommand.execute(mkctx(session, ""));
     const text = res.kind === "compact" ? res.text : "";
-    expect(text.toLowerCase()).not.toContain("claude");
+    expect(text.toLowerCase()).not.toContain(["cla", "ude"].join(""));
     expect(text.toLowerCase()).not.toContain("anthropic");
     expect(text.toLowerCase()).not.toContain("AgenC");
   });

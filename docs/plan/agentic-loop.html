@@ -442,7 +442,7 @@ flowchart TB
       PermEval --> Step1{"Deny check<br/>bypass-immune"}
       Step1 -->|tool denied| Denied1[Return deny]
       Step1 -->|requiresUserInteraction| ForceAsk[Force ask even in bypass]
-      Step1 -->|"content-specific .git/ .claude/"| ForceAsk
+      Step1 -->|"content-specific .git/ .agenc/"| ForceAsk
       Step1 -->|passes| Step2{Mode check}
       Step2 -->|"bypass OR plan+bypassAvail"| Allowed1[Auto-allow]
       Step2 -->|allow-rule match| Allowed1

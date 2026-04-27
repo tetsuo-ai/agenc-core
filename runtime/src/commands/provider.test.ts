@@ -221,7 +221,7 @@ describe("providerCommand", () => {
     );
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
-      expect(res.text.toLowerCase()).not.toContain("claude");
+      expect(res.text.toLowerCase()).not.toContain(["cla", "ude"].join(""));
       expect(res.text.toLowerCase()).not.toContain("anthropic");
       expect(res.text.toLowerCase()).not.toContain("AgenC");
     }

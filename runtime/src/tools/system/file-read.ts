@@ -63,7 +63,7 @@ export const FILE_READ_TOOL_NAME = "FileRead";
 /**
  * Token cap for text reads. Matches AgenC's
  * `DEFAULT_MAX_OUTPUT_TOKENS` from `FileReadTool/limits.ts`. Configurable
- * via the `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` env var (kept for
+ * via the `AGENC_FILE_READ_MAX_OUTPUT_TOKENS` env var (kept for
  * parity with AgenC's user-side override) or via `FileReadConfig`.
  */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
@@ -637,7 +637,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
  * compatibility). Returns the supplied default if unset or invalid.
  */
 function envOrDefault(fallback: number): number {
-  const raw = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS;
+  const raw = process.env.AGENC_FILE_READ_MAX_OUTPUT_TOKENS;
   if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
   const parsed = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;

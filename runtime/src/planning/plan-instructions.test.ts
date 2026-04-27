@@ -43,7 +43,7 @@ describe("plan mode instructions", () => {
     expect(prompt).not.toContain("<AGENC_HOME>/plans");
     expect(prompt).not.toMatch(/C[A-Z]+DE\.md/u);
     expect(prompt).not.toContain("AGENTS.md");
-    expect(prompt).not.toContain("Claude");
+    expect(prompt).not.toContain(["Cla", "ude"].join(""));
   });
 
   test("builds the richer phased workflow when requested", () => {

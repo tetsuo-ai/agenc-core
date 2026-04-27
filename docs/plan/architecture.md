@@ -144,7 +144,7 @@ graph TB
 | AgenC | `ink/` | ~9,000 | `runtime/src/tui/ink/` (verbatim) |
 | AgenC | `ink/components/` | ~2,300 | `runtime/src/tui/components/` |
 | AgenC | `commands/` | ~2,000 (subset) | `runtime/src/commands/` |
-| AgenC | `constants/prompts.ts` + `utils/claudemd.ts` + `utils/projectInstructions.ts` | 2,471 | `runtime/src/prompts/` |
+| AgenC | `constants/prompts.ts` + `utils/agenc-md.ts` + `utils/projectInstructions.ts` | 2,471 | `runtime/src/prompts/` |
 | AgenC | `memdir/` + `memoryScan.ts` + `memoryTypes.ts` | ~900 | `runtime/src/prompts/memory/` |
 | AgenC | `utils/permissions/` + `hooks/toolPermission/` + `utils/sandbox/` | ~3,500 | `runtime/src/permissions/` |
 | AgenC | `utils/worktree.ts` + `tools/AgentTool/*` | ~3,000 | `runtime/src/agents/{delegate,run-agent,worktree,fork-context}.ts` |

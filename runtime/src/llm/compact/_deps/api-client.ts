@@ -13,10 +13,7 @@
  * stream event consumed by `compactConversation` (see
  * `compact.ts:2068-2095`). Streaming UX surfaces real per-token
  * deltas during compaction so the cockpit "responding" status and
- * response-length counter advance live, matching the original
- * upstream behavior at
- * `/home/tetsuo/git/claude/src/services/api/claude.ts::queryModelWithStreaming`
- * (line 762).
+ * response-length counter advance live.
  *
  * What we deliberately do NOT pull in from upstream:
  *   - the Anthropic SDK / `Stream<BetaRawMessageStreamEvent>` graph

@@ -1,48 +1,36 @@
 // @ts-nocheck
 import memoize from 'lodash-es/memoize.js'
-import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
-export function resolveClaudeConfigHomeDir(options?: {
+export function resolveAgenCConfigHomeDir(options?: {
   configDirEnv?: string
+  agencHomeEnv?: string
   homeDir?: string
-  openClaudeExists?: boolean
-  legacyClaudeExists?: boolean
 }): string {
   if (options?.configDirEnv) {
     return options.configDirEnv.normalize('NFC')
   }
-
-  const homeDir = options?.homeDir ?? homedir()
-  const openClaudeDir = join(homeDir, '.openclaude')
-  const legacyClaudeDir = join(homeDir, '.claude')
-  const openClaudeExists =
-    options?.openClaudeExists ?? existsSync(openClaudeDir)
-  const legacyClaudeExists =
-    options?.legacyClaudeExists ?? existsSync(legacyClaudeDir)
-
-  // Preserve existing user config/install state until we ship an explicit
-  // migration. New installs (neither path exists) use the newer legacy
-  // config home.
-  if (!openClaudeExists && legacyClaudeExists) {
-    return legacyClaudeDir.normalize('NFC')
+  if (options?.agencHomeEnv) {
+    return options.agencHomeEnv.normalize('NFC')
   }
 
-  return openClaudeDir.normalize('NFC')
+  const homeDir = options?.homeDir ?? homedir()
+  return join(homeDir, '.agenc').normalize('NFC')
 }
 
-// Memoized: 150+ callers, many on hot paths. Keyed off CLAUDE_CONFIG_DIR so
+// Memoized: 150+ callers, many on hot paths. Keyed off AgenC config-home env
 // tests that change the env var get a fresh value without explicit cache.clear.
-export const getClaudeConfigHomeDir = memoize(
-  (): string => resolveClaudeConfigHomeDir({
-    configDirEnv: process.env.CLAUDE_CONFIG_DIR,
+export const getAgenCConfigHomeDir = memoize(
+  (): string => resolveAgenCConfigHomeDir({
+    configDirEnv: process.env.AGENC_CONFIG_DIR,
+    agencHomeEnv: process.env.AGENC_HOME,
   }),
-  () => process.env.CLAUDE_CONFIG_DIR,
+  () => `${process.env.AGENC_CONFIG_DIR ?? ''}\0${process.env.AGENC_HOME ?? ''}`,
 )
 
 export function getTeamsDir(): string {
-  return join(getClaudeConfigHomeDir(), 'teams')
+  return join(getAgenCConfigHomeDir(), 'teams')
 }
 
 /**
@@ -75,19 +63,19 @@ export function isEnvDefinedFalsy(
 }
 
 /**
- * --bare / CLAUDE_CODE_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
+ * --bare / AGENC_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
  * attribution, background prefetches, and ALL keychain/credential reads.
  * Auth is strictly ANTHROPIC_API_KEY env or apiKeyHelper from --settings.
  * Explicit CLI flags (--plugin-dir, --add-dir, --mcp-config) still honored.
  * ~30 gates across the codebase.
  *
  * Checks argv directly (in addition to the env var) because several gates
- * run before main.tsx's action handler sets CLAUDE_CODE_SIMPLE=1 from --bare
+ * run before main.tsx's action handler sets AGENC_SIMPLE=1 from --bare
  * — notably startKeychainPrefetch() at main.tsx top-level.
  */
 export function isBareMode(): boolean {
   return (
-    isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) ||
+    isEnvTruthy(process.env.AGENC_SIMPLE) ||
     process.argv.includes('--bare')
   )
 }
@@ -134,10 +122,10 @@ export function getDefaultVertexRegion(): string {
 
 /**
  * Check if bash commands should maintain project working directory (reset to original after each command)
- * @returns true if CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR is set to a truthy value
+ * @returns true if AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR is set to a truthy value
  */
 export function shouldMaintainProjectWorkingDir(): boolean {
-  return isEnvTruthy(process.env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR)
+  return isEnvTruthy(process.env.AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR)
 }
 
 /**

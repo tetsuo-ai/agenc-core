@@ -38,8 +38,8 @@ export function groupMessagesByApiRound(messages: Message[]): Message[][] {
   // after resume-from-partial-batch or max_tokens truncation) — and in that
   // case it pins the gate shut forever, merging all subsequent rounds into
   // one group. We let those boundaries fire; the summarizer fork's own
-  // ensureToolResultPairing at claude.ts:1136 repairs the dangling tu at
-  // API time.
+  // the downstream provider request builder repairs dangling tool-use
+  // pairs at API time.
   for (const msg of messages) {
     if (
       msg.type === 'assistant' &&

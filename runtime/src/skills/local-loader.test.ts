@@ -25,24 +25,27 @@ function writeSkill(root: string, name: string, body?: string): void {
 }
 
 describe("local skills loader", () => {
-  it("discovers project, user, compat home, and plugin skill roots", async () => {
+  it("discovers AgenC project, configured user, default user, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
+    const home = tmpRoot("skills-user");
+    const defaultAgencHome = join(home, ".agenc");
     const workspaceRoot = tmpRoot("skills-workspace");
-    const compatHome = tmpRoot("skills-compat");
 
     writeSkill(join(workspaceRoot, ".agents", "skills"), "project-skill");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "agenc-project-skill");
     writeSkill(join(agencHome, "skills"), "home-skill");
-    writeSkill(join(compatHome, "skills"), "compat-skill");
+    writeSkill(join(defaultAgencHome, "skills"), "default-home-skill");
     writeSkill(join(agencHome, "plugins", "demo", "skills"), "plugin-skill");
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
       workspaceRoot,
-      env: { CODEX_HOME: compatHome },
+      env: { HOME: home },
     });
 
     expect(snapshot.skills.map((skill) => skill.name)).toEqual([
-      "compat-skill",
+      "agenc-project-skill",
+      "default-home-skill",
       "home-skill",
       "plugin-skill",
       "project-skill",
@@ -77,7 +80,7 @@ describe("local skills loader", () => {
   it("binds session services without changing the /skills command contract", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
-    writeSkill(join(workspaceRoot, ".codex", "skills"), "repo-docs");
+    writeSkill(join(workspaceRoot, ".agenc", "skills"), "repo-docs");
     writeSkill(join(agencHome, "plugins", "tools", "skills"), "plugin-docs");
 
     const services = createLocalSkillsServices({

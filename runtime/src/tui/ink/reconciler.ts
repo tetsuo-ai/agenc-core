@@ -185,7 +185,7 @@ export function getOwnerChain(fiber: unknown): string[] {
 let debugRepaints: boolean | undefined
 export function isDebugRepaintsEnabled(): boolean {
   if (debugRepaints === undefined) {
-    debugRepaints = isEnvTruthy(process.env.CLAUDE_CODE_DEBUG_REPAINTS)
+    debugRepaints = isEnvTruthy(process.env.AGENC_DEBUG_REPAINTS)
   }
   return debugRepaints
 }
@@ -194,7 +194,7 @@ export const dispatcher = new Dispatcher()
 
 // --- COMMIT INSTRUMENTATION (temp debugging) ---
 // eslint-disable-next-line custom-rules/no-process-env-top-level -- debug instrumentation, read-once is fine
-const COMMIT_LOG = process.env.CLAUDE_CODE_COMMIT_LOG
+const COMMIT_LOG = process.env.AGENC_COMMIT_LOG
 let _commits = 0
 let _lastLog = 0
 let _lastCommitAt = 0

@@ -11,9 +11,8 @@
  * attachments wrap their content in `<system-reminder>` tags inside the
  * user-channel message — matches AgenC's convention.
  *
- * AgenC branding substitutions: `AGENC.md` for `CLAUDE.md`, `AgenC`
- * for `AgenC`/`AgenC` where the prose names a product, and
- * AgenC tool names where our model-facing tools differ. Unsupported
+ * AgenC branding substitutions use AgenC instruction filenames,
+ * product names, and model-facing tool names. Unsupported
  * AgenC product surfaces (buddy, bagel, teammate swarms, IDE/LSP)
  * do not render here until AgenC ships the matching producer/runtime
  * feature.

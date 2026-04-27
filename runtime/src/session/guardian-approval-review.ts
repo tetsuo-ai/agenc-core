@@ -34,7 +34,7 @@ import {
 } from "./review.js";
 import type { GuardianRejectionCircuitBreaker } from "./guardian-rejection-circuit-breaker.js";
 
-export const GUARDIAN_PREFERRED_MODEL = "codex-auto-review";
+export const GUARDIAN_PREFERRED_MODEL = "agenc-auto-review";
 export const GUARDIAN_REVIEW_TIMEOUT_MS = 90_000;
 export const GUARDIAN_REVIEWER_NAME = "guardian";
 

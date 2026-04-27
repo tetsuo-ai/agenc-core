@@ -116,9 +116,9 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
           AGENC_WORKSPACE: workspace,
           HOME: home,
           SESSION_INGRESS_URL: "https://api.example.test",
-          CLAUDE_CODE_USE_CCR_V2: "1",
-          CLAUDE_CODE_WORKER_EPOCH: "42",
-          CLAUDE_CODE_SESSION_ACCESS_TOKEN: "worker-jwt",
+          AGENC_USE_CCR_V2: "1",
+          AGENC_WORKER_EPOCH: "42",
+          AGENC_SESSION_ACCESS_TOKEN: "worker-jwt",
         },
       });
       shutdown = boot.shutdown;
@@ -206,9 +206,9 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
           AGENC_WORKSPACE: workspace,
           HOME: home,
           SESSION_INGRESS_URL: "https://api.example.test",
-          CLAUDE_CODE_USE_CCR_V2: "1",
-          CLAUDE_CODE_WORKER_EPOCH: "42",
-          CLAUDE_CODE_SESSION_ACCESS_TOKEN: "worker-jwt",
+          AGENC_USE_CCR_V2: "1",
+          AGENC_WORKER_EPOCH: "42",
+          AGENC_SESSION_ACCESS_TOKEN: "worker-jwt",
         },
       });
       shutdown = boot.shutdown;
@@ -334,8 +334,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
           AGENC_WORKSPACE: workspace,
           HOME: home,
           SESSION_INGRESS_URL: "https://api.example.test",
-          CLAUDE_CODE_USE_CCR_V2: "1",
-          CLAUDE_CODE_SESSION_ACCESS_TOKEN: "worker-jwt",
+          AGENC_USE_CCR_V2: "1",
+          AGENC_SESSION_ACCESS_TOKEN: "worker-jwt",
         },
       });
       shutdown = boot.shutdown;

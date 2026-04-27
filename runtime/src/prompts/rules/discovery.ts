@@ -1,8 +1,7 @@
 /**
  * AgenC scoped instruction rules.
  *
- * This is the AgenC-branded analogue of AgenC's `.claude/rules/*.md`
- * discovery, with stricter path handling and a smaller frontmatter grammar.
+ * Uses stricter path handling and a small frontmatter grammar.
  *
  * Rule files live under:
  *   - `/etc/agenc/rules/*.md` for managed rules
@@ -395,4 +394,3 @@ export function formatRulesBlock(rules: readonly InstructionRule[]): string {
     })
     .join("\n\n");
 }
-

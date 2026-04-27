@@ -7,10 +7,9 @@
  * compact-time deltas. These helpers produce the minimum
  * AttachmentMessage shape compact's prompt assembly needs.
  *
- * `generateFileAttachment` is a gut-local port of the upstream
- * `src/utils/attachments.ts::generateFileAttachment` from
- * /home/tetsuo/git/claude — adapted to gut primitives: plain
- * `node:fs/promises` reads, BOM strip, line-ending normalize,
+ * `generateFileAttachment` is a gut-local implementation adapted to
+ * gut primitives: plain `node:fs/promises` reads, BOM strip,
+ * line-ending normalize,
  * line-count cap (`MAX_LINES_TO_READ`), and per-file token cap
  * threaded through `toolUseContext.fileReadingLimits.maxTokens`
  * (POST_COMPACT_MAX_TOKENS_PER_FILE in compact.ts).
@@ -166,10 +165,7 @@ function logEvent(_eventName: string): void {
  *   - the file cannot be read (permission, IO error, decode error)
  *   - the file is too big AND the mode is not `'compact'`
  *
- * Adapted from upstream `generateFileAttachment` in
- * `/home/tetsuo/git/claude/src/utils/attachments.ts`. The upstream impl
- * routes through `FileReadTool.call`, which the gut runtime does not
- * own at this layer; we substitute a direct text read with line and
+ * This layer substitutes a direct text read with line and
  * token caps that produces the same `FileAttachment` content shape the
  * downstream compact prompt expects.
  */

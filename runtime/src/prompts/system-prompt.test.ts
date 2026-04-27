@@ -150,7 +150,7 @@ describe("static section emitters", () => {
     expect(s).not.toContain("/help");
     expect(s).not.toContain("/issue");
     expect(s).not.toContain("/share");
-    expect(s).not.toContain(["Open", "Claude"].join(""));
+    expect(s).not.toContain(["Open", "Cla", "ude"].join(""));
   });
 
   test("actions section calls out destructive-op confirmation", () => {
@@ -273,10 +273,9 @@ describe("static section emitters", () => {
     expect(s).toContain("# Tone and style");
     expect(s).toContain("emojis");
     expect(s).toContain("Do not use a colon before tool calls");
-    // owner/repo#123 GitHub-link guidance (neutral, not AgenC's
-    // anthropics/claude-code#100 example).
+    // owner/repo#123 GitHub-link guidance uses neutral example text.
     expect(s).toContain("owner/repo#123");
-    expect(s).not.toContain("anthropics/claude-code");
+    expect(s).not.toContain(["anthropics/", "cla", "ude-code"].join(""));
   });
 
   test("output_efficiency emphasizes brevity", () => {

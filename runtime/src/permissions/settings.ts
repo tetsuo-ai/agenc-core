@@ -1,8 +1,7 @@
 /**
  * T11 Wave 1 — disk-facing glue for permission rules.
  *
- * Settings sources + JSON file paths (match AgenC layout but
- * scoped under `~/.agenc` instead of `~/.claude`):
+ * Settings sources + JSON file paths:
  *
  *   userSettings    ~/.agenc/settings.json
  *   projectSettings <projectRoot>/.agenc/settings.json

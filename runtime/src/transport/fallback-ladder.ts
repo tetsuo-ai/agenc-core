@@ -2,10 +2,10 @@ import { isEnvTruthy } from "../utils/envUtils.js";
 
 export type TransportMode = "websocket" | "hybrid" | "sse";
 
-const SSE_ENV_KEYS = ["CLAUDE_CODE_USE_CCR_V2", "USE_CCR_V2"] as const;
+const SSE_ENV_KEYS = ["AGENC_USE_CCR_V2", "USE_CCR_V2"] as const;
 const HYBRID_ENV_KEYS = [
-  "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
-  "CLAUDE_CODE_POST_FOR_SESSION_INGRESS",
+  "AGENC_POST_FOR_SESSION_INGRESS_V2",
+  "AGENC_POST_FOR_SESSION_INGRESS",
   "POST_FOR_SESSION_INGRESS",
 ] as const;
 

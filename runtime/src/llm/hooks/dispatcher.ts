@@ -4,7 +4,7 @@
  * Drives the `PreCompact`, `PostCompact`, and `SessionStart` events
  * through the registered hook callbacks and aggregates results in the
  * shape the upstream compact pipeline expects (see
- * `claude/src/utils/hooks.ts::executePreCompactHooks` etc.).
+ * AgenC lifecycle hook dispatcher.
  *
  * Behavior preserved from upstream:
  *  - Hooks run sequentially; abort signal is propagated.

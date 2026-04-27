@@ -2,7 +2,7 @@
  * Lifecycle hook event types for the gut runtime.
  *
  * Lean port of the upstream `PreCompact` / `PostCompact` / `SessionStart`
- * hook surfaces (see `claude/src/utils/hooks.ts`). Tool-use hooks live in
+ * hook surfaces. Tool-use hooks live in
  * `runtime/src/tools/hooks.ts` and are unrelated — this module is for
  * runtime lifecycle dispatch (compaction boundaries, session start).
  *

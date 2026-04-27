@@ -352,7 +352,7 @@ If you can say it in one sentence, don't use three. Prefer short, direct sentenc
  *
  * Lifted from AgenC `getSimpleToneAndStyleSection` (prompts.ts:430).
  * Adapted:
- *   - `anthropics/claude-code#100` example → `owner/repo#123` (neutral)
+ *   - vendor-specific issue examples are replaced with `owner/repo#123`
  *   - dropped the AgenC `process.env.USER_TYPE === 'ant'` gating on
  *     "Your responses should be short and concise." — kept that bullet
  *     unconditionally, since AgenC has no ant/external split
@@ -646,7 +646,7 @@ export async function assembleSystemPrompt(
         opts.projectInstructions && opts.projectInstructions.trim().length > 0
           ? opts.projectInstructions
           : null,
-      "AGENTS/CLAUDE inputs reload between turns and repos",
+      "instruction inputs reload between turns and repos",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",

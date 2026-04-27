@@ -164,9 +164,7 @@ async function tryLoadFile(
 
 /**
  * Collect the AGENC.md (+ AGENC.local.md) files for one walked
- * directory. Mirrors AgenC `getMemoryFilesForNestedDirectory`
- * (`claudemd.ts:1269`) restricted to the Project/Local tier files
- * AgenC actually ships.
+ * directory. Restricted to the Project/Local tier files AgenC ships.
  */
 async function collectMemoryFilesForDirectory(
   dir: string,

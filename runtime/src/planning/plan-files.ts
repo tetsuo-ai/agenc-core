@@ -223,8 +223,8 @@ export function getPlanFilePath(ctx: PlanFileContext = {}): string {
  * of the workspace allowlist, matching AgenC's
  * `checkEditableInternalPath` carve-out (filesystem.ts:1488-1506) which
  * fires before the workspace-write check and bypasses dangerous-path
- * heuristics (the plan dir lives under `~/.agenc`/`~/.claude` which is
- * normally treated as dangerous).
+ * heuristics (the plan dir lives under the AgenC home, which is normally
+ * treated as dangerous).
  */
 export function isSessionPlanFile(
   absolutePath: string,

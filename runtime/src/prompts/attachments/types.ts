@@ -10,9 +10,8 @@
  * adds the underlying feature, the variant lands here alongside its
  * producer.
  *
- * Attachment names use AgenC branding where AgenC branded for itself
- * (e.g. `AGENC.md` instead of `CLAUDE.md`). Otherwise the prose, schema,
- * and gating logic match AgenC exactly.
+ * Attachment names use AgenC branding. Otherwise the prose, schema, and
+ * gating logic match AgenC exactly.
  *
  * @module
  */

@@ -288,7 +288,7 @@ function mkToolUseContext(): unknown {
 }
 
 describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
-  const originalPctOverride = process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+  const originalPctOverride = process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE
   const originalDisable = process.env.DISABLE_COMPACT
   const originalAutoDisable = process.env.DISABLE_AUTO_COMPACT
 
@@ -297,7 +297,7 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
     // threshold to 1% of the effective context window. With even a
     // tiny message list the token count clears 1% of ~180k = ~1.8k,
     // so autoCompactIfNeeded proceeds into compactConversation.
-    process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = '1'
+    process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = '1'
     delete process.env.DISABLE_COMPACT
     delete process.env.DISABLE_AUTO_COMPACT
     vi.clearAllMocks()
@@ -354,9 +354,9 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
 
   afterEach(() => {
     if (originalPctOverride === undefined) {
-      delete process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
+      delete process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE
     } else {
-      process.env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE = originalPctOverride
+      process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = originalPctOverride
     }
     if (originalDisable === undefined) {
       delete process.env.DISABLE_COMPACT
@@ -381,7 +381,7 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
     const messages = makeFatMessages(40)
     // Smoke-check the upstream gate so a failure in `shouldAutoCompact`
     // shows up as an explicit precondition failure rather than a silent
-    // `wasCompacted: false`. With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1`
+    // `wasCompacted: false`. With `AGENC_AUTOCOMPACT_PCT_OVERRIDE=1`
     // the threshold is about 1% of the effective context window
     // (~10k tokens for claude-sonnet-4), which our fat fixture clears.
     const gate = await shouldAutoCompact(
@@ -492,7 +492,7 @@ describe('autoCompactIfNeeded circuit breaker on I-18 failure', () => {
  * autocompact threshold. The helper walks back to the LAST assistant
  * message with real usage; the usage numbers below are chosen to
  * exceed the 1% threshold for claude-sonnet-4 under
- * `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=1` (about 9-10k tokens).
+ * `AGENC_AUTOCOMPACT_PCT_OVERRIDE=1` (about 9-10k tokens).
  */
 function makeFatMessages(count: number): unknown[] {
   const body = 'x'.repeat(20_000)

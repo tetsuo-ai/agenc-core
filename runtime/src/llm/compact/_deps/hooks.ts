@@ -4,10 +4,9 @@
  * adapts those callsites to the gut lifecycle hook dispatcher in
  * `runtime/src/llm/hooks/`.
  *
- * The adapter intentionally mirrors the upstream `claude/src/utils/hooks.ts`
- * + `claude/src/utils/sessionStart.ts` shapes the compact pipeline already
- * consumes (newCustomInstructions / userDisplayMessage; HookResultMessage[]
- * for SessionStart) so no compact-side glue had to change.
+ * The adapter intentionally mirrors the lifecycle-hook shapes the compact
+ * pipeline already consumes (newCustomInstructions / userDisplayMessage;
+ * HookResultMessage[] for SessionStart) so no compact-side glue had to change.
  */
 
 import {

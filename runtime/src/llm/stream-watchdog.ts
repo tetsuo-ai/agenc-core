@@ -1,12 +1,12 @@
 /**
  * Stream idle watchdog — I-11.
  *
- * Hand-port of AgenC `services/api/claude.ts:1894-2433`
- * (`streamWatchdogEnabled`, `streamWatchdogFiredAt`,
- * `streamIdleAborted`) + AgenC runtime `client.rs:1146`
+ * AgenC stream-idle deadline guard (`streamWatchdogEnabled`,
+ * `streamWatchdogFiredAt`, `streamIdleAborted`) plus runtime
+ * `client.rs:1146`
  * (`stream_idle_timeout_ms` from provider info).
  *
- * AgenC gates behind `CLAUDE_ENABLE_STREAM_WATCHDOG` env var
+ * AgenC gates behind `AGENC_ENABLE_STREAM_WATCHDOG` env var
  * (opt-in). AgenC ships default-on because silent provider stalls
  * are pure latency burn; opt-out is `AGENC_DISABLE_STREAM_WATCHDOG=1`.
  *
@@ -31,7 +31,7 @@
 import { monotonicMs } from "./_deps/monotonic.js";
 
 /**
- * Default idle timeout. Matches AgenC `claude.ts:1898`. Override
+ * Default idle timeout. Override
  * via env `AGENC_STREAM_IDLE_TIMEOUT_MS` (positive integer) or via
  * explicit `timeoutMs` option on `installStreamWatchdog`.
  */

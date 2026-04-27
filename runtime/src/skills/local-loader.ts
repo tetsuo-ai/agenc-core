@@ -24,7 +24,7 @@ export interface LocalSkillsSnapshot {
 export interface LocalSkillsServiceOptions {
   readonly agencHome: string;
   readonly workspaceRoot: string;
-  readonly env?: Partial<Pick<NodeJS.ProcessEnv, "HOME" | "CODEX_HOME">>;
+  readonly env?: Partial<Pick<NodeJS.ProcessEnv, "HOME">>;
 }
 
 interface SkillRoot {
@@ -99,20 +99,18 @@ export async function discoverSkillRoots(
   options: LocalSkillsServiceOptions,
 ): Promise<readonly SkillRoot[]> {
   const home = options.env?.HOME;
-  const compatHome =
-    options.env?.CODEX_HOME ?? (home ? join(home, ".codex") : "");
+  const defaultAgencHome = home ? join(home, ".agenc") : "";
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
 
   const roots: SkillRoot[] = [
     { path: join(workspaceRoot, ".agents", "skills"), scope: "project" },
-    { path: join(workspaceRoot, ".codex", "skills"), scope: "project" },
     { path: join(workspaceRoot, ".agenc", "skills"), scope: "project" },
     { path: join(agencHome, "skills"), scope: "user" },
   ];
 
-  if (compatHome.length > 0) {
-    roots.push({ path: join(compatHome, "skills"), scope: "user" });
+  if (defaultAgencHome.length > 0) {
+    roots.push({ path: join(defaultAgencHome, "skills"), scope: "user" });
   }
 
   const pluginRoots = [

@@ -3,10 +3,10 @@ import { resolveTransportMode } from "./fallback-ladder.js";
 
 const ENV_KEYS = [
   "AGENC_TRANSPORT",
-  "CLAUDE_CODE_USE_CCR_V2",
+  "AGENC_USE_CCR_V2",
   "USE_CCR_V2",
-  "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
-  "CLAUDE_CODE_POST_FOR_SESSION_INGRESS",
+  "AGENC_POST_FOR_SESSION_INGRESS_V2",
+  "AGENC_POST_FOR_SESSION_INGRESS",
   "POST_FOR_SESSION_INGRESS",
 ] as const;
 
@@ -30,7 +30,7 @@ describe("resolveTransportMode", () => {
     expect(
       resolveTransportMode({
         AGENC_TRANSPORT: "ws",
-        CLAUDE_CODE_USE_CCR_V2: "1",
+        AGENC_USE_CCR_V2: "1",
       } as NodeJS.ProcessEnv),
     ).toBe("websocket");
   });
@@ -57,12 +57,12 @@ describe("resolveTransportMode", () => {
   it("follows the AgenC fallback order when no explicit override is set", () => {
     expect(
       resolveTransportMode({
-        CLAUDE_CODE_USE_CCR_V2: "1",
+        AGENC_USE_CCR_V2: "1",
       } as NodeJS.ProcessEnv),
     ).toBe("sse");
     expect(
       resolveTransportMode({
-        CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2: "1",
+        AGENC_POST_FOR_SESSION_INGRESS_V2: "1",
       } as NodeJS.ProcessEnv),
     ).toBe("hybrid");
     expect(

@@ -13,13 +13,12 @@
  * AgenC adaptation from upstream AgenC (`src/utils/plans.ts`):
  *
  *   - The storage root is AgenC's config dir (`AGENC_HOME` or
- *     `$HOME/.agenc`) instead of Claude's config dir.
+ *     `$HOME/.agenc`).
  *   - The file content is raw markdown, matching AgenC's
  *     `plan_file_reference` attachment semantics.
  *
- *   - Task disk output (`getTaskOutputPath`): no gut equivalent. Gut
- *     does not own claude's `DiskTaskOutput` per-task stdout-on-disk
- *     subsystem. Compact's only caller is
+ *   - Task disk output (`getTaskOutputPath`): no gut equivalent. Compact's
+ *     only caller is
  *     `createAsyncAgentAttachmentsIfNeeded`, which filters
  *     `appState.tasks` for `task.type === 'local_agent'`; gut compact
  *     wires `tasks` as an empty record today, so this resolver is

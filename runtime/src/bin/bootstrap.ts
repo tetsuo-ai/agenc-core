@@ -79,8 +79,8 @@ import {
   setCurrentRuntimeSession,
 } from "./_deps/current-session.js";
 import {
-  getClaudeConfigHomeDir,
-  resolveClaudeConfigHomeDir,
+  getAgenCConfigHomeDir,
+  resolveAgenCConfigHomeDir,
 } from "./_deps/env-utils.js";
 import {
   loadTranscriptFile,
@@ -210,7 +210,7 @@ function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
 }
 
 function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
-  const raw = env.CLAUDE_CODE_WORKER_EPOCH;
+  const raw = env.AGENC_WORKER_EPOCH;
   if (!raw) return null;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || !Number.isSafeInteger(parsed)) {
@@ -628,11 +628,12 @@ export async function bootstrapLocalRuntimeSession(
   const env = options.env ?? process.env;
   const argv = options.argv ?? process.argv;
   const agencHome = resolveAgencHomeFromEnv(env);
-  const transcriptConfigHome = resolveClaudeConfigHomeDir({
-    configDirEnv: env.CLAUDE_CONFIG_DIR,
+  const transcriptConfigHome = resolveAgenCConfigHomeDir({
+    configDirEnv: env.AGENC_CONFIG_DIR,
+    agencHomeEnv: env.AGENC_HOME,
     homeDir: env.HOME,
   });
-  const legacyProcessConfigHome = getClaudeConfigHomeDir();
+  const processConfigHome = getAgenCConfigHomeDir();
   const configStore = new ConfigStore({
     home: agencHome,
     env,
@@ -941,7 +942,7 @@ export async function bootstrapLocalRuntimeSession(
           try {
             const transcriptLog = await loadPersistedContextCollapseState({
               configHomes: Array.from(
-                new Set([transcriptConfigHome, legacyProcessConfigHome]),
+                new Set([transcriptConfigHome, processConfigHome]),
               ),
               workspaceRoot,
               conversationId,

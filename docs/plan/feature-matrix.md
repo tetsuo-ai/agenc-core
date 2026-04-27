@@ -77,7 +77,7 @@ T11 = permissions, T12 = TUI.
 | Existing ToolRegistry | agenc | `runtime/src/tool-registry.ts` | 141 | extend | T6 | keep + add concurrency tag |
 | Sibling-abort on Bash errors | oc | `StreamingToolExecutor.ts:359-362` | — | take | T6 | (in streaming-executor) |
 | Progress message buffering | oc | `StreamingToolExecutor.ts:30, 420` | — | take | T6 | (in streaming-executor) |
-| Env-capped concurrency (default 10) | oc | `toolOrchestration.ts:10` (`CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`) | — | take (rename to `AGENC_*`) | T6 | `tools/orchestration.ts` |
+| Env-capped concurrency (default 10) | oc | `toolOrchestration.ts:10` (`AGENC_MAX_TOOL_USE_CONCURRENCY`) | — | take (rename to `AGENC_*`) | T6 | `tools/orchestration.ts` |
 
 ## Recovery paths
 
@@ -152,7 +152,7 @@ owners.
 | Per-turn relevant memory attachment (5 files/turn, 4KB ea, 60KB/session cap) | oc | `utils/attachments.ts` (partial) | — | take | T10 | `prompts/memory/attachments.ts` |
 | Environment context injection (cwd, git, platform, model, cutoff) | oc | `constants/prompts.ts` | — | take | T10 | (in system-prompt) |
 | MCP instruction injection (per-turn, bust cache) | oc | `constants/prompts.ts` | — | take | T10 | (in system-prompt) |
-| `CLAUDE_CODE_SIMPLE` ultra-minimal prompt | oc | `constants/prompts.ts` | — | take (rename `AGENC_SIMPLE`) | T10 | (env-gated) |
+| `AGENC_SIMPLE` ultra-minimal prompt | oc | `constants/prompts.ts` | — | take (rename `AGENC_SIMPLE`) | T10 | (env-gated) |
 
 ## Permissions
 

@@ -51,7 +51,7 @@ describe("RolloutTraceRecorder.disabled", () => {
 
     // Every call must be a no-op.
     recorder.recordThreadStarted(sampleMetadata());
-    recorder.recordCodexTurnStarted("thread-root", "turn-1");
+    recorder.recordAgenCTurnStarted("thread-root", "turn-1");
     recorder.flush();
     recorder.close();
   });
@@ -60,7 +60,7 @@ describe("RolloutTraceRecorder.disabled", () => {
     const recorder = RolloutTraceRecorder.disabled();
     const codeCell = recorder.codeCellTraceContext({
       threadId: "t1",
-      codexTurnId: "turn-1",
+      agencTurnId: "turn-1",
       runtimeCellId: "cell-1",
     });
     expect(codeCell.enabled).toBe(false);
@@ -71,7 +71,7 @@ describe("RolloutTraceRecorder.disabled", () => {
 
     const inference = recorder.inferenceTraceContext({
       threadId: "t1",
-      codexTurnId: "turn-1",
+      agencTurnId: "turn-1",
       model: "m",
       providerName: "p",
     });
@@ -79,7 +79,7 @@ describe("RolloutTraceRecorder.disabled", () => {
 
     const compaction = recorder.compactionTraceContext({
       threadId: "t1",
-      codexTurnId: "turn-1",
+      agencTurnId: "turn-1",
       compactionId: "c1",
       model: "m",
       providerName: "p",
@@ -188,18 +188,18 @@ describe("RolloutTraceRecorder.createInRootForTest — filesystem semantics", ()
     recorder.close();
   });
 
-  test("recordCodexTurnStarted emits codex_turn_started with thread+turn context", () => {
+  test("recordAgenCTurnStarted emits agenc_turn_started with thread+turn context", () => {
     const recorder = RolloutTraceRecorder.createInRootForTest(root, "thread-c");
-    recorder.recordCodexTurnStarted("thread-c", "turn-42");
+    recorder.recordAgenCTurnStarted("thread-c", "turn-42");
     recorder.flush();
     const events = readEventLog(recorder.bundleDir!);
-    const turn = events.find((e) => e.payload.type === "codex_turn_started");
+    const turn = events.find((e) => e.payload.type === "agenc_turn_started");
     expect(turn).toBeDefined();
     expect(turn!.threadId).toBe("thread-c");
-    expect(turn!.codexTurnId).toBe("turn-42");
-    if (turn!.payload.type !== "codex_turn_started") throw new Error();
+    expect(turn!.agencTurnId).toBe("turn-42");
+    if (turn!.payload.type !== "agenc_turn_started") throw new Error();
     expect(turn!.payload.threadId).toBe("thread-c");
-    expect(turn!.payload.codexTurnId).toBe("turn-42");
+    expect(turn!.payload.agencTurnId).toBe("turn-42");
     recorder.close();
   });
 
@@ -207,7 +207,7 @@ describe("RolloutTraceRecorder.createInRootForTest — filesystem semantics", ()
     const recorder = RolloutTraceRecorder.createInRootForTest(root, "thread-f");
     recorder.recordThreadStarted(sampleMetadata({ threadId: "thread-f" }));
     for (let i = 0; i < 5; i += 1) {
-      recorder.recordCodexTurnStarted("thread-f", `turn-${i}`);
+      recorder.recordAgenCTurnStarted("thread-f", `turn-${i}`);
     }
     recorder.flush();
     const events = readEventLog(recorder.bundleDir!);
@@ -270,15 +270,15 @@ describe("TraceWriter — low-level writer", () => {
       rootThreadId: "thread-root",
     });
     writer.appendWithContext(
-      { threadId: "thread-root", codexTurnId: "turn-1" },
-      { type: "codex_turn_started", codexTurnId: "turn-1", threadId: "thread-root" },
+      { threadId: "thread-root", agencTurnId: "turn-1" },
+      { type: "agenc_turn_started", agencTurnId: "turn-1", threadId: "thread-root" },
     );
     writer.close();
     const events = readEventLog(bundleDir);
     expect(events).toHaveLength(2);
     expect(events[0]!.threadId).toBeUndefined();
     expect(events[1]!.threadId).toBe("thread-root");
-    expect(events[1]!.codexTurnId).toBe("turn-1");
+    expect(events[1]!.agencTurnId).toBe("turn-1");
   });
 
   test("writer throws when reused after close", () => {

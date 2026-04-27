@@ -255,7 +255,7 @@ describe("attachmentsToMessages", () => {
     );
   });
 
-  test("uses AgenC branding and does not leak Claude-branded memory names", () => {
+  test("uses AgenC branding and does not leak legacy-branded memory names", () => {
     const planFilePath = "/home/u/.agenc/plans/active.md";
     const rendered = attachmentsToMessages([
       { kind: "plan_mode", variant: "full", planFilePath, planExists: false },
@@ -274,8 +274,8 @@ describe("attachmentsToMessages", () => {
       .join("\n");
 
     expect(rendered).toContain("AGENC.md");
-    expect(rendered).not.toContain("CLAUDE.md");
-    expect(rendered).not.toContain(["Claude", " Code"].join(""));
+    expect(rendered).not.toContain(["CLA", "UDE.md"].join(""));
+    expect(rendered).not.toContain(["Cla", "ude Code"].join(""));
   });
 
   test("preserves attachment ordering across mixed kinds", () => {

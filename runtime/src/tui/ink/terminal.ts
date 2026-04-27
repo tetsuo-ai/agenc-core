@@ -119,7 +119,7 @@ export function isSynchronizedOutputSupported(): boolean {
 // -- XTVERSION-detected terminal name (populated async at startup) --
 //
 // TERM_PROGRAM is not forwarded over SSH by default, so env-based detection
-// fails when claude runs remotely inside a VS Code integrated terminal.
+// fails when AgenC runs remotely inside a VS Code integrated terminal.
 // XTVERSION (CSI > 0 q → DCS > | name ST) goes through the pty — the query
 // reaches the *client* terminal and the reply comes back through stdin.
 // App.tsx fires the query when raw mode enables; setXtversionName() is called
@@ -185,9 +185,9 @@ const EXTENDED_KEYS_TERMINALS = [
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
-  // Open Claude defaults this off because some real terminals render the UI
-  // but stop delivering normal typing once kitty/modifyOtherKeys negotiation
-  // is enabled. Power users can opt back in explicitly.
+  // Default this off because some real terminals render the UI but stop
+  // delivering normal typing once kitty/modifyOtherKeys negotiation is
+  // enabled. Power users can opt back in explicitly.
   if (process.env.AGENC_ENABLE_EXTENDED_KEYS !== '1') {
     return false
   }

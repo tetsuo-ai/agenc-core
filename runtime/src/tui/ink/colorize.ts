@@ -7,8 +7,8 @@ import type { Color, TextStyles } from './styles.js'
  * COLORTERM=truecolor. chalk's supports-color doesn't recognize
  * TERM_PROGRAM=vscode (it only knows iTerm.app/Apple_Terminal), so it falls
  * through to the -256color regex → level 2. At level 2, chalk.rgb()
- * downgrades to the nearest 6×6×6 cube color: rgb(215,119,87) (Claude
- * orange) → idx 174 rgb(215,135,135) — washed-out salmon.
+ * downgrades to the nearest 6×6×6 cube color: rgb(215,119,87) (AgenC
+ * accent orange) → idx 174 rgb(215,135,135) — washed-out salmon.
  *
  * Gated on level === 2 (not < 3) to respect NO_COLOR / FORCE_COLOR=0 —
  * those yield level 0 and are an explicit "no colors" request. Desktop VS
@@ -48,9 +48,9 @@ function clampChalkLevelForTmux(): boolean {
   // bg.ts sets terminal-overrides :Tc before attach, so truecolor passes
   // through — skip the clamp. General escape hatch for anyone who's
   // configured their tmux correctly: AGENC_TRUECOLOR=1 or
-  // CLAUDE_CODE_TMUX_TRUECOLOR are both honored.
+  // AGENC_TMUX_TRUECOLOR are both honored.
   if (process.env.AGENC_TRUECOLOR === '1') return false
-  if (process.env.CLAUDE_CODE_TMUX_TRUECOLOR) return false
+  if (process.env.AGENC_TMUX_TRUECOLOR) return false
   // Outer-terminal advertised truecolor + a tmux config that passes RGB
   // through (terminal-overrides ',*:Tc' or terminal-features ',*:RGB').
   // We can't read tmux's runtime config without a subprocess, but if the

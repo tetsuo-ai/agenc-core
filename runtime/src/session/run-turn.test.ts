@@ -595,9 +595,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
   test("prepare-context blocking_limit terminates before the provider call", async () => {
     const originalDisableAutoCompact = process.env.DISABLE_AUTO_COMPACT;
     const originalBlockingLimitOverride =
-      process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
+      process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
     process.env.DISABLE_AUTO_COMPACT = "1";
-    process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE = "50";
+    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE = "50";
     const warningSpy = vi
       .spyOn(autoCompactModule, "calculateTokenWarningState")
       .mockReturnValue({
@@ -649,9 +649,9 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         process.env.DISABLE_AUTO_COMPACT = originalDisableAutoCompact;
       }
       if (originalBlockingLimitOverride === undefined) {
-        delete process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE;
+        delete process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
       } else {
-        process.env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE =
+        process.env.AGENC_BLOCKING_LIMIT_OVERRIDE =
           originalBlockingLimitOverride;
       }
       warningSpy.mockRestore();

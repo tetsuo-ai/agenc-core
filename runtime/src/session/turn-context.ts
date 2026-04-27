@@ -261,7 +261,7 @@ export interface SessionConfiguration {
   /** AgenC runtime `base_instructions` — baseline system prompt for the session. */
   readonly baseInstructions?: string;
   /** AgenC runtime `AgenC runtime_home` — directory containing agent state for the session. */
-  readonly codexHome?: string;
+  readonly agencHome?: string;
   /** AgenC runtime `thread_name` — optional user-facing thread label. */
   readonly threadName?: string;
   /**
@@ -365,8 +365,8 @@ export interface Config {
     readonly windowsSandboxPrivateDesktop: boolean;
   };
   readonly ghostSnapshot: GhostSnapshotConfig;
-  readonly codexSelfExe?: string;
-  readonly codexLinuxSandboxExe?: string;
+  readonly agencSelfExe?: string;
+  readonly agencLinuxSandboxExe?: string;
   readonly agentRoles: ReadonlyArray<{ name: string; description: string }>;
   /** Stage 2 (tool-result budgeting) thresholds. Falls back to defaults
    *  in `applyToolResultBudgeting` when absent. */
@@ -530,10 +530,10 @@ export interface TurnContext {
   readonly finalOutputJsonSchema?: unknown;
 
   /** Path to the AgenC runtime/agenc self exe (for spawning child processes). */
-  readonly codexSelfExe?: string;
+  readonly agencSelfExe?: string;
 
   /** Linux sandbox helper exe path. */
-  readonly codexLinuxSandboxExe?: string;
+  readonly agencLinuxSandboxExe?: string;
 
   /** Tool-call readiness gate (set when tools are ready to dispatch). T7 wires. */
   readonly toolCallGate: ReadinessFlag;
@@ -796,8 +796,8 @@ function cloneConfigForSnapshot(config: Config): Config {
 // ─────────────────────────────────────────────────────────────────────
 
 /** Mirror of AgenC runtime `SessionConfiguration::AgenC runtime_home` — thin accessor. */
-export function codexHome(sc: SessionConfiguration): string | undefined {
-  return sc.codexHome;
+export function agencHome(sc: SessionConfiguration): string | undefined {
+  return sc.agencHome;
 }
 
 /**
@@ -1152,8 +1152,8 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     features: frozenConfig.features,
     ghostSnapshot: frozenConfig.ghostSnapshot,
     finalOutputJsonSchema: undefined,
-    codexSelfExe: frozenConfig.codexSelfExe,
-    codexLinuxSandboxExe: frozenConfig.codexLinuxSandboxExe,
+    agencSelfExe: frozenConfig.agencSelfExe,
+    agencLinuxSandboxExe: frozenConfig.agencLinuxSandboxExe,
     toolCallGate: new ReadinessFlag(),
     truncationPolicy: opts.modelInfo.truncationPolicy,
     jsRepl: opts.jsRepl ?? { id: `repl-${opts.conversationId}-${opts.subId}` },
