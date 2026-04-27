@@ -1,5 +1,5 @@
 /**
- * Content-replacement state — port of openclaude
+ * Content-replacement state — port of AgenC
  * `utils/toolResultStorage.ts::ContentReplacementState` adapted to gut's
  * flat `LLMMessage` shape.
  *
@@ -27,7 +27,7 @@ import type { LLMMessage } from "../../llm/types.js";
 /**
  * Per-conversation-thread state for the aggregate tool result budget.
  *
- * Mirrors openclaude `ContentReplacementState` with the same prompt-
+ * Mirrors AgenC `ContentReplacementState` with the same prompt-
  * cache stability contract: once an id is in `seenIds` its decision
  * is frozen, and once an id is in `replacements` the cached marker is
  * re-applied byte-identical every turn.
@@ -44,7 +44,7 @@ export function createContentReplacementState(): ContentReplacementState {
 
 /**
  * Clone state for a cache-sharing fork. Mutating the clone does not
- * affect the source. Mirrors openclaude `cloneContentReplacementState`.
+ * affect the source. Mirrors AgenC `cloneContentReplacementState`.
  */
 export function cloneContentReplacementState(
   source: ContentReplacementState,
@@ -57,7 +57,7 @@ export function cloneContentReplacementState(
 
 /**
  * Discriminated record persisted (best-effort) for resume rebuild.
- * Mirrors openclaude `ContentReplacementRecord` with the same
+ * Mirrors AgenC `ContentReplacementRecord` with the same
  * `kind: 'tool-result'` discriminator so future replacement mechanisms
  * (offloaded images, etc.) can extend the same record type.
  */
@@ -75,9 +75,9 @@ export interface ContentReplacementRecord {
  * are supplied (from prior on-disk persistence) the `replacements` Map
  * is also populated for byte-identical re-apply.
  *
- * Mirrors openclaude `reconstructContentReplacementState`. Adapted to
+ * Mirrors AgenC `reconstructContentReplacementState`. Adapted to
  * gut's flat `LLMMessage` (tool messages are role="tool" with
- * `toolCallId`), not openclaude's `tool_result` blocks inside user
+ * `toolCallId`), not AgenC's `tool_result` blocks inside user
  * `Message.message.content`.
  */
 export function reconstructContentReplacementState(
@@ -114,7 +114,7 @@ export function reconstructContentReplacementState(
 
 /**
  * Provision replacement state at turn-state-build time. Mirrors
- * openclaude `provisionContentReplacementState` minus the GrowthBook
+ * AgenC `provisionContentReplacementState` minus the GrowthBook
  * gate (gut runs the budget unconditionally — there is no
  * `tengu_hawthorn_steeple` flag in this runtime, so the feature is
  * always on for I-88 compliance).

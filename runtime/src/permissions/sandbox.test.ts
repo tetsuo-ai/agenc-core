@@ -54,7 +54,7 @@ describe("SandboxPolicy — 4 variants construct cleanly", () => {
 });
 
 describe("defaultReadOnlySubpathsFor", () => {
-  test("emits .git, .agenc, .agents under the root (codex parity)", () => {
+  test("emits .git, .agenc, .agents under the root (AgenC behavior)", () => {
     const root = isPosix ? "/tmp/repo" : "C:\\tmp\\repo";
     const subs = defaultReadOnlySubpathsFor(root);
     expect(subs).toContain(path.join(root, ".git"));

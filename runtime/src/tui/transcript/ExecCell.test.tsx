@@ -86,7 +86,7 @@ describe("collapseOutput", () => {
 });
 
 describe("ExecCell status badge", () => {
-  test("running state renders an OpenClaude-style Bash row", async () => {
+  test("running state renders an AgenC-style Bash row", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell command="npm run build" stdout="" stderr="" />,
     );

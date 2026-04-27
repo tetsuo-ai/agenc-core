@@ -223,7 +223,7 @@ export async function shouldAutoCompact(
   // inside the block breaks the init-time cycle (this file exports
   // getEffectiveContextWindowSize which collapse's index imports).
   if (feature('CONTEXT_COLLAPSE')) {
-    // Openclaude context-collapse subsystem deleted in gut-cleanup. Lean runtime
+    // AgenC context-collapse subsystem deleted in gut-cleanup. Lean runtime
     // does not provide an alternative, so collapse is always disabled here.
     const isContextCollapseEnabled = (): boolean => false
     if (isContextCollapseEnabled()) {

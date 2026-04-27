@@ -90,10 +90,10 @@ Per-provider auth behavior — critical for the error path and for
 - 401 → try refresh → retry original request.
 - `consecutiveAuthFailures` counter incremented per 401; reset on
   success.
-- **Hard cap: `MAX_CONSECUTIVE_AUTH_FAILURES = 10`** from openclaude
-  `ccrClient.ts:68`. When hit, openclaude calls `onEpochMismatch()`
+- **Hard cap: `MAX_CONSECUTIVE_AUTH_FAILURES = 10`** from AgenC
+  `ccrClient.ts:68`. When hit, AgenC calls `onEpochMismatch()`
   which logs `cli_worker_auth_failures_exhausted` and exits
-  (openclaude `ccrClient.ts:606-612`).
+  (AgenC `ccrClient.ts:606-612`).
 - AgenC port: same cap. After 10 consecutive 401s with a
   valid-looking token, emit `AuthFailed` event and hard-fail the
   session with message "OAuth refresh exhausted — re-authenticate
@@ -141,7 +141,7 @@ Provider resolution is similarly layered (`--provider`,
 ### Resolution scope: session, not turn
 
 Provider + model + capability profile are **resolved once at session
-init** and cached in the `Session` struct. Mirrors codex's two-level
+init** and cached in the `Session` struct. Mirrors AgenC runtime's two-level
 client design (`client.rs` Session-scoped `ModelClient` + Turn-scoped
 `ModelClientSession`). Per-turn re-resolution is wasteful and breaks
 prompt cache continuity.
@@ -185,10 +185,10 @@ and let `shape-request.ts` do composition.
 
 ## Port scope impact
 
-Multi-provider materially changes the codex/openclaude port plan
+Multi-provider materially changes the AgenC runtime/AgenC port plan
 from the earlier "Grok locked" framing:
 
-- **Codex `client.rs` (1,978 LOC)** — was cherry-pick-only. Now a
+- **AgenC runtime `client.rs` (1,978 LOC)** — was cherry-pick-only. Now a
   full port. Its multi-provider dispatch pattern is the target
   architecture.
 - **Existing Grok adapter (8,144 LOC)** — still ships unchanged as

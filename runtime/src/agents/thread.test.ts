@@ -138,7 +138,7 @@ describe("AgentThread", () => {
 // T9-A5 literal method surface: threadName, messages, memory,
 // worktreePath, fork(), spawn(), join()
 // ─────────────────────────────────────────────────────────────────────
-describe("AgentThread — openclaude-parity getters", () => {
+describe("AgentThread — AgenC-compatible getters", () => {
   it("threadName falls back to agentId when nickname is empty", () => {
     const live = makeLive();
     (live as { nickname: string }).nickname = "";

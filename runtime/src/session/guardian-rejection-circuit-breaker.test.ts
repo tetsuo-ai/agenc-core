@@ -1,8 +1,8 @@
 /**
  * Tests for GuardianRejectionCircuitBreaker.
  *
- * Mirrors upstream codex tests from
- * `codex-rs/core/src/guardian/tests.rs`:
+ * Mirrors upstream AgenC runtime tests from
+ * `AgenC runtime-rs/core/src/guardian/tests.rs`:
  *   - `guardian_rejection_circuit_breaker_interrupts_after_three_consecutive_denials`
  *   - `guardian_rejection_circuit_breaker_resets_consecutive_denials_on_non_denial`
  *   - `guardian_rejection_circuit_breaker_interrupts_after_ten_total_denials`
@@ -18,7 +18,7 @@ import {
   createGuardianRejectionCircuitBreaker,
 } from "./guardian-rejection-circuit-breaker.js";
 
-describe("GuardianRejectionCircuitBreaker (upstream codex parity)", () => {
+describe("GuardianRejectionCircuitBreaker (upstream AgenC behavior)", () => {
   test("stays closed below the consecutive threshold", () => {
     const breaker = new GuardianRejectionCircuitBreaker();
     expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });
@@ -130,7 +130,7 @@ describe("GuardianRejectionCircuitBreaker (upstream codex parity)", () => {
     });
   });
 
-  test("factory defaults match upstream codex constants", () => {
+  test("factory defaults match runtime constants", () => {
     expect(MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN).toBe(3);
     expect(MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN).toBe(10);
     const breaker = createGuardianRejectionCircuitBreaker();

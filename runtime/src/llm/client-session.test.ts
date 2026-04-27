@@ -103,7 +103,7 @@ describe("ProviderHttpClientSession", () => {
     expect(headers.get("x-request-id")).toBe("req-1");
   });
 
-  test("retries request transport failures with codex default budget", async () => {
+  test("retries request transport failures with default budget", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockRejectedValueOnce(new Error("network failed"))

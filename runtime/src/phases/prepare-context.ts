@@ -1,13 +1,13 @@
 /**
  * Phase 1 — Prepare Context.
  *
- * Mirrors openclaude `query.ts:311-652` — the staged pre-model-call
+ * Mirrors AgenC `query.ts:311-652` — the staged pre-model-call
  * chain:
  *
  *   1. **Compact-boundary projection** — rebuild `messagesForQuery`
  *      from the slice AFTER the most recent compact-summary message
  *      in `state.messages` (`getMessagesAfterCompactBoundary` in
- *      openclaude). Implemented here in pure TS.
+ *      AgenC). Implemented here in pure TS.
  *
  *   2. **Tool-result budgeting** (`applyToolResultBudget`) — per-tool
  *      result-size enforcement with optional persistence.
@@ -78,7 +78,7 @@ import { recordContentReplacement } from "./_deps/session-storage.js";
  * traces the module into the runtime bundle (variable-path dynamic
  * imports are NOT traced). Result is `null` when the module tree
  * fails to resolve at runtime — callers treat that as "stage
- * disabled", matching openclaude's feature-off behavior.
+ * disabled", matching AgenC's feature-off behavior.
  *
  * Historical: the previous `safeCompactRequire` helper silently
  * swallowed every load failure. That hid real module-evaluation
@@ -129,7 +129,7 @@ async function safeCompactImport<T = unknown>(
 
 /**
  * Look backwards through `messages` for the most recent compact-
- * boundary marker. openclaude marks boundaries with a system-role
+ * boundary marker. AgenC marks boundaries with a system-role
  * message carrying `isCompactSummary` / `isCompactBoundary`. AgenC's
  * LLMMessage doesn't carry that flag yet (T6 adds it with the real
  * rollout), so we detect the boundary by searching for an assistant
@@ -138,7 +138,7 @@ async function safeCompactImport<T = unknown>(
  * attachment kind. Returns the slice from the message AFTER the
  * boundary onward (or the full history when no boundary exists).
  *
- * Openclaude reference: `llm/compact/grouping.ts` +
+ * AgenC reference: `llm/compact/grouping.ts` +
  * `utils/messages.ts::getMessagesAfterCompactBoundary`.
  */
 const COMPACT_BOUNDARY_PREFIX = "<agenc-compact-boundary>";
@@ -284,7 +284,7 @@ export async function prepareContext(
   clearPrepareContextTerminal(state);
   const runtimeOptions = resolvePrepareContextRuntimeOptions(ctx, session);
 
-  // Stage 1: compact-boundary projection (openclaude query.ts:369).
+  // Stage 1: compact-boundary projection (AgenC query.ts:369).
   let messagesForQuery = getMessagesAfterCompactBoundary(state.messages);
 
   // Stages 2-7: compaction pipeline. Stages 3/4/6 dynamically import
@@ -296,7 +296,7 @@ export async function prepareContext(
   // label.
 
   // Stage 2 — I-88-driven tool-result budgeting (ports
-  // openclaude `query.ts:~369` + `toolResultStorage.ts`).
+  // AgenC `query.ts:~369` + `toolResultStorage.ts`).
   // Byte-index source: `session.rolloutStore` (`RolloutStore` owns the
   // I-88 per-turn tally at `rollout-store.ts:76/82`). Falls back to
   // measuring tool-role messages in-place when the rollout store is
@@ -449,7 +449,7 @@ export async function prepareContext(
   // `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3`.
   //
   // Double-compact gate: `run-turn.ts::runPreSamplingCompact` is the
-  // canonical pre-turn compact dispatcher per codex (turn.rs:712-735)
+  // canonical pre-turn compact dispatcher per AgenC runtime (turn.rs:712-735)
   // and runs BEFORE the phase loop. If it already compacted this turn,
   // it stamps `state.autoCompactTracking` with compacted=true and
   // turnCounter=0 (see run-turn.ts:334-339). commit.ts bumps
@@ -514,9 +514,9 @@ export async function prepareContext(
         messagesForQuery = compactedMessages;
         // Also write state.messages so the NEXT prepareContext iteration's
         // Stage-1 `getMessagesAfterCompactBoundary(state.messages)` sees the
-        // boundary that we just produced. Without this, openclaude's
+        // boundary that we just produced. Without this, AgenC's
         // query.ts invariant that the compacted view survives across
-        // loop iterations (see openclaude/src/query.ts:541-620) is
+        // loop iterations (see AgenC/src/query.ts:541-620) is
         // violated in AgenC because `state.messages` is the long-lived
         // full history and Stage 1 re-derives `messagesForQuery` from it
         // each iteration. Mirrors the pre-sampling compact write-back in
@@ -557,7 +557,7 @@ export async function prepareContext(
     }
   }
 
-  // Stage 7: blocking-limit preempt (openclaude query.ts:596-679).
+  // Stage 7: blocking-limit preempt (AgenC query.ts:596-679).
   // The phase port cannot yield directly, so it stores the typed local
   // terminal + synthetic assistant error message on TurnState for the
   // caller to consume before sampling.

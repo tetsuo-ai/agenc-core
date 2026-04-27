@@ -1,5 +1,5 @@
 /**
- * Vendored from openclaude/src/utils/semver.ts plus a tiny `coerce` helper
+ * Vendored from AgenC/src/utils/semver.ts plus a tiny `coerce` helper
  * — minimal surface used by terminal capability detection. Uses a small
  * inline semver parser so we don't add a runtime dep on the `semver`
  * package.

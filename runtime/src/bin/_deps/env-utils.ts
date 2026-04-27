@@ -1,14 +1,14 @@
 /**
  * Per-dir config-home resolution for `runtime/src/bin/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/envUtils.ts` helpers
+ * Mirrors the AgenC implementation `runtime/src/utils/envUtils.ts` helpers
  * the bootstrap path consumes:
  *   - `resolveClaudeConfigHomeDir(opts?)`
  *   - `getClaudeConfigHomeDir()`
  *
  * The bootstrap path uses these to locate transcript candidates under
- * `~/.openclaude` / `~/.claude` for context-collapse rehydration.
- * Carved as a local `_deps/` to cut the gut→openclaude crossing.
+ * legacy config homes for context-collapse rehydration.
+ * Carved as a local `_deps/` to keep bootstrap self-contained.
  */
 
 import { existsSync } from "node:fs";

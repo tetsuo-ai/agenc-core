@@ -534,7 +534,7 @@ export default class App extends PureComponent<Props, State> {
       this.props.stdout.write(SHOW_CURSOR + DFE + DBP + DISABLE_MOUSE_TRACKING + DISABLE_ALTERNATE_SCROLL);
     }
 
-    // Emit suspend event for Claude Code to handle. Mostly just has a notification
+    // Emit suspend event for AgenC to handle. Mostly just has a notification
     this.internal_eventEmitter.emit('suspend');
 
     // Set up resume handler
@@ -552,7 +552,7 @@ export default class App extends PureComponent<Props, State> {
         this.props.stdout.write(HIDE_CURSOR);
       }
 
-      // Emit resume event for Claude Code to handle
+      // Emit resume event for AgenC to handle
       this.internal_eventEmitter.emit('resume');
       process.removeListener('SIGCONT', resumeHandler);
     };

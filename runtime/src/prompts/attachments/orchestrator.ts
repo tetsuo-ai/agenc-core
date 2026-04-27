@@ -1,7 +1,7 @@
 /**
  * Per-turn attachments orchestrator.
  *
- * Hand-port of openclaude `src/utils/attachments.ts:744-1004`
+ * Hand-port of AgenC `src/utils/attachments.ts:744-1004`
  * (`getAttachments()`). Runs every registered producer in parallel each
  * turn, collects their outputs, returns a flat `Attachment[]`. Producers
  * are pure functions of `(opts, trackingState)` and are responsible for
@@ -40,7 +40,7 @@ import { agentMentionsProducer } from "./agent-mentions.js";
 import type { Attachment } from "./types.js";
 
 /**
- * Inputs every producer receives. Mirrors openclaude's
+ * Inputs every producer receives. Mirrors AgenC's
  * `getAttachments(input, toolUseContext, ...)` parameter set, adapted to
  * AgenC types.
  */
@@ -62,7 +62,7 @@ export interface GetAttachmentsOptions {
    * Names of deferred tools that have been discovered (loaded into the
    * visible catalog) via `system.searchTools` so far this session. Drives
    * the deferred-tools delta producer's diff. Optional — when omitted,
-   * the producer treats the discovered set as empty (matches openclaude
+   * the producer treats the discovered set as empty (matches AgenC
    * bootstraps with no ToolSearch tool registered).
    *
    * Sourced at the call site from
@@ -141,7 +141,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
  *
  * Producer failures are logged (per producer) and treated as empty
  * outputs — one failing producer must not block the others. Matches
- * openclaude's `maybe()` wrapper at `attachments.ts:1006`.
+ * AgenC's `maybe()` wrapper at `attachments.ts:1006`.
  */
 export async function getAttachments(
   opts: GetAttachmentsOptions,

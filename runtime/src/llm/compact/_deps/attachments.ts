@@ -1,6 +1,6 @@
 /**
  * Attachment-message helpers for compact prompt assembly. The
- * openclaude runtime threads file/agent/tool/MCP-instruction
+ * AgenC runtime threads file/agent/tool/MCP-instruction
  * attachments into the post-compact context; the gut runtime owns its
  * own attachment surface (`runtime/src/prompts/memory/attachments.ts`)
  * for memory injection but does not yet have an equivalent for the

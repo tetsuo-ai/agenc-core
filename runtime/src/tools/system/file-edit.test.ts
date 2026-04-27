@@ -1,5 +1,5 @@
 /**
- * Tests for the lifted openclaude `Edit` tool.
+ * Tests for the lifted AgenC `Edit` tool.
  *
  * Coverage:
  *   - successful edit on a previously-read file
@@ -55,7 +55,7 @@ describe("Edit tool", () => {
     clearAllPlanSlugs();
   });
 
-  test("exposes the openclaude tool name", () => {
+  test("exposes the AgenC tool name", () => {
     expect(FILE_EDIT_TOOL_NAME).toBe("Edit");
     const tool = createFileEditTool({ allowedPaths: [root] });
     expect(tool.name).toBe("Edit");

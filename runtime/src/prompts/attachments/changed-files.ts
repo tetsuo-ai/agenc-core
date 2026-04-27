@@ -1,7 +1,7 @@
 /**
  * Changed-files attachment producer.
  *
- * Hand-port of openclaude `getChangedFiles()`
+ * Hand-port of AgenC `getChangedFiles()`
  * (`src/utils/attachments.ts:2064-2162`). For each file the model has
  * read this session, stat the file on disk and detect mid-session
  * mutation. Emit one attachment per changed file:
@@ -14,7 +14,7 @@
  *
  * Files that disappear (ENOENT) are evicted from the read cache; other
  * stat failures (atomic-save races, EACCES churn, transient FS errors)
- * intentionally do NOT evict — that matches the openclaude regression
+ * intentionally do NOT evict — that matches the AgenC regression
  * fix called out at `attachments.ts:2147-2156`.
  *
  * @module
@@ -50,7 +50,7 @@ const IMAGE_MIME_BY_EXT: Readonly<Record<string, string>> = {
 /** Cap on the diff snippet bytes to avoid runaway large pastes. */
 const DIFF_SNIPPET_MAX_BYTES = 16_000;
 
-/** Diff structuredPatch timeout, ms (matches openclaude default). */
+/** Diff structuredPatch timeout, ms (matches AgenC default). */
 const DIFF_TIMEOUT_MS = 1_000;
 
 /**
@@ -87,7 +87,7 @@ interface PendingFile {
 
 /**
  * Compute a compact diff snippet between two text contents. Mirrors
- * openclaude `getSnippetForTwoFileDiff` (FileEditTool/utils.ts:362).
+ * AgenC `getSnippetForTwoFileDiff` (FileEditTool/utils.ts:362).
  *
  * Returns "" when the contents are byte-identical. Returns a hunk-only
  * snippet (with deleted lines stripped, only kept lines numbered) when

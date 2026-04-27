@@ -1,8 +1,8 @@
 /**
- * `Sleep` — port of openclaude `SleepTool`.
+ * `Sleep` — port of AgenC `SleepTool`.
  *
- * The model-facing prompt is byte-identical to openclaude's at
- * `src/tools/SleepTool/prompt.ts`. Openclaude's actual implementation
+ * The model-facing prompt is byte-identical to AgenC's at
+ * `src/tools/SleepTool/prompt.ts`. AgenC's actual implementation
  * isn't in the open-source mirror (the SleepTool.ts file is a runtime
  * stub loaded via `require('./tools/SleepTool/SleepTool.js')` in
  * `src/tools.ts:18-20`); the implementation below is the minimal
@@ -10,7 +10,7 @@
  *
  * Schema: `{ durationMs: number }`. The `tick` poll-mention and
  * "5-minute prompt cache" guidance are kept verbatim from upstream so
- * a model trained on openclaude prompts behaves identically here.
+ * a model trained on AgenC prompts behaves identically here.
  *
  * @module
  */
@@ -18,12 +18,12 @@
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 
 const SLEEP_MIN_MS = 0;
-const SLEEP_MAX_MS = 60 * 60 * 1000; // 1 hour ceiling — same as openclaude.
+const SLEEP_MAX_MS = 60 * 60 * 1000; // 1 hour ceiling — same as AgenC.
 
 /**
- * Verbatim port of openclaude `SLEEP_TOOL_PROMPT`
+ * Verbatim port of AgenC `SLEEP_TOOL_PROMPT`
  * (src/tools/SleepTool/prompt.ts:6-16). The `<tick>` reference matches
- * `TICK_TAG = 'tick'` from openclaude `src/constants/xml.ts:25`.
+ * `TICK_TAG = 'tick'` from AgenC `src/constants/xml.ts:25`.
  */
 const SLEEP_DESCRIPTION = `Wait for a specified duration. The user can interrupt the sleep at any time.
 

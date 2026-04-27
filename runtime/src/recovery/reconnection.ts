@@ -1,7 +1,7 @@
 /**
  * Reconnection with exponential backoff for transient provider errors.
  *
- * Port of openclaude reconnection pattern: on transient network /
+ * Port of AgenC reconnection pattern: on transient network /
  * provider errors (ECONNRESET, ECONNREFUSED, 503, stream_idle), the
  * recovery layer sleeps with exponential backoff (1s → 30s cap,
  * ±25% jitter, 10-minute give-up budget) then resamples. Pending
@@ -199,7 +199,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 /**
  * Detects a wall-clock gap > 60s between two monotonic samples,
- * which openclaude treats as "process likely sleeping" and resets
+ * which AgenC treats as "process likely sleeping" and resets
  * the backoff budget. Exposed for callers orchestrating multiple
  * reconnect cycles.
  */

@@ -8,7 +8,7 @@
  * initial replay).
  *
  * Used for `Session.agentStatus` (T9), `Session.outOfBandElicitationPaused`
- * (codex parity), and `Mailbox.seqWatch` (T9, mailbox sequence counter).
+ * (AgenC behavior), and `Mailbox.seqWatch` (T9, mailbox sequence counter).
  *
  * @module
  */

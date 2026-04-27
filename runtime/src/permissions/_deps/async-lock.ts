@@ -1,9 +1,9 @@
 /**
  * Per-dir AsyncLock for `runtime/src/permissions/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/async-lock.ts` API the
+ * Mirrors the AgenC implementation `runtime/src/utils/async-lock.ts` API the
  * permissions modules use (mode + network-approval mutexes). Carved as
- * a local `_deps/` to cut the gut→openclaude crossing.
+ * a local `_deps/` to cut the gut→AgenC crossing.
  */
 
 export class AsyncLock<T> {

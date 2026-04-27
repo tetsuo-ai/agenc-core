@@ -1,14 +1,14 @@
 /**
  * Nested-memory attachment producer.
  *
- * Hand-port of openclaude `getNestedMemoryAttachmentsForFile()`
+ * Hand-port of AgenC `getNestedMemoryAttachmentsForFile()`
  * (`src/utils/attachments.ts:1793-1863`), adapted to AgenC's instruction
  * filenames. Walks the directory hierarchy between `cwd` and each
  * file path mentioned in the latest user input, collecting
  * `AGENC.md` + `AGENC.local.md` files and `.agenc/rules/*.md`
  * scoped rules along the way.
  *
- * Processing follows openclaude's four-phase shape, rebranded:
+ * Processing follows AgenC's four-phase shape, rebranded:
  *
  *   - Phase 1: Managed/User `.agenc/rules/*.md` conditional rules
  *     matching the trigger path.
@@ -98,7 +98,7 @@ function readSessionId(opts: GetAttachmentsOptions): string | undefined {
 }
 
 /**
- * Mirror openclaude `getDirectoriesToProcess` (`attachments.ts:1657`).
+ * Mirror AgenC `getDirectoriesToProcess` (`attachments.ts:1657`).
  * Returns the chain of directories from `originalCwd` down to the file's
  * parent (`nestedDirs`, ordered cwd→target) and the chain of ancestors
  * from the filesystem root up to `originalCwd` (`cwdLevelDirs`, ordered
@@ -164,7 +164,7 @@ async function tryLoadFile(
 
 /**
  * Collect the AGENC.md (+ AGENC.local.md) files for one walked
- * directory. Mirrors openclaude `getMemoryFilesForNestedDirectory`
+ * directory. Mirrors AgenC `getMemoryFilesForNestedDirectory`
  * (`claudemd.ts:1269`) restricted to the Project/Local tier files
  * AgenC actually ships.
  */

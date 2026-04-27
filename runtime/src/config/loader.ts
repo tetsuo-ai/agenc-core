@@ -20,7 +20,7 @@
 //   - Date-time values
 //   - Hex/octal/binary integers
 //
-// This is enough for AgenC's config surface (codex + openclaude fields).
+// This is enough for AgenC's config surface (AgenC runtime + AgenC fields).
 // Unknown TOML values are still parsed and surfaced to the caller via
 // `normalizeRawConfig` (→ `_unknown` side-table).
 //
@@ -45,7 +45,7 @@ import type { AgenCConfig } from "./schema.js";
 import {
   defaultConfig,
   mergeConfigs,
-  normalizeCodexKeyAliases,
+  normalizeAgenCKeyAliases,
   normalizeRawConfig,
 } from "./schema.js";
 import { resolveAgencHome } from "./env.js";
@@ -695,7 +695,7 @@ export async function loadConfig(
     });
   }
 
-  const aliased = normalizeCodexKeyAliases(parsed);
+  const aliased = normalizeAgenCKeyAliases(parsed);
   const normalized = normalizeRawConfig(aliased);
   const merged = mergeConfigs(base, normalized);
   return Object.freeze({

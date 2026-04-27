@@ -1,5 +1,5 @@
 /**
- * Vendored from openclaude/src/utils/tempfile.ts — minimal temp-path
+ * Vendored from AgenC/src/utils/tempfile.ts — minimal temp-path
  * generator used by OSC 52 clipboard fallback paths.
  */
 

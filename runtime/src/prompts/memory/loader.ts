@@ -2,7 +2,7 @@
  * Memory loader — assembles `MEMORY.md` + ordered topic files into a
  * bounded prompt fragment the runtime injects as system-context.
  *
- * Hand-port of openclaude `memdir/memdir.ts` load path (line 272-316
+ * Hand-port of AgenC `memdir/memdir.ts` load path (line 272-316
  * `buildMemoryPrompt` subset). Differs:
  *   - Async from the start: runtime is async-first, no sync-reads.
  *   - Line AND byte caps (TODO.MD §T10-C: 200 lines / 25KB).

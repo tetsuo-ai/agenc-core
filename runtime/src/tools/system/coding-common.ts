@@ -26,7 +26,7 @@ import {
  * When the dispatcher injects `__agencSessionId`, the filesystem tools
  * can resolve the active session's plan file path via plan-files.ts and
  * allowlist it regardless of the workspace allowlist — mirrors
- * openclaude's `checkEditableInternalPath` carve-out
+ * AgenC's `checkEditableInternalPath` carve-out
  * (utils/permissions/filesystem.ts:1488-1506).
  */
 function planFileContextFromArgs(
@@ -192,12 +192,12 @@ export async function resolveWorkspacePath(params: {
   const safe = await safePath(rawPath, allowedPaths);
   if (safe.safe) return safe.resolved;
 
-  // Plan-file allowlist (openclaude parity, filesystem.ts:1488-1506).
+  // Plan-file allowlist (AgenC behavior, filesystem.ts:1488-1506).
   // When the rejection is for a path outside the workspace AND the
   // target is the active session's plan file, allow it — that's the
   // only writable target outside the workspace root, and the same
   // carve-out applies in plan mode and outside (mode-agnostic, matches
-  // openclaude's `checkEditableInternalPath` which has no mode gate).
+  // AgenC's `checkEditableInternalPath` which has no mode gate).
   // Defence-in-depth: still reject the obvious unsafe shapes that
   // safePath would have caught (null bytes, traversal, length).
   if (

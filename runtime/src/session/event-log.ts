@@ -2,8 +2,8 @@
  * Event log — the discriminated union that every state change in
  * AgenC flows through.
  *
- * Hand-port of codex `protocol/src/protocol.rs` EventMsg (78 variants)
- * reduced to the 18-variant AgenC subset per `docs/plan/codex-inventory.md §4`.
+ * Hand-port of AgenC runtime `protocol/src/protocol.rs` EventMsg (78 variants)
+ * reduced to the 18-variant AgenC subset per `docs/plan/AgenC runtime-inventory.md §4`.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — `emitError()` helper
@@ -284,7 +284,7 @@ export interface PlanApprovalCompletedEvent {
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
  * mid-turn compaction) so resume/fork replay recovers the latest
- * durable baseline. Port of codex `TurnContextItem` (protocol.rs:2896).
+ * durable baseline. Port of AgenC runtime `TurnContextItem` (protocol.rs:2896).
  *
  * Full-parity shape: every field populated by `toTurnContextItem` in
  * `turn-context.ts` is declared here so downstream readers (notably
@@ -319,7 +319,7 @@ export interface TurnContextItem {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Codex `SessionConfigured` payload. Emitted once at session open.
+ * AgenC runtime `SessionConfigured` payload. Emitted once at session open.
  * Kept in the canonical union so session.ts can rely on event-log.ts
  * as the single source of truth for event types.
  */

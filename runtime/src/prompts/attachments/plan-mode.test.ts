@@ -1,7 +1,7 @@
 /**
  * Tests for the plan-mode attachment producer.
  *
- * Pins the openclaude-equivalent behaviour at
+ * Pins the AgenC-equivalent behaviour at
  * `src/utils/attachments.ts:1132-1274`:
  *
  *   - First plan-mode turn fires a `full` reminder.
@@ -13,7 +13,7 @@
  *   - `plan_mode_exit` fires once when the tracking flag is set, then
  *     clears it. Sets `hasExitedPlanModeInSession`.
  *   - Re-entry after a prior exit fires `plan_mode_reentry` paired with
- *     a `plan_mode` (full) on the same turn — matches openclaude
+ *     a `plan_mode` (full) on the same turn — matches AgenC
  *     :1217-1240 which emits both attachments together.
  *
  * The producer scans `opts.messages` for marker substrings to detect
@@ -79,7 +79,7 @@ function humanTurn(text = "next thing please"): LLMMessage {
 }
 
 describe("plan-mode attachment producer", () => {
-  test("config matches openclaude PLAN_MODE_ATTACHMENT_CONFIG", () => {
+  test("config matches AgenC PLAN_MODE_ATTACHMENT_CONFIG", () => {
     expect(PLAN_MODE_ATTACHMENT_CONFIG.TURNS_BETWEEN_ATTACHMENTS).toBe(5);
     expect(PLAN_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS).toBe(
       5,
@@ -182,7 +182,7 @@ describe("plan-mode attachment producer", () => {
   });
 
   test("exit flag is cleared silently when current mode is still plan", async () => {
-    // Mirrors openclaude :1258-1261 — a quick toggle out and back in must
+    // Mirrors AgenC :1258-1261 — a quick toggle out and back in must
     // not surface an exit reminder for an exit the model never saw. The
     // flag is cleared, but no exit reminder fires AND the
     // hasExitedPlanModeInSession flag is NOT set.
@@ -210,7 +210,7 @@ describe("plan-mode attachment producer", () => {
 
     const out = await planModeProducer(opts, tracking);
 
-    // openclaude :1217-1240 emits BOTH the reentry AND the regular
+    // AgenC :1217-1240 emits BOTH the reentry AND the regular
     // plan_mode in the same response.
     expect(out.map((a) => a.kind)).toEqual(["plan_mode_reentry", "plan_mode"]);
     // The reentry guidance is one-shot — flag should be cleared.

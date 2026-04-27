@@ -1,10 +1,10 @@
 /**
- * Humanized tool schema-validation errors (port of openclaude
+ * Humanized tool schema-validation errors (port of AgenC
  * `utils/toolErrors.ts` + `services/tools/toolExecution.ts`
  * `buildSchemaNotSentHint` / `getSchemaValidationErrorOverride`).
  *
  * AgenC's Tool shape carries a raw JSON Schema (`Tool.inputSchema:
- * JSONSchema`) rather than a Zod schema. We match openclaude's
+ * JSONSchema`) rather than a Zod schema. We match AgenC's
  * observable prose by consuming the structured errors produced by
  * `validateToolArgs` (`execution.ts`) — the categories (missing
  * required, unexpected key, type mismatch) come out identical to
@@ -16,12 +16,12 @@ import type { Tool } from "./types.js";
 import type { SchemaValidationError } from "./execution.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// openclaude parity: `formatZodValidationError`
+// AgenC behavior: `formatZodValidationError`
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Convert structured schema-validation errors into the same humanized
- * prose openclaude emits from `formatZodValidationError`. Paths are
+ * prose AgenC emits from `formatZodValidationError`. Paths are
  * rendered as JS-style accessors (`todos[0].activeForm`). Missing
  * required fields, unexpected keys, and type mismatches are grouped
  * into labeled lines.
@@ -85,7 +85,7 @@ function formatValidationPath(path: string): string {
   if (!path) return "";
   // `path` here is the dotted form used by `validateToolArgs`
   // (`todos.0.activeForm`). Convert numeric segments into `[n]`
-  // bracket form so the output matches openclaude's JS-style accessor.
+  // bracket form so the output matches AgenC's JS-style accessor.
   const segments = path.split(".");
   let result = "";
   for (let i = 0; i < segments.length; i += 1) {
@@ -104,12 +104,12 @@ function formatValidationPath(path: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// openclaude parity: `getSchemaValidationErrorOverride`
+// AgenC behavior: `getSchemaValidationErrorOverride`
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Tool names recognized as the skill-dispatch family. Matches
- * openclaude's `SKILL_TOOL_NAME` lookup behavior — a missing `skill`
+ * AgenC's `SKILL_TOOL_NAME` lookup behavior — a missing `skill`
  * parameter is a common LLM error when the model sees the tool
  * description without the full parameter schema.
  */
@@ -123,7 +123,7 @@ const SKILL_TOOL_NAMES: ReadonlySet<string> = new Set([
  * Per-tool override for a schema-validation error message. Returns
  * `null` when the default `formatSchemaValidationError` prose is fine.
  *
- * Mirrors openclaude `getSchemaValidationErrorOverride` scope (today,
+ * Mirrors AgenC `getSchemaValidationErrorOverride` scope (today,
  * only SkillTool's missing-`skill` case). Additional overrides can be
  * added here as new tools gain specific bad-input guidance.
  */
@@ -145,7 +145,7 @@ export function getSchemaValidationErrorOverride(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// openclaude parity: `buildSchemaNotSentHint`
+// AgenC behavior: `buildSchemaNotSentHint`
 // ─────────────────────────────────────────────────────────────────────
 
 /**

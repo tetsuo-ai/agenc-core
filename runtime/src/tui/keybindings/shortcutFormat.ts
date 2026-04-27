@@ -1,7 +1,7 @@
 /**
  * Reverse lookup + display formatting for the gut keybinding registry.
  *
- * Both upstream Claude Code and openclaude expose a
+ * Both upstream AgenC and AgenC expose a
  * `getShortcutDisplay(action, context, fallback)` helper that takes an
  * action name, finds the configured key sequence, and returns it
  * pretty-printed (e.g. `Ctrl+R`). Their action-name space is wider than

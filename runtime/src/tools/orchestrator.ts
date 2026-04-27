@@ -2,16 +2,16 @@
  * Tool orchestrator — approval → sandbox → attempt → retry decision
  * pipeline.
  *
- * Hand-port of codex `core/src/tools/orchestrator.rs` (447 LOC).
+ * Hand-port of AgenC runtime `core/src/tools/orchestrator.rs` (447 LOC).
  * Ports the core lifecycle:
  *
  *   1. `defaultExecApprovalRequirement(policy, fs_policy)` — the
- *      codex decision table (sandboxing.rs:185-221): read current
+ *      AgenC runtime decision table (sandboxing.rs:185-221): read current
  *      approval policy + filesystem sandbox kind to decide
  *      skip / needs_approval / forbidden.
  *   2. **Two-pass sandbox escalation** — first attempt under the
  *      selected sandbox; on a `SandboxDeniedError`, request approval
- *      and retry with sandbox disabled (codex orchestrator.rs:188-373).
+ *      and retry with sandbox disabled (AgenC runtime orchestrator.rs:188-373).
  *   3. **`requestApproval()`** — consult the registered
  *      `permission-request` hooks first, route auto-reviewed
  *      approvals through the guardian reviewer when configured, then
@@ -28,7 +28,7 @@
  *   I-44 (stale modal decision) — `ApprovalDecision.decisionAtTurnId`
  *        is the turn stamp callers validate against the current turn.
  *
- * Explicitly deferred vs codex:
+ * Explicitly deferred vs AgenC runtime:
  *   - OTEL `tool_decision` emission: T7 has no otel bridge yet; we
  *     emit a session event via the caller-supplied hook instead of
  *     spawning a SessionTelemetry call at this layer.
@@ -72,11 +72,11 @@ export { SandboxDeniedError };
 // live in the permissions layer (T11 Wave 1 Agent C).
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex `AskForApproval`. */
+/** Port of AgenC runtime `AskForApproval`. */
 export type ApprovalPolicy = PermissionsApprovalPolicy;
 
 /**
- * Port of codex `SandboxMode`. Includes `external_sandbox` as a fourth
+ * Port of AgenC runtime `SandboxMode`. Includes `external_sandbox` as a fourth
  * value — the orchestrator receives this from `TurnContext`, but the
  * permissions `SandboxMode` enum is the 3-variant selector. The two
  * keep the overlapping names in sync.
@@ -88,7 +88,7 @@ export type SandboxMode =
   | "external_sandbox";
 
 /**
- * Port of codex `FileSystemSandboxKind`. The permissions layer uses
+ * Port of AgenC runtime `FileSystemSandboxKind`. The permissions layer uses
  * the 2-variant form (`full_access` / `restricted`). The orchestrator
  * keeps a compatibility layer that distinguishes `external_sandbox`
  * as a third kind for the older call sites. Callers that only need
@@ -99,10 +99,10 @@ export type FileSystemSandboxKind =
   | "unrestricted"
   | "external_sandbox";
 
-/** Port of codex `ExecApprovalRequirement` — per-tool-call. */
+/** Port of AgenC runtime `ExecApprovalRequirement` — per-tool-call. */
 export type ExecApprovalRequirement = PermissionsExecApprovalRequirement;
 
-/** Port of codex `ReviewDecision`. */
+/** Port of AgenC runtime `ReviewDecision`. */
 export type ReviewDecision = PermissionsReviewDecision;
 
 // ─────────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ export interface ApprovalDecision {
 // ApprovalCtx — the bundle every decision path receives
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex `ApprovalCtx`. */
+/** Port of AgenC runtime `ApprovalCtx`. */
 export interface ApprovalCtx {
   readonly invocation: ToolInvocation;
   readonly callId: string;
@@ -132,7 +132,7 @@ export interface ApprovalCtx {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Sandbox-denied error (ports codex `SandboxErr::Denied`).
+// Sandbox-denied error (ports AgenC runtime `SandboxErr::Denied`).
 // ─────────────────────────────────────────────────────────────────────
 
 /** Classifier used by the retry policy. */
@@ -174,7 +174,7 @@ export interface ClassifyToolOptions {
   readonly mcpServerTrusted?: (server: string) => boolean;
   /**
    * Optional `GranularApprovalConfig` that accompanies
-   * `approvalPolicy === "granular"`. Codex parity — port of
+   * `approvalPolicy === "granular"`. AgenC behavior — port of
    * `AskForApproval::Granular(GranularConfig)` inner payload
    * (protocol.rs:859-874). When the granular config disallows sandbox
    * approval prompts, classification of a restricted call returns
@@ -184,7 +184,7 @@ export interface ClassifyToolOptions {
 }
 
 /**
- * Decide whether a tool call needs approval. Codex pattern
+ * Decide whether a tool call needs approval. AgenC runtime pattern
  * (orchestrator.rs:exec_approval_requirement):
  *
  *   - `never`        → always skip (no approval requested)
@@ -302,11 +302,11 @@ export function classifyToolApproval(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Default approval requirement table (codex sandboxing.rs:185-221)
+// Default approval requirement table (AgenC runtime sandboxing.rs:185-221)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Map codex `SandboxMode` → `FileSystemSandboxKind`. This matches the
+ * Map AgenC runtime `SandboxMode` → `FileSystemSandboxKind`. This matches the
  * kind assignments in protocol/permissions.rs (restricted =
  * `workspace_write` / `read_only`, unrestricted = `danger_full_access`,
  * external_sandbox = `external_sandbox`).
@@ -329,13 +329,13 @@ export function sandboxKindFromMode(mode: SandboxMode): FileSystemSandboxKind {
 }
 
 /**
- * Port of codex `default_exec_approval_requirement`
+ * Port of AgenC runtime `default_exec_approval_requirement`
  * (sandboxing.rs:185-221). Given the current approval policy + the
  * filesystem sandbox kind, return the skip/needs-approval/forbidden
  * decision the orchestrator will apply when a tool did not override
  * the requirement itself.
  *
- * Codex table:
+ * AgenC runtime table:
  *
  *   | policy          | fs kind       | decision       |
  *   |-----------------|---------------|----------------|
@@ -354,7 +354,7 @@ export function defaultExecApprovalRequirement(
 ): ExecApprovalRequirement {
   // Narrow the 3-variant orchestrator-side kind to the 2-variant
   // permissions-layer kind: `external_sandbox` is treated as a
-  // non-restricted context for approval-table purposes (codex parity).
+  // non-restricted context for approval-table purposes (AgenC behavior).
   const narrowed: PermissionsFileSystemSandboxKind =
     fsKind === "restricted" ? "restricted" : "full_access";
   return defaultExecApprovalRequirementFromPermissions(
@@ -380,7 +380,7 @@ export interface ApprovalResolver {
 /**
  * Permission-request hook. First-match wins: the first hook to return
  * a decision other than `undefined` short-circuits the resolver path.
- * Ports the precedence of `run_permission_request_hooks` in codex
+ * Ports the precedence of `run_permission_request_hooks` in AgenC runtime
  * `orchestrator.rs:394-425`.
  */
 export type PermissionRequestHook = (
@@ -426,7 +426,7 @@ function alreadyAborted(signal: AbortSignal | undefined): boolean {
 }
 
 /**
- * Codex parity: detect the abort branch without relying on
+ * AgenC behavior: detect the abort branch without relying on
  * `String(err).toLowerCase().includes("abort")` substring sniffing.
  * Mirrors the `tokio::select!` cancellation arm — we match:
  *   - `DOMException` / `AbortError` (browser/Node `AbortSignal` throws)
@@ -499,7 +499,7 @@ async function awaitWithAbort<T>(
 }
 
 /**
- * Run the permission-request pipeline. Codex order:
+ * Run the permission-request pipeline. AgenC runtime order:
  *
  *   1. For each registered `permission-request` hook: await; the
  *      first `Allow | Deny` answer wins. `undefined` means "pass".
@@ -613,14 +613,14 @@ export async function requestApproval(
 /**
  * Translate a `ReviewDecision` into the control-flow intent the
  * orchestrator needs: proceed vs reject vs timeout. Mirrors the
- * match tree at codex `orchestrator.rs:160-183`.
+ * match tree at AgenC runtime `orchestrator.rs:160-183`.
  */
 export function isApprovalAccepted(decision: ReviewDecision): boolean {
   return reviewDecisionIsAllow(decision);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Retry decision + default policy (codex `orchestrator.rs::RetryDecision`)
+// Retry decision + default policy (AgenC runtime `orchestrator.rs::RetryDecision`)
 // ─────────────────────────────────────────────────────────────────────
 
 export type RetryDecision =
@@ -642,7 +642,7 @@ function isTransientError(err: unknown): boolean {
 }
 
 /**
- * Port of codex `orchestrator::default_retry_policy`. Replaces the
+ * Port of AgenC runtime `orchestrator::default_retry_policy`. Replaces the
  * previous `{kind: "bubble"}` stub with a real classifier:
  *
  *   - `SandboxDeniedError` → `escalate_sandbox` (the lifecycle
@@ -667,7 +667,7 @@ export function defaultRetryPolicy(): RetryDecision {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Attempt loop — codex `orchestrator::attempt_tool_call`
+// Attempt loop — AgenC runtime `orchestrator::attempt_tool_call`
 // ─────────────────────────────────────────────────────────────────────
 
 export interface AttemptOpts<T> {
@@ -679,7 +679,7 @@ export interface AttemptOpts<T> {
 }
 
 /**
- * Run a tool call with bounded retry. Codex pattern: attempt once; on
+ * Run a tool call with bounded retry. AgenC runtime pattern: attempt once; on
  * failure consult `onFailure`; if it returns `retry` sleep optionally
  * then dispatch again; `escalate_sandbox` bubbles to the caller (the
  * orchestrate-tool-call lifecycle catches it); else bubble the error.
@@ -724,7 +724,7 @@ export interface OrchestrateToolCallOpts<T> {
   readonly toolDenylist?: ReadonlySet<string>;
   /**
    * Optional `GranularApprovalConfig` accompanying `"granular"` policy —
-   * codex parity (`AskForApproval::Granular(GranularConfig)`). Piped
+   * AgenC behavior (`AskForApproval::Granular(GranularConfig)`). Piped
    * into `classifyToolApproval` and the fs-policy fallback so
    * `allows_sandbox_approval == false` yields `forbidden` instead of
    * `needs_approval`, and into `wantsNoSandboxApproval` gating on
@@ -750,7 +750,7 @@ export interface OrchestrateToolCallOpts<T> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Tool capability readers — codex `Sandboxable::escalate_on_failure()`
+// Tool capability readers — AgenC runtime `Sandboxable::escalate_on_failure()`
 // and `Approvable::wants_no_sandbox_approval(policy)`.
 //
 // Tool authors may opt into these via structural fields on the Tool
@@ -763,7 +763,7 @@ export interface OrchestrateToolCallOpts<T> {
 /**
  * Structural extension fields for sandbox-escalation behavior. A Tool
  * may expose either as a plain boolean or a function. Defaults mirror
- * codex: `escalate_on_failure: true`, `wants_no_sandbox_approval` per
+ * AgenC runtime: `escalate_on_failure: true`, `wants_no_sandbox_approval` per
  * the policy table in `sandboxing.rs:290-298`.
  */
 interface ToolSandboxCapabilities {
@@ -774,7 +774,7 @@ interface ToolSandboxCapabilities {
 }
 
 /**
- * Port of codex `Sandboxable::escalate_on_failure()` (sandboxing.rs:309-311).
+ * Port of AgenC runtime `Sandboxable::escalate_on_failure()` (sandboxing.rs:309-311).
  * Default `true`. A tool that returns `false` bails with the original
  * `SandboxDeniedError` instead of prompting for approval. Read-only
  * tools can opt out so a sandbox denial does not propose running them
@@ -788,11 +788,11 @@ export function escalateOnFailure(tool: Tool): boolean {
 }
 
 /**
- * Port of codex `Approvable::wants_no_sandbox_approval(policy)`
+ * Port of AgenC runtime `Approvable::wants_no_sandbox_approval(policy)`
  * (sandboxing.rs:290-298). Decides whether the runtime should ASK for
  * approval to retry without the sandbox after a `SandboxDeniedError`.
  *
- * Codex table:
+ * AgenC runtime table:
  *   - `OnFailure`                         → true
  *   - `UnlessTrusted` (= "untrusted")     → true
  *   - `Never`                             → false
@@ -869,7 +869,7 @@ function approvalRejectionMessage(
 }
 
 /**
- * Port of codex `ToolOrchestrator::run` (orchestrator.rs:105-377).
+ * Port of AgenC runtime `ToolOrchestrator::run` (orchestrator.rs:105-377).
  *
  * Flow:
  *
@@ -885,7 +885,7 @@ function approvalRejectionMessage(
  *   4. If the first attempt (or its retry) throws
  *      `SandboxDeniedError`: request approval, then retry the tool
  *      with `sandbox = "danger_full_access"` (the TS parity for
- *      codex's `SandboxType::None`).
+ *      AgenC runtime's `SandboxType::None`).
  */
 export async function orchestrateToolCall<T>(
   opts: OrchestrateToolCallOpts<T>,
@@ -893,13 +893,13 @@ export async function orchestrateToolCall<T>(
   const approvalSignal = resolveApprovalSignal(opts);
   // Step 1 — approval classification.
   //
-  // Codex parity (orchestrator.rs:124-127):
+  // AgenC behavior (orchestrator.rs:124-127):
   //
   //   let requirement = tool.exec_approval_requirement(req)
   //     .unwrap_or_else(|| default_exec_approval_requirement(policy, fs));
   //
   // The tool-side classifier is the FALLBACK shape. When it returns a
-  // concrete `Skip` or `Forbidden`, codex never upgrades that into
+  // concrete `Skip` or `Forbidden`, AgenC runtime never upgrades that into
   // `NeedsApproval` by re-running the default table. AgenC previously
   // did exactly that upgrade for `skip` with `bypassSandbox=false`,
   // which could promote a read-only tool under `granular + restricted`
@@ -974,9 +974,9 @@ export async function orchestrateToolCall<T>(
   } catch (err) {
     if (!isSandboxDeniedError(err)) throw err;
 
-    // Codex parity (orchestrator.rs:253-258):
+    // AgenC behavior (orchestrator.rs:253-258):
     //   if !tool.escalate_on_failure() {
-    //     return Err(ToolError::Codex(CodexErr::Sandbox(SandboxErr::Denied…)));
+    //     return Err(ToolError::AgenC runtime(AgenC runtimeErr::Sandbox(SandboxErr::Denied…)));
     //   }
     // Read-only or otherwise-opting-out tools bail with the original
     // sandbox denial instead of requesting approval to rerun unsandboxed.
@@ -984,10 +984,10 @@ export async function orchestrateToolCall<T>(
       throw err;
     }
 
-    // Codex parity (orchestrator.rs:259-279):
+    // AgenC behavior (orchestrator.rs:259-279):
     //   if !tool.wants_no_sandbox_approval(approval_policy) { … }
     // For `AskForApproval::Never` / `AskForApproval::OnRequest` (without
-    // network-approval context, which is not plumbed yet), codex
+    // network-approval context, which is not plumbed yet), AgenC runtime
     // surfaces the original `SandboxErr::Denied` and never prompts. Only
     // policies that want the approval path continue into the escalation
     // pipeline below.
@@ -1026,7 +1026,7 @@ export async function orchestrateToolCall<T>(
       }
     }
 
-    // Retry with sandbox disabled (codex `SandboxType::None`).
+    // Retry with sandbox disabled (AgenC runtime `SandboxType::None`).
     return await opts.dispatch("danger_full_access");
   }
 }

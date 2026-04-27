@@ -1,21 +1,21 @@
 /**
  * AgenC-original concurrency contract for tool execution.
  *
- * Provenance note: `ConcurrencyClass` is AgenC-original — codex has
+ * Provenance note: `ConcurrencyClass` is AgenC-original — AgenC runtime has
  * no equivalent enum. Earlier docs (feature-matrix.md:73,
  * architecture.md:228 + architecture.md:387-390) mistakenly framed
- * this as a "port of codex `parallel.rs:28-140`"; in fact codex only
+ * this as a "port of AgenC runtime `parallel.rs:28-140`"; in fact AgenC runtime only
  * exposes the boolean `supports_parallel_tool_calls` flag referenced
  * below, and AgenC extends it here. W4 is correcting the docs.
  *
- * Codex `core/src/tools/parallel.rs` inspired the boolean
+ * AgenC runtime `core/src/tools/parallel.rs` inspired the boolean
  * `supports_parallel_tool_calls` flag, but AgenC expands that single
  * boolean into a 4-class `ConcurrencyClass` enum + a per-serverId
- * `Semaphore` map for MCP tools + an openclaude-style
+ * `Semaphore` map for MCP tools + an AgenC-style
  * `isConcurrencySafe(args)` runtime predicate that can downgrade an
  * otherwise-parallel call to `exclusive` on untrusted input.
  *
- * The codex primitive — `ToolCallRuntime::handle_tool_call` as
+ * The AgenC runtime primitive — `ToolCallRuntime::handle_tool_call` as
  * spawn + cancellation token + router dispatch — is NOT ported here.
  * That lives in `phases/execute-tools.ts` and
  * `tools/streaming-executor.ts`. This module only owns the
@@ -131,9 +131,9 @@ export interface ToolCallRuntimeOpts {
  * `Semaphore` map. Every tool dispatch funnels through `run()` which
  * acquires the right guard for the supplied ConcurrencyClass.
  *
- * Codex `parallel.rs` uses `tokio::sync::RwLock`; AgenC uses
+ * AgenC runtime `parallel.rs` uses `tokio::sync::RwLock`; AgenC uses
  * `AsyncRwLock` (T5). The guard-acquisition policy here is AgenC's
- * own; codex has no per-id semaphore or per-call downgrade path.
+ * own; AgenC runtime has no per-id semaphore or per-call downgrade path.
  */
 export class ToolCallRuntime {
   private readonly lock = new AsyncRwLock<void>(undefined);
@@ -216,7 +216,7 @@ export interface ConcurrencyClassifiable {
  *      `exclusive` for unknowns/writes). MCP tools typically declare
  *      `shared_server(serverId)`; read-only function tools declare
  *      `shared_read`.
- *   2. Openclaude-style per-call refinement via
+ *   2. AgenC-style per-call refinement via
  *      `tool.isConcurrencySafe(args)`: a nominally parallel tool whose
  *      arguments look risky (e.g. a read-class tool invoked with a
  *      path that would write) downgrades itself to `exclusive` at call
@@ -232,7 +232,7 @@ export function classify(
 ): ConcurrencyClass {
   const base = tool.concurrencyClass ?? EXCLUSIVE;
 
-  // Per-call downgrade hook (openclaude pattern).
+  // Per-call downgrade hook (AgenC pattern).
   if (tool.isConcurrencySafe) {
     let safe = false;
     try {

@@ -18,7 +18,7 @@
  *     caller consumes the `TraceRecord` from `DispatchOutcome`).
  *
  * Port notes: parse + unknown-command fallback logic is ported from
- * openclaude `src/utils/slashCommandParsing.ts` and the selection path
+ * AgenC `src/utils/slashCommandParsing.ts` and the selection path
  * in `src/utils/processUserInput/processSlashCommand.tsx`. React/JSX,
  * MCP settle polling, plugin marketplace, and fork-agent paths are
  * intentionally dropped — AgenC uses raw-text command execution.
@@ -249,7 +249,7 @@ export async function dispatchSlashCommand(
 }
 
 /**
- * Heuristic from openclaude — if the would-be command name is also a
+ * Heuristic from AgenC — if the would-be command name is also a
  * valid path in the cwd, treat the input as a mistyped file reference
  * rather than an unknown command. This intentionally also checks names
  * that fit the normal command regex: `/notes` should pass through when

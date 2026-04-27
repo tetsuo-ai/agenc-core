@@ -1,14 +1,14 @@
 /**
  * AgentStatus — subagent lifecycle FSM.
  *
- * Hand-port of codex `core/src/agent/status.rs` (27 LOC). Tracks the
+ * Hand-port of AgenC runtime `core/src/agent/status.rs` (27 LOC). Tracks the
  * state transitions of a spawned subagent from creation through
  * terminal states.
  *
  * Final states: `completed`, `errored`, `shutdown`.
  * Non-final: `idle`, `running`, `interrupted`.
  *
- * `interrupted` is intentionally non-final (matches codex
+ * `interrupted` is intentionally non-final (matches AgenC runtime
  * `status.rs` — `is_final` returns false for `Running | PendingInit |
  * Interrupted`). Completion watchers must loop past an interrupt
  * until a truly terminal state (`completed`, `errored`, `shutdown`)

@@ -1,7 +1,7 @@
 /**
  * `/skills` — report skills and plugin roots visible to the session.
  *
- * Reads the codex-shaped `skillsManager` / `pluginsManager` services
+ * Reads the AgenC-shaped `skillsManager` / `pluginsManager` services
  * from `SessionServices`. The current manager may be a no-op, but the
  * command surface is runtime-owned and will automatically reflect the
  * real loader once that service is bound.

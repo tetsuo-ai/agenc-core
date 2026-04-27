@@ -1,6 +1,6 @@
 # Runtime Owner Manifest
 
-This document is the Phase 0 forbidden-owner manifest for the codex
+This document is the Phase 0 forbidden-owner manifest for the AgenC runtime
 runtime replacement in `agenc-core/runtime`.
 
 It does two jobs:
@@ -28,7 +28,7 @@ ownership is fully consolidated.
 - `runtime/src/bin/bootstrap.ts`
   Canonical local bootstrap owner. It owns session creation/resume,
   sidecar and MCP startup wiring, and the current `buildTurnContext(...)`
-  handoff into the codex session kernel.
+  handoff into the AgenC runtime session kernel.
 - `runtime/src/tui/main.tsx`
   Ink/TUI bootstrap surface. It owns terminal lifecycle and stdin-loss
   handling for the live cockpit, but it must not grow session bootstrap
@@ -42,7 +42,7 @@ ownership is fully consolidated.
 - `runtime/src/session/turn-context.ts`
   Owns the `TurnContext` shape and builder API.
 - `runtime/src/session/run-turn.ts`
-  Owns the codex-aligned turn orchestration kernel.
+  Owns the AgenC runtime-aligned turn orchestration kernel.
 - `runtime/src/tools/execution.ts`
   Intended tool execution owner after legacy service ownership is
   removed.
@@ -137,7 +137,7 @@ JSON together.
       "path": "runtime/src/bin/bootstrap.ts",
       "kind": "bootstrap_owner",
       "ownedSurface": "session create/resume bootstrap, MCP/sidecar wiring, and TurnContext handoff",
-      "disposition": "canonical local bootstrap owner after the codex cutover",
+      "disposition": "canonical local bootstrap owner after the AgenC runtime cutover",
       "expectedHeuristics": [
         "build_turn_context_call"
       ]

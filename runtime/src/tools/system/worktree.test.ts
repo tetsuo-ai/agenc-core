@@ -1,5 +1,5 @@
 /**
- * Tests for `EnterWorktree` / `ExitWorktree` — verbatim openclaude
+ * Tests for `EnterWorktree` / `ExitWorktree` — verbatim AgenC
  * port of `EnterWorktreeTool` + `ExitWorktreeTool`. Verifies session-
  * level state tracking, slug validation, and the dirty-tree refusal
  * gate.
@@ -48,7 +48,7 @@ async function setupRepo(): Promise<{ root: string; cleanup: () => Promise<void>
   };
 }
 
-describe("EnterWorktree / ExitWorktree (openclaude port)", () => {
+describe("EnterWorktree / ExitWorktree (AgenC port)", () => {
   let repo: Awaited<ReturnType<typeof setupRepo>>;
   const sessionId = "test-session";
 

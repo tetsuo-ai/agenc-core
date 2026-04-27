@@ -93,7 +93,7 @@ describe("defaultExecApprovalRequirement — full decision table", () => {
     expect(r.kind).toBe("needs_approval");
   });
 
-  test("granular + restricted + sandbox_approval=false → forbidden (exact codex message)", () => {
+  test("granular + restricted + sandbox_approval=false → forbidden (exact sandbox message)", () => {
     const g: GranularApprovalConfig = {
       sandbox_approval: false,
       rules: false,

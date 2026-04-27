@@ -1,7 +1,7 @@
 /**
  * Relevant-memory attachment producer.
  *
- * Hand-port of openclaude `getRelevantMemoryAttachments()`
+ * Hand-port of AgenC `getRelevantMemoryAttachments()`
  * (`src/utils/attachments.ts:2197-2243`), bridged onto AgenC's existing
  * `selectRelevantMemoriesForTurn()` ranker
  * (`runtime/src/prompts/memory/attachments.ts:174`).
@@ -19,7 +19,7 @@
  * documented at `attachments.ts:30-38`. No additional caps are applied
  * here.
  *
- * Dedup: openclaude filters memories the model has already read this
+ * Dedup: AgenC filters memories the model has already read this
  * session via `readFileState.has(m.path)`. AgenC's analog is
  * `hasSessionRead()`. The producer applies that filter.
  *
@@ -73,7 +73,7 @@ function readMemoryAwareKey(
 }
 
 function buildMemoryHeader(path: string, mtimeMs: number): string {
-  // Mirror openclaude `memoryHeader()` (attachments.ts:2328-2333) shape.
+  // Mirror AgenC `memoryHeader()` (attachments.ts:2328-2333) shape.
   // Exact prose is not load-bearing — the renderer in messages.ts uses
   // the header verbatim when present.
   const mtimeIso = new Date(mtimeMs).toISOString();

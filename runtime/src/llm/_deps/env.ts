@@ -1,8 +1,8 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of `../config/env.js`.
+ * Local _deps stub for the gut/AgenC crossing of `../config/env.js`.
  * Provides `resolveApiKey` for the xAI/Grok credential lookup chain that
  * the provider factory consumes. The full env resolver suite stayed in
- * the openclaude port and will be replaced when the config tranche
+ * the AgenC port and will be replaced when the config tranche
  * lands.
  */
 

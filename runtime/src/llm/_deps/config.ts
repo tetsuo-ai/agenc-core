@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of `../config/index.js`.
+ * Local _deps stub for the gut/AgenC crossing of `../config/index.js`.
  * Provides the minimal surface the LLM models-manager consumes:
  *   - AgenCConfig type (loose pass-through shape)
  *   - normalizeProviderSlug

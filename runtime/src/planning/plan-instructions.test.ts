@@ -7,7 +7,7 @@ import {
 } from "./plan-instructions.js";
 
 describe("plan mode instructions", () => {
-  test("builds OpenClaude-style interview guidance with AgenC naming", () => {
+  test("builds AgenC-style interview guidance with AgenC naming", () => {
     const prompt = buildPlanModeInstructions({
       planFilePath: "/tmp/agenc/plans/session.md",
       planExists: false,

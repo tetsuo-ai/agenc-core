@@ -600,7 +600,7 @@ describe("default reactive-compact driver", () => {
   test("returns null when session cannot back a compact runtime context", async () => {
     // mkSession builds a stub without session.state / services.registry,
     // so createSessionBackedCompactContext throws. The default driver
-    // swallows that and reports noop, matching the openclaude behavior
+    // swallows that and reports noop, matching the AgenC behavior
     // of "insufficient infrastructure ⇒ skip reactive compact".
     const log = new EventLog();
     const session = mkSession(log);

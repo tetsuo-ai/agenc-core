@@ -2,7 +2,7 @@
  * Command registry.
  *
  * Holds the set of `SlashCommand` entries the dispatcher can route to.
- * Ports the minimum openclaude `hasCommand` / `getCommand` / `findCommand`
+ * Ports the minimum AgenC `hasCommand` / `getCommand` / `findCommand`
  * lookup behavior (`src/commands.js`) without pulling in plugin marketplace,
  * skill loading, MCP wiring, or hook registration.
  *
@@ -258,7 +258,7 @@ const exitWorktreeCommand: SlashCommand = {
  */
 export function buildDefaultRegistry(): CommandRegistry {
   return CommandRegistry.fromCommands([
-    // Presentation order mirrors codex-style picker prominence.
+    // Presentation order mirrors AgenC-style picker prominence.
     modelCommand,
     providerCommand,
     permissionsCommand,

@@ -64,7 +64,7 @@ export function runPostCompactCleanup(
   }
   if (feature('CONTEXT_COLLAPSE')) {
     if (isMainThreadCompact) {
-      // Openclaude context-collapse subsystem deleted in gut-cleanup; nothing
+      // AgenC context-collapse subsystem deleted in gut-cleanup; nothing
       // to reset in the lean runtime.
     }
   }
@@ -90,13 +90,13 @@ export function runPostCompactCleanup(
   // cacheUtils resets. See compactConversation() for full rationale.
   clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
-    // Openclaude commit-attribution helpers were deleted in gut-cleanup; the
+    // AgenC commit-attribution helpers were deleted in gut-cleanup; the
     // feature flag is always false in the lean runtime, so this branch is dead.
   }
   // T5: the legacy `clearSessionMessagesCache` helper cleared a
   // memoized `getSessionMessages` cache in `utils/sessionStorage.ts`
   // consumed only by `doesMessageExistInSession` and `getLastSessionLog`
-  // — both legacy openclaude readers. Grep confirms no T5 consumer reads
+  // — both legacy AgenC readers. Grep confirms no T5 consumer reads
   // the memoized cache, so the post-compact clear is semantically dead
   // here. The call has been removed along with the legacy import.
 }

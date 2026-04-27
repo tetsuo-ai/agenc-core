@@ -1325,7 +1325,7 @@ export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
 }
 
 /**
- * Openclaude-style CLI startup gate: config reads must be enabled before any
+ * AgenC-style CLI startup gate: config reads must be enabled before any
  * downstream path can touch global settings (auto-compact, theme, provider
  * profiles, etc.). AgenC routes both the one-shot and Ink console through this
  * same entrypoint, so the gate belongs here rather than in individual phases.

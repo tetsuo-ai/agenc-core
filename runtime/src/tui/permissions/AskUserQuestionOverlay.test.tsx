@@ -133,7 +133,7 @@ const ASK_INPUT = {
       question: "Which planner interview behavior should AgenC use?",
       options: [
         {
-          label: "OpenClaude picker (Recommended)",
+          label: "AgenC picker (Recommended)",
           description: "Show multiple-choice questions in the TUI.",
           preview: "Render an interactive picker and return selected answers.",
         },
@@ -164,7 +164,7 @@ describe("AskUserQuestionOverlay", () => {
 
     expect(getText()).toContain("Answer questions");
     expect(getText()).toContain("Which planner interview behavior should AgenC use?");
-    expect(getText()).toContain("OpenClaude picker (Recommended)");
+    expect(getText()).toContain("AgenC picker (Recommended)");
 
     emitter.emit("input", makeKeyEvent({ name: "return" }));
     await new Promise((r) => setTimeout(r, 20));
@@ -180,7 +180,7 @@ describe("AskUserQuestionOverlay", () => {
     });
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain(
-      '"Which planner interview behavior should AgenC use?"="OpenClaude picker (Recommended)"',
+      '"Which planner interview behavior should AgenC use?"="AgenC picker (Recommended)"',
     );
     expect(result.content).toContain("selected preview");
     unmount();

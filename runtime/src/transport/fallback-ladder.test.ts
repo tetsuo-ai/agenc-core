@@ -54,7 +54,7 @@ describe("resolveTransportMode", () => {
     ).toThrow("Unsupported AGENC_TRANSPORT value: invalid");
   });
 
-  it("follows the openclaude fallback order when no explicit override is set", () => {
+  it("follows the AgenC fallback order when no explicit override is set", () => {
     expect(
       resolveTransportMode({
         CLAUDE_CODE_USE_CCR_V2: "1",

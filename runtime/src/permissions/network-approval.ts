@@ -1,8 +1,8 @@
 /**
  * T11 Wave 1 Agent D — network approval decision layer.
  *
- * Port of codex `tools::network_approval::NetworkApprovalService`
- * (`codex-rs/core/src/tools/network_approval.rs`, 688 LOC). This module
+ * Port of AgenC runtime `tools::network_approval::NetworkApprovalService`
+ * (`AgenC runtime-rs/core/src/tools/network_approval.rs`, 688 LOC). This module
  * owns ONLY the approval-decision layer: session-scoped host cache
  * (allow/deny), in-flight request dedup, short-circuit guards, and
  * resolver/hook invocation. Upstream wildcard / URL / allowlist
@@ -18,7 +18,7 @@
  *     stub falls through to the immediate path.
  *
  * Invariants:
- *   - Exact codex short-circuit order: sandbox gate, then approval-policy
+ *   - Exact AgenC runtime short-circuit order: sandbox gate, then approval-policy
  *     gate (`network_approval.rs:128-133, 361-369`).
  *   - Session deny takes precedence over session allow in the same lookup
  *     turn (`network_approval.rs:320-331`).
@@ -38,7 +38,7 @@ import { AsyncLock } from "./_deps/async-lock.js";
 // `session/turn-context.ts` which only has stub shapes today).
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex `AskForApproval`. Only `"never"` is load-bearing here. */
+/** Port of AgenC runtime `AskForApproval`. Only `"never"` is load-bearing here. */
 export type ApprovalPolicy =
   | "never"
   | "on_failure"
@@ -47,7 +47,7 @@ export type ApprovalPolicy =
   | "untrusted";
 
 /**
- * Port of codex `SandboxPolicy` kinds. Only the `kind` field is load-bearing
+ * Port of AgenC runtime `SandboxPolicy` kinds. Only the `kind` field is load-bearing
  * for network approval. Two kinds short-circuit to deny:
  *   - `danger_full_access`: no review flow — full access is already granted.
  *   - `external_sandbox`: review flow is not available outside the managed sandbox.
@@ -60,7 +60,7 @@ export interface SandboxPolicy {
     | "external_sandbox";
 }
 
-/** Port of codex `ReviewDecision` enum (sum type with amendment payload). */
+/** Port of AgenC runtime `ReviewDecision` enum (sum type with amendment payload). */
 export type ReviewDecision =
   | { readonly kind: "approved" }
   | { readonly kind: "approved_execpolicy_amendment" }
@@ -73,7 +73,7 @@ export type ReviewDecision =
   | { readonly kind: "abort" }
   | { readonly kind: "timed_out" };
 
-/** Port of codex `NetworkPolicyAmendment`. */
+/** Port of AgenC runtime `NetworkPolicyAmendment`. */
 export interface NetworkPolicyAmendment {
   readonly action: "allow" | "deny";
   /** Optional human-readable justification (not load-bearing for caching). */
@@ -84,22 +84,22 @@ export interface NetworkPolicyAmendment {
 // Host approval key + decisions
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex `NetworkApprovalProtocol` string labels. */
+/** Port of AgenC runtime `NetworkApprovalProtocol` string labels. */
 export type NetworkProtocol = "http" | "https" | "socks5-tcp" | "socks5-udp";
 
-/** Port of codex `HostApprovalKey`. Host must already be lowercased. */
+/** Port of AgenC runtime `HostApprovalKey`. Host must already be lowercased. */
 export interface HostApprovalKey {
   readonly host: string;
   readonly protocol: NetworkProtocol;
   readonly port: number;
 }
 
-/** Decision returned to the caller (codex `NetworkDecision`). */
+/** Decision returned to the caller (AgenC runtime `NetworkDecision`). */
 export type NetworkDecision =
   | { readonly kind: "allow" }
   | { readonly kind: "deny"; readonly reason: string };
 
-/** Port of codex `PendingApprovalDecision`. Internal cache-state value. */
+/** Port of AgenC runtime `PendingApprovalDecision`. Internal cache-state value. */
 type PendingApprovalDecision = "allow_once" | "allow_for_session" | "deny";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ type PendingApprovalDecision = "allow_once" | "allow_for_session" | "deny";
 
 /**
  * Lowercase, trim, and strip a single trailing dot (DNS canonical form).
- * Keeps codex parity: codex does `host.to_ascii_lowercase()` — we add the
+ * Keeps AgenC behavior: AgenC runtime does `host.to_ascii_lowercase()` — we add the
  * trailing-dot strip for DNS canonicalization since TypeScript-land hosts
  * may come from `URL` parsing which preserves the dot.
  */
@@ -152,7 +152,7 @@ function canonicalKey(key: HostApprovalKey): HostApprovalKey {
  * key. Only the owner (first caller) runs the resolver; subsequent
  * callers `await wait()` until the owner calls `set()`.
  *
- * Codex uses `tokio::sync::Notify` + `Mutex<Option<...>>`. We use a
+ * AgenC runtime uses `tokio::sync::Notify` + `Mutex<Option<...>>`. We use a
  * single promise+resolver pair — all waiters share the same pending
  * promise and are released together when `set()` fires.
  */
@@ -185,7 +185,7 @@ export class PendingHostApproval {
 
   /**
    * Record the decision and release every waiter. Idempotent: a second
-   * call with a different value is ignored (codex behavior).
+   * call with a different value is ignored (AgenC runtime behavior).
    */
   set(decision: PendingApprovalDecision): void {
     if (this.decisionValue !== null) return;
@@ -200,7 +200,7 @@ export class PendingHostApproval {
 
 /**
  * Contextual data handed to resolvers and hooks. Mirrors the fields
- * codex gathers before calling `request_command_approval` or the
+ * AgenC runtime gathers before calling `request_command_approval` or the
  * permission-request hook runtime.
  */
 export interface NetworkApprovalContext {
@@ -225,7 +225,7 @@ export type NetworkApprovalHookResult =
   | null;
 
 /**
- * Permission-request hook (codex `run_permission_request_hooks`). Runs
+ * Permission-request hook (AgenC runtime `run_permission_request_hooks`). Runs
  * with the highest precedence, short-circuiting the resolver when any
  * hook returns a non-null result.
  */
@@ -239,7 +239,7 @@ export interface NetworkApprovalResolver {
 }
 
 /**
- * Persistence callback for network-policy amendments. Codex calls
+ * Persistence callback for network-policy amendments. AgenC runtime calls
  * `session.persist_network_policy_amendment` — T11 exposes this as a
  * swap-in callback so T12/T13 can wire the real write path.
  *
@@ -256,7 +256,7 @@ export type PersistNetworkPolicyAmendment = (
 // Request options + error classes
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of codex `NetworkApprovalMode`. */
+/** Port of AgenC runtime `NetworkApprovalMode`. */
 export type NetworkApprovalMode = "immediate" | "deferred";
 
 export interface RequestNetworkApprovalOptions {
@@ -315,7 +315,7 @@ export class NetworkApprovalService {
   // ───── Session reset ────────────────────────────────────────────────
 
   /**
-   * Clear both session caches. Codex `Session::reset` / `/clear` calls
+   * Clear both session caches. AgenC runtime `Session::reset` / `/clear` calls
    * this on new session bootstrap. Does NOT touch in-flight pending
    * approvals — those resolve themselves.
    */
@@ -342,11 +342,11 @@ export class NetworkApprovalService {
   // ───── Main entrypoint ──────────────────────────────────────────────
 
   /**
-   * Port of codex `NetworkApprovalService::handle_inline_policy_request`.
+   * Port of AgenC runtime `NetworkApprovalService::handle_inline_policy_request`.
    * Consult caches, dedup concurrent callers, and invoke hooks/resolver
    * exactly once per host key.
    *
-   * Short-circuit order (codex parity):
+   * Short-circuit order (AgenC behavior):
    *   1. Signal already aborted → throw `AbortError`.
    *   2. Sandbox policy disallows review flow → deny.
    *   3. Approval policy is `"never"` → deny.
@@ -357,7 +357,7 @@ export class NetworkApprovalService {
   async requestNetworkApproval(
     opts: RequestNetworkApprovalOptions,
   ): Promise<NetworkDecision> {
-    // Signal check — codex spawns the approval task on the runtime; we
+    // Signal check — AgenC runtime spawns the approval task on the runtime; we
     // proactively refuse if the caller already cancelled.
     if (opts.signal?.aborted) {
       throw makeAbortError(opts.signal);
@@ -403,7 +403,7 @@ export class NetworkApprovalService {
     try {
       const resolved = await this.resolveApproval(normalizedKey, opts);
 
-      // Cache side effects (codex `network_approval.rs:564-580`).
+      // Cache side effects (AgenC runtime `network_approval.rs:564-580`).
       if (resolved === "allow_for_session") {
         this.sessionDeniedHosts.delete(stringKey);
         this.sessionApprovedHosts.add(stringKey);

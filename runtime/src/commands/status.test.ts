@@ -71,7 +71,7 @@ describe("statusCommand", () => {
   it("renders permission mode from PermissionModeRegistry, not approvalPolicy.value", () => {
     // approvalPolicy is "never" but the registry says "plan" — the
     // Permission mode line MUST reflect the registry (T11 permission
-    // mode) and ignore the codex-side approvalPolicy field.
+    // mode) and ignore the AgenC-side approvalPolicy field.
     const registry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "plan" }),
     );

@@ -24,7 +24,7 @@ const external = [
   '@modelcontextprotocol/sdk',
   '@homebridge/node-pty-prebuilt-multiarch',
   // Optional peer deps that the compact subsystem (and other
-  // openclaude-derived modules) reach through guarded dynamic imports.
+  // AgenC-owned modules) reach through guarded dynamic imports.
   // Marked external so tsup does not try to bundle them at build time;
   // they will resolve (or fail gracefully) at runtime.
   '@anthropic-ai/bedrock-sdk',

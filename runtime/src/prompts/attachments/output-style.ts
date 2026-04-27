@@ -1,7 +1,7 @@
 /**
  * Output-style attachment producer.
  *
- * Intended hand-port of openclaude `getOutputStyleAttachment`
+ * Intended hand-port of AgenC `getOutputStyleAttachment`
  * (`src/utils/attachments.ts:1598-1613`), which emits an
  * `output_style` system-reminder every turn whenever the active style
  * is non-default.
@@ -10,7 +10,7 @@
  * today and neither is threaded through `GetAttachmentsOptions`:
  *
  *   1. `config/schema.ts` `PartialOutputStyleConfig` carries a
- *      cockpit palette `theme` (e.g. "dark"), not the openclaude
+ *      cockpit palette `theme` (e.g. "dark"), not the AgenC
  *      style preset shape.
  *   2. `prompts/system-prompt.ts` `OutputStyleInput` (`{ name, prompt }`)
  *      is the actual preset shape but is supplied to the system-prompt
@@ -36,6 +36,6 @@ export const outputStyleProducer: AttachmentProducer = async (
   // TODO(attachments): emit `{ kind: "output_style", style }` once the
   // active output-style preset name is reachable from
   // GetAttachmentsOptions. Filter `style === "default"` before emit per
-  // openclaude convention.
+  // AgenC convention.
   return [];
 };

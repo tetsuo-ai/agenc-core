@@ -1,10 +1,10 @@
 /**
- * `Grep` — port of openclaude `GrepTool`.
+ * `Grep` — port of AgenC `GrepTool`.
  *
- * Mature ripgrep wrapper lifted from openclaude
+ * Mature ripgrep wrapper lifted from AgenC
  * (`src/tools/GrepTool/GrepTool.ts` + `prompt.ts`). Description text and
  * input schema mirror the upstream contract field-by-field so a model
- * trained on openclaude's Grep prompt behaves identically here.
+ * trained on AgenC's Grep prompt behaves identically here.
  *
  * - Invokes `rg` as a subprocess for performance.
  * - Three output modes: `content`, `files_with_matches` (default), `count`.
@@ -31,7 +31,7 @@ export const GREP_TOOL_NAME = "Grep";
 const BASH_TOOL_NAME = "Bash";
 const AGENT_TOOL_NAME = "Agent";
 
-/** Verbatim adaptation of openclaude `GrepTool/prompt.ts:7-17`. */
+/** Verbatim adaptation of AgenC `GrepTool/prompt.ts:7-17`. */
 const GREP_DESCRIPTION = `A powerful search tool built on ripgrep
 
   Usage:
@@ -159,7 +159,7 @@ export function __resetRipgrepProbeForTests(): void {
 }
 
 function splitGlobs(rawGlob: string): string[] {
-  // Mirror openclaude (GrepTool.ts:392-409): split on whitespace, then on
+  // Mirror AgenC (GrepTool.ts:392-409): split on whitespace, then on
   // commas where the segment doesn't include `{}` brace expansions.
   const out: string[] = [];
   for (const piece of rawGlob.split(/\s+/)) {
@@ -586,7 +586,7 @@ async function runFallbackGrep(params: {
 
 export function createGrepTool(config?: GrepToolConfig): Tool {
   // Default to process.cwd() when caller doesn't pass an allowlist (mirrors
-  // the openclaude default of `getCwd()`). Production wiring always passes
+  // the AgenC default of `getCwd()`). Production wiring always passes
   // an allowlist via the runtime; this default keeps the factory ergonomic
   // for one-off harness use.
   const allowedPaths =

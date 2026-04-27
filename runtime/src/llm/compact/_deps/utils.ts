@@ -1,6 +1,6 @@
 /**
  * Minimal utility replacements for what `runtime/src/llm/compact/**`
- * actually uses out of the openclaude-port utils tree. Each function
+ * actually uses out of the AgenC implementation utils tree. Each function
  * implements only the surface the compact subsystem reaches for, not
  * the full upstream API.
  */

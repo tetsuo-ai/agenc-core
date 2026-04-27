@@ -106,7 +106,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
         query: {
           type: "string",
           description:
-            "Search terms. May include OpenClaude-style select:<tool_name> to load an exact deferred tool.",
+            "Search terms. May include AgenC-style select:<tool_name> to load an exact deferred tool.",
         },
         select: {
           anyOf: [

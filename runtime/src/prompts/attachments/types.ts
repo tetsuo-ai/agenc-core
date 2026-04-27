@@ -1,7 +1,7 @@
 /**
  * Per-turn attachment data type.
  *
- * Hand-port of the `Attachment` discriminated union from openclaude's
+ * Hand-port of the `Attachment` discriminated union from AgenC's
  * `src/utils/attachments.ts:441-718`, restricted to the subset of variants
  * that have an AgenC analog. Variants tied to features AgenC doesn't ship
  * (`ultrathink_effort`, `bagel_console_errors`, `buddy_intro`,
@@ -10,16 +10,16 @@
  * adds the underlying feature, the variant lands here alongside its
  * producer.
  *
- * Attachment names use AgenC branding where openclaude branded for itself
+ * Attachment names use AgenC branding where AgenC branded for itself
  * (e.g. `AGENC.md` instead of `CLAUDE.md`). Otherwise the prose, schema,
- * and gating logic match openclaude exactly.
+ * and gating logic match AgenC exactly.
  *
  * @module
  */
 
 /**
  * Memory file injection from the per-file 4-phase nested traversal.
- * Source: openclaude `attachments.ts:494-512`.
+ * Source: AgenC `attachments.ts:494-512`.
  */
 export interface NestedMemoryAttachment {
   readonly kind: "nested_memory";
@@ -37,7 +37,7 @@ export interface NestedMemoryAttachment {
 
 /**
  * Selected relevant memories surfaced via the per-turn ranker.
- * Source: openclaude `attachments.ts:514-524`.
+ * Source: AgenC `attachments.ts:514-524`.
  */
 export interface RelevantMemoriesAttachment {
   readonly kind: "relevant_memories";
@@ -62,7 +62,7 @@ export interface RelevantMemoriesAttachment {
 
 /**
  * Plan-mode reminder pulse (full or sparse).
- * Source: openclaude `attachments.ts:566-577`.
+ * Source: AgenC `attachments.ts:566-577`.
  */
 export interface PlanModeAttachment {
   readonly kind: "plan_mode";
@@ -76,7 +76,7 @@ export interface PlanModeAttachment {
 
 /**
  * Plan-mode re-entry attachment (after a prior exit).
- * Source: openclaude `attachments.ts:579-583`.
+ * Source: AgenC `attachments.ts:579-583`.
  */
 export interface PlanModeReentryAttachment {
   readonly kind: "plan_mode_reentry";
@@ -86,7 +86,7 @@ export interface PlanModeReentryAttachment {
 
 /**
  * Plan-mode exit attachment (one-shot, fires on transition out).
- * Source: openclaude `attachments.ts:585-587`.
+ * Source: AgenC `attachments.ts:585-587`.
  */
 export interface PlanModeExitAttachment {
   readonly kind: "plan_mode_exit";
@@ -96,7 +96,7 @@ export interface PlanModeExitAttachment {
 
 /**
  * Auto-mode reminder pulse (analogous to plan-mode).
- * Source: openclaude `attachments.ts:566-577` (auto-mode family).
+ * Source: AgenC `attachments.ts:566-577` (auto-mode family).
  */
 export interface AutoModeAttachment {
   readonly kind: "auto_mode";
@@ -105,7 +105,7 @@ export interface AutoModeAttachment {
 
 /**
  * Auto-mode exit attachment (one-shot).
- * Source: openclaude `attachments.ts:585-587` (auto-mode family).
+ * Source: AgenC `attachments.ts:585-587` (auto-mode family).
  */
 export interface AutoModeExitAttachment {
   readonly kind: "auto_mode_exit";
@@ -113,7 +113,7 @@ export interface AutoModeExitAttachment {
 
 /**
  * Date-change notification (fires once per local-calendar-day boundary).
- * Source: openclaude `attachments.ts:1416-1445`.
+ * Source: AgenC `attachments.ts:1416-1445`.
  */
 export interface DateChangeAttachment {
   readonly kind: "date_change";
@@ -124,7 +124,7 @@ export interface DateChangeAttachment {
 /**
  * One-shot critical reminder set by runtime producers (mode transitions,
  * rate-limit warnings, etc.). Cleared after firing.
- * Source: openclaude `attachments.ts:1588-1596`.
+ * Source: AgenC `attachments.ts:1588-1596`.
  */
 export interface CriticalSystemReminderAttachment {
   readonly kind: "critical_system_reminder";
@@ -133,7 +133,7 @@ export interface CriticalSystemReminderAttachment {
 
 /**
  * Output-style attachment (fires every turn when style is non-default).
- * Source: openclaude `attachments.ts:1598-1613`.
+ * Source: AgenC `attachments.ts:1598-1613`.
  */
 export interface OutputStyleAttachment {
   readonly kind: "output_style";
@@ -144,7 +144,7 @@ export interface OutputStyleAttachment {
 /**
  * Deferred-tool catalog delta (new tools loaded mid-session via
  * `system.searchTools`).
- * Source: openclaude `attachments.ts:1456-1476`.
+ * Source: AgenC `attachments.ts:1456-1476`.
  */
 export interface DeferredToolsDeltaAttachment {
   readonly kind: "deferred_tools_delta";
@@ -156,7 +156,7 @@ export interface DeferredToolsDeltaAttachment {
 
 /**
  * Subagent listing delta (new agents available, agents removed).
- * Source: openclaude `attachments.ts:1491-1560`.
+ * Source: AgenC `attachments.ts:1491-1560`.
  */
 export interface AgentListingDeltaAttachment {
   readonly kind: "agent_listing_delta";
@@ -169,7 +169,7 @@ export interface AgentListingDeltaAttachment {
 
 /**
  * MCP server instruction delta (new server connected, instructions changed).
- * Source: openclaude `attachments.ts:1560-1586`.
+ * Source: AgenC `attachments.ts:1560-1586`.
  */
 export interface McpInstructionsDeltaAttachment {
   readonly kind: "mcp_instructions_delta";
@@ -180,7 +180,7 @@ export interface McpInstructionsDeltaAttachment {
 
 /**
  * Diff snippet for a file modified mid-session via Edit/Write/exec_command.
- * Source: openclaude `attachments.ts:2064-2162` (`getChangedFiles`).
+ * Source: AgenC `attachments.ts:2064-2162` (`getChangedFiles`).
  */
 export interface EditedTextFileAttachment {
   readonly kind: "edited_text_file";
@@ -191,7 +191,7 @@ export interface EditedTextFileAttachment {
 
 /**
  * Re-injected image after mid-session modification.
- * Source: openclaude `attachments.ts:2064-2162` (`getChangedFiles` image branch).
+ * Source: AgenC `attachments.ts:2064-2162` (`getChangedFiles` image branch).
  */
 export interface EditedImageFileAttachment {
   readonly kind: "edited_image_file";
@@ -204,7 +204,7 @@ export interface EditedImageFileAttachment {
 
 /**
  * `@agent-<type>` mention extracted from user input.
- * Source: openclaude `attachments.ts:1967-1994`.
+ * Source: AgenC `attachments.ts:1967-1994`.
  */
 export interface AgentMentionAttachment {
   readonly kind: "agent_mention";

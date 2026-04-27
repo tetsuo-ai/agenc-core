@@ -3,7 +3,7 @@
  *
  * These helpers protect the live React/Ink transcript from retaining full
  * tool payloads that already exist in the rollout log and model history.
- * The model-facing cleanup follows openclaude's persisted-output path; this
+ * The model-facing cleanup follows AgenC's persisted-output path; this
  * file is only for display state.
  */
 

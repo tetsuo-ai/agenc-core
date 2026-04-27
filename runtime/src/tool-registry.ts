@@ -10,7 +10,7 @@
  *
  * Build once per session. The registry is intentionally flat — every
  * surviving tool registers into one router-backed list with no grouping.
- * The provider-visible catalog is request scoped: Codex-primary tools
+ * The provider-visible catalog is request scoped: AgenC runtime-primary tools
  * are visible by default, while compatibility built-ins, MCP, and
  * explicitly deferred tools become visible after discovery.
  *
@@ -34,7 +34,7 @@ import {
   createMonitorTool,
   createEnterWorktreeTool,
   createExitWorktreeTool,
-  // Openclaude-derived file/search tools (lifted into AgenC).
+  // AgenC-owned file/search tools (lifted into AgenC).
   // These are the canonical file-content and search surface.
   createFileReadTool,
   createFileEditTool,
@@ -248,17 +248,17 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
 const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "exec_command",
   "write_stdin",
-  // Openclaude-derived file/search tools, lifted into AgenC and now
+  // AgenC-owned file/search tools, lifted into AgenC and now
   // first-class visible.
   FILE_READ_TOOL_NAME,
   FILE_EDIT_TOOL_NAME,
   FILE_WRITE_TOOL_NAME,
   GLOB_TOOL_NAME,
   GREP_TOOL_NAME,
-  // `TodoWrite` is the openclaude port; codex `update_plan`
-  // is intentionally not shipped — `/plan` itself is openclaude-derived
+  // `TodoWrite` is the AgenC port; AgenC runtime `update_plan`
+  // is intentionally not shipped — `/plan` itself is AgenC-owned
   // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
-  // tool is openclaude `TodoWrite`.
+  // tool is AgenC `TodoWrite`.
   "TodoWrite",
   "EnterPlanMode",
   "ExitPlanMode",
@@ -269,7 +269,7 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "wait",
 ]);
 
-function codexPrimarySurface(tool: Tool): Tool {
+function agencPrimarySurface(tool: Tool): Tool {
   if (DEFAULT_VISIBLE_BUILTIN_TOOLS.has(tool.name)) return tool;
   if (tool.metadata?.source && tool.metadata.source !== "builtin") return tool;
   if (tool.metadata?.deferred === true) return tool;
@@ -314,7 +314,7 @@ export interface BuildToolRegistryOptions {
    * runs without a lifecycle observer.
    */
   readonly bashExecObserver?: BashExecObserver;
-  /** Shared Codex-style unified exec process manager for exec_command/write_stdin. */
+  /** Shared AgenC-style unified exec process manager for exec_command/write_stdin. */
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   /**
    * Live MCP tool source. This is intentionally a provider instead of a
@@ -323,7 +323,7 @@ export interface BuildToolRegistryOptions {
   readonly mcpToolsProvider?: ToolListProvider;
   /**
    * Hide MCP tool schemas until `system.searchTools` discovers them.
-   * This mirrors codex's deferred MCP catalog path and prevents large
+   * This mirrors AgenC runtime's deferred MCP catalog path and prevents large
    * MCP installs from bloating every request by default.
    */
   readonly deferMcpTools?: boolean;
@@ -341,7 +341,7 @@ export interface BuildToolRegistryOptions {
   /**
    * Include AgenC-owned structured git/symbol/repo-inventory tools in
    * the catalog. Defaults to true, but those tools stay deferred so the
-   * default model-visible prompt remains Codex-small.
+   * default model-visible prompt remains AgenC runtime-small.
    */
   readonly codeIntelligenceTools?: boolean;
   /** Live plan-mode bridge for EnterPlanMode/ExitPlanMode. */
@@ -421,7 +421,7 @@ export function buildToolRegistry(
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
-    // Openclaude-derived file/search tools (lifted, now AgenC-owned).
+    // AgenC-owned file/search tools (lifted, now AgenC-owned).
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
     }),
@@ -462,7 +462,7 @@ export function buildToolRegistry(
   const defaultBuiltinTools: Tool[] = [
     ...rawDefaultBuiltinTools,
     ...codeModeTools,
-  ].map((tool) => tagTool(codexPrimarySurface(tool)));
+  ].map((tool) => tagTool(agencPrimarySurface(tool)));
   const extraTools: Tool[] = (options.extraTools ?? []).map((tool) =>
     tagTool(tool),
   );

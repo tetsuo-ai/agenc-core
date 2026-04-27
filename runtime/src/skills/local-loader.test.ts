@@ -25,24 +25,24 @@ function writeSkill(root: string, name: string, body?: string): void {
 }
 
 describe("local skills loader", () => {
-  it("discovers project, user, codex-home, and plugin skill roots", async () => {
+  it("discovers project, user, compat home, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
-    const codexHome = tmpRoot("skills-codex");
+    const compatHome = tmpRoot("skills-compat");
 
     writeSkill(join(workspaceRoot, ".agents", "skills"), "project-skill");
     writeSkill(join(agencHome, "skills"), "home-skill");
-    writeSkill(join(codexHome, "skills"), "codex-skill");
+    writeSkill(join(compatHome, "skills"), "compat-skill");
     writeSkill(join(agencHome, "plugins", "demo", "skills"), "plugin-skill");
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
       workspaceRoot,
-      env: { CODEX_HOME: codexHome },
+      env: { CODEX_HOME: compatHome },
     });
 
     expect(snapshot.skills.map((skill) => skill.name)).toEqual([
-      "codex-skill",
+      "compat-skill",
       "home-skill",
       "plugin-skill",
       "project-skill",

@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../../../services/api/openaiErrorClassification.js`. The OpenAI
  * provider adapter only consumes `classifyOpenAIHttpFailure` and
  * `buildOpenAICompatibilityErrorMessage`, so this stub exposes a

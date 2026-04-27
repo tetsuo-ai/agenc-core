@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 
-// Openclaude `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
+// AgenC `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
 // has no transcript writer, so this stays null and the optional-chained calls
 // below become no-ops.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,7 +17,7 @@ type CanUseToolFn = (...args: any[]) => any
 type Tool = any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LocalAgentTaskState = any
-// Lean stubs: openclaude port deleted in gut-cleanup; compact path retained but
+// Lean stubs: AgenC port deleted in gut-cleanup; compact path retained but
 // tool object refs are no-op placeholders carrying just the canonical name.
 import { FILE_READ_TOOL_NAME, FILE_UNCHANGED_STUB } from './_deps/tool-names.js';
 const FileReadTool: any = { name: FILE_READ_TOOL_NAME, isMcp: false }
@@ -384,7 +384,7 @@ export type RecompactionInfo = {
  * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults.
  * Mid-turn compaction can additionally inject a serialized reference-
  * context message immediately before the last real user message
- * (or, if none survives, before the summary), matching codex's
+ * (or, if none survives, before the summary), matching AgenC runtime's
  * `BeforeLastUserMessage` behavior.
  */
 export function buildPostCompactMessages(result: CompactionResult): Message[] {
@@ -914,7 +914,7 @@ export function filterLargeToolResultsForCompact(
     thresholdBytes?: number
     /**
      * Best-effort turnId resolver for a given message. The compact
-     * path has no direct message→turn mapping (messages are openclaude
+     * path has no direct message→turn mapping (messages are AgenC
      * Messages, not rollout events), so callers may pass a resolver
      * when they have one; otherwise dropped entries carry
      * `turnId: 'unknown'`.

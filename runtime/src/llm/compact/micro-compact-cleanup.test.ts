@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 // `feature('CACHED_MICROCOMPACT')` must be true so the router enters the
-// cached-MC branch (openclaude parity). Other feature flags default to false.
+// cached-MC branch (AgenC behavior). Other feature flags default to false.
 vi.mock('bun:bundle', () => ({
   feature: (name: string) => name === 'CACHED_MICROCOMPACT',
 }))
@@ -62,7 +62,7 @@ describe('microcompact cleanup wiring', () => {
 
   test('time-based microcompact runs post-compact cleanup before returning', async () => {
     // The gut runtime gets the time-based-MC config through the compact
-    // `_deps/no-op.js` shim (not the upstream openclaude
+    // `_deps/no-op.js` shim (not the upstream AgenC
     // `services/analytics/growthbook.js` path), so mock the live import
     // surface that `time-based-mc-config.ts` actually reads from.
     vi.doMock('./time-based-mc-config.js', () => ({
@@ -82,7 +82,7 @@ describe('microcompact cleanup wiring', () => {
     }
     // Use the gut runtime's actual compactable tool name (`FileRead`)
     // so `collectCompactableToolIds` recognizes the tool_use entries via the
-    // built-in `COMPACTABLE_TOOLS` set. Upstream openclaude's `'Read'` name
+    // built-in `COMPACTABLE_TOOLS` set. Upstream AgenC's `'Read'` name
     // doesn't match the live registry-aligned constants in `_deps/tool-names.ts`.
     const messages: Message[] = [
       assistantToolUse('tool-1', 'FileRead', old),

@@ -1,9 +1,7 @@
 // T10 Group D — AgenC config schema.
 //
-// Merges:
-//   - codex `config_toml.rs` / `profile_toml.rs`
-//   - openclaude `settings.json` subset
-//   - AgenC additions (toolBudget, stream watchdog, agenc_home)
+// Merges AgenC config surfaces, profile selection, and runtime additions
+// such as tool budgets, stream watchdog settings, and agenc_home.
 //
 // All public types are readonly. `defaultConfig()` returns a frozen snapshot;
 // `mergeConfigs()` is a right-biased deep merge that preserves immutability
@@ -260,7 +258,7 @@ export interface ProviderConfig {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface AgenCConfig {
-  // ── Codex-rooted fields ────────────────────────────────────────────
+  // ── Runtime fields ─────────────────────────────────────────────────
   readonly model?: string;
   readonly model_provider?: string;
   readonly approval_policy?: ApprovalPolicy;
@@ -284,7 +282,7 @@ export interface AgenCConfig {
   readonly hooks?: HooksMap;
   readonly mcp_servers?: Readonly<Record<string, McpServerConfig>>;
 
-  // ── Openclaude-rooted fields ──────────────────────────────────────
+  // ── Settings fields ────────────────────────────────────────────────
   readonly autoUpdates?: boolean;
   readonly bypassPermissionsModeAcceptedIn?: readonly string[];
   readonly experiments?: ExperimentsConfig;
@@ -316,13 +314,13 @@ export interface AgenCConfig {
 /*
  * DEFERRED_KEYS — in-file audit trail (T10 A+ Fix-β).
  *
- * Top-level keys accepted by codex or openclaude config surfaces that
+ * Top-level keys accepted by AgenC config surfaces that
  * AgenC intentionally routes into `_unknown` today. They are NOT silent
  * drops: `normalizeRawConfig` preserves them verbatim so a future
  * tranche can light them up without losing operator intent already
  * stored on disk. Grep-anchor: "DEFERRED_KEYS".
  *
- * Codex-rooted, deferred:
+ * Runtime deferred:
  *   - notify           → T11 (hook-style post-turn notifications)
  *   - otel             → T12 (OTel exporters — depends on observability)
  *   - plugins          → T11 (plugin loader)
@@ -331,7 +329,7 @@ export interface AgenCConfig {
  *   - file_opener      → T11 (editor integration)
  *   - analytics        → T12 (analytics opt-in knobs)
  *
- * Openclaude-rooted, deferred:
+ * Settings deferred:
  *   - env              → T11 (shell env injection policy)
  *   - apiKeyHelper     → T11 (external API-key resolver hook)
  *   - cleanupPeriodDays → T11 (rollout/history retention)
@@ -353,7 +351,7 @@ export interface AgenCConfig {
  * (d) remove it from this block. Don't forget to drop the matching
  * `_unknown` test if the key is tested via `_unknown` today.
  */
-export const DEFERRED_CODEX_KEYS: readonly string[] = Object.freeze([
+export const DEFERRED_RUNTIME_KEYS: readonly string[] = Object.freeze([
   "notify",
   "otel",
   "plugins",
@@ -363,7 +361,7 @@ export const DEFERRED_CODEX_KEYS: readonly string[] = Object.freeze([
   "analytics",
 ]);
 
-export const DEFERRED_OPENCLAUDE_KEYS: readonly string[] = Object.freeze([
+export const DEFERRED_SETTINGS_KEYS: readonly string[] = Object.freeze([
   "env",
   "apiKeyHelper",
   "cleanupPeriodDays",
@@ -371,7 +369,7 @@ export const DEFERRED_OPENCLAUDE_KEYS: readonly string[] = Object.freeze([
 ]);
 
 // Known top-level keys — anything else goes into `_unknown` (I-26).
-// See DEFERRED_CODEX_KEYS / DEFERRED_OPENCLAUDE_KEYS above for the list
+// See DEFERRED_RUNTIME_KEYS / DEFERRED_SETTINGS_KEYS above for the list
 // of keys intentionally absent from this array while their tranches
 // catch up. Forward-compat: unknown keys land on `_unknown` rather than
 // being dropped.
@@ -506,36 +504,36 @@ export function mergeConfigs(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Codex TOML alias normalization
+// AgenC TOML alias normalization
 // ─────────────────────────────────────────────────────────────────────
 
-// Codex TOML uses some field names that differ from AgenC canonical keys.
-// This mapping lets users drop a codex config.toml unchanged and have it
+// AgenC TOML accepts some field names that differ from canonical keys.
+// This mapping lets users keep existing config.toml field names and have them
 // work. Aliases are applied BEFORE `normalizeRawConfig` so renamed fields
 // land on the `KNOWN_CONFIG_KEYS` fast path instead of `_unknown`.
-const CODEX_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+const AGENC_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   tools: "tools_config",
   model_reasoning_effort: "reasoning_effort",
   model_reasoning_summary: "reasoning_summary",
 });
 
 /**
- * Remap codex-style TOML keys onto canonical AgenC keys.
+ * Remap accepted TOML aliases onto canonical AgenC keys.
  *
  * Rules:
- * - Top-level aliases from `CODEX_TOP_LEVEL_ALIASES` are renamed; if the
+ * - Top-level aliases from `AGENC_TOP_LEVEL_ALIASES` are renamed; if the
  *   canonical key is also present, the canonical key wins and the alias is
  *   dropped (forward-compat for mixed configs).
- * - `agents.max_depth` → `agent_max_depth` (codex nests this).
+ * - `agents.max_depth` → `agent_max_depth`.
  *
  * The returned object is a shallow copy; nested values are passed through
  * by reference. Callers should not mutate `raw` after calling.
  */
-export function normalizeCodexKeyAliases(
+export function normalizeAgenCKeyAliases(
   raw: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...raw };
-  for (const [alias, canonical] of Object.entries(CODEX_TOP_LEVEL_ALIASES)) {
+  for (const [alias, canonical] of Object.entries(AGENC_TOP_LEVEL_ALIASES)) {
     if (alias in out) {
       if (!(canonical in out)) {
         out[canonical] = out[alias];

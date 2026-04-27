@@ -1,7 +1,7 @@
 /**
  * Memory citation metadata.
  *
- * Codex uses explicit citation blocks so memory-derived claims can be
+ * AgenC runtime uses explicit citation blocks so memory-derived claims can be
  * audited and usage can be tracked. AgenC keeps the same data model but
  * stores it as structured metadata on the session state before choosing
  * any user-visible rendering.

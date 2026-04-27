@@ -1,5 +1,5 @@
 /**
- * AgenC adapter for OpenClaude's `utils/cliHighlight.ts`.
+ * AgenC adapter for AgenC's `utils/cliHighlight.ts`.
  *
  * The TUI uses `getCliHighlightPromise` to optionally light up code blocks
  * in markdown rendering. Returning `null` means the markdown pipeline falls

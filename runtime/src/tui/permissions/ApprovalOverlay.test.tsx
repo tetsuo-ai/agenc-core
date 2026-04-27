@@ -433,7 +433,7 @@ describe("ApprovalOverlay", () => {
           request={makeRequest({
             tool: "ExitPlanMode",
             args: {
-              plan: "# Plan\n\n- Port OpenClaude planning workflow",
+              plan: "# Plan\n\n- Use AgenC planning workflow",
               planFilePath: "/tmp/agenc/plans/session.md",
             },
           })}
@@ -448,7 +448,7 @@ describe("ApprovalOverlay", () => {
     expect(text).toContain("Plan approval needed");
     expect(text).toContain("Approve plan");
     expect(text).toContain("Keep planning");
-    expect(text).toContain("Port OpenClaude planning workflow");
+    expect(text).toContain("Use AgenC planning workflow");
 
     emitter.emit("input", makeKeyEvent({ sequence: "a" }));
     await new Promise((r) => setTimeout(r, 20));

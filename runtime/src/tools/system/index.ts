@@ -78,7 +78,7 @@ export {
   type WorktreeToolConfig,
 } from "./worktree.js";
 
-// Openclaude-derived file/search tools (lifted into AgenC; free to modify).
+// AgenC-owned file/search tools (lifted into AgenC; free to modify).
 // These are the canonical first-class file/search surface.
 export {
   createFileReadTool,

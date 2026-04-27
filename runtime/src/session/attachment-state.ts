@@ -1,7 +1,7 @@
 /**
  * Per-session attachment-tracking state.
  *
- * Hand-port of openclaude `bootstrap/state.ts:1622-1626 + :1333-1346`,
+ * Hand-port of AgenC `bootstrap/state.ts:1622-1626 + :1333-1346`,
  * scoped to the AgenC session via WeakMap. Matches the existing AgenC
  * pattern in `runtime/src/prompts/memory/attachments.ts:47` (sessionBudgets)
  * and `runtime/src/prompts/memory/auto-save.ts:114`.
@@ -41,7 +41,7 @@ export interface AttachmentTrackingState {
   /**
    * Full set of deferred-tool names last announced. Stored alongside the
    * hash so the producer can compute added/removed deltas without
-   * rescanning the message history (openclaude reconstructs prior state
+   * rescanning the message history (AgenC reconstructs prior state
    * from prior `deferred_tools_delta` attachments in the transcript;
    * AgenC tracks it directly here).
    */

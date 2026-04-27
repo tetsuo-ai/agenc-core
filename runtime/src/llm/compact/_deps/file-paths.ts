@@ -3,18 +3,18 @@
  * to compaction summaries.
  *
  * Plan resolvers are wired into the AgenC plan-mode subsystem
- * (`src/planning/plan-files.ts`), which stores OpenClaude-style
+ * (`src/planning/plan-files.ts`), which stores AgenC-style
  * session-scoped markdown plans under `<AGENC_HOME>/plans/<slug>.md`.
  *
  * Project-instruction discovery is implemented here so compact's prompt
  * assembly can still surface AGENC.md / .agenc/instructions.md for the
  * cwd it was given.
  *
- * AgenC adaptation from upstream OpenClaude (`src/utils/plans.ts`):
+ * AgenC adaptation from upstream AgenC (`src/utils/plans.ts`):
  *
  *   - The storage root is AgenC's config dir (`AGENC_HOME` or
  *     `$HOME/.agenc`) instead of Claude's config dir.
- *   - The file content is raw markdown, matching OpenClaude's
+ *   - The file content is raw markdown, matching AgenC's
  *     `plan_file_reference` attachment semantics.
  *
  *   - Task disk output (`getTaskOutputPath`): no gut equivalent. Gut

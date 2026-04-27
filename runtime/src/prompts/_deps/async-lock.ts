@@ -1,9 +1,9 @@
 /**
  * Per-dir AsyncLock for `runtime/src/prompts/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/async-lock.ts` API the
+ * Mirrors the AgenC implementation `runtime/src/utils/async-lock.ts` API the
  * memory loader uses (per-key write mutex). Carved as a local `_deps/`
- * to cut the gut→openclaude crossing.
+ * to cut the gut→AgenC crossing.
  */
 
 export class AsyncLock<T> {

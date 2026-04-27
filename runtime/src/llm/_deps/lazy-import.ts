@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../utils/lazy-import.js`. Generic lazy-import helper used by LLM
  * adapters for optional npm dependencies.
  */

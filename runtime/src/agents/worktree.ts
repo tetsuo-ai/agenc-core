@@ -1,8 +1,8 @@
 /**
  * Git worktree lifecycle for subagent isolation.
  *
- * Hand-port of openclaude `utils/worktree.ts` (1,563 LOC) focused on
- * the core create/resume/teardown paths. The openclaude file mixes
+ * Hand-port of AgenC `utils/worktree.ts` (1,563 LOC) focused on
+ * the core create/resume/teardown paths. The AgenC file mixes
  * in telemetry, stale-cleanup cron, and UI-specific flows; AgenC's
  * T9 subset includes:
  *

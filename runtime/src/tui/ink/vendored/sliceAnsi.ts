@@ -1,5 +1,5 @@
 /**
- * Vendored from openclaude/src/utils/sliceAnsi.ts — ANSI-aware slice that
+ * Vendored from AgenC/src/utils/sliceAnsi.ts — ANSI-aware slice that
  * preserves hyperlink tokens and counts display cells (not code units).
  */
 import {

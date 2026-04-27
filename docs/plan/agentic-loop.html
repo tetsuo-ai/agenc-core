@@ -340,7 +340,7 @@ flowchart TB
       RespIdCheck -->|yes| RespIdRetry["Clear lastResponseId<br/>retry once with full history<br/>I-8 warning: previous_response_id_expired"]
       RespIdCheck -->|no| WatchdogWrap
       RespIdRetry --> WatchdogWrap
-      ProviderCall --> WatchdogWrap["I-11: Promise.race(nextEvent, idleTimer)<br/>STREAM_IDLE_TIMEOUT_MS=90s default-on (matches openclaude)<br/>(opt-out via AGENC_DISABLE_STREAM_WATCHDOG)"]
+      ProviderCall --> WatchdogWrap["I-11: Promise.race(nextEvent, idleTimer)<br/>STREAM_IDLE_TIMEOUT_MS=90s default-on (matches AgenC)<br/>(opt-out via AGENC_DISABLE_STREAM_WATCHDOG)"]
       WatchdogWrap --> StreamLoop{Stream event}
       StreamLoop -->|output_text.delta| StreamParse["llm/stream-parser.ts<br/>extract thinking/plan blocks<br/>strip proposed_plan markers<br/>capture citations<br/><b>I-77: scan for UI-spoof patterns<br/>([Approval Required], [y/n], etc.)<br/>prefix with [MODEL OUTPUT] marker</b>"]
       StreamParse --> BudgetCheck{"I-22: every 1000 tokens<br/>budgetTracker.remaining > 0?"}
@@ -368,7 +368,7 @@ flowchart TB
       AuthOAuth --> AuthCap{"≥ MAX_CONSECUTIVE_AUTH_FAILURES<br/>(=10, ccrClient.ts:68)?"}
       AuthCap -->|yes| AuthExhausted["I-8: emit error event<br/>cli_worker_auth_failures_exhausted<br/>hard-fail: re-authenticate"]
       AuthCap -->|no| ProviderCall
-      ProviderErr -->|"network / 5xx / 429"| SDKRetry["SDK retry<br/>exponential backoff (monotonic clock per I-82)<br/><b>I-58: honor Retry-After header (port openclaude)<br/>I-84: parse seconds OR HTTP-date<br/>cap at MAX_RETRY_AFTER_MS=300000</b>"]
+      ProviderErr -->|"network / 5xx / 429"| SDKRetry["SDK retry<br/>exponential backoff (monotonic clock per I-82)<br/><b>I-58: honor Retry-After header (port AgenC)<br/>I-84: parse seconds OR HTTP-date<br/>cap at MAX_RETRY_AFTER_MS=300000</b>"]
     ProviderErr -->|"200 OK + text/html<br/>(captive portal / proxy intercept)"| CaptivePortal["I-85: stream_error<br/>cause='captive_portal_or_proxy_intercept'<br/>non-retryable"]
     ProviderErr -->|"TLS cert validation failed<br/>(rotation / expiry / CA change)"| TlsError["I-86: LLMCertificateError<br/>distinct from auth failure<br/>retry once with fresh handshake"]
     CaptivePortal --> Cleanup
@@ -410,7 +410,7 @@ flowchart TB
       ReactiveCheck --> RCWorked{Compacted?}
       RCWorked -->|yes| ReactiveClearResp["I-2: activeProvider.clearResponseId()<br/>(P3 compaction triggers same I-2 contract as P1)"]
       ReactiveClearResp --> ReactiveRetry["transition=reactive_compact_retry<br/>buildPostCompactMessages"]
-      RCWorked -->|no| ApiErrGuard{"lastMessage.isApiErrorMessage?<br/>(openclaude query.ts:1297-1299 guard<br/>— without this, hooks fire on success<br/>and tokens spiral)"}
+      RCWorked -->|no| ApiErrGuard{"lastMessage.isApiErrorMessage?<br/>(AgenC query.ts:1297-1299 guard<br/>— without this, hooks fire on success<br/>and tokens spiral)"}
       ApiErrGuard -->|no — skip hooks| SurfaceErr2
       ApiErrGuard -->|yes| ExecStopFailHooks["executeStopFailureHooks"]
       ExecStopFailHooks --> SurfaceErr2["Return {reason:prompt_too_long<br/>OR image_error}"]
@@ -480,7 +480,7 @@ flowchart TB
       DispatchTool["tool.call(input, abortSignal, timeoutMs)<br/>streaming progress buffer<br/><b>I-9: per-tool timeout (default 30s, monotonic clock per I-82)<br/>I-3: mutation tools call checkModeStillAllowed()<br/>I-78: stdio chunks accumulated as Buffer[], decoded once at flush<br/>I-79: tool args parsed with large-int reviver (BigInt for >2^53)</b>"] --> TimeoutRace{"Promise.race:<br/>tool / timeout / abort"}
       TimeoutRace -->|timeout| ToolTimeout["I-9: TerminalToolResult{reason:'timeout',is_error:true}<br/>+ I-8 stream_error"]
       TimeoutRace -->|abort signal| ModeAbort["Abort write<br/>TerminalToolResult{reason:'mode_changed' or 'aborted'}"]
-      TimeoutRace -->|tool returned| SizeCheck{"I-15: result size<br/>< MAX_TOOL_RESULT_BYTES?<br/>(default 400KB — matches openclaude 100k tokens × 4 bytes)"}
+      TimeoutRace -->|tool returned| SizeCheck{"I-15: result size<br/>< MAX_TOOL_RESULT_BYTES?<br/>(default 400KB — matches AgenC 100k tokens × 4 bytes)"}
       SizeCheck -->|"too large"| TruncateResult["Truncate + marker<br/>+ I-8 warning"]
       SizeCheck -->|ok| ModeRaceCheck{"I-3: mode still<br/>allowed for write?"}
       TruncateResult --> ModeRaceCheck
@@ -516,7 +516,7 @@ flowchart TB
       AppendHistory --> RecordBoundary{"Compaction occurred<br/>this turn? (record only —<br/>compaction itself ran in P1/P3)"}
       RecordBoundary -->|yes| MarkBoundary[Mark turn boundary<br/>in rollout]
       RecordBoundary -->|no| StopGate
-      MarkBoundary --> StopGate["phases/stop-hooks.ts<br/>evaluateTurnEndStopGate +<br/>hooks: Stop / StopFailure<br/>(codex stop.rs port)"]
+      MarkBoundary --> StopGate["phases/stop-hooks.ts<br/>evaluateTurnEndStopGate +<br/>hooks: Stop / StopFailure<br/>(AgenC runtime stop.rs port)"]
       StopGate --> StopResult{Gate result}
       StopResult -->|needs continuation| Phase1
       StopResult -->|blocking errors| StopHookInject
@@ -559,7 +559,7 @@ flowchart TB
     RegAsync --> ChildPhase
     ChildPhase -.->|"recurses through<br/>full phase machine"| Phase1
     ChildPhase --> ChildDone[Child turn complete]
-    ChildDone --> Mailbox["I-5: bidirectional mailbox<br/>child → parent: progress / result<br/>parent → child: Interrupt / Resume / Cancel<br/><b>I-16: bounded queue (1000 max)<br/>backpressure 5s, then drop oldest + I-8 warning</b><br/>(CHANGE codex unbounded mpsc)"]
+    ChildDone --> Mailbox["I-5: bidirectional mailbox<br/>child → parent: progress / result<br/>parent → child: Interrupt / Resume / Cancel<br/><b>I-16: bounded queue (1000 max)<br/>backpressure 5s, then drop oldest + I-8 warning</b><br/>(CHANGE AgenC runtime unbounded mpsc)"]
     Mailbox --> ParentDrain[Parent polls mailbox.drain]
     Mailbox -.->|"parent Interrupt"| ChildPhase
     ChildDone --> WTChanged{Worktree changes?}

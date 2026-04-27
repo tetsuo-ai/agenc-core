@@ -54,7 +54,7 @@ function parseContent(result: {
   content: string;
   metadata?: Record<string, unknown>;
 }): Record<string, unknown> {
-  // After the openclaude tool_result shape port, structured fields (exitCode,
+  // After the AgenC tool_result shape port, structured fields (exitCode,
   // stdout, stderr, timedOut, durationMs, truncated) live on `metadata`
   // and `content` is plain text. Historical assertions used JSON.parse(
   // result.content) and inspected `.error` / `.exitCode` / etc.; rebuild

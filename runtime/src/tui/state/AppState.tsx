@@ -363,7 +363,7 @@ export interface AgenCAppStateValue {
   readonly configStore: ConfigStoreLike;
   readonly isStreaming: boolean;
   /**
-   * Active model slug surfaced to the status bar. Mirrors openclaude's
+   * Active model slug surfaced to the status bar. Mirrors AgenC's
    * `useAppState(s => s.mainLoopModel)` (`hooks/useMainLoopModel.ts:14`).
    * Updated by the `/model` slash command via `setModel` so the status
    * bar refreshes synchronously rather than waiting for the next turn's
@@ -382,7 +382,7 @@ export interface AgenCAppStateValue {
   setStreaming: (next: boolean) => void;
   /**
    * Update the visible model slug (status bar). Slash-command path uses
-   * this for synchronous parity with openclaude `setAppState({...prev,
+   * this for synchronous parity with AgenC `setAppState({...prev,
    * mainLoopModel: model})` at `commands/model/model.tsx:59-63`.
    */
   setModel: (next: string) => void;
@@ -490,7 +490,7 @@ export function AgenCAppStateProvider({
       createTuiApprovalResolver(exposedOps, session);
     // Publish the React-side setters so non-React callers (the slash
     // dispatcher in `bin/agenc.ts`) can refresh AppState synchronously
-    // — mirrors openclaude's `setAppState({...prev, mainLoopModel})`
+    // — mirrors AgenC's `setAppState({...prev, mainLoopModel})`
     // pattern adapted to AgenC's session-as-bridge convention.
     sessionWithQueueOps.appStateBridge = { setModel: memoSetModel };
     return () => {

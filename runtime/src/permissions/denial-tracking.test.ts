@@ -13,7 +13,7 @@ import {
 } from "./denial-tracking.js";
 
 describe("DENIAL_LIMITS", () => {
-  it("matches openclaude's live values (3 consecutive, 20 total)", () => {
+  it("matches AgenC's live values (3 consecutive, 20 total)", () => {
     expect(DENIAL_LIMITS.maxConsecutive).toBe(3);
     expect(DENIAL_LIMITS.maxTotal).toBe(20);
   });
@@ -127,7 +127,7 @@ describe("handleDenialLimitExceeded", () => {
 describe("local (per-request) denial tracking pattern", () => {
   it("mutating a per-request state does not leak into another state", () => {
     const sessionState = freshDenialTracking();
-    // openclaude's async-subagent pattern: clone into a local scope where
+    // AgenC's async-subagent pattern: clone into a local scope where
     // setAppState is a no-op.
     const localState = { ...sessionState };
     const after = recordDenial(localState);

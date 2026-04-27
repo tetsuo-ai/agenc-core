@@ -3,14 +3,14 @@
  * `runtime/src/agents/**`.
  *
  * The agent run-loop injects two non-enumerable args into every child
- * tool call so the openclaude-port filesystem tools can scope their
+ * tool call so the AgenC implementation filesystem tools can scope their
  * I/O:
  *   - `__agencSessionId` — the child conversation id
  *   - `__agencSessionAllowedRoots` — extra workspace roots for the
  *     child (worktree path)
  *
  * Carved as a local `_deps/` (mirroring
- * `runtime/src/tools/system/filesystem.ts`) to cut the gut→openclaude
+ * `runtime/src/tools/system/filesystem.ts`) to cut the gut→AgenC
  * crossing without re-importing the full filesystem tool surface.
  */
 

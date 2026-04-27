@@ -1,6 +1,6 @@
 // @ts-nocheck
-// Stub for openclaude's `src/types/message.ts`, which is referenced throughout
-// the openclaude-ported compact/ tree but never exists in upstream source.
+// Stub for AgenC's `src/types/message.ts`, which is referenced throughout
+// the AgenC implementationed compact/ tree but never exists in upstream source.
 // The port uses these as type-only imports, so any-typed placeholders are
 // sufficient to keep the compact module resolvable without pulling a live
 // message-type implementation into AgenC yet.

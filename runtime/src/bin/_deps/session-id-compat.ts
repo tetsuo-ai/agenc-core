@@ -1,10 +1,10 @@
 /**
  * Per-dir session-id retag helper for `runtime/src/bin/**`.
  *
- * Mirrors the openclaude-port `runtime/src/bridge/sessionIdCompat.ts`
+ * Mirrors the AgenC implementation `runtime/src/bridge/sessionIdCompat.ts`
  * `toInfraSessionId` helper used by the bootstrap path when building
  * the legacy code-session ingest URL. Carved as a local `_deps/` to
- * cut the gut→openclaude crossing.
+ * cut the gut→AgenC crossing.
  */
 
 /**

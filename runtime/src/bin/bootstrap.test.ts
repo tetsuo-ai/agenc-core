@@ -617,7 +617,7 @@ describe("bootstrapLocalRuntimeSession", () => {
   });
 
   // The "hydrates reconstructed history and seeded transcript events when
-  // resuming" test was removed alongside the openclaude-port gut. The
+  // resuming" test was removed alongside the AgenC implementation gut. The
   // resume path now sits on top of `_deps/session-storage.loadTranscriptFile`
   // which is a no-op stub (always throws ENOENT), so JSONL-backed transcript
   // hydration + marble-origami context-collapse rehydration can no longer
@@ -627,7 +627,7 @@ describe("bootstrapLocalRuntimeSession", () => {
   // dedicated tests in `recovery/collapse-drain.test.ts` and
   // `phases/post-sample-recovery.test.ts`. Restore this test once
   // `loadTranscriptFile` ports over the JSONL parse path.
-  it.skip("hydrates reconstructed history and seeded transcript events when resuming (deleted with openclaude-port gut)", async () => {
+  it.skip("hydrates reconstructed history and seeded transcript events when resuming (deleted with AgenC implementation gut)", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
 
@@ -1310,9 +1310,9 @@ required = true
     }
   });
 
-  it("enforces the upstream codex bootstrap step ordering invariant", async () => {
+  it("enforces the runtime bootstrap step ordering invariant", async () => {
     // Asserts the concrete step order the bin bootstrap is required to
-    // follow, mirroring upstream codex
+    // follow, mirroring upstream AgenC runtime
     // `core/src/session/session.rs:814-908, 931-942`:
     //
     //   1. Session construction (Session instance exists).
@@ -1436,7 +1436,7 @@ required = true
 
       const idx = (label: string): number => ordering.indexOf(label);
 
-      // The recorded step order must match the upstream codex
+      // The recorded step order must match the upstream AgenC runtime
       // contract: each step happens strictly before the next. Every
       // label must have been recorded (index >= 0).
       const mountIdx = idx("rollout_store_mounted");

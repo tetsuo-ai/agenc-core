@@ -1,11 +1,11 @@
 /**
- * Tests for `isSessionPlanFile` — the openclaude-parity carve-out used
+ * Tests for `isSessionPlanFile` — the AgenC-compatible carve-out used
  * by `tools/system/filesystem.ts:validatePath` and
  * `tools/system/coding-common.ts:resolveWorkspacePath` to allow writes
  * to the active session's plan-file family even when the path is
  * outside the workspace allowlist.
  *
- * Mirrors openclaude `isSessionPlanFile`
+ * Mirrors AgenC `isSessionPlanFile`
  * (`src/utils/permissions/filesystem.ts:254`):
  *
  *     const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
@@ -52,7 +52,7 @@ describe("isSessionPlanFile", () => {
   });
 
   test("matches the per-agent variant `<slug>-agent-<agentId>.md`", () => {
-    // openclaude allows both the main plan and per-agent plan files for
+    // AgenC allows both the main plan and per-agent plan files for
     // the same session — the prefix is `getPlansDirectory()/<slug>` and
     // the suffix is `.md`. The agent-id segment fits between the slug
     // and the `.md` suffix.

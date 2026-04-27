@@ -1,7 +1,7 @@
 /**
  * `/enter-worktree <slug>` — user-facing worktree entry.
  *
- * Port of openclaude `tools/EnterWorktreeTool/EnterWorktreeTool.ts`
+ * Port of AgenC `tools/EnterWorktreeTool/EnterWorktreeTool.ts`
  * (127 LOC). Creates (or resumes) an isolated worktree at
  * `<project>/.agenc-worktrees/<slug>` and switches the current
  * session's cwd to point at it.

@@ -3,7 +3,7 @@
  *
  * Mirrors the shape `runtime/src/utils/forkedAgent.ts` exposes for
  * compact cache-safe forking. Carved as a local `_deps/` so the
- * session tree stays resolvable after the openclaude umbrella
+ * session tree stays resolvable after the AgenC umbrella
  * `src/utils/forkedAgent.ts` is removed.
  *
  * The compact-runtime-context only constructs/consumes `CacheSafeParams`;

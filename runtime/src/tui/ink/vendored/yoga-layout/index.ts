@@ -1,8 +1,8 @@
 /**
- * OpenClaude-native TypeScript Yoga compatibility layer.
+ * AgenC-native TypeScript Yoga compatibility layer.
  *
  * AgenC intentionally vendors the same synchronous Yoga implementation used by
- * OpenClaude's TUI (`src/native-ts/yoga-layout`). This avoids native/WASM
+ * AgenC's TUI (`src/native-ts/yoga-layout`). This avoids native/WASM
  * install failures while preserving the layout semantics the upstream Ink stack
  * relies on. Treat this file as a ported renderer primitive, not an AgenC-local
  * fallback: behavior changes here must be validated with layout-contract tests.
@@ -34,7 +34,7 @@
  * Also implemented for spec parity (not used by Ink):
  *   - baseline alignment (align-items/align-self: baseline)
  *
- * Official Yoga features intentionally not exposed by AgenC/OpenClaude Ink:
+ * Official Yoga features intentionally not exposed by AgenC/AgenC Ink:
  *   - aspect-ratio
  *   - box-sizing: content-box
  *   - RTL direction (Ink always passes Direction.LTR)

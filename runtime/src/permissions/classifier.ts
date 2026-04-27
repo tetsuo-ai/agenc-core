@@ -1,7 +1,7 @@
 /**
  * Auto-mode classifier surface.
  *
- * Ports openclaude's `yoloClassifier.ts` + `classifierDecision.ts`
+ * Ports AgenC's `yoloClassifier.ts` + `classifierDecision.ts`
  * decision shape onto AgenC's provider abstraction:
  *
  *   - `isAutoModeAllowlistedTool` — safe-tool allowlist consulted by the
@@ -44,11 +44,11 @@ import type { ToolPermissionContext } from "./types.js";
 // ---------------------------------------------------------------------------
 
 /**
- * AgenC counterparts to the openclaude safe-tool list. Tool name strings
+ * AgenC counterparts to the AgenC safe-tool list. Tool name strings
  * are exactly what the orchestrator dispatches on so rule evaluation
  * lines up with registered tool names.
  *
- * Categories preserved from openclaude:
+ * Categories preserved from AgenC:
  *   - Read-only file operations
  *   - Search / read-only
  *   - LSP
@@ -113,7 +113,7 @@ export function __listAutoModeAllowlistedToolsForTesting(): readonly string[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Live circuit breaker for the auto-mode classifier. openclaude wires
+ * Live circuit breaker for the auto-mode classifier. AgenC wires
  * this to GrowthBook's `tengu_iron_gate_closed` flag. AgenC does not yet
  * ship that remote circuit-breaker surface, so the gate is considered open
  * when the local runtime can actually reach the xAI-backed classifier
@@ -151,7 +151,7 @@ export interface LLMUsage {
 /**
  * Minimal message shape the classifier accepts — transcript items are
  * provided by the orchestrator. Intentionally narrow so callers don't
- * have to reshape to openclaude's `Message` type.
+ * have to reshape to AgenC's `Message` type.
  */
 export interface LLMMessage {
   readonly role: "user" | "assistant" | "system" | "tool";
@@ -256,7 +256,7 @@ export function __resetClassifierStubSessionForTesting(): void {
  *
  * Structural gaps that remain after this tranche:
  *
- *   - AgenC does not yet expose openclaude's remote auto-mode circuit breaker
+ *   - AgenC does not yet expose AgenC's remote auto-mode circuit breaker
  *     or custom auto-mode rules/model settings. The gate therefore uses local
  *     classifier reachability (API key present) rather than GrowthBook, and
  *     the prompt is runtime-owned rather than settings-owned.

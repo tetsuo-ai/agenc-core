@@ -1,7 +1,7 @@
 /**
  * Token budget tracker — I-22.
  *
- * Ports openclaude `query/tokenBudget.ts` semantics into the live
+ * Ports AgenC `query/tokenBudget.ts` semantics into the live
  * request path while keeping AgenC's mid-stream sampling as a thin
  * estimation layer only. The continuation / diminishing-returns
  * decision itself is boundary-only and uses provider-reported output

@@ -8,7 +8,7 @@ export default defineConfig({
     alias: [
       { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
       // Mirror the tsconfig `paths` mapping `src/*` to the runtime `src/` tree
-      // so openclaude-style absolute imports resolve both under tsc and vitest.
+      // so AgenC-style absolute imports resolve both under tsc and vitest.
       { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
     ],
   },

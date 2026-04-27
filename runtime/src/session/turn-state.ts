@@ -1,9 +1,9 @@
 /**
  * TurnState — mutable working set carried across phase-machine iterations.
  *
- * Hand-port of openclaude `src/query.ts`'s `State` type (query.ts:203) plus
+ * Hand-port of AgenC `src/query.ts`'s `State` type (query.ts:203) plus
  * the 22 loop-local variables the body destructures/re-assigns each iteration
- * (query.ts:315-339). Every field below cites its exact openclaude source
+ * (query.ts:315-339). Every field below cites its exact AgenC source
  * line per `docs/plan/translation-conventions.md` "full-port with citations"
  * rule. Forward-dep types (StreamingToolExecutor, MemoryPrefetch, etc.)
  * whose real implementations land in T7/T8/T10 get placeholder `unknown`
@@ -25,14 +25,14 @@ import { provisionContentReplacementState } from "./_deps/tool-result-storage.js
 
 /**
  * Continue — the 8 recovery re-entry reasons captured at each
- * openclaude query.ts continue site. Used on `TurnState.transition`
+ * AgenC query.ts continue site. Used on `TurnState.transition`
  * so the phase machine can route correctly on the next iteration
  * and so tests can assert which recovery path fired without peeking
- * at message contents. Mirrors openclaude `Continue` from
+ * at message contents. Mirrors AgenC `Continue` from
  * `src/query/transitions.ts` (source exists in upstream head; cited
  * as per transition literal sites in query.ts).
  *
- * Sites (openclaude query.ts line → reason):
+ * Sites (AgenC query.ts line → reason):
  *   981  → collapse_drain_retry (implied by context-collapse retry)
  *   1142 → collapse_drain_retry
  *   1195 → reactive_compact_retry
@@ -41,7 +41,7 @@ import { provisionContentReplacementState } from "./_deps/tool-result-storage.js
  *   1338 → stop_hook_blocking
  *   1375 → token_budget_continuation
  *   1457 → continuation_nudge
- * Plus codex model-fallback site → model_fallback.
+ * Plus AgenC runtime model-fallback site → model_fallback.
  *
  * T8 disambiguation:
  *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
@@ -68,7 +68,7 @@ export interface Continue {
 }
 
 /**
- * Terminal — why the run-turn generator returned. Mirrors openclaude
+ * Terminal — why the run-turn generator returned. Mirrors AgenC
  * query.ts terminal reasons: 'completed', 'blocking_limit',
  * 'prompt_too_long', 'image_error', 'model_error', 'aborted_streaming',
  * 'stop_hook_prevented', 'aborted_tools', 'hook_stopped', 'max_turns'.
@@ -98,10 +98,10 @@ export interface Terminal {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * openclaude `AutoCompactTrackingState` from the compaction pipeline.
+ * AgenC `AutoCompactTrackingState` from the compaction pipeline.
  * Real import lands when `src/llm/compact/**` is lifted from tsconfig
  * exclude (T5b/T6). Structural shape documented here; runtime matches
- * codex/openclaude schema.
+ * AgenC runtime/AgenC schema.
  */
 export interface AutoCompactTrackingState {
   readonly compacted: boolean;
@@ -111,7 +111,7 @@ export interface AutoCompactTrackingState {
 }
 
 /**
- * openclaude `ToolUseSummaryMessage` (services/tools/StreamingToolExecutor).
+ * AgenC `ToolUseSummaryMessage` (services/tools/StreamingToolExecutor).
  * T7 wires real type. Used as a pending promise whose resolution is
  * awaited before the next phase iteration.
  */
@@ -122,7 +122,7 @@ export type ToolUseSummaryMessage = {
 };
 
 /**
- * openclaude `StreamingToolExecutor` instance. T7 wires real class.
+ * AgenC `StreamingToolExecutor` instance. T7 wires real class.
  * Held loop-local so the next iteration can await pending executor
  * completion before re-entering streamModel.
  */
@@ -148,7 +148,7 @@ export interface SkillPrefetch {
 
 /**
  * Content-replacement state (tool-result budget enforcement). Real
- * impl in `utils/toolResultStorage.ts` (openclaude). T7 wires real
+ * impl in `utils/toolResultStorage.ts` (AgenC). T7 wires real
  * type; carried on TurnState so iteration-to-iteration sees persisted
  * replacements.
  */
@@ -171,7 +171,7 @@ export interface AssistantMessage {
 }
 
 /**
- * Single tool-result user message. T7 wires real shape. openclaude
+ * Single tool-result user message. T7 wires real shape. AgenC
  * query.ts:562 collects these alongside AttachmentMessage into
  * `toolResults`.
  */
@@ -197,7 +197,7 @@ export interface AttachmentMessage {
 
 /**
  * Parsed tool-use block extracted from an assistant message. T7 wires
- * real shape. Exists as a separate type on TurnState because openclaude
+ * real shape. Exists as a separate type on TurnState because AgenC
  * uses non-empty `toolUseBlocks` as the sole loop-exit signal (stop_reason
  * is unreliable). See query.ts:564-567.
  */
@@ -224,7 +224,7 @@ export type TokenBudgetDecision =
 /**
  * TurnState carries mutable cross-iteration data for the phase machine.
  *
- * Field groups follow openclaude query.ts:
+ * Field groups follow AgenC query.ts:
  *   - Phase 1 (prepareContext): input messages, compact tracking, budget
  *   - Phase 2 (streamModel):    captured assistant output + tool-use blocks
  *   - Phase 3 (postSampleRecovery): recovery counters, token overrides
@@ -237,40 +237,40 @@ export type TokenBudgetDecision =
  * mutated-or-replaced TurnState. See `docs/plan/architecture.md` §Phase
  * Machine for the pure-phase-function invariant (I-89, proposed).
  *
- * Field-name mapping to openclaude `query.ts:315` destructure:
+ * Field-name mapping to AgenC `query.ts:315` destructure:
  *   toolUseContext    → handled via TurnContext + streamingToolExecutor
  *   tracking          → autoCompactTracking (renamed for clarity)
- *   (all other 20 names map 1:1 — see openclaude-inventory.md §1)
+ *   (all other 20 names map 1:1 — see AgenC-inventory.md §1)
  */
 export interface TurnState {
-  // ── Phase 1 — prepare context (openclaude query.ts:268-459) ───────
+  // ── Phase 1 — prepare context (AgenC query.ts:268-459) ───────
   /** Full conversation history including user + assistant + tool turns.
-   *  openclaude query.ts:272 (State.messages).
-   *  Updated at commit phase (openclaude query.ts:1192) with new
+   *  AgenC query.ts:272 (State.messages).
+   *  Updated at commit phase (AgenC query.ts:1192) with new
    *  assistant message + tool results. */
   messages: LLMMessage[];
 
   /** Post-compact/post-snip/post-microcompact projection of `messages`
    *  used for the actual model request. Rebuilt each iteration from
    *  `getMessagesAfterCompactBoundary(messages)` then mutated by
-   *  compaction pipeline. openclaude query.ts:369. */
+   *  compaction pipeline. AgenC query.ts:369. */
   messagesForQuery: LLMMessage[];
 
   /** Auto-compact tracking (turn counter since last compact, consecutive
-   *  failure count for circuit breaker). openclaude query.ts:371, 531.
+   *  failure count for circuit breaker). AgenC query.ts:371, 531.
    *  Reset on every successful compact so `turnsSincePreviousCompact`
    *  reflects the most recent compaction event. */
   autoCompactTracking: AutoCompactTrackingState | undefined;
 
   /** task_budget.remaining tracking across compaction boundaries.
-   *  Undefined until first compact fires. openclaude query.ts:295, 521.
+   *  Undefined until first compact fires. AgenC query.ts:295, 521.
    *  Cumulative: each compaction subtracts the final context at that
    *  compact's trigger point. */
   taskBudgetRemaining: number | undefined;
 
   /** Tokens freed by the HISTORY_SNIP pass this iteration. Plumbed to
    *  autocompact threshold check so it reflects post-snip size.
-   *  openclaude query.ts:410. */
+   *  AgenC query.ts:410. */
   snipTokensFreed: number;
 
   /** Memory prefetch handle started once per turn (query.ts:305).
@@ -284,41 +284,41 @@ export interface TurnState {
   pendingSkillPrefetch: SkillPrefetch | undefined;
 
   /** Content-replacement state for per-message tool-result budget
-   *  enforcement. openclaude query.ts:383-404. T7 wires real type. */
+   *  enforcement. AgenC query.ts:383-404. T7 wires real type. */
   contentReplacementState: ContentReplacementState | undefined;
 
-  // ── Phase 2 — stream model (openclaude query.ts:561-1082) ─────────
+  // ── Phase 2 — stream model (AgenC query.ts:561-1082) ─────────
   /** Assistant messages produced this iteration (typically one, but
-   *  recovery paths can emit multiples). openclaude query.ts:561. */
+   *  recovery paths can emit multiples). AgenC query.ts:561. */
   assistantMessages: AssistantMessage[];
 
   /** Tool-use blocks parsed from the assistant stream. Non-empty value
    *  is the sole reliable loop-continue signal — `stop_reason`
-   *  ('tool_use' etc.) is unreliable. openclaude query.ts:564-567. */
+   *  ('tool_use' etc.) is unreliable. AgenC query.ts:564-567. */
   toolUseBlocks: ToolUseBlock[];
 
   /** Set true during streaming when a tool_use block arrives; false
    *  after streaming means we're done (modulo stop-hook retry).
-   *  openclaude query.ts:568. */
+   *  AgenC query.ts:568. */
   needsFollowUp: boolean;
 
   /** Tool results (user messages) + attachment messages to send with
-   *  the next request. openclaude query.ts:562. */
+   *  the next request. AgenC query.ts:562. */
   toolResults: Array<UserMessage | AttachmentMessage>;
 
-  // ── Phase 3 — post-sample recovery (openclaude query.ts:1082-1299) ─
+  // ── Phase 3 — post-sample recovery (AgenC query.ts:1082-1299) ─
   /** Whether reactive compact has already fired this turn. Prevents
    *  infinite compact-retry loop when context stays over threshold.
-   *  openclaude query.ts:1189. Wired in T8. */
+   *  AgenC query.ts:1189. Wired in T8. */
   hasAttemptedReactiveCompact: boolean;
 
   /** One-shot override for maxOutputTokens on next request (used by
-   *  recovery escalation). openclaude query.ts:1246. */
+   *  recovery escalation). AgenC query.ts:1246. */
   maxOutputTokensOverride: number | undefined;
 
   /** Consecutive max-output-tokens recovery attempts. Cap at
    *  MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3 (query.ts:162) before giving
-   *  up. openclaude query.ts:1273. */
+   *  up. AgenC query.ts:1273. */
   maxOutputTokensRecoveryCount: number;
 
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery
@@ -326,21 +326,21 @@ export interface TurnState {
    *  continue site, checked before re-entering stream. */
   recoveryReentryCount: number;
 
-  // ── Phase 4 — continuation nudge (openclaude query.ts:1300-1465) ──
+  // ── Phase 4 — continuation nudge (AgenC query.ts:1300-1465) ──
   /** Consecutive continuation-nudge count. Cap at MAX_CONTINUATION_NUDGES=3
    *  (query.ts:163) to prevent infinite nudge loops when the model
    *  matches continuation signals without emitting tool calls.
-   *  openclaude query.ts:1456. */
+   *  AgenC query.ts:1456. */
   continuationNudgeCount: number;
 
-  // ── Phase 5 — execute tools (openclaude query.ts:572, 1467-1635) ──
+  // ── Phase 5 — execute tools (AgenC query.ts:572, 1467-1635) ──
   /** Streaming tool executor instance (T7). Kept loop-local so the
    *  next iteration can await pending executor completion before
-   *  re-entering streamModel. openclaude query.ts:572. */
+   *  re-entering streamModel. AgenC query.ts:572. */
   streamingToolExecutor: StreamingToolExecutor | null;
 
   /** Pending tool-use summary promise — resolved before next iteration
-   *  can proceed. openclaude query.ts:1577. */
+   *  can proceed. AgenC query.ts:1577. */
   pendingToolUseSummary: Promise<ToolUseSummaryMessage | null> | undefined;
 
   /** Cached token-budget decision captured mid-stream (I-22). Acted on
@@ -354,21 +354,21 @@ export interface TurnState {
    *  resetIterationFields. */
   lastResponseUsage: LLMUsage | undefined;
 
-  // ── Phase 6 — commit (openclaude query.ts:1192-1465) ──────────────
+  // ── Phase 6 — commit (AgenC query.ts:1192-1465) ──────────────
   /** Number of model turns consumed this session. Compared against
    *  `ctx.configSnapshot.maxTurns` for I-7 terminal abort.
-   *  openclaude query.ts:279. */
+   *  AgenC query.ts:279. */
   turnCount: number;
 
   // ── Recovery transition (I-7 + I-42 + I-17) ───────────────────────
   /** Why the previous iteration continued. Undefined on first
    *  iteration. Lets tests assert recovery paths fired without
-   *  inspecting message contents. openclaude query.ts:1140, 219. */
+   *  inspecting message contents. AgenC query.ts:1140, 219. */
   transition: Continue | undefined;
 
   /** Stop-hook "blocking" state from prior iteration. Whether the
    *  most recent stop-hook returned a blocking result that should
-   *  suppress the next continuation attempt. openclaude query.ts:211. */
+   *  suppress the next continuation attempt. AgenC query.ts:211. */
   stopHookActive: boolean | undefined;
 
   /** Consecutive stop-hook blocking iterations. Enforces I-17
@@ -385,14 +385,14 @@ export interface TurnState {
 // (see session/turn-context.ts). Phases read the frozen config from
 // `ctx.configSnapshot`, never from `session.state` directly. TurnState
 // does not duplicate the snapshot — there is exactly one immutable
-// snapshot per turn, on the TurnContext, mirroring codex's pattern.
+// snapshot per turn, on the TurnContext, mirroring AgenC runtime's pattern.
 
 // ─────────────────────────────────────────────────────────────────────
 // Builder
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Initial-state builder. Mirrors openclaude query.ts:268-283 (the
+ * Initial-state builder. Mirrors AgenC query.ts:268-283 (the
  * `let state: State = {...}` block). Taking the TurnContext + seed
  * user message (serialized into a single LLMMessage) is sufficient
  * because all counters start at 0 and all tracking/override fields
@@ -457,7 +457,7 @@ export function buildInitialTurnState(
  * the cross-iteration bookkeeping (turnCount, compact tracking,
  * nudge counts) intact while clearing per-iteration accumulators.
  *
- * Matches openclaude's implicit re-allocation of `assistantMessages`,
+ * Matches AgenC's implicit re-allocation of `assistantMessages`,
  * `toolUseBlocks`, `toolResults`, `needsFollowUp` at query.ts:561-568
  * on every iteration.
  */

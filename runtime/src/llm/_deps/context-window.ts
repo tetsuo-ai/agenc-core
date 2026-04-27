@@ -1,7 +1,7 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../gateway/context-window.js`. The full gateway resolver lives in
- * the openclaude port; this lean stub re-exposes only the surface that
+ * the AgenC port; this lean stub re-exposes only the surface that
  * the LLM subsystem actually consumes:
  *   - GatewayLLMConfig type (minimal field set)
  *   - normalizeGrokModel (legacy alias rewrite)

@@ -1,17 +1,17 @@
 /**
  * Pre/post tool hooks + MCP output modifier.
  *
- * Subset port of openclaude `services/tools/toolHooks.ts`. AgenC's T6
+ * Subset port of AgenC `services/tools/toolHooks.ts`. AgenC's T6
  * surface is a composable chain: each hook function receives
  * `(invocation, args, dispatchResult)` and returns either a
  * pass-through value or a replacement.
  *
- * T6 (W1 parity pass): the decision set grew to match openclaude's
+ * T6 (W1 parity pass): the decision set grew to match AgenC's
  * PostToolUse universe — `stop`, `preventContinuation`,
  * `additionalContext`, `hook_blocking_error`, and `rewrite` all live
  * here and every one is emitted by the live execution path. The
  * args-retry auto-fix loop (previously `runWithAutoFixRetry`) was
- * removed per `docs/plan/feature-matrix.md`: openclaude's auto-fix is
+ * removed per `docs/plan/feature-matrix.md`: AgenC's auto-fix is
  * a lint/test runner injected as PostToolUse additional context, not
  * an args-retry — AgenC's `/auto-fix` command advertises that flow,
  * and the unrelated args-retry surface was confusing the contract.
@@ -24,12 +24,12 @@ import type { ToolInvocation } from "./context.js";
 import type { Tool } from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Timing threshold (openclaude parity — toolHooks.ts)
+// Timing threshold (AgenC behavior — toolHooks.ts)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Hooks that run longer than this threshold (ms) emit a telemetry
- * event so slow hooks are discoverable. Matches openclaude's
+ * event so slow hooks are discoverable. Matches AgenC's
  * `HOOK_TIMING_DISPLAY_THRESHOLD_MS=500`.
  */
 export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500;
@@ -49,7 +49,7 @@ export interface HookTimingRecord {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Hook permission result (openclaude parity — used before the permission
+// Hook permission result (AgenC behavior — used before the permission
 // gate so PreToolUse hooks can steer the rule-based check).
 // ─────────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ export interface HookPermissionResult {
    * and the tool's `execute()` both see the rewritten values.
    */
   readonly updatedInput?: Record<string, unknown>;
-  /** openclaude `decisionReason.hookName` passthrough for analytics. */
+  /** AgenC `decisionReason.hookName` passthrough for analytics. */
   readonly hookName?: string;
 }
 
@@ -94,7 +94,7 @@ export type PreToolUseDecision =
   /** Short-circuit: return a synthesized result (memoizing/cached hook). */
   | { readonly kind: "skip"; readonly synthResult: ToolDispatchResult }
   /**
-   * Stop the turn entirely — openclaude PreToolUse `stop` (CANCEL_MESSAGE
+   * Stop the turn entirely — AgenC PreToolUse `stop` (CANCEL_MESSAGE
    * tool_result, turn concluded). `stopReason` is surfaced as the
    * toolUseResult for analytics.
    */
@@ -208,7 +208,7 @@ export async function runPreToolUseHooks(
     if (decision.hookPermissionResult && !hookPermissionResult) {
       // First hook that speaks up wins — subsequent hooks can still
       // rewrite args/add context but can't override the permission
-      // decision. Matches openclaude `hookPermissionResult` threading.
+      // decision. Matches AgenC `hookPermissionResult` threading.
       hookPermissionResult = decision.hookPermissionResult;
       if (decision.hookPermissionResult.updatedInput) {
         args = decision.hookPermissionResult.updatedInput;
@@ -238,7 +238,7 @@ export type PostToolUseDecision =
   | { readonly kind: "continue" }
   | { readonly kind: "rewrite"; readonly result: ToolDispatchResult }
   /**
-   * openclaude `stop` — the turn halts. Surfaces as a
+   * AgenC `stop` — the turn halts. Surfaces as a
    * `hook_stopped_continuation` attachment on the live path.
    */
   | {
@@ -246,7 +246,7 @@ export type PostToolUseDecision =
       readonly stopReason?: string;
     }
   /**
-   * openclaude `preventContinuation` — the successful tool result is
+   * AgenC `preventContinuation` — the successful tool result is
    * kept, but the turn does not loop back to the model. Live path
    * emits `hook_stopped_continuation`.
    */
@@ -256,7 +256,7 @@ export type PostToolUseDecision =
       readonly result?: ToolDispatchResult;
     }
   /**
-   * openclaude `additionalContext` — inject extra synthesized user
+   * AgenC `additionalContext` — inject extra synthesized user
    * messages after the tool_result (e.g. lint/test feedback). Live
    * path emits `hook_additional_context`.
    */
@@ -266,7 +266,7 @@ export type PostToolUseDecision =
       readonly result?: ToolDispatchResult;
     }
   /**
-   * openclaude `hook_blocking_error` — the hook errored while
+   * AgenC `hook_blocking_error` — the hook errored while
    * processing the result; surface the error alongside the (possibly
    * unchanged) result. Live path emits `hook_blocking_error`.
    */
@@ -311,7 +311,7 @@ export interface PostHooksResult {
  * Hooks that throw are captured via `onError`. A thrown hook is
  * equivalent to a `hook_blocking_error` decision with the error
  * message as the `blockingError`; callers that want the
- * `hook_error_during_execution` label instead (openclaude's label
+ * `hook_error_during_execution` label instead (AgenC's label
  * for the throw path) should emit it from the `onError` callback.
  */
 export async function runPostToolUseHooks(
@@ -414,7 +414,7 @@ export async function runPostToolUseHooks(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Post-tool-use failure hook (openclaude parity — `executePostToolUseFailureHooks`)
+// Post-tool-use failure hook (AgenC behavior — `executePostToolUseFailureHooks`)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface PostToolUseFailureHookInput {
@@ -430,7 +430,7 @@ export type PostToolUseFailureHook = (
 ) => Promise<void> | void;
 
 /**
- * Port of openclaude `executePostToolUseFailureHooks`. Fires for every
+ * Port of AgenC `executePostToolUseFailureHooks`. Fires for every
  * hook in order after a tool throws. Purely observational: exceptions
  * inside a failure hook are swallowed + reported via `onError`, and the
  * original tool error is expected to bubble up from the caller. Returns
@@ -471,7 +471,7 @@ export async function runPostToolUseFailureHooks(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Placeholder for the MCP output modifier (openclaude toolHooks:
+ * Placeholder for the MCP output modifier (AgenC toolHooks:
  * `applyMcpOutputModifier`). T9 wires a real implementation that
  * lets per-server config transform raw MCP text content (e.g. strip
  * secrets, reformat Markdown). T7 ships the surface so the pipeline
@@ -535,7 +535,7 @@ export class ToolHookRegistry {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Permission-decision hook (openclaude parity — resolveHookPermissionDecision)
+// Permission-decision hook (AgenC behavior — resolveHookPermissionDecision)
 // ─────────────────────────────────────────────────────────────────────
 
 /** First-match wins: `pass` means "no opinion, consult the next hook". */
@@ -561,7 +561,7 @@ export type PermissionDecisionHook = (input: {
  * first non-`pass`/non-`undefined` decision. A thrown hook is treated
  * as `pass` (safety: a broken hook must not silently deny).
  *
- * This is the typed, payload-shape-aware analog of openclaude
+ * This is the typed, payload-shape-aware analog of AgenC
  * `resolveHookPermissionDecision`. The orchestrator's `requestApproval`
  * pipeline consults this BEFORE falling back to the session approval
  * resolver so hooks get first-say on permission outcomes.
@@ -599,7 +599,7 @@ export async function resolveHookPermissionDecision(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Hook + rule merge (openclaude parity — `resolveHookPermissionDecision`
+// Hook + rule merge (AgenC behavior — `resolveHookPermissionDecision`
 // inc-4788 semantics: hook `allow` does NOT bypass settings.json deny/ask).
 // ─────────────────────────────────────────────────────────────────────
 
@@ -615,7 +615,7 @@ export interface MergedHookPermissionDecision {
 
 /**
  * Merge a PreToolUse hook's permission result with the rule-based
- * permission check, preserving openclaude inc-4788 semantics:
+ * permission check, preserving AgenC inc-4788 semantics:
  *
  *   - hook `allow` + rule `deny` → deny wins
  *   - hook `allow` + rule `ask`  → ask wins (dialog required)

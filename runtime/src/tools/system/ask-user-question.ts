@@ -1,11 +1,11 @@
 /**
- * AskUserQuestion — OpenClaude-style user interview tool.
+ * AskUserQuestion — AgenC-style user interview tool.
  *
  * The model uses this tool to ask 1-4 multiple-choice questions during
  * planning or execution. The TUI renders the actual interactive picker
  * and records the user's answers before allowing the tool call to run.
  *
- * The approval decision enum intentionally stays Codex-shaped, so the
+ * The approval decision enum intentionally stays AgenC-shaped, so the
  * answered input is handed from the TUI to the tool through a small
  * call-id keyed side channel. The executor already injects `__callId`
  * into every tool call just before dispatch.

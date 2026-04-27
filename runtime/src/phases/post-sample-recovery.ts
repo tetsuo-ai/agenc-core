@@ -2,7 +2,7 @@
  * Phase 3 — Post-Sample Recovery.
  *
  * Evaluates the 7-strategy recovery ladder after the model stream
- * completes. Mirrors openclaude `query.ts:1082-1299`. Routes through
+ * completes. Mirrors AgenC `query.ts:1082-1299`. Routes through
  * the ordered trigger priority (I-10) under the recovery-in-flight
  * exclusive lock (I-62) with the per-turn re-entry cap (I-42).
  *
@@ -99,7 +99,7 @@ export async function postSampleRecovery(
       content: continuationMessage,
     });
     state.transition = { reason: "token_budget_continuation" };
-    // Match openclaude's continuation branch as closely as the current
+    // Match AgenC's continuation branch as closely as the current
     // phase split allows: clear recovery-specific one-shot state before
     // re-entering PrepareContext with the injected continuation prompt.
     state.hasAttemptedReactiveCompact = false;

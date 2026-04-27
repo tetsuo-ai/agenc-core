@@ -208,11 +208,11 @@ describe("rollout-reconstruction", () => {
   });
 
   test("isUserTurnBoundary excludes tool-result response_items", () => {
-    // Codex parity: a role='user' response_item carrying a
+    // AgenC behavior: a role='user' response_item carrying a
     // function_call_output / tool_use_result must NOT count as a
     // user-turn boundary during reverse-scan. We verify this via
     // the thread_rolled_back drop logic, which counts boundaries
-    // the same way. Codex `trim_pre_turn_context_updates`
+    // the same way. AgenC runtime `trim_pre_turn_context_updates`
     // (history.rs:428-456) additionally strips contextual user
     // injections sitting *above* the cut index, so the
     // `<environment_context>` fragment between real-u1 and real-u2
@@ -257,7 +257,7 @@ describe("rollout-reconstruction", () => {
     // real-u1 survives: the rolled-back turn is real-u2, not real-u1.
     expect(userTexts).toContain("real-u1");
     expect(userTexts).not.toContain("real-u2");
-    // Codex `trim_pre_turn_context_updates` (history.rs:428-456)
+    // AgenC runtime `trim_pre_turn_context_updates` (history.rs:428-456)
     // strips the contextual <environment_context> injection that
     // sat immediately above the rollback cut, so the fragment is
     // dropped too.
@@ -323,7 +323,7 @@ describe("rollout-reconstruction", () => {
     expect(texts).toContain("first ask");
     expect(texts).toContain("second ask");
     expect(texts[texts.length - 1]).toBe("summary blob");
-    // Reference context cleared per codex legacy-compaction branch.
+    // Reference context cleared per AgenC runtime legacy-compaction branch.
     expect(r.referenceContextItem).toBeUndefined();
   });
 
@@ -355,8 +355,8 @@ describe("rollout-reconstruction", () => {
     }
   });
 
-  test("replay truncation caps oversized tool-output text only (codex process_item)", () => {
-    // Codex `ContextManager::process_item` (history.rs:375-409)
+  test("replay truncation caps oversized tool-output text only (tool item)", () => {
+    // AgenC runtime `ContextManager::process_item` (history.rs:375-409)
     // only truncates FunctionCallOutput / CustomToolCallOutput on
     // replay — plain Message (role=assistant/user) content passes
     // through unchanged. Verify both branches.
@@ -364,7 +364,7 @@ describe("rollout-reconstruction", () => {
     const items: RolloutItem[] = [
       // Assistant Message: must NOT be truncated.
       { type: "response_item", payload: { role: "assistant", content: big } },
-      // Tool-role output: MUST be truncated (codex FunctionCallOutput).
+      // Tool-role output: MUST be truncated (AgenC runtime FunctionCallOutput).
       {
         type: "response_item",
         payload: {
@@ -432,11 +432,11 @@ describe("rollout-reconstruction", () => {
   });
 
   /**
-   * Port of codex
+   * Port of AgenC runtime
    * `reconstruct_history_rollback_counts_inter_agent_assistant_turns`
-   * (codex-rs/core/src/session/rollout_reconstruction_tests.rs:479-571).
+   * (AgenC runtime-rs/core/src/session/rollout_reconstruction_tests.rs:479-571).
    *
-   * Codex `is_user_turn_boundary` (history.rs:703-710) counts an
+   * AgenC runtime `is_user_turn_boundary` (history.rs:703-710) counts an
    * assistant-role message whose content is an inter-agent
    * instruction JSON payload as a user-turn boundary. Rolling back
    * one user turn must therefore drop the inter-agent assistant turn
@@ -478,7 +478,7 @@ describe("rollout-reconstruction", () => {
         },
       },
       // Turn 2: inter-agent assistant-instruction turn (counts as a
-      // user-turn boundary per codex).
+      // user-turn boundary per AgenC runtime).
       {
         type: "event_msg",
         payload: {
@@ -565,7 +565,7 @@ describe("rollout-reconstruction", () => {
 
   /**
    * `collectUserMessages` / legacy compaction rebuild must skip a
-   * previously-emitted summary message (codex `is_summary_message`
+   * previously-emitted summary message (AgenC runtime `is_summary_message`
    * at `compact.rs:410-412`). We feed a history with the rendered
    * summary prefix verbatim and assert that a subsequent legacy
    * compaction rebuild does not re-feed it.

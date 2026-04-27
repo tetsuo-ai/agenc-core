@@ -1,7 +1,7 @@
 /**
  * Phase 6 — Commit.
  *
- * Mirrors openclaude `query.ts:1192-1465` (iteration tail) + 1643-1836
+ * Mirrors AgenC `query.ts:1192-1465` (iteration tail) + 1643-1836
  * (terminal commit). Responsibilities per TODO.MD T5-B line 974:
  *
  *   1. **Append history** — ensure all iteration outputs (assistant
@@ -38,7 +38,7 @@ import { evaluateStopHooks } from "./stop-hooks.js";
 
 /**
  * I-17: hard cap on how many consecutive stop-hook blocking cycles
- * we tolerate before force-terminating with error. Matches openclaude
+ * we tolerate before force-terminating with error. Matches AgenC
  * `MAX_STOP_HOOK_BLOCKS = 3` (query.ts:163).
  */
 export const MAX_STOP_HOOK_BLOCKS = 3;
@@ -93,7 +93,7 @@ export async function commit(
   }
 
   // Drop the streaming tool executor reference so the next iteration
-  // constructs a fresh one (matches openclaude query.ts:572).
+  // constructs a fresh one (matches AgenC query.ts:572).
   state.streamingToolExecutor = null;
 
   // ── 2. Compaction boundary — if this iteration's tracking state
@@ -114,7 +114,7 @@ export async function commit(
     // T6 I-24b: re-append session metadata so --resume readers that
     // scan the last 16KB of the rollout still find the session
     // header even after many compacts have pushed it out of range.
-    // Port of openclaude sessionStorage.ts::reAppendSessionMetadata.
+    // Port of AgenC sessionStorage.ts::reAppendSessionMetadata.
     session.rolloutStore?.store.reAppendSessionMetadata();
     // Mark the boundary as consumed so subsequent iterations don't
     // re-emit until the next successful compact mutates the turnId.

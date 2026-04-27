@@ -1,10 +1,10 @@
 /**
  * Lean message-helper surface used by `runtime/src/session/**`.
  *
- * Mirrors the small slice of the upstream openclaude `utils/messages.ts`
+ * Mirrors the small slice of the upstream AgenC `utils/messages.ts`
  * API that the gut session subsystem actually reaches for. Operates on
  * the duck-typed message shape `{ type, message: { role, content }, ... }`,
- * matching the openclaude wire format that `compact/` already uses.
+ * matching the AgenC wire format that `compact/` already uses.
  *
  * Extends compact's `_deps/messages.ts` createUserMessage to accept a
  * caller-provided `timestamp` (manual-compact.ts uses it to keep the

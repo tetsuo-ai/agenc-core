@@ -2,10 +2,10 @@
  * Per-dir process-global "current runtime session" handle for
  * `runtime/src/bin/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/currentRuntimeSession.ts`
+ * Mirrors the AgenC implementation `runtime/src/utils/currentRuntimeSession.ts`
  * surface the bootstrap path consumes (`setCurrentRuntimeSession`,
  * `clearCurrentRuntimeSession`). Carved as a local `_deps/` to cut the
- * gut→openclaude crossing.
+ * gut→AgenC crossing.
  *
  * The lean rebuild owns its own session lifecycle; the global slot is
  * preserved here only so legacy bootstrap glue still has somewhere to

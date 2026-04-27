@@ -1,7 +1,7 @@
 /**
  * Memory-directory scanning primitives.
  *
- * Hand-port of openclaude `memdir/memoryScan.ts` (102 LOC). Differs:
+ * Hand-port of AgenC `memdir/memoryScan.ts` (102 LOC). Differs:
  *   - Returns full MemoryEntry (frontmatter + body + size) instead of
  *     header-only records. T10 consumers (loader, attachments, auto-save
  *     extractor) need the body text; a second read would double syscalls.
@@ -13,7 +13,7 @@
  * callers can attribute truncation. Newest-mtime-first ordering so the
  * caps bite the oldest memories when pressure hits.
  *
- * Directory recursion is depth-capped at 3 (openclaude #42-3: unbounded
+ * Directory recursion is depth-capped at 3 (AgenC #42-3: unbounded
  * `readdir({recursive:true})` is a DoS surface via symlink loops or deep
  * trees). `MEMORY.md` is always skipped — it's an index, not a memory.
  *
@@ -157,7 +157,7 @@ export async function scanMemoryDir(
 /**
  * Parse the ordered bullet-list of file pointers inside `MEMORY.md`.
  *
- * The index uses a simple shape (per openclaude buildMemoryLines): each
+ * The index uses a simple shape (per AgenC buildMemoryLines): each
  * line looks like `- [Title](relative-path.md) — hook text`. This parser
  * extracts the `(path)` segment, resolves relative to the MEMORY.md's
  * directory, and preserves order (newest-first by convention, but we

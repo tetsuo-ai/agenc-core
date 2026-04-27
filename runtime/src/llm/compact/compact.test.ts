@@ -259,7 +259,7 @@ function mkToolUseContext(): unknown {
   // `options.querySource`, `agentId`, and routes `abortController` +
   // `getAppState` through compactConversation (which we've mocked to
   // throw before it ever touches those). Cast to unknown so we don't
-  // have to stub the full openclaude ToolUseContext surface.
+  // have to stub the full AgenC ToolUseContext surface.
   return {
     agentId: 'test-agent',
     options: {

@@ -2,7 +2,7 @@
  * PlanProgress — transcript renderer for plan history cells.
  *
  * Consumes the `plan_started` / `plan_delta` / `plan_item_completed` /
- * `plan_exited` stream and renders a codex-style "Updated Plan" cell with a
+ * `plan_exited` stream and renders a AgenC-style "Updated Plan" cell with a
  * checklist instead of the older bordered per-item widget.
  *
  * Design notes:

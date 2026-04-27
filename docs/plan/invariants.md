@@ -18,10 +18,10 @@ enforced in code**, and **the test that proves it**.
 **Default:** `MAX_AGENT_DEPTH = 4`. Overrideable via
 `config.agents.maxDepth` (root) or per-role in `agents/role.ts`.
 
-**Divergence:** codex ships `DEFAULT_AGENT_MAX_DEPTH = 1` (single
+**Divergence:** AgenC runtime ships `DEFAULT_AGENT_MAX_DEPTH = 1` (single
 level of subagent recursion). AgenC raises the default to 4 so a
 coordinator → planner → worker → tool-caller chain fits inside the
-default cap. Intentional AgenC divergence; operators who want codex
+default cap. Intentional AgenC divergence; operators who want AgenC runtime
 semantics set `config.agents.maxDepth = 1`.
 
 **Why:** registry caps breadth (`max_threads`) but nothing today caps
@@ -48,18 +48,18 @@ post-compact cleanup, BEFORE returning control to the phase machine.
 API) tells the provider "continue from this response with these new
 inputs as delta." After compaction, the history sent is radically
 different from what the provider associates with that id, producing
-undefined behavior. Openclaude doesn't have this concern because its
+undefined behavior. AgenC doesn't have this concern because its
 ccrClient doesn't use `previous_response_id`; AgenC does because xAI
 and OpenAI do.
 
 **Pattern:** synchronous call inside `runPostCompactCleanup()`,
-mirroring the openclaude pattern (`postCompactCleanup.ts:31-77`) that
+mirroring the AgenC pattern (`postCompactCleanup.ts:31-77`) that
 clears 8+ caches synchronously. Not an event subscription — cleanup
 must be deterministic, serial with compaction, and complete before
 the next model request is built.
 
 **Enforced in:** `runtime/src/llm/compact/post-compact-cleanup.ts` —
-**partial port** of the openclaude pattern, not verbatim. Openclaude's
+**partial port** of the AgenC pattern, not verbatim. AgenC's
 source imports `bun:bundle` and `../../tools/BashTool/bashPermissions.js`
 which don't resolve in AgenC's build graph. AgenC reproduces the
 synchronous-cleanup contract (serial with compaction, complete before
@@ -67,7 +67,7 @@ the next request is built) and routes the `previous_response_id` clear
 through a tracker-registry shim at
 `runtime/src/llm/grok/incremental.ts::clearAllResponseIds`. Adapters
 without `previous_response_id` (Anthropic, local, Ollama) register a
-no-op clear. Openclaude's other cache-clearing helpers (image,
+no-op clear. AgenC's other cache-clearing helpers (image,
 tool-result, etc.) are ported selectively as AgenC grows those caches.
 
 **Test:** `llm/compact/post-compact-cleanup.test.ts` — invoke
@@ -84,7 +84,7 @@ network) MUST re-check `permissions.mode` immediately before mutating
 state, not just at evaluation time. A mid-stream Shift+Tab transition
 to `plan` mode while a write is in flight must abort the write.
 
-**Why:** Openclaude only wires this race guard for Bash
+**Why:** AgenC only wires this race guard for Bash
 (`tools/BashTool/bashPermissions.ts`). Every other mutation tool has a
 window where the user cycles modes via Shift+Tab and the tool still
 commits, violating plan-mode's read-only contract.
@@ -116,7 +116,7 @@ throughput, but **every `TurnComplete`, `TurnAborted`, `Error`, and
 phase machine proceeds. Turn-scoped durability is guaranteed; within
 a turn, up to 100ms of progress events may be lost on crash.
 
-**Why:** The openclaude pattern of 100ms batching is fine for token
+**Why:** The AgenC pattern of 100ms batching is fine for token
 deltas and tool progress (both replayable) but unacceptable for turn
 boundaries (not replayable — the next turn depends on knowing the
 previous one committed).
@@ -137,10 +137,10 @@ emit, assert replay sees everything up to and including
 **Rule:** `Mailbox` supports both child→parent (progress, completion,
 result) and parent→child (`Interrupt`, `Resume`, `Cancel`,
 `UpdateContext`) messages. `MailboxReceiver` exists on both ends.
-Codex semantics — not openclaude's AsyncGenerator-only pattern.
+AgenC runtime semantics — not AgenC's AsyncGenerator-only pattern.
 
 **Why:** Parent can't interrupt a long-running async child without a
-send path. Openclaude uses AbortController for hard cancel but lacks
+send path. AgenC uses AbortController for hard cancel but lacks
 softer signals (pause, update-context, nudge).
 
 **Enforced in:** `runtime/src/agents/mailbox.ts` — `send()` takes a
@@ -152,10 +152,10 @@ Mailbox>` (to children).
 `AgentControl.interrupt(threadId)` in `runtime/src/agents/control.ts`
 cascades the abort to every live descendant of the interrupted agent
 (recursive `this.interrupt(descendant.agentId, ...)` at the tail of
-`interrupt()`). Codex's `interrupt_agent` (`control.rs:643-646`)
+`interrupt()`). AgenC runtime's `interrupt_agent` (`control.rs:643-646`)
 submits only to a single thread. Rationale: in AgenC a user Ctrl+C
 or a parent→child `Interrupt` must reach every in-flight subagent
-on the spot; in codex the supervisor loop drives the cascade
+on the spot; in AgenC runtime the supervisor loop drives the cascade
 externally. Downstream TUI and any caller issuing an interrupt
 must not assume single-thread interrupt semantics — sending
 `Interrupt` to a non-leaf agent WILL tear down its entire live
@@ -196,7 +196,7 @@ must be aborted. **But the destination differs by abort trigger:**
 
 | Trigger | Cascade destination | Reason returned |
 |---|---|---|
-| User interrupt (Ctrl+C) | `Cleanup → Exit` | `aborted_streaming` (openclaude `query.ts:1082`) |
+| User interrupt (Ctrl+C) | `Cleanup → Exit` | `aborted_streaming` (AgenC `query.ts:1082`) |
 | Subagent parent `Interrupt` (I-5) | `Cleanup → Exit` | `aborted_streaming` |
 | Recovery trigger (PTL, media, max-tokens) | `Phase3 post-sample-recovery` | continues loop |
 | Plan-mode transition mid-stream (I-3) | `Cleanup → Exit` with `TerminalToolResult{reason:'mode_changed'}` | `aborted_streaming` |
@@ -204,7 +204,7 @@ must be aborted. **But the destination differs by abort trigger:**
 
 In all five cases the cascade is identical (walk
 `streamingToolExecutor.getRemainingResults()` to synthesize
-`tool_result` blocks for orphans — openclaude `query.ts:1046-1060`).
+`tool_result` blocks for orphans — AgenC `query.ts:1046-1060`).
 What differs is where control flow returns after cleanup.
 
 **Why:** Orphan tools continue running after any of these triggers,
@@ -240,15 +240,15 @@ schema validation failure, hook deny — MUST emit either an `error`
 or `stream_error` event to the event log before returning. No
 silent failures.
 
-**Why:** AgenC adopts codex's typed `EventMsg` discriminated union
+**Why:** AgenC adopts AgenC runtime's typed `EventMsg` discriminated union
 (`protocol.rs` `Error`, `StreamError`, `Warning`) precisely so
 post-mortem analysis (replay, debugging, telemetry) can distinguish
 *what kind of failure happened*. An event log that only records
 happy-path events is a liar — replay reconstructs a session that
 "completed normally" when it actually died on a 401.
 
-Openclaude doesn't have this issue because it tags errors inline on
-messages with `isApiErrorMessage` (openclaude `query.ts:1103, 1297`);
+AgenC doesn't have this issue because it tags errors inline on
+messages with `isApiErrorMessage` (AgenC `query.ts:1103, 1297`);
 that pattern doesn't survive AgenC's structured event log because
 errors aren't always inside an assistant message.
 
@@ -292,10 +292,10 @@ abort the tool via its `AbortController`, synthesize a
 `TerminalToolResult{reason:'timeout', is_error:true}`, emit I-8
 `stream_error`, and continue.
 
-**Source:** **PORT** from codex `core/src/tools/registry.rs:561`
+**Source:** **PORT** from AgenC runtime `core/src/tools/registry.rs:561`
 (`timeout_ms: params.timeout_ms`) + `tools/mod.rs:107-108`
-(`build_content_with_timeout`). Openclaude has Bash-only timeout
-(`tools/BashTool/`); codex has it generic. Take codex's pattern.
+(`build_content_with_timeout`). AgenC has Bash-only timeout
+(`tools/BashTool/`); AgenC runtime has it generic. Take AgenC runtime's pattern.
 
 **Why:** Without this, a hung MCP call, infinite loop in a tool's own
 code, or a stalled subprocess (where SIGTERM is ignored) blocks
@@ -321,13 +321,13 @@ recovery condition, evaluate in this fixed order: `isWithheld413` →
 `stopHookBlocking` → `streamingFallbackOccured` → `FallbackTriggeredError`.
 First match wins; the rest are ignored for that turn.
 
-**Source:** **DOCUMENT** existing openclaude order at `query.ts:1101,
+**Source:** **DOCUMENT** existing AgenC order at `query.ts:1101,
 1115, 854, 1335, 928`. Order is implicit in current source (chained
 `if`/`else if`); AgenC makes it explicit + tested.
 
 **Why:** Multiple triggers CAN fire simultaneously (e.g. an oversized
 tool result causes both PTL and a media-too-large flag). The
-implicit order in openclaude has the right priority (413 first
+implicit order in AgenC has the right priority (413 first
 because compaction also fixes media bloat) but it's never asserted.
 Future refactors can silently reorder and break recovery in subtle
 ways.
@@ -346,15 +346,15 @@ message satisfying ALL triggers, assert `WithheldGate413` is taken.
 
 **Rule:** While streaming from any provider, a watchdog times the
 gap since the last received event. If gap exceeds
-`STREAM_IDLE_TIMEOUT_MS` (default 90,000 — matches openclaude `claude.ts:1898`), abort the stream with
+`STREAM_IDLE_TIMEOUT_MS` (default 90,000 — matches AgenC `claude.ts:1898`), abort the stream with
 `abortReason='stream_idle'`, emit I-8 `stream_error`, route to
 `AbortRecovery → Phase3` (transient — SDK retry attempts a
 reconnect).
 
-**Source:** **PORT** from openclaude `services/api/claude.ts:1894-2433`
+**Source:** **PORT** from AgenC `services/api/claude.ts:1894-2433`
 (`streamWatchdogEnabled`, `streamWatchdogFiredAt`,
-`streamIdleAborted`) + codex `client.rs:1146`
-(`stream_idle_timeout_ms` from provider info). Openclaude gates
+`streamIdleAborted`) + AgenC runtime `client.rs:1146`
+(`stream_idle_timeout_ms` from provider info). AgenC gates
 behind `CLAUDE_ENABLE_STREAM_WATCHDOG` env var; **AgenC ships
 default-on** because silent provider stalls are pure latency burn.
 
@@ -383,8 +383,8 @@ On any of these: emit I-8 `error`, switch the affected sidecar into
 attempts to flush every 30s), and surface a one-shot warning to the
 TUI cockpit.
 
-**Source:** **NEW for AgenC**. Neither openclaude `sessionStorage.ts`
-nor codex `rollout/` handles these explicitly — both will throw
+**Source:** **NEW for AgenC**. Neither AgenC `sessionStorage.ts`
+nor AgenC runtime `rollout/` handles these explicitly — both will throw
 unhandled rejections on ENOSPC, which silently breaks the I-4 fsync
 guarantee.
 
@@ -421,13 +421,13 @@ current turn. It:
    incremental cache).
 5. Emits I-8 `warning` with old/new provider+model in the event log.
 
-**Source:** **NEW for AgenC**. Openclaude's `commands/model/` doesn't
+**Source:** **NEW for AgenC**. AgenC's `commands/model/` doesn't
 handle live-stream switches; the slash command just updates state
 silently and the in-flight stream completes with the old model. With
 multi-provider that's worse — the new provider's request shape
 won't match the pending response.
 
-**Why:** Multi-provider exposes a class of bugs openclaude doesn't
+**Why:** Multi-provider exposes a class of bugs AgenC doesn't
 have. Mid-stream provider switch with mismatched request shape
 produces wrong-format tool calls or undefined provider behavior.
 Better to abort cleanly + apply on next turn.
@@ -461,7 +461,7 @@ on that adapter, (b) retry the same request once with the full
 history (omitting `previous_response_id`), (c) emit I-8 `warning`
 with `cause='previous_response_id_expired'`.
 
-**Source:** **NEW for AgenC**. Codex `client.rs:980` always sends
+**Source:** **NEW for AgenC**. AgenC runtime `client.rs:980` always sends
 `previous_response_id` when available but has no branch for the
 provider returning "I don't know that id." Provider response caches
 have TTLs (xAI evicts after ~10 minutes of inactivity per their
@@ -485,14 +485,14 @@ warning event.
 ## I-15 · Tool result size hard cap
 
 **Rule:** Every tool result is capped at `MAX_TOOL_RESULT_BYTES`
-(default 400 KB — matches openclaude `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`; per-tool override). Results exceeding the cap are
+(default 400 KB — matches AgenC `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`; per-tool override). Results exceeding the cap are
 truncated to `cap - marker.length` and a marker
 `\n\n[truncated: original was N bytes, returning first M]\n` is
 appended. Emit I-8 `warning` per truncation.
 
-**Source:** **PORT + GENERALIZE** from openclaude
+**Source:** **PORT + GENERALIZE** from AgenC
 `utils/shell/outputLimits.ts:3-11` (`BASH_MAX_OUTPUT_DEFAULT=30_000`,
-`BASH_MAX_OUTPUT_UPPER_LIMIT=150_000`, env override). Openclaude has
+`BASH_MAX_OUTPUT_UPPER_LIMIT=150_000`, env override). AgenC has
 this for Bash only; AgenC generalizes to every tool.
 
 **Why:** Without a generic cap, a tool that returns a 50 MB binary
@@ -519,7 +519,7 @@ up to `MAX_MAILBOX_BLOCK_MS` (default 5000); on timeout, drop the
 oldest message, increment `droppedMessageCount`, emit I-8 `warning`
 once per drop streak.
 
-**Source:** **NEW for AgenC** (must change codex pattern). Codex
+**Source:** **NEW for AgenC** (must change AgenC runtime pattern). AgenC runtime
 `agent/mailbox.rs:12-24` uses `mpsc::unbounded_channel()` —
 explicitly unbounded. Acceptable in Rust where sends are
 non-blocking and memory pressure is observed via OS signal; in
@@ -549,11 +549,11 @@ time `phases/stop-hooks.ts` injects blocking errors. Default cap
 the turn with `error:'stop_hook_loop'`, emits I-8 `error`.
 
 **Attribution (T8 A4 closure):** `MAX_STOP_HOOK_BLOCKS = 3` is
-openclaude-sourced. AgenC reuses the exact value and extends the
+AgenC-sourced. AgenC reuses the exact value and extends the
 pattern from a boolean `stopHookActive` flag into a counted cap so
 multi-stop-hook configs can't sidestep the ceiling.
 
-**Source:** **PORT + EXTEND**. Openclaude has `stopHookActive`
+**Source:** **PORT + EXTEND**. AgenC has `stopHookActive`
 boolean flag (`query.ts:211, 1310, 1335`) that prevents one specific
 re-fire pattern, but no counter cap. If a hook keeps blocking on each
 retry (e.g. a buggy hook that always returns blockingErrors), the
@@ -599,7 +599,7 @@ existing `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3`), discard the
 summary, fall through to alternative recovery (collapse-drain,
 reactive-compact). Emit I-8 `warning`.
 
-**Source:** **NEW for AgenC**. Openclaude has the failure-counted
+**Source:** **NEW for AgenC**. AgenC has the failure-counted
 circuit breaker (`autoCompact.ts:75`) but only counts THROWN
 failures, not "succeeded but produced verbose summary." A model that
 returns a longer summary than the input is a soft failure that goes
@@ -629,7 +629,7 @@ session-end signal. Sequence: (a) abort active turn via
 fsync), (c) emit I-8 `warning` with `cause='stdin_lost'`, (d) exit
 with code 130 (same as SIGINT — not an error).
 
-**Source:** **NEW for AgenC**. Openclaude has `suspendStdin` for
+**Source:** **NEW for AgenC**. AgenC has `suspendStdin` for
 intentional pause, but no explicit handler for unexpected stdin
 closure. Today this surfaces as unhandled exception in Ink's read
 loop.
@@ -670,7 +670,7 @@ prompt extensions), AgenC hard-fails boot with a clear "no MCP
 servers available" message. If no tool requires MCP, soft-fail per
 I-6 and continue with built-in tools only.
 
-**Source:** **NEW for AgenC**. Openclaude evaluates per-server. No
+**Source:** **NEW for AgenC**. AgenC evaluates per-server. No
 aggregate rollup. With AgenC's broader MCP usage (resources, prompts,
 multiple servers expected), this matters more.
 
@@ -698,7 +698,7 @@ to the in-flight tool's AbortController, (c) NOT swallow the abort
 or treat Ctrl+C as "deny." Modal cleanup runs before the abort
 cascade (I-7) processes orphans.
 
-**Source:** **NEW for AgenC**. Openclaude's
+**Source:** **NEW for AgenC**. AgenC's
 `hooks/toolPermission/handlers/interactiveHandler.ts` doesn't
 explicitly handle Ctrl+C during modal — the abort signal arrives at
 the tool dispatcher but the modal promise can resolve later with a
@@ -731,9 +731,9 @@ decision and tool is NOT dispatched.
 tokens, check `budgetTracker.remaining`. If exceeded: abort stream
 with `AbortRecovery(reason='token_budget_exceeded')`, route to
 Phase 3 which can decide to inject a budget-continuation nudge
-(existing pattern at openclaude `query.ts:1375`).
+(existing pattern at AgenC `query.ts:1375`).
 
-**Source:** **PORT + EXTEND**. Openclaude has `budgetTracker` +
+**Source:** **PORT + EXTEND**. AgenC has `budgetTracker` +
 `token_budget_continuation` transition (`query.ts:1346, 1375`) but
 checks only at turn boundaries. AgenC adds the mid-stream check.
 
@@ -755,7 +755,7 @@ mark with `token_budget_exceeded`.
 
 50 additional invariants surfaced by 8 specialist subagent reviews of
 the flowchart. Each carries source provenance: **PORT** (working
-solution exists in openclaude/codex; copy it), **EXTEND** (partial
+solution exists in AgenC/AgenC runtime; copy it), **EXTEND** (partial
 solution exists; broaden), **NEW** (no upstream solution; AgenC must
 build), or **ALREADY-COVERED** (verified in upstream; documented here
 for completeness). Each invariant is shorter-form than I-1..I-22 to
@@ -778,13 +778,13 @@ keep this section navigable.
 **NEW.** Periodic `state.snapshot.json` writes can succeed while the rollout fsync fails (or vice versa) — a divergence both files claim authoritative. Rule: rollout JSONL is the only source of truth for replay; snapshot is a 30-min cached projection used only as a reconstruction speedup. Each carries `snapshotSequenceNumber`; if snapshot.seq < rollout.seq, ignore snapshot + emit `warning:'snapshot_behind_rollout'`. **Where:** `runtime/src/session/rollout-reconstruction.ts`.
 
 ### I-26 · Forward-compat: unknown event variant skipped, not panicked
-**EXTEND** codex (`#[serde(default, skip_serializing_if)]` partial). Reconstruction from a rollout written by a newer AgenC version must not panic on unknown event types. Rule: every `RolloutItem` carries `eventVersion: number`; reducer wraps unknown variants in a `{type:'unknown', raw:string, version:N}` shim and continues. Emit `warning:'unknown_event_variant'` per skipped event. **Where:** `runtime/src/session/event-log-reducer.ts`. **Test:** v1 reads a v2 rollout and reconstructs without throwing.
+**EXTEND** AgenC runtime (`#[serde(default, skip_serializing_if)]` partial). Reconstruction from a rollout written by a newer AgenC version must not panic on unknown event types. Rule: every `RolloutItem` carries `eventVersion: number`; reducer wraps unknown variants in a `{type:'unknown', raw:string, version:N}` shim and continues. Emit `warning:'unknown_event_variant'` per skipped event. **Where:** `runtime/src/session/event-log-reducer.ts`. **Test:** v1 reads a v2 rollout and reconstructs without throwing.
 
 ### I-27 · Event-log emission is FIFO with monotonic sequence numbers
 **NEW.** When two phases or sidecars emit concurrently (Node.js single event loop but interleaved promise microtasks), the reducer can see events out-of-causal-order. Rule: every `EventLog.emit()` is synchronous; events get a monotonic `seq: number` at emit time; reducer asserts `prevSeq + 1 === currSeq` and emits `error:'event_reordering_detected'` on violation. **Where:** `runtime/src/session/event-log.ts`. **Test:** synthetic concurrent emit from two phases; reducer order matches emit order.
 
 ### I-28 · File-history snapshot LRU eviction
-**NEW.** openclaude `fileHistory.ts` caps at 100 snapshots silently. Long sessions overflow + lose oldest. Rule: explicit LRU eviction with `maxFileHistorySnapshots` config; on cap, evict oldest + emit `warning:'file_history_cap_reached'` once per session; expose `isFileHistoryComplete: false` on snapshot metadata so consumers know history is partial. **Where:** `runtime/src/session/file-history.ts`.
+**NEW.** AgenC `fileHistory.ts` caps at 100 snapshots silently. Long sessions overflow + lose oldest. Rule: explicit LRU eviction with `maxFileHistorySnapshots` config; on cap, evict oldest + emit `warning:'file_history_cap_reached'` once per session; expose `isFileHistoryComplete: false` on snapshot metadata so consumers know history is partial. **Where:** `runtime/src/session/file-history.ts`.
 
 ### I-29 · Memory file write lock (auto-extract vs manual edit)
 **NEW.** `MEMORY.md` is written by both the auto-extract subagent and (potentially) hand-edits. Race loses one write silently. Rule: acquire `fs.open(path, 'wx')` exclusive lock with 2s timeout; on contention, emit `warning:'memory_write_contention'` + skip the write, retrying on the next auto-save tick. Journal append replay (`MEMORY.md.extract`) is deferred to T11; current impl emits `warning:'memory_write_contention'` + skips the write, retrying on the next auto-save tick. **Where:** `runtime/src/prompts/memory/auto-save.ts`. **Scheduled for:** T10 (memory / auto-save tranche); journal-replay variant lands in T11.
@@ -795,7 +795,7 @@ keep this section navigable.
 ## Subagent lifecycle (I-31..I-37)
 
 ### I-31 · Empty mailbox returns sentinel on receiver-closed
-**NEW.** Parent's `mailbox.drain()` returns `[]` whether the child is alive (idle) or already shut down. Parent loops on stale reference. Rule: `MailboxReceiver` carries `closed: boolean`; on receiver close, future `drain()` returns `[{type:'agent_exited', threadId, finalStatus}]` then permanently empty. Sender side rejects sends after close with `MailboxClosed` error. **Where:** `runtime/src/agents/mailbox.ts`. Codex's `mpsc::Receiver` has equivalent semantics naturally; AgenC must implement explicitly.
+**NEW.** Parent's `mailbox.drain()` returns `[]` whether the child is alive (idle) or already shut down. Parent loops on stale reference. Rule: `MailboxReceiver` carries `closed: boolean`; on receiver close, future `drain()` returns `[{type:'agent_exited', threadId, finalStatus}]` then permanently empty. Sender side rejects sends after close with `MailboxClosed` error. **Where:** `runtime/src/agents/mailbox.ts`. AgenC runtime's `mpsc::Receiver` has equivalent semantics naturally; AgenC must implement explicitly.
 
 ### I-32 · Child-spawn race with parent Interrupt (cancellation token in slot reservation)
 **NEW.** Parent sends `Interrupt` to child A while child A is mid-spawn of child B. B is born, A dies, B is orphaned. Rule: `registry.reserve_spawn_slot(parentId)` returns a `CancellationToken` scoped to the parent. Before `spawn_agent_internal()` returns, validate `parent.token.is_cancelled()`; if true, undo spawn + synthesize a `parent_interrupt` mailbox message to the child. **Where:** `runtime/src/agents/control.ts` + `runtime/src/agents/registry.ts`.
@@ -813,7 +813,7 @@ keep this section navigable.
 **NEW.** Parent is mid-`compactConversation` writing to rollout (100ms batch); child fork reads partial state. Rule: `forkSubagent()` calls `parent.rollout.flushAndSync()` synchronously before reading parent messages for fork context. Distinct from I-4's turn-boundary fsync. **Where:** `runtime/src/agents/fork-context.ts`.
 
 ### I-37 · Sibling `agentPath` collision returns error (already covered, document)
-**ALREADY-COVERED** by codex `registry.rs:240-260` — `reserve_agent_path` returns `UnsupportedOperation("agent path already exists")` on collision. AgenC port preserves this verbatim. **Where:** port to `runtime/src/agents/registry.ts`. No new behavior; documented to prevent re-introducing the bug during port.
+**ALREADY-COVERED** by AgenC runtime `registry.rs:240-260` — `reserve_agent_path` returns `UnsupportedOperation("agent path already exists")` on collision. AgenC port preserves this verbatim. **Where:** port to `runtime/src/agents/registry.ts`. No new behavior; documented to prevent re-introducing the bug during port.
 
 ## Failure cascades (I-38..I-44)
 
@@ -856,8 +856,8 @@ keep this section navigable.
 
 ## Boot, signals, init (I-45..I-52)
 
-### I-45 · SIGTERM ≠ SIGINT (port openclaude pattern)
-**PORT** openclaude `main.tsx:4021` (`process.once('SIGTERM', shutdown)`). Different exit code (0 for SIGTERM = orderly orchestrator stop, 130 for SIGINT = user interrupt). Both call `session.abortTerminal('signal_received')` then fsync barrier. **Where:** `runtime/src/bin/agenc.ts`.
+### I-45 · SIGTERM ≠ SIGINT (port AgenC pattern)
+**PORT** AgenC `main.tsx:4021` (`process.once('SIGTERM', shutdown)`). Different exit code (0 for SIGTERM = orderly orchestrator stop, 130 for SIGINT = user interrupt). Both call `session.abortTerminal('signal_received')` then fsync barrier. **Where:** `runtime/src/bin/agenc.ts`.
 
 ### I-46 · SIGHUP routes through stdin-loss path (I-19)
 **NEW.** SIGHUP fires when controlling terminal closes. In TUI mode I-19's stdin-close handler covers this. In one-shot mode without TUI, SIGHUP arrives as a bare signal; treat identically: abort + fsync + exit 130. **Where:** `runtime/src/bin/agenc.ts`.
@@ -897,11 +897,11 @@ keep this section navigable.
 ### I-57 · History compatibility check on provider switch (extends I-13)
 **NEW.** I-13 covers the abort flow on `/model` mid-stream. But a session whose history has 3 image messages can't continue under a provider that doesn't support images. Rule: on `/model` or `/provider` switch, run `validateHistoryCompatibility(newCaps, history)`. If history contains content the new provider rejects (images, audio, thinking blocks), strip + nudge user: "your history has image messages; new provider doesn't support them — stripped." Emit `warning:'content_stripped_on_switch'`. **Where:** `runtime/src/commands/model.ts` + `runtime/src/commands/provider.ts`. **Status:** WIRED in T13 through the live provider capability registry.
 
-### I-58 · Honor `Retry-After` header on 429 (port openclaude)
-**PORT** openclaude `services/api/withRetry.ts:303-475`. Rule: 429 response with `Retry-After: N` MUST sleep for max(N, exponentialBackoff). Cap at user-configurable `MAX_RETRY_AFTER_MS = 300_000` (5 min); above cap, emit `warning:'rate_limit_exceeds_max_wait'` and abort to recovery. **Where:** `runtime/src/llm/oauth/refresh-loop.ts` + `runtime/src/llm/wire/*.ts`.
+### I-58 · Honor `Retry-After` header on 429 (port AgenC)
+**PORT** AgenC `services/api/withRetry.ts:303-475`. Rule: 429 response with `Retry-After: N` MUST sleep for max(N, exponentialBackoff). Cap at user-configurable `MAX_RETRY_AFTER_MS = 300_000` (5 min); above cap, emit `warning:'rate_limit_exceeds_max_wait'` and abort to recovery. **Where:** `runtime/src/llm/oauth/refresh-loop.ts` + `runtime/src/llm/wire/*.ts`.
 
-### I-59 · Local-provider health-check sidecar (port openclaude detection)
-**PORT** openclaude `services/api/openaiErrorClassification.ts:224` (ECONNREFUSED detection). For local providers (Ollama, LMStudio), add a 10s health-check ping during streaming. On `connection_refused` mid-stream, emit `stream_error{cause:'local_provider_down'}` immediately rather than waiting for I-11 watchdog (60s). User-facing message: "local provider lost connection — restart Ollama/LMStudio and retry." **Where:** `runtime/src/llm/providers/ollama/health.ts` + `runtime/src/llm/providers/lmstudio/health.ts`.
+### I-59 · Local-provider health-check sidecar (port AgenC detection)
+**PORT** AgenC `services/api/openaiErrorClassification.ts:224` (ECONNREFUSED detection). For local providers (Ollama, LMStudio), add a 10s health-check ping during streaming. On `connection_refused` mid-stream, emit `stream_error{cause:'local_provider_down'}` immediately rather than waiting for I-11 watchdog (60s). User-facing message: "local provider lost connection — restart Ollama/LMStudio and retry." **Where:** `runtime/src/llm/providers/ollama/health.ts` + `runtime/src/llm/providers/lmstudio/health.ts`.
 
 ### I-60 · Ambiguous model name disambiguation at init
 **NEW.** Two providers both have a `llama-3.3` (Groq full name `llama-3.3-70b-versatile`, OpenRouter routes through). User passes `--model llama-3.3` without `--provider`. Rule: provider factory builds an inverted index `model → provider[]`. Multiple matches → hard-fail boot with disambiguation message listing all matches. Single match → proceed. **Where:** `runtime/src/config/schema.ts::resolveModelDisambiguated` + `runtime/src/bin/agenc.ts::resolveModelOrExit`. **Scheduled for:** T10 (config / provider resolver tranche).
@@ -914,14 +914,14 @@ keep this section navigable.
 ### I-62 · Recovery-trigger evaluation is exclusive
 **NEW.** Two triggers can fire simultaneously (tool error + 413). Without a lock, two recovery branches can interleave. Rule: enter Phase 3 with an exclusive lock on `session.recoveryInFlight: AsyncLock<void>`. Second trigger queues; on dequeue, re-evaluate priority (per I-10) — second trigger may now be moot. **Where:** `runtime/src/phases/post-sample-recovery.ts`.
 
-### I-63 · Subagent slot acquisition is atomic (port codex pattern)
-**PORT** codex `agent/registry.rs:80` (`reserve_spawn_slot` under mutex). Rule: slot counter increment/decrement happens under `AsyncLock`; concurrent spawns can never both observe `count = N-1` and both increment to `N`. **Where:** `runtime/src/agents/registry.ts`.
+### I-63 · Subagent slot acquisition is atomic (port AgenC runtime pattern)
+**PORT** AgenC runtime `agent/registry.rs:80` (`reserve_spawn_slot` under mutex). Rule: slot counter increment/decrement happens under `AsyncLock`; concurrent spawns can never both observe `count = N-1` and both increment to `N`. **Where:** `runtime/src/agents/registry.ts`.
 
 ### I-64 · Mailbox `send()` is non-blocking microtask
 **NEW.** I-16 says `send()` blocks 5s on backpressure. But if the parent is awaiting an approval modal, that block freezes the modal. Rule: `send()` returns synchronously; backpressure handling (timeout, drop) runs as a `queueMicrotask(...)` so the caller's event loop stays responsive. **Where:** `runtime/src/agents/mailbox.ts`.
 
 ### I-65 · Tool result completion ordering (already covered, document)
-**ALREADY-COVERED** by openclaude `StreamingToolExecutor.ts:38` ("Results are buffered and emitted in the order tools were received"). AgenC port preserves this. Documented here so the port doesn't drop the buffering by accident. **Where:** `runtime/src/tools/streaming-executor.ts`.
+**ALREADY-COVERED** by AgenC `StreamingToolExecutor.ts:38` ("Results are buffered and emitted in the order tools were received"). AgenC port preserves this. Documented here so the port doesn't drop the buffering by accident. **Where:** `runtime/src/tools/streaming-executor.ts`.
 
 **AgenC concrete pattern (T7):** `StreamingToolExecutor.getCompletedResults()` iterates `this.tools[]` (the submission-order queue) and skips entries with `status === "yielded"`. A completed tool is yielded once; its `status` flips to `"yielded"` so the next iterator call observes it as already-handled. Parallel-safe tools can finish in arbitrary order internally — the yield sequence stays in submission order because the iterator walks the queue front-to-back, skipping anything not yet `"completed"`. Test: `streaming-executor.test.ts` "completes in submission order (I-65)" queues ids [a,b,c] with randomized completion delays and asserts yield order is [a,b,c].
 
@@ -965,7 +965,7 @@ flowchart-stress-test review.
 
 **Source provenance summary for I-23..I-72:**
 
-- **PORT** (5): I-37, I-45, I-58, I-59, I-63, I-65 — working solutions exist in openclaude or codex; copy them.
+- **PORT** (5): I-37, I-45, I-58, I-59, I-63, I-65 — working solutions exist in AgenC or AgenC runtime; copy them.
 - **EXTEND** (3): I-26, I-38, I-43 — partial solutions exist; broaden.
 - **NEW** (42): everything else — AgenC must implement.
 
@@ -1000,21 +1000,21 @@ scale, pure observation). Each carries source provenance.
 ## Data integrity & encoding (I-78..I-81)
 
 ### I-78 · Buffer chunks accumulated, not stringified at boundary
-**NEW.** Today's openclaude (and likely AgenC port) does `stdoutBuf += chunk.toString()` per stdio chunk. UTF-8 sequences split across packets corrupt to `\uFFFD` and lose continuation bytes. Rule: accumulate raw `Buffer[]`, decode once at flush boundary via `Buffer.concat(chunks).toString('utf8')`. Applies to: bash tool output, MCP stdio transport, file reads from streaming sources. **Where:** `runtime/src/tools/system/bash.ts`, `runtime/src/mcp-client/transports/stdio.ts`. **Test:** spawn process emitting a multi-byte emoji split across two writes; assert assembled output is intact.
+**NEW.** Today's AgenC (and likely AgenC port) does `stdoutBuf += chunk.toString()` per stdio chunk. UTF-8 sequences split across packets corrupt to `\uFFFD` and lose continuation bytes. Rule: accumulate raw `Buffer[]`, decode once at flush boundary via `Buffer.concat(chunks).toString('utf8')`. Applies to: bash tool output, MCP stdio transport, file reads from streaming sources. **Where:** `runtime/src/tools/system/bash.ts`, `runtime/src/mcp-client/transports/stdio.ts`. **Test:** spawn process emitting a multi-byte emoji split across two writes; assert assembled output is intact.
 
 ### I-79 · Large-integer JSON tool args use string-pre-parse reviver
 **NEW.** Tool args sent as `{lamports: 9007199254740993}` (>2^53) are silently corrupted by `JSON.parse` to nearest float. Crypto nonces, blockchain amounts, NFT IDs all bite this. Rule: every tool-arg JSON parser uses a pre-parse string scan (regex `"key":\s*-?\d{16,}`) wrapping numeric literals as strings, then a custom reviver converts them to `BigInt`. Tools whose schema declares `bigint` get `BigInt` values; everything else stays `number`. **Where:** `runtime/src/tools/execution.ts` arg deserialization.
 
 ### I-80 · Line-ending normalization at every external boundary
-**PORT** openclaude `utils/markdown.ts:14-17` (`EOL = '\n'` unconditional). Rule: every text crossing into AgenC from outside (file reads, tool stdout, network responses, MCP results) is normalized via `text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')` before injection into history or YAML parsing. CRLF in YAML frontmatter breaks key matching; mixed endings in tool output confuses the model. **Where:** `runtime/src/utils/text.ts` (helper) + every boundary callsite.
+**PORT** AgenC `utils/markdown.ts:14-17` (`EOL = '\n'` unconditional). Rule: every text crossing into AgenC from outside (file reads, tool stdout, network responses, MCP results) is normalized via `text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')` before injection into history or YAML parsing. CRLF in YAML frontmatter breaks key matching; mixed endings in tool output confuses the model. **Where:** `runtime/src/utils/text.ts` (helper) + every boundary callsite.
 
-### I-81 · UTF-8 BOM stripped on every file read (port openclaude)
+### I-81 · UTF-8 BOM stripped on every file read (port AgenC)
 **PORT** BOM stripping behavior. Rule: every `fs.readFile(path, 'utf8')` call wraps result in `stripBOM()`. Windows-edited files often save with BOM (`\uFEFF`); leaving it in breaks YAML parsing, JSON parsing, first-key matching, dedup hashing. **Where:** central `runtime/src/utils/file-read.ts` helper used by config loader, AGENC.md ancestor walk, memory loader, agenc-md @include.
 
 ## Time & clock (I-82..I-84)
 
-### I-82 · Monotonic clock for all deadline arithmetic (port openclaude)
-**PORT** openclaude `services/api/claude.ts:1933` (`performance.now()` for watchdog). Rule: every deadline / elapsed-time calculation uses `performance.now()` (or `process.hrtime.bigint()`), not `Date.now()`. Wall clock is for display + event-log timestamps only. NTP corrections, `date` set, suspend/resume, container clock skew all break wall-clock arithmetic; monotonic clock is immune. **Where:** I-9 timeouts, I-11 watchdog, I-22 budget check, OAuth refresh, all SDK retries. **Test:** mock `Date.now()` to jump backward 5s mid-stream; assert watchdog timing unaffected.
+### I-82 · Monotonic clock for all deadline arithmetic (port AgenC)
+**PORT** AgenC `services/api/claude.ts:1933` (`performance.now()` for watchdog). Rule: every deadline / elapsed-time calculation uses `performance.now()` (or `process.hrtime.bigint()`), not `Date.now()`. Wall clock is for display + event-log timestamps only. NTP corrections, `date` set, suspend/resume, container clock skew all break wall-clock arithmetic; monotonic clock is immune. **Where:** I-9 timeouts, I-11 watchdog, I-22 budget check, OAuth refresh, all SDK retries. **Test:** mock `Date.now()` to jump backward 5s mid-stream; assert watchdog timing unaffected.
 
 ### I-83 · Event-log batches detect long delays (suspend/resume)
 **NEW.** A laptop closes mid-batch; system resumes 8 hours later; the deferred 100ms flush callback fires, attributing all events in the batch to "8 hours ago" by `Date.now()`. Rule: every batch carries `batchOpenedAt: monotonicMs` (per I-82). On flush, if `performance.now() - batchOpenedAt > 10_000` (10s), abandon the batch + emit `warning:'event_log_batch_delayed'` + emit a sentinel `system_resumed_from(durationMs)` event so reconstruction can reason about the gap. **Where:** `runtime/src/session/session-store.ts` batch flush.
@@ -1077,7 +1077,7 @@ All **89 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second swe
 
 **Source provenance for I-73..I-88:**
 
-- **PORT** (3): I-80, I-81, I-82 — copy openclaude pattern
+- **PORT** (3): I-80, I-81, I-82 — copy AgenC pattern
 - **EXTEND** (3): I-75, I-84, I-87 — broaden existing invariant
 - **NEW** (10): everything else
 
@@ -1127,7 +1127,7 @@ All **89 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second swe
 | I-34 Worktree force-remove + prune | T9 (worktree) | — |
 | I-35 Sparse-checkout teardown verify | T9 (worktree) | — |
 | I-36 Fork flushes parent rollout | T9 (fork-context) + T6 (rollout-store) | — |
-| I-37 agentPath collision (already covered) | T9 (registry — port codex) | — |
+| I-37 agentPath collision (already covered) | T9 (registry — port AgenC runtime) | — |
 | **I-38..I-44 Failure cascades** | T6 + T7 + T8 | every error site |
 | I-38 fsync failure degraded path | T6 (session-store) | extends I-12 |
 | I-39 Stop-hook throw guard | T8 (stop-hooks) | — |
@@ -1151,13 +1151,13 @@ All **89 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second swe
 | I-55 Per-provider tool-call normalizer | T13 (per adapter) | — |
 | I-56 Stream chunk reorder normalize | T7 (stream-parser) | — |
 | I-57 History compatibility on switch | T11 (commands/model + provider) | extends I-13 |
-| I-58 Honor Retry-After (port openclaude) | T13 (wire shims) | — |
+| I-58 Honor Retry-After (port AgenC) | T13 (wire shims) | — |
 | I-59 Local-provider health-check | T13 (Ollama + LMStudio adapters) | extends I-11 |
 | I-60 Ambiguous model name disambiguation | T10 (resolve-provider) | — |
 | **I-61..I-65 Concurrency & ordering** | T7 (tools) + T9 (mailbox) | — |
 | I-61 SharedServer per-id semaphore | T7 (concurrency) | — |
 | I-62 Recovery-trigger evaluation exclusive | T8 (recovery) | extends I-10 |
-| I-63 Subagent slot acquisition atomic (port codex) | T9 (registry) | — |
+| I-63 Subagent slot acquisition atomic (port AgenC runtime) | T9 (registry) | — |
 | I-64 Mailbox send non-blocking microtask | T9 (mailbox) | extends I-16 |
 | I-65 Tool result ordering (already covered) | T7 (streaming-executor) | — |
 | **I-66..I-72 TUI & input** | T12 (TUI) | — |
@@ -1177,10 +1177,10 @@ All **89 invariants** are decisions. I-1..I-8 first review, I-9..I-22 second swe
 | **I-78..I-81 Data integrity** | T7 (tools) + T5 (utils) | — |
 | I-78 Buffer chunk accumulation | T7 (tools/system/bash) + T9 (mcp stdio) | — |
 | I-79 Large-int JSON reviver | T7 (tools/execution) | — |
-| I-80 Line-ending normalization (port openclaude) | T5 (utils/text) | — |
-| I-81 UTF-8 BOM strip (port openclaude) | T5 (utils/file-read) | — |
+| I-80 Line-ending normalization (port AgenC) | T5 (utils/text) | — |
+| I-81 UTF-8 BOM strip (port AgenC) | T5 (utils/file-read) | — |
 | **I-82..I-84 Time & clock** | T5 (utils) + T8 (recovery) | — |
-| I-82 Monotonic clock for deadlines (port openclaude) | T5 (utils/clock) | — |
+| I-82 Monotonic clock for deadlines (port AgenC) | T5 (utils/clock) | — |
 | I-83 Event-log batch suspend detection | T6 (session-store) | extends I-4 |
 | I-84 Retry-After parses date (extends I-58) | T13 (wire shims) | extends I-58 |
 | **I-85..I-86 Network classification** | T13 (wire shims) | — |
@@ -1207,28 +1207,28 @@ invariant number in its description.
 
 | # | Source | Notes |
 |---|---|---|
-| I-1 | NEW | AgenC bound; codex registry caps breadth, not depth |
-| I-2 | NEW | xAI/OpenAI Responses API specific; openclaude doesn't use this id |
-| I-3 | EXTEND openclaude | Bash-only race guard in `bashPermissions.ts` extended to all mutation tools |
-| I-4 | NEW | AgenC turn-level durability promise; openclaude batches without per-turn fsync |
-| I-5 | EXTEND codex | Codex mailbox is single-direction in practice; AgenC adds parent→child |
-| I-6 | NEW | Aggregate fail-soft policy; openclaude handles per-server only |
-| I-7 | EXTEND openclaude | Two destinations (terminal vs recovery) made explicit |
-| I-8 | NEW | Event log error emission as invariant; openclaude tags errors inline |
-| I-9 | PORT codex | `tools/registry.rs:561` `timeout_ms` |
-| I-10 | DOCUMENT openclaude | `query.ts:1101-1209` implicit order made explicit |
-| I-11 | PORT openclaude | `services/api/claude.ts:1894-2433` watchdog, default-on in AgenC |
-| I-12 | NEW | Neither openclaude nor codex handles ENOSPC explicitly |
+| I-1 | NEW | AgenC bound; AgenC runtime registry caps breadth, not depth |
+| I-2 | NEW | xAI/OpenAI Responses API specific; AgenC doesn't use this id |
+| I-3 | EXTEND AgenC | Bash-only race guard in `bashPermissions.ts` extended to all mutation tools |
+| I-4 | NEW | AgenC turn-level durability promise; AgenC batches without per-turn fsync |
+| I-5 | EXTEND AgenC runtime | AgenC runtime mailbox is single-direction in practice; AgenC adds parent→child |
+| I-6 | NEW | Aggregate fail-soft policy; AgenC handles per-server only |
+| I-7 | EXTEND AgenC | Two destinations (terminal vs recovery) made explicit |
+| I-8 | NEW | Event log error emission as invariant; AgenC tags errors inline |
+| I-9 | PORT AgenC runtime | `tools/registry.rs:561` `timeout_ms` |
+| I-10 | DOCUMENT AgenC | `query.ts:1101-1209` implicit order made explicit |
+| I-11 | PORT AgenC | `services/api/claude.ts:1894-2433` watchdog, default-on in AgenC |
+| I-12 | NEW | Neither AgenC nor AgenC runtime handles ENOSPC explicitly |
 | I-13 | NEW | Mid-stream provider switch is multi-provider specific |
 | I-14 | NEW | `previous_response_id` server-side expiration retry |
-| I-15 | PORT + GENERALIZE openclaude | `BASH_MAX_OUTPUT` extended to every tool |
-| I-16 | CHANGE codex | `mpsc::unbounded_channel` → bounded with backpressure |
-| I-17 | EXTEND openclaude | `stopHookActive` flag + counter cap |
+| I-15 | PORT + GENERALIZE AgenC | `BASH_MAX_OUTPUT` extended to every tool |
+| I-16 | CHANGE AgenC runtime | `mpsc::unbounded_channel` → bounded with backpressure |
+| I-17 | EXTEND AgenC | `stopHookActive` flag + counter cap |
 | I-18 | NEW | Compaction shrink assertion |
 | I-19 | NEW | TUI stdin loss handler |
 | I-20 | NEW | MCP startup aggregate rollup |
 | I-21 | NEW | Approval modal abort race |
-| I-22 | EXTEND openclaude | `budgetTracker` + mid-stream check |
+| I-22 | EXTEND AgenC | `budgetTracker` + mid-stream check |
 
 Anything marked **NEW** must be implemented in AgenC code; nothing to
 copy from upstream. **PORT** items copy a working pattern from the

@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../tools/system/command-line.js`. Provides shell tokenization and
  * separator/redirect operator sets used by `shell-write-policy.ts`.
  */

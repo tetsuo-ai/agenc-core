@@ -132,7 +132,7 @@ function shouldTreatMalformedArgumentsAsStructuredLiteral(
   if (isLikelyStructuredObjectLiteral(value)) {
     return true;
   }
-  // openclaude preserves Bash's plain-string command mode even when the
+  // AgenC preserves Bash's plain-string command mode even when the
   // command starts with bracket syntax (`[ -f foo ] && pwd`, `{ pwd; }`).
   // File/path tools do not have that escape hatch: if their arguments start
   // with JSON-like delimiters but failed to parse, keep them as malformed

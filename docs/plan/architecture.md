@@ -1,13 +1,13 @@
 # AgenC Architecture
 
-High-level module map + dependency graph for the codex-runtime replacement
+High-level module map + dependency graph for the AgenC-runtime replacement
 target.
 
 The destination architecture is unambiguous:
 
 - live session and turn ownership comes from the AgenC TypeScript port of the
-  codex runtime
-- selected openclaude loop, compaction, transport, and subagent behaviors are
+  AgenC runtime
+- selected AgenC loop, compaction, transport, and subagent behaviors are
   retained inside that runtime
 - no permanent hybrid runtime owner remains after cutover
 
@@ -15,8 +15,8 @@ The destination architecture is unambiguous:
 
 - [`invariants.md`](invariants.md) — 72 design invariants (I-1..I-72) that close design holes + edge cases from three review passes
 - [`provider-matrix.md`](provider-matrix.md) — 9 providers, capability grid, auth flows
-- [`openclaude-inventory.md`](openclaude-inventory.md) — openclaude files we port 1:1
-- [`codex-inventory.md`](codex-inventory.md) — codex files we hand-port (Rust→TS)
+- [`behavior-inventory.md`](behavior-inventory.md) — AgenC files we port 1:1
+- [`runtime-inventory.md`](runtime-inventory.md) — AgenC runtime files we hand-port (Rust→TS)
 - [`feature-matrix.md`](feature-matrix.md) — every feature × source × tranche
 - [`sequence-diagrams.md`](sequence-diagrams.md) — swimlane per critical path
 - [`translation-conventions.md`](translation-conventions.md) — Rust→TS mapping rules
@@ -137,22 +137,22 @@ graph TB
 
 | Source | Path | LOC | Destination |
 |---|---|---|---|
-| Openclaude | `query.ts` | 1,838 | `runtime/src/phases/*` + `session/run-turn.ts` |
-| Openclaude | `services/compact/` | 4,171 | `runtime/src/llm/compact/` |
-| Openclaude | `services/tools/` | 3,211 | `runtime/src/tools/` |
-| Openclaude | `cli/transports/` | ~1,400 (subset) | `runtime/src/transport/` |
-| Openclaude | `ink/` | ~9,000 | `runtime/src/tui/ink/` (verbatim) |
-| Openclaude | `ink/components/` | ~2,300 | `runtime/src/tui/components/` |
-| Openclaude | `commands/` | ~2,000 (subset) | `runtime/src/commands/` |
-| Openclaude | `constants/prompts.ts` + `utils/claudemd.ts` + `utils/projectInstructions.ts` | 2,471 | `runtime/src/prompts/` |
-| Openclaude | `memdir/` + `memoryScan.ts` + `memoryTypes.ts` | ~900 | `runtime/src/prompts/memory/` |
-| Openclaude | `utils/permissions/` + `hooks/toolPermission/` + `utils/sandbox/` | ~3,500 | `runtime/src/permissions/` |
-| Openclaude | `utils/worktree.ts` + `tools/AgentTool/*` | ~3,000 | `runtime/src/agents/{delegate,run-agent,worktree,fork-context}.ts` |
-| Codex | `core/src/session/` | 3,082 (session.rs+turn.rs) | `runtime/src/session/` (hand-port) |
-| AgenC | — (atop codex `parallel.rs` RwLock primitive) | 194 | `runtime/src/tools/concurrency.ts` (AgenC-original) |
-| Codex | `core/src/agent/{control,registry,role,status}.rs` | ~2,019 | `runtime/src/agents/{control,registry,role,status}.ts` (hand-port) |
-| Codex | `core/src/agent/mailbox.rs` | 161 | `runtime/src/agents/mailbox.ts` (hand-port) |
-| Codex | `protocol/src/protocol.rs` (event enums only) | ~500 effective | `runtime/src/session/event-log.ts` (hand-port) |
+| AgenC | `query.ts` | 1,838 | `runtime/src/phases/*` + `session/run-turn.ts` |
+| AgenC | `services/compact/` | 4,171 | `runtime/src/llm/compact/` |
+| AgenC | `services/tools/` | 3,211 | `runtime/src/tools/` |
+| AgenC | `cli/transports/` | ~1,400 (subset) | `runtime/src/transport/` |
+| AgenC | `ink/` | ~9,000 | `runtime/src/tui/ink/` (verbatim) |
+| AgenC | `ink/components/` | ~2,300 | `runtime/src/tui/components/` |
+| AgenC | `commands/` | ~2,000 (subset) | `runtime/src/commands/` |
+| AgenC | `constants/prompts.ts` + `utils/claudemd.ts` + `utils/projectInstructions.ts` | 2,471 | `runtime/src/prompts/` |
+| AgenC | `memdir/` + `memoryScan.ts` + `memoryTypes.ts` | ~900 | `runtime/src/prompts/memory/` |
+| AgenC | `utils/permissions/` + `hooks/toolPermission/` + `utils/sandbox/` | ~3,500 | `runtime/src/permissions/` |
+| AgenC | `utils/worktree.ts` + `tools/AgentTool/*` | ~3,000 | `runtime/src/agents/{delegate,run-agent,worktree,fork-context}.ts` |
+| AgenC runtime | `core/src/session/` | 3,082 (session.rs+turn.rs) | `runtime/src/session/` (hand-port) |
+| AgenC | — (atop AgenC runtime `parallel.rs` RwLock primitive) | 194 | `runtime/src/tools/concurrency.ts` (AgenC-original) |
+| AgenC runtime | `core/src/agent/{control,registry,role,status}.rs` | ~2,019 | `runtime/src/agents/{control,registry,role,status}.ts` (hand-port) |
+| AgenC runtime | `core/src/agent/mailbox.rs` | 161 | `runtime/src/agents/mailbox.ts` (hand-port) |
+| AgenC runtime | `protocol/src/protocol.rs` (event enums only) | ~500 effective | `runtime/src/session/event-log.ts` (hand-port) |
 | AgenC (keep) | `runtime/src/llm/grok/` | 8,144 | — verbatim |
 | AgenC (keep) | `runtime/src/watch/agenc-watch-{art,splash,ui-primitives,terminal-sequences}.mjs` | ~700 | — verbatim |
 
@@ -194,41 +194,41 @@ agenc-core/runtime/src/
   bin/
     agenc.ts                     # CLI entry (argv/stdin + optional TUI boot)
   session/
-    session.ts                   # codex-port: Session struct
-    run-turn.ts                  # codex-port: run_turn orchestration
-    turn-context.ts              # codex-port: immutable per-turn snapshot
-    turn-state.ts                # openclaude-port: 22 loop variables
-    event-log.ts                 # codex-port: EventLogEntry union + reducer
-    rollout-item.ts              # codex-port: RolloutItem JSONL wrapper
-    rollout-store.ts             # codex-inspired: JSONL append + read
-    rollout-reconstruction.ts    # codex-port: reverse-scan + forward-replay
-    session-store.ts             # openclaude-port: ~/.agenc/projects/<slug>/ layout
-    sidecar.ts                   # openclaude-inspired: async event subscribers
-    file-history.ts              # openclaude-port: per-message snapshots
+    session.ts                   # AgenC implementation: Session struct
+    run-turn.ts                  # AgenC implementation: run_turn orchestration
+    turn-context.ts              # AgenC implementation: immutable per-turn snapshot
+    turn-state.ts                # AgenC implementation: 22 loop variables
+    event-log.ts                 # AgenC implementation: EventLogEntry union + reducer
+    rollout-item.ts              # AgenC implementation: RolloutItem JSONL wrapper
+    rollout-store.ts             # AgenC-designed: JSONL append + read
+    rollout-reconstruction.ts    # AgenC implementation: reverse-scan + forward-replay
+    session-store.ts             # AgenC implementation: ~/.agenc/projects/<slug>/ layout
+    sidecar.ts                   # AgenC-designed: async event subscribers
+    file-history.ts              # AgenC implementation: per-message snapshots
   phases/
     index.ts                     # enum + transition table
-    prepare-context.ts           # openclaude: phase 1 (311-652)
-    stream-model.ts              # openclaude: phase 2 (685-1028)
-    post-sample-recovery.ts      # openclaude: phase 3 (1093-1216)
-    continuation-nudge.ts        # openclaude: phase 4 (1400-1463)
-    execute-tools.ts             # openclaude: phase 5 (1471-1590)
-    commit.ts                    # openclaude: phase 6 (1643-1836)
-    stop-hooks.ts                # openclaude stop-gate behavior + codex event/session wiring
+    prepare-context.ts           # AgenC: phase 1 (311-652)
+    stream-model.ts              # AgenC: phase 2 (685-1028)
+    post-sample-recovery.ts      # AgenC: phase 3 (1093-1216)
+    continuation-nudge.ts        # AgenC: phase 4 (1400-1463)
+    execute-tools.ts             # AgenC: phase 5 (1471-1590)
+    commit.ts                    # AgenC: phase 6 (1643-1836)
+    stop-hooks.ts                # AgenC stop-gate behavior + AgenC runtime event/session wiring
   recovery/
-    tombstone.ts                 # openclaude-port
-    terminal-tool-result.ts      # openclaude-port
-    fallback-ladder.ts           # openclaude-port
-    reconnection.ts              # openclaude-port
-    withhold-cascading.ts        # openclaude-port: two-gate withhold
+    tombstone.ts                 # AgenC implementation
+    terminal-tool-result.ts      # AgenC implementation
+    fallback-ladder.ts           # AgenC implementation
+    reconnection.ts              # AgenC implementation
+    withhold-cascading.ts        # AgenC implementation: two-gate withhold
   tools/
-    streaming-executor.ts        # openclaude-port
-    orchestration.ts             # openclaude-port
-    execution.ts                 # openclaude-port
-    hooks.ts                     # openclaude-port (tool hooks)
-    concurrency.ts               # agenc-original (atop codex RwLock primitive)
-    router.ts                    # codex-port: router.rs
-    orchestrator.ts              # codex-port: orchestrator.rs
-    context.ts                   # codex-port: ToolPayload
+    streaming-executor.ts        # AgenC implementation
+    orchestration.ts             # AgenC implementation
+    execution.ts                 # AgenC implementation
+    hooks.ts                     # AgenC implementation (tool hooks)
+    concurrency.ts               # agenc-original (atop AgenC runtime RwLock primitive)
+    router.ts                    # AgenC implementation: router.rs
+    orchestrator.ts              # AgenC implementation: orchestrator.rs
+    context.ts                   # AgenC implementation: ToolPayload
     registry.ts                  # extend existing tool-registry.ts
   llm/
     grok/                        # historical Grok implementation retained
@@ -240,64 +240,64 @@ agenc-core/runtime/src/
     capabilities.ts              # provider/model capability registry
     shape-request.ts             # capability-driven request composer
     types.ts                     # existing — keep
-    compact/                     # openclaude-port wholesale (15 files)
+    compact/                     # AgenC implementation wholesale (15 files)
     hooks/                       # existing — keep
   transport/
     index.ts                     # Transport interface + factory
-    ws-duplex.ts                 # openclaude-port: WebSocketTransport
-    ws-post.ts                   # openclaude-port: HybridTransport
-    sse-post.ts                  # openclaude-port: SSETransport
-    serial-batch-uploader.ts     # openclaude-port: SerialBatchEventUploader
-    fallback-ladder.ts           # openclaude-port: transportUtils factory + ladder
+    ws-duplex.ts                 # AgenC implementation: WebSocketTransport
+    ws-post.ts                   # AgenC implementation: HybridTransport
+    sse-post.ts                  # AgenC implementation: SSETransport
+    serial-batch-uploader.ts     # AgenC implementation: SerialBatchEventUploader
+    fallback-ladder.ts           # AgenC implementation: transportUtils factory + ladder
     capability-probe.ts          # planned: per-transport feature bitmap
   agents/
-    thread.ts                    # AgenC child-session wrapper over codex control + openclaude message streaming
-    worktree.ts                  # openclaude-port: worktree.ts
+    thread.ts                    # AgenC child-session wrapper over AgenC runtime control + AgenC message streaming
+    worktree.ts                  # AgenC implementation: worktree.ts
     delegate.ts                  # legacy AgentTool adapter only; no child-session ownership
-    run-agent.ts                 # openclaude-port behavior invoked inside codex-owned child session lifecycle
-    fork-context.ts              # openclaude-port: forkSubagent.ts
-    mailbox.ts                   # codex-port: mailbox.rs
-    control.ts                   # codex-port: control.rs
-    registry.ts                  # codex-port: registry.rs
-    role.ts                      # codex-port: role.rs + built-in default/explorer/awaiter
-    status.ts                    # codex-port: status.rs
-    resume.ts                    # codex lifecycle with retained openclaude worktree pragmatism
+    run-agent.ts                 # AgenC implementation behavior invoked inside AgenC runtime-owned child session lifecycle
+    fork-context.ts              # AgenC implementation: forkSubagent.ts
+    mailbox.ts                   # AgenC implementation: mailbox.rs
+    control.ts                   # AgenC implementation: control.rs
+    registry.ts                  # AgenC implementation: registry.rs
+    role.ts                      # AgenC implementation: role.rs + built-in default/explorer/awaiter
+    status.ts                    # AgenC implementation: status.rs
+    resume.ts                    # AgenC runtime lifecycle with retained AgenC worktree pragmatism
   permissions/
-    evaluator.ts                 # openclaude-port: hasPermissionsToUseTool
-    context.ts                   # openclaude-port: PermissionContext
-    mode.ts                      # openclaude-port: PermissionMode + cycleNextMode
-    sandbox.ts                   # codex-port: decision enums (no OS primitives)
-    rules.ts                     # openclaude-port: rule structures
-    approval.ts                  # openclaude-port: approval callback
-    classifier.ts                # openclaude-port: 2-stage YOLO classifier
-    network-approval.ts          # codex-port: network_approval.rs
+    evaluator.ts                 # AgenC implementation: hasPermissionsToUseTool
+    context.ts                   # AgenC implementation: PermissionContext
+    mode.ts                      # AgenC implementation: PermissionMode + cycleNextMode
+    sandbox.ts                   # AgenC implementation: decision enums (no OS primitives)
+    rules.ts                     # AgenC implementation: rule structures
+    approval.ts                  # AgenC implementation: approval callback
+    classifier.ts                # AgenC implementation: 2-stage YOLO classifier
+    network-approval.ts          # AgenC implementation: network_approval.rs
   prompts/
-    system-prompt.ts             # openclaude-port: getSystemPrompt()
-    project-instructions.ts      # openclaude-port: ancestor walk + @include
+    system-prompt.ts             # AgenC implementation: getSystemPrompt()
+    project-instructions.ts      # AgenC implementation: ancestor walk + @include
     agenc-md.ts                  # AgenC 4-tier instruction file loader
-    sections.ts                  # openclaude-port: cached vs volatile sections
+    sections.ts                  # AgenC implementation: cached vs volatile sections
     memory/
-      loader.ts                  # openclaude-port: loadMemoryPrompt()
-      auto-save.ts               # openclaude-port: sessionMemory.ts
-      scan.ts                    # openclaude-port: memoryScan.ts
-      types.ts                   # openclaude-port: memoryTypes.ts
-      attachments.ts             # openclaude-port: partial attachments.ts
+      loader.ts                  # AgenC implementation: loadMemoryPrompt()
+      auto-save.ts               # AgenC implementation: sessionMemory.ts
+      scan.ts                    # AgenC implementation: memoryScan.ts
+      types.ts                   # AgenC implementation: memoryTypes.ts
+      attachments.ts             # AgenC implementation: partial attachments.ts
   commands/
-    dispatcher.ts                # inline-args support (codex-inspired)
-    plan.ts                      # openclaude-port
-    permissions.ts               # openclaude-port
-    model.ts                     # openclaude-port
-    config.ts                    # openclaude-port
-    help.ts                      # openclaude-port
+    dispatcher.ts                # inline-args support (AgenC-designed)
+    plan.ts                      # AgenC implementation
+    permissions.ts               # AgenC implementation
+    model.ts                     # AgenC implementation
+    config.ts                    # AgenC implementation
+    help.ts                      # AgenC implementation
     clear.ts                     # simplified
     context.ts                   # simplified
-    exit.ts                      # openclaude-port
-    status.ts                    # openclaude-port
+    exit.ts                      # AgenC implementation
+    status.ts                    # AgenC implementation
     keybindings.ts               # simplified
   config/
-    loader.ts                    # codex-inspired: TOML loader
-    schema.ts                    # merged openclaude settings + codex profile
-    profiles.ts                  # codex-port: named profile overrides
+    loader.ts                    # AgenC-designed: TOML loader
+    schema.ts                    # merged AgenC settings + AgenC runtime profile
+    profiles.ts                  # AgenC implementation: named profile overrides
     store.ts                     # snapshot + reload + subscribers (I-30/I-47)
     env.ts                       # env var resolution
     # note: the ancestor walker for AGENC.md actually lives
@@ -310,8 +310,8 @@ agenc-core/runtime/src/
     resilient-bridge.ts          # existing
     transports/
       stdio.ts                   # existing inline → extract
-      sse.ts                     # NEW (codex-mcp-inspired)
-      http.ts                    # NEW (codex-mcp-inspired)
+      sse.ts                     # NEW (AgenC runtime-mcp-inspired)
+      http.ts                    # NEW (AgenC runtime-mcp-inspired)
     resource-bridge.ts           # NEW
     prompt-bridge.ts             # NEW
   tui/
@@ -321,33 +321,33 @@ agenc-core/runtime/src/
       Banner.tsx                 # run/status/phase/tool cockpit
       ArtPanel.tsx               # ASCII girl (wraps watch/agenc-watch-art.mjs)
       Splash.tsx                 # wraps watch/agenc-watch-splash.mjs
-      StatusLineConfig.tsx       # codex-inspired configurable status line
+      StatusLineConfig.tsx       # AgenC-designed configurable status line
     transcript/
       MessageList.tsx            # ScrollBox-wrapped
       StreamingMessage.tsx       # incremental markdown
-      ExecCell.tsx               # codex-inspired exec cell model
+      ExecCell.tsx               # AgenC-designed exec cell model
     composer/
       Composer.tsx               # multiline + history
       Palette.tsx                # slash + file-mention
-      history.ts                 # openclaude-port
-      drag-drop.ts               # openclaude-port
-      image-paste.ts             # openclaude-port
+      history.ts                 # AgenC implementation
+      drag-drop.ts               # AgenC implementation
+      image-paste.ts             # AgenC implementation
       useComposerState.ts        # hook
     components/
-      Spinner.tsx                # openclaude-port
-      Diff/                      # openclaude-port
-      HighlightedCode/           # openclaude-port
+      Spinner.tsx                # AgenC implementation
+      Diff/                      # AgenC implementation
+      HighlightedCode/           # AgenC implementation
     hooks/
       useQuery.ts                # consume run-turn events
-      useMarkdownStream.ts       # openclaude-port wrapper
+      useMarkdownStream.ts       # AgenC implementation wrapper
       useInput.ts                # keyboard subscription
-      useAnimationTick.ts        # codex-inspired scheduler
+      useAnimationTick.ts        # AgenC-designed scheduler
     permissions/
-      ApprovalOverlay.tsx        # codex-inspired overlay + openclaude handler
-      InteractiveHandler.tsx     # openclaude-port
+      ApprovalOverlay.tsx        # AgenC-designed overlay + AgenC handler
+      InteractiveHandler.tsx     # AgenC implementation
     keybindings/
-      defaultBindings.ts         # openclaude-port
-    ink/                         # LOCKED — openclaude verbatim (~9,000 LOC)
+      defaultBindings.ts         # AgenC implementation
+    ink/                         # LOCKED — AgenC verbatim (~9,000 LOC)
     theme.ts                     # imports watch/agenc-watch-ui-primitives.mjs
   watch/                         # LOCKED — AgenC aesthetic + logic modules
     agenc-watch-art.mjs          # verbatim
@@ -365,52 +365,52 @@ agenc-core/runtime/src/
     behavior-subject.ts          # translation helper for Rust watch::channel
     async-queue.ts               # translation helper for Rust mpsc::channel
     event-emitter.ts             # translation helper
-    generators.ts                # openclaude-port: all() concurrency-capped
-    error-log.ts                 # openclaude-port: errorLogSink
+    generators.ts                # AgenC implementation: all() concurrency-capped
+    error-log.ts                 # AgenC implementation: errorLogSink
 ```
 
 ---
 
 ## Key design decisions
 
-### 1. Hybrid kernel: codex discipline, openclaude implementation
+### 1. Hybrid kernel: AgenC runtime discipline, AgenC implementation
 
 The phase machine, Session type, TurnContext, and event log come from
-codex's architectural discipline. The inner phase logic (what happens
+AgenC runtime's architectural discipline. The inner phase logic (what happens
 inside `stream-model`, `execute-tools`, `post-sample-recovery`) comes
-from openclaude's battle-tested implementation. These are not in
-conflict — codex says "here are the types and phase boundaries,"
-openclaude says "here is what runs inside."
+from AgenC's battle-tested implementation. These are not in
+conflict — AgenC runtime says "here are the types and phase boundaries,"
+AgenC says "here is what runs inside."
 
-### 2. Concurrency contract = AgenC-new enum + openclaude streaming
+### 2. Concurrency contract = AgenC-new enum + AgenC streaming
 
-Codex's `RwLock` model inspired the read-vs-write discipline, but the
-`ConcurrencyClass` enum itself is AgenC-original (codex has no such
-enum). Openclaude's `StreamingToolExecutor` gives us mid-stream tool
+AgenC runtime's `RwLock` model inspired the read-vs-write discipline, but the
+`ConcurrencyClass` enum itself is AgenC-original (AgenC runtime has no such
+enum). AgenC's `StreamingToolExecutor` gives us mid-stream tool
 dispatch + Bash-only sibling abort. Combine:
 
-- `ConcurrencyClass.SharedRead` maps to openclaude's `isConcurrencySafe=true`
+- `ConcurrencyClass.SharedRead` maps to AgenC's `isConcurrencySafe=true`
 - `ConcurrencyClass.Exclusive` maps to `isConcurrencySafe=false`
 - `ConcurrencyClass.SharedServer(id)` for MCP server-scoped concurrency
 - `ConcurrencyClass.BackgroundTerminal` for long-running shells
 
-### 3. Subagent = openclaude worktree + codex mailbox
+### 3. Subagent = AgenC worktree + AgenC runtime mailbox
 
-Openclaude already nails worktree creation, teardown, and sparse
-checkout. Codex has the better communication model (typed mailbox with
+AgenC already nails worktree creation, teardown, and sparse
+checkout. AgenC runtime has the better communication model (typed mailbox with
 trigger-turn flag). Take both.
 
-### 4. Event log = codex union + openclaude sidecars
+### 4. Event log = AgenC runtime union + AgenC sidecars
 
-Codex's typed `EventMsg`/`RolloutItem` discriminated unions are the
-format. Openclaude's pattern of sidecar files (JSONL transcript +
+AgenC runtime's typed `EventMsg`/`RolloutItem` discriminated unions are the
+format. AgenC's pattern of sidecar files (JSONL transcript +
 metadata at EOF + write-queue batching) is the persistence layer. The
 union lives in `session/event-log.ts`; sidecars run async subscribers
 in `session/sidecar.ts`.
 
 ### 5. Ink is locked verbatim
 
-No refactoring the reconciler. Port `openclaude/src/ink/` as a sealed
+No refactoring the reconciler. Port `AgenC/src/ink/` as a sealed
 subsystem; AgenC code consumes it like a library.
 
 ### 6. Grok is the default provider, not the only one
@@ -424,9 +424,9 @@ registry in `runtime/src/llm/capabilities.ts` and the shared request
 composer `runtime/src/llm/shape-request.ts`. Full provider plan:
 [`provider-matrix.md`](provider-matrix.md).
 
-### 7. Compaction = openclaude wholesale
+### 7. Compaction = AgenC wholesale
 
-Delete the dead AgenC chain, copy openclaude's `services/compact/`
+Delete the dead AgenC chain, copy AgenC's `services/compact/`
 (15 files, 4,171 LOC). Kebab-case rename on arrival, content 1:1.
 
 ---
@@ -450,17 +450,17 @@ Delete the dead AgenC chain, copy openclaude's `services/compact/`
   (`PermissionModeRegistry.setMode` /
   `subscribeToModeChange`) used by I-3 guards.
 - **Evaluator (5-step decision tree)** —
-  `permissions/evaluator.ts` implements the ported openclaude flow:
+  `permissions/evaluator.ts` implements the ported AgenC flow:
   (1) rule/tool checks, (2) mode gate with the I-3 `getAppState()`
   re-read, (3) passthrough→ask conversion, (4) outer transforms
   (dontAsk, auto, headless fallback), (5) auto-mode classifier
   pipeline with safe-tool allowlist and denial tracking.
 - **Denial tracking (3/20 limits)** —
-  `permissions/denial-tracking.ts` enforces the openclaude-canonical
+  `permissions/denial-tracking.ts` enforces the AgenC-canonical
   limits: `maxConsecutive = 3`, `maxTotal = 20`. Exceeding either
   falls back to prompting or aborts the headless run.
 - **Sandbox policy (4 variants)** — `permissions/sandbox.ts` ports
-  the codex `SandboxMode` enum (`danger_full_access`, `read_only`,
+  the AgenC runtime `SandboxMode` enum (`danger_full_access`, `read_only`,
   `workspace_write`, `external_sandbox`) as a decision model only.
   No OS primitives are linked in; worktree + evaluator + cwd jail
   remain the enforcement surface.
@@ -469,9 +469,9 @@ Delete the dead AgenC chain, copy openclaude's `services/compact/`
   for the same key short-circuit the modal.
 - **Network approval service** —
   `permissions/network-approval.ts` ports the host+protocol+port
-  cache from codex with `AllowOnce | AllowForSession | Deny`.
+  cache from AgenC runtime with `AllowOnce | AllowForSession | Deny`.
 - **Bash subcommand permission check** — `permissions/bash.ts`
-  ports the openclaude subcommand parser and sandbox-override
+  ports the AgenC subcommand parser and sandbox-override
   rules; AgenC ships a ~1005 LOC lean port of the ~2598 LOC
   upstream file.
 

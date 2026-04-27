@@ -1,7 +1,7 @@
 /**
  * ReviewDecision — user's answer to an approval prompt.
  *
- * Hand-port of codex `protocol/src/protocol.rs:3600-3654`
+ * Hand-port of AgenC runtime `protocol/src/protocol.rs:3600-3654`
  * (T11 Wave 1, Agent C).
  *
  * This file is the single canonical location for the `ReviewDecision`
@@ -9,7 +9,7 @@
  * re-exports from here; nothing else in the runtime owns its own copy.
  *
  * Shape notes:
- *   - The original codex enum is serde `snake_case` tagged, meaning
+ *   - The original AgenC runtime enum is serde `snake_case` tagged, meaning
  *     `ReviewDecision::Approved` serializes as `"approved"` and
  *     `ReviewDecision::ApprovedExecpolicyAmendment { .. }` as
  *     `{ "approved_execpolicy_amendment": { .. } }`. AgenC models the
@@ -52,7 +52,7 @@ export interface NetworkPolicyAmendment {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ReviewDecision — 7 variants, codex parity.
+// ReviewDecision — 7 variants, AgenC behavior.
 // ─────────────────────────────────────────────────────────────────────
 
 export type ReviewDecision =
@@ -104,7 +104,7 @@ export function networkPolicyAmendment(
 /**
  * Does the decision count as an allow (proceed with the tool call)?
  *
- * Codex parity: approvals come in three positive flavors —
+ * AgenC behavior: approvals come in three positive flavors —
  *   - `approved` (one-shot)
  *   - `approved_for_session` (cache for the rest of the session)
  *   - `approved_execpolicy_amendment` (persist a rule)
@@ -138,7 +138,7 @@ export function reviewDecisionIsAllow(decision: ReviewDecision): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Stable, PII-free string form of a decision. Ports codex
+ * Stable, PII-free string form of a decision. Ports AgenC runtime
  * `ReviewDecision::to_opaque_string()` (protocol.rs:3635-3653).
  *
  * These strings appear in metrics labels and logs. Do not rename or

@@ -82,7 +82,7 @@ describe("agentMentionsProducer", () => {
   });
 
   test("only triggers on token-boundary @ — email-style is ignored", async () => {
-    // openclaude regex requires (^|\s) before @, so foo@agent-bar is
+    // AgenC regex requires (^|\s) before @, so foo@agent-bar is
     // intentionally skipped.
     const out = await agentMentionsProducer(
       makeOpts("foo@agent-bar"),

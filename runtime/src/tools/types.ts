@@ -135,7 +135,7 @@ export interface Tool {
    */
   readonly concurrencyClass?: import("./concurrency.js").ConcurrencyClass;
   /**
-   * Per-call downgrade hook (openclaude pattern). Return `true` when
+   * Per-call downgrade hook (AgenC pattern). Return `true` when
    * the specific invocation is safe to run concurrently; `false` or
    * `throw` downgrades to `Exclusive`.
    */
@@ -158,13 +158,13 @@ export interface Tool {
    *  always requires user approval. */
   readonly requiresApproval?: boolean;
   /**
-   * OpenClaude parity: tools that must collect interactive user input
+   * AgenC behavior: tools that must collect interactive user input
    * can force an approval/user-interaction prompt even when the current
    * permission mode would otherwise bypass normal approvals.
    */
   readonly requiresUserInteraction?: () => boolean;
   /**
-   * Optional OpenClaude-style permission hook. The permissions evaluator
+   * Optional AgenC-style permission hook. The permissions evaluator
    * calls this before the generic mode gate so tools can request asks,
    * denies, or updated inputs based on their own arguments.
    */
@@ -173,12 +173,12 @@ export interface Tool {
     context: ToolEvaluatorContext,
   ) => PermissionResult | Promise<PermissionResult>;
   /**
-   * Openclaude parity: how this tool should respond to a user
+   * AgenC behavior: how this tool should respond to a user
    * 'interrupt' abort (typed message mid-turn). `'cancel'` → the
    * executor synthesizes a `user_interrupted` terminal result and
    * stops the tool. `'block'` → the tool is allowed to finish; the
    * interrupt does not cancel it. Omitting the field defaults to
-   * `'block'` — conservative, matches openclaude default.
+   * `'block'` — conservative, matches AgenC default.
    */
   readonly interruptBehavior?: () => "cancel" | "block";
 }

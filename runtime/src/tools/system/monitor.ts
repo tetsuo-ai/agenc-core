@@ -1,7 +1,7 @@
 /**
- * `Monitor` — port of openclaude `MonitorTool`.
+ * `Monitor` — port of AgenC `MonitorTool`.
  *
- * Verbatim model-facing prompt from openclaude `MonitorTool.ts:90`. The
+ * Verbatim model-facing prompt from AgenC `MonitorTool.ts:90`. The
  * tool spawns a shell command in the background and streams its stdout
  * line-by-line as `tool_progress` events that the runtime delivers to
  * the model as notifications. For one-shot "wait until done" commands
@@ -10,11 +10,11 @@
  * Implementation contract:
  *   - Schema: `{ command: string, description: string }` (verbatim).
  *   - Returns: `{ taskId, outputFile }` text confirmation matching
- *     openclaude `mapToolResultToToolResultBlockParam` content.
+ *     AgenC `mapToolResultToToolResultBlockParam` content.
  *   - Streams output through AgenC's existing `unifiedExecManager`
  *     `tool_progress` event channel — the same path `exec_command`
  *     uses for live stdout/stderr chunks. The 30-minute timeout
- *     ceiling matches openclaude `MONITOR_TIMEOUT_MS`.
+ *     ceiling matches AgenC `MONITOR_TIMEOUT_MS`.
  *
  * @module
  */
@@ -26,13 +26,13 @@ import type {
 } from "../types.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 
-const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — openclaude parity.
+const MONITOR_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes — AgenC behavior.
 
 /**
- * Verbatim port of openclaude `MonitorTool.prompt()`
+ * Verbatim port of AgenC `MonitorTool.prompt()`
  * (`src/tools/MonitorTool/MonitorTool.ts:89-91`). Adapted only to
  * mention AgenC's `exec_command`'s `yield_time_ms` instead of
- * openclaude's `Bash` `run_in_background`, since that's the AgenC
+ * AgenC's `Bash` `run_in_background`, since that's the AgenC
  * primitive the model already knows.
  */
 const MONITOR_DESCRIPTION = `Execute a shell command in the background and stream its stdout line-by-line as notifications. Each polling interval (~1s), new output lines are delivered to you. Use this for monitoring logs, watching build output, or observing long-running processes. For one-shot "wait until done" commands, prefer exec_command with a short yield_time_ms instead.`;
@@ -106,7 +106,7 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
         // Drive through unifiedExecManager exactly the same way
         // exec_command does — that's how the runtime already streams
         // line-by-line tool_progress chunks. The yield ceiling
-        // matches openclaude's MONITOR_TIMEOUT_MS so abandoned
+        // matches AgenC's MONITOR_TIMEOUT_MS so abandoned
         // monitors get reaped by the existing hard-timeout path.
         const output = await config.unifiedExecManager.execCommand({
           cmd: command,
@@ -126,14 +126,14 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
           output.process_id !== undefined
             ? `monitor-${output.process_id}`
             : `monitor-${startedAt.toString(36)}`;
-        // AgenC has no on-disk task-output mirror (openclaude's
+        // AgenC has no on-disk task-output mirror (AgenC's
         // `getTaskOutputPath`), but the live stream is delivered via
         // tool_progress events which the model already consumes.
         // Use a synthetic agenc:// URI so the result shape matches
         // upstream without inventing an unused file path.
         const outputFile = `agenc://exec/${taskId}/output`;
 
-        // Verbatim port of openclaude
+        // Verbatim port of AgenC
         // `mapToolResultToToolResultBlockParam` content
         // (`MonitorTool.ts:140-145`), with TaskStop replaced by the
         // AgenC primitive the model already knows.

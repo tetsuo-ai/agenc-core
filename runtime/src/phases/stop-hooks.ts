@@ -1,8 +1,8 @@
 /**
  * Phase 3b — Stop hooks.
  *
- * Port of codex `hooks/src/events/stop.rs` (547 LOC, AgenC subset
- * ~250 LOC) + openclaude `query.ts:1313-1341` stop-hook ladder.
+ * Port of AgenC runtime `hooks/src/events/stop.rs` (547 LOC, AgenC subset
+ * ~250 LOC) + AgenC `query.ts:1313-1341` stop-hook ladder.
  *
  * Stop hooks fire at turn-end and can:
  *   - declare that the stop is legitimate (no-op; turn completes)
@@ -21,7 +21,7 @@
  *        guard + stop-hook-loop + throw-guard all funnel through
  *        `emitError`.
  *
- * Critical subtlety (openclaude 1297-1299): `executeStopFailureHooks`
+ * Critical subtlety (AgenC 1297-1299): `executeStopFailureHooks`
  * fires ONLY when `lastMessage?.isApiErrorMessage` — without this
  * gate tokens spiral, because a stop-failure hook on a non-API-error
  * assistant turn can inject text the model refines indefinitely.
@@ -42,16 +42,16 @@ import type {
 // ─────────────────────────────────────────────────────────────────────
 
 /** I-17 recursion cap is AgenC's additional guard over both sources.
- *  Codex has no cap — its stop-hook loop relies on timeouts +
- *  cancellation (see `codex-rs/hooks/src/events/stop.rs` and
- *  `codex-rs/core/src/session/turn.rs`, neither defines a
- *  `MAX_STOP_HOOK_RECURSION_DEPTH` constant). Openclaude caps at
+ *  AgenC runtime has no cap — its stop-hook loop relies on timeouts +
+ *  cancellation (see `AgenC runtime-rs/hooks/src/events/stop.rs` and
+ *  `AgenC runtime-rs/core/src/session/turn.rs`, neither defines a
+ *  `MAX_STOP_HOOK_RECURSION_DEPTH` constant). AgenC caps at
  *  `MAX_STOP_HOOK_BLOCKS` in `query.ts`; we mirror that name + value
  *  here. */
 export const MAX_STOP_HOOK_BLOCKS = 3;
 
 // ─────────────────────────────────────────────────────────────────────
-// Stop-hook types (port of codex StopOutcome subset)
+// Stop-hook types (port of AgenC runtime StopOutcome subset)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface StopRequest {
@@ -63,7 +63,7 @@ export interface StopRequest {
   readonly stopHookActive: boolean;
   readonly lastAssistantMessage?: string;
   /** Whether the last assistant message was itself an API error —
-   *  openclaude `isApiErrorMessage` flag (query.ts:1297-1299). */
+   *  AgenC `isApiErrorMessage` flag (query.ts:1297-1299). */
   readonly lastIsApiErrorMessage: boolean;
 }
 
@@ -176,7 +176,7 @@ export async function evaluateStopHooks(
     }
 
     if (outcome.shouldBlock) {
-      // Codex `stop.rs:185-193` rejects `decision:block` without a
+      // AgenC runtime `stop.rs:185-193` rejects `decision:block` without a
       // non-empty reason. Mirror that: blank/whitespace-only
       // blockReason is a typed hook failure; we skip this hook's
       // block contribution entirely.
@@ -207,10 +207,10 @@ export async function evaluateStopHooks(
   }
   void aggregate;
 
-  // Codex `stop.rs:271` precedence: `should_block = !should_stop &&
+  // AgenC runtime `stop.rs:271` precedence: `should_block = !should_stop &&
   // any(should_block)`. A hook that returned `shouldStop: true` wins
   // over any concurrent `shouldBlock: true`, even across hooks.
-  // Asserted by codex test `continue_false_overrides_block_decision`
+  // Asserted by AgenC runtime test `continue_false_overrides_block_decision`
   // (stop.rs:378-400).
   if (anyShouldStop) {
     return {
@@ -224,7 +224,7 @@ export async function evaluateStopHooks(
     return { allowStop: true, blocking: false };
   }
 
-  // Openclaude critical subtlety (1297-1299): when the LAST assistant
+  // AgenC critical subtlety (1297-1299): when the LAST assistant
   // message is an API error, DO NOT fire executeStopFailureHooks —
   // tokens spiral. A blocking hook on an API-error turn skips the
   // inject and allows stop.
@@ -260,12 +260,12 @@ export async function evaluateStopHooks(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Stop-failure hooks — port of openclaude executeStopFailureHooks
+// Stop-failure hooks — port of AgenC executeStopFailureHooks
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Run stop-failure hooks ONLY when the last assistant message is an
- * API error (openclaude query.ts:1297-1299 guard). Without this
+ * API error (AgenC query.ts:1297-1299 guard). Without this
  * guard the hooks fire on every terminal turn, even successful
  * ones, which spirals tokens on stop-hook-inject loops.
  */

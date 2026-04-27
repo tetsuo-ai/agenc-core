@@ -2,8 +2,8 @@
  * File-history sidecar — per-message snapshots of edited files with
  * versioned backups.
  *
- * Hand-port of openclaude `src/utils/fileHistory.ts` (1,115 LOC). The
- * openclaude implementation is tightly coupled to React-hook-style
+ * Hand-port of AgenC `src/utils/fileHistory.ts` (1,115 LOC). The
+ * AgenC implementation is tightly coupled to React-hook-style
  * state updaters + global session state. This AgenC port preserves
  * the on-disk format + data shapes but restructures around
  * `SessionStore` + `SidecarManager`.
@@ -66,7 +66,7 @@ export interface FileHistoryBackup {
 }
 
 /**
- * Port of openclaude `DiffStats` + `computeDiffStats`. Counts line-
+ * Port of AgenC `DiffStats` + `computeDiffStats`. Counts line-
  * level insertions/deletions relative to the previous version of the
  * same tracked file.
  */
@@ -648,7 +648,7 @@ export class FileHistorySidecar implements Sidecar {
 // ─────────────────────────────────────────────────────────────────────
 // Session-resume surface — module-level helpers
 //
-// Port of openclaude `utils/fileHistory.ts` lines 347-397, 399-408,
+// Port of AgenC `utils/fileHistory.ts` lines 347-397, 399-408,
 // 414-484, 494-531, 600-634, 888-917, 922-1046. The AgenC port reuses
 // the existing FileHistory on-disk layout (`backupFileName` is the
 // absolute path to the backup artifact under `projectDir/file-history/
@@ -706,7 +706,7 @@ async function hashFileContent(filePath: string): Promise<string | null> {
 }
 
 /**
- * Port of openclaude `checkOriginFileChanged` (fileHistory.ts:600-634).
+ * Port of AgenC `checkOriginFileChanged` (fileHistory.ts:600-634).
  * Hash-compares current disk state to the recorded origin (v1) backup.
  * Returns `true` when the file differs (including presence mismatch)
  * or when `backupFileName` is `null` but the file exists on disk.
@@ -738,7 +738,7 @@ export async function checkOriginFileChanged(
 }
 
 /**
- * Port of openclaude `fileHistoryCanRestore` (fileHistory.ts:399-408).
+ * Port of AgenC `fileHistoryCanRestore` (fileHistory.ts:399-408).
  * Returns `true` when a snapshot for `messageId` exists AND every
  * tracked file in that snapshot has a reachable backup on disk (i.e.
  * the backup files themselves have not been garbage-collected).
@@ -758,7 +758,7 @@ export async function fileHistoryCanRestore(
 }
 
 /**
- * Port of openclaude `fileHistoryRewind` (fileHistory.ts:347-397).
+ * Port of AgenC `fileHistoryRewind` (fileHistory.ts:347-397).
  * Rewind the tracked files on disk to the snapshot identified by
  * `messageId`. Returns the list of files that changed. Throws when
  * the snapshot does not exist so callers can surface a clear error.
@@ -803,7 +803,7 @@ export async function fileHistoryRewind(
 }
 
 /**
- * Port of openclaude `fileHistoryGetDiffStats` (fileHistory.ts:414-484),
+ * Port of AgenC `fileHistoryGetDiffStats` (fileHistory.ts:414-484),
  * generalized to diff between two snapshot points. When `fromMessageId`
  * is omitted, diffs against the first recorded snapshot (the origin).
  * Returns per-file insertions/deletions plus an aggregate.
@@ -867,7 +867,7 @@ export async function fileHistoryGetDiffStats(
 }
 
 /**
- * Port of openclaude `fileHistoryHasAnyChanges` (fileHistory.ts:494-531)
+ * Port of AgenC `fileHistoryHasAnyChanges` (fileHistory.ts:494-531)
  * specialized to "any edit ever recorded" — true iff at least one
  * tracked-file backup exists across the snapshot log. Complements the
  * disk-vs-snapshot variant exposed via the `FileHistory` class.
@@ -916,7 +916,7 @@ function isPersistedSnapshot(value: unknown): value is PersistedSnapshot {
 }
 
 /**
- * Port of openclaude `fileHistoryRestoreStateFromLog` (fileHistory.ts:
+ * Port of AgenC `fileHistoryRestoreStateFromLog` (fileHistory.ts:
  * 888-917). Rebuild `FileHistoryState` by walking the rollout items
  * and collecting any `event_msg` payload whose `msg.type ===
  * "file_history_snapshot"` carries a `PersistedSnapshot`. Unknown or
@@ -966,7 +966,7 @@ export function fileHistoryRestoreStateFromLog(
 }
 
 /**
- * Port of openclaude `copyFileHistoryForResume` (fileHistory.ts:922-
+ * Port of AgenC `copyFileHistoryForResume` (fileHistory.ts:922-
  * 1046). AgenC snapshots carry absolute backup paths, so resuming a
  * session does not require per-session backup-dir migration: the new
  * session can read the existing backup artifacts directly. This helper

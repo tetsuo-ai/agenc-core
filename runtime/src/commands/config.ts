@@ -218,7 +218,7 @@ const defaultSpawnEditor: EditorSpawner = (command, args) =>
 export function editorForEnv(env: NodeJS.ProcessEnv): string {
   const preferred = env.EDITOR?.trim() || env.VISUAL?.trim();
   if (preferred && preferred.length > 0) return preferred;
-  // Fallbacks mirror openclaude's Settings/edit flow.
+  // Fallbacks mirror AgenC's Settings/edit flow.
   return "vim";
 }
 

@@ -243,7 +243,7 @@ function createMethodBackedConfigStore(
 const FAKE_CONFIG_STORE: ConfigStoreLike = { current: () => ({}) as never };
 
 describe("App", () => {
-  test("recognizes codex-style picker slash commands", () => {
+  test("recognizes AgenC-style picker slash commands", () => {
     expect(readPickerCommandIntent("/model")).toEqual({ kind: "model" });
     expect(readPickerCommandIntent("/model-provider")).toEqual({
       kind: "model-provider",
@@ -570,7 +570,7 @@ describe("App", () => {
     unmount();
   });
 
-  test("renders OpenClaude-style prompt chrome with configurable status line", async () => {
+  test("renders AgenC-style prompt chrome with configurable status line", async () => {
     const session = {
       ...createFakeSession("plan"),
       conversationId: "conv-1234567890",
@@ -872,7 +872,7 @@ describe("App", () => {
                 question: "Which planner interview behavior should AgenC use?",
                 options: [
                   {
-                    label: "OpenClaude picker (Recommended)",
+                    label: "AgenC picker (Recommended)",
                     description: "Show multiple-choice questions in the TUI.",
                   },
                   {
@@ -892,7 +892,7 @@ describe("App", () => {
 
     expect(text).toContain("Answer questions");
     expect(text).toContain("Which planner interview behavior should AgenC use?");
-    expect(text).toContain("OpenClaude picker (Recommended)");
+    expect(text).toContain("AgenC picker (Recommended)");
     expect(text).not.toContain("Approval pending");
     expect(text.indexOf("Answer questions")).toBeLessThan(
       text.indexOf("Ask AgenC to do anything"),

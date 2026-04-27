@@ -7,7 +7,7 @@
  * `state.toolUseBlocks`, and updates `state.messages` with the new
  * assistant turn.
  *
- * Mirrors openclaude `query.ts:561-1082`.
+ * Mirrors AgenC `query.ts:561-1082`.
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog, default-on) — installStreamWatchdog
@@ -283,7 +283,7 @@ function estimateChunkTokens(chunk: LLMStreamChunk): number {
  * event for each dropped id so the history has a matching entry and
  * the next iteration doesn't stall.
  *
- * Openclaude does the equivalent via `ensureToolResultPairing` in
+ * AgenC does the equivalent via `ensureToolResultPairing` in
  * `utils/messages.ts:5109`; AgenC's event stream is the direct
  * surface, so we emit here at the drop site.
  */
@@ -514,7 +514,7 @@ export async function streamModel(
       completionTokens: response.usage.completionTokens,
       totalTokens: response.usage.totalTokens,
     };
-    // Cross-turn token accumulator — codex
+    // Cross-turn token accumulator — AgenC runtime
     // `Session::update_token_info_from_usage` (session/mod.rs:2739-2749)
     // plus `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
     // Runs under the session state lock so the mid-turn compact gate in
@@ -553,7 +553,7 @@ export async function streamModel(
   });
 
   // I-22: boundary check uses provider-reported completion tokens.
-  // OpenClaude decides continuation from the finalized turn output,
+  // AgenC decides continuation from the finalized turn output,
   // not from an overshoot heuristic; the mid-stream sampler above is
   // only there to keep the local invariant's estimation path alive.
   if (session.budgetTracker) {

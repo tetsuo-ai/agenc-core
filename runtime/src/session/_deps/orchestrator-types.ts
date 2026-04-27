@@ -3,7 +3,7 @@
  *
  * Session only references these as type-only parameters; permissive
  * `any`-typed aliases are sufficient. Carved as a local `_deps/` so
- * the gut session tree stays resolvable after the openclaude
+ * the gut session tree stays resolvable after the AgenC
  * `tools/orchestrator.ts` is removed.
  */
 

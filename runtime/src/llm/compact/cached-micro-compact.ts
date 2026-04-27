@@ -1,4 +1,4 @@
-// Parity stub — mirrors openclaude's `cachedMicrocompact.ts`, which also ships
+// Parity stub — mirrors AgenC's `cachedMicrocompact.ts`, which also ships
 // a `return false` stub in the public source snapshot because the real
 // implementation is behind an internal Anthropic feature flag
 // (`feature('CACHED_MICROCOMPACT')`) and is not included in the external build.

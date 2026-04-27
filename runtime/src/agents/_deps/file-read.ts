@@ -1,10 +1,10 @@
 /**
  * Per-dir text-normalization helper for `runtime/src/agents/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/file-read.ts`
+ * Mirrors the AgenC implementation `runtime/src/utils/file-read.ts`
  * `normalizeExternalText` helper that `role.ts` uses to clean external
  * agent-definition text. Carved as a local `_deps/` to cut the
- * gut→openclaude crossing.
+ * gut→AgenC crossing.
  */
 
 export interface NormalizeOptions {

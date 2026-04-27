@@ -1,22 +1,22 @@
 /**
  * Denial-tracking primitive (I-3).
  *
- * Ports openclaude's `denialTracking.ts` with the handful of integration
+ * Ports AgenC's `denialTracking.ts` with the handful of integration
  * helpers (`handleDenialLimitExceeded`) needed by classifier + prompt fallback
  * logic. Tracks two counters:
  *
  *   - `consecutiveDenials` — reset on any success
- *   - `totalDenials` — lifetime counter, never reset (openclaude correction)
+ *   - `totalDenials` — lifetime counter, never reset (AgenC correction)
  *
- * The spec's original draft reset `totalDenials` on success; openclaude's
+ * The spec's original draft reset `totalDenials` on success; AgenC's
  * live source deliberately leaves it sticky so operators can abort runaway
- * loops after a hard cap. We match openclaude.
+ * loops after a hard cap. We match AgenC.
  *
  * @module
  */
 
 /**
- * Session-wide denial caps. openclaude's authoritative values:
+ * Session-wide denial caps. AgenC's authoritative values:
  *   - 3 consecutive denials  -> CLI: soft-fallback (convert deny to ask)
  *   - 20 total denials       -> CLI: reset consecutive + fallback;
  *                               headless: abort with AbortError
@@ -34,7 +34,7 @@ export type DenialTrackingState = {
 
 /**
  * Fresh zeroed state for a new session or a new localDenialTracking scope.
- * openclaude's async-subagent path clones this into a request-scoped state
+ * AgenC's async-subagent path clones this into a request-scoped state
  * where `setAppState` is a no-op — so callers can pass in their own
  * `DenialTrackingState` instance and own its lifecycle locally.
  */
@@ -103,7 +103,7 @@ export type DenialLimitOutcome =
  * responsible for having already run `recordDenial` before invoking this —
  * this function reads counters and returns the policy outcome.
  *
- * Precedence (matches openclaude):
+ * Precedence (matches AgenC):
  *   1. Headless + totalDenials >= 20    -> abort
  *   2. CLI + totalDenials >= 20         -> reset consecutive, fallback
  *   3. CLI + consecutiveDenials >= 3    -> fallback (soft)

@@ -1,7 +1,7 @@
 /**
  * Session-memory subsystem the compact path consumes.
  *
- * Ported from upstream Claude Code's
+ * Ported from upstream AgenC's
  * `src/services/SessionMemory/sessionMemoryUtils.ts` and
  * `src/services/SessionMemory/prompts.ts`, adapted to the gut runtime:
  *
@@ -19,7 +19,7 @@
  * - `getSessionMemoryPath()` matches the legacy gut path so existing
  *   tests and rollout-context paths keep resolving.
  *
- * No openclaude SessionMemory module is imported.
+ * No AgenC SessionMemory module is imported.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";

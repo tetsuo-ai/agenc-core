@@ -5,7 +5,7 @@
  * lines" with mode tags (`code`, `code-meta`, `plain`, etc.). The full
  * implementation lives at `runtime/src/watch/agenc-watch-markdown-*.mjs`
  * and is treated as an aesthetic lock — we only re-export it through this
- * shim so the TUI never reaches across into the openclaude tree.
+ * shim so the TUI never reaches across into the AgenC tree.
  */
 
 import * as watchMarkdown from "../../watch/agenc-watch-markdown-core.mjs";

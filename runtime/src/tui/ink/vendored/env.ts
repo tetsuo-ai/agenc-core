@@ -1,5 +1,5 @@
 /**
- * Vendored from openclaude/src/utils/env.ts — only the `env` object fields
+ * Vendored from AgenC/src/utils/env.ts — only the `env` object fields
  * referenced by the Ink core. Terminal detection is trimmed to what the
  * ported code actually consults (`env.terminal`).
  */

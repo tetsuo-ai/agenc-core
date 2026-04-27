@@ -1,7 +1,7 @@
 # Runtime Validation Program
 
 This document converts the named validation gates and benchmark fixtures
-from [codex-runtime-replacement.md](./codex-runtime-replacement.md) into
+from [runtime-replacement.md](./runtime-replacement.md) into
 the current `agenc-core/runtime` file map.
 
 It is intentionally literal:

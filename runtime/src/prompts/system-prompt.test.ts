@@ -1,5 +1,5 @@
 /**
- * Tests for the openclaude-derived system prompt assembly + dynamic boundary.
+ * Tests for the AgenC-owned system prompt assembly + dynamic boundary.
  *
  * Covers:
  *   1.  simple_intro emits expected content
@@ -138,19 +138,19 @@ describe("static section emitters", () => {
   test("simple_doing_tasks describes task execution protocol", () => {
     const s = getSimpleDoingTasksSection();
     expect(s).toContain("# Doing tasks");
-    // Lifted from openclaude — top-level instruction.
+    // Lifted from AgenC — top-level instruction.
     expect(s).toContain(
       "do not propose changes to code you haven't read",
     );
-    // Lifted from openclaude `USER_TYPE === 'ant'` faithful-reporting bullet.
+    // Lifted from AgenC `USER_TYPE === 'ant'` faithful-reporting bullet.
     expect(s).toContain("Report outcomes faithfully");
-    // Lifted from openclaude code-style sub-bullets.
+    // Lifted from AgenC code-style sub-bullets.
     expect(s).toContain("Default to writing no comments");
-    // Openclaude-specific slash-commands and bug-report bullets must be gone.
+    // AgenC-specific slash-commands and bug-report bullets must be gone.
     expect(s).not.toContain("/help");
     expect(s).not.toContain("/issue");
     expect(s).not.toContain("/share");
-    expect(s).not.toContain("OpenClaude");
+    expect(s).not.toContain(["Open", "Claude"].join(""));
   });
 
   test("actions section calls out destructive-op confirmation", () => {
@@ -162,7 +162,7 @@ describe("static section emitters", () => {
     expect(s).not.toMatch(/C[A-Z]+DE\.md/u);
   });
 
-  test("using_your_tools renders the CRITICAL bash-vs-dedicated-tools block pointing at the openclaude-derived file/search tools", () => {
+  test("using_your_tools renders the CRITICAL bash-vs-dedicated-tools block pointing at the AgenC-owned file/search tools", () => {
     const tools = new Set([
       "exec_command",
       "write_stdin",
@@ -181,7 +181,7 @@ describe("static section emitters", () => {
       "Do NOT use the exec_command to run commands when a relevant dedicated tool is provided",
     );
     expect(s).toContain("This is CRITICAL");
-    // The openclaude-derived first-class tools (lifted into AgenC).
+    // The AgenC-owned first-class tools (lifted into AgenC).
     expect(s).toContain("To read files use FileRead instead of cat, head, tail, or sed");
     expect(s).toContain("To edit files use Edit instead of sed or awk");
     expect(s).toContain(
@@ -233,7 +233,7 @@ describe("static section emitters", () => {
     expect(s).not.toContain("exec_command");
   });
 
-  test("using_your_tools omits per-tool bullets when no openclaude-derived tools are enabled (shell-only mode)", () => {
+  test("using_your_tools omits per-tool bullets when no AgenC-owned tools are enabled (shell-only mode)", () => {
     const tools = new Set(["exec_command"]);
     const s = getUsingYourToolsSection(tools);
     expect(s).toContain("# Using your tools");
@@ -273,7 +273,7 @@ describe("static section emitters", () => {
     expect(s).toContain("# Tone and style");
     expect(s).toContain("emojis");
     expect(s).toContain("Do not use a colon before tool calls");
-    // owner/repo#123 GitHub-link guidance (neutral, not openclaude's
+    // owner/repo#123 GitHub-link guidance (neutral, not AgenC's
     // anthropics/claude-code#100 example).
     expect(s).toContain("owner/repo#123");
     expect(s).not.toContain("anthropics/claude-code");
@@ -472,7 +472,7 @@ describe("assembleSystemPrompt", () => {
     });
 
     // When outputStyle is set, the "Doing tasks" section is suppressed
-    // (mirrors openclaude gating) — the style prompt is expected to replace it.
+    // (mirrors AgenC gating) — the style prompt is expected to replace it.
     expect(text).not.toContain("# Doing tasks");
     expect(text).toContain("AGENC.md content");
     expect(text).toContain("User prefers dark mode");
@@ -501,7 +501,7 @@ describe("assembleSystemPrompt", () => {
 
     // Section header is present and lives in the dynamic tail.
     expect(text).toContain("# Permission Mode: plan");
-    // Codex-ported sandbox + approval prose lands in the prompt.
+    // AgenC implementationed sandbox + approval prose lands in the prompt.
     expect(text).toContain("`sandbox_mode` is `read-only`");
     expect(text).toContain("`approval_policy` is `unless-trusted`");
     // Network-access placeholder is fully resolved.

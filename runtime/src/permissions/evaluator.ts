@@ -1,12 +1,12 @@
 /**
  * T11 Wave 2-A — permission evaluator (5-step decision tree).
  *
- * Ports openclaude's `hasPermissionsToUseTool` +
+ * Ports AgenC's `hasPermissionsToUseTool` +
  * `hasPermissionsToUseToolInner` + `checkRuleBasedPermissions` from
  * `src/utils/permissions/permissions.ts`. Every step is numbered in
  * comments to make it easy to cross-reference the source.
  *
- * 5-step flow (paraphrased from openclaude lines ~1058-1319):
+ * 5-step flow (paraphrased from AgenC lines ~1058-1319):
  *
  *   1. Rule-based + tool-implementation checks (bypass-immune where
  *      noted):
@@ -94,7 +94,7 @@ export interface ToolEvaluatorContext {
    */
   readonly denialTracking?: DenialTrackingState;
   /**
-   * Toggle for openclaude's `shouldUseSandbox()` step-1b fallthrough.
+   * Toggle for AgenC's `shouldUseSandbox()` step-1b fallthrough.
    * When provided and returning true for a Bash input, the ask-rule
    * short-circuit is skipped so the sandbox auto-allow can fire inside
    * tool.checkPermissions. Defaults to "never sandboxed" — desktop
@@ -106,7 +106,7 @@ export interface ToolEvaluatorContext {
    * allow path where Bash ask-rules should fall through to step 1c.
    * This mirrors `SandboxManager.isSandboxingEnabled()
    *   && SandboxManager.isAutoAllowBashIfSandboxedEnabled()`
-   * in openclaude. Defaults to false.
+   * in AgenC. Defaults to false.
    */
   readonly autoAllowBashIfSandboxed?: boolean;
   /**
@@ -158,7 +158,7 @@ export type CanUseToolFn = (
 ) => Promise<PermissionResult>;
 
 // ---------------------------------------------------------------------------
-// Message builders (tiny subset of openclaude's createPermissionRequestMessage)
+// Message builders (tiny subset of AgenC's createPermissionRequestMessage)
 // ---------------------------------------------------------------------------
 
 function createPermissionRequestMessage(toolName: string): string {
@@ -232,7 +232,7 @@ function readClassifierTranscriptMessages(
 // ---------------------------------------------------------------------------
 
 /**
- * Ports openclaude's `checkRuleBasedPermissions` — runs steps 1a–1g and
+ * Ports AgenC's `checkRuleBasedPermissions` — runs steps 1a–1g and
  * returns the first bypass-immune rule-based decision that fires, or
  * `null` when nothing in steps 1a–1g blocks the mode gate from running.
  * Does NOT run the mode gate or the classifier. Generic tool asks from
@@ -304,7 +304,7 @@ export async function checkRuleBasedPermissions(
           : (maybe as PermissionResult);
     } catch (e) {
       if (isAbortError(e)) throw e;
-      // Any other throw → fall back to passthrough. openclaude logs
+      // Any other throw → fall back to passthrough. AgenC logs
       // these; we surface them via the context's onDecision hook for
       // now. No crash: permission failures are always recoverable.
       toolResult = {
@@ -359,7 +359,7 @@ export async function checkRuleBasedPermissions(
 // ---------------------------------------------------------------------------
 
 /**
- * Ported from openclaude lines 1262-1297. Runs after step 1g; re-reads
+ * Ported from AgenC lines 1262-1297. Runs after step 1g; re-reads
  * `context.getAppState()` so a Shift+Tab mid-evaluation mutation is
  * respected.
  */
@@ -432,7 +432,7 @@ export async function hasPermissionsToUseToolInner(
 
   // When the rule-based layer returned an explicit tool-level allow,
   // use it as the toolResult so step 2 can still observe the updated
-  // input. A tool-level allow is NOT bypass-immune — openclaude runs
+  // input. A tool-level allow is NOT bypass-immune — AgenC runs
   // step 2 regardless (and mode=bypass will re-stamp the reason).
   let toolResult: PermissionResult;
   if (ruleBased && ruleBased.behavior === "allow") {
@@ -441,7 +441,7 @@ export async function hasPermissionsToUseToolInner(
     // No bypass-immune result. Re-invoke the tool permission check so
     // step 3 can convert passthrough → ask. Keeping this as a fresh
     // call (rather than reusing the rule-based layer's internal
-    // result) matches openclaude's single-source-of-truth semantics.
+    // result) matches AgenC's single-source-of-truth semantics.
     toolResult = {
       behavior: "passthrough" as const,
       message: createPermissionRequestMessage(tool.name),
@@ -489,7 +489,7 @@ export async function hasPermissionsToUseToolInner(
     return toolResult as PermissionDenyDecision;
   }
 
-  // Tool allow: honor it (mirrors openclaude — tool.checkPermissions
+  // Tool allow: honor it (mirrors AgenC — tool.checkPermissions
   // can legitimately return allow for acceptEdits etc.).
   return toolResult as PermissionAllowDecision;
 }
@@ -559,7 +559,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
     // permission-request hooks. W2-A does not run hooks itself; the
     // caller (W3) plugs the hook pipeline in via onDecision/ctor. To
     // keep the contract honest here we return `deny:asyncAgent` when
-    // the flag is set — matching openclaude's terminal fallthrough
+    // the flag is set — matching AgenC's terminal fallthrough
     // when no hook decides.
     if (appState.toolPermissionContext.shouldAvoidPermissionPrompts === true) {
       const deny: PermissionDenyDecision = {
@@ -624,7 +624,7 @@ async function runAutoClassifierPipeline(
   }
 
   // 5.3 — PowerShell requires explicit approval unless build flag set.
-  // POWERSHELL_AUTO_MODE is not wired in AgenC; mirror openclaude's
+  // POWERSHELL_AUTO_MODE is not wired in AgenC; mirror AgenC's
   // default-off behavior.
   if (tool.name === "PowerShell") {
     if (toolCtx.shouldAvoidPermissionPrompts === true) {
@@ -645,7 +645,7 @@ async function runAutoClassifierPipeline(
     context.denialTracking ?? appState.denialTracking;
 
   // 5.4 — acceptEdits simulation fast-path. Skip for Agent/REPL as in
-  // openclaude.
+  // AgenC.
   if (tool.name !== "Agent" && tool.name !== "REPL") {
     const acceptEditsResult = await tryAcceptEditsSimulation(
       tool,
@@ -835,10 +835,10 @@ function persistDenialState(
   next: DenialTrackingState,
 ): void {
   // Prefer the per-request slot; otherwise write to the app-state's
-  // snapshot. The in-place mutation matches openclaude's subagent
+  // snapshot. The in-place mutation matches AgenC's subagent
   // semantics where setAppState is a no-op.
   if (context.denialTracking) {
-    // Mutate in place to match openclaude's Object.assign contract.
+    // Mutate in place to match AgenC's Object.assign contract.
     (context.denialTracking as { consecutiveDenials: number }).consecutiveDenials =
       next.consecutiveDenials;
     (context.denialTracking as { totalDenials: number }).totalDenials =

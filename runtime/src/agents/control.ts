@@ -1,7 +1,7 @@
 /**
  * AgentControl — subagent lifecycle + control plane.
  *
- * Port of codex `core/src/agent/control.rs` (1,214 LOC). Covers: full
+ * Port of AgenC runtime `core/src/agent/control.rs` (1,214 LOC). Covers: full
  * lifecycle (spawn/interrupt/shutdown/resume), parent→child message
  * routing (send_input / append_message / inter-agent communication),
  * metadata + subtree queries (list_agents / subtree descendants /
@@ -11,7 +11,7 @@
  * Deferred (subsystems not yet in AgenC — track T10/T13):
  *   - Rollout-driven rehydrate restores live handles + descendant
  *     tree shape from the rollout-store-owned spawn-edge snapshot.
- *     Full codex parity still needs the broader T6/T10 rollout/state
+ *     Full AgenC behavior still needs the broader T6/T10 rollout/state
  *     rehydrate surface for pending turn/tool state.
  *   - Exec-policy + shell-snapshot inheritance
  *     (`inheritedExecPolicyForSource`, `inheritedShellSnapshotForSource`)
@@ -22,19 +22,19 @@
  *     writes/reads through that API; it does not keep a second
  *     persistence owner in memory.
  *   - `getAgentConfigSnapshot` / `getTotalTokenUsage` currently return
- *     conservative fallbacks (role-config blob + zeros). The codex
+ *     conservative fallbacks (role-config blob + zeros). The AgenC runtime
  *     parity surface is preserved so callers upgrade once the live
  *     thread config snapshot lands.
  *
  * Invariants wired:
  *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `childDepth >= cap`.
- *        AgenC raises the cap from codex's `DEFAULT_AGENT_MAX_DEPTH=1`
- *        (`codex-rs/core/src/config/mod.rs:127`) to 4 because AgenC's
+ *        AgenC raises the cap from AgenC runtime's `DEFAULT_AGENT_MAX_DEPTH=1`
+ *        (`AgenC runtime-rs/core/src/config/mod.rs:127`) to 4 because AgenC's
  *        subagent workflow (delegate/worktree/fork-context) routinely
  *        nests 2–3 levels deep for multi-role planner → implementer →
- *        verifier chains. Comparison operator matches codex's `>=`
- *        form (`codex-rs/core/src/agent/control.rs:486`,
- *        `codex-rs/core/src/agent/multi_agents_common.rs:283`).
+ *        verifier chains. Comparison operator matches AgenC runtime's `>=`
+ *        form (`AgenC runtime-rs/core/src/agent/control.rs:486`,
+ *        `AgenC runtime-rs/core/src/agent/multi_agents_common.rs:283`).
  *   I-5  (bidirectional mailbox) — routing methods (send_input /
  *        append_message / IAC / interrupt) go through the child's
  *        `downInbox` with `direction: 'down'`.
@@ -83,16 +83,16 @@ import { AgentStatusTracker, isFinal, type AgentStatus } from "./status.js";
  * I-1 default cap. Overrideable via `config.agents.maxDepth` (T10) or the
  * `AGENC_AGENT_MAX_DEPTH` env var (test/ops escape hatch).
  *
- * Semantics match codex: `spawn` rejects when `childDepth >= cap`, so the
+ * Semantics match AgenC runtime: `spawn` rejects when `childDepth >= cap`, so the
  * cap value is the smallest depth that is NOT allowed. Cap=4 means root
  * (depth 0) may spawn depths 1, 2, and 3; depth 4 is rejected.
  *
- * Divergence from codex: codex defaults to `DEFAULT_AGENT_MAX_DEPTH=1`
- * (`codex-rs/core/src/config/mod.rs:127`), which permits only a single
+ * Divergence from AgenC runtime: AgenC defaults to `DEFAULT_AGENT_MAX_DEPTH=1`
+ * (`AgenC runtime-rs/core/src/config/mod.rs:127`), which permits only a single
  * layer of subagents under root. AgenC raises the default to 4 because
  * its multi-role delegate pipeline (planner → implementer → verifier,
  * optionally with a fork-context scout) routinely exercises 2–3 levels
- * of nesting. Ops can still dial it back to codex's default via
+ * of nesting. Ops can still dial it back to AgenC runtime's default via
  * `AGENC_AGENT_MAX_DEPTH=1` or the per-session `maxDepth` override.
  */
 const DEFAULT_MAX_AGENT_DEPTH = 4;
@@ -113,7 +113,7 @@ export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
  * Accessor stub for the session-level child-base-config blob.
  *
  * TODO(T10): Replace with a real accessor once `SessionConfiguration`
- * carries a stable child-config source. Codex derives the child's
+ * carries a stable child-config source. AgenC runtime derives the child's
  * base config from `Session.state.config` (`role.rs:40`); AgenC's
  * `Session.state.sessionConfiguration` exists but is not yet the
  * authoritative source for subagent config layering. Returning
@@ -166,21 +166,21 @@ export class AgentReferenceUnresolvedError extends Error {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Fork-mode + spawn option types (codex `SpawnAgentForkMode` /
+// Fork-mode + spawn option types (AgenC runtime `SpawnAgentForkMode` /
 // `SpawnAgentOptions`; `control.rs:46-55`).
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex `SpawnAgentForkMode` (`control.rs:46`). AgenC's
+ * Port of AgenC runtime `SpawnAgentForkMode` (`control.rs:46`). AgenC's
  * fork-context module owns the richer `ForkMode` used by delegate.ts;
- * this enum matches the narrower codex spawn-entry shape.
+ * this enum matches the narrower AgenC runtime spawn-entry shape.
  */
 export type SpawnAgentForkMode =
   | { readonly kind: "full_history" }
   | { readonly kind: "last_n_turns"; readonly n: number };
 
 /**
- * Port of codex `SpawnAgentOptions` (`control.rs:52`).
+ * Port of AgenC runtime `SpawnAgentOptions` (`control.rs:52`).
  */
 export interface SpawnAgentOptions {
   readonly threadId?: ThreadId;
@@ -193,7 +193,7 @@ export interface SpawnAgentOptions {
 }
 
 /**
- * Port of codex `ListedAgent` (`control.rs:64`).
+ * Port of AgenC runtime `ListedAgent` (`control.rs:64`).
  */
 export interface ListedAgent {
   readonly agentName: string;
@@ -218,7 +218,7 @@ export interface LiveAgent {
   readonly downInbox: Mailbox;
   /** Per-agent AbortController — triggered by `interrupt()`. */
   readonly abortController: AbortController;
-  /** Cached metadata snapshot at spawn time (codex `LiveAgent.metadata`). */
+  /** Cached metadata snapshot at spawn time (AgenC runtime `LiveAgent.metadata`). */
   readonly metadata: AgentMetadata;
 }
 
@@ -240,7 +240,7 @@ export class AgentControl {
   private readonly live = new Map<ThreadId, LiveAgent>();
   /** Cancellation tokens scoped to parents — I-32. */
   private readonly parentTokens = new Map<AgentPath, AbortController>();
-  /** Registered session-root thread id (codex `register_session_root`). */
+  /** Registered session-root thread id (AgenC runtime `register_session_root`). */
   private rootThreadId: ThreadId | undefined;
   /** Parent linkage: childId → parentId (for open_thread_spawn_children
    *  and subtree cascade, since we have no state-db in-tree yet). */
@@ -257,7 +257,7 @@ export class AgentControl {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `spawn_agent_internal` (control.rs:~310).
+   * Port of AgenC runtime `spawn_agent_internal` (control.rs:~310).
    *
    * Lifecycle:
    *   1. I-1 depth check.
@@ -280,7 +280,7 @@ export class AgentControl {
     const parentDepth = depthOfAgentPath(opts.parentPath);
     const childDepth = parentDepth + 1;
 
-    // I-1: depth cap. Matches codex `>=` comparison semantics
+    // I-1: depth cap. Matches AgenC runtime `>=` comparison semantics
     // (`control.rs:486`): cap is the smallest rejected depth.
     if (childDepth >= this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
@@ -426,11 +426,11 @@ export class AgentControl {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Additional spawn entry points (codex parity)
+  // Additional spawn entry points (AgenC behavior)
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `spawn_agent_with_metadata` (control.rs:170).
+   * Port of AgenC runtime `spawn_agent_with_metadata` (control.rs:170).
    * Delegates to `spawn()` but accepts the richer `SpawnAgentOptions`
    * surface (preset threadId / role / metadata / fork mode).
    */
@@ -457,9 +457,9 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `spawn_forked_thread` (control.rs:328). Thin wrapper
-   * that requires a fork mode + parent-spawn-call id (matches codex's
-   * `CodexErr::Fatal` guards at `control.rs:337` and `control.rs:342`).
+   * Port of AgenC runtime `spawn_forked_thread` (control.rs:328). Thin wrapper
+   * that requires a fork mode + parent-spawn-call id (matches AgenC runtime's
+   * `AgenC runtimeErr::Fatal` guards at `control.rs:337` and `control.rs:342`).
    * The actual rollout-truncation body lives in `fork-context.ts`.
    */
   async spawnForkedThread(
@@ -477,11 +477,11 @@ export class AgentControl {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Parent → child routing (codex control.rs:582/605/619)
+  // Parent → child routing (AgenC runtime control.rs:582/605/619)
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `send_input` (`control.rs:582`). Routes a user-input
+   * Port of AgenC runtime `send_input` (`control.rs:582`). Routes a user-input
    * message to a live child via its `downInbox` with triggerTurn=true,
    * and records the preview for `ListedAgent.lastTaskMessage`.
    */
@@ -506,7 +506,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `append_message` (`control.rs:605`). Non-turn-
+   * Port of AgenC runtime `append_message` (`control.rs:605`). Non-turn-
    * triggering message append.
    */
   async appendMessage(threadId: ThreadId, message: string): Promise<void> {
@@ -529,9 +529,9 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `send_inter_agent_communication`
+   * Port of AgenC runtime `send_inter_agent_communication`
    * (`control.rs:619`). Generic parent→child IAC routing. Updates
-   * `lastTaskMessage` on success (matches codex's registry update).
+   * `lastTaskMessage` on success (matches AgenC runtime's registry update).
    */
   async sendInterAgentCommunication(
     threadId: ThreadId,
@@ -672,7 +672,7 @@ export class AgentControl {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `resume_agent_from_rollout`. T9 provides an
+   * Port of AgenC runtime `resume_agent_from_rollout`. T9 provides an
    * in-memory rehydrate: given metadata for a previously known
    * subagent path, rebuild a fresh `LiveAgent` handle with new
    * mailboxes/status/abort so a caller can reconnect.
@@ -692,7 +692,7 @@ export class AgentControl {
 
     // I-1: depth cap. Use metadata.depth as authority, fall back to
     // parent-path-derived depth + 1 if metadata is missing depth.
-    // Matches codex `>=` comparison (`multi_agents_common.rs:283`).
+    // Matches AgenC runtime `>=` comparison (`multi_agents_common.rs:283`).
     const depth =
       metadata.depth ?? depthOfAgentPath(parentPath) + 1;
     if (depth >= this.maxDepth) {
@@ -778,15 +778,15 @@ export class AgentControl {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Rollout-driven resume (codex `resume_agent_from_rollout`)
+  // Rollout-driven resume (AgenC runtime `resume_agent_from_rollout`)
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `resume_agent_from_rollout` (control.rs:406).
+   * Port of AgenC runtime `resume_agent_from_rollout` (control.rs:406).
    *
    * Rebuilds the root handle, then breadth-first reopens every tracked
    * open descendant below it from the rollout-store-owned edge index.
-   * Parent failures short-circuit their subtree, matching codex's
+   * Parent failures short-circuit their subtree, matching AgenC runtime's
    * resume queue semantics.
    */
   async resumeAgentFromRollout(opts: {
@@ -857,9 +857,9 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `resume_single_agent_from_rollout` public surface
+   * Port of AgenC runtime `resume_single_agent_from_rollout` public surface
    * (control.rs:479). Alias of `resume()` — present so ports tracking
-   * the codex name don't need to rename.
+   * the AgenC runtime name don't need to rename.
    */
   async resumeSingleAgentFromRollout(opts: {
     readonly parentPath: AgentPath;
@@ -872,19 +872,19 @@ export class AgentControl {
   // Metadata + subtree queries (Priority 2)
   // ─────────────────────────────────────────────────────────────────
 
-  /** Port of codex `register_session_root` (`control.rs:721`). */
+  /** Port of AgenC runtime `register_session_root` (`control.rs:721`). */
   registerSessionRoot(threadId: ThreadId): void {
     this.rootThreadId = threadId;
     this.registry.registerRootThread(threadId);
   }
 
-  /** Port of codex `get_agent_metadata` (`control.rs:731`). */
+  /** Port of AgenC runtime `get_agent_metadata` (`control.rs:731`). */
   getAgentMetadata(threadId: ThreadId): AgentMetadata | undefined {
     return this.registry.agentMetadataForThread(threadId);
   }
 
   /**
-   * Port of codex `list_live_agent_subtree_thread_ids`
+   * Port of AgenC runtime `list_live_agent_subtree_thread_ids`
    * (`control.rs:735`). Returns `[root, ...descendants]`.
    */
   listLiveAgentSubtreeThreadIds(
@@ -896,7 +896,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `get_agent_config_snapshot` (`control.rs:744`).
+   * Port of AgenC runtime `get_agent_config_snapshot` (`control.rs:744`).
    * Deferred (T13): no per-thread config snapshot yet. Returns a
    * compact best-effort snapshot assembled from the live handle.
    */
@@ -916,7 +916,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `resolve_agent_reference` (`control.rs:757`).
+   * Port of AgenC runtime `resolve_agent_reference` (`control.rs:757`).
    * Supports `@nickname`, `@/absolute/path`, and `@relative/path`.
    */
   resolveAgentReference(opts: {
@@ -949,7 +949,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `get_total_token_usage` (`control.rs:788`).
+   * Port of AgenC runtime `get_total_token_usage` (`control.rs:788`).
    * Deferred (T13): AgenC doesn't expose per-thread totals yet.
    * Returns zeros until the budget tracker wiring lands.
    */
@@ -971,7 +971,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `format_environment_context_subagents`
+   * Port of AgenC runtime `format_environment_context_subagents`
    * (`control.rs:798`). Produces a textual subagent tree for
    * injection into the parent's prompt.
    */
@@ -988,7 +988,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `list_agents` (`control.rs:820`). Optional role +
+   * Port of AgenC runtime `list_agents` (`control.rs:820`). Optional role +
    * path-prefix filter. Includes root when no prefix is supplied or
    * the prefix matches the root.
    */
@@ -1044,7 +1044,7 @@ export class AgentControl {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `maybe_start_completion_watcher` (`control.rs:899`).
+   * Port of AgenC runtime `maybe_start_completion_watcher` (`control.rs:899`).
    * Starts a detached watcher that waits for the child to reach a
    * terminal status, then fires an IAC back to the parent announcing
    * the completion. No-op when the parent is unknown.
@@ -1110,7 +1110,7 @@ export class AgentControl {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of codex `prepare_thread_spawn` (`control.rs:975`). Reserves
+   * Port of AgenC runtime `prepare_thread_spawn` (`control.rs:975`). Reserves
    * the nickname and composes the child metadata without actually
    * spawning. Callers that want to preflight a spawn use this to see
    * the allocated path/nickname.
@@ -1135,7 +1135,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `inherited_shell_snapshot_for_source`
+   * Port of AgenC runtime `inherited_shell_snapshot_for_source`
    * (`control.rs:1010`). Deferred (T13 config refactor).
    */
   inheritedShellSnapshotForSource(
@@ -1146,7 +1146,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `inherited_exec_policy_for_source`
+   * Port of AgenC runtime `inherited_exec_policy_for_source`
    * (`control.rs:1045`). Deferred (T13 config refactor).
    */
   inheritedExecPolicyForSource(
@@ -1157,7 +1157,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `open_thread_spawn_children` (`control.rs:1060`).
+   * Port of AgenC runtime `open_thread_spawn_children` (`control.rs:1060`).
    * Returns live children of the given parent thread, sorted by path.
    */
   openThreadSpawnChildren(
@@ -1177,7 +1177,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `live_thread_spawn_children` (`control.rs:1070`).
+   * Port of AgenC runtime `live_thread_spawn_children` (`control.rs:1070`).
    * Parent→children map for every live child.
    */
   liveThreadSpawnChildren(): ReadonlyMap<
@@ -1201,7 +1201,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `live_thread_spawn_descendants` (`control.rs:1137`).
+   * Port of AgenC runtime `live_thread_spawn_descendants` (`control.rs:1137`).
    * Depth-first walk over the in-memory spawn tree rooted at
    * `rootThreadId`.
    */
@@ -1226,7 +1226,7 @@ export class AgentControl {
   }
 
   /**
-   * Port of codex `persist_thread_spawn_edge_for_source`
+   * Port of AgenC runtime `persist_thread_spawn_edge_for_source`
    * (`control.rs:1113`). Stores an open edge snapshot in the
    * rollout-store-owned durable index for later resume/tree recovery.
    */
@@ -1308,11 +1308,11 @@ export class AgentControl {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Free helpers (codex parity)
+// Free helpers (AgenC behavior)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex `render_input_preview` (`control.rs:1187`). Codex's
+ * Port of AgenC runtime `render_input_preview` (`control.rs:1187`). AgenC runtime's
  * form walks over `Op::UserInput` items; AgenC inputs are plain
  * strings at this boundary, so we preview the first line and truncate
  * to fit a registry `lastTaskMessage` cell.
@@ -1351,7 +1351,7 @@ function edgeStatusForShutdownReason(
   return null;
 }
 
-/** Port of codex `agent_matches_prefix` (`control.rs:1173`). */
+/** Port of AgenC runtime `agent_matches_prefix` (`control.rs:1173`). */
 function agentMatchesPrefix(
   agentPath: AgentPath | undefined,
   prefix: AgentPath,

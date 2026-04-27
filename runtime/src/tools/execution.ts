@@ -2,18 +2,18 @@
  * Tool execution — the central gate between the model's tool_use
  * blocks and the actual `Tool.execute()` call.
  *
- * 1:1 port of openclaude `services/tools/toolExecution.ts` plus
+ * 1:1 port of AgenC `services/tools/toolExecution.ts` plus
  * `utils/toolErrors.ts:formatError`. AgenC's Tool shape carries a raw
  * JSON Schema (not Zod), so the validator is a richer JSON-schema
  * engine implemented here; the observable tool_result prose matches
- * openclaude's `formatZodValidationError` + `CANCEL_MESSAGE` /
+ * AgenC's `formatZodValidationError` + `CANCEL_MESSAGE` /
  * `INTERRUPT_MESSAGE_FOR_TOOL_USE` / `createToolResultStopMessage`.
  *
- * Control flow (openclaude parity):
+ * Control flow (AgenC behavior):
  *   1. Parse args (I-79 large-int reviver).
  *   2. Run schema validation (+ `getSchemaValidationErrorOverride` +
  *      `buildSchemaNotSentHint`).
- *   3. Run PreToolUse hooks BEFORE the permission gate (openclaude
+ *   3. Run PreToolUse hooks BEFORE the permission gate (AgenC
  *      `toolExecution.ts:832-894`). Hooks can rewrite args, synthesize
  *      a `hookPermissionResult`, inject `additionalContext`, deny,
  *      skip with a synthesized result, or stop the turn.
@@ -32,9 +32,9 @@
  *
  * Errors thread through `formatError` + `CANCEL_MESSAGE` /
  * `INTERRUPT_MESSAGE_FOR_TOOL_USE` so the live path's tool_result
- * text matches openclaude's observable output. The args-retry
+ * text matches AgenC's observable output. The args-retry
  * `runWithAutoFixRetry` was removed (see
- * `docs/plan/feature-matrix.md`) — openclaude's auto-fix is a
+ * `docs/plan/feature-matrix.md`) — AgenC's auto-fix is a
  * lint/test runner injected as PostToolUse additional context, not
  * an args retry.
  *
@@ -92,7 +92,7 @@ import {
   formatSchemaValidationError,
   getSchemaValidationErrorOverride,
 } from "./schema-errors.js";
-// Inline copies of openclaude `utils/messages.ts` constants. The full
+// Inline copies of AgenC `utils/messages.ts` constants. The full
 // messages.ts is a heavy port that pulls in `bun:bundle`, analytics,
 // and the entire session service graph; importing two constants from
 // it bricks the whole tools/ test surface. The canonical strings are
@@ -122,7 +122,7 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
 /**
  * I-15: default cap on tool result size in bytes. 400 KB matches
- * openclaude `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
+ * AgenC `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
  * Per-tool override via `tool.maxResultBytes`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
@@ -133,7 +133,7 @@ const TRUNCATION_MARKER_TEMPLATE =
 
 /**
  * Hard cap on formatted error prose before middle-truncation. Mirrors
- * openclaude `formatError`'s 10,000-char cutoff.
+ * AgenC `formatError`'s 10,000-char cutoff.
  */
 const FORMAT_ERROR_MAX_BYTES = 10_000;
 
@@ -499,7 +499,7 @@ export async function requestApprovalWithAbortRace(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Error classification — port of openclaude `classifyToolError`.
+// Error classification — port of AgenC `classifyToolError`.
 // ─────────────────────────────────────────────────────────────────────
 
 export type ToolErrorClass =
@@ -590,7 +590,7 @@ function isShellInterruptError(err: unknown): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// openclaude `formatError` parity — produces tool_result content.
+// AgenC `formatError` parity — produces tool_result content.
 // ─────────────────────────────────────────────────────────────────────
 
 export function formatError(error: unknown): string {
@@ -642,14 +642,14 @@ function getErrorParts(error: Error): string[] {
 // ─────────────────────────────────────────────────────────────────────
 // JSON Schema validation (richer than the old hand-rolled subset —
 // handles anyOf, oneOf, allOf, const, format, and $ref chasing so
-// openclaude's Zod-backed parity is observable).
+// AgenC's Zod-backed parity is observable).
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SchemaValidationError {
   readonly path: string;
   readonly message: string;
   /**
-   * Category driving the openclaude-style prose: missing required,
+   * Category driving the AgenC-style prose: missing required,
    * unexpected key, type mismatch, or `other` for everything else.
    */
   readonly category: "missing" | "unexpected_key" | "type" | "other";
@@ -711,7 +711,7 @@ function joinPath(prefix: string, key: string | number): string {
 }
 
 /**
- * Richer JSON Schema validator that covers the keywords openclaude's
+ * Richer JSON Schema validator that covers the keywords AgenC's
  * Zod schemas emit: `type`, `required`, `properties`,
  * `additionalProperties`, `items`, `enum`, `const`, `anyOf`, `oneOf`,
  * `allOf`, `$ref`, `format`, plus coarse string length / number
@@ -1185,11 +1185,11 @@ function buildApprovalCacheKeys(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Emit one of the six openclaude hook-attachment kinds as a warning on
+ * Emit one of the six AgenC hook-attachment kinds as a warning on
  * the event log. AgenC's event stream doesn't have a dedicated
  * `attachment` message type, so we carry the kind + human-readable
  * message through the warning channel — consumers filter on
- * `cause: hook_*` to reproduce openclaude's attachment view.
+ * `cause: hook_*` to reproduce AgenC's attachment view.
  */
 function emitHookAttachment(
   log: EventLog | undefined,
@@ -1203,7 +1203,7 @@ function emitHookAttachment(
 
 /**
  * Execute one tool invocation end-to-end. See module comment for the
- * full openclaude-parity ordering.
+ * full AgenC-compatible ordering.
  */
 export async function runToolUse(
   rawArgs: string,
@@ -1323,7 +1323,7 @@ export async function runToolUse(
       });
     }
     if (preDecision.kind === "stop") {
-      // openclaude PreToolUse `stop` — return CANCEL_MESSAGE so the
+      // AgenC PreToolUse `stop` — return CANCEL_MESSAGE so the
       // turn halts and the model stops generating.
       emitHookAttachment(
         opts.eventLog,
@@ -1642,7 +1642,7 @@ export async function runToolUse(
     const cls = classifyToolError(err);
     const message = err instanceof Error ? err.message : String(err);
 
-    // MCP-class side effects (openclaude toolExecution :1633-1661 +
+    // MCP-class side effects (AgenC toolExecution :1633-1661 +
     // :1759-1764). Both are optional hooks on RunToolUseOptions so the
     // runtime can wire real MCP state while tests run without it.
     if (cls === "mcp_auth" && opts.onMcpAuthError) {
@@ -1718,7 +1718,7 @@ export async function runToolUse(
     if (opts.throwOnExecutionError) {
       throw err instanceof Error ? err : new Error(String(err));
     }
-    // Terminal content per openclaude:
+    // Terminal content per AgenC:
     //   aborted → INTERRUPT_MESSAGE_FOR_TOOL_USE
     //   otherwise → formatError (covers timeout, mcp, shell, tool_threw)
     const terminalContent =
@@ -1784,7 +1784,7 @@ export async function runToolUse(
     }
   }
 
-  // openclaude `shouldPreventContinuation` parity — when a PreToolUse
+  // AgenC `shouldPreventContinuation` parity — when a PreToolUse
   // hook set `preventContinuation`, emit the attachment now that the
   // tool has actually run successfully.
   if (prePreventContinuation) {
@@ -1829,7 +1829,7 @@ export interface ExecuteToolDispatchOptions extends RunToolUseOptions {
 /**
  * Execute a single tool invocation and return just the
  * `ToolDispatchResult`. T6 removes the args-retry auto-fix loop per
- * `docs/plan/feature-matrix.md` — openclaude's auto-fix injects
+ * `docs/plan/feature-matrix.md` — AgenC's auto-fix injects
  * lint/test output as PostToolUse `hook_additional_context`, it does
  * NOT re-dispatch with rewritten args.
  */

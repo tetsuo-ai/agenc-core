@@ -1,7 +1,7 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../utils/tokenBudget.js`. Only the message helper is consumed by the
- * llm token-budget code; full parser stayed in the openclaude port.
+ * llm token-budget code; full parser stayed in the AgenC port.
  */
 
 export function getBudgetContinuationMessage(

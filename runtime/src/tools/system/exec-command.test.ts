@@ -138,7 +138,7 @@ describe("exec_command tool", () => {
     });
   });
 
-  test("returns Codex-style visible exit status for failed commands", async () => {
+  test("returns AgenC-style visible exit status for failed commands", async () => {
     const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(
       async () => failedExecOutput("compiler failed\n", 2),
     );

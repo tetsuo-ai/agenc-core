@@ -13,7 +13,7 @@
  * - system.move — rename/move file or directory
  *
  * File content tools are intentionally not registered here. AgenC's
- * canonical file-content surface is the first-class openclaude-derived
+ * canonical file-content surface is the first-class AgenC-owned
  * `FileRead`, `Edit`, and `Write` tools in sibling modules.
  *
  * @module
@@ -135,7 +135,7 @@ interface SessionReadSnapshot {
    * (`runtime/src/prompts/attachments/changed-files.ts`) to detect
    * mid-session edits and emit `edited_text_file` snippets.
    *
-   * Hand-port of openclaude `FileState.content` semantics — openclaude's
+   * Hand-port of AgenC `FileState.content` semantics — AgenC's
    * `FileStateCache` always stores raw bytes (`fileStateCache.ts:4-15`).
    * AgenC's `content` field carries the formatted display content; this
    * additional field carries the pre-format raw bytes.
@@ -386,7 +386,7 @@ export function getSessionReadSnapshot(
  * Iterates only the in-memory `sessionReadState` map; persisted local
  * history snapshots are intentionally not enumerated — they are loaded
  * lazily on demand via {@link getSessionReadSnapshot}. The producer
- * iterates the live read set, which is the openclaude
+ * iterates the live read set, which is the AgenC
  * `cacheKeys(toolUseContext.readFileState)` parity surface.
  */
 export function forEachSessionRead(
@@ -794,10 +794,10 @@ async function validatePath(
   );
   if (result.safe) return [result.resolved, null];
 
-  // Plan-file allowlist (openclaude parity, filesystem.ts:1488-1506).
+  // Plan-file allowlist (AgenC behavior, filesystem.ts:1488-1506).
   // When the rejection is for a path outside the workspace allowlist
   // and the target is the active session's plan file, allow it. Same
-  // shape as openclaude's `checkEditableInternalPath`: mode-agnostic,
+  // shape as AgenC's `checkEditableInternalPath`: mode-agnostic,
   // bypasses workspace allowlist, retains all other safety checks
   // (null bytes, traversal, length — those rejected upstream of here).
   const planCtx = planFileContextFromArgs(args);

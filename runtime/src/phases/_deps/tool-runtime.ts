@@ -1,7 +1,7 @@
 /**
  * Lean tool-execution surfaces consumed by `phases/execute-tools.ts`.
  *
- * The openclaude port shipped a full multi-layer dispatcher
+ * The AgenC port shipped a full multi-layer dispatcher
  * (`StreamingToolExecutor` → `router` → `orchestrator` → `execution`).
  * The lean rebuild deletes that stack and replaces it with the
  * minimum behaviour `phases/execute-tools.ts` and its tests rely on:
@@ -13,7 +13,7 @@
  *     into hook arg observers) so tools that stream progress chunks
  *     re-emit through the session event log as `tool_progress`.
  *   - Permission evaluator pass via `canUseTool` + `permissionContext`.
- *   - Codex-style approval classification for `requiresApproval`
+ *   - AgenC-style approval classification for `requiresApproval`
  *     tools, routed through the session approval resolver.
  *   - Mid-execution abort drain — when the abort signal is already
  *     tripped, queued tools yield a synthetic
@@ -430,7 +430,7 @@ export class StreamingToolExecutor {
     // Abort-drain: if the abort signal is already tripped, this call
     // never dispatches. Synthesize the terminal error result up front
     // so getRemainingResults() yields it without consulting the
-    // registry. This matches the openclaude `mode_changed` mid-stream
+    // registry. This matches the AgenC `mode_changed` mid-stream
     // cascade contract.
     if (this.abortSignal?.aborted) {
       tracked.drainErrorMessage = PERMISSION_MODE_CHANGED_MESSAGE;
@@ -438,7 +438,7 @@ export class StreamingToolExecutor {
 
     this.tools.push(tracked);
 
-    // Upstream Codex does not surface routing classification as transcript
+    // Upstream AgenC runtime does not surface routing classification as transcript
     // warnings. Keep this path quiet; real failures are emitted where they
     // happen (permission denial, hook errors, dispatch errors).
   }
@@ -719,7 +719,7 @@ export class StreamingToolExecutor {
             },
             dispatch: async () => {
               // Plumb the session id so filesystem tools can resolve
-              // the active plan-file path (openclaude parity:
+              // the active plan-file path (AgenC behavior:
               // `checkEditableInternalPath` allowlists plan files
               // outside the workspace root). Sub-agents already
               // receive this through `injectChildToolArgs` in

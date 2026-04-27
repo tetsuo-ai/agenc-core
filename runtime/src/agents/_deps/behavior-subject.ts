@@ -1,10 +1,10 @@
 /**
  * Per-dir BehaviorSubject for `runtime/src/agents/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/behavior-subject.ts`
+ * Mirrors the AgenC implementation `runtime/src/utils/behavior-subject.ts`
  * API used by `status.ts` (agent-status watch) and `mailbox.ts`
  * (sequence counter). Carved as a local `_deps/` to cut the gut→
- * openclaude crossing.
+ * AgenC crossing.
  */
 
 type Listener<T> = (value: T) => void;

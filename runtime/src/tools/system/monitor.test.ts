@@ -1,5 +1,5 @@
 /**
- * Tests for `Monitor` — verbatim openclaude `MonitorTool` port.
+ * Tests for `Monitor` — verbatim AgenC `MonitorTool` port.
  * Verifies schema parity, the upstream-style result-content sentence,
  * and that the tool wires through to AgenC's `unifiedExecManager`.
  */
@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { UnifiedExecProcessManager } from "../../unified-exec/index.js";
 import { createMonitorTool } from "./monitor.js";
 
-describe("Monitor (openclaude port)", () => {
+describe("Monitor (AgenC port)", () => {
   let manager: UnifiedExecProcessManager;
 
   beforeEach(() => {
@@ -57,7 +57,7 @@ describe("Monitor (openclaude port)", () => {
     });
     expect(result.isError).toBeUndefined();
     const content = String(result.content);
-    // Verbatim port of openclaude MonitorTool.ts:140-145 sentence
+    // Verbatim port of AgenC MonitorTool.ts:140-145 sentence
     // structure (taskId / outputFile / 1s polling).
     expect(content).toContain("Monitor task started with ID:");
     expect(content).toContain("Output is being streamed to:");
@@ -72,7 +72,7 @@ describe("Monitor (openclaude port)", () => {
     expect(meta.exitCode).toBe(0);
   });
 
-  test("schema declares the verbatim openclaude fields", async () => {
+  test("schema declares the verbatim AgenC fields", async () => {
     const tool = createMonitorTool({
       cwd: process.cwd(),
       unifiedExecManager: manager,
@@ -88,7 +88,7 @@ describe("Monitor (openclaude port)", () => {
     expect(schema.required.sort()).toEqual(["command", "description"]);
   });
 
-  test("description matches openclaude MonitorTool.prompt() verbatim", async () => {
+  test("description matches AgenC MonitorTool.prompt() verbatim", async () => {
     const tool = createMonitorTool({
       cwd: process.cwd(),
       unifiedExecManager: manager,
@@ -98,7 +98,7 @@ describe("Monitor (openclaude port)", () => {
     );
     expect(tool.description).toContain("(~1s)");
     expect(tool.description).toContain("monitoring logs");
-    // AgenC adapts only the trailing reference: openclaude says
+    // AgenC adapts only the trailing reference: AgenC says
     // "Bash with run_in_background"; AgenC wires to exec_command.
     expect(tool.description).toContain("exec_command with a short yield_time_ms");
   });

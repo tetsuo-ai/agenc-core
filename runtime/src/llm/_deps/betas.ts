@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../../../constants/betas.js`. Only the context-management beta header
  * is consumed by the anthropic adapter today.
  */

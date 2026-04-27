@@ -5,10 +5,10 @@
  * fork metadata + worktree handle so callers (delegate.ts +
  * TUI transcript) have a single object to subscribe to.
  *
- * The class also exposes an openclaude-compatible surface (`threadName`,
+ * The class also exposes an AgenC-compatible surface (`threadName`,
  * `messages`, `memory`, `metadata`, `worktreePath`, `worktreeBranch`,
  * `fork()`, `spawn()`, `join()`)
- * so callers that expect the literal openclaude `AgentTool` shape can
+ * so callers that expect the literal AgenC `AgentTool` shape can
  * interoperate with AgenC's subagent runtime without reaching into the
  * underlying `LiveAgent` / `delegate()` surface directly.
  *
@@ -31,7 +31,7 @@ import type { AgentPath } from "./registry.js";
 
 /**
  * Minimal memory entry shape. Full memory wiring lands in T10; the
- * stub here keeps the getter surface live so openclaude-parity
+ * stub here keeps the getter surface live so AgenC-compatible
  * callers can iterate without branching on capability.
  */
 export interface MemoryEntry {
@@ -51,7 +51,7 @@ export interface AgentThreadOpts {
 
 /**
  * Arguments accepted by `AgentThread.fork()` / `AgentThread.spawn()`.
- * Mirrors the openclaude `AgentTool` spawn surface: a task prompt, an
+ * Mirrors the AgenC `AgentTool` spawn surface: a task prompt, an
  * optional role, and optional isolation/worktree info. The only
  * difference between `fork` and `spawn` is the default fork mode —
  * see the method docs.
@@ -143,7 +143,7 @@ export class AgentThread {
   }
 
   /**
-   * Openclaude-parity alias for `nickname`. Falls back to the thread
+   * AgenC-compatible alias for `nickname`. Falls back to the thread
    * id when the role allocator could not mint a nickname (e.g. role
    * pool exhausted).
    */
@@ -170,19 +170,19 @@ export class AgentThread {
   /**
    * Memory scratch for the subagent. Returns the current entries;
    * the underlying array is not mutated by callers. T10 wires the
-   * real memory store; today this returns `[]` so openclaude-parity
+   * real memory store; today this returns `[]` so AgenC-compatible
    * callers can iterate unconditionally.
    */
   get memory(): ReadonlyArray<MemoryEntry> {
     return this.memoryEntries;
   }
 
-  /** Openclaude-parity alias for `worktree?.path`. */
+  /** AgenC-compatible alias for `worktree?.path`. */
   get worktreePath(): string | undefined {
     return this.worktree?.path;
   }
 
-  /** Openclaude-parity alias for `worktree?.branch`. */
+  /** AgenC-compatible alias for `worktree?.branch`. */
   get worktreeBranch(): string | undefined {
     return this.worktree?.branch;
   }
@@ -207,7 +207,7 @@ export class AgentThread {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Openclaude-parity spawn methods
+  // AgenC-compatible spawn methods
   // ─────────────────────────────────────────────────────────────────
 
   /**

@@ -1,5 +1,5 @@
 /**
- * Tests for the lifted openclaude `Glob` tool.
+ * Tests for the lifted AgenC `Glob` tool.
  *
  * Coverage:
  *   - simple `*.txt` pattern in a tmp dir
@@ -38,7 +38,7 @@ describe("Glob tool", () => {
     root = "";
   });
 
-  test("exposes the openclaude-bare tool name and required schema", () => {
+  test("exposes the AgenC-bare tool name and required schema", () => {
     expect(GLOB_TOOL_NAME).toBe("Glob");
     const tool = createGlobTool({ allowedPaths: [root] });
     expect(tool.name).toBe("Glob");

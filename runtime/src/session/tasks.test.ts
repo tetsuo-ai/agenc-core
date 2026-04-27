@@ -2,7 +2,7 @@
  * Tests for the task-dispatch subsystem (`session/tasks.ts` + the
  * `Session.spawnTask` / `Session.onTaskFinished` / `Session.abortAllTasks`
  * methods). Proves the "one turn in flight at a time" invariant that
- * upstream codex `tasks/mod.rs::spawn_task` enforces via the
+ * upstream AgenC runtime `tasks/mod.rs::spawn_task` enforces via the
  * `active_turn` mutex + `abort_all_tasks(TurnAbortReason::Replaced)`
  * re-entry contract.
  *
@@ -687,7 +687,7 @@ describe("bin/agenc.ts parity", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("constants", () => {
-  it("graceful interruption budget matches upstream codex tasks/mod.rs:62", () => {
+  it("graceful interruption budget matches runtime tasks/mod.rs:62", () => {
     // Upstream: GRACEFULL_INTERRUPTION_TIMEOUT_MS = 100 (note: typo in
     // upstream; gut carries the corrected spelling). The ms value is
     // what matters for behavior parity.
@@ -697,7 +697,7 @@ describe("constants", () => {
 
 // ─────────────────────────────────────────────────────────────────────
 // Part 7 — Router integration: toolCalls counter wiring through the
-// ActiveTurnState lock. Mirrors upstream codex tools/registry.rs:303-309.
+// ActiveTurnState lock. Mirrors upstream AgenC runtime tools/registry.rs:303-309.
 // ─────────────────────────────────────────────────────────────────────
 
 describe("ToolRouter.dispatchModelToolCall toolCalls counter", () => {

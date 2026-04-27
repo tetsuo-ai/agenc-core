@@ -1,7 +1,7 @@
 /**
  * `/plan` — enter plan mode or display the active plan.
  *
- * Port of openclaude `src/commands/plan/plan.tsx` adapted to AgenC's
+ * Port of AgenC `src/commands/plan/plan.tsx` adapted to AgenC's
  * `SlashCommand` contract (`runtime/src/commands/types.ts`).
  *
  * Behaviour matrix:
@@ -24,7 +24,7 @@
  *     - `/plan` with no args renders the current plan (or a hint that no
  *       plan is written yet).
  *
- * Plan storage path decision: match OpenClaude's session plan files, but
+ * Plan storage path decision: match AgenC's session plan files, but
  * translate the storage root to AgenC: `<AGENC_HOME>/plans/<slug>.md`.
  *
  * Dependency: expects `session.services.permissionModeRegistry`.

@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of `../types/errors.js`.
+ * Local _deps stub for the gut/AgenC crossing of `../types/errors.js`.
  * `errors.ts` only needs the `RuntimeError` base class and the `RuntimeErrorCodes`
  * subset for LLM/chat-budget conditions.
  */

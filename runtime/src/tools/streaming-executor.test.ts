@@ -109,7 +109,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(() => exec.discard("second")).not.toThrow();
   });
 
-  // Openclaude parity (`StreamingToolExecutor.ts:69-71`, :412-415, :454-456):
+  // AgenC behavior (`StreamingToolExecutor.ts:69-71`, :412-415, :454-456):
   // discard() flips a boolean; yield paths early-return. The executor
   // does NOT synthesize streaming_fallback results — the caller
   // abandons the output stream.
@@ -212,9 +212,9 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
   });
 });
 
-describe("StreamingToolExecutor openclaude parity (T6)", () => {
+describe("StreamingToolExecutor AgenC behavior (T6)", () => {
   test("unknown tool pre-synthesizes No such tool available", async () => {
-    // openclaude StreamingToolExecutor.ts:77-102 — the executor must
+    // AgenC StreamingToolExecutor.ts:77-102 — the executor must
     // pre-synthesize a deterministic tool_result for an unknown tool
     // so the tool_use block never reaches the model unpaired.
     const exec = new StreamingToolExecutor({
@@ -238,7 +238,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
   });
 
   test("head-of-line break: executing non-safe tool blocks downstream yields", async () => {
-    // openclaude :436-438 — while a non-concurrency-safe tool is
+    // AgenC :436-438 — while a non-concurrency-safe tool is
     // still executing, downstream completed/pending results must not
     // be yielded out of order.
     let resolveExclusive!: () => void;
@@ -281,7 +281,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
   });
 
   test("progress events yield through getRemainingUpdates", async () => {
-    // openclaude :366-378, :419-422, :453-490 — progress messages
+    // AgenC :366-378, :419-422, :453-490 — progress messages
     // ride the same iterator as terminal results and wake the
     // drain loop via Promise.race.
     let triggerProgress!: () => void;
@@ -319,7 +319,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
   });
 
   test("child abort bubbles to parent (non-sibling_error)", async () => {
-    // openclaude :301-318 — when the child abort fires for a reason
+    // AgenC :301-318 — when the child abort fires for a reason
     // OTHER than 'sibling_error' (e.g. permission reject, ExitPlanMode
     // clear+auto), the parent abortController must also abort so the
     // turn loop ends instead of sending REJECT_MESSAGE to the model.
@@ -359,7 +359,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
   });
 
   test("child abort with sibling_error does NOT bubble to parent", async () => {
-    // openclaude :306-315 — sibling_error is the dedicated internal
+    // AgenC :306-315 — sibling_error is the dedicated internal
     // cascade and must NOT propagate to the parent controller.
     const parent = new AbortController();
     const bashTool = testTool({
@@ -394,7 +394,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
   });
 
   test("interruptBehavior('block') continues past interrupt", async () => {
-    // openclaude :219-228 — tools that declare interruptBehavior() ==
+    // AgenC :219-228 — tools that declare interruptBehavior() ==
     // 'block' must NOT be cancelled when the parent abortController
     // is aborted with reason 'interrupt'. They continue to their
     // natural completion.
@@ -427,7 +427,7 @@ describe("StreamingToolExecutor openclaude parity (T6)", () => {
   });
 
   test("interruptBehavior('cancel') synthesizes user_interrupted", async () => {
-    // openclaude :223-226 — interruptBehavior === 'cancel' AND abort
+    // AgenC :223-226 — interruptBehavior === 'cancel' AND abort
     // reason === 'interrupt' → user_interrupted terminal result.
     const abortCtl = new AbortController();
     const writeTool = testTool({

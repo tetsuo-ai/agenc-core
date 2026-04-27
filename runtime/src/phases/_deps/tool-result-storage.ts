@@ -1,7 +1,7 @@
 /**
  * I-88 — per-turn tool-result byte budget enforcement.
  *
- * Port of openclaude `utils/toolResultStorage.ts::applyToolResultBudget`
+ * Port of AgenC `utils/toolResultStorage.ts::applyToolResultBudget`
  * adapted to gut's flat `LLMMessage` shape (tool messages are
  * `role: "tool"` with `toolCallId`, not `tool_result` blocks inside
  * user `Message.message.content`).
@@ -9,18 +9,18 @@
  * What this enforces:
  *   - Walk the message list once, splitting tool-role messages into
  *     per-API-round groups (a maximal run of tool messages between
- *     assistant messages). Mirrors openclaude's `collectCandidatesByMessage`
+ *     assistant messages). Mirrors AgenC's `collectCandidatesByMessage`
  *     which groups by adjacent user messages between assistants.
  *   - For each group, partition by prior decision: must-reapply (cached
  *     replacement), frozen (seen unreplaced — prefix already cached),
- *     fresh (new). Mirrors openclaude `partitionByPriorDecision`.
+ *     fresh (new). Mirrors AgenC `partitionByPriorDecision`.
  *   - Sum the group's bytes. If over `MAX_TOOL_RESULTS_PER_MESSAGE_CHARS`,
  *     pick the largest fresh candidates and replace until under budget
- *     (or fresh is exhausted). Mirrors openclaude `selectFreshToReplace`.
+ *     (or fresh is exhausted). Mirrors AgenC `selectFreshToReplace`.
  *   - Replacement content is a `<persisted-output>` marker carrying the
  *     original size + `[Old tool result content cleared]` body. The tag
  *     is the detection sentinel so subsequent passes do not re-process
- *     the already-replaced block (mirrors openclaude
+ *     the already-replaced block (mirrors AgenC
  *     `isContentAlreadyCompacted`).
  *
  * Decisions are recorded on the `ContentReplacementState` (mutated in
@@ -40,7 +40,7 @@
  *
  * Skip semantics: `skipToolNames` carries tools whose
  * `maxResultBytes` is `Infinity` (e.g. file readers whose own maxTokens
- * is the bound). Mirrors openclaude's per-tool-`Infinity` opt-out.
+ * is the bound). Mirrors AgenC's per-tool-`Infinity` opt-out.
  *
  * @module
  */
@@ -52,11 +52,11 @@ import type {
 } from "../../session/_deps/tool-result-storage.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Constants — mirror openclaude `constants/toolLimits.ts`.
+// Constants — mirror AgenC `constants/toolLimits.ts`.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Per-API-round aggregate budget. Openclaude default
+ * Per-API-round aggregate budget. AgenC default
  * `MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000` (200KB). Same default
  * here so the in-flight enforcement matches upstream char-budget math.
  *
@@ -70,7 +70,7 @@ const DEFAULT_PER_MESSAGE_BUDGET_CHARS = 200_000;
  * Marker tags used to wrap a replaced tool result. The opening tag is
  * the detection sentinel — once a content string starts with it, the
  * block is treated as already-compacted and skipped on subsequent
- * passes. Mirrors openclaude `PERSISTED_OUTPUT_TAG`.
+ * passes. Mirrors AgenC `PERSISTED_OUTPUT_TAG`.
  */
 const PERSISTED_OUTPUT_TAG = "<persisted-output>";
 const PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>";
@@ -94,7 +94,7 @@ export interface ApplyToolResultBudgetResult<T> {
 
 /**
  * Mirror already-known tool-result replacements back into a live in-memory
- * transcript. This follows openclaude's `applyToolResultReplacementsToMessages`
+ * transcript. This follows AgenC's `applyToolResultReplacementsToMessages`
  * contract: once a tool result has been replaced for model use, the original
  * oversized string must be dropped from the long-lived message array too.
  */
@@ -163,7 +163,7 @@ function messageContentBytes(message: LLMMessage): number {
     }
     // image_url / other parts intentionally not counted — they are not
     // text payloads and the caller's compaction policy treats them
-    // separately (mirrors openclaude `hasImageBlock` skip).
+    // separately (mirrors AgenC `hasImageBlock` skip).
   }
   return total;
 }
@@ -183,7 +183,7 @@ function hasImageContent(message: LLMMessage): boolean {
 
 /**
  * Build the human-readable replacement string the model sees in place
- * of an over-budget tool result. Mirrors openclaude
+ * of an over-budget tool result. Mirrors AgenC
  * `buildLargeToolResultMessage` shape (PERSISTED_OUTPUT_TAG ...
  * PERSISTED_OUTPUT_CLOSING_TAG) but without on-disk persistence —
  * gut does not maintain the per-result file store yet, so the body
@@ -202,7 +202,7 @@ function buildReplacementContent(originalBytes: number): string {
  * Group adjacent tool-role messages into per-API-round buckets. A
  * group is bounded by an assistant message (or end-of-list).
  * Non-tool/non-assistant messages do not break a group (mirrors
- * openclaude's treatment of attachments / progress events as
+ * AgenC's treatment of attachments / progress events as
  * non-boundary).
  */
 function collectGroups(
@@ -263,7 +263,7 @@ function partitionByPriorDecision(
 /**
  * Greedy: pick largest fresh candidates until the model-visible total
  * (frozen + remaining fresh) is at or under budget, or fresh exhausted.
- * Mirrors openclaude `selectFreshToReplace`.
+ * Mirrors AgenC `selectFreshToReplace`.
  */
 function selectFreshToReplace(
   fresh: ReadonlyArray<ToolCandidate>,

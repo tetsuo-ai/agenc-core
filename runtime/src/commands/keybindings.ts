@@ -7,7 +7,7 @@
  * we fall back to `nano`.
  *
  * The default file uses AgenC's live keybinding schema, which mirrors
- * OpenClaude's `{ bindings: [{ context, bindings }] }` structure with
+ * AgenC's `{ bindings: [{ context, bindings }] }` structure with
  * AgenC action names and `~/.agenc` storage.
  *
  * @module

@@ -1,7 +1,7 @@
 /**
  * T11 Wave 1 — disk-facing glue for permission rules.
  *
- * Settings sources + JSON file paths (match openclaude layout but
+ * Settings sources + JSON file paths (match AgenC layout but
  * scoped under `~/.agenc` instead of `~/.claude`):
  *
  *   userSettings    ~/.agenc/settings.json
@@ -221,13 +221,13 @@ export async function readSettingsFileLenient(
 /**
  * Returns the list of setting sources the runtime should consult,
  * derived from the active config. Policy and flag settings are always
- * included (matching openclaude behavior). Pass the config store so
+ * included (matching AgenC behavior). Pass the config store so
  * consumers do not depend on any process-global.
  */
 export function getEnabledSettingSources(
   configStore?: ConfigStore,
 ): PermissionRuleSource[] {
-  // Today AgenC has no per-source opt-out knob; mirror openclaude's
+  // Today AgenC has no per-source opt-out knob; mirror AgenC's
   // "all settings sources enabled" default. When such a knob is added
   // to AgenCConfig, it should be read here.
   void configStore;
@@ -583,7 +583,7 @@ export function parseBaseToolsFromCLI(
 export interface InitialPermissionModeInput {
   /** Raw CLI `--permission-mode` value, if present. */
   readonly permissionModeCli?: string;
-  /** `--dangerously-bypass-approvals-and-sandbox` flag (codex alias
+  /** `--dangerously-bypass-approvals-and-sandbox` flag (AgenC runtime alias
    * for `--dangerously-skip-permissions`). */
   readonly dangerouslySkipPermissions?: boolean;
   /** Resolved `policySettings` blob (for disableBypassPermissionsMode). */

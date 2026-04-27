@@ -1,7 +1,7 @@
 # Rust → TypeScript Translation Conventions
 
-Rules for hand-porting codex Rust files to AgenC TypeScript. Pick
-once, apply consistently across every hand-port tranche. Codex source
+Rules for hand-porting AgenC runtime Rust files to AgenC TypeScript. Pick
+once, apply consistently across every hand-port tranche. AgenC runtime source
 is read-only reference — we translate, not vendor.
 
 ---
@@ -272,8 +272,8 @@ switch (event.type) {
 
 **Rules:**
 
-1. Always use `type` (not `kind`, not `tag`) as the discriminant — matches codex serde tagging.
-2. Always use `snake_case` for discriminant values — matches codex wire format for round-trip compat.
+1. Always use `type` (not `kind`, not `tag`) as the discriminant — matches AgenC runtime serde tagging.
+2. Always use `snake_case` for discriminant values — matches AgenC runtime wire format for round-trip compat.
 3. Payload field name matches Rust variant content: if variant is `TurnStarted(TurnStartedEvent)`, field is `event`; if tuple has multiple, use `payload`.
 4. For exhaustive matching, always add the `_exhaustive: never = event` default. The compiler catches missing variants.
 
@@ -472,7 +472,7 @@ export class RateLimited extends ClientError {
 
 ### Wire-format types
 
-When porting a type that serializes to JSON matching codex's wire format (events, rollout items), **keep `snake_case` field names**:
+When porting a type that serializes to JSON matching AgenC runtime's wire format (events, rollout items), **keep `snake_case` field names**:
 
 ```ts
 export interface TurnStartedEvent {
@@ -516,7 +516,7 @@ Use `Promise.allSettled` if you want to collect errors without short-circuiting.
 
 ---
 
-## Specific codex idioms
+## Specific AgenC runtime idioms
 
 ### `Arc::clone(&self.foo)`
 
@@ -593,7 +593,7 @@ Don't deviate for "it's faster to write": write once, consistent, reviewable.
 ## Ported-file layout
 
 Every hand-ported file lives at a deterministic path. The mapping is in
-[`codex-inventory.md`](codex-inventory.md). When porting a Rust file,
+[`runtime-inventory.md`](runtime-inventory.md). When porting a Rust file,
 open its entry in that inventory to see the exact destination.
 
 Suffix convention:

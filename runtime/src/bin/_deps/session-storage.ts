@@ -2,7 +2,7 @@
  * Per-dir transcript-loader + session-storage glue for
  * `runtime/src/bin/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/sessionStorage.ts`
+ * Mirrors the AgenC implementation `runtime/src/utils/sessionStorage.ts`
  * surface the bootstrap path consumes:
  *   - `loadTranscriptFile(path)` — used during context-collapse rehydration
  *   - `setRemoteIngressUrl(url)` — used by `registerStartupSessionIngress`
@@ -24,7 +24,7 @@ import type {
 export interface LoadedTranscript {
   readonly contextCollapseCommits: ContextCollapseCommitEntry[];
   readonly contextCollapseSnapshot?: ContextCollapseSnapshotEntry;
-  // The full openclaude shape carries many more maps; the lean caller
+  // The full AgenC shape carries many more maps; the lean caller
   // only needs the two collapse fields. Permissive `unknown` allows the
   // shape to grow without breaking callers.
   readonly [extra: string]: unknown;
@@ -44,11 +44,11 @@ export interface LoadedTranscript {
  *    bad row).
  *  - Collects `type: "marble-origami-commit"` entries into
  *    `contextCollapseCommits` (commit order matters — nested collapses
- *    must be replayed in arrival order, mirroring the openclaude
+ *    must be replayed in arrival order, mirroring the AgenC
  *    semantics in `runtime/src/utils/sessionStorage.ts::loadTranscriptFile`).
  *  - Collects `type: "marble-origami-snapshot"` entries last-wins:
  *    later entries supersede earlier ones, again mirroring the
- *    openclaude shape.
+ *    AgenC shape.
  *  - All other entry types (rollout `event_msg`, plain Claude
  *    transcript messages, `summary`, etc.) are ignored. The rollout
  *    history reconstruction path lives in
@@ -98,7 +98,7 @@ export async function loadTranscriptFile(
 
 /**
  * No-op remote-ingress URL setter. The bootstrap path calls this to
- * configure the openclaude transcript ingest endpoint; the lean rebuild
+ * configure the AgenC transcript ingest endpoint; the lean rebuild
  * does not stream transcripts to a remote ingress today.
  */
 export function setRemoteIngressUrl(_url: string | null): void {

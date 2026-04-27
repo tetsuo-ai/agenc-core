@@ -2,7 +2,7 @@
  * Per-dir branded ID stubs for `runtime/src/session/**`.
  *
  * Mirrors `runtime/src/types/ids.ts` so session callers keep the
- * branded `AgentId` / `SessionId` types after the openclaude umbrella
+ * branded `AgentId` / `SessionId` types after the AgenC umbrella
  * `src/types/` directory is removed.
  */
 

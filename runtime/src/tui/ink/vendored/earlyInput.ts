@@ -1,7 +1,7 @@
 /**
  * Early input capture for AgenC's Ink TUI.
  *
- * This mirrors OpenClaude's startup behavior: if the operator launches
+ * This mirrors AgenC's startup behavior: if the operator launches
  * `agenc` and starts typing before React/Ink has mounted, those bytes are
  * buffered and later used as the initial composer draft instead of being
  * lost. It is deliberately disabled for print / non-TTY paths because raw

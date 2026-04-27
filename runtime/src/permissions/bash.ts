@@ -1,7 +1,7 @@
 /**
  * T11 Wave 2 — Bash permission splitter + sandbox override + I-3 re-fetch.
  *
- * LEAN port of openclaude
+ * LEAN port of AgenC
  * `src/tools/BashTool/bashPermissions.ts` (~2600 LOC) into ~700 LOC. The
  * upstream file layers tree-sitter AST parsing, shell-quote argv parsing,
  * heredoc extraction, classifier callbacks, and a React dialog queue on
@@ -19,13 +19,13 @@
  *
  * I-3 pattern (mid-execution AppState re-fetch):
  * Every `await` point that could yield to the UI event loop re-reads
- * the context via `context.getAppState()`. This is how Claude Code
+ * the context via `context.getAppState()`. This is how AgenC
  * survives the race where the user hits Shift+Tab (mode change) while
  * a permission check is mid-flight. Each re-fetch site is tagged with
  * `// I-3 re-fetch N/6` so auditors can trace the invariant.
  *
- * INTENTIONALLY SKIPPED (vs openclaude):
- *   - tree-sitter AST (openclaude's primary parse; we use regex fallback).
+ * INTENTIONALLY SKIPPED (vs AgenC):
+ *   - tree-sitter AST (AgenC's primary parse; we use regex fallback).
  *   - shell-quote npm dep (inline argv parser covers our matching needs).
  *   - Remote Bash classifier race policy (orchestrator owns).
  *   - React dialog queue / pending classifier hooks (orchestrator owns).
@@ -76,7 +76,7 @@ const ESCAPED_BACKSLASH_PLACEHOLDER_RE = new RegExp(
 );
 
 /**
- * Env-var assignment pattern. Matches openclaude's `ENV_VAR_ASSIGN_RE`.
+ * Env-var assignment pattern. Matches AgenC's `ENV_VAR_ASSIGN_RE`.
  */
 const ENV_VAR_ASSIGN_RE = /^[A-Za-z_]\w*=/;
 
@@ -89,7 +89,7 @@ const COMMAND_TOKEN_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 
 /**
  * Env vars safe to strip from the prefix lookup. Narrower than
- * openclaude's full list — AgenC keeps only the ones that appear in
+ * AgenC's full list — AgenC keeps only the ones that appear in
  * lean-port test fixtures and which cannot execute code or hijack
  * binaries. When AgenC adds ANT_ONLY_SAFE_ENV_VARS (T11 Wave 3) it
  * should merge here, not replace.
@@ -161,7 +161,7 @@ const BARE_SHELL_PREFIXES: ReadonlySet<string> = new Set([
  * `shouldUseSandbox` check composes this list with a redirection
  * sniff — presence on the list alone is NOT sufficient.
  *
- * openclaude has a much larger list driven by remote feature flags.
+ * AgenC has a much larger list driven by remote feature flags.
  * Lean port keeps the stable subset; adding entries requires a
  * corresponding test in `bash.test.ts`.
  */
@@ -243,7 +243,7 @@ const EXCLUDED_SANDBOX_COMMANDS: ReadonlySet<string> = new Set([
  * deny with `decisionReason: { type: "safetyCheck", classifierApprovable: false }`.
  *
  * Curated to the ~15 patterns AgenC must always block. NOT a replacement
- * for the full security gate (openclaude's `bashCommandIsSafeAsync`
+ * for the full security gate (AgenC's `bashCommandIsSafeAsync`
  * runs ~30 pattern classes); this is the hard-deny floor.
  */
 const DANGEROUS_COMMAND_PATTERNS: ReadonlyArray<{
@@ -628,7 +628,7 @@ export function matchedDangerousLabel(command: string): string | null {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Match `Bash(prefix:*)` style content rules. openclaude wildcard
+ * Match `Bash(prefix:*)` style content rules. AgenC wildcard
  * matching is implemented in `shared/permissions` and supports a
  * superset we don't need yet: exact match, `prefix:*`, and bare
  * `Bash` (whole-tool). This helper covers all three.
@@ -905,13 +905,13 @@ export async function bashToolHasPermission(
   const argv = parseShellCommand(input.command);
 
   // Yield once so UI-triggered mode changes can land before the next
-  // read. Matches openclaude's pre-classifier yield at ~1989.
+  // read. Matches AgenC's pre-classifier yield at ~1989.
   await Promise.resolve();
   // I-3 re-fetch 2/6 — after initial parse yield.
   appState = context.getAppState();
   ctx = appState.toolPermissionContext;
 
-  // Plan-mode enforcement is upstream-faithful: openclaude's
+  // Plan-mode enforcement is upstream-faithful: AgenC's
   // `checkPermissionMode` (BashTool/modeValidation.ts:168-205) has no
   // plan branch — `mode === "plan"` falls through to the normal
   // permission flow. Bash redirects, mkdir, mv, rm in plan mode are

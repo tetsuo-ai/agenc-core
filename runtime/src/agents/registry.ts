@@ -1,7 +1,7 @@
 /**
  * AgentRegistry — in-memory slot + path tracking for subagents.
  *
- * Hand-port of codex `core/src/agent/registry.rs` (344 LOC).
+ * Hand-port of AgenC runtime `core/src/agent/registry.rs` (344 LOC).
  * Owns:
  *   - Spawn-slot counter (bounded by `maxThreads`)
  *   - `agentPath` → `AgentMetadata` map (hierarchical "/root/worker/sub")
@@ -10,7 +10,7 @@
  *
  * Invariants wired:
  *   I-37 (sibling `agentPath` collision) — `reserveAgentPath` returns
- *        `AgentPathExistsError` on collision. Mirrors codex.
+ *        `AgentPathExistsError` on collision. Mirrors AgenC runtime.
  *   I-63 (atomic slot acquisition) — slot counter increment/decrement
  *        happens under `AsyncLock<void>`. Concurrent spawns never
  *        both observe `count = N-1` and both increment to `N`.
@@ -62,7 +62,7 @@ export class AgentPathExistsError extends Error {
 /**
  * Opaque handle the caller must hold until spawn finalizes. On drop
  * (dispose), the reservation releases the slot — so failed spawns
- * don't leak counters. Matches codex's `SpawnReservation` RAII.
+ * don't leak counters. Matches AgenC runtime's `SpawnReservation` RAII.
  */
 export class SpawnReservation {
   private released = false;

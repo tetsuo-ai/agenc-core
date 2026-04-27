@@ -1,16 +1,16 @@
 /**
  * Agent-mention attachment producer.
  *
- * Hand-port of openclaude `processAgentMentions()`
+ * Hand-port of AgenC `processAgentMentions()`
  * (`src/utils/attachments.ts:1967-1994`). Scans the latest user input
  * for `@agent-<type>` mentions and emits one `agent_mention` attachment
  * per unique reference that resolves to an active agent definition.
  *
- * Supports both formats openclaude accepts at `:2822-2848`:
+ * Supports both formats AgenC accepts at `:2822-2848`:
  *   1. `@agent-<type>` (legacy/manual typing)
  *   2. `@"<type> (agent)"` (autocomplete-selected)
  *
- * Mentions of unknown agent types are dropped — matches openclaude's
+ * Mentions of unknown agent types are dropped — matches AgenC's
  * registry-gated emit at `:1980-1990`. The active set is read off the
  * session via `agentDefinitions.activeAgents`, the same surface
  * `agent-listing-delta` consults.
@@ -92,7 +92,7 @@ export const agentMentionsProducer: AttachmentProducer = async (opts) => {
   const types = extractAgentMentions(opts.userInput);
   if (types.length === 0) return [];
   const known = readActiveAgentTypes(opts.sessionKey);
-  // Empty registry = headless / pre-bootstrap. Match openclaude's
+  // Empty registry = headless / pre-bootstrap. Match AgenC's
   // permissive behavior in that case (any mention emits) so unit tests
   // and bare-options invocations don't silently drop. When the registry
   // is populated, gate emits to known agents.

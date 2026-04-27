@@ -1,7 +1,7 @@
 /**
  * Reactive compaction — the second-level PTL recovery step.
  *
- * Hand-port of openclaude's reactive compact caller surface
+ * Hand-port of AgenC's reactive compact caller surface
  * caller surface (the module itself is feature-gated behind
  * `REACTIVE_COMPACT`; T8 ships the caller contract). When collapse-
  * drain can't release enough context (or isn't enabled), reactive-
@@ -28,7 +28,7 @@
  *        treat as failed outcome, increment circuit-breaker.
  *
  * Critical subtlety: `hasAttemptedReactiveCompact` is **preserved**
- * on stop-hook-blocking transitions (openclaude query.ts:1332 —
+ * on stop-hook-blocking transitions (AgenC query.ts:1332 —
  * "Resetting caused infinite loop"). It's reset only on
  * token-budget-continuation (1369).
  *
@@ -52,7 +52,7 @@ import {
  * Lazily import the compact pipeline so tests and bundlers that don't
  * drag in the full `compactConversation` graph (and its heavy
  * transitive dependencies like `utils/sessionStorage` → `axios`) still
- * load `reactive-compact.ts` cleanly. Mirrors openclaude's
+ * load `reactive-compact.ts` cleanly. Mirrors AgenC's
  * feature-flagged `require('./services/compact/reactiveCompact.js')`
  * pattern.
  */
@@ -69,7 +69,7 @@ async function loadCompactContext(): Promise<
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Driver surface — openclaude reactiveCompact.js or a future port
+// Driver surface — AgenC reactiveCompact.js or a future port
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ReactiveCompactResult {
@@ -193,7 +193,7 @@ async function tryBuildCompactRuntimeContext(
 /**
  * Default driver: invokes the full `compactConversation` pipeline
  * the same way `autoCompactIfNeeded` does. This is a parity port
- * of openclaude's feature-gated reactive-compact path. The driver
+ * of AgenC's feature-gated reactive-compact path. The driver
  * builds a session-backed `CompactRuntimeContext`, runs the real
  * compaction, and exposes the resulting `CompactionResult` back to
  * `runReactiveCompact` so the caller can finalize cleanup + event
@@ -381,7 +381,7 @@ function countUserTurnBoundaries(messages: ReadonlyArray<LLMMessage>): number {
  * backed context that carries `clearProviderResponseId`, and emits
  * `context_compacted` via `session.emit()` so the session-level
  * listener also clears the live `ProviderHttpClient`
- * `responsesContinuationState`. Openclaude doesn't have this
+ * `responsesContinuationState`. AgenC doesn't have this
  * concern because its ccrClient doesn't use `previous_response_id`;
  * AgenC does because xAI/OpenAI do.
  */
@@ -518,7 +518,7 @@ function state_hasAttemptedReactiveCompact(state: TurnState): boolean {
 }
 
 /**
- * Reset helper — openclaude query.ts:1369 token-budget-continuation
+ * Reset helper — AgenC query.ts:1369 token-budget-continuation
  * path. Only this entry clears the flag; stop-hook-blocking
  * (query.ts:1332) must PRESERVE it.
  */

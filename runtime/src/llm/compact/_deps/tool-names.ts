@@ -1,7 +1,7 @@
 /**
  * Tool name constants used by compact prompts.
  *
- * Values match AgenC's first-class openclaude-derived file/search tools.
+ * Values match AgenC's first-class AgenC-owned file/search tools.
  * The compact prompt references these names so the model knows which tools
  * are available after compaction.
  */

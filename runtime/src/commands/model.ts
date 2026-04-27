@@ -144,7 +144,7 @@ export const modelCommand: SlashCommand = {
         };
       }
       const summary = await applyModelSwitch(ctx.session, target);
-      // Mirror openclaude's `setAppState({ ...prev, mainLoopModel: model })`
+      // Mirror AgenC's `setAppState({ ...prev, mainLoopModel: model })`
       // (commands/model/model.tsx:59-63): write through to the React-side
       // store synchronously so the status bar reflects the new model on
       // the next render rather than waiting for `consumePendingProviderSwitch`

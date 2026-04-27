@@ -1,12 +1,12 @@
 /**
  * Per-dir file-read helper for `runtime/src/config/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/file-read.ts` behavior:
+ * Mirrors the AgenC implementation `runtime/src/utils/file-read.ts` behavior:
  *   - utf8 read
  *   - I-81 BOM strip
  *   - I-80 line-ending normalization
  *
- * Carved as a local `_deps/` to cut the gut→openclaude crossing.
+ * Carved as a local `_deps/` to cut the gut→AgenC crossing.
  */
 
 import { readFile as fsReadFile } from "node:fs/promises";

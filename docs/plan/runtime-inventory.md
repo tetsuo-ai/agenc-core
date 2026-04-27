@@ -1,6 +1,6 @@
-# Codex Inventory
+# AgenC runtime Inventory
 
-Every codex file AgenC hand-ports from Rust to TypeScript. Rust source is
+Every AgenC runtime file AgenC hand-ports from Rust to TypeScript. Rust source is
 **reference in hand** — LLM-assisted translation is fast when the source
 is visible. See [`translation-conventions.md`](translation-conventions.md)
 for Rust→TS mapping rules.
@@ -13,14 +13,14 @@ of TS across session, tools, agents, client, protocol, rollout. Earlier
 
 **Load-bearing escalation since multi-provider decision:**
 `client.rs` (1,978 LOC) is now a **full port**, not a cherry-pick.
-See [`provider-matrix.md`](provider-matrix.md) for why — codex's
+See [`provider-matrix.md`](provider-matrix.md) for why — AgenC runtime's
 multi-provider dispatch is the target architecture.
 
 ---
 
 ## 1. Session kernel (Tranche 4b)
 
-**Source:** `/home/tetsuo/git/codex/codex-rs/core/src/session/`
+**Source:** `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/session/`
 
 | File | Rust LOC | Purpose | TS Destination | Priority |
 |---|---|---|---|---|
@@ -32,11 +32,11 @@ multi-provider dispatch is the target architecture.
 | `rollout_reconstruction.rs` | 304 | Event log replay; history rebuild after rollback/compaction | `runtime/src/session/rollout-reconstruction.ts` | P1 |
 | `handlers.rs` | 1,232 | Dispatch for realtime, shell, review, interrupt | Partial port — fold into phases | P2 |
 | `mcp.rs` | 291 | MCP elicitation request/response | Fold into existing `mcp-client/` | P2 |
-| `review.rs` | 164 | Guardian review session manager | Skip — codex-specific | — |
+| `review.rs` | 164 | Guardian review session manager | Skip — AgenC runtime-specific | — |
 
 ### `mod.rs` breakdown (3,042 LOC — §1a)
 
-`mod.rs` is codex's session umbrella. It's not monolithic — splits
+`mod.rs` is AgenC runtime's session umbrella. It's not monolithic — splits
 cleanly into five responsibilities. AgenC ports to five TS files,
 not one.
 
@@ -85,10 +85,10 @@ Rust idiom is not preserved; TS readability demands the split.
 | 4 | Stop hook | 513–567 | last agent msg | history if hook prompts |
 | 5 | After-agent hooks | 568–625 | sampling output | side effects only |
 
-**Port strategy:** keep codex ownership of the live session/turn kernel and
-merge in openclaude's retained phase behavior where called for. Openclaude
+**Port strategy:** keep AgenC runtime ownership of the live session/turn kernel and
+merge in AgenC's retained phase behavior where called for. AgenC
 already supplies phase 3 (streaming) and 3d (tool execution) behavior well;
-codex remains the owner of the `Session` struct, `TurnContext` snapshot, and
+AgenC runtime remains the owner of the `Session` struct, `TurnContext` snapshot, and
 phase orchestration discipline.
 
 ### TurnContext (`turn_context.rs`)
@@ -131,7 +131,7 @@ Result: `{ history, previousTurnSettings, referenceContextItem }`.
 
 ## 2. Tools + concurrency (Tranche 6)
 
-**Source:** `/home/tetsuo/git/codex/codex-rs/core/src/tools/`
+**Source:** `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/tools/`
 
 | File | Rust LOC | Purpose | TS Destination | Priority |
 |---|---|---|---|---|
@@ -192,7 +192,7 @@ class ToolCallRuntime {
 }
 ```
 
-**Synergy with openclaude's `StreamingToolExecutor`:** openclaude uses a per-tool `isConcurrencySafe` check; codex uses an `RwLock`. Combine: openclaude's streaming ring buffer with codex's explicit enum-driven concurrency class. `isConcurrencySafe` maps 1:1 to `ConcurrencyClass.SharedRead`; non-safe tools map to `Exclusive`.
+**Synergy with AgenC's `StreamingToolExecutor`:** AgenC uses a per-tool `isConcurrencySafe` check; AgenC runtime uses an `RwLock`. Combine: AgenC's streaming ring buffer with AgenC runtime's explicit enum-driven concurrency class. `isConcurrencySafe` maps 1:1 to `ConcurrencyClass.SharedRead`; non-safe tools map to `Exclusive`.
 
 ### Sandbox (skip Rust primitives, port the approval decision model)
 
@@ -248,7 +248,7 @@ interface ApprovalCtx {
 
 ## 3. Agents + mailbox (Tranche 9)
 
-**Source:** `/home/tetsuo/git/codex/codex-rs/core/src/agent/`
+**Source:** `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/agent/`
 
 | File | Rust LOC | Purpose | TS Destination | Priority |
 |---|---|---|---|---|
@@ -260,9 +260,9 @@ interface ApprovalCtx {
 | `agent_resolver.rs` | 36 | Resolves agent targets by name/path/id | Skip — simple | — |
 | `mod.rs` | 14 | Module exports | — | — |
 
-Final ownership note: in the replacement target, codex ports under
+Final ownership note: in the replacement target, AgenC runtime ports under
 `agents/{control,mailbox,registry,role,status}.ts` plus child `session/*`
-own subagent lifecycle. Openclaude-derived `delegate.ts` and `run-agent.ts`
+own subagent lifecycle. AgenC-owned `delegate.ts` and `run-agent.ts`
 remain adapters/behavior ports only.
 
 ### Mailbox shape
@@ -351,11 +351,11 @@ interface AgentMetadata {
 
 ## 4. Protocol + event log (Tranche 5)
 
-**Source:** `/home/tetsuo/git/codex/codex-rs/protocol/src/protocol.rs` (5,266 LOC — we take only event/rollout types, ~500 LOC effective)
+**Source:** `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/protocol/src/protocol.rs` (5,266 LOC — we take only event/rollout types, ~500 LOC effective)
 
 ### EventMsg variants (78 total; we keep 16 — see below)
 
-Codex has 78 event variants. Most are codex-specific (realtime voice, guardian review, collab agents, plan mode, skills). AgenC needs a minimal discriminated union covering: turn lifecycle, content, tool lifecycle, approval gates, compaction, errors.
+AgenC runtime has 78 event variants. Most are AgenC runtime-specific (realtime voice, guardian review, collab agents, plan mode, skills). AgenC needs a minimal discriminated union covering: turn lifecycle, content, tool lifecycle, approval gates, compaction, errors.
 
 **Proposed minimal AgenC EventLogEntry (~18 variants, ~400 LOC of TS):**
 
@@ -391,7 +391,7 @@ type EventLogEntry =
 - Image generation (`ImageGenerationBegin/End`, `ViewImageToolCall`)
 - Hook events (we have our own hook model already)
 - MCP startup events (handled at session start in AgenC)
-- `ItemStarted/Completed`, `RawResponseItem`, `ModelReroute` — codex-specific routing
+- `ItemStarted/Completed`, `RawResponseItem`, `ModelReroute` — AgenC runtime-specific routing
 
 ### RolloutItem wrapper (6 variants — port all)
 
@@ -418,11 +418,11 @@ type RolloutItem =
 
 ## 5. Model client — full port (multi-provider dispatch)
 
-**Source:** `/home/tetsuo/git/codex/codex-rs/core/src/client.rs` (1,978 LOC)
+**Source:** `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/client.rs` (1,978 LOC)
 
 **Previously:** "cherry-pick only, AgenC has Grok adapter." **Now:**
 full port. With multi-provider in scope (see
-[`provider-matrix.md`](provider-matrix.md)), codex's two-level client
+[`provider-matrix.md`](provider-matrix.md)), AgenC runtime's two-level client
 design is the target architecture. AgenC's current Grok adapter
 becomes one of N implementations behind it.
 
@@ -436,7 +436,7 @@ becomes one of N implementations behind it.
 
 ### Feature port priorities
 
-| Feature | Codex lines | AgenC status | Port? |
+| Feature | AgenC runtime lines | AgenC status | Port? |
 |---|---|---|---|
 | Two-level client struct (Session + Turn) | 1–240 | Missing | **Yes** — core architecture |
 | Multi-provider dispatch | 60–199 | Missing | **Yes** — `provider.is_openai()`, `provider.is_azure_responses_endpoint()`, `supports_websockets` |
@@ -444,7 +444,7 @@ becomes one of N implementations behind it.
 | Auth refresh + retry loop | 1154–1211, 1699–1961 | Missing | **Yes** — OAuth providers only (ChatGPT, future); inert for bearer-key providers |
 | `previous_response_id` incremental reuse | 909–946 | Missing | **Yes** — per-provider via capability flag (see invariant I-2 for clear-on-compact) |
 | Capability-flagged request shaping | 437–443, 620–637, 833–852 | Missing | **Yes** — maps 1:1 to `llm/capabilities.ts` registry |
-| Sticky routing (`x-codex-turn-state`) | 215–226, 973–984 | Missing | OpenAI only (codex-specific header); gate behind capability flag |
+| Sticky routing (`x-AgenC runtime-turn-state`) | 215–226, 973–984 | Missing | OpenAI only (AgenC runtime-specific header); gate behind capability flag |
 | Prompt cache keying via conversation id | 853, 870 | Partial (Grok adapter has it) | **Yes** — centralize in `llm/shape-request.ts` |
 | Telemetry: wire_api, transport, timing | 1119–1130, 1216–1227 | Partial | **Yes** — uniform per-provider trace output |
 | Session-scoped WebSocket pooling | 212–240, 361–373 | Missing | Skip — AgenC is in-process, Grok/OpenAI use HTTPS |
@@ -467,7 +467,7 @@ runtime/src/llm/
     messages-anthropic.ts   # NEW — Anthropic /v1/messages shape
     chat-completions.ts     # NEW — OpenAI Chat Completions (covers OpenAI legacy, Ollama, LMStudio, OpenRouter, Groq, DeepSeek, Gemini beta)
   oauth/
-    refresh-loop.ts         # NEW — shared OAuth helper (codex auth-refresh port)
+    refresh-loop.ts         # NEW — shared OAuth helper (AgenC runtime auth-refresh port)
   providers/
     grok/                   # RELOCATED from runtime/src/llm/grok/ — unchanged internals
     openai/                 # NEW
@@ -541,7 +541,7 @@ Decisions: `Allow` (no prompt), `Prompt` (ask unless policy=never), `Forbidden` 
 
 ### OS primitives → TS alternatives (AgenC skip; reference only)
 
-| OS primitive | Codex function | TS alternative |
+| OS primitive | AgenC runtime function | TS alternative |
 |---|---|---|
 | Seatbelt (macOS) | sandbox-exec + SBPL | Worktree + permission evaluator + env jail |
 | Landlock (Linux) | eBPF access control | Worktree + permission evaluator |
@@ -555,13 +555,13 @@ Decisions: `Allow` (no prompt), `Prompt` (ask unless policy=never), `Forbidden` 
 
 ## 7. Config + prompts (Tranche 10)
 
-**Source:** `codex-rs/config/src/config_toml.rs` + `codex-rs/core/config.schema.json` + `codex-rs/core/src/prompts/`
+**Source:** `AgenC runtime-rs/config/src/config_toml.rs` + `AgenC runtime-rs/core/config.schema.json` + `AgenC runtime-rs/core/src/prompts/`
 
 ### Config file
 
-- Path: `~/.codex/config.toml`
+- Path: `~/.AgenC runtime/config.toml`
 - Format: TOML + JSON Schema validation
-- AgenC picks: `~/.agenc/config.toml` or `~/.agenc/config.json` — **user preference** (openclaude uses `.json` in `settings.json`). Suggest TOML to match codex + better for nested config.
+- AgenC picks: `~/.agenc/config.toml` or `~/.agenc/config.json` — **user preference** (AgenC uses `.json` in `settings.json`). Suggest TOML to match AgenC runtime + better for nested config.
 
 ### Schema (fields worth porting)
 
@@ -594,7 +594,7 @@ Embedded via Rust `include_str!`:
 Override: `model_instructions_file` — absolute path to custom instructions.
 Developer instructions injected separately via `developer_instructions`.
 
-### AGENTS.md hierarchy (codex matches openclaude closely)
+### AGENTS.md hierarchy (AgenC runtime matches AgenC closely)
 
 1. Walk CWD → root; default root marker `.git`; configurable via `project_root_markers`
 2. Collect `AGENTS.md` + fallback filenames from root → CWD (inclusive)
@@ -604,11 +604,11 @@ Developer instructions injected separately via `developer_instructions`.
 
 ### Env vars
 
-- `CODEX_HOME` / `CODEX_SQLITE_HOME` → AgenC `AGENC_HOME`
-- `CODEX_CA_CERTIFICATE` → custom CA bundle
-- `CODEX_THREAD_ID` → thread identifier (injected by harness)
+- `AGENC_HOME` / `AGENC_SQLITE_HOME` → AgenC `AGENC_HOME`
+- `AGENC_CA_CERTIFICATE` → custom CA bundle
+- `AGENC_THREAD_ID` → thread identifier (injected by harness)
 
-**AgenC action:** adopt TOML config with the openclaude `settings.json` schema as the base; add codex profile layer + AGENTS.md ancestor walk. Already designed for this — see `openclaude-inventory.md §8`.
+**AgenC action:** adopt TOML config with the AgenC `settings.json` schema as the base; add AgenC runtime profile layer + AGENTS.md ancestor walk. Already designed for this — see `behavior-inventory.md §8`.
 
 **AgenC destination:** `runtime/src/config/{loader,schema,profiles,agents-md,env}.ts`.
 
@@ -616,12 +616,12 @@ Developer instructions injected separately via `developer_instructions`.
 
 ## 8. Rollout + replay (Tranche 5 + 7)
 
-**Source:** `codex-rs/rollout/src/` (7,357 total) + `core/src/session/rollout_reconstruction.rs` (304)
+**Source:** `AgenC runtime-rs/rollout/src/` (7,357 total) + `core/src/session/rollout_reconstruction.rs` (304)
 
-### On-disk layout (codex)
+### On-disk layout (AgenC runtime)
 
 ```
-~/.codex/sessions/
+~/.AgenC runtime/sessions/
   rollout-{timestamp}-{thread_id}.jsonl
 ```
 
@@ -662,15 +662,15 @@ Index: reverse-scan from file tail to first `CompactedItem` with `replacement_hi
 
 ## 9. CLI + TUI + slash commands (reference only)
 
-**Source:** `codex-rs/cli/` + `codex-rs/tui/` + `codex-rs/tui/src/chatwidget/slash_dispatch.rs`
+**Source:** `AgenC runtime-rs/cli/` + `AgenC runtime-rs/tui/` + `AgenC runtime-rs/tui/src/chatwidget/slash_dispatch.rs`
 
-**Decision:** AgenC TUI is Ink/React from openclaude, not ratatui.
-Codex's slash dispatch and status line are reference material for
+**Decision:** AgenC TUI is Ink/React from AgenC, not ratatui.
+AgenC runtime's slash dispatch and status line are reference material for
 design, not port targets.
 
 ### Cherry-pick candidates
 
-| Concept | Codex file | AgenC destination | Why |
+| Concept | AgenC runtime file | AgenC destination | Why |
 |---|---|---|---|
 | Status-line configurability | `bottom_pane/status_line_setup.rs` (64KB) | `runtime/src/tui/cockpit/StatusLineConfig.ts` | Users toggle/reorder 12+ metrics (model, tokens, context %, git, limits) |
 | Inline slash command args | `slash_dispatch.rs` | `runtime/src/commands/dispatcher.ts` | `/review <path>`, `/plan <args>`, `/side <prompt>` — easier UX than modal popups |
@@ -679,17 +679,17 @@ design, not port targets.
 | Approval overlay UX | `bottom_pane/approval_overlay.rs` (56KB) | `runtime/src/tui/permissions/ApprovalOverlay.tsx` | Multi-choice approval with inline context |
 | Collaboration-mode masking | `collaboration_modes::plan_mask()` | `runtime/src/permissions/mode-mask.ts` | Switch model behavior via runtime config mask |
 
-### Codex slash commands (reference list — AgenC picks subset)
+### AgenC runtime slash commands (reference list — AgenC picks subset)
 
 From `slash_dispatch.rs` enum `SlashCommand` (strum derive, 59 variants):
 
 `/model`, `/fast`, `/approvals`, `/permissions`, `/status`, `/plan`, `/review`, `/side`, `/rename`, `/resume`, `/fork`, `/init`, `/compact`, `/clear`, `/diff`, `/copy`, `/mcp`, `/settings`, `/ps`, `/stop`, `/clean`, and ~38 more.
 
-AgenC merges with openclaude's 46+ commands (see `openclaude-inventory.md §7`). Reconcile naming where they differ.
+AgenC merges with AgenC's 46+ commands (see `behavior-inventory.md §7`). Reconcile naming where they differ.
 
 ---
 
-## 10. Missed-features sweep (codex)
+## 10. Missed-features sweep (AgenC runtime)
 
 Features outside the main subsystems worth porting or at least learning from.
 
@@ -699,7 +699,7 @@ Features outside the main subsystems worth porting or at least learning from.
 |---|---|---|---|
 | Stop hooks + completion detection | `hooks/src/events/stop.rs` | 547 | Direct replacement for missing AgenC stop detection; mid-turn model override + hook-driven continuation |
 | Stream parsing (thinking/plan blocks) | `utils/stream-parser/src/` | 500+ | Citation extraction, proposed_plan stripping, inline hidden tags. Handles block-based model output |
-| MCP client manager | `codex-mcp/src/mcp_connection_manager.rs` | 1,870 | Tool discovery, dependency resolution, connection lifecycle, tool naming, auth, reconnect. Direct improvement over AgenC's MCP |
+| MCP client manager | `AgenC runtime-mcp/src/mcp_connection_manager.rs` | 1,870 | Tool discovery, dependency resolution, connection lifecycle, tool naming, auth, reconnect. Direct improvement over AgenC's MCP |
 | Rollout + replay | `rollout/src/` | 7,357 | Already captured in §8 |
 
 ### Nice-to-have
@@ -723,7 +723,7 @@ Cache util, keyring-store, process-hardening (Linux-specific).
 
 ### Crate organization pattern (adopt)
 
-Codex structure:
+AgenC runtime structure:
 - `utils/*` — feature-focused utility crates
 - `core/`, `otel/`, `hooks/`, `protocol/` — domain crates
 - `chatgpt/`, `lmstudio/` — client adapters

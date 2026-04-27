@@ -1,16 +1,16 @@
 /**
  * Agent-listing delta attachment producer.
  *
- * Hand-port of openclaude `getAgentListingDeltaAttachment`
+ * Hand-port of AgenC `getAgentListingDeltaAttachment`
  * (`src/utils/attachments.ts:1491-1557`). Fires when the set of available
  * agent types has changed since the last announcement, OR on first
  * emission (with `isInitial: true`).
  *
  * Main-thread-only: subagents do not see the agent listing because
- * subagent depth > 0 cannot itself spawn deeper agents in the openclaude
+ * subagent depth > 0 cannot itself spawn deeper agents in the AgenC
  * model AgenC mirrors here.
  *
- * AgenC divergence from openclaude: the prior-announced set is tracked
+ * AgenC divergence from AgenC: the prior-announced set is tracked
  * directly on `AttachmentTrackingState.lastAgentListingSet` (a Map of
  * agent type → rendered description line) instead of being reconstructed
  * by scanning the message history.
@@ -91,7 +91,7 @@ export const agentListingDeltaProducer: AttachmentProducer = async (
   if (isInitial) {
     if (currentMap.size === 0) {
       // Seed an empty map so we still detect "first added" as the next
-      // delta (with isInitial: false). Matches openclaude where an empty
+      // delta (with isInitial: false). Matches AgenC where an empty
       // initial scan still updates the announced set baseline.
       trackingState.lastAgentListingSet = new Map();
       return [];

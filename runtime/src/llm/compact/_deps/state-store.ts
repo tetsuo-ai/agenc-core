@@ -1,5 +1,5 @@
 /**
- * Minimal state-store factory matching the openclaude
+ * Minimal state-store factory matching the AgenC
  * `state/store.ts::createStore` API surface compact-warning-state
  * uses: `getState()`, `setState(updater)`, `subscribe(listener)`.
  */

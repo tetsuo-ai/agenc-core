@@ -1,8 +1,8 @@
 /**
  * Tests for the auto-mode attachment producer.
  *
- * Pins the openclaude-equivalent behaviour at
- * `src/utils/attachments.ts:1276-1401`. AgenC maps openclaude's single
+ * Pins the AgenC-equivalent behaviour at
+ * `src/utils/attachments.ts:1276-1401`. AgenC maps AgenC's single
  * `auto` mode to the autonomous-execution family
  * (`auto`, `acceptEdits`, `bypassPermissions`); the producer fires
  * uniformly across that family.
@@ -57,7 +57,7 @@ function humanTurn(text = "another step"): LLMMessage {
 }
 
 describe("auto-mode attachment producer", () => {
-  test("config matches openclaude AUTO_MODE_ATTACHMENT_CONFIG", () => {
+  test("config matches AgenC AUTO_MODE_ATTACHMENT_CONFIG", () => {
     expect(AUTO_MODE_ATTACHMENT_CONFIG.TURNS_BETWEEN_ATTACHMENTS).toBe(5);
     expect(AUTO_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS).toBe(
       5,
@@ -215,7 +215,7 @@ describe("auto-mode attachment producer", () => {
   });
 
   test("re-entry after exit fires variant: full (auto-mode has no separate reentry attachment)", async () => {
-    // openclaude does NOT define an auto_mode_reentry attachment. The
+    // AgenC does NOT define an auto_mode_reentry attachment. The
     // exit just resets the cycle so the next entry fires `full` again.
     const exitOpts = makeOpts({
       permissionContext: { mode: "default" } as ToolPermissionContext,

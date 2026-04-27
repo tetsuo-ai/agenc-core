@@ -73,7 +73,7 @@ describe("role registry", () => {
     expect(names).toContain("awaiter");
   });
 
-  it("explorer resolves through codex-shaped config-file metadata instead of AgenC-only overlays", () => {
+  it("explorer resolves through AgenC-shaped config-file metadata instead of AgenC-only overlays", () => {
     const role = getAgentRole("explorer")!;
     expect(role.config.configFile).toBe("explorer.toml");
     expect(role.config.reasoningEffort).toBeUndefined();
@@ -168,7 +168,7 @@ describe("config-layer stack", () => {
     expect(base.reasoning_effort).toBe("high");
   });
 
-  it("applyRoleToConfig parses codex TOML aliases into canonical AgenC config keys", () => {
+  it("applyRoleToConfig parses AgenC TOML aliases into canonical AgenC config keys", () => {
     registerAgentRole({
       name: "custom-inline",
       config: {
@@ -291,7 +291,7 @@ describe("config-layer stack", () => {
     });
   });
 
-  it("formatRoleList uses codex-style locked-setting notes from role TOML", () => {
+  it("formatRoleList uses AgenC-style locked-setting notes from role TOML", () => {
     registerAgentRole({
       name: "model-locked-role",
       config: {

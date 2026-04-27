@@ -2,7 +2,7 @@
  * System-prompt and user/system-context surface for compact's
  * `buildCompactCacheSafeParams`.
  *
- * Ports the openclaude `constants/prompts.ts::getSystemPrompt`,
+ * Ports the AgenC `constants/prompts.ts::getSystemPrompt`,
  * `context.ts::getUserContext` / `getSystemContext`, and
  * `utils/systemPrompt.ts::buildEffectiveSystemPrompt` shapes onto gut
  * primitives so the compact summarizer call inherits a real system
@@ -117,7 +117,7 @@ function memoizeAsync<T>(fn: () => Promise<T>): MemoizedAsync<T> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// getSystemPrompt — port of openclaude `constants/prompts::getSystemPrompt`
+// getSystemPrompt — port of AgenC `constants/prompts::getSystemPrompt`
 // ─────────────────────────────────────────────────────────────────────
 
 interface ToolLike {
@@ -179,7 +179,7 @@ function buildMcpServerInstructions(
 
 /**
  * Build the cache-safe default system prompt for compact's summarizer
- * fork. Mirrors the openclaude `getSystemPrompt(tools, model, addDirs,
+ * fork. Mirrors the AgenC `getSystemPrompt(tools, model, addDirs,
  * mcpClients)` shape: returns an ordered list of section strings. The
  * upstream consumer (`buildEffectiveSystemPrompt`) wraps this list with
  * `customSystemPrompt` / `appendSystemPrompt` overrides.

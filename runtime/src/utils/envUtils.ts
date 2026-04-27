@@ -23,7 +23,8 @@ export function resolveClaudeConfigHomeDir(options?: {
     options?.legacyClaudeExists ?? existsSync(legacyClaudeDir)
 
   // Preserve existing user config/install state until we ship an explicit
-  // migration. New installs (neither path exists) use ~/.openclaude.
+  // migration. New installs (neither path exists) use the newer legacy
+  // config home.
   if (!openClaudeExists && legacyClaudeExists) {
     return legacyClaudeDir.normalize('NFC')
   }
@@ -150,7 +151,7 @@ export function isRunningOnHomespace(): boolean {
 }
 
 /**
- * Conservative check for whether Claude Code is running inside a protected
+ * Conservative check for whether AgenC is running inside a protected
  * (privileged or ASL3+) COO namespace or cluster.
  *
  * Conservative means: when signals are ambiguous, assume protected. We would
@@ -161,7 +162,7 @@ export function isRunningOnHomespace(): boolean {
  * Used for telemetry to measure auto-mode usage in sensitive environments.
  */
 export function isInProtectedNamespace(): boolean {
-  // The protectedNamespace helper was openclaude-only and has been
+  // The protectedNamespace helper was AgenC-only and has been
   // removed in the lean build. Always report false here so the bundler
   // does not try to resolve a deleted module path.
   return false

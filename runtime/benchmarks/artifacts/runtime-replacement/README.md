@@ -9,7 +9,7 @@ Rules:
 - File names match the fixture ids in
   `runtime/benchmarks/v1/runtime-replacement/manifest.json`.
 - The first green local capture on the pre-Phase-1 `gut` branch is the
-  lock point named by `docs/plan/codex-runtime-replacement.md`.
+  lock point named by `docs/plan/runtime-replacement.md`.
 
 Capture a baseline:
 

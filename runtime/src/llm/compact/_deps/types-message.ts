@@ -1,8 +1,8 @@
 /**
  * Per-dir message-type stubs for `runtime/src/llm/compact/**`.
  *
- * Mirrors the openclaude `runtime/src/types/message.ts` stub so the
- * compact tree stays decoupled from the openclaude-port path tree
+ * Mirrors the AgenC `runtime/src/types/message.ts` stub so the
+ * compact tree stays decoupled from the AgenC implementation path tree
  * once the umbrella `src/types/` directory is removed.
  *
  * The compact path uses these as type-only references; permissive

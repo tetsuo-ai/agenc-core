@@ -2,7 +2,7 @@
  * Tests for `turn-context.ts`.
  *
  * Covers the two audit-surfaced gaps plus the shallow-freeze fix:
- *   - A2 OAuth gate (`imageGenerationToolAuthAllowed`): codex parity —
+ *   - A2 OAuth gate (`imageGenerationToolAuthAllowed`): AgenC behavior —
  *     only ChatGPT OAuth mode unlocks image generation.
  *   - D3 SessionConfiguration fields + `applySessionConfiguration`:
  *     legacy-FS-policy preservation on cwd-only updates.
@@ -124,7 +124,7 @@ function mkProvider(): LLMProvider {
 // A2 — image-generation OAuth gate parity
 // ─────────────────────────────────────────────────────────────────────
 
-describe("imageGenerationToolAuthAllowed (codex AuthMode::Chatgpt parity)", () => {
+describe("imageGenerationToolAuthAllowed (AgenC ChatGPT auth behavior)", () => {
   test("returns false when no AuthManager is present", () => {
     expect(imageGenerationToolAuthAllowed(undefined)).toBe(false);
   });
@@ -165,7 +165,7 @@ describe("imageGenerationToolAuthAllowed (codex AuthMode::Chatgpt parity)", () =
 // ─────────────────────────────────────────────────────────────────────
 
 describe("SessionConfiguration helpers", () => {
-  test("codexHome accessor returns the stored codexHome value", () => {
+  test("compat home accessor returns the stored home value", () => {
     const sc: SessionConfiguration = {
       ...mkSessionConfiguration(),
       codexHome: "/home/u/.agenc",
@@ -231,7 +231,7 @@ describe("SessionConfiguration helpers", () => {
     expect(next.sandboxPolicy.value).toBe("workspace_write");
     // A sandbox-policy change now rebuilds `fileSystemSandboxPolicy`
     // from the new mode via `deriveFileSystemSandboxPolicyForMode`,
-    // matching codex `apply_sandbox_policy_changes`. The deny-entry
+    // matching AgenC runtime `apply_sandbox_policy_changes`. The deny-entry
     // preservation still lands with T11; this default projection
     // covers the zero-op "new richer policy" baseline.
     expect(next.fileSystemSandboxPolicy).not.toBe(
@@ -444,7 +444,7 @@ describe("applySessionConfiguration sandbox cascade", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Codex `impl Session` turn-builder helpers
+// AgenC runtime `impl Session` turn-builder helpers
 // ─────────────────────────────────────────────────────────────────────
 
 function mkSessionForTurn(overrides: Partial<SessionForTurn> = {}): SessionForTurn {
@@ -463,7 +463,7 @@ function mkSessionForTurn(overrides: Partial<SessionForTurn> = {}): SessionForTu
   };
 }
 
-describe("codex-parity turn-builder helpers", () => {
+describe("AgenC turn-builder helpers", () => {
   test("buildPerTurnConfig returns a frozen snapshot that cannot be mutated", () => {
     const session = mkSessionForTurn();
     const snap = buildPerTurnConfig(session);

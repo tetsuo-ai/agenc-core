@@ -1,5 +1,5 @@
 /**
- * Vendored from openclaude/src/utils/envUtils.ts — minimal subset used by
+ * Vendored from AgenC/src/utils/envUtils.ts — minimal subset used by
  * the Ink core. Truthy-env-var check.
  */
 

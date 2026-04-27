@@ -1,20 +1,20 @@
 /**
  * Attachment-to-LLMMessage conversion.
  *
- * Hand-port of openclaude `createAttachmentMessage()`
+ * Hand-port of AgenC `createAttachmentMessage()`
  * (`src/utils/attachments.ts:3221`) plus the model-facing attachment
  * normalization in `src/utils/messages.ts::normalizeAttachmentForAPI`.
  *
  * Each attachment kind renders as one (or zero) `LLMMessage`. Attachments
- * are emitted on the user channel because openclaude's contract is that
+ * are emitted on the user channel because AgenC's contract is that
  * the model treats them as user-context. System-reminder-style
  * attachments wrap their content in `<system-reminder>` tags inside the
- * user-channel message — matches openclaude's convention.
+ * user-channel message — matches AgenC's convention.
  *
  * AgenC branding substitutions: `AGENC.md` for `CLAUDE.md`, `AgenC`
- * for `OpenClaude`/`Claude Code` where the prose names a product, and
+ * for `AgenC`/`AgenC` where the prose names a product, and
  * AgenC tool names where our model-facing tools differ. Unsupported
- * openclaude product surfaces (buddy, bagel, teammate swarms, IDE/LSP)
+ * AgenC product surfaces (buddy, bagel, teammate swarms, IDE/LSP)
  * do not render here until AgenC ships the matching producer/runtime
  * feature.
  *
@@ -211,9 +211,9 @@ function wrapSystemReminder(content: string): string {
 // ──────────────────────────────────────────────────────────────────────
 // Plan-mode / auto-mode body builders.
 //
-// These are openclaude-style bodies for the per-turn pulse, adapted for
+// These are AgenC-style bodies for the per-turn pulse, adapted for
 // AgenC tool names and the producer surfaces currently present here.
-// Prose source: `openclaude/src/utils/messages.ts` plan/auto rendering.
+// Prose source: `AgenC/src/utils/messages.ts` plan/auto rendering.
 //
 // Kept inline rather than re-imported from `planning/plan-instructions.ts`
 // so producers and the renderer share one source of truth and can

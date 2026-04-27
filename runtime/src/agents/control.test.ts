@@ -88,9 +88,9 @@ describe("AgentControl", () => {
     expect(live.depth).toBe(1);
   });
 
-  it("I-1: depth at cap is rejected (codex `>=` semantics)", async () => {
+  it("I-1: depth at cap is rejected (AgenC `>=` semantics)", async () => {
     // maxDepth=2 means childDepth=2 rejects; depth=1 is the last
-    // accepted level. Matches codex `depth >= config.agent_max_depth`.
+    // accepted level. Matches AgenC runtime `depth >= config.agent_max_depth`.
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 2 });
@@ -117,7 +117,7 @@ describe("AgentControl", () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 1 });
-    // cap=1 matches codex default: root (depth 0) may not spawn.
+    // cap=1 matches AgenC default: root (depth 0) may not spawn.
     await expect(
       control.spawn({ parentPath: "/root" }),
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
@@ -312,7 +312,7 @@ describe("AgentControl", () => {
     const msg = drained[0]!;
     expect((msg as { triggerTurn: boolean }).triggerTurn).toBe(false);
     expect((msg as { content: string }).content).toBe("context blob");
-    // appendMessage does NOT update lastTaskMessage (codex parity).
+    // appendMessage does NOT update lastTaskMessage (AgenC behavior).
     const meta = registry.agentMetadataForThread(live.agentId);
     expect(meta?.lastTaskMessage).toBeUndefined();
   });

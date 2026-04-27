@@ -459,7 +459,7 @@ describe("MessageList", () => {
     unmount();
   });
 
-  test("recognizes AgenC and Codex-style aliases as semantic tool families", async () => {
+  test("recognizes AgenC and AgenC-style aliases as semantic tool families", async () => {
     const { unmount, stdout } = await mount(
       <MessageList
         messages={[

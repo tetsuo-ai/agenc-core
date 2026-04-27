@@ -1,5 +1,5 @@
 // @ts-nocheck
-// Stub for openclaude's `src/constants/querySource.ts`, which is imported by
+// Stub for AgenC's `src/constants/querySource.ts`, which is imported by
 // the ported compact/ tree but never exists in upstream source. Compact uses
 // this only as a type-only reference, so a permissive alias is sufficient.
 //

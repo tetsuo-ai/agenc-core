@@ -19,7 +19,7 @@
  *      the user sees why an attachment was dropped.
  *
  * The React tree stays intentionally small, but the live buffer now follows
- * the OpenClaude text-input contract: the wrapped-cursor model renders
+ * the AgenC text-input contract: the wrapped-cursor model renders
  * styled text through the ANSI parser while `useDeclaredCursor` tells Ink
  * where to park the physical cursor for IME/accessibility. The contract
  * here covers both keystroke → state plumbing and stable terminal-safe
@@ -108,7 +108,7 @@ export interface ComposerSession {
   readonly home?: string;
   /** Optional observability hook — dropped mentions emit here. */
   readonly emit?: (event: string, payload?: unknown) => void;
-  /** Optional live skills service for Codex-style `$skill` mentions. */
+  /** Optional live skills service for AgenC-style `$skill` mentions. */
   readonly skillsManager?: SkillMentionServiceLike;
   /**
    * Optional app/connector registry. When present, app entries are merged
@@ -144,7 +144,7 @@ export interface ComposerProps {
 
 const PASTE_BURST_CHAR_INTERVAL_MS =
   process.platform === "win32" ? 30 : 8;
-// Match openclaude's fallback threshold: regular typing can occasionally
+// Match AgenC's fallback threshold: regular typing can occasionally
 // arrive in small multi-char chunks, so only treat very large unbracketed
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;

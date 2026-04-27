@@ -334,7 +334,7 @@ describe("Composer", () => {
     unmount();
   });
 
-  test("opens Codex-style skill mention palette from live skills service", async () => {
+  test("opens AgenC-style skill mention palette from live skills service", async () => {
     const emitter = new EventEmitter();
     const { unmount, stdout } = await mount(
       withInputProviders(

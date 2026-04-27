@@ -427,7 +427,7 @@ describe("bashToolHasPermission", () => {
   });
 
   test("plan mode does not hard-block non-read-only commands (upstream parity)", async () => {
-    // OpenClaude's `checkPermissionMode`
+    // AgenC's `checkPermissionMode`
     // (BashTool/modeValidation.ts:168-205) has no plan branch; bash
     // redirects in plan mode fall through to the normal permission flow
     // and rely on the system prompt to discourage the model. AgenC

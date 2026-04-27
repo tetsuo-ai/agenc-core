@@ -506,7 +506,7 @@ describe("mergeHookPermissionDecision", () => {
 });
 
 describe("HOOK_TIMING_DISPLAY_THRESHOLD_MS", () => {
-  test("constant matches openclaude default", () => {
+  test("constant matches AgenC default", () => {
     expect(HOOK_TIMING_DISPLAY_THRESHOLD_MS).toBe(500);
   });
 

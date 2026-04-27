@@ -8,7 +8,7 @@
  *      whether the post-compact tools list should include
  *      `ToolSearchTool` + MCP tools with deferred-loading semantics.
  *
- * Compared to the upstream openclaude / claude-code helpers, the gut
+ * Compared to the upstream AgenC / claude-code helpers, the gut
  * runtime is in a different state:
  *
  *   - The gut runtime DOES have a `tool_search` subsystem (see
@@ -17,7 +17,7 @@
  *     opaque `tools[]` payloads on the runtime ToolOutput layer, NOT
  *     Anthropic-style `tool_reference` content blocks inside
  *     `tool_result` blocks. The compact subsystem operates on the
- *     openclaude `Message` shape (Anthropic content-block arrays),
+ *     AgenC `Message` shape (Anthropic content-block arrays),
  *     where `tool_reference` is the canonical discovery marker.
  *
  *   - The gut runtime's LLM providers do NOT understand the Anthropic

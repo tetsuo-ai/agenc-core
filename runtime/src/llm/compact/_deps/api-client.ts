@@ -4,7 +4,7 @@
  *
  * The compact subsystem expects an async generator yielding
  * Anthropic-style `stream_event` chunks (matching the upstream
- * openclaude wire shape — `content_block_start` + `text_delta`
+ * AgenC wire shape — `content_block_start` + `text_delta`
  * `content_block_delta` events) plus a terminal `assistant` event
  * carrying the final compacted text and usage.
  *
@@ -83,7 +83,7 @@ function adaptMessage(raw: unknown): LLMMessage | null {
     content?: unknown;
     message?: { role?: string; content?: unknown };
   };
-  // Upstream openclaude shape: { type: 'user' | 'assistant', message: { role, content } }
+  // Upstream AgenC shape: { type: 'user' | 'assistant', message: { role, content } }
   // Gut shape: { role, content }
   const role = m.message?.role ?? m.role ?? m.type;
   const content = m.message?.content ?? m.content;

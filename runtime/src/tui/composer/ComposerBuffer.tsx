@@ -70,7 +70,7 @@ export function ComposerBuffer({
         placeholder !== undefined &&
         placeholder.length > 0
       ) {
-        // Match openclaude/src/hooks/renderPlaceholder.ts: invert the FIRST
+        // Match AgenC/src/hooks/renderPlaceholder.ts: invert the FIRST
         // CHARACTER of the placeholder rather than prepending an extra
         // inverted-space cell. Prepending a separate cell shifts the
         // placeholder one column right of where the declared cursor lands,

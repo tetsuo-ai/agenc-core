@@ -39,7 +39,7 @@ import {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * The state the reducer builds up. Mirrors the subset of codex
+ * The state the reducer builds up. Mirrors the subset of AgenC runtime
  * `SessionState` that rollout replay is responsible for. Full
  * SessionState (session.ts) is a superset — other fields are wired
  * outside replay (e.g. services DI, mailbox state).
@@ -159,7 +159,7 @@ export function reduce(
       };
 
     case "compacted": {
-      // Codex semantics: if replacement_history is present, use it as
+      // AgenC semantics: if replacement_history is present, use it as
       // the new history base. Otherwise keep history and record the
       // compaction message for any downstream rebuild logic.
       const next =
@@ -246,11 +246,11 @@ export function reduce(
 }
 
 /**
- * Port of codex `History::drop_last_n_user_turns`
+ * Port of AgenC runtime `History::drop_last_n_user_turns`
  * (`context_manager/history.rs:240-263`) + companion
  * `trim_pre_turn_context_updates` (`history.rs:428-456`).
  *
- * Codex semantics:
+ * AgenC semantics:
  *   - a "user-turn boundary" is defined by `is_user_turn_boundary`
  *     (role==="user" with non-contextual content, OR role==="assistant"
  *     carrying an inter-agent-instruction payload). We delegate to the
@@ -260,8 +260,8 @@ export function reduce(
  *     the preceding item is a contextual pre-turn update (a
  *     user-role Message whose content is purely contextual fragments).
  *     These items sit above the rolled-back turn as prompt scaffolding
- *     that belongs with the discarded turn, so codex trims them too.
- *     We conservatively skip codex's "developer-role contextual
+ *     that belongs with the discarded turn, so AgenC runtime trims them too.
+ *     We conservatively skip AgenC runtime's "developer-role contextual
  *     message" branch because AgenC does not yet emit developer-role
  *     message items in rollout history (see feature matrix I-33 / I-82).
  */
@@ -271,7 +271,7 @@ function dropLastNUserTurns(
 ): ResponseItem[] {
   if (n <= 0) return [...history];
 
-  // Collect user-turn boundary indices (codex `user_message_positions`).
+  // Collect user-turn boundary indices (AgenC runtime `user_message_positions`).
   const userPositions: number[] = [];
   for (let i = 0; i < history.length; i += 1) {
     const item = history[i];
@@ -287,7 +287,7 @@ function dropLastNUserTurns(
     cutIndex = userPositions[userPositions.length - n]!;
   }
 
-  // Codex `trim_pre_turn_context_updates`: walk backward from the
+  // AgenC runtime `trim_pre_turn_context_updates`: walk backward from the
   // cut, stripping contiguous contextual user-message injections
   // above the boundary. We stop at the first non-contextual item and
   // never cross `firstInstructionTurnIdx`.

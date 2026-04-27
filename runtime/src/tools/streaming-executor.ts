@@ -1,31 +1,31 @@
 /**
- * StreamingToolExecutor — full openclaude port.
+ * StreamingToolExecutor — full AgenC port.
  *
- * Hand-port of openclaude `services/tools/StreamingToolExecutor.ts`.
+ * Hand-port of AgenC `services/tools/StreamingToolExecutor.ts`.
  * Dispatches tools as they stream in from the model, with four-class
  * concurrency control (via the T7 `classify` analyzer) + sibling-
  * abort cascade on Bash errors + order-preserving yield of completed
- * results + openclaude-parity progress interleaving, unknown-tool
+ * results + AgenC-compatible progress interleaving, unknown-tool
  * short-circuit, head-of-line break, per-tool `interruptBehavior`
  * gating, and child → parent abort bubble-up.
  *
  * T6 closure parity pointers (direct code references):
  *   - `discard()` flips a boolean only, no synthesis:
- *     openclaude `StreamingToolExecutor.ts:69-71`.
+ *     AgenC `StreamingToolExecutor.ts:69-71`.
  *   - Yield paths early-return on `discarded`:
- *     openclaude `StreamingToolExecutor.ts:412-415, :454-456`.
+ *     AgenC `StreamingToolExecutor.ts:412-415, :454-456`.
  *   - Unknown-tool pre-synthesis:
- *     openclaude `StreamingToolExecutor.ts:77-102`.
+ *     AgenC `StreamingToolExecutor.ts:77-102`.
  *   - `createChildAbortController` + bubble-up on non-`sibling_error`:
- *     openclaude `StreamingToolExecutor.ts:301-318`.
+ *     AgenC `StreamingToolExecutor.ts:301-318`.
  *   - Head-of-line stop (non-safe executing tool blocks downstream):
- *     openclaude `StreamingToolExecutor.ts:436-438`.
+ *     AgenC `StreamingToolExecutor.ts:436-438`.
  *   - `Promise.race` wake-up (executingPromises + progressPromise):
- *     openclaude `StreamingToolExecutor.ts:453-490`.
+ *     AgenC `StreamingToolExecutor.ts:453-490`.
  *   - Progress interleaved into result stream:
- *     openclaude `StreamingToolExecutor.ts:366-378, :419-422`.
+ *     AgenC `StreamingToolExecutor.ts:366-378, :419-422`.
  *   - `interruptBehavior()` per-tool interrupt gating:
- *     openclaude `StreamingToolExecutor.ts:219-241, :254-260`.
+ *     AgenC `StreamingToolExecutor.ts:219-241, :254-260`.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — synthetic error
@@ -116,7 +116,7 @@ export interface StreamingToolResult {
 }
 
 /**
- * Openclaude parity union: either a terminal tool result or an inline
+ * AgenC behavior union: either a terminal tool result or an inline
  * progress event. Mirrors `MessageUpdate` in
  * `services/tools/StreamingToolExecutor.ts`. Used by the "updates"
  * iterators that yield progress + results interleaved in submission
@@ -145,7 +145,7 @@ export interface StreamingToolExecutorOptions {
   readonly abortSignal?: AbortSignal;
   /**
    * Parent tool-use context abort controller. When provided, the
-   * executor wires the openclaude child-abort bubble-up (openclaude
+   * executor wires the AgenC child-abort bubble-up (AgenC
    * `StreamingToolExecutor.ts:301-318`): permission-dialog reject /
    * ExitPlanMode "clear+auto" aborts the per-tool child controller
    * for a non-`sibling_error` reason, which bubbles up and aborts
@@ -160,9 +160,9 @@ export interface StreamingToolExecutorOptions {
   readonly onSiblingAbort?: (reason: string) => void;
   /** Fired per progress event (TUI rendering hook). */
   readonly onProgress?: (event: ProgressEvent) => void;
-  /** Name of the Bash tool in this registry — matches openclaude
+  /** Name of the Bash tool in this registry — matches AgenC
    *  `BASH_TOOL_NAME`. Only this tool's error triggers the sibling-
-   *  abort cascade (openclaude rationale: Bash has implicit
+   *  abort cascade (AgenC rationale: Bash has implicit
    *  dependency chains; independent tools don't). */
   readonly bashToolName?: string;
   /**
@@ -204,7 +204,7 @@ export class StreamingToolExecutor {
   /**
    * Parent tool-use context abort controller. When present, represents
    * the session/query-level controller. Child-abort bubble-up
-   * (openclaude :304-318) re-aborts this controller for non
+   * (AgenC :304-318) re-aborts this controller for non
    * `sibling_error` reasons so the turn loop ends instead of sending
    * REJECT_MESSAGE back to the model.
    */
@@ -216,7 +216,7 @@ export class StreamingToolExecutor {
    *  abort-like errors don't cause infinite synthesis. */
   private isAborting = false;
   /**
-   * Openclaude parity (`StreamingToolExecutor.ts:49`): `discard()`
+   * AgenC behavior (`StreamingToolExecutor.ts:49`): `discard()`
    * flips this flag. All result iterators (`getCompletedResults`,
    * `getRemainingResults`, `*Updates` variants) early-return when
    * true. The executor does NOT synthesize fallback results — the
@@ -255,9 +255,9 @@ export class StreamingToolExecutor {
   /**
    * Queue a tool call. Dispatches as soon as the concurrency gate
    * allows. Non-concurrent-safe tools block the queue until all
-   * running safe tools finish (openclaude semantics).
+   * running safe tools finish (AgenC semantics).
    *
-   * Openclaude parity: when the tool name is unknown (not in the
+   * AgenC behavior: when the tool name is unknown (not in the
    * registry AND no `concurrencyClassOverride` set for tests), we
    * pre-synthesize a deterministic `No such tool available` terminal
    * result and mark the tracked tool `completed`. That guarantees
@@ -267,7 +267,7 @@ export class StreamingToolExecutor {
   addTool(block: ToolUseBlock, toolCall: LLMToolCall): void {
     if (this.closed || this.isAborting) return;
 
-    // Unknown-tool short-circuit (openclaude StreamingToolExecutor.ts:77-102).
+    // Unknown-tool short-circuit (AgenC StreamingToolExecutor.ts:77-102).
     const isKnown =
       this.concurrencyClassOverrides.has(toolCall.name) ||
       this.registry.tools.some((t) => t.name === toolCall.name);
@@ -306,11 +306,11 @@ export class StreamingToolExecutor {
       parsedArgs = {};
     }
     const classification = classify(classifiable, parsedArgs);
-    // Openclaude tracks a per-call `isConcurrencySafe` boolean derived
+    // AgenC tracks a per-call `isConcurrencySafe` boolean derived
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
     // classification model but also cache the boolean so the
     // head-of-line-break logic in `getCompletedResults` matches
-    // openclaude `:436-438` semantics exactly.
+    // AgenC `:436-438` semantics exactly.
     const tool = this.registry.tools.find((t) => t.name === toolCall.name);
     let concurrencySafe = false;
     if (tool?.isConcurrencySafe) {
@@ -352,7 +352,7 @@ export class StreamingToolExecutor {
    * Discard all pending + in-progress tools. Called when streaming
    * fallback fires and the whole batch should be abandoned.
    *
-   * Openclaude parity (`StreamingToolExecutor.ts:69-71`): `discard()`
+   * AgenC behavior (`StreamingToolExecutor.ts:69-71`): `discard()`
    * ONLY flips `this.discarded = true`. It does NOT synthesize
    * results — the caller (query.ts-equivalent) is responsible for
    * abandoning the output stream. All yield paths (`getCompletedResults`,
@@ -376,7 +376,7 @@ export class StreamingToolExecutor {
    * submission order (I-65). Calling this repeatedly is safe;
    * already-yielded tools are skipped.
    *
-   * Openclaude parity (`StreamingToolExecutor.ts:412-440`):
+   * AgenC behavior (`StreamingToolExecutor.ts:412-440`):
    *   - Early-return if `discarded`.
    *   - Drain pending progress via `onProgress` before yielding results.
    *   - Head-of-line stop: if the current tool is still `executing`
@@ -385,7 +385,7 @@ export class StreamingToolExecutor {
   *getCompletedResults(): Generator<StreamingToolResult, void> {
     if (this.discarded) return;
     for (const tool of this.tools) {
-      // Always flush pending progress first (openclaude :418-422).
+      // Always flush pending progress first (AgenC :418-422).
       while (tool.pendingProgress.length > 0) {
         const ev = tool.pendingProgress.shift();
         if (ev) this.onProgress?.(ev);
@@ -400,7 +400,7 @@ export class StreamingToolExecutor {
           durationMs: 0,
         };
       } else if (tool.status === "executing" && !tool.isConcurrencySafe) {
-        // Head-of-line break (openclaude :436-438). A still-running
+        // Head-of-line break (AgenC :436-438). A still-running
         // exclusive tool blocks every downstream yield to preserve
         // submission order.
         break;
@@ -410,8 +410,8 @@ export class StreamingToolExecutor {
 
   /**
    * Unified update iterator: yields progress events AND completed
-   * results interleaved in submission order. Mirrors openclaude's
-   * `MessageUpdate` yield shape from `getCompletedResults` (openclaude
+   * results interleaved in submission order. Mirrors AgenC's
+   * `MessageUpdate` yield shape from `getCompletedResults` (AgenC
    * :412-440). The plain `getCompletedResults` generator remains the
    * compat surface for callers that only want terminal results.
    */
@@ -446,7 +446,7 @@ export class StreamingToolExecutor {
    * Async iterator that yields results as they complete. Ends when
    * the queue is closed AND every tool has reached `yielded`.
    *
-   * Openclaude parity (`StreamingToolExecutor.ts:453-490`): wake-up
+   * AgenC behavior (`StreamingToolExecutor.ts:453-490`): wake-up
    * uses `Promise.race([...executingPromises, progressPromise])` so a
    * progress event from any running tool unblocks the drain loop
    * without waiting for the tool to complete.
@@ -493,7 +493,7 @@ export class StreamingToolExecutor {
 
   /**
    * Async iterator that yields terminal results AND progress events
-   * interleaved in submission order. Matches openclaude's
+   * interleaved in submission order. Matches AgenC's
    * `getRemainingResults` shape. Callers that want progress messages
    * woven into their output channel consume this; callers that want
    * only terminal results continue to use `getRemainingResults`.
@@ -610,9 +610,9 @@ export class StreamingToolExecutor {
   }
 
   /**
-   * Openclaude parity (`StreamingToolExecutor.ts:233-241`): look up
+   * AgenC behavior (`StreamingToolExecutor.ts:233-241`): look up
    * the tool's optional `interruptBehavior()` hook. Returns `'block'`
-   * when the tool is missing the hook or throws — matches openclaude
+   * when the tool is missing the hook or throws — matches AgenC
    * conservative default. Only tools that explicitly opt into
    * `'cancel'` get cancelled on `interrupt` aborts; `'block'` tools
    * finish their work even while a user message is queued.
@@ -645,12 +645,12 @@ export class StreamingToolExecutor {
 
   /**
    * Process the queue, starting tools when concurrency conditions
-   * allow. Openclaude parity (`StreamingToolExecutor.ts:140-151`):
+   * allow. AgenC behavior (`StreamingToolExecutor.ts:140-151`):
    * iterates queued tools in submission order; non-concurrent-safe
    * tools that cannot yet execute break the loop (submission-order
    * invariant). AgenC retains the `void this.executeTool(tool)` fire-
-   * and-forget pattern rather than openclaude's `await`: the
-   * openclaude executeTool completes synchronously after kicking off
+   * and-forget pattern rather than AgenC's `await`: the
+   * AgenC executeTool completes synchronously after kicking off
    * `collectResults` + attaching `promise.finally`, so the two
    * patterns are observably equivalent for concurrency — the explicit
    * `void` makes the non-blocking dispatch intent clear and preserves
@@ -668,7 +668,7 @@ export class StreamingToolExecutor {
         if (i > this.lastDispatchedIndex) this.lastDispatchedIndex = i;
       } else if (!tool.isConcurrencySafe) {
         // Head-of-line: a non-concurrency-safe tool cannot yet run;
-        // preserve submission order by stopping here (openclaude
+        // preserve submission order by stopping here (AgenC
         // :148 `if (!tool.isConcurrencySafe) break`). Downstream
         // concurrency-safe tools wait their turn.
         break;
@@ -694,8 +694,8 @@ export class StreamingToolExecutor {
   private async runOne(tool: TrackedTool): Promise<void> {
     const startedAtMs = performance.now();
 
-    // Openclaude `getAbortReason` + `collectResults` pre-check
-    // (openclaude :278-292). If the sibling / parent controllers are
+    // AgenC `getAbortReason` + `collectResults` pre-check
+    // (AgenC :278-292). If the sibling / parent controllers are
     // already aborted when we start, synthesize the terminal result
     // and return. For `interrupt`-class aborts, honor the tool's
     // `interruptBehavior()` hook: `'block'` tools proceed; `'cancel'`
@@ -713,7 +713,7 @@ export class StreamingToolExecutor {
     //   - permission dialog reject (PermissionContext.cancelAndAbort)
     //   - ExitPlanMode "clear+auto" rejection
     //
-    // Openclaude (`StreamingToolExecutor.ts:301-318`) wires a bubble-
+    // AgenC (`StreamingToolExecutor.ts:301-318`) wires a bubble-
     // up listener: if the child was aborted for a non-`sibling_error`
     // reason AND the parent tool-use-context controller is not
     // already aborted AND we are not discarding, re-abort the parent
@@ -783,7 +783,7 @@ export class StreamingToolExecutor {
       tool.result = this.createSyntheticError(tool.toolCall, syntheticReason);
       tool.status = "completed";
       // Bash-thrown errors also trigger sibling abort (parity with
-      // openclaude line 354-363 behaviour when a Bash run throws).
+      // AgenC line 354-363 behaviour when a Bash run throws).
       if (
         tool.toolCall.name === this.bashToolName &&
         !this.hasBashErrored
@@ -805,7 +805,7 @@ export class StreamingToolExecutor {
   }
 
   /**
-   * Openclaude `getAbortReason` (`StreamingToolExecutor.ts:209-231`):
+   * AgenC `getAbortReason` (`StreamingToolExecutor.ts:209-231`):
    * resolve the reason a tool should be cancelled based on the
    * current executor state. Returns `null` when the tool may proceed.
    *
@@ -825,9 +825,9 @@ export class StreamingToolExecutor {
     if (rawReason === "sibling_error" || this.hasBashErrored) {
       return "sibling_error";
     }
-    // For the openclaude 'interrupt' case, check per-tool behavior
+    // For the AgenC 'interrupt' case, check per-tool behavior
     // before cancelling. Block-behavior tools continue executing
-    // (openclaude :219-228).
+    // (AgenC :219-228).
     const interruptLike =
       rawReason === "interrupt" ||
       (typeof rawReason === "string" &&
@@ -845,7 +845,7 @@ export class StreamingToolExecutor {
   }
 
   // ─────────────────────────────────────────────────────────────────
-  // Synthetic error message — openclaude parity
+  // Synthetic error message — AgenC behavior
   // ─────────────────────────────────────────────────────────────────
 
   private createSyntheticError(
@@ -929,7 +929,7 @@ export class StreamingToolExecutor {
    * External fire-drill for aborting in-flight tool dispatches. Unlike
    * `discard()` (which only flips the result-stream flag), `abort()`
    * also aborts the internal `siblingAbortController` so the per-tool
-   * child controllers fire. That lets the openclaude-parity bubble-up
+   * child controllers fire. That lets the AgenC-compatible bubble-up
    * listener re-abort the parent `parentAbortController` when the
    * abort reason is not `sibling_error`. Tests and recovery paths
    * invoke this to simulate permission-dialog reject / ExitPlanMode

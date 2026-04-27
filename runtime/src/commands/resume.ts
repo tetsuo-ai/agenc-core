@@ -98,7 +98,7 @@ function extractUserText(item: unknown): string | null {
   if (payload && typeof payload === "object") {
     return extractUserText(payload);
   }
-  // Codex rollout sometimes wraps ResponseItem; look for text fields.
+  // AgenC runtime rollout sometimes wraps ResponseItem; look for text fields.
   const text = rec["text"];
   if (typeof text === "string" && rec["role"] === "user") return text;
   return null;

@@ -1,7 +1,7 @@
 /**
  * T11 Wave 1 — rule string parsing, matching, context composition.
  *
- * Port of the following openclaude modules:
+ * Port of the following AgenC modules:
  *   - `src/utils/permissions/permissionRuleParser.ts`
  *     (parseRuleString / serializeRuleValue + escape helpers)
  *   - `src/utils/permissions/permissions.ts`
@@ -570,7 +570,7 @@ export function applyPermissionRulesToPermissionContext(
   // Now handle read-only sources by direct bucket write. We append
   // to any pre-existing strings for the same source × behavior so
   // repeated `applyPermissionRulesToPermissionContext` calls stay
-  // additive (match openclaude semantics).
+  // additive (match AgenC semantics).
   for (const [key, strings] of directInstall) {
     const sepIdx = key.indexOf(":");
     const source = key.slice(0, sepIdx) as PermissionRuleSource;

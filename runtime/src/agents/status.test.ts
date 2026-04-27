@@ -41,7 +41,7 @@ describe("AgentStatusTracker", () => {
   it("isFinal classifies terminal states", () => {
     expect(isFinal({ status: "idle" })).toBe(false);
     expect(isFinal({ status: "shutdown", endedAtMs: 0 })).toBe(true);
-    // interrupted is non-final (matches codex semantics).
+    // interrupted is non-final (matches AgenC semantics).
     expect(
       isFinal({
         status: "interrupted",

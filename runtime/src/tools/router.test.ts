@@ -63,11 +63,11 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
-  test("findSpec rejects MCP-serverId entry for plain (no-namespace) lookup (codex router.rs:111-121)", () => {
+  test("findSpec rejects MCP-serverId entry for plain (no-namespace) lookup (router behavior)", () => {
     // A spec registered with `serverId` (MCP umbrella) must not
     // resolve when the request has no namespace. This prevents a
     // function named `"a.b"` from accidentally resolving to a
-    // namespace `"a"` tool `"b"` (codex parity).
+    // namespace `"a"` tool `"b"` (AgenC behavior).
     const mcpTool: Tool = {
       name: "db.query",
       description: "",
@@ -88,7 +88,7 @@ describe("ToolRouter", () => {
     expect(router.findSpec({ name: "db.query" })).toBeUndefined();
   });
 
-  test("findSpec namespaced lookup matches via serverId (codex router.rs:122-131)", () => {
+  test("findSpec namespaced lookup matches via serverId (router behavior)", () => {
     const mcpTool: Tool = {
       name: "query", // stored under the bare inner name
       description: "",
@@ -133,8 +133,8 @@ describe("ToolRouter", () => {
     ).toBe(false);
   });
 
-  test("toolSupportsParallel false for namespaced tool name even when base spec is parallel (codex router_tests.rs:195-217)", () => {
-    // Codex parity test: a function spec (`shell`) that advertises
+  test("toolSupportsParallel false for namespaced tool name even when base spec is parallel (router behavior)", () => {
+    // AgenC behavior test: a function spec (`shell`) that advertises
     // `supports_parallel_tool_calls = true` must still return `false`
     // when invoked under a namespaced name
     // (`mcp__server__shell`). Checked BEFORE spec lookup so the
@@ -166,8 +166,8 @@ describe("ToolRouter", () => {
     ).toBe(false);
   });
 
-  test("toolSupportsParallel hard-false for non-Function/Freeform spec variants (codex router.rs:150-158)", () => {
-    // Codex `ToolSpec::Namespace | ToolSpec::ToolSearch |
+  test("toolSupportsParallel hard-false for non-Function/Freeform spec variants (router behavior)", () => {
+    // AgenC runtime `ToolSpec::Namespace | ToolSpec::ToolSearch |
     // ToolSpec::LocalShell | ToolSpec::ImageGeneration |
     // ToolSpec::WebSearch` are hard-coded non-parallel regardless of
     // the `supports_parallel_tool_calls` flag.

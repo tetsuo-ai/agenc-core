@@ -13,7 +13,7 @@ import {
 } from "./types.js";
 
 describe("permissions/types constants", () => {
-  test("PERMISSION_RULE_SOURCES preserves openclaude priority order", () => {
+  test("PERMISSION_RULE_SOURCES preserves AgenC priority order", () => {
     expect([...PERMISSION_RULE_SOURCES]).toEqual([
       "userSettings",
       "projectSettings",

@@ -1,12 +1,12 @@
-# Openclaude Inventory
+# AgenC Inventory
 
-Every file AgenC takes from `/home/tetsuo/git/openclaude/src/`. TypeScript
+Every file AgenC takes from `/home/tetsuo/git/AgenC/src/`. TypeScript
 → TypeScript direct port; file paths kebab-cased on arrival; content is
 1:1 unless noted.
 
 These files are behavior/reference sources, not final runtime owners. Where
-openclaude historically owned the live loop or subagent path, AgenC keeps only
-the selected behavior while final ownership moves to the codex-ported
+AgenC historically owned the live loop or subagent path, AgenC keeps only
+the selected behavior while final ownership moves to the AgenC implementationed
 `session/*`, `agents/control.ts`, and `agents/mailbox.ts` runtime boundary.
 
 **Totals:** ~30 files directly ported, ~13,000 LOC before trim.
@@ -15,7 +15,7 @@ the selected behavior while final ownership moves to the codex-ported
 
 ## 1. Query kernel (Tranche 4b)
 
-**Source:** `openclaude/src/query.ts` (1,838 LOC — single while-true loop, lines 244–1838)
+**Source:** `AgenC/src/query.ts` (1,838 LOC — single while-true loop, lines 244–1838)
 
 The loop drives 6 distinct phases with 8 continue sites short-circuiting
 back to the top. Do not copy the monolith; explode into one file per
@@ -60,13 +60,13 @@ runtime/src/session/run-turn.ts            # top-level while(true) + continue di
 ```
 
 Ownership note: `query.ts` does not survive as a runtime owner. Its retained
-phase behavior runs under the codex-owned `session/run-turn.ts` path.
+phase behavior runs under the AgenC runtime-owned `session/run-turn.ts` path.
 
 ---
 
 ## 2. Recovery paths (Tranche 7)
 
-**Source:** `openclaude/src/query.ts:685-900, 1093-1341` + recovery helpers
+**Source:** `AgenC/src/query.ts:685-900, 1093-1341` + recovery helpers
 
 **7 strategies with cascading ladder:**
 
@@ -91,11 +91,11 @@ phase behavior runs under the codex-owned `session/run-turn.ts` path.
 
 **Dependencies (must port together):**
 
-- `openclaude/src/services/compact/reactiveCompact.js` — `isWithheldPromptTooLong()`, `isWithheldMediaSizeError()`, `tryReactiveCompact()`
-- `openclaude/src/services/contextCollapse/index.js` — `recoverFromOverflow()`
-- `openclaude/src/services/api/errors.js` — `isPromptTooLongMessage()`, `PROMPT_TOO_LONG_ERROR_MESSAGE`
-- `openclaude/src/services/api/withRetry.js` — `FallbackTriggeredError`
-- `openclaude/src/utils/messages.js` — `buildPostCompactMessages()`, `createSystemMessage()`, `createUserMessage({isMeta})`
+- `AgenC/src/services/compact/reactiveCompact.js` — `isWithheldPromptTooLong()`, `isWithheldMediaSizeError()`, `tryReactiveCompact()`
+- `AgenC/src/services/contextCollapse/index.js` — `recoverFromOverflow()`
+- `AgenC/src/services/api/errors.js` — `isPromptTooLongMessage()`, `PROMPT_TOO_LONG_ERROR_MESSAGE`
+- `AgenC/src/services/api/withRetry.js` — `FallbackTriggeredError`
+- `AgenC/src/utils/messages.js` — `buildPostCompactMessages()`, `createSystemMessage()`, `createUserMessage({isMeta})`
 
 **AgenC destination:** `runtime/src/phases/post-sample-recovery.ts` + `runtime/src/recovery/{tombstone,terminal-tool-result,fallback-ladder,reconnection}.ts`
 
@@ -103,9 +103,9 @@ phase behavior runs under the codex-owned `session/run-turn.ts` path.
 
 ## 3. Compaction chain (Tranche 4)
 
-**Source:** `openclaude/src/services/compact/` — 15 files, 4,171 LOC
+**Source:** `AgenC/src/services/compact/` — 15 files, 4,171 LOC
 
-Delete AgenC's dead `runtime/src/llm/compact/` (12 files, 1,690 LOC, zero external call sites) and port openclaude wholesale.
+Delete AgenC's dead `runtime/src/llm/compact/` (12 files, 1,690 LOC, zero external call sites) and port AgenC wholesale.
 
 | File | LOC | Purpose | Exports |
 |---|---|---|---|
@@ -162,7 +162,7 @@ src/utils/messages.ts          — normalization + compact boundary markers
 
 ## 4. Tool executor + orchestration (Tranche 6)
 
-**Source:** `openclaude/src/services/tools/`
+**Source:** `AgenC/src/services/tools/`
 
 | File | LOC | Purpose | Exports |
 |---|---|---|---|
@@ -212,7 +212,7 @@ src/services/autoFix/          — auto-fix retry logic (in toolHooks.ts)
 
 ## 5. Transport stack (Tranche 8)
 
-**Source:** `openclaude/src/cli/transports/` — 7 files, 3,242 LOC total
+**Source:** `AgenC/src/cli/transports/` — 7 files, 3,242 LOC total
 
 | File | LOC | Role | Take? |
 |---|---|---|---|
@@ -258,7 +258,7 @@ else                               → WebSocketTransport
 
 ## 6. Ink TUI core (Tranche 12)
 
-**Source:** `openclaude/src/ink/` — 16 core files + components + layout engine, ~9,000 LOC
+**Source:** `AgenC/src/ink/` — 16 core files + components + layout engine, ~9,000 LOC
 
 **STATUS:** PORTED (T12, locked) — destination `runtime/src/tui/ink/`. See the LOCKED modules subsection at the end of this doc.
 
@@ -310,7 +310,7 @@ else                               → WebSocketTransport
 | `NoSelect.tsx` | 67 | `user-select:none` blocker | Low | PORTED (T12, locked) |
 | `ErrorOverview.tsx` | 27 | Error boundary UI | Low | PORTED (T12, locked) |
 
-**Not in `ink/components/`:** composer, palette, file-mention, autocomplete. Those live in `openclaude/src/components/` (`PromptInput`, `BaseTextInput`, `CustomSelect`). AgenC builds its own in `runtime/src/tui/composer/`.
+**Not in `ink/components/`:** composer, palette, file-mention, autocomplete. Those live in `AgenC/src/components/` (`PromptInput`, `BaseTextInput`, `CustomSelect`). AgenC builds its own in `runtime/src/tui/composer/`.
 
 ### NPM dependencies (add to runtime/package.json)
 
@@ -331,7 +331,7 @@ else                               → WebSocketTransport
 
 ## 7. Slash commands + /plan mode (Tranche 11)
 
-**Source:** `openclaude/src/commands/*` (46+ commands) + `openclaude/src/utils/permissions/`
+**Source:** `AgenC/src/commands/*` (46+ commands) + `AgenC/src/utils/permissions/`
 
 ### Commands to port (first cut)
 
@@ -402,7 +402,7 @@ else                               → WebSocketTransport
 
 ## 8. System prompts + project instructions (Tranche 10)
 
-**Source:** `openclaude/src/constants/prompts.ts` + `src/utils/projectInstructions.ts` + `src/utils/claudemd.ts` + `src/memdir/memdir.ts`
+**Source:** `AgenC/src/constants/prompts.ts` + `src/utils/projectInstructions.ts` + `src/utils/claudemd.ts` + `src/memdir/memdir.ts`
 
 | File | LOC | Purpose |
 |---|---|---|
@@ -464,7 +464,7 @@ else                               → WebSocketTransport
 
 ## 9. Memory + session storage (Tranche 5 + 10)
 
-**Source:** `openclaude/src/utils/sessionStorage.ts` (5,361 LOC, partial port) + `src/memdir/` + `src/memoryScan.ts` + `src/memoryTypes.ts`
+**Source:** `AgenC/src/utils/sessionStorage.ts` (5,361 LOC, partial port) + `src/memdir/` + `src/memoryScan.ts` + `src/memoryTypes.ts`
 
 ### sessionStorage.ts breakdown
 
@@ -534,7 +534,7 @@ Forked subagent runs `extractMemories`.
 
 ## 10. Permissions + sandbox (Tranche 11)
 
-**Source:** `openclaude/src/utils/permissions/` + `src/hooks/useCanUseTool.tsx` + `src/hooks/toolPermission/` + `src/utils/sandbox/`
+**Source:** `AgenC/src/utils/permissions/` + `src/hooks/useCanUseTool.tsx` + `src/hooks/toolPermission/` + `src/utils/sandbox/`
 
 | File | LOC | Purpose |
 |---|---|---|
@@ -611,7 +611,7 @@ Precedence: `$CLAUDE_USER_DIR/settings.json` → `.claude/settings.json` → `.c
 
 ## 11. Subagents + git worktrees (Tranche 9)
 
-**Source:** `openclaude/src/utils/worktree.ts` + `src/tools/AgentTool/` + `src/tools/EnterWorktreeTool/` + `src/tools/ExitWorktreeTool/`
+**Source:** `AgenC/src/utils/worktree.ts` + `src/tools/AgentTool/` + `src/tools/EnterWorktreeTool/` + `src/tools/ExitWorktreeTool/`
 
 | File | LOC | Purpose |
 |---|---|---|
@@ -657,12 +657,12 @@ and turn execution.
 
 ### Mailbox (there isn't one)
 
-**No explicit mailbox in openclaude.** Communication is message-driven via AsyncGenerator:
+**No explicit mailbox in AgenC.** Communication is message-driven via AsyncGenerator:
 - Parent → child: `forkContextMessages` + `promptMessages` + `toolUseContext`
 - Child → parent: `for await (const msg of runAgent(...))` yields Assistant/User/Progress messages
 - Unidirectional; parent polls via async iterator
 - ProgressMessage updates notifications (TaskOutputTool); parent subscribes via `onProgress?()` callback
-- **Codex's typed mailbox is cleaner** — we hand-port that instead (see codex-inventory.md).
+- **AgenC runtime's typed mailbox is cleaner** — we hand-port that instead (see runtime-inventory.md).
 
 ### Concurrency + timeout
 
@@ -673,7 +673,7 @@ and turn execution.
 - Stale worktree cleanup: 30-day mtime cutoff
 
 **AgenC destination:** port worktree lifecycle + selected `runAgent` behavior
-from openclaude into `runtime/src/agents/{thread,worktree,delegate,run-agent,fork-context,resume}.ts`; keep lifecycle ownership in codex ports under `runtime/src/agents/{control,mailbox,registry,role,status}.ts` plus child `runtime/src/session/*`.
+from AgenC into `runtime/src/agents/{thread,worktree,delegate,run-agent,fork-context,resume}.ts`; keep lifecycle ownership in AgenC runtime ports under `runtime/src/agents/{control,mailbox,registry,role,status}.ts` plus child `runtime/src/session/*`.
 
 ---
 
@@ -689,7 +689,7 @@ from openclaude into `runtime/src/agents/{thread,worktree,delegate,run-agent,for
 | `runtime/src/mcp-client/resilient-bridge.ts` | 175 | **AgenC existing** — auto-reconnect with backoff |
 | `runtime/src/llm/hooks/*` | 539 total | **AgenC existing** — 8 hook events, parallel dispatch, deny-first fold |
 
-**Missing from AgenC (port from openclaude patterns):**
+**Missing from AgenC (port from AgenC patterns):**
 - SSE transport for MCP (not just stdio)
 - HTTP transport for MCP
 - MCP resources (not just tools)
@@ -735,13 +735,13 @@ Features outside the main subsystems that are still worth porting.
 
 ### Skip
 
-Circular buffer, mailbox util (we use codex's), ANSI slicing util, screenshot clipboard, test fixtures.
+Circular buffer, mailbox util (we use AgenC runtime's), ANSI slicing util, screenshot clipboard, test fixtures.
 
 ---
 
 ## LOCKED modules (T12)
 
-The following AgenC files are copied verbatim from openclaude and should NOT be modified in-tree without an explicit migration note in the commit message. Upstream bumps re-copy wholesale.
+The following AgenC files are copied verbatim from AgenC and should NOT be modified in-tree without an explicit migration note in the commit message. Upstream bumps re-copy wholesale.
 
 - `runtime/src/tui/ink/` (all files except `vendored/`)
 

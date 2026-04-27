@@ -1,10 +1,10 @@
 /**
  * Permission-mode finite state machine (I-3 primitive).
  *
- * Ports openclaude's `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
+ * Ports AgenC's `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
  * transition helpers from `permissionSetup.ts` / `bootstrap/state.ts` into a
  * self-contained module with no global state. All session state that
- * openclaude stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
+ * AgenC stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
  * instead (`autoModeActive`, `prePlanMode`, `strippedDangerousRules`).
  * Plan-mode exit-reminder bookkeeping lives separately on
  * AttachmentTrackingState (`runtime/src/session/attachment-state.ts`).
@@ -68,7 +68,7 @@ export const INTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
 
 /**
  * Type guard — true when `mode` is one of the Shift+Tab-visible external
- * modes. Mirrors openclaude's `isExternalPermissionMode`.
+ * modes. Mirrors AgenC's `isExternalPermissionMode`.
  */
 export function isExternalPermissionMode(mode: PermissionMode): boolean {
   return (EXTERNAL_PERMISSION_MODES as readonly PermissionMode[]).includes(mode);
@@ -97,7 +97,7 @@ export function __setAutoModeGateResolverForTesting(
  * mode is available (set at startup by the equivalent of
  * `verifyAutoModeGateAccess`) AND the live gate is currently enabled.
  *
- * The dual check mirrors openclaude's rationale: the cached
+ * The dual check mirrors AgenC's rationale: the cached
  * `isAutoModeAvailable` and the live gate can diverge if the circuit breaker
  * or settings flip mid-session; checking both prevents
  * `transitionPermissionMode` from throwing inside the Shift+Tab handler and
@@ -174,7 +174,7 @@ export function cyclePermissionMode(
 
 /**
  * Setting to drive whether plan mode should run with auto-mode semantics
- * active (classifier evaluates during plan). openclaude gates this behind
+ * active (classifier evaluates during plan). AgenC gates this behind
  * `getUseAutoModeDuringPlan()` + `hasAutoModeOptIn()`. For T11 Wave 1 we
  * default to false; Wave-2 YOLO wiring can override this via
  * `prepareContextForPlanMode`'s `shouldUseAutoInPlan` option.
@@ -233,11 +233,11 @@ function isBypassConsentAccepted(
  * effects are limited to returning a possibly-modified context — all
  * session state (plan-mode stash, auto-mode-active flag) lives on the
  * context instead of hidden globals. The caller is responsible for
- * attaching `mode` to the returned context (this matches openclaude's
+ * attaching `mode` to the returned context (this matches AgenC's
  * invariant that `transitionPermissionMode` never sets the mode itself).
  *
  * Throws if entering auto mode while the gate is disabled, mirroring
- * openclaude's hard error at permissionSetup.ts:629 — this is what makes the
+ * AgenC's hard error at permissionSetup.ts:629 — this is what makes the
  * Shift+Tab handler's dual-check defensive (see `canCycleToAuto`).
  *
  * Bypass-consent gate:
@@ -385,7 +385,7 @@ export function transitionPermissionMode(
  * Plan-mode entry preparation. Stashes the current mode as `prePlanMode`
  * so `ExitPlanMode` can restore it cleanly. When `shouldUseAutoInPlan` is
  * true, also strips dangerous allow rules so the classifier runs during
- * plan (openclaude's auto-during-plan flow).
+ * plan (AgenC's auto-during-plan flow).
  *
  * Re-entering plan while already in plan is a no-op (protects against
  * duplicate `prePlanMode` stashing via SDK resends).
@@ -418,7 +418,7 @@ export function prepareContextForPlanMode(
 /**
  * Interpreter / shell patterns that auto-allow arbitrary code execution when
  * present as a Bash allow rule (e.g. `Bash(python:*)` hands the model a
- * scripting escape hatch). Subset of openclaude's
+ * scripting escape hatch). Subset of AgenC's
  * `CROSS_PLATFORM_CODE_EXEC` + `DANGEROUS_BASH_PATTERNS` — the entries most
  * commonly seen as broad allowlist prefixes in operator configs.
  *
@@ -496,7 +496,7 @@ export function isDangerousBashPermission(
 
 /**
  * Similar detector for PowerShell and Agent allow rules. Scoped narrowly to
- * the cases openclaude explicitly catches in
+ * the cases AgenC explicitly catches in
  * `isDangerousPowerShellPermission` + `isDangerousTaskPermission`. We keep
  * the matcher conservative — if the content looks like a non-exact rule
  * (e.g. `PowerShell(iex:*)`) we strip it.
@@ -563,7 +563,7 @@ function isDangerousPermission(
 
 /**
  * Parses a raw allow-rule string into `{ toolName, ruleContent }`. Mirrors
- * openclaude's `permissionRuleValueFromString` for the subset of rule
+ * AgenC's `permissionRuleValueFromString` for the subset of rule
  * shapes we need to introspect here. Format: `ToolName` or
  * `ToolName(content)`. Any unmatched closing paren yields an undefined
  * content (treated as "no content" = tool-level allow).
@@ -587,7 +587,7 @@ function parseRuleString(raw: string): {
  * `strippedDangerousRules` so `restoreDangerousPermissions` can replay them
  * when leaving auto mode.
  *
- * Equivalent to openclaude's `stripDangerousPermissionsForAutoMode` without
+ * Equivalent to AgenC's `stripDangerousPermissionsForAutoMode` without
  * the debug-logging side effect. The stash is always initialised (possibly
  * empty) so the restore path has a single branch to worry about.
  */

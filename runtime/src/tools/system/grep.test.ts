@@ -24,7 +24,7 @@ describe("Grep tool", () => {
     __resetRipgrepProbeForTests();
   });
 
-  test("exposes the openclaude-bare tool name and required schema", () => {
+  test("exposes the AgenC-bare tool name and required schema", () => {
     expect(GREP_TOOL_NAME).toBe("Grep");
     const tool = createGrepTool({ allowedPaths: [root] });
     expect(tool.name).toBe("Grep");

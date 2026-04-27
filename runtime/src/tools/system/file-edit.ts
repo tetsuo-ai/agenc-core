@@ -1,15 +1,15 @@
 /**
  * `Edit` — first-class string-replacement editor.
  *
- * Lifted from openclaude `FileEditTool` (src/tools/FileEditTool/*) and
+ * Lifted from AgenC `FileEditTool` (src/tools/FileEditTool/*) and
  * adapted to the AgenC tool contract. Behavior summary:
  *
  *   - Read-before-write enforcement via {@link hasSessionRead}. The
  *     model must have called the AgenC read tool on the path with a
  *     full view earlier in the session, otherwise the edit is rejected
- *     with the verbatim openclaude error string.
+ *     with the verbatim AgenC error string.
  *   - Modification-time check: if the file mtime advanced past the
- *     recorded read snapshot, the edit is rejected with openclaude's
+ *     recorded read snapshot, the edit is rejected with AgenC's
  *     "modified since read" error so the model is forced to re-read.
  *   - Empty-old_string semantics:
  *       * empty + nonexistent path  → create empty target
@@ -18,14 +18,14 @@
  *   - `replace_all`: when true, every occurrence is replaced; when false
  *     a multi-match is rejected with an actionable error.
  *   - Quote/typography normalization via {@link findActualString} —
- *     verbatim port from openclaude utils.ts. Smart quotes, en/em dashes,
+ *     verbatim port from AgenC utils.ts. Smart quotes, en/em dashes,
  *     and NBSP normalize so a model can match against typographic prose.
  *   - `old_string === new_string` is rejected with the verbatim
- *     openclaude error.
+ *     AgenC error.
  *   - `.ipynb` files are rejected with a notebook-tool hint.
  *
  * Errors are returned as plain text in `ToolResult.content` with
- * `isError: true` — no JSON envelope, matching the codex-style envelope
+ * `isError: true` — no JSON envelope, matching the AgenC-style envelope
  * used elsewhere in AgenC's tool surface.
  *
  * @module
@@ -60,7 +60,7 @@ const FILE_UNEXPECTEDLY_MODIFIED_ERROR =
 const READ_BEFORE_WRITE_ERROR =
   "File has not been read yet. Read it first before writing to it.";
 
-// Verbatim from openclaude FileEditTool/prompt.ts:20-27.
+// Verbatim from AgenC FileEditTool/prompt.ts:20-27.
 const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
 
 Usage:
@@ -72,10 +72,10 @@ Usage:
 - Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`;
 
 // V8/Bun string length cap. 1 GiB stat-size guard prevents OOM on
-// gigabyte files. Lifted from openclaude FileEditTool.ts:84.
+// gigabyte files. Lifted from AgenC FileEditTool.ts:84.
 const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024;
 
-// ── quote normalization (lifted from openclaude utils.ts) ─────────────
+// ── quote normalization (lifted from AgenC utils.ts) ─────────────
 
 const LEFT_SINGLE_CURLY_QUOTE = "‘";
 const RIGHT_SINGLE_CURLY_QUOTE = "’";
@@ -91,7 +91,7 @@ const UNICODE_SPACE_RE = /[  -   　]/gu;
 
 /**
  * Normalize curly quotes, Unicode dashes, and exotic spaces to their
- * ASCII equivalents. Lifted from openclaude `utils.ts` `normalizeQuotes`,
+ * ASCII equivalents. Lifted from AgenC `utils.ts` `normalizeQuotes`,
  * extended with dash/space passes so a model whose `old_string` is
  * pure ASCII can still match against typographic file content.
  */
@@ -106,7 +106,7 @@ function normalizeQuotes(str: string): string {
 }
 
 /**
- * Verbatim port of openclaude `utils.ts:findActualString`. When
+ * Verbatim port of AgenC `utils.ts:findActualString`. When
  * `searchString` is not literally present in `fileContent`, retry with
  * a quote/dash/space-normalized comparison and return the actual byte
  * range from the file at the matching offset.
@@ -199,7 +199,7 @@ async function readFileSnapshot(absolutePath: string): Promise<FileSnapshot> {
       throw new Error(`Path is not a regular file: ${absolutePath}`);
     }
     const buffer = await readFile(absolutePath);
-    // Normalize CRLF→LF the same way openclaude FileEditTool.ts:214 does;
+    // Normalize CRLF→LF the same way AgenC FileEditTool.ts:214 does;
     // the model authoring `old_string` against Read output sees LF.
     const text = buffer.toString("utf8").replaceAll("\r\n", "\n");
     return {
@@ -235,7 +235,7 @@ async function writeFileCreatingParents(
  * spurious diff on the next turn for the file we just wrote.
  *
  * Best-effort — a failed stat falls back to wall-clock time, and a
- * missing sessionId is a no-op (matches openclaude's
+ * missing sessionId is a no-op (matches AgenC's
  * `recordOnDiskWriteForFreshState` defensive shape).
  */
 async function snapshotPostWrite(
@@ -272,7 +272,7 @@ function applyEdit(
 }
 
 /**
- * Format a successful-edit result line. Mirrors openclaude
+ * Format a successful-edit result line. Mirrors AgenC
  * `mapToolResultToToolResultBlockParam` (FileEditTool.ts:578-597),
  * adapted for AgenC's plain-text content envelope.
  */
@@ -328,7 +328,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       if ("error" in validated) return errorResult(validated.error);
       const { file_path, old_string, new_string, replace_all } = validated;
 
-      // Verbatim from openclaude FileEditTool.ts:148-156.
+      // Verbatim from AgenC FileEditTool.ts:148-156.
       if (old_string === new_string) {
         return errorResult(
           "No changes to make: old_string and new_string are exactly the same.",
@@ -387,7 +387,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       }
 
       // Empty old_string + nonexistent file → file creation.
-      // Verbatim semantics from openclaude FileEditTool.ts:223-228.
+      // Verbatim semantics from AgenC FileEditTool.ts:223-228.
       if (!snapshot.exists && old_string === "") {
         try {
           await writeFileCreatingParents(absoluteFilePath, new_string);
@@ -404,7 +404,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       }
 
       // Nonexistent file with non-empty old_string → error. The hint
-      // is intentionally simpler than openclaude's "did you mean X?"
+      // is intentionally simpler than AgenC's "did you mean X?"
       // suggestion — that path needed cwd-aware fuzzy file lookup
       // helpers we don't have wired into this tool yet.
       if (!snapshot.exists) {
@@ -435,7 +435,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
 
       // Read-before-write enforcement. User-initiated `FileRead`
       // calls satisfy the gate even when they use offset/limit, matching
-      // openclaude's gate semantics. AgenC does not currently seed
+      // AgenC's gate semantics. AgenC does not currently seed
       // auto-injected processed content into this state.
       //
       // Skipped when no sessionId was injected (headless / unit-test
@@ -489,7 +489,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       }
 
       // Match counting with early-out for non-replace_all calls. Mirrors
-      // openclaude FileEditTool.ts:329-343.
+      // AgenC FileEditTool.ts:329-343.
       let matches = 0;
       let from = 0;
       while (true) {
@@ -502,7 +502,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       if (matches === 0) {
         // findActualString found a match but indexOf says no — this is
         // unreachable in practice but the defensive check matches the
-        // openclaude error wording so a model that hits the path gets
+        // AgenC error wording so a model that hits the path gets
         // the same recovery hint.
         return errorResult(
           `String to replace not found in file.\nString: ${old_string}`,
@@ -531,7 +531,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       await snapshotPostWrite(sessionId, absoluteFilePath, updated);
 
       // TODO(file-edit): wire LSP didChange/didSave notifications when
-      // AgenC adds an LSP integration. Openclaude's FileEditTool.ts:493-514
+      // AgenC adds an LSP integration. AgenC's FileEditTool.ts:493-514
       // emits both events for incremental diagnostics; AgenC has no
       // LSP today so nothing to notify.
 

@@ -3,9 +3,9 @@
  *
  * The session subsystem leans on a handful of gut-authored primitives
  * (`monotonicMs`, `AsyncLock`, `AsyncQueue`, `BehaviorSubject`) that
- * happen to live under `runtime/src/utils/` alongside the openclaude
+ * happen to live under `runtime/src/utils/` alongside the AgenC
  * port. Routing them through `_deps/` keeps every `src/session/*.ts`
- * import targeted at gut-owned surfaces and lets the openclaude port
+ * import targeted at gut-owned surfaces and lets the AgenC port
  * be deleted without churn here later.
  *
  * Also re-exports a couple of error/log primitives shared with the

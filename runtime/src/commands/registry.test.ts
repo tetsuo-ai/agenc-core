@@ -178,7 +178,7 @@ describe("buildDefaultRegistry()", () => {
     expect(reg.has("status")).toBe(true);
   });
 
-  it("exposes codex-facing aliases like /provider and /approvals", () => {
+  it("exposes AgenC-facing aliases like /provider and /approvals", () => {
     const reg = buildDefaultRegistry();
     expect(reg.has("provider")).toBe(true);
     expect(reg.has("approvals")).toBe(true);

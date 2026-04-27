@@ -1,7 +1,7 @@
 /**
  * Default keybindings for the AgenC TUI.
  *
- * Ported from the reference Ink runtime at openclaude/src/keybindings.
+ * Ported from the reference Ink runtime at AgenC/src/keybindings.
  * AgenC only exposes the contexts that are live in this shell today, but
  * those contexts should match upstream behavior instead of carrying local
  * narrowed-scope shortcuts.

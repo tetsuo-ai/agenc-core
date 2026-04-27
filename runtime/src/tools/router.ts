@@ -1,5 +1,5 @@
 /**
- * Subset port of codex `core/src/tools/router.rs`.
+ * Subset port of AgenC runtime `core/src/tools/router.rs`.
  *
  * Ports:
  *   - Spec registry (`ConfiguredToolSpec[]`) + `findSpec` /
@@ -22,7 +22,7 @@
  *
  * Deferred (not in this port):
  *   - `TurnContext`-gated `js_repl_tools_only` direct-call blocking
- *     (codex router.rs:280-290) — AgenC exposes the code-mode filter
+ *     (AgenC runtime router.rs:280-290) — AgenC exposes the code-mode filter
  *     through `dispatchToolCallWithCodeMode` instead; the
  *     per-turn-context gate lands with the JsRepl subsystem.
  *   - `DiscoverableTool` materialization into actual `Tool` objects
@@ -93,10 +93,10 @@ export interface ConfiguredToolSpec {
    *  should not be advertised in `modelVisibleSpecs()`. */
   readonly deferred?: boolean;
   /** When true, the tool was injected as a discoverable late-load
-   *  entry (codex `DiscoverableTool`). */
+   *  entry (AgenC runtime `DiscoverableTool`). */
   readonly discoverable?: boolean;
   /** When true, the tool was injected as a runtime dynamic spec
-   *  (codex `DynamicToolSpec`). */
+   *  (AgenC runtime `DynamicToolSpec`). */
   readonly dynamic?: boolean;
 }
 
@@ -153,7 +153,7 @@ export interface LiveToolDispatchOptions {
 // ─────────────────────────────────────────────────────────────────────
 // ResponseItem input union for `buildToolCall`.
 //
-// Mirrors the 4 codex `ResponseItem` variants the router consumes.
+// Mirrors the 4 AgenC runtime `ResponseItem` variants the router consumes.
 // Types are narrow — callers only need to pass the minimum the router
 // reads. Everything else is preserved upstream in the rollout store.
 // ─────────────────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ export type RouterResponseItem =
 export interface ToolRouterOpts {
   /**
    * Allowlist of MCP server IDs whose tools can run in parallel
-   * within a batch. Mirrors codex `parallel_mcp_server_names`
+   * within a batch. Mirrors AgenC runtime `parallel_mcp_server_names`
    * (router.rs:42). Empty by default = MCP tools serialize per server.
    * T9 wires from config.
    */
@@ -205,7 +205,7 @@ export interface ToolRouterOpts {
 }
 
 /**
- * Codex `ToolRouterParams` (router.rs:45-52). Builder-style input for
+ * AgenC runtime `ToolRouterParams` (router.rs:45-52). Builder-style input for
  * `ToolRouter.fromConfig(...)`. AgenC accepts the subset it can
  * materialize today — `unavailableCalledTools` is retained as opaque
  * tool-name list so the registry can filter on it.
@@ -235,8 +235,8 @@ export class ToolRouter {
   }
 
   /**
-   * Port of codex `ToolRouter::from_config` (router.rs:55-97). Merges
-   * the 5 codex input slots into one spec list with a consistent
+   * Port of AgenC runtime `ToolRouter::from_config` (router.rs:55-97). Merges
+   * the 5 AgenC runtime input slots into one spec list with a consistent
    * priority:
    *
    *   1. `baseSpecs` (typically from the local tool registry)
@@ -247,7 +247,7 @@ export class ToolRouter {
    *
    * Tools named in `unavailableCalledTools` are retained but flagged
    * `unavailable: true`. Later additions override earlier ones on name
-   * collision (matches codex spec-build ordering).
+   * collision (matches AgenC runtime spec-build ordering).
    */
   static fromConfig(opts: ToolRouterFromConfigOpts): ToolRouter {
     const unavailable = new Set(opts.unavailableCalledTools ?? []);
@@ -305,7 +305,7 @@ export class ToolRouter {
   }
 
   /** LLMTool array for provider requests. Deferred tools are hidden
-   *  (loaded on-demand via ToolSearch) to match codex behavior. */
+   *  (loaded on-demand via ToolSearch) to match AgenC runtime behavior. */
   modelVisibleSpecs(): ReadonlyArray<LLMTool> {
     return this.specs
       .filter((config) => config.deferred !== true)
@@ -320,10 +320,10 @@ export class ToolRouter {
   }
 
   /**
-   * Look up a single spec. Port of codex `ToolRouter::find_spec`
+   * Look up a single spec. Port of AgenC runtime `ToolRouter::find_spec`
    * (router.rs:110-133).
    *
-   * Codex matches by walking specs:
+   * AgenC runtime matches by walking specs:
    *   - `ToolSpec::Function(tool)`  — only when `tool_name.namespace.is_none()`
    *     and `tool.name == tool_name.name`
    *   - `ToolSpec::Freeform(tool)`  — same
@@ -332,7 +332,7 @@ export class ToolRouter {
    *     matches by `tool.name`
    *
    * AgenC stores both kinds in the flat `byName` map — MCP tools are
-   * flagged with `serverId`. The port preserves codex's exclusion:
+   * flagged with `serverId`. The port preserves AgenC runtime's exclusion:
    *
    *   1. A request with no namespace resolves only to specs whose
    *      `serverId` is not set (plain function/freeform). A dotted
@@ -354,7 +354,7 @@ export class ToolRouter {
       typeof toolName === "string" ? parseToolName(toolName) : toolName;
     const ns = parsed.namespace;
     if (ns === undefined) {
-      // Plain function/freeform lookup. Codex router.rs:111-121 only
+      // Plain function/freeform lookup. AgenC runtime router.rs:111-121 only
       // matches `ToolSpec::Function` or `ToolSpec::Freeform`, never a
       // namespace tool. AgenC flag: `serverId === undefined` means the
       // spec is not an MCP umbrella, so it's safe to return.
@@ -363,7 +363,7 @@ export class ToolRouter {
       if (spec.serverId !== undefined) return undefined;
       return spec;
     }
-    // Namespaced lookup. Codex router.rs:122-131 only accepts a
+    // Namespaced lookup. AgenC runtime router.rs:122-131 only accepts a
     // `ToolSpec::Namespace` spec with matching `namespace.name`. In
     // AgenC, MCP tools live in the flat map under `serverId.name` with
     // `serverId === namespace`. Try the dotted storage key first, then
@@ -379,13 +379,13 @@ export class ToolRouter {
   }
 
   /**
-   * Port of codex `tool_supports_parallel` (router.rs:142-169).
+   * Port of AgenC runtime `tool_supports_parallel` (router.rs:142-169).
    *
    *   - MCP tools: parallel iff the owning server is in the allowlist.
    *   - Namespaced tool names (`tool_name.namespace.is_some()`): hard
-   *     `false` regardless of the spec flag. Matches codex
+   *     `false` regardless of the spec flag. Matches AgenC runtime
    *     `configured_tool_supports_parallel` (router.rs:142-145).
-   *   - Non-Function/Freeform spec kinds: codex hard-codes `false` for
+   *   - Non-Function/Freeform spec kinds: AgenC runtime hard-codes `false` for
    *     `ToolSpec::Namespace | ToolSpec::ToolSearch | ToolSpec::LocalShell |
    *     ToolSpec::ImageGeneration | ToolSpec::WebSearch` (router.rs:
    *     150-158). AgenC detects these by spec shape — any spec whose
@@ -397,7 +397,7 @@ export class ToolRouter {
     if (call.payload.kind === "mcp") {
       return this.parallelMcpServerNames.has(call.payload.server);
     }
-    // Namespaced tool names can never parallelize — codex parity
+    // Namespaced tool names can never parallelize — AgenC behavior
     // (router.rs:142-145). Checked BEFORE spec lookup so a namespace-
     // flagged call never leaks a true via the underlying spec's
     // `supportsParallelToolCalls` flag.
@@ -407,7 +407,7 @@ export class ToolRouter {
     const spec = this.findSpec(call.toolName);
     if (spec === undefined) return false;
     if (!spec.supportsParallelToolCalls) return false;
-    // Hard-false list — spec variants codex forbids from parallel:
+    // Hard-false list — spec variants AgenC runtime forbids from parallel:
     // Namespace / ToolSearch / LocalShell / ImageGeneration / WebSearch
     // (router.rs:150-158). AgenC carries these as plain tool entries
     // rather than a ToolSpec union, so guard by the canonical name.
@@ -456,7 +456,7 @@ export class ToolRouter {
   }
 
   /**
-   * Port of codex `dispatch_tool_call_with_code_mode_result`
+   * Port of AgenC runtime `dispatch_tool_call_with_code_mode_result`
    * (router.rs:266-302). When `source === "code_mode"`, restrict
    * dispatch to the JS-REPL-safe subset (`js_repl` / `js_repl_reset`);
    * anything else returns an error result the model can observe. All
@@ -471,7 +471,7 @@ export class ToolRouter {
       return {
         content: JSON.stringify({
           error:
-            "direct tool calls are disabled in code_mode; use js_repl and codex.tool(...) instead",
+            "direct tool calls are disabled in code_mode; use js_repl helpers instead",
         }),
         isError: true,
       };
@@ -528,7 +528,7 @@ export class ToolRouter {
       opts.signal.addEventListener("abort", forwardAbort, { once: true });
     }
 
-    // Upstream codex `tools/registry.rs:303-309` — increment the
+    // Upstream AgenC runtime `tools/registry.rs:303-309` — increment the
     // per-turn `tool_calls` counter under the `ActiveTurnState` lock
     // before dispatching the handler. Saturating-add semantics (caps
     // at Number.MAX_SAFE_INTEGER) mirror upstream `saturating_add(1)`.
@@ -598,14 +598,14 @@ export class ToolRouter {
   }
 
   /**
-   * Port of codex `ToolRouter::create_diff_consumer` (router.rs:135).
+   * Port of AgenC runtime `ToolRouter::create_diff_consumer` (router.rs:135).
    * Returns a consumer the tool execution flow can call to record
    * pre-hook arguments and compare post-hook arguments — used to
    * surface argument rewrites in telemetry.
    *
    * Intentionally minimal: the consumer keeps an in-memory map keyed
    * by argument-name; `.compare(name, after)` runs a line-diff against
-   * the previously recorded `before`. Matches codex
+   * the previously recorded `before`. Matches AgenC runtime
    * `ToolArgumentDiffConsumer` in scope (not in shape).
    */
   createDiffConsumer(toolName: ToolName | string): ToolArgumentDiffConsumer {
@@ -795,10 +795,10 @@ export function toolCallFromLLMToolCall(
 }
 
 /**
- * Port of codex `ToolRouter::build_tool_call` (router.rs:172-263).
+ * Port of AgenC runtime `ToolRouter::build_tool_call` (router.rs:172-263).
  * Inspects `item.type` and produces the right ToolCall envelope for
  * each of the four ResponseItem variants. Returns `null` when the
- * item is not a tool call (codex returns `Ok(None)`) or when the
+ * item is not a tool call (AgenC runtime returns `Ok(None)`) or when the
  * tool_search_call was not client-executed.
  *
  * MCP attribution is resolved through
@@ -898,11 +898,11 @@ function parseToolSearchArguments(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Non-parallel spec variants — codex router.rs:150-158 hard-false list.
+// Non-parallel spec variants — AgenC runtime router.rs:150-158 hard-false list.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Tool names corresponding to codex `ToolSpec` variants that codex
+ * Tool names corresponding to AgenC runtime `ToolSpec` variants that AgenC runtime
  * hard-codes as non-parallel in `configured_tool_supports_parallel`:
  *
  *   - `ToolSpec::Namespace(_)`        — MCP umbrella (handled by name/
@@ -934,9 +934,9 @@ function isNonParallelSpecTool(toolName: string): boolean {
 
 /**
  * Direct tool set permitted when `source === "code_mode"`. Matches
- * codex router.rs:281 (`matches!(tool_name.name.as_str(), "js_repl" |
+ * AgenC runtime router.rs:281 (`matches!(tool_name.name.as_str(), "js_repl" |
  * "js_repl_reset")`). Code-mode callers go through `js_repl` and the
- * JS runner's `codex.tool(...)` bridge for everything else.
+ * JS runner's `AgenC runtime.tool(...)` bridge for everything else.
  */
 const CODE_MODE_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "js_repl",

@@ -1,13 +1,13 @@
 /**
  * Auto-mode attachment producer.
  *
- * Hand-port of openclaude `getAutoModeAttachments` + `getAutoModeExitAttachment`
+ * Hand-port of AgenC `getAutoModeAttachments` + `getAutoModeExitAttachment`
  * (`src/utils/attachments.ts:1276-1401`). Drives the per-turn pulse and
  * the one-shot exit reminder for AgenC's autonomous-execution permission
  * modes.
  *
- * Mode mapping (openclaude `auto` → AgenC):
- *   - openclaude single mode `"auto"` becomes the canonical autonomous
+ * Mode mapping (AgenC `auto` → AgenC):
+ *   - AgenC single mode `"auto"` becomes the canonical autonomous
  *     family in AgenC. AgenC has its own literal `"auto"` mode plus two
  *     other autonomous-leaning modes from the broader runtime: `"acceptEdits"`
  *     (file edits don't prompt) and `"bypassPermissions"` (all approvals
@@ -39,7 +39,7 @@ import type { AttachmentProducer } from "./orchestrator.js";
 import type { Attachment } from "./types.js";
 
 /**
- * Source: openclaude `attachments.ts:265-268`.
+ * Source: AgenC `attachments.ts:265-268`.
  */
 export const AUTO_MODE_ATTACHMENT_CONFIG = {
   TURNS_BETWEEN_ATTACHMENTS: 5,
@@ -50,7 +50,7 @@ const AUTO_MODE_MARKER = "Auto mode is active";
 const AUTO_MODE_EXIT_MARKER = "exited auto mode";
 
 /**
- * AgenC permission modes treated as openclaude's `auto` mode for the
+ * AgenC permission modes treated as AgenC's `auto` mode for the
  * purposes of the auto-mode attachment family.
  */
 const AUTO_FAMILY_MODES: ReadonlySet<PermissionMode> = new Set<PermissionMode>([
@@ -83,9 +83,9 @@ function messageContains(message: LLMMessage, marker: string): boolean {
 }
 
 /**
- * Source: openclaude `getAutoModeAttachmentTurnCount` (:1276-1314).
+ * Source: AgenC `getAutoModeAttachmentTurnCount` (:1276-1314).
  *
- * The exit-marker case mirrors openclaude's "exit resets the throttle —
+ * The exit-marker case mirrors AgenC's "exit resets the throttle —
  * treat as if no prior attachment exists" branch.
  */
 function getAutoModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
@@ -115,7 +115,7 @@ function getAutoModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
 }
 
 /**
- * Source: openclaude `countAutoModeAttachmentsSinceLastExit` (:1320-1334).
+ * Source: AgenC `countAutoModeAttachmentsSinceLastExit` (:1320-1334).
  */
 function countAutoModeAttachmentsSinceLastExit(
   messages: readonly LLMMessage[],
@@ -139,7 +139,7 @@ export const autoModeProducer: AttachmentProducer = async (
 
   // Step 1 — exit reminder. Fires when the flag is set AND we are no
   // longer in any auto-family mode. If we're still in auto, clear the
-  // flag silently (matches openclaude :1391-1397).
+  // flag silently (matches AgenC :1391-1397).
   if (trackingState.needsAutoModeExitAttachment) {
     if (isAutoFamilyMode(mode)) {
       trackingState.needsAutoModeExitAttachment = false;

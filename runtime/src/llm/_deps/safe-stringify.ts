@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../../tools/types.js` for `safeStringify`. Bigint-safe JSON
  * serialization helper.
  */

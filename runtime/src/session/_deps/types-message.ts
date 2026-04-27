@@ -1,8 +1,8 @@
 /**
  * Per-dir message-type stubs for `runtime/src/session/**`.
  *
- * Mirrors the openclaude `runtime/src/types/message.ts` stub so the
- * session tree stays decoupled from the openclaude-port path tree
+ * Mirrors the AgenC `runtime/src/types/message.ts` stub so the
+ * session tree stays decoupled from the AgenC implementation path tree
  * once the umbrella `src/types/` directory is removed.
  *
  * Session callers use these as type-only references; permissive

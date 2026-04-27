@@ -1,10 +1,10 @@
 /**
  * ThreadStore — storage-neutral thread persistence boundary.
  *
- * Partial hand-port of upstream codex `thread-store/` crate
- * (`codex-rs/thread-store/src/store.rs` trait + `local/` default impl).
+ * Partial hand-port of upstream AgenC runtime `thread-store/` crate
+ * (`AgenC runtime-rs/thread-store/src/store.rs` trait + `local/` default impl).
  * Upstream is a large subsystem with two back-ends (filesystem + remote
- * RPC), a SQLite `codex-state` metadata DB, paging/cursor listing, cwd
+ * RPC), a SQLite `AgenC runtime-state` metadata DB, paging/cursor listing, cwd
  * filters, search-term filters, Git-info patches, `ThreadNameUpdated`
  * rollout events, and an `archived_sessions/` subdir convention. Gut
  * has none of that scaffolding yet. This port therefore covers only
@@ -124,7 +124,7 @@ import {
 } from "./session-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Params + types — mirrored from codex `thread-store/src/types.rs`.
+// Params + types — mirrored from AgenC runtime `thread-store/src/types.rs`.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -224,7 +224,7 @@ export interface ListThreadsParams {
 
 /** Mirror of upstream `StoredThread` (`types.rs:157`), narrowed to the
  *  fields gut actually persists in the registry. Fields upstream
- *  reconstructs from a `codex-state` SQLite row (token usage,
+ *  reconstructs from a `AgenC runtime-state` SQLite row (token usage,
  *  reasoning effort, approval mode, sandbox policy, git info, full
  *  preview, cli version) are not populated. */
 export interface StoredThread {
@@ -328,7 +328,7 @@ export class ThreadStoreConflictError extends Error {
  * Storage-neutral thread persistence boundary.
  *
  * Matches the upstream `ThreadStore` trait
- * (`codex-rs/thread-store/src/store.rs:20`) method for method. Method
+ * (`AgenC runtime-rs/thread-store/src/store.rs:20`) method for method. Method
  * names are lower-camel-cased per `docs/plan/translation-conventions.md`;
  * parameter shapes match upstream.
  */
@@ -395,7 +395,7 @@ export interface FileThreadStoreOpts {
  * thread id.
  *
  * Wire-format deviations from upstream:
- *   - No `codex-state` SQLite db: metadata lives in the JSON registry.
+ *   - No `AgenC runtime-state` SQLite db: metadata lives in the JSON registry.
  *   - Live archives defer the `archived_sessions/` move until the writer is
  *     no longer registered, preserving the open `RolloutStore` path.
  *   - No on-disk `ThreadNameUpdated` rows: name updates only rewrite the

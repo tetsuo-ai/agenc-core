@@ -1,7 +1,7 @@
 /**
  * MCP-instructions delta attachment producer.
  *
- * Hand-port of openclaude `getMcpInstructionsDeltaAttachment`
+ * Hand-port of AgenC `getMcpInstructionsDeltaAttachment`
  * (`src/utils/attachments.ts:1560-1586`) and the underlying diff in
  * `getMcpInstructionsDelta` (`src/utils/mcpInstructionsDelta.ts:55`).
  *
@@ -10,7 +10,7 @@
  * are immutable for the lifetime of a connection (set once at the
  * `InitializeResult` handshake), so the diff key is the server name.
  *
- * AgenC divergence from openclaude: the prior-announced map is tracked
+ * AgenC divergence from AgenC: the prior-announced map is tracked
  * directly on `AttachmentTrackingState.lastMcpInstructionsMap` (server
  * name → instruction block) instead of being reconstructed from prior
  * `mcp_instructions_delta` attachments in the message history.

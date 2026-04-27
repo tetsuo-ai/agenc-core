@@ -1,13 +1,13 @@
 /**
- * Re-exports the openclaude-port shims that the session subsystem needs
+ * Re-exports the AgenC implementation shims that the session subsystem needs
  * for compact-adjacent calls. These were previously local stubs that
  * silently dropped state; both surfaces now have canonical
  * implementations elsewhere in the gut runtime:
  *
  * - `notifyCompaction`: prompt-cache break-detection signal. The gut
- *   runtime does not own the openclaude prompt-cache subsystem, so the
+ *   runtime does not own the AgenC prompt-cache subsystem, so the
  *   canonical version remains a no-op, but it lives alongside the rest
- *   of the openclaude-port no-op surface in
+ *   of the AgenC implementation no-op surface in
  *   `src/llm/compact/_deps/no-op.ts`.
  *
  * - `setLastSummarizedMessageId`: SessionMemory anchor for the next

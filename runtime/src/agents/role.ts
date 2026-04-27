@@ -1,18 +1,18 @@
 /**
  * Agent roles — built-in + user-configurable.
  *
- * Subset port of codex `core/src/agent/role.rs`. Ports:
+ * Subset port of AgenC runtime `core/src/agent/role.rs`. Ports:
  *   - Role enum + nickname allocation (Wave 1).
  *   - Role/config loading (`loadRoleLayerToml`, `applyRoleToConfig`,
  *     `buildConfigLayerStack`, `formatRoleList`) (Wave 3).
  *
- * AgenC divergences from codex upstream:
+ * AgenC divergences from AgenC runtime upstream:
  *
- *   - Awaiter kept active. Codex has `awaiter` commented out at
+ *   - Awaiter kept active. AgenC runtime has `awaiter` commented out at
  *     `role.rs:398-414` ("awaiter is temp removed"). AgenC keeps it
  *     because the MCP + long-running tool-poll use case needs a
  *     background polling role.
- *   - Deterministic nickname ordering. Codex shuffles candidates with
+ *   - Deterministic nickname ordering. AgenC runtime shuffles candidates with
  *     `rand::rng()`; AgenC cycles in declaration order so spawn tests
  *     stay reproducible and allocation-collision tests don't flake.
  *   - Registry-as-single-nickname-source. AgenC's `AgentRegistry`
@@ -23,17 +23,17 @@
  *     or provider object because the child-session config source is
  *     not wired yet. The layering here preserves `base → role → user`
  *     precedence and profile selection, but it does not recreate
- *     codex's full `ConfigLayerStack` / provider-preservation reload.
+ *     AgenC runtime's full `ConfigLayerStack` / provider-preservation reload.
  *
  * Built-in roles:
  *   - `default`  — unrestricted; inherits parent config
- *   - `explorer` — codebase queries; loads codex's built-in
+ *   - `explorer` — codebase queries; loads AgenC runtime's built-in
  *                  `explorer.toml` role layer
  *   - `worker`   — execution/production work; inherits parent tool
- *                  catalog (mirrors codex `agent/role.rs:383`
+ *                  catalog (mirrors AgenC runtime `agent/role.rs:383`
  *                  `worker` entry)
  *   - `awaiter`  — long-running polling; keeps AgenC's active awaiter
- *                  behavior but sources its role config from the codex
+ *                  behavior but sources its role config from the AgenC runtime
  *                  `awaiter.toml` content
  *
  * User roles register via `registerAgentRole({ name, config })` and
@@ -45,7 +45,7 @@
 import { readFileSync } from "node:fs";
 import type { AgentRegistry } from "./registry.js";
 import {
-  normalizeCodexKeyAliases,
+  normalizeAgenCKeyAliases,
   normalizeRawConfig,
   parseToml,
   resolveProfile,
@@ -57,14 +57,14 @@ export type AgentReasoningEffort = "none" | "low" | "medium" | "high";
 
 export interface AgentRoleConfig {
   readonly description?: string;
-  /** Codex-shaped role layer file. Built-ins resolve against embedded
+  /** AgenC-shaped role layer file. Built-ins resolve against embedded
    *  TOML content; user-defined roles read the path from disk. */
   readonly configFile?: string;
   /** Inline TOML role layer. Useful for tests and bootstrap-time
    *  in-memory role registration. */
   readonly configToml?: string;
   /** Legacy inline parsed config object. Prefer `configToml` or
-   *  `configFile` for codex parity. */
+   *  `configFile` for AgenC behavior. */
   readonly configBundle?: Record<string, unknown>;
   /** Candidate nicknames for this role; registry picks one on spawn. */
   readonly nicknameCandidates?: ReadonlyArray<string>;
@@ -73,7 +73,7 @@ export interface AgentRoleConfig {
   /** Runtime hint derived from the loaded role layer when possible. */
   readonly reasoningEffort?: AgentReasoningEffort;
   /** Optional explicit tool allowlist. This is runtime metadata, not a
-   *  codex role-layer config field. */
+   *  AgenC runtime role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
   /** Whether this role runs synchronously (parent blocks) or async
    *  (parent registers + continues). */
@@ -89,7 +89,7 @@ export interface AgentRole {
 
 const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
   "explorer.toml": "",
-  // Codex's built-in awaiter role also carries developer_instructions,
+  // AgenC runtime's built-in awaiter role also carries developer_instructions,
   // but role.ts strips role metadata before applying the config layer
   // and AgenC's current inline TOML parser does not support multiline
   // strings. Keep only the config fields this module consumes.
@@ -190,7 +190,7 @@ export function resolveAgentRole(name: string | undefined): AgentRole {
 }
 
 /**
- * Strict role-config lookup. Mirrors codex `resolve_role_config`
+ * Strict role-config lookup. Mirrors AgenC runtime `resolve_role_config`
  * (`role.rs:121`). Returns the `AgentRoleConfig` for a named role or
  * `undefined` when the role is unknown — the caller is expected to
  * surface the error. Contrast with `resolveAgentRole`, which falls
@@ -216,7 +216,7 @@ export function tryResolveRoleConfig(
 /**
  * Allocate a nickname for a fresh subagent. On collision, cycles
  * through the candidate list + appends an ordinal suffix
- * ("scout the 2nd"). Mirrors codex `registry.rs::format_agent_nickname`
+ * ("scout the 2nd"). Mirrors AgenC runtime `registry.rs::format_agent_nickname`
  * except for nickname ordering (see module-level divergence note).
  */
 export function allocateNickname(
@@ -273,9 +273,9 @@ export function formatNicknameWithSuffix(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Config-layer stack (Wave 3 port of codex role.rs:40-270)
+// Config-layer stack (Wave 3 port of AgenC runtime role.rs:40-270)
 //
-// Codex layers TOML documents: `base → role-layer → user-layer` with
+// AgenC runtime layers TOML documents: `base → role-layer → user-layer` with
 // config/profile resolution (`role.rs:155-270`). AgenC now loads role
 // TOML through the same config-parser aliases, strips role-only
 // metadata, and merges the resulting config keys onto a plain object
@@ -285,7 +285,7 @@ export function formatNicknameWithSuffix(
 
 /**
  * Role-shaped subset of the effective config blob. Pure-ported from
- * codex `role.rs`: the live child config will eventually be a full
+ * AgenC runtime `role.rs`: the live child config will eventually be a full
  * session-config snapshot, but today this seam accepts the config keys
  * the role layer can legitimately rewrite plus arbitrary pass-through
  * siblings.
@@ -308,7 +308,7 @@ export interface RoleShapedConfig {
 
 /**
  * Apply the role's loaded TOML layer onto a base config blob. Mirrors
- * codex `apply_role_to_config` (`role.rs:40`) at the config-loading
+ * AgenC runtime `apply_role_to_config` (`role.rs:40`) at the config-loading
  * seam: role metadata is ignored, config aliases are normalized, and
  * top-level `profile = "..."` selectors are resolved against the
  * merged config snapshot.
@@ -341,7 +341,7 @@ function applyRoleToConfigInner<Base extends RoleShapedConfig>(
 }
 
 /**
- * Load the role's TOML layer. Mirrors codex `load_role_layer_toml`
+ * Load the role's TOML layer. Mirrors AgenC runtime `load_role_layer_toml`
  * (`role.rs:87-119`) at the module boundary:
  *   - built-ins resolve `configFile` against embedded TOML content
  *   - user-defined role files are read from disk
@@ -349,7 +349,7 @@ function applyRoleToConfigInner<Base extends RoleShapedConfig>(
  *     layer is returned
  *
  * The returned object is TOML-shaped rather than fully normalized so
- * callers can still inspect codex-native keys like
+ * callers can still inspect AgenC-native keys like
  * `model_reasoning_effort` or `profile`.
  */
 export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
@@ -358,7 +358,7 @@ export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
 }
 
 /**
- * Build the layered effective config. Mirrors codex
+ * Build the layered effective config. Mirrors AgenC runtime
  * `build_config_layer_stack` + `build_next_config` +
  * `deserialize_effective_config` (`role.rs:155-270`) collapsed into a
  * single pure function.
@@ -378,12 +378,12 @@ export function buildConfigLayerStack<Base extends RoleShapedConfig>(opts: {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Role-list prompt formatter (Wave 3 port of codex role.rs:280-309)
+// Role-list prompt formatter (Wave 3 port of AgenC runtime role.rs:280-309)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Format a known-roles list for injection into the spawn-agent tool
- * description. Mirrors codex `spawn_tool_spec::build` +
+ * description. Mirrors AgenC runtime `spawn_tool_spec::build` +
  * `build_from_configs` + `format_role` (`role.rs:280-309`).
  *
  * Roles missing a `description` are rendered as `name: no description`
@@ -534,7 +534,7 @@ function stripRoleDeclarationMetadata(
 function roleTomlToConfigLayer(
   roleLayerToml: Record<string, unknown>,
 ): Record<string, unknown> {
-  const aliased = normalizeCodexKeyAliases(roleLayerToml);
+  const aliased = normalizeAgenCKeyAliases(roleLayerToml);
   const normalized = cloneRecord(
     normalizeRawConfig(aliased) as Record<string, unknown>,
   );

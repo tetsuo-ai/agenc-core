@@ -1,7 +1,7 @@
 /**
  * Context-window upgrade hint helper.
  *
- * Both upstream Claude Code and openclaude expose
+ * Both upstream AgenC and AgenC expose
  * `getUpgradeMessage(context)` — a sync helper that checks whether the
  * user is on a model that has a "more context" sibling available
  * (Sonnet -> Sonnet 1M, Opus -> Opus 1M) and returns either a short

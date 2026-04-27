@@ -1,7 +1,7 @@
 # Runtime Sidecar / Observer Compatibility Gate
 
 This note freezes the current sidecar and observer ordering contract
-for the codex runtime replacement work. It is a compatibility record,
+for the AgenC runtime replacement work. It is a compatibility record,
 not a redesign document: if a future change wants different semantics,
 it must do so intentionally and update the tests named below.
 

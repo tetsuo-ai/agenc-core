@@ -40,7 +40,7 @@ function writeRollout(
 }
 
 describe("resumeCommand helpers", () => {
-  it("sessionIdFromFilename extracts an id from a codex-style filename", () => {
+  it("sessionIdFromFilename extracts an id from a AgenC-style filename", () => {
     const id = sessionIdFromFilename(
       "rollout-2026-04-20T10-00-00-000Z-abc123def.jsonl",
     );

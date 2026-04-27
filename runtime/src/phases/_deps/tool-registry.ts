@@ -3,7 +3,7 @@
  *
  * The phases path only references `ToolDispatchResult` from the root
  * `runtime/src/tool-registry.ts`. Carved as a local `_deps/` so the
- * gut phase tree stays decoupled from the openclaude umbrella when
+ * gut phase tree stays decoupled from the AgenC umbrella when
  * the root tool-registry is removed.
  */
 

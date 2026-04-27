@@ -22,7 +22,7 @@ export type ExecOptions = {
   preserveOutputOnError?: boolean
   /**
    * When true, inherit the current working directory from process.cwd().
-   * Mirrors the upstream openclaude option used by OSC 52 clipboard paths
+   * Mirrors the upstream AgenC option used by OSC 52 clipboard paths
    * that need to run from the user's terminal cwd.
    */
   useCwd?: boolean

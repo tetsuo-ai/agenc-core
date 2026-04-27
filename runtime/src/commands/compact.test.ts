@@ -118,6 +118,6 @@ describe("compactCommand", () => {
     const text = res.kind === "compact" ? res.text : "";
     expect(text.toLowerCase()).not.toContain("claude");
     expect(text.toLowerCase()).not.toContain("anthropic");
-    expect(text.toLowerCase()).not.toContain("openclaude");
+    expect(text.toLowerCase()).not.toContain("AgenC");
   });
 });

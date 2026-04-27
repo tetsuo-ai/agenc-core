@@ -6,8 +6,8 @@
  * to `state.messages` so the next iteration provides them to the
  * model.
  *
- * Mirrors openclaude `query.ts:1467-1635`. The executor accepts tool
- * calls mid-stream (openclaude query.ts:572 starts the executor
+ * Mirrors AgenC `query.ts:1467-1635`. The executor accepts tool
+ * calls mid-stream (AgenC query.ts:572 starts the executor
  * BEFORE streamModel returns and feeds tool_use blocks as they
  * arrive). T5's stream-model captures the complete tool-use block
  * list at stream end and hands them to the executor here; T7 rewires
@@ -484,7 +484,7 @@ export async function executeTools(
   }
 
   // Clear the executor from state so commit starts a fresh one next
-  // iteration. Matches openclaude query.ts's per-iteration
+  // iteration. Matches AgenC query.ts's per-iteration
   // `streamingToolExecutor = new StreamingToolExecutor(...)`.
   state.streamingToolExecutor = null;
 

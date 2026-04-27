@@ -1,7 +1,7 @@
 /**
  * System prompt section registry — cache-separation pattern.
  *
- * Port of openclaude `constants/systemPromptSections.ts` (69 LOC).
+ * Port of AgenC `constants/systemPromptSections.ts` (69 LOC).
  *
  * Two section factories:
  *
@@ -17,7 +17,7 @@
  *     MUST live after `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`.
  *
  * Storage is a single module-level `Map<id, string|null>` — the cache is
- * process-local and not keyed by session, matching openclaude behavior.
+ * process-local and not keyed by session, matching AgenC behavior.
  * `clearSystemPromptSections()` wipes the whole map.
  *
  * @module

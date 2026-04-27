@@ -6,15 +6,15 @@ live AgenC execution engine.
 The target is now explicit:
 
 - AgenC keeps the product, CLI, TUI, provider, and operator surface
-- AgenC's live runtime/session kernel is ported from `../codex`
+- AgenC's live runtime/session kernel is ported from `the prior runtime implementation`
 - selected agent-loop and compaction behaviors are ported from
-  `../openclaude`
+  `the prior TypeScript implementation`
 - no AgenC-era runtime ownership survives in the live turn path
 
 This is a replacement-first migration. We are not polishing the
 transitional hybrid runtime. We are deleting it tranche by tranche and
-replacing it with an AgenC runtime whose kernel is copied from codex and
-whose selected behaviors are copied from openclaude.
+replacing it with an AgenC runtime whose kernel is copied from AgenC runtime and
+whose selected behaviors are copied from AgenC.
 
 ---
 
@@ -31,12 +31,12 @@ That means:
 
 The acceptable end state is:
 
-- all live turns are owned by an AgenC runtime ported from codex
-- openclaude-derived behavior runs inside that AgenC runtime
+- all live turns are owned by an AgenC runtime ported from AgenC runtime
+- AgenC-owned behavior runs inside that AgenC runtime
 - AgenC-specific code exists above the runtime, not inside it
 
-This is still AgenC. We are copying codex's runtime architecture into
-AgenC, not turning the product into codex.
+This is still AgenC. We are copying AgenC runtime's runtime architecture into
+AgenC, not turning the product into AgenC runtime.
 
 ---
 
@@ -80,31 +80,31 @@ Not part of the runtime boundary:
 
 ## Source Of Truth
 
-### Codex runtime source of truth
+### AgenC runtime source of truth
 
-The replacement target is the codex runtime under:
+The replacement target is the AgenC runtime under:
 
-- `/home/tetsuo/git/codex/codex-rs/core/src/session/session.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/session/turn.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/session/turn_context.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/compact.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/tools/router.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/tools/orchestrator.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/tools/context.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/tools/registry.rs`
-- `/home/tetsuo/git/codex/codex-rs/core/src/agent/*`
-- `/home/tetsuo/git/codex/codex-rs/codex-mcp/src/mcp_connection_manager.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/session/session.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/session/turn.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/session/turn_context.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/compact.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/tools/router.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/tools/orchestrator.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/tools/context.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/tools/registry.rs`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/core/src/agent/*`
+- `/home/tetsuo/git/AgenC runtime/AgenC runtime-rs/AgenC runtime-mcp/src/mcp_connection_manager.rs`
 
 Important note:
 
-- codex runtime is Rust
+- AgenC runtime is Rust
 - AgenC replacement is therefore a Rust -> TypeScript port
 - "1:1" means ownership, architecture, invariants, control flow,
   sequencing, and semantics, not byte-identical code
 
-### Openclaude behavior source of truth
+### AgenC behavior source of truth
 
-Openclaude remains the behavior source for the parts that are
+AgenC remains the behavior source for the parts that are
 intentionally retained:
 
 - compaction behavior
@@ -114,20 +114,20 @@ intentionally retained:
 
 Primary sources:
 
-- `/home/tetsuo/git/openclaude/src/query.ts`
-- `/home/tetsuo/git/openclaude/src/services/compact/*`
-- `/home/tetsuo/git/openclaude/src/services/tools/StreamingToolExecutor.ts`
+- `/home/tetsuo/git/AgenC/src/query.ts`
+- `/home/tetsuo/git/AgenC/src/services/compact/*`
+- `/home/tetsuo/git/AgenC/src/services/tools/StreamingToolExecutor.ts`
 
 Rule:
 
-- openclaude code may provide behavior
+- AgenC code may provide behavior
 - it must not remain the runtime owner
 
 ---
 
 ## Retained Behavior Inventory
 
-The replacement plan only retains openclaude behavior where the rebuild
+The replacement plan only retains AgenC behavior where the rebuild
 documents already call for it. That retained inventory is:
 
 - pre-request compaction stages and shrink discipline
@@ -137,7 +137,7 @@ documents already call for it. That retained inventory is:
   tranche docs
 - streaming-tool-execution behavior where the runtime explicitly keeps it
 
-Not retained as openclaude runtime ownership:
+Not retained as AgenC runtime ownership:
 
 - query-loop bootstrap / top-level runtime ownership
 - slash-command runtime dispatch ownership
@@ -146,7 +146,7 @@ Not retained as openclaude runtime ownership:
 - generic session mutation ownership
 
 If a behavior is retained, it must be called from the AgenC runtime
-ported from codex. If it is not in this list or in the tranche docs, it
+ported from AgenC runtime. If it is not in this list or in the tranche docs, it
 is not implicitly carried forward.
 
 ---
@@ -281,13 +281,13 @@ consumers do not get pulled into unnecessary runtime churn.
 
 ## Current Problem Statement
 
-The repo contains a large amount of codex/openclaude-derived code, but
+The repo contains a large amount of AgenC runtime/AgenC-owned code, but
 the live runtime is still transitional.
 
 Symptoms:
 
-- codex-style session pieces exist, but are not yet the sole runtime owner
-- openclaude-derived behavior exists, but is still often entered through
+- AgenC-style session pieces exist, but are not yet the sole runtime owner
+- AgenC-owned behavior exists, but is still often entered through
   AgenC-era bridges
 - bootstrap and slash-command entry still own runtime behavior in
   `bin/agenc.ts`
@@ -328,7 +328,7 @@ The migration is complete only when all of the following are true:
 
 ## File Classification
 
-### Port from codex into the AgenC runtime
+### Port from AgenC runtime into the AgenC runtime
 
 These modules are intended to become the live runtime owners:
 
@@ -345,10 +345,10 @@ These modules are intended to become the live runtime owners:
 - `runtime/src/tools/registry.ts`
 - `runtime/src/agents/*`
 - `runtime/src/permissions/network-approval.ts`
-- codex-aligned ownership pieces under `runtime/src/recovery/*`
-- codex-aligned MCP/session-service ownership pieces used by runtime boot
+- AgenC runtime-aligned ownership pieces under `runtime/src/recovery/*`
+- AgenC runtime-aligned MCP/session-service ownership pieces used by runtime boot
 
-### Keep from openclaude as behavior only
+### Keep from AgenC as behavior only
 
 These may survive only as behavior modules under runtime ownership:
 
@@ -385,8 +385,8 @@ Goal:
 
 Work:
 
-- document the runtime as an AgenC runtime ported from codex
-- document openclaude as behavior source only
+- document the runtime as an AgenC runtime ported from AgenC runtime
+- document AgenC as behavior source only
 - add architecture guard scripts/tests
 - add a forbidden-owner manifest covering:
   - exact live entrypoints
@@ -528,12 +528,12 @@ Rollback:
 
 Goal:
 
-- make the ported codex session code the single owner of runtime state
+- make the ported AgenC runtime session code the single owner of runtime state
   and turn execution
 
 Work:
 
-- finish strict codex parity for:
+- finish strict AgenC behavior for:
   - `session.ts`
   - `run-turn.ts`
   - `turn-context.ts`
@@ -566,11 +566,11 @@ Rollback:
 
 Goal:
 
-- replace tool ownership with codex router/orchestrator semantics
+- replace tool ownership with AgenC runtime router/orchestrator semantics
 
 Work:
 
-- port/adapt codex:
+- port/adapt AgenC runtime:
   - router
   - orchestrator
   - tool context
@@ -631,7 +631,7 @@ Rollback:
 
 Goal:
 
-- keep openclaude compaction behavior, but move invocation ownership
+- keep AgenC compaction behavior, but move invocation ownership
   fully under the runtime boundary established in Phases 1-3
 
 Ownership rule:
@@ -741,8 +741,8 @@ Goal:
 Work:
 
 - expand the minimum blocker guards into long-term hardening checks
-- add source-of-truth docs linking each owner module to codex/openclaude
-- perform parity audit against codex runtime ownership and openclaude
+- add source-of-truth docs linking each owner module to AgenC runtime/AgenC
+- perform parity audit against AgenC runtime ownership and AgenC
   behavior retention
 - verify sidecar/subscriber and shutdown invariants still hold after
   deletion
@@ -961,8 +961,8 @@ separate plan explicitly changes that public/runtime surface.
 
 The runtime replacement is done only when:
 
-- the live runtime is AgenC's runtime, ported from codex
-- selected openclaude behaviors run inside that runtime
+- the live runtime is AgenC's runtime, ported from AgenC runtime
+- selected AgenC behaviors run inside that runtime
 - bootstrap, session, tools, compaction, recovery, and persistence all
   have one ownership path
 - commands/helpers are thin surfaces only

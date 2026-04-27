@@ -1,5 +1,5 @@
 /**
- * Re-export of the gut equivalent of openclaude's
+ * Re-export of the gut equivalent of AgenC's
  * `constants/systemPromptSections::clearSystemPromptSections`.
  */
 

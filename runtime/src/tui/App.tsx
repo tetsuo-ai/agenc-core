@@ -13,7 +13,7 @@
  *     </AgenCAppStateProvider>
  *
  * `TUIRoot` itself now mounts:
- *   - <MessageList> — OpenClaude-style semantic transcript rows derived
+ *   - <MessageList> — AgenC-style semantic transcript rows derived
  *     from `useQuery`'s PhaseEvent stream through the `eventsToMessages`
  *     adapter.
  *   - <Composer> — multi-line prompt input; submit calls
@@ -402,7 +402,7 @@ function TUIRoot({
   );
   // Prefer the live AppState model (updated synchronously by `/model`)
   // over the seeded prop so the status bar refreshes on the next render
-  // after a slash-command swap. Mirrors openclaude's
+  // after a slash-command swap. Mirrors AgenC's
   // `useAppState(s => s.mainLoopModel)` subscription pattern.
   const effectiveModel = liveModel ?? model;
   const statusLineSession = useMemo(

@@ -137,10 +137,10 @@ describe("defaultRetryPolicy + attemptWithRetry", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Codex-parity port coverage (T7 orchestrator gap fill)
+// AgenC runtime-parity port coverage (T7 orchestrator gap fill)
 // ─────────────────────────────────────────────────────────────────────
 
-describe("defaultExecApprovalRequirement (codex sandboxing.rs:185-221)", () => {
+describe("defaultExecApprovalRequirement (sandboxing behavior)", () => {
   test("never + restricted → skip", () => {
     const r = defaultExecApprovalRequirement("never", "restricted");
     expect(r.kind).toBe("skip");
@@ -560,7 +560,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
   });
 });
 
-describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => {
+describe("orchestrateToolCall lifecycle (orchestrator behavior)", () => {
   const mkTool = (over: Partial<Tool> = {}): Tool => ({
     name: "test.cmd",
     description: "",
@@ -600,7 +600,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
   });
 
   test("sandbox escalation: first attempt sandbox-denied → approval → second attempt succeeds with sandbox=off (under on_failure which wants escalation)", async () => {
-    // Codex parity (sandboxing.rs:290-298): `AskForApproval::OnFailure`
+    // AgenC behavior (sandboxing.rs:290-298): `AskForApproval::OnFailure`
     // has `wants_no_sandbox_approval == true`. Under `never` /
     // `on_request`, the orchestrator bails with the original denial
     // (covered in separate tests below). This test exercises the
@@ -761,8 +761,8 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     expect(dispatched).not.toHaveBeenCalled();
   });
 
-  test("sandbox-denied under on_request policy: bails with original error, no approval (codex orchestrator.rs:259-279 + sandboxing.rs:290-298)", async () => {
-    // Codex parity: `AskForApproval::OnRequest` has
+  test("sandbox-denied under on_request policy: bails with original error, no approval (orchestrator behavior + sandboxing.rs:290-298)", async () => {
+    // AgenC behavior: `AskForApproval::OnRequest` has
     // `wants_no_sandbox_approval == false` (without network-approval
     // context). A SandboxDeniedError must propagate unchanged — the
     // orchestrator must not prompt for approval to retry unsandboxed.
@@ -851,7 +851,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     expect(dispatches).toEqual(["workspace_write", "danger_full_access"]);
   });
 
-  test("escalateOnFailure=false: SandboxDeniedError bails without approval (codex sandboxing.rs:309-311)", async () => {
+  test("escalateOnFailure=false: SandboxDeniedError bails without approval (sandboxing behavior)", async () => {
     const resolver: ApprovalResolver = {
       request: vi.fn(async () => ({ kind: "approved" })),
     };
@@ -881,7 +881,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     expect(resolver.request).not.toHaveBeenCalled();
   });
 
-  test("granular policy with sandbox_approval=true: escalates via approval (codex sandboxing.rs:290-298)", async () => {
+  test("granular policy with sandbox_approval=true: escalates via approval (sandboxing behavior)", async () => {
     const dispatches: string[] = [];
     const resolver: ApprovalResolver = {
       request: async () => ({ kind: "approved" }),
@@ -916,7 +916,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     expect(dispatches).toEqual(["read_only", "danger_full_access"]);
   });
 
-  test("granular policy with sandbox_approval=false: restricted fs forbids, never prompts (codex sandboxing.rs:200-209)", async () => {
+  test("granular policy with sandbox_approval=false: restricted fs forbids, never prompts (sandboxing behavior)", async () => {
     const granular: GranularApprovalConfig = {
       sandbox_approval: false,
       rules: true,
@@ -947,7 +947,7 @@ describe("orchestrateToolCall lifecycle (codex orchestrator.rs:105-377)", () => 
     expect(resolver.request).not.toHaveBeenCalled();
   });
 
-  test("double-classification removed: read-only skip is final under granular+restricted (codex orchestrator.rs:124-127)", async () => {
+  test("double-classification removed: read-only skip is final under granular+restricted (orchestrator behavior)", async () => {
     // Regression for problem 6 (T6 audit). Previously: when the tool
     // classifier returned `skip` without sandbox bypass, the
     // orchestrator would re-run `defaultExecApprovalRequirement` and
@@ -980,7 +980,7 @@ describe("escalateOnFailure + wantsNoSandboxApproval helpers", () => {
     execute: async () => ({ content: "ok" }),
   };
 
-  test("escalateOnFailure: default true (codex sandboxing.rs:309-311)", () => {
+  test("escalateOnFailure: default true (sandboxing behavior)", () => {
     expect(escalateOnFailure(bareTool)).toBe(true);
   });
 
@@ -1002,7 +1002,7 @@ describe("escalateOnFailure + wantsNoSandboxApproval helpers", () => {
     expect(escalateOnFailure(optOut)).toBe(false);
   });
 
-  test("wantsNoSandboxApproval defaults per policy (codex sandboxing.rs:290-298)", () => {
+  test("wantsNoSandboxApproval defaults per policy (sandboxing behavior)", () => {
     expect(wantsNoSandboxApproval(bareTool, "never")).toBe(false);
     expect(wantsNoSandboxApproval(bareTool, "on_request")).toBe(false);
     expect(wantsNoSandboxApproval(bareTool, "on_failure")).toBe(true);

@@ -1,21 +1,21 @@
 /**
  * `FileRead` — first-class file reading tool for AgenC.
  *
- * Lifted (and adapted) from openclaude `src/tools/FileReadTool/`. The
- * model-facing prompt mirrors openclaude's `FileReadTool/prompt.ts` so
- * a model trained on the openclaude surface behaves identically here.
+ * Lifted (and adapted) from AgenC `src/tools/FileReadTool/`. The
+ * model-facing prompt mirrors AgenC's `FileReadTool/prompt.ts` so
+ * a model trained on the AgenC surface behaves identically here.
  *
- * Key behaviors preserved from openclaude:
+ * Key behaviors preserved from AgenC:
  *   - Token-aware text-file size cap (defaults to 25k tokens, matching
- *     openclaude `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
+ *     AgenC `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
  *     exceeds the cap, the read is rejected with the exact error
- *     message openclaude emits so model-side recovery copy still works.
+ *     message AgenC emits so model-side recovery copy still works.
  *   - Image multimodal output: PNG/JPG/JPEG/GIF/WEBP read as bytes,
  *     base64-encoded, and returned via `contentItems` as
  *     `input_image` with a data URL. The text `content` carries a
- *     short summary so the codex envelope is never empty.
+ *     short summary so the AgenC runtime envelope is never empty.
  *   - PDF schema is exposed (the `pages` arg) but actual PDF parsing
- *     is currently a polite "not implemented" — openclaude depended on
+ *     is currently a polite "not implemented" — AgenC depended on
  *     `pdfjs-dist`/`poppler-utils`/`sharp` which AgenC has not pulled
  *     in. Returning an actionable error preserves the surface shape
  *     while we defer the dep decision.
@@ -31,7 +31,7 @@
  *     (`snapshotTopRecentReads`) can rebuild context after a compact.
  *
  * The error envelope is plain text in `content` with `isError: true` —
- * codex shape, not JSON-wrapped. Matches the envelope used by `Edit`
+ * AgenC runtime shape, not JSON-wrapped. Matches the envelope used by `Edit`
  * and `Write`.
  *
  * @module
@@ -61,16 +61,16 @@ import {
 export const FILE_READ_TOOL_NAME = "FileRead";
 
 /**
- * Token cap for text reads. Matches openclaude's
+ * Token cap for text reads. Matches AgenC's
  * `DEFAULT_MAX_OUTPUT_TOKENS` from `FileReadTool/limits.ts`. Configurable
  * via the `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` env var (kept for
- * parity with openclaude's user-side override) or via `FileReadConfig`.
+ * parity with AgenC's user-side override) or via `FileReadConfig`.
  */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
 
 /**
  * Default upper bound on raw file size for text reads. 256 KB is the
- * openclaude `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
+ * AgenC `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */
@@ -95,7 +95,7 @@ const IMAGE_MIME_BY_EXT: Readonly<Record<string, string>> = {
 };
 
 /**
- * Binary-file extension list (lifted from openclaude
+ * Binary-file extension list (lifted from AgenC
  * `src/constants/files.ts`). Used to short-circuit reads of non-text,
  * non-image, non-PDF files with a useful error message.
  */
@@ -136,7 +136,7 @@ const PDF_EXTENSION = ".pdf";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Adapted from openclaude `FileReadTool/prompt.ts` `renderPromptTemplate`.
+ * AgenC file-read prompt template.
  * Image / PDF mentions are kept so the model knows the tool's capability
  * surface; the ipynb branch is dropped (AgenC does not currently parse
  * notebooks here).
@@ -149,7 +149,7 @@ Usage:
 - By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - Results are returned using cat -n format, with line numbers starting at 1
-- This tool allows Claude Code to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually as Claude Code is a multimodal LLM.
+- This tool allows AgenC to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually because AgenC can inspect multimodal inputs.
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
 - This tool can only read files, not directories. To list files in a directory, use the registered shell tool.
 - You will regularly be asked to read screenshots. If the user provides a path to a screenshot, ALWAYS use this tool to view the file at the path. This tool will work with all temporary file paths.
@@ -180,7 +180,7 @@ export interface FileReadToolConfig {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/** Codex-shape error envelope: plain text body, isError flag. */
+/** AgenC runtime-shape error envelope: plain text body, isError flag. */
 function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
 }
@@ -205,11 +205,11 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * Cheap token estimate. Matches the spirit of openclaude's
+ * Cheap token estimate. Matches the spirit of AgenC's
  * `roughTokenCountEstimationForFileType` — for source code 1 token ~= 4
  * characters is a deliberate underestimate. We use it as a fast gate
  * before paying for an actual tokenizer call (which AgenC does not have
- * here). Aligns with how openclaude's `validateContentTokens` uses the
+ * here). Aligns with how AgenC's `validateContentTokens` uses the
  * rough estimate to decide whether to invoke the API tokenizer.
  */
 function estimateTokens(content: string): number {
@@ -218,7 +218,7 @@ function estimateTokens(content: string): number {
 
 /**
  * Detect whether a buffer looks binary (null bytes or >10% non-printable
- * in the first 8 KB). Same heuristic openclaude uses in
+ * in the first 8 KB). Same heuristic AgenC uses in
  * `constants/files.ts:isBinaryContent`.
  */
 function isBinaryContent(buffer: Buffer): boolean {
@@ -243,7 +243,7 @@ function hasBinaryExtension(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
-/** Produce the codex `cat -n` style numbered output. */
+/** Produce the AgenC runtime `cat -n` style numbered output. */
 function formatNumbered(content: string, startLine: number): string {
   return addLineNumbers({ content, startLine });
 }
@@ -354,7 +354,7 @@ async function readTextFile(
   const text = buffer.toString("utf-8");
   const sliced = sliceLines(text, opts.offset, opts.limit);
 
-  // Token cap — match openclaude's MaxFileReadTokenExceededError
+  // Token cap — match AgenC's MaxFileReadTokenExceededError
   // verbatim so any model-side recovery prompt still triggers.
   const estimated = estimateTokens(sliced.content);
   if (estimated > opts.maxTokens) {
@@ -365,7 +365,7 @@ async function readTextFile(
 
   // Record the read in session state. Partial reads carry
   // `viewKind: "partial"` for range-aware dedup and snapshot checks, but
-  // still satisfy the read-before-write gate. Openclaude only blocks
+  // still satisfy the read-before-write gate. AgenC only blocks
   // auto-injected processed partial views; AgenC does not populate that
   // path here.
   recordSessionRead(sessionId, resolvedPath.canonical, {
@@ -470,10 +470,10 @@ async function readImageFile(
     rawContent: base64,
   });
 
-  // The `FunctionCallOutputContentItem` shape (port of codex
+  // The `FunctionCallOutputContentItem` shape (port of AgenC runtime
   // `FunctionCallOutputContentItem`) accepts `input_image` carrying a
   // URL — providers that support the OpenAI Responses API consume data
-  // URLs verbatim. The text body remains a brief summary so the codex
+  // URLs verbatim. The text body remains a brief summary so the AgenC runtime
   // envelope is never empty.
   const dataUrl = `data:${mime};base64,${base64}`;
   const contentItems: FunctionCallOutputContentItem[] = [
@@ -495,7 +495,7 @@ async function readImageFile(
   };
 }
 
-// PDF support is intentionally NOT implemented yet — openclaude depends
+// PDF support is intentionally NOT implemented yet — AgenC depends
 // on `pdfjs-dist`/`poppler-utils`/`sharp`, which the AgenC runtime does
 // not currently bundle. Returning an actionable error here preserves
 // the schema and lets the parent decide which dep to take on later.
@@ -577,7 +577,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
 
       // Pre-flight: any other binary extension is rejected *before* we
       // even resolve the path, so the model gets an actionable error
-      // identical to openclaude's `errorCode: 4` branch.
+      // identical to AgenC's `errorCode: 4` branch.
       if (!isImage && !isPdf && hasBinaryExtension(filePath)) {
         return errorResult(
           `This tool cannot read binary files. The file appears to be a binary ${ext} file. Use a different tool for binary file analysis.`,
@@ -633,7 +633,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
 }
 
 /**
- * Read the env-var override for `maxTokens` (kept for openclaude
+ * Read the env-var override for `maxTokens` (kept for AgenC
  * compatibility). Returns the supplied default if unset or invalid.
  */
 function envOrDefault(fallback: number): number {

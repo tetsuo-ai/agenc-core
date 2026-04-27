@@ -4,7 +4,7 @@
  * The agent runtime needs a structural `ToolRegistry` interface so it
  * can forward tool dispatch from a filtered child registry back to the
  * parent's flat dispatch surface. The full registry implementation
- * lives in the openclaude-port `runtime/src/tool-registry.ts`; we
+ * lives in the AgenC implementation `runtime/src/tool-registry.ts`; we
  * mirror only the structural contract here so child runners stay
  * decoupled.
  */

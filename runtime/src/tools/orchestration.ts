@@ -1,7 +1,7 @@
 /**
  * Tool-batch orchestration helper.
  *
- * Formerly a subset port of openclaude `services/tools/toolOrchestration.ts`
+ * Formerly a subset port of AgenC `services/tools/toolOrchestration.ts`
  * (188 LOC) that provided `partitionToolCalls`, `runToolsConcurrently`,
  * and `runToolsSerially`. Those helpers became dead code once T6's
  * `StreamingToolExecutor` + `router`/`orchestrator` path took over tool

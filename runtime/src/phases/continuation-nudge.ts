@@ -1,7 +1,7 @@
 /**
  * Phase 4 — Continuation Nudge.
  *
- * Hand-port of openclaude `query.ts:1400-1463` (the continuation-nudge
+ * Hand-port of AgenC `query.ts:1400-1463` (the continuation-nudge
  * decision block). Fires when:
  *   - the stream produced an assistant message
  *   - AND the turn has not hit maxTurns

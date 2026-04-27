@@ -15,7 +15,7 @@ const BASE_INPUT: AskUserQuestionInput = {
       question: "Which implementation path should AgenC take?",
       options: [
         {
-          label: "Port OpenClaude picker (Recommended)",
+          label: "Use AgenC picker (Recommended)",
           description: "Match upstream's choice-based interview flow.",
           preview: "Implement AskUserQuestion in the TUI permission path.",
         },
@@ -33,12 +33,12 @@ describe("AskUserQuestion tool", () => {
     clearAskUserQuestionResponsesForTest();
   });
 
-  test("parses OpenClaude-style question payloads", () => {
+  test("parses AgenC-style question payloads", () => {
     const parsed = parseAskUserQuestionInput(BASE_INPUT);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.input.questions[0]?.options[0]?.label).toBe(
-      "Port OpenClaude picker (Recommended)",
+      "Use AgenC picker (Recommended)",
     );
   });
 
@@ -108,7 +108,7 @@ describe("AskUserQuestion tool", () => {
         ...BASE_INPUT,
         answers: {
           "Which implementation path should AgenC take?":
-            "Port OpenClaude picker (Recommended)",
+            "Use AgenC picker (Recommended)",
         },
       }),
     ).resolves.toEqual({
@@ -131,7 +131,7 @@ describe("AskUserQuestion tool", () => {
       ...BASE_INPUT,
       answers: {
         "Which implementation path should AgenC take?":
-          "Port OpenClaude picker (Recommended)",
+          "Use AgenC picker (Recommended)",
       },
       annotations: {
         "Which implementation path should AgenC take?": {
@@ -145,12 +145,12 @@ describe("AskUserQuestion tool", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain("User has answered your questions");
     expect(result.content).toContain(
-      '"Which implementation path should AgenC take?"="Port OpenClaude picker (Recommended)"',
+      '"Which implementation path should AgenC take?"="Use AgenC picker (Recommended)"',
     );
     expect(result.codeModeResult).toMatchObject({
       answers: {
         "Which implementation path should AgenC take?":
-          "Port OpenClaude picker (Recommended)",
+          "Use AgenC picker (Recommended)",
       },
     });
   });

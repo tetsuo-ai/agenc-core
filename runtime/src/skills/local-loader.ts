@@ -99,7 +99,8 @@ export async function discoverSkillRoots(
   options: LocalSkillsServiceOptions,
 ): Promise<readonly SkillRoot[]> {
   const home = options.env?.HOME;
-  const codexHome = options.env?.CODEX_HOME ?? (home ? join(home, ".codex") : "");
+  const compatHome =
+    options.env?.CODEX_HOME ?? (home ? join(home, ".codex") : "");
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
 
@@ -110,8 +111,8 @@ export async function discoverSkillRoots(
     { path: join(agencHome, "skills"), scope: "user" },
   ];
 
-  if (codexHome.length > 0) {
-    roots.push({ path: join(codexHome, "skills"), scope: "user" });
+  if (compatHome.length > 0) {
+    roots.push({ path: join(compatHome, "skills"), scope: "user" });
   }
 
   const pluginRoots = [

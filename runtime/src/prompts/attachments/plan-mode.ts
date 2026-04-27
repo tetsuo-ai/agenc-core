@@ -1,7 +1,7 @@
 /**
  * Plan-mode attachment producer.
  *
- * Hand-port of openclaude `getPlanModeAttachments` + `getPlanModeExitAttachment`
+ * Hand-port of AgenC `getPlanModeAttachments` + `getPlanModeExitAttachment`
  * (`src/utils/attachments.ts:1187-1274`). Drives the per-turn pulse and the
  * one-shot exit reminder for AgenC plan mode (`PermissionMode === "plan"`).
  *
@@ -40,7 +40,7 @@
  * These markers come from `./messages.ts` body builders. The renderer
  * wraps them in `<system-reminder>` tags inside user-channel messages.
  *
- * Plan-file path resolution mirrors openclaude's
+ * Plan-file path resolution mirrors AgenC's
  * `getPlanFilePath(toolUseContext.agentId)` call. AgenC's
  * `getPlanFilePath(ctx)` keys on `{sessionId, agencHome}`. We derive
  * `sessionId` from `(opts.sessionKey as Session).conversationId` when
@@ -59,7 +59,7 @@ import type { AttachmentProducer, GetAttachmentsOptions } from "./orchestrator.j
 import type { Attachment } from "./types.js";
 
 /**
- * Source: openclaude `attachments.ts:260-263`.
+ * Source: AgenC `attachments.ts:260-263`.
  */
 export const PLAN_MODE_ATTACHMENT_CONFIG = {
   TURNS_BETWEEN_ATTACHMENTS: 5,
@@ -101,7 +101,7 @@ function messageContains(message: LLMMessage, marker: string): boolean {
  * Backward-walk the message history counting HUMAN turns until a prior
  * plan-mode attachment marker is encountered.
  *
- * Source: openclaude `getPlanModeAttachmentTurnCount` (:1132-1164).
+ * Source: AgenC `getPlanModeAttachmentTurnCount` (:1132-1164).
  */
 function getPlanModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
   turnCount: number;
@@ -133,7 +133,7 @@ function getPlanModeAttachmentTurnCount(messages: readonly LLMMessage[]): {
  * start of history if no exit). Drives the full/sparse cycle so it
  * resets on re-entry.
  *
- * Source: openclaude `countPlanModeAttachmentsSinceLastExit` (:1170-1185).
+ * Source: AgenC `countPlanModeAttachmentsSinceLastExit` (:1170-1185).
  */
 function countPlanModeAttachmentsSinceLastExit(
   messages: readonly LLMMessage[],
@@ -193,7 +193,7 @@ export const planModeProducer: AttachmentProducer = async (
   if (trackingState.needsPlanModeExitAttachment) {
     if (opts.permissionContext.mode === "plan") {
       // Re-entered plan before the exit reminder had a chance to fire —
-      // clear the flag silently. Matches openclaude :1258-1261.
+      // clear the flag silently. Matches AgenC :1258-1261.
       trackingState.needsPlanModeExitAttachment = false;
     } else {
       trackingState.needsPlanModeExitAttachment = false;
@@ -232,9 +232,9 @@ export const planModeProducer: AttachmentProducer = async (
 
   // Re-entry case: first plan-mode pulse since the last exit AND we have
   // observed a prior exit in this session. Fire `plan_mode_reentry`
-  // instead of `plan_mode`. Match openclaude :1217-1220 — the reentry
+  // instead of `plan_mode`. Match AgenC :1217-1220 — the reentry
   // is a *separate* attachment that precedes any plan_mode for the cycle.
-  // openclaude's source emits BOTH reentry + plan_mode on the same turn
+  // AgenC's source emits BOTH reentry + plan_mode on the same turn
   // when both conditions hit; we mirror that exactly.
   const priorAttachmentCount = countPlanModeAttachmentsSinceLastExit(
     opts.messages,
@@ -250,13 +250,13 @@ export const planModeProducer: AttachmentProducer = async (
     });
     // One-shot guidance — clear the flag so subsequent re-entries that
     // follow in the same session don't double-fire when we're still
-    // inside the same plan-mode session. Matches openclaude :1219.
+    // inside the same plan-mode session. Matches AgenC :1219.
     trackingState.hasExitedPlanModeInSession = false;
   }
 
   // Always emit the plan_mode attachment alongside any reentry. The
   // attachment count we count INCLUDES the one we are about to emit
-  // (openclaude `+ 1` at :1224-1225). Full reminder fires on 1, 6, 11...
+  // (AgenC `+ 1` at :1224-1225). Full reminder fires on 1, 6, 11...
   const attachmentCount = priorAttachmentCount + 1;
   const variant: "full" | "sparse" =
     attachmentCount %

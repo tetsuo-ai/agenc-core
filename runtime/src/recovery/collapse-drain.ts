@@ -1,14 +1,14 @@
 /**
  * Collapse-drain recovery strategy.
  *
- * Hand-port of openclaude `services/contextCollapse/index.js` +
+ * Hand-port of AgenC `services/contextCollapse/index.js` +
  * `query.ts:1116-1149`. Context-collapse is a feature-gated
  * compaction layer: stage collapses are projected as a read-time
  * view over the full history. When a streaming response returns
  * PTL, the drain path applies all staged collapses to the actual
  * message array (consumed + committed), freeing context.
  *
- * Openclaude's real implementation calls `recoverFromOverflow()`
+ * AgenC's real implementation calls `recoverFromOverflow()`
  * which lives behind the `CONTEXT_COLLAPSE` feature flag. AgenC
  * ships the **caller-side shape** (`recoverFromOverflow()` with a
  * pluggable `driver` parameter). The driver is the real collapse
@@ -17,7 +17,7 @@
  * T10 are already wired to produce the staged-collapse data; T8
  * just consumes it.
  *
- * Critical subtlety (openclaude `query.ts:1123`): the drain is
+ * Critical subtlety (AgenC `query.ts:1123`): the drain is
  * one-shot per recovery pass — guarded by checking
  * `state.transition?.reason !== 'collapse_drain_retry'` at the
  * entry gate. Violating this spirals.
@@ -203,7 +203,7 @@ export function resetCollapseDrainAttempted(state: TurnState): void {
 
 /**
  * Perform the one-shot drain. Returns `skipped_guard` when the state
- * shows we already drained this recovery pass (openclaude
+ * shows we already drained this recovery pass (AgenC
  * `query.ts:1123` one-shot guard).
  *
  * On success: mutates `state.messages` / `state.messagesForQuery`
@@ -221,7 +221,7 @@ export async function runCollapseDrain(
   state: TurnState,
   opts: CollapseDrainOpts,
 ): Promise<CollapseDrainOutcome> {
-  // I-42: one-shot guard — openclaude query.ts:1123.
+  // I-42: one-shot guard — AgenC query.ts:1123.
   if (hasAttemptedCollapseDrain(state)) {
     return { kind: "skipped_guard", committed: 0 };
   }

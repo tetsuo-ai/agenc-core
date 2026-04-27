@@ -97,7 +97,7 @@ const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 
 function errorResult(message: string): ToolResult {
   // Plain-text content; structured fields (none here) absent. Mirrors
-  // openclaude's `tool_result` shape — errors are strings the model can
+  // AgenC's `tool_result` shape — errors are strings the model can
   // read directly without an extra JSON.parse hop.
   return { content: message, isError: true };
 }
@@ -397,7 +397,7 @@ function runSpawnedCommand(params: {
 
       // Flatten content to plain text (stdout, then stderr if non-empty)
       // so the model sees the raw command output instead of a JSON
-      // string it has to re-parse. Mirrors openclaude `BashTool`
+      // string it has to re-parse. Mirrors AgenC `BashTool`
       // `tool_result.content` shape (plain string, structured flags on
       // the result envelope). Structured fields move to `metadata`
       // where the inner emitEnd observer + ToolResult consumers can
@@ -755,13 +755,13 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
   return {
     name: "system.bash",
-    // Marked deferred: exec_command is the canonical shell tool (codex
-    // parity — codex's `local_shell` + `write_stdin` is what AgenC's
+    // Marked deferred: exec_command is the canonical shell tool (AgenC runtime
+    // parity — AgenC runtime's `local_shell` + `write_stdin` is what AgenC's
     // `exec_command` + `write_stdin` mirrors). system.bash stays
     // available via system.searchTools for callers that genuinely
     // need the direct-mode (command + args) split or the dual-mode
     // semantics, but defaults to off to keep the visible catalog
-    // Codex-small and avoid duplicate-tool confusion.
+    // AgenC runtime-small and avoid duplicate-tool confusion.
     metadata: {
       family: "terminal",
       source: "builtin",
@@ -1010,7 +1010,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
       // `events-to-messages.ts`'s `toolMessageIndexByCallId` — otherwise
       // the two callId namespaces produce two transcript rows for the
       // same Bash invocation (the streaming row + the completed row).
-      // Mirrors openclaude where bash is a single tool_use_id pair with
+      // Mirrors AgenC where bash is a single tool_use_id pair with
       // streaming via `progressMessages` keyed off the same id.
       const execCallId =
         typeof input.__callId === "string" && input.__callId.length > 0
@@ -1029,7 +1029,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         // Read the structured fields directly from metadata — they're
         // populated alongside the plain-text content above. (Earlier
         // versions JSON.parsed the content blob; that no longer works
-        // since content is plain text now, matching openclaude's
+        // since content is plain text now, matching AgenC's
         // tool_result shape.)
         const md = (result.metadata ?? {}) as {
           exitCode?: number | null;

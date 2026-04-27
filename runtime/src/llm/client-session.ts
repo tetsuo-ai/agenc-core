@@ -1,7 +1,7 @@
 /**
  * Turn-scoped provider HTTP session.
  *
- * Ports the codex provider/session contract into the runtime-facing
+ * Ports the AgenC runtime provider/session contract into the runtime-facing
  * TypeScript client layer: provider-level query params, auth/header injection,
  * bounded retry budgets, stream idle timeouts, and explicit wire-api metadata.
  *
@@ -56,7 +56,7 @@ export interface ProviderHttpRetryBudget {
   /**
    * Retry budget excluding the initial attempt.
    *
-   * Matches codex `request_max_retries` / `stream_max_retries`.
+   * Matches AgenC runtime `request_max_retries` / `stream_max_retries`.
    */
   readonly maxRetries?: number;
   readonly baseDelayMs?: number;

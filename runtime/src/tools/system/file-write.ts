@@ -1,9 +1,9 @@
 /**
- * `Write` — port of openclaude `FileWriteTool`.
+ * `Write` — port of AgenC `FileWriteTool`.
  *
- * Lifted from openclaude `src/tools/FileWriteTool/FileWriteTool.ts` and
+ * Lifted from AgenC `src/tools/FileWriteTool/FileWriteTool.ts` and
  * `src/tools/FileWriteTool/prompt.ts`. The model-facing description is
- * the openclaude wording, lightly adapted to AgenC's voice.
+ * the AgenC wording, lightly adapted to AgenC's voice.
  *
  * Behavior preserved from upstream:
  *   - Creates a new file or overwrites an existing one.
@@ -25,9 +25,9 @@
  *   - `.ipynb` is rejected with a redirect to the notebook tool.
  *   - Path safety enforced via AgenC's `safePath` and
  *     `resolveToolAllowedPaths`.
- *   - Errors are returned as plain text (codex envelope), not JSON.
+ *   - Errors are returned as plain text (AgenC runtime envelope), not JSON.
  *
- * Lifted FROM openclaude; the following openclaude couplings are
+ * Lifted FROM AgenC; the following AgenC couplings are
  * intentionally NOT lifted:
  *   - analytics / growthbook / `logEvent` calls
  *   - LSP didChange/didSave notifications
@@ -60,7 +60,7 @@ import {
 export const FILE_WRITE_TOOL_NAME = "Write";
 
 /**
- * Verbatim wording from openclaude `src/tools/FileWriteTool/prompt.ts`,
+ * Verbatim wording from AgenC `src/tools/FileWriteTool/prompt.ts`,
  * lightly adapted: the upstream "Edit tool" reference is kept (AgenC
  * exposes `Edit` for incremental edits), and the
  * pre-read instruction is generalized away from the exact
@@ -77,14 +77,14 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`;
 
 /**
- * Verbatim from openclaude `FileWriteTool.ts:202-205`. Used when the
+ * Verbatim from AgenC `FileWriteTool.ts:202-205`. Used when the
  * target file exists but the model has not read it in this session.
  */
 const READ_REQUIRED_MESSAGE =
   "File has not been read yet. Read it first before writing to it.";
 
 /**
- * Verbatim from openclaude `FileEditTool/constants.ts` (re-exported by
+ * Verbatim from AgenC `FileEditTool/constants.ts` (re-exported by
  * `FileWriteTool.ts:43,213-217`). Used when the target was read
  * previously but the on-disk content has drifted since that read.
  */
@@ -140,7 +140,7 @@ function normalizeNewlines(value: string): string {
 }
 
 /**
- * Mirror openclaude's `readFreshTextSnapshot` shape so the value we
+ * Mirror AgenC's `readFreshTextSnapshot` shape so the value we
  * write to the session-read state matches the rest of the AgenC
  * filesystem tooling.
  */
@@ -210,7 +210,7 @@ export function createFileWriteTool(
         return errorResult("content must be a string");
       }
 
-      // Notebook redirect — openclaude routes `.ipynb` to NotebookEdit
+      // Notebook redirect — AgenC routes `.ipynb` to NotebookEdit
       // instead of allowing a raw text write that would corrupt the
       // notebook's JSON envelope.
       if (filePath.toLowerCase().endsWith(".ipynb")) {
@@ -262,7 +262,7 @@ export function createFileWriteTool(
         }
       }
 
-      // Read-before-overwrite enforcement. Verbatim openclaude wording
+      // Read-before-overwrite enforcement. Verbatim AgenC wording
       // when the existing file was not read in this session. Headless
       // invocations (no `__agencSessionId`) bypass the gate so unit
       // tests and embedded contexts keep working — same convention as
@@ -274,7 +274,7 @@ export function createFileWriteTool(
 
         // Modification-since-read: compare current on-disk content
         // (CRLF-normalized) against the snapshot the session captured
-        // at read time. This mirrors openclaude's check (which uses
+        // at read time. This mirrors AgenC's check (which uses
         // mtime + content fallback) but uses AgenC's content-compare
         // semantics for parity with `Write` / `Edit`.
         const snapshot = getSessionReadSnapshot(sessionId, absolutePath);
@@ -307,7 +307,7 @@ export function createFileWriteTool(
         );
       }
 
-      // Auto-create parent directories. Equivalent to the openclaude
+      // Auto-create parent directories. Equivalent to the AgenC
       // `mkdir -p` step at FileWriteTool.ts:254 — done before the
       // write so a missing-directory ENOENT surfaces here cleanly.
       try {
@@ -353,7 +353,7 @@ export function createFileWriteTool(
         );
       }
 
-      // Plain-text result — codex envelope. Matches openclaude's
+      // Plain-text result — AgenC runtime envelope. Matches AgenC's
       // `mapToolResultToToolResultBlockParam` (FileWriteTool.ts:421-435).
       void existingStat;
       return successResult(

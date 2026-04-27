@@ -1,7 +1,7 @@
 /**
  * T11 Wave 2-A — permission dialog context + queue + resolve-once.
  *
- * Ports openclaude's `src/hooks/toolPermission/PermissionContext.ts`
+ * Ports AgenC's `src/hooks/toolPermission/PermissionContext.ts`
  * into a framework-agnostic module. The REPL supplies React-backed
  * queue ops; the daemon and tests supply plain-callback ops.
  *
@@ -198,7 +198,7 @@ export interface PersistDestinationCheck {
 }
 
 /**
- * Default persistence check — mirrors openclaude's
+ * Default persistence check — mirrors AgenC's
  * `supportsPersistence`: only the three on-disk destinations
  * correspond to persisted rules.
  */

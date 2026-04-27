@@ -1,7 +1,7 @@
 /**
  * RolloutTraceRecorder — best-effort, opt-in hot-path trace recorder.
  *
- * Hand-port of upstream codex `codex-rs/rollout-trace/src/recorder.rs`
+ * Hand-port of upstream AgenC runtime `AgenC runtime-rs/rollout-trace/src/recorder.rs`
  * (core handle) plus the narrow slice of `writer.rs`, `raw_event.rs`,
  * `bundle.rs`, and `payload.rs` required to land the lifecycle surface.
  *
@@ -18,7 +18,7 @@
  *   - `createRootOrDisabled(threadId)`          → reads env, returns root or disabled
  *   - `createInRootForTest(root, threadId)`     → creates bundle at known root
  *   - `recordThreadStarted(metadata)`           → emits ThreadStarted lifecycle
- *   - `recordCodexTurnStarted(threadId, turnId)`→ emits CodexTurnStarted lifecycle
+ *   - `recordAgenC runtimeTurnStarted(threadId, turnId)`→ emits AgenC runtimeTurnStarted lifecycle
  *   - File-backed `TraceWriter` (manifest.json + trace.jsonl + payloads/*.json)
  *   - Raw event envelope + schema versioning
  *
@@ -36,7 +36,7 @@
  *     projection lives in a separate tranche.
  *
  * Not ported (honest INCOMPLETE flags):
- *   - Upstream emits `RolloutEnded`, `ThreadEnded`, and `CodexTurnEnded` raw
+ *   - Upstream emits `RolloutEnded`, `ThreadEnded`, and `AgenC runtimeTurnEnded` raw
  *     events from context-destruction and reducer paths, not from standalone
  *     `record_*` methods on the recorder. Those paths (runtime cells, tool
  *     dispatch, inference, compaction) land in future tranches; the raw event
@@ -72,8 +72,8 @@ import { randomUUID } from "node:crypto";
 /**
  * Environment variable that enables local trace-bundle recording.
  *
- * Matches upstream `CODEX_ROLLOUT_TRACE_ROOT_ENV`. When set to a directory,
- * each independent root session gets one child bundle under that root.
+ * When set to a directory, each independent root session gets one child
+ * bundle under that root.
  * When unset, `createRootOrDisabled` returns a disabled recorder that
  * accepts every call and records nothing.
  */
@@ -96,7 +96,7 @@ const PAYLOADS_DIR_NAME = "payloads";
 /** Upstream `AgentThreadId`. Kept as a bare string here. */
 export type AgentThreadId = string;
 
-/** Upstream `CodexTurnId`. Kept as a bare string here. */
+/** Upstream `AgenC runtimeTurnId`. Kept as a bare string here. */
 export type CodexTurnId = string;
 
 /** Upstream `CompactionId`. Kept as a bare string here. */
@@ -550,7 +550,7 @@ export class RolloutTraceRecorder {
   /**
    * Emits a turn-start lifecycle event.
    *
-   * Mirrors upstream `record_codex_turn_started`. Most production turn
+   * Mirrors upstream `record_AgenC runtime_turn_started`. Most production turn
    * lifecycle wiring lives in higher-level session code; this explicit hook
    * lets trace-focused integration tests produce valid reducer inputs
    * without exercising the full session loop.

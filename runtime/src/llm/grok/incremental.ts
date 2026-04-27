@@ -2,11 +2,11 @@
  * Incremental-request bookkeeping for the Grok (OpenAI-compatible
  * Responses API) adapter.
  *
- * Hand-port of codex `core/src/client.rs::get_incremental_items`
+ * Hand-port of AgenC runtime `core/src/client.rs::get_incremental_items`
  * (lines 909-946) plus the `LastResponse`/`WebsocketSession` slots
  * that back it (lines 868-907, 948-960).
  *
- * Rationale (verbatim from codex `get_incremental_items` comment):
+ * Rationale (verbatim from AgenC runtime `get_incremental_items` comment):
  *
  *   > Checks whether the current request is an incremental extension
  *   > of the previous request. We only reuse an incremental input
@@ -38,8 +38,8 @@ import type { LLMMessage } from "../types.js";
 /**
  * Snapshot of the request properties that must match byte-for-byte
  * (excluding the `input` array) for an incremental extension to be
- * reused. Matches codex `ResponsesApiRequest` minus the `input`
- * field (which is the variable part codex clears on line 922).
+ * reused. Matches AgenC runtime `ResponsesApiRequest` minus the `input`
+ * field (which is the variable part AgenC runtime clears on line 922).
  */
 export interface IncrementalRequestShape {
   readonly model: string;
@@ -51,7 +51,7 @@ export interface IncrementalRequestShape {
 }
 
 /**
- * Cached state for the last-completed response. Codex's `LastResponse`
+ * Cached state for the last-completed response. AgenC runtime's `LastResponse`
  * (client.rs:868-907) tracks both the `previous_response_id` (for
  * server-side state reuse) and the items the server added to output
  * (so we don't re-send them on the next incremental call).
@@ -65,7 +65,7 @@ export interface LastResponseSnapshot {
 }
 
 /**
- * Result of a delta-computation attempt. Matches codex line 940-945:
+ * Result of a delta-computation attempt. Matches AgenC runtime line 940-945:
  *   Some(delta)   → incremental OK, send only these
  *   None          → full resend required
  */
@@ -137,7 +137,7 @@ export class IncrementalTracker {
   /**
    * Decide whether to send a full or incremental payload.
    *
-   * Mirrors codex `get_incremental_items` control flow:
+   * Mirrors AgenC runtime `get_incremental_items` control flow:
    *   1. Compare non-input request shape → full on mismatch
    *   2. Build baseline = previous input + last-response items
    *   3. Current input must start with baseline

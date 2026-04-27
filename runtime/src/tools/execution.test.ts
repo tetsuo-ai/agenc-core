@@ -694,7 +694,7 @@ describe("runToolUse — schema validation integration", () => {
     expect(err).toBeDefined();
   });
 
-  test("type mismatch produces openclaude-style humanized prose", async () => {
+  test("type mismatch produces AgenC-style humanized prose", async () => {
     const tool: Tool = {
       name: "typed",
       description: "",
@@ -711,7 +711,7 @@ describe("runToolUse — schema validation integration", () => {
     });
     expect(out.isError).toBe(true);
     expect(out.content).toContain("InputValidationError");
-    // openclaude prose: "The parameter `count` type is expected as `integer`
+    // AgenC prose: "The parameter `count` type is expected as `integer`
     // but provided as `string`"
     expect(out.content).toContain("count");
     expect(out.content).toContain("integer");
@@ -1147,7 +1147,7 @@ describe("T11 W3-B — permission evaluator integration", () => {
     });
     const out = await runP;
     expect(out.isError).toBe(true);
-    // openclaude parity: aborted tools surface `INTERRUPT_MESSAGE_FOR_TOOL_USE`.
+    // AgenC behavior: aborted tools surface `INTERRUPT_MESSAGE_FOR_TOOL_USE`.
     expect(out.content).toContain("interrupted by user");
   });
 
@@ -1317,7 +1317,7 @@ describe("T6 parity — PreToolUse ordering + inc-4788", () => {
     // native ask-without-prompt path when the evaluator disagrees.
     // We use a hook `allow` without ruleBasedCheck to confirm the
     // evaluator is NOT reached (hook allow short-circuits without rule
-    // check, matching openclaude's `resolveHookPermissionDecision`).
+    // check, matching AgenC's `resolveHookPermissionDecision`).
     let evalRan = 0;
     let execRan = 0;
     const { context } = buildEvaluatorContext("default");
@@ -1467,7 +1467,7 @@ describe("T6 parity — formatError + terminal labels", () => {
   });
 
   test("aborted tool surfaces INTERRUPT_MESSAGE_FOR_TOOL_USE (no <tool_use_error>)", async () => {
-    // openclaude parity: an aborted tool's tool_result is NOT wrapped
+    // AgenC behavior: an aborted tool's tool_result is NOT wrapped
     // in the old `<tool_use_error>` tag. The execution dispatcher
     // routes `cls === "aborted"` to the canonical
     // INTERRUPT_MESSAGE_FOR_TOOL_USE string.

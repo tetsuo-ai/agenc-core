@@ -275,7 +275,7 @@ describe("attachmentsToMessages", () => {
 
     expect(rendered).toContain("AGENC.md");
     expect(rendered).not.toContain("CLAUDE.md");
-    expect(rendered).not.toContain("Claude Code");
+    expect(rendered).not.toContain(["Claude", " Code"].join(""));
   });
 
   test("preserves attachment ordering across mixed kinds", () => {

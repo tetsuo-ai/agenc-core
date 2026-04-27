@@ -23,7 +23,7 @@ const TEST_TOOLS: LLMTool[] = [
 ];
 
 describe("buildOpenAIResponsesRequest", () => {
-  test("uses codex-style response items and disables store by default", () => {
+  test("uses AgenC-style response items and disables store by default", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",
       messages: [

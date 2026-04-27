@@ -1,11 +1,11 @@
 /**
- * No-op replacements for openclaude-port subsystems the gut runtime
+ * No-op replacements for AgenC implementation subsystems the gut runtime
  * does not implement: analytics, telemetry, prompt-cache notification,
  * classifier-approval cache, speculative-check cache, beta tracing,
  * memory-file cache.
  *
  * Compact called these for cross-cutting cache invalidation in the
- * openclaude runtime. The gut runtime does not own these caches, so
+ * AgenC runtime. The gut runtime does not own these caches, so
  * these are no-ops that satisfy the call signature without side
  * effect.
  */

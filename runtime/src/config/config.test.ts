@@ -7,7 +7,7 @@ import {
   defaultConfig,
   mergeConfigs,
   normalizeRawConfig,
-  normalizeCodexKeyAliases,
+  normalizeAgenCKeyAliases,
   AgenCConfig,
   resolveModelDisambiguated,
   AmbiguousModelError,
@@ -19,7 +19,7 @@ import {
   validateStatusLineConfig,
   validateOutputStyleConfig,
   KNOWN_CONFIG_KEYS,
-  DEFERRED_OPENCLAUDE_KEYS,
+  DEFERRED_SETTINGS_KEYS,
 } from "./schema.js";
 import { parseToml, loadConfig, TomlParseError } from "./loader.js";
 import {
@@ -160,9 +160,9 @@ describe("schema: defaultConfig independence", () => {
   });
 });
 
-describe("schema: normalizeCodexKeyAliases", () => {
+describe("schema: normalizeAgenCKeyAliases", () => {
   test("tools → tools_config", () => {
-    const out = normalizeCodexKeyAliases({
+    const out = normalizeAgenCKeyAliases({
       tools: { web_search: true },
     });
     expect(out.tools_config).toEqual({ web_search: true });
@@ -170,7 +170,7 @@ describe("schema: normalizeCodexKeyAliases", () => {
   });
 
   test("model_reasoning_effort → reasoning_effort", () => {
-    const out = normalizeCodexKeyAliases({
+    const out = normalizeAgenCKeyAliases({
       model_reasoning_effort: "high",
     });
     expect(out.reasoning_effort).toBe("high");
@@ -178,7 +178,7 @@ describe("schema: normalizeCodexKeyAliases", () => {
   });
 
   test("model_reasoning_summary → reasoning_summary", () => {
-    const out = normalizeCodexKeyAliases({
+    const out = normalizeAgenCKeyAliases({
       model_reasoning_summary: "detailed",
     });
     expect(out.reasoning_summary).toBe("detailed");
@@ -186,7 +186,7 @@ describe("schema: normalizeCodexKeyAliases", () => {
   });
 
   test("agents.max_depth → agent_max_depth", () => {
-    const out = normalizeCodexKeyAliases({
+    const out = normalizeAgenCKeyAliases({
       agents: { max_depth: 3 },
     });
     expect(out.agent_max_depth).toBe(3);
@@ -194,7 +194,7 @@ describe("schema: normalizeCodexKeyAliases", () => {
   });
 
   test("canonical key wins when both alias and canonical present", () => {
-    const out = normalizeCodexKeyAliases({
+    const out = normalizeAgenCKeyAliases({
       tools: { web_search: true },
       tools_config: { web_search: false },
     });
@@ -264,7 +264,7 @@ describe("provider resolution (T13)", () => {
 describe("schema: permissions block (T11)", () => {
   test("permissions is registered as a known key (no longer deferred)", () => {
     expect(KNOWN_CONFIG_KEYS.includes("permissions")).toBe(true);
-    expect(DEFERRED_OPENCLAUDE_KEYS.includes("permissions")).toBe(false);
+    expect(DEFERRED_SETTINGS_KEYS.includes("permissions")).toBe(false);
   });
 
   test("normalizeRawConfig preserves permissions on the typed path, not _unknown", () => {
@@ -389,7 +389,7 @@ describe("schema: statusLine / outputStyle block (T12)", () => {
 
   test("statusLine is registered as a known key, not deferred", () => {
     expect(KNOWN_CONFIG_KEYS.includes("statusLine")).toBe(true);
-    expect(DEFERRED_OPENCLAUDE_KEYS.includes("statusLine")).toBe(false);
+    expect(DEFERRED_SETTINGS_KEYS.includes("statusLine")).toBe(false);
   });
 });
 
@@ -694,7 +694,7 @@ required = false
     expect(servers?.docs?.required).toBe(false);
   });
 
-  test("codex key aliases: tools → tools_config via loader", async () => {
+  test("AgenC key aliases: tools → tools_config via loader", async () => {
     writeFileSync(
       join(dir, "config.toml"),
       `
@@ -704,11 +704,11 @@ web_search = true
     );
     const out = await loadConfig({ home: dir });
     expect(out.config.tools_config?.web_search).toBe(true);
-    // The codex-style `tools` key should not leak into _unknown.
+    // The AgenC-style `tools` key should not leak into _unknown.
     expect(out.config._unknown?.tools).toBeUndefined();
   });
 
-  test("codex key aliases: model_reasoning_effort → reasoning_effort via loader", async () => {
+  test("AgenC key aliases: model_reasoning_effort → reasoning_effort via loader", async () => {
     writeFileSync(
       join(dir, "config.toml"),
       `model_reasoning_effort = "high"\n`,

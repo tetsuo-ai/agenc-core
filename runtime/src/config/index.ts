@@ -3,7 +3,7 @@
 // Public surface:
 //   - types + defaults + merge
 //   - TOML loader (inline minimal parser, no new npm dep)
-//   - profile resolver (codex-derived)
+//   - profile resolver (AgenC-owned)
 //   - env resolvers
 //   - I-60 model disambiguation
 //   - ConfigStore (snapshot + reload + subscribe; I-47 integration lives in T10-I)
@@ -45,7 +45,7 @@ export {
   defaultConfig,
   mergeConfigs,
   normalizeRawConfig,
-  normalizeCodexKeyAliases,
+  normalizeAgenCKeyAliases,
   resolveModelDisambiguated,
   isValidPermissionMode,
   validatePermissionsConfig,

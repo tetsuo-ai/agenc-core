@@ -1,9 +1,9 @@
 /**
  * Mailbox — bidirectional typed queue for inter-agent communication.
  *
- * Hand-port of codex `core/src/agent/mailbox.rs` (161 LOC) adapted
- * for AgenC's bounded + backpressure model. Openclaude uses
- * AsyncGenerator-only (unidirectional parent polls child); codex uses
+ * Hand-port of AgenC runtime `core/src/agent/mailbox.rs` (161 LOC) adapted
+ * for AgenC's bounded + backpressure model. AgenC uses
+ * AsyncGenerator-only (unidirectional parent polls child); AgenC runtime uses
  * unbounded `mpsc::unbounded_channel` which is unacceptable on Node.js
  * because there's no OS-level backpressure signal.
  *

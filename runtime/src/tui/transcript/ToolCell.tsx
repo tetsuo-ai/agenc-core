@@ -2,7 +2,7 @@
  * Semantic tool-call history cell.
  *
  * AgenC keeps the transcript chrome branded, but the behavior follows the
- * upstream Codex/OpenClaude shape: one semantic cell per tool invocation,
+ * upstream AgenC runtime/AgenC shape: one semantic cell per tool invocation,
  * tool-family aware labels, in-place progress, and compact result previews.
  */
 
@@ -344,7 +344,7 @@ function renderIndentedText(
   color?: string,
 ): React.ReactElement[] {
   const normalized = preserveLines ? content : collapseOutput(content, 4, 2);
-  // Mirror openclaude's `MessageResponse` two-column flex layout
+  // Mirror AgenC's `MessageResponse` two-column flex layout
   // (components/MessageResponse.tsx): one row, the `⎿  ` prefix rendered
   // ONCE in a `flexShrink={0}` column, the entire content rendered as a
   // single `<Text>` inside a `flexGrow={1}` column. Yoga places wrap

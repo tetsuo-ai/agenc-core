@@ -4,7 +4,7 @@
  * The agent runtime only needs a duck-typed `Tool` shape and the
  * bigint-safe stringify helper to wrap tools / forward dispatch results
  * back to the parent registry. Carved as a local `_deps/` to cut the
- * gut→openclaude crossing.
+ * gut→AgenC crossing.
  */
 
 export type JSONSchema = Record<string, unknown>;

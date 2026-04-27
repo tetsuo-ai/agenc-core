@@ -3,7 +3,7 @@
  *
  * The CLI delegate-tool wrapper needs a duck-typed `Tool` / `ToolResult`
  * shape and the bigint-safe stringify helper. Carved as a local
- * `_deps/` to cut the gut→openclaude crossing.
+ * `_deps/` to cut the gut→AgenC crossing.
  */
 
 export type JSONSchema = Record<string, unknown>;

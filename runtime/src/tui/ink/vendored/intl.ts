@@ -1,5 +1,5 @@
 /**
- * Vendored from openclaude/src/utils/intl.ts — minimal subset required by
+ * Vendored from AgenC/src/utils/intl.ts — minimal subset required by
  * the Ink core port. Shared Intl object instances with lazy initialization.
  */
 

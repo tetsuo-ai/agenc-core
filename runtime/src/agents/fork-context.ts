@@ -2,7 +2,7 @@
  * Fork-context — build a child's initial message set from the
  * parent's history.
  *
- * Hand-port of openclaude `tools/AgentTool/forkSubagent.ts` +
+ * Hand-port of AgenC `tools/AgentTool/forkSubagent.ts` +
  * `utils/forkedAgent.ts` (410 LOC combined). Four fork modes:
  *
  *   - `full_history` — child receives the full parent history.
@@ -72,7 +72,7 @@ function lastNUserTurns(
 
 /**
  * Build the directive message every subagent receives. Based on
- * openclaude's fork-subagent preamble: explicit task + worktree
+ * AgenC's fork-subagent preamble: explicit task + worktree
  * notice + guardrails.
  */
 function buildDirective(input: ForkContextInput): string {
@@ -167,7 +167,7 @@ export async function forkSubagent(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of openclaude `utils/forkedAgent.ts::buildCacheSafeParams`.
+ * Port of AgenC `utils/forkedAgent.ts::buildCacheSafeParams`.
  * Ensures the child request shares the parent's prompt-cache prefix
  * when possible by preserving the ordered tuple (systemPrompt,
  * systemContext, toolCatalog hashes). Callers supply the parent's

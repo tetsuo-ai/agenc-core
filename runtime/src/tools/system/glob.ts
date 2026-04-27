@@ -1,16 +1,16 @@
 /**
- * `Glob` — port of openclaude `GlobTool` as a first-class AgenC tool.
+ * `Glob` — port of AgenC `GlobTool` as a first-class AgenC tool.
  *
- * The model-facing description is byte-identical to openclaude's at
- * `src/tools/GlobTool/prompt.ts`. Openclaude's implementation
+ * The model-facing description is byte-identical to AgenC's at
+ * `src/tools/GlobTool/prompt.ts`. AgenC's implementation
  * (`src/tools/GlobTool/GlobTool.ts`) routes through a ripgrep-backed
  * `glob()` helper; AgenC's existing `system.glob` already covers the
  * ripgrep path. This tool intentionally uses Node's built-in
  * `fs.promises.glob` (Node 22+) so the lifted surface stays free of new
- * dependencies and matches the bare openclaude name (`Glob`) the model
+ * dependencies and matches the bare AgenC name (`Glob`) the model
  * has been trained to call.
  *
- * Output is plain text (codex envelope), one path per line, sorted
+ * Output is plain text (AgenC runtime envelope), one path per line, sorted
  * newest-first by mtime, capped at `MAX_RESULTS=100` with a truncation
  * note. Every emitted path is verified via `safePath()` against the
  * configured allowedPaths so a clever pattern can't escape the
@@ -28,13 +28,13 @@ import {
 } from "./filesystem.js";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 
-/** Hard cap matches openclaude's `globLimits.maxResults` default. */
+/** Hard cap matches AgenC's `globLimits.maxResults` default. */
 const MAX_RESULTS = 100;
 
 export const GLOB_TOOL_NAME = "Glob";
 
 /**
- * Verbatim port of openclaude `DESCRIPTION`
+ * Verbatim port of AgenC `DESCRIPTION`
  * (src/tools/GlobTool/prompt.ts:3-7).
  */
 const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any codebase size
@@ -135,7 +135,7 @@ export function createGlobTool(
 
       // Resolve the search root: explicit `path`/`cwd`, else first
       // allowed root (matches the contract spec mapping for
-      // openclaude's `getCwd()`).
+      // AgenC's `getCwd()`).
       const requestedRoot =
         asNonEmptyString(args.path) ?? asNonEmptyString(args.cwd);
       const searchRootRaw = requestedRoot ?? effectiveAllowed[0];
@@ -201,7 +201,7 @@ export function createGlobTool(
         let mtimeMs = 0;
         try {
           const stats = await fs.stat(check.resolved);
-          // Skip directories — Glob's openclaude semantic is "files".
+          // Skip directories — Glob's AgenC semantic is "files".
           if (stats.isDirectory()) continue;
           mtimeMs = stats.mtimeMs;
         } catch {

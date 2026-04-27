@@ -1,14 +1,14 @@
 /**
  * T11 — foundational permission primitives.
  *
- * Ported from openclaude `src/types/permissions.ts`, trimmed to what
+ * Ported from AgenC `src/types/permissions.ts`, trimmed to what
  * AgenC needs for the rule + settings layer (Wave 1). Wave 2 modules
  * (yoloClassifier, hooks, dangerousPatterns) extend these types; they
  * are not required here.
  *
  * Invariants:
  *   - Every public type is `readonly` where possible.
- *   - `PERMISSION_RULE_SOURCES` preserves openclaude priority order.
+ *   - `PERMISSION_RULE_SOURCES` preserves AgenC priority order.
  *   - Mode list is the 7-variant superset (bubble kept for completeness
  *     but marked internal-only).
  *
@@ -96,7 +96,7 @@ export const PERMISSION_BEHAVIORS: readonly PermissionBehavior[] =
  * earlier have lower precedence, later entries override earlier ones
  * when flattened for display or for tie-breaking inside the evaluator.
  *
- * Ported exactly from openclaude's
+ * Ported exactly from AgenC's
  * `src/utils/permissions/permissions.ts :: PERMISSION_RULE_SOURCES`.
  */
 export type PermissionRuleSource =
@@ -224,7 +224,7 @@ export interface AdditionalWorkingDirectory {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Decision reasons (superset of openclaude's 11 variants)
+// Decision reasons (superset of AgenC's 11 variants)
 // ─────────────────────────────────────────────────────────────────────
 
 export type PermissionDecisionReason =
@@ -351,7 +351,7 @@ export interface ToolPermissionContext {
   readonly isAutoModeAvailable?: boolean;
   /**
    * True when the FSM has activated auto mode. Cleared by the transition
-   * FSM when leaving auto. Equivalent to openclaude's bootstrap-state
+   * FSM when leaving auto. Equivalent to AgenC's bootstrap-state
    * `autoModeState.isAutoModeActive()` module, kept on the context here so
    * session serialisation has a single source of truth.
    */
@@ -371,7 +371,7 @@ export interface ToolPermissionContext {
 /**
  * Legacy tool-name aliases. When a tool is renamed, add `old → new`
  * here so permission rules, hooks, and persisted wire names resolve to
- * the canonical name. Exactly the mapping shipped by openclaude:
+ * the canonical name. Exactly the mapping shipped by AgenC:
  *
  *   - `Task`           → `Agent`           (subagent tool rename)
  *   - `KillShell`      → `TaskStop`        (tool rename)

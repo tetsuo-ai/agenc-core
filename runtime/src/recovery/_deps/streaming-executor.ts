@@ -4,7 +4,7 @@
  * Recovery callers only forward an executor instance through as a
  * type-only parameter (and call `.tombstoneInFlightToolCalls()` /
  * `.cancel()` on it). Carved as a local `_deps/` so the gut recovery
- * path stays decoupled from the deleted openclaude class.
+ * path stays decoupled from the deleted AgenC class.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

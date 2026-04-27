@@ -1,5 +1,5 @@
 /**
- * `EnterWorktree` / `ExitWorktree` — port of openclaude `EnterWorktreeTool`
+ * `EnterWorktree` / `ExitWorktree` — port of AgenC `EnterWorktreeTool`
  * + `ExitWorktreeTool`. The model-facing prompts (`prompt.ts`) and input
  * schemas are byte-identical to upstream where the AgenC contract permits.
  *
@@ -16,7 +16,7 @@
  *       - EnterWorktree refuses if a session-level worktree is already
  *         active.
  *       - EnterWorktree auto-generates a name from the AgenC plan slug
- *         if none was supplied (matches openclaude's
+ *         if none was supplied (matches AgenC's
  *         `getPlanSlug()` fallback at `EnterWorktreeTool.ts:90`).
  *       - ExitWorktree no-ops with the upstream message when no
  *         session-level worktree is active.
@@ -37,7 +37,7 @@
  *     wants subsequent commands to run in the worktree it must pass
  *     `cwd: <worktreePath>` to `exec_command`.
  *   - The session-level `currentWorktreeSession` is an in-process
- *     module singleton (matches openclaude's `getCurrentWorktreeSession`
+ *     module singleton (matches AgenC's `getCurrentWorktreeSession`
  *     at `utils/worktree.js`). For multi-session daemons this is
  *     keyed on the AgenC `__agencSessionId` injected arg so child
  *     agents and the main session each get their own slot.
@@ -57,9 +57,9 @@ import { safeStringify } from "../types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-level worktree state — module singleton keyed by AgenC
-// session id. Mirrors openclaude `getCurrentWorktreeSession()` /
+// session id. Mirrors AgenC `getCurrentWorktreeSession()` /
 // `setCurrentWorktreeSession()` from `utils/worktree.js`. The state
-// is intentionally in-memory only: openclaude persists it via
+// is intentionally in-memory only: AgenC persists it via
 // `saveWorktreeState(...)` so it survives session reloads, but for
 // AgenC's runtime that lives across daemon restarts we keep it
 // in-memory and let the model re-establish on resume.
@@ -121,7 +121,7 @@ function validateWorktreeSlug(slug: string): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Verbatim ports of openclaude prompts
+// Verbatim ports of AgenC prompts
 // ─────────────────────────────────────────────────────────────────────
 
 const ENTER_WORKTREE_PROMPT = `Use this tool ONLY when the user explicitly asks to work in a worktree. This tool creates an isolated git worktree and switches the current session into it.
@@ -232,7 +232,7 @@ interface ChangeSummary {
 }
 
 /**
- * Mirrors openclaude `countWorktreeChanges`
+ * Mirrors AgenC `countWorktreeChanges`
  * (`ExitWorktreeTool.ts:79-113`). Returns null when state cannot be
  * reliably determined (lock file, corrupt index, missing baseline);
  * callers MUST treat null as "unknown, fail closed" rather than 0/0.
@@ -337,7 +337,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         );
       }
       // Refuse if this session already has an active worktree —
-      // matches openclaude `EnterWorktreeTool.call:79-81`.
+      // matches AgenC `EnterWorktreeTool.call:79-81`.
       const existing = getCurrentWorktreeSession(sessionId);
       if (existing !== undefined) {
         return errorResult(
@@ -356,7 +356,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         }
         slug = slugRaw;
       } else {
-        // Auto-name: use the AgenC plan slug. Mirrors openclaude
+        // Auto-name: use the AgenC plan slug. Mirrors AgenC
         // `EnterWorktreeTool.call:90` which calls `getPlanSlug()`.
         const planFilePath = getPlanFilePath(defaultPlanCtx(sessionId));
         // getPlanFilePath returns `<plansDir>/<slug>.md`. Extract the slug.
@@ -375,8 +375,8 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         );
       }
 
-      // Mirror openclaude `EnterWorktreeTool.call:90-94`: create the
-      // worktree under `.agenc/worktrees/<slug>` (openclaude uses
+      // Mirror AgenC `EnterWorktreeTool.call:90-94`: create the
+      // worktree under `.agenc/worktrees/<slug>` (AgenC uses
       // `.claude/worktrees/`; we substitute `.agenc` for parity with
       // the rest of the AgenC layout).
       const worktreePath = resolve(mainRepoRoot, ".agenc", "worktrees", slug);
@@ -489,7 +489,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
 
       const session = getCurrentWorktreeSession(sessionId);
       if (session === undefined) {
-        // Verbatim no-op message from openclaude
+        // Verbatim no-op message from AgenC
         // `ExitWorktreeTool.validateInput:182-188`.
         return errorResult(
           "No-op: there is no active EnterWorktree session to exit. This tool only operates on worktrees created by EnterWorktree in the current session — it will not touch worktrees created manually or in a previous session. No filesystem changes were made.",
@@ -525,7 +525,7 @@ export function createExitWorktreeTool(_config: WorktreeToolConfig): Tool {
         }
       }
 
-      // Re-count for accurate analytics (matches openclaude
+      // Re-count for accurate analytics (matches AgenC
       // `ExitWorktreeTool.call:256-259`). Null falls back to 0/0.
       const finalSummary =
         (await countWorktreeChanges(

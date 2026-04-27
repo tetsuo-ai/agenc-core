@@ -1,5 +1,5 @@
 /**
- * Session bootstrap — port of upstream codex
+ * Session bootstrap — port of upstream AgenC runtime
  * `core/src/session/session.rs::Session::new` (lines 258-967).
  *
  * Upstream `Session::new` is a single ~710 LOC async function that
@@ -111,7 +111,7 @@ export interface BootstrapSessionConfiguredPayload {
 
 /**
  * Options for `bootstrapSession`. A superset of `SessionOpts` with the
- * bootstrap-only fields codex `Session::new` accepts directly:
+ * bootstrap-only fields AgenC runtime `Session::new` accepts directly:
  *
  *   - `mcp` — session-owned MCP manager + optional start opts. Upstream
  *     constructs `McpConnectionManager::new()` inline; gut wires the
@@ -132,7 +132,7 @@ export interface BootstrapSessionConfiguredPayload {
  *   - `onAfterSessionConfigured` — caller hook run AFTER the
  *     `SessionConfigured` emit but BEFORE the startup prewarm. Used by
  *     `bin/bootstrap.ts` to start sidecars and launch the live MCP
- *     connection manager, mirroring the upstream codex ordering at
+ *     connection manager, mirroring the upstream AgenC runtime ordering at
  *     `session.rs:814-854, 857-908` where sidecar and MCP start happen
  *     after the terminal SessionConfigured event.
  *   - `enablePrewarm` — opt-out for tests. Default `true`; the prewarm
@@ -206,7 +206,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 
 /**
  * Upstream `let mut default_shell = ...` block
- * (codex-rs/core/src/session/session.rs:585-605). Discovers the real
+ * (AgenC runtime-rs/core/src/session/session.rs:585-605). Discovers the real
  * user shell and returns a `UserShell` suitable for
  * `SessionServices.userShell`.
  */
@@ -218,7 +218,7 @@ export async function discoverShellForSession(
 
 /**
  * Upstream parallel `tokio::join!(auth_and_mcp_fut, ...)`
- * (codex-rs/core/src/session/session.rs:388-419). Runs the caller's
+ * (AgenC runtime-rs/core/src/session/session.rs:388-419). Runs the caller's
  * `auth` prep and `manager.start(...)` concurrently and returns the
  * individual results so the caller can thread the auth artifact into
  * downstream services.
@@ -278,7 +278,7 @@ export async function startAuthAndMcpInParallel(params: {
 
 /**
  * Upstream `SessionConfigured` event emission block
- * (codex-rs/core/src/session/session.rs:814-854). The event is the
+ * (AgenC runtime-rs/core/src/session/session.rs:814-854). The event is the
  * LAST bootstrap step before the post-configured event chain; gut
  * mirrors that by emitting through the canonical `session.emit` path
  * and seeding the TUI's initial-transcript-event list with the same
@@ -384,7 +384,7 @@ export async function runStartupPrewarm(
  *   5. Emit `SessionConfigured` — the terminal bootstrap event.
  *   6. Call `onAfterSessionConfigured(session)` if provided. This is
  *      where `bin/bootstrap.ts` starts sidecars and the live MCP
- *      connection manager, matching upstream codex ordering at
+ *      connection manager, matching upstream AgenC runtime ordering at
  *      `session.rs:856-908`.
  *   7. Schedule the startup prewarm. Runs in the background; any
  *      error is swallowed.
@@ -464,8 +464,8 @@ export async function bootstrapSession(
   emitSessionConfigured(session, sessionConfiguredPayload);
 
   // 6. Post-emit caller hook — sidecar start + live MCP connection
-  //    manager init. Upstream codex ordering
-  //    (`codex-rs/core/src/session/session.rs:856-908`) starts the
+  //    manager init. Upstream AgenC runtime ordering
+  //    (`AgenC runtime-rs/core/src/session/session.rs:856-908`) starts the
   //    watcher/skills listener and the real `McpConnectionManager::new()`
   //    AFTER the SessionConfigured dispatch; the gut bin path mirrors
   //    that by doing its `sidecarManager.start()` and

@@ -1,7 +1,7 @@
 /**
  * Session memory-mode helpers.
  *
- * Modes mirror the Codex memory-mode semantics but are stored in AgenC's
+ * Modes mirror the AgenC runtime memory-mode semantics but are stored in AgenC's
  * per-session attachment state for now. A later persistence migration can
  * move this to the thread store without changing callers.
  *

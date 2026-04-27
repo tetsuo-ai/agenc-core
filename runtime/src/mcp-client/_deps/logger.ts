@@ -1,9 +1,9 @@
 /**
  * Per-dir logger surface for `runtime/src/mcp-client/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/logger.ts` API the
+ * Mirrors the AgenC implementation `runtime/src/utils/logger.ts` API the
  * mcp-client modules use (`Logger`, `silentLogger`). Carved as a local
- * `_deps/` to cut the gut→openclaude crossing without losing behavior.
+ * `_deps/` to cut the gut→AgenC crossing without losing behavior.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";

@@ -227,7 +227,7 @@ describe("modelCommand", () => {
     if (res.kind === "text") {
       expect(res.text.toLowerCase()).not.toContain("claude");
       expect(res.text.toLowerCase()).not.toContain("anthropic");
-      expect(res.text.toLowerCase()).not.toContain("openclaude");
+      expect(res.text.toLowerCase()).not.toContain("AgenC");
     }
   });
 });

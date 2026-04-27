@@ -1,7 +1,7 @@
 /**
  * Durable-memory v2 consolidation primitives.
  *
- * This module provides the safe local substrate for the Codex-style
+ * This module provides the safe local substrate for the AgenC-style
  * two-phase pipeline: raw extracted memories are appended to
  * `raw_memories.md`, while deterministic local consolidation keeps
  * `MEMORY.md` and `memory_summary.md` present and bounded. A later

@@ -319,7 +319,7 @@ export class MCPManager {
   }
 
   /**
-   * Port of codex `Session::resolve_mcp_tool_info` (session.rs). Given
+   * Port of AgenC runtime `Session::resolve_mcp_tool_info` (session.rs). Given
    * a tool name the model emitted, either return `{ serverName,
    * toolName }` when the tool is MCP-backed, or `undefined`.
    *

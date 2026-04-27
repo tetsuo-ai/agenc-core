@@ -1,7 +1,7 @@
 /**
  * Deferred-tools delta attachment producer.
  *
- * Hand-port of openclaude `getDeferredToolsDeltaAttachment`
+ * Hand-port of AgenC `getDeferredToolsDeltaAttachment`
  * (`src/utils/attachments.ts:1456-1476`) and the underlying diff in
  * `getDeferredToolsDelta` (`src/utils/toolSearch.ts:646-706`).
  *
@@ -10,7 +10,7 @@
  * first turn seeds tracking state without emitting (announcing the
  * always-empty initial set would be noise).
  *
- * AgenC divergence from openclaude: instead of reconstructing the prior
+ * AgenC divergence from AgenC: instead of reconstructing the prior
  * announced set by scanning the message history for prior
  * `deferred_tools_delta` attachments, AgenC stores the prior set
  * directly on `AttachmentTrackingState.lastDeferredToolsSet`. Same
@@ -63,7 +63,7 @@ export const deferredToolsDeltaProducer: AttachmentProducer = async (
   if (prior === undefined) {
     // First turn — seed without emitting. The delta only marks a real
     // change in the catalog; the initial state is communicated through
-    // the ToolSearch system-prompt section. Matches openclaude behavior:
+    // the ToolSearch system-prompt section. Matches AgenC behavior:
     // the first scan finds no prior `deferred_tools_delta` attachments,
     // and announces only what's already deferred — for a fresh session
     // that's the empty set.

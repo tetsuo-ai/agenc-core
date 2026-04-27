@@ -156,7 +156,7 @@ export function truncate(input: string, max: number = TOOL_ARGS_MAX): string {
 
 /**
  * Keep huge pasted prompts from becoming enormous Ink text nodes. This mirrors
- * OpenClaude's prompt-display cap: the runtime still receives the full prompt,
+ * AgenC's prompt-display cap: the runtime still receives the full prompt,
  * but the fullscreen transcript only mounts a bounded head/tail preview.
  */
 export function truncateUserMessageForDisplay(input: string): string {
@@ -361,7 +361,7 @@ export const MessageList: React.FC<MessageListProps> = ({
 
   // Follow while sticky not only on appended rows but also when the live tail
   // mutates in place (assistant streaming, exec stdout/stderr growth, plan
-  // updates). This mirrors codex's active-cell revision behavior: the bottom
+  // updates). This mirrors AgenC runtime's active-cell revision behavior: the bottom
   // stays pinned until the user explicitly scrolls away.
   useEffect(() => {
     const handle = scrollRef.current;

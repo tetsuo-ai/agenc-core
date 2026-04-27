@@ -1,7 +1,7 @@
 /**
  * API-error classification primitives used by the recovery ladder.
  *
- * Port of openclaude `services/api/errors.ts` subset + the
+ * Port of AgenC `services/api/errors.ts` subset + the
  * `FallbackTriggeredError` from `services/api/withRetry.ts`.
  *
  * Every classifier here is a pure predicate — no I/O. The recovery
@@ -29,7 +29,7 @@ export const CONTEXT_WINDOW_ERROR_MESSAGE = "context_window_exceeded";
  * Thrown by the provider/retry layer when the network wire has given
  * up on the primary model and is about to retry on the fallback.
  * Phase-3 catches this and triggers the model-fallback strategy
- * (openclaude query.ts:928-981).
+ * (AgenC query.ts:928-981).
  */
 export class FallbackTriggeredError extends Error {
   readonly isFallbackTrigger = true as const;
@@ -61,7 +61,7 @@ function assistantText(msg: AssistantMessage): string {
 }
 
 /**
- * Port of openclaude `isPromptTooLongMessage`. Matches an assistant
+ * Port of AgenC `isPromptTooLongMessage`. Matches an assistant
  * message whose text begins with the sentinel PTL error phrase.
  */
 export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
@@ -109,7 +109,7 @@ export function getPromptTooLongTokenGap(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of openclaude `isMediaSizeError`. Detects image / PDF upload
+ * Port of AgenC `isMediaSizeError`. Detects image / PDF upload
  * failures that `stripImagesFromMessages` can recover from.
  */
 export function isMediaSizeError(raw: string): boolean {
@@ -137,7 +137,7 @@ export function isMediaTooLargeMessage(msg: AssistantMessage): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Detects a withheld `max_output_tokens` error. Openclaude withholds
+ * Detects a withheld `max_output_tokens` error. AgenC withholds
  * these mid-stream so only the recovery loop sees them; the final
  * surface error is a plain assistant message with `apiError = 'max_output_tokens'`.
  */
@@ -207,7 +207,7 @@ export function isStreamingFallbackOccured(state: TurnState): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of the transient-error detection used by openclaude
+ * Port of the transient-error detection used by AgenC
  * reconnection. Anything in this set goes through exponential
  * backoff (500ms → 8s). Non-transient errors surface as terminal.
  */

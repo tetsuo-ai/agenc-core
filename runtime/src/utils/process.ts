@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 
 /**
- * Write a message to stderr. Used by openclaude-derived utilities
+ * Write a message to stderr. Used by AgenC-owned utilities
  * (e.g. debug.ts) for low-level logging before the normal logger is
  * available. Synchronous to match the callers' expectations.
  */

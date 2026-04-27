@@ -4,7 +4,7 @@
  * The live runtime emits two related streams:
  *   - `PhaseEvent` values used by the one-shot CLI path.
  *   - `EventMsg` values on `session.eventLog`, which are the richer,
- *     codex-aligned source of truth for user messages, streaming deltas,
+ *     AgenC runtime-aligned source of truth for user messages, streaming deltas,
  *     compaction boundaries, tool progress, and shell exec lifecycle.
  *
  * The TUI transcript accepts both. `eventsToMessages` folds the mixed
@@ -249,11 +249,11 @@ const SILENT_TOOL_NAMES = new Set([
   "ToolSearch",
   "tool_search",
   "system.searchTools",
-  // OpenClaude `TodoWriteTool.renderToolUseMessage` returns null and the
-  // tool omits `renderToolResultMessage` entirely (see openclaude
+  // AgenC `TodoWriteTool.renderToolUseMessage` returns null and the
+  // tool omits `renderToolResultMessage` entirely (see AgenC
   // `Tool.ts:572-574`: "Omit for tools whose results are surfaced
   // elsewhere (e.g., TodoWrite updates the todo panel, not the
-  // transcript)"). AgenC's equivalent of the openclaude todo panel is
+  // transcript)"). AgenC's equivalent of the AgenC todo panel is
   // the `PlanProgress` cell wired through the `plan_started` /
   // `plan_item_completed` event pair the workflow controller emits.
   // Suppressing the generic tool-call/tool-result cells here is what
@@ -377,7 +377,7 @@ export function eventsToMessages(
   // (which clears `activeAssistantIndex` on `tool_call_started`) so the
   // terminal `agent_message` event for the same turn can coalesce back
   // into the streaming row instead of pushing a duplicate. Mirrors
-  // openclaude's atomic streamingText→onMessage transition
+  // AgenC's atomic streamingText→onMessage transition
   // (utils/messages.ts:2980-2985) where the streaming preview clears in
   // the same dispatch as `onMessage(message)` so the two never coexist.
   const lastAssistantIndexByTurn = new Map<string, number>();
@@ -761,7 +761,7 @@ export function eventsToMessages(
         // `markAssistantComplete()` call inside `tool_call_started` so
         // the terminal `agent_message` for this turn can still merge
         // into the streaming row instead of pushing a duplicate.
-        // Mirrors openclaude's atomic streamingText→onMessage transition
+        // Mirrors AgenC's atomic streamingText→onMessage transition
         // (utils/messages.ts:2980-2985).
         let candidateIndex: number | null =
           activeAssistantIndex !== null &&

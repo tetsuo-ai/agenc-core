@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of `../utils/monotonic.js`.
+ * Local _deps stub for the gut/AgenC crossing of `../utils/monotonic.js`.
  * Minimal monotonic-clock helpers used by stream-watchdog and grok adapter.
  */
 

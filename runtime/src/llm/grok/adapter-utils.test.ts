@@ -54,7 +54,7 @@ describe("grok adapter utils", () => {
     );
   });
 
-  it("orders Codex-primary AgenC tools before compatibility system tools", () => {
+  it("orders AgenC-primary AgenC tools before compatibility system tools", () => {
     const makeTool = (name: string): LLMTool => ({
       type: "function",
       function: {

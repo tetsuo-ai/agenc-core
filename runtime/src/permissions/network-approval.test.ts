@@ -1,7 +1,7 @@
 /**
  * Tests for T11 Wave 1 Agent D — network approval decision layer.
  *
- * Ports the codex `network_approval_tests.rs` behavioural surface:
+ * Ports the AgenC runtime `network_approval_tests.rs` behavioural surface:
  *   - Short-circuit guards (sandbox, approval policy, signal).
  *   - Session allow/deny cache semantics (incl. cross-toggle eviction).
  *   - Host-key canonicalization (case + port + protocol).
@@ -461,7 +461,7 @@ describe("NetworkApprovalService — cache toggling", () => {
     expect(svc.sessionAllowedSize).toBe(0);
 
     // 2) Directly clear the deny (simulate operator override) so the next
-    //    call actually reaches the resolver. This mirrors codex's
+    //    call actually reaches the resolver. This mirrors AgenC runtime's
     //    `clear_session_denied_hosts` helper path.
     svc.clearSessionHosts();
 

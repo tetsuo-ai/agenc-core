@@ -2,15 +2,15 @@
  * Lean re-implementation of the tool-result capping helpers
  * `rollout-reconstruction.ts` uses to bound replayed tool output size.
  *
- * `tools/execution.ts` lives in the openclaude port and bundles the
+ * `tools/execution.ts` lives in the AgenC port and bundles the
  * full execution orchestrator. The gut session code only needs the
  * size cap + the I-15 byte limit, so they are reproduced here as a
- * narrow, dependency-free surface that survives openclaude deletion.
+ * narrow, dependency-free surface that survives AgenC deletion.
  */
 
 /**
  * I-15: default cap on tool result size in bytes. 400 KB matches
- * openclaude `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
+ * AgenC `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
 

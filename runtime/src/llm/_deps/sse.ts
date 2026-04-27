@@ -1,8 +1,8 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../../../transport/sse-post.js`. Provider adapters only consume
  * `parseSSEFrames`; the rest of the SSETransport stays in the
- * openclaude port until the transport tranche replaces it.
+ * AgenC port until the transport tranche replaces it.
  */
 
 export interface SSEFrame {

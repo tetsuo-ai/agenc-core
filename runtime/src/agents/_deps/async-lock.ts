@@ -1,9 +1,9 @@
 /**
  * Per-dir AsyncLock for `runtime/src/agents/**`.
  *
- * Mirrors the openclaude-port `runtime/src/utils/async-lock.ts` API the
+ * Mirrors the AgenC implementation `runtime/src/utils/async-lock.ts` API the
  * registry + worktree modules use. Carved as a local `_deps/` to cut
- * the gut→openclaude crossing.
+ * the gut→AgenC crossing.
  */
 
 export class AsyncLock<T> {

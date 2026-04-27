@@ -1,5 +1,5 @@
 /**
- * Local _deps stub for the gut/openclaude crossing of
+ * Local _deps stub for the gut/AgenC crossing of
  * `../gateway/model-route.js`. Only `canonicalizeProviderModel` is
  * consumed by the LLM subsystem (xai-strict-filter), so we keep this
  * stub trimmed to that surface.

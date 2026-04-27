@@ -1,7 +1,7 @@
 /**
  * AgenC scoped instruction rules.
  *
- * This is the AgenC-branded analogue of openclaude's `.claude/rules/*.md`
+ * This is the AgenC-branded analogue of AgenC's `.claude/rules/*.md`
  * discovery, with stricter path handling and a smaller frontmatter grammar.
  *
  * Rule files live under:

@@ -205,8 +205,8 @@ export function getPlanFilePath(ctx: PlanFileContext = {}): string {
 /**
  * Does `absolutePath` belong to the current session's plan-file family?
  *
- * Mirrors openclaude `isSessionPlanFile`
- * (`/home/tetsuo/git/openclaude/src/utils/permissions/filesystem.ts:254`):
+ * Mirrors AgenC `isSessionPlanFile`
+ * (`/home/tetsuo/git/AgenC/src/utils/permissions/filesystem.ts:254`):
  *
  *     const expectedPrefix = join(getPlansDirectory(), getPlanSlug())
  *     return path.startsWith(expectedPrefix) && path.endsWith('.md')
@@ -220,7 +220,7 @@ export function getPlanFilePath(ctx: PlanFileContext = {}): string {
  * end in `.md` so the suffix check excludes it.
  *
  * Used by the filesystem tools to allowlist plan-file writes regardless
- * of the workspace allowlist, matching openclaude's
+ * of the workspace allowlist, matching AgenC's
  * `checkEditableInternalPath` carve-out (filesystem.ts:1488-1506) which
  * fires before the workspace-write check and bypasses dangerous-path
  * heuristics (the plan dir lives under `~/.agenc`/`~/.claude` which is

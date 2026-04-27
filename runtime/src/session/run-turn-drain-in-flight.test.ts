@@ -3,7 +3,7 @@
  *
  * The cancellation/error paths in runTurnKernel call `drainInFlight`
  * after the phase loop catches an abort/error while tools are still
- * in flight. Openclaude parity (`query.ts:1046-1060`) requires every
+ * in flight. AgenC behavior (`query.ts:1046-1060`) requires every
  * yielded synthetic `tool_result` to be paired with the orphan
  * `tool_use` block on `state.messages` so the next provider request
  * sees a balanced tool-use/tool-result pair. Earlier AgenC code
@@ -78,7 +78,7 @@ function mkCtxAndSession() {
   return { ctx, session, emitted };
 }
 
-describe("drainInFlight — openclaude parity (T6)", () => {
+describe("drainInFlight — AgenC behavior (T6)", () => {
   test("yielded synthetic tool_results are appended to state.messages", async () => {
     const exec = new StreamingToolExecutor({
       registry: mockRegistry(async () => ({ content: "ok" })),

@@ -45,7 +45,7 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
 });
 
 describe("tool-registry dynamic and deferred catalog", () => {
-  test("Codex-primary tools are visible while compatibility entries stay deferred", () => {
+  test("AgenC-primary tools are visible while compatibility entries stay deferred", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const registeredNames = registry.tools.map((tool) => tool.name);
     expect(registeredNames).toContain("exec_command");
@@ -64,12 +64,12 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registeredNames).toContain("ExitPlanMode");
     expect(registeredNames).toContain("AskUserQuestion");
     // The legacy `workflow.enterPlan` / `workflow.exitPlan` aliases were
-    // dropped — the canonical OpenClaude-parity names are the only entries.
+    // dropped — the canonical AgenC-compatible names are the only entries.
     expect(registeredNames).not.toContain("workflow.enterPlan");
     expect(registeredNames).not.toContain("workflow.exitPlan");
-    // `update_plan` is the codex-only checklist name. AgenC's `/plan`
-    // surface is openclaude-derived, so the only checklist tool we
-    // ship is openclaude `TodoWrite`.
+    // `update_plan` is the AgenC runtime-only checklist name. AgenC's `/plan`
+    // surface is AgenC-owned, so the only checklist tool we
+    // ship is AgenC `TodoWrite`.
     expect(registeredNames).not.toContain("update_plan");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
@@ -105,20 +105,20 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(askUserQuestion?.metadata?.family).toBe("planning");
   });
 
-  test("exec_command dispatch accepts Codex-style cmd/workdir arguments", async () => {
+  test("exec_command dispatch accepts AgenC-style cmd/workdir arguments", async () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 
     const result = await registry.dispatch({
       id: "exec-1",
       name: "exec_command",
-      arguments: JSON.stringify({ cmd: "printf agenc-codex", workdir: "/tmp" }),
+      arguments: JSON.stringify({ cmd: "printf agenc-runtime", workdir: "/tmp" }),
     });
 
     expect(result.isError).toBeUndefined();
-    // The model-facing content follows Codex unified-exec output: status
+    // The model-facing content follows AgenC runtime unified-exec output: status
     // headers plus the captured stdout/stderr.
     expect(result.content).toContain("Process exited with code 0");
-    expect(result.content).toContain("Output:\nagenc-codex");
+    expect(result.content).toContain("Output:\nagenc-runtime");
   });
 
   test("code mode adds visible exec/wait tools when enabled", () => {
@@ -132,7 +132,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(visibleNames).toContain("wait");
   });
 
-  test("searchTools supports OpenClaude-style select:<tool> loading", async () => {
+  test("searchTools supports AgenC-style select:<tool> loading", async () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 
     const result = await registry.dispatch({
@@ -164,7 +164,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(registry.getDiscoveredToolNames?.().has("FileRead")).toBe(false);
   });
 
-  test("TodoWrite returns the verbatim openclaude tool_result sentence and emits a plan event without ever writing the plan file", async () => {
+  test("TodoWrite returns the verbatim AgenC tool_result sentence and emits a plan event without ever writing the plan file", async () => {
     const emittedPlans: unknown[] = [];
     const writtenPlans: string[] = [];
     const registry = buildToolRegistry({
@@ -190,19 +190,19 @@ describe("tool-registry dynamic and deferred catalog", () => {
       }),
     });
     expect(todo.isError).toBeUndefined();
-    // Verbatim openclaude `TodoWriteTool.mapToolResultToToolResultBlockParam`
+    // Verbatim AgenC `TodoWriteTool.mapToolResultToToolResultBlockParam`
     // base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
     expect(todo.content).toBe(
       "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable",
     );
     expect(emittedPlans).toHaveLength(1);
 
-    // OpenClaude's TodoWrite is in-memory only. Persisting to the plan
+    // AgenC's TodoWrite is in-memory only. Persisting to the plan
     // file would overwrite the user-authored plan.
     expect(writtenPlans).toHaveLength(0);
   });
 
-  test("TodoWrite is permitted in plan mode (openclaude classifier classifies it as metadata-only)", async () => {
+  test("TodoWrite is permitted in plan mode (AgenC classifier classifies it as metadata-only)", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "plan" }),
     );
@@ -231,7 +231,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(emittedPlans).toHaveLength(1);
   });
 
-  test("TodoWrite schema requires content/status/activeForm and rejects extras (openclaude parity)", () => {
+  test("TodoWrite schema requires content/status/activeForm and rejects extras (AgenC behavior)", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const todoWrite = registry.tools.find((t) => t.name === "TodoWrite");
     expect(todoWrite).toBeDefined();
@@ -268,12 +268,12 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.content).toContain("activeForm");
   });
 
-  test("update_plan is no longer registered (codex name dropped in favor of openclaude TodoWrite)", () => {
+  test("update_plan is no longer registered (runtime name dropped in favor of AgenC TodoWrite)", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     expect(registry.tools.find((t) => t.name === "update_plan")).toBeUndefined();
   });
 
-  test("OpenClaude-style EnterPlanMode/ExitPlanMode drive the live permission-mode registry", async () => {
+  test("AgenC-style EnterPlanMode/ExitPlanMode drive the live permission-mode registry", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "acceptEdits" }),
     );
@@ -326,7 +326,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(exited).toBe(true);
   });
 
-  test("ExitPlanMode exposes OpenClaude-style approved-plan metadata", async () => {
+  test("ExitPlanMode exposes AgenC-style approved-plan metadata", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({ mode: "plan" }),
     );

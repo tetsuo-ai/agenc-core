@@ -1,5 +1,5 @@
 /**
- * Tests for `/plan` slash command + OpenClaude-style AgenC plan files.
+ * Tests for `/plan` slash command + AgenC-style AgenC plan files.
  */
 
 import { existsSync, mkdtempSync } from "node:fs";
@@ -184,7 +184,7 @@ describe("planCommand.execute", () => {
     }
   });
 
-  it("transitions default -> plan and returns OpenClaude confirmation text", async () => {
+  it("transitions default -> plan and returns AgenC confirmation text", async () => {
     const h = mkHarness({ initialMode: "default" });
     const res = await planCommand.execute(h.ctx);
     expect(h.registry.current().mode).toBe("plan");

@@ -5,7 +5,7 @@ runtime replacement work in `agenc-core/runtime/src/session/*`.
 
 The goal in this wave is not to redesign persistence. The goal is to
 name the current contract, pin it with tests, and block accidental drift
-while runtime ownership moves from the hybrid AgenC path to the codex
+while runtime ownership moves from the hybrid AgenC path to the AgenC runtime
 runtime port.
 
 ## Scope
