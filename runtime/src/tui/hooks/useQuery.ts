@@ -37,6 +37,11 @@ import type {
   TranscriptSlashResultEvent,
   TranscriptSourceEvent,
 } from "../state/events-to-messages.js";
+import {
+  appendBoundedTranscriptText,
+  truncateTranscriptJsonArgs,
+  truncateTranscriptText,
+} from "../state/transcript-limits.js";
 
 /**
  * Minimal structural shape this hook depends on. Any Session-like
@@ -73,6 +78,11 @@ interface QueryState {
   seenEventKeys: Set<string>;
   lastEventSeq: number;
 }
+
+const MAX_BUFFERED_TRANSCRIPT_EVENTS = 2_500;
+const TARGET_BUFFERED_TRANSCRIPT_EVENTS = 2_000;
+const MAX_BUFFERED_TRANSCRIPT_CHARS = 1_500_000;
+const TARGET_BUFFERED_TRANSCRIPT_CHARS = 1_000_000;
 
 interface ResetPayload {
   readonly initialEvents: readonly TranscriptSourceEvent[];
@@ -137,6 +147,139 @@ function transcriptEventSeq(event: TranscriptSourceEvent): number | null {
   return "seq" in event && typeof event.seq === "number" ? event.seq : null;
 }
 
+function sanitizeTranscriptEventForTui(
+  event: TranscriptSourceEvent,
+): TranscriptSourceEvent {
+  switch (event.type) {
+    case "tool_progress":
+      return {
+        ...event,
+        payload: {
+          ...event.payload,
+          chunk: truncateTranscriptText(event.payload.chunk),
+        },
+      };
+    case "tool_call_started":
+      return {
+        ...event,
+        payload: {
+          ...event.payload,
+          args: truncateTranscriptJsonArgs(event.payload.args),
+        },
+      };
+    case "tool_call_completed":
+      return {
+        ...event,
+        payload: {
+          ...event.payload,
+          result: truncateTranscriptText(event.payload.result),
+        },
+      };
+    case "exec_command_end":
+      return {
+        ...event,
+        payload: {
+          ...event.payload,
+          ...(typeof event.payload.stdout === "string"
+            ? { stdout: truncateTranscriptText(event.payload.stdout) }
+            : {}),
+          ...(typeof event.payload.stderr === "string"
+            ? { stderr: truncateTranscriptText(event.payload.stderr) }
+            : {}),
+        },
+      };
+    case "tool_call":
+      return {
+        ...event,
+        toolCall: {
+          ...event.toolCall,
+          arguments: truncateTranscriptJsonArgs(event.toolCall.arguments),
+        },
+      };
+    case "tool_result":
+      return {
+        ...event,
+        result: {
+          ...event.result,
+          content: truncateTranscriptText(event.result.content),
+        },
+      };
+    default:
+      return event;
+  }
+}
+
+function stringCost(value: unknown): number {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) {
+    return value.reduce((sum, entry) => sum + stringCost(entry), 0);
+  }
+  if (value && typeof value === "object") {
+    return Object.values(value).reduce(
+      (sum, entry) => sum + stringCost(entry),
+      0,
+    );
+  }
+  return 0;
+}
+
+function eventStringCost(event: TranscriptSourceEvent): number {
+  return stringCost(event);
+}
+
+function isPruneBoundaryEvent(event: TranscriptSourceEvent): boolean {
+  return (
+    event.type === "turn_start" ||
+    event.type === "turn_started" ||
+    event.type === "context_compacted"
+  );
+}
+
+function pruneBufferedTranscriptEvents(
+  events: readonly TranscriptSourceEvent[],
+): {
+  readonly events: TranscriptSourceEvent[];
+  readonly rebuiltSeenKeys: boolean;
+} {
+  if (events.length <= MAX_BUFFERED_TRANSCRIPT_EVENTS) {
+    const totalChars = events.reduce(
+      (sum, event) => sum + eventStringCost(event),
+      0,
+    );
+    if (totalChars <= MAX_BUFFERED_TRANSCRIPT_CHARS) {
+      return { events: [...events], rebuiltSeenKeys: false };
+    }
+  }
+
+  let startIndex = Math.max(0, events.length - TARGET_BUFFERED_TRANSCRIPT_EVENTS);
+  let retainedChars = 0;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    retainedChars += eventStringCost(events[index]!);
+    if (
+      retainedChars > TARGET_BUFFERED_TRANSCRIPT_CHARS &&
+      index > startIndex
+    ) {
+      startIndex = index + 1;
+      break;
+    }
+  }
+
+  for (let index = startIndex; index < events.length - 1; index += 1) {
+    if (isPruneBoundaryEvent(events[index]!)) {
+      startIndex = index;
+      break;
+    }
+  }
+
+  if (startIndex <= 0) {
+    return { events: [...events], rebuiltSeenKeys: false };
+  }
+  return {
+    events: events.slice(startIndex),
+    rebuiltSeenKeys: true,
+  };
+}
+
 function isAgentMessageDeltaEvent(
   event: TranscriptSourceEvent,
 ): event is AgentMessageDeltaEnvelope {
@@ -194,18 +337,24 @@ function sameProgressSlot(
 
 function bufferTranscriptEvent(
   events: readonly TranscriptSourceEvent[],
-  event: TranscriptSourceEvent,
+  rawEvent: TranscriptSourceEvent,
 ): {
   readonly events: TranscriptSourceEvent[];
   readonly rebuiltSeenKeys: boolean;
 } {
+  const event = sanitizeTranscriptEventForTui(rawEvent);
   if (isCompactBoundaryEvent(event)) {
     const previousBoundary = findLastCompactBoundaryIndex(events);
     const retained =
       previousBoundary >= 0 ? events.slice(previousBoundary + 1) : [...events];
-    return {
+    const compacted = {
       events: [...retained, event],
       rebuiltSeenKeys: previousBoundary >= 0,
+    };
+    const pruned = pruneBufferedTranscriptEvents(compacted.events);
+    return {
+      events: pruned.events,
+      rebuiltSeenKeys: compacted.rebuiltSeenKeys || pruned.rebuiltSeenKeys,
     };
   }
 
@@ -215,23 +364,26 @@ function bufferTranscriptEvent(
     isAgentMessageDeltaEvent(last) &&
     isAgentMessageDeltaEvent(event)
   ) {
-    return {
-      events: [
-        ...events.slice(0, -1),
-        {
-          ...event,
-          payload: { delta: `${last.payload.delta}${event.payload.delta}` },
+    const coalesced = [
+      ...events.slice(0, -1),
+      {
+        ...event,
+        payload: {
+          delta: appendBoundedTranscriptText(
+            last.payload.delta,
+            event.payload.delta,
+          ),
         },
-      ],
-      rebuiltSeenKeys: false,
-    };
+      },
+    ];
+    const pruned = pruneBufferedTranscriptEvents(coalesced);
+    return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
   }
 
   if (last && isAgentMessageDeltaEvent(last) && isAgentMessageEvent(event)) {
-    return {
-      events: [...events.slice(0, -1), event],
-      rebuiltSeenKeys: false,
-    };
+    const replaced = [...events.slice(0, -1), event];
+    const pruned = pruneBufferedTranscriptEvents(replaced);
+    return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
   }
 
   if (
@@ -243,24 +395,25 @@ function bufferTranscriptEvent(
     const stream = event.payload.stream ?? "status";
     const chunk =
       stream === "stdout" || stream === "stderr"
-        ? `${last.payload.chunk}${event.payload.chunk}`
+        ? appendBoundedTranscriptText(last.payload.chunk, event.payload.chunk)
         : event.payload.chunk;
-    return {
-      events: [
-        ...events.slice(0, -1),
-        {
-          ...event,
-          payload: {
-            ...event.payload,
-            chunk,
-          },
+    const coalesced = [
+      ...events.slice(0, -1),
+      {
+        ...event,
+        payload: {
+          ...event.payload,
+          chunk,
         },
-      ],
-      rebuiltSeenKeys: false,
-    };
+      },
+    ];
+    const pruned = pruneBufferedTranscriptEvents(coalesced);
+    return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
   }
 
-  return { events: [...events, event], rebuiltSeenKeys: false };
+  const appended = [...events, event];
+  const pruned = pruneBufferedTranscriptEvents(appended);
+  return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
 }
 
 function buildEventIndex(events: readonly TranscriptSourceEvent[]): {
@@ -271,7 +424,8 @@ function buildEventIndex(events: readonly TranscriptSourceEvent[]): {
   const dedupeKeys = new Set<string>();
   let buffered: TranscriptSourceEvent[] = [];
   let lastEventSeq = 0;
-  for (const event of events) {
+  for (const rawEvent of events) {
+    const event = sanitizeTranscriptEventForTui(rawEvent);
     const seq = transcriptEventSeq(event);
     if (seq !== null && seq <= lastEventSeq) {
       continue;
@@ -363,7 +517,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
     case "reset":
       return createInitialState(action.payload);
     case "event": {
-      const { event } = action;
+      const event = sanitizeTranscriptEventForTui(action.event);
       const eventSeq = transcriptEventSeq(event);
       if (eventSeq !== null && eventSeq <= state.lastEventSeq) {
         return state;

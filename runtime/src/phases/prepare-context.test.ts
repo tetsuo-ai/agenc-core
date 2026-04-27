@@ -184,6 +184,10 @@ describe("prepareContext Stage 2 wiring", () => {
           "<persisted-output>",
         ),
     ).toBe(true);
+    expect(String(state.messages[1]?.content)).toContain(
+      "[Old tool result content cleared]",
+    );
+    expect(state.messages[1]?.content).not.toBe(repeat(big, "x"));
   });
 });
 

@@ -26,6 +26,12 @@ import type { PhaseEvent } from "../../phases/events.js";
 import type { EventMsg } from "../../session/event-log.js";
 import type { TranscriptMessage } from "../transcript/MessageList.js";
 import type { PlanEvent } from "../transcript/PlanProgress.js";
+import {
+  appendBoundedTranscriptLine,
+  appendBoundedTranscriptText,
+  truncateTranscriptJsonArgs,
+  truncateTranscriptText,
+} from "./transcript-limits.js";
 
 type TranscriptEventMsg = Extract<
   EventMsg,
@@ -166,9 +172,9 @@ function toPlanEvent(
 function safeJsonParse(input: string): unknown {
   if (typeof input !== "string" || input.trim().length === 0) return undefined;
   try {
-    return JSON.parse(input);
+    return JSON.parse(truncateTranscriptJsonArgs(input));
   } catch {
-    return input;
+    return truncateTranscriptText(input);
   }
 }
 
@@ -411,7 +417,7 @@ export function eventsToMessages(
     const prev = messages[existingIndex]!;
     messages[existingIndex] = {
       ...prev,
-      content: prev.content.length > 0 ? `${prev.content}\n${chunk}` : chunk,
+      content: appendBoundedTranscriptLine(prev.content, chunk),
       timestamp,
       ...(stream ? { progressStream: stream } : {}),
     };
@@ -660,20 +666,21 @@ export function eventsToMessages(
           if (callIndex !== undefined) {
             messages[callIndex] = {
               ...messages[callIndex]!,
-              toolResultContent: event.result.content,
+              toolResultContent: truncateTranscriptText(event.result.content),
               isError: event.result.isError === true,
               isComplete: true,
               timestamp,
             };
           } else {
+            const resultContent = truncateTranscriptText(event.result.content);
             messages.push({
               id: `tool-result-${event.toolCall.id}-${timestamp}`,
               turnId: ensureTurnId(currentTurnId),
               kind: "tool_result",
-              content: event.result.content,
+              content: resultContent,
               toolName: event.toolCall.name,
               toolArgs: safeJsonParse(event.toolCall.arguments),
-              toolResultContent: event.result.content,
+              toolResultContent: resultContent,
               isError: event.result.isError === true,
               timestamp,
             });
@@ -841,7 +848,7 @@ export function eventsToMessages(
       }
       case "tool_progress": {
         const stream = event.payload.stream;
-        const chunk = event.payload.chunk;
+        const chunk = truncateTranscriptText(event.payload.chunk);
         if (!toolNameByCallId.has(event.payload.callId)) {
           toolNameByCallId.set(event.payload.callId, event.payload.toolName);
         }
@@ -863,10 +870,16 @@ export function eventsToMessages(
             ...prev,
             ...(stream === "stdout"
               ? {
-                  execStdout: `${prev.execStdout ?? ""}${chunk}`,
+                  execStdout: appendBoundedTranscriptText(
+                    prev.execStdout ?? "",
+                    chunk,
+                  ),
                 }
               : {
-                  execStderr: `${prev.execStderr ?? ""}${chunk}`,
+                  execStderr: appendBoundedTranscriptText(
+                    prev.execStderr ?? "",
+                    chunk,
+                  ),
                 }),
             timestamp,
           };
@@ -880,9 +893,9 @@ export function eventsToMessages(
             stderr: "",
           };
           if (stream === "stdout") {
-            pending.stdout += chunk;
+            pending.stdout = appendBoundedTranscriptText(pending.stdout, chunk);
           } else {
-            pending.stderr += chunk;
+            pending.stderr = appendBoundedTranscriptText(pending.stderr, chunk);
           }
           pendingExecOutputByCallId.set(targetCallId, pending);
           break;
@@ -893,7 +906,7 @@ export function eventsToMessages(
           const prior = prev.toolProgressContent ?? "";
           messages[toolIndex] = {
             ...prev,
-            toolProgressContent: prior.length > 0 ? `${prior}\n${chunk}` : chunk,
+            toolProgressContent: appendBoundedTranscriptLine(prior, chunk),
             timestamp,
           };
           break;
@@ -937,23 +950,31 @@ export function eventsToMessages(
           toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
         }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
+        const stdout =
+          event.payload.stdout !== undefined
+            ? truncateTranscriptText(event.payload.stdout)
+            : undefined;
+        const stderr =
+          event.payload.stderr !== undefined
+            ? truncateTranscriptText(event.payload.stderr)
+            : undefined;
         ensureToolMessage(event.payload.callId, {
           turnId: ensureTurnId(currentTurnId),
           kind: "tool_call",
-          content: event.payload.stdout ?? "",
+          content: stdout ?? "",
           toolName: "exec_command",
           callId: event.payload.callId,
           execCommand:
             messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
               ?.execCommand ?? "",
           execStdout:
-            event.payload.stdout ??
+            stdout ??
             buffered?.stdout ??
             messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
               ?.execStdout ??
             "",
           execStderr:
-            event.payload.stderr ??
+            stderr ??
             buffered?.stderr ??
             messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
               ?.execStderr ??
@@ -993,24 +1014,25 @@ export function eventsToMessages(
         if (toolMessage) {
           messages[toolIndex!] = {
             ...toolMessage,
-            toolResultContent: event.payload.result,
+            toolResultContent: truncateTranscriptText(event.payload.result),
             isError: event.payload.isError,
             isComplete: true,
             timestamp,
           };
         } else {
           const toolName = toolNameByCallId.get(event.payload.callId);
+          const resultContent = truncateTranscriptText(event.payload.result);
           messages.push({
             id: event.id ?? `tool-result-${event.payload.callId}-${timestamp}`,
             turnId: ensureTurnId(currentTurnId),
             kind: "tool_result",
-            content: event.payload.result,
+            content: resultContent,
             callId: event.payload.callId,
             ...(toolName !== undefined ? { toolName } : {}),
             ...(toolArgsByCallId.has(event.payload.callId)
               ? { toolArgs: toolArgsByCallId.get(event.payload.callId) }
               : {}),
-            toolResultContent: event.payload.result,
+            toolResultContent: resultContent,
             isError: event.payload.isError,
             timestamp,
           });

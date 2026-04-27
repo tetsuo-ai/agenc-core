@@ -14,6 +14,7 @@ export interface FrameMonitorOptions {
   readonly reportEvery: number;
   readonly now?: () => number;
   readonly write?: (line: string) => void;
+  readonly memoryUsage?: () => NodeJS.MemoryUsage;
 }
 
 export interface TuiFrameMonitor {
@@ -41,6 +42,10 @@ function readPositiveNumber(
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function formatMiB(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)}MiB`;
+}
+
 export function frameMonitorOptionsFromEnv(
   env: FrameMonitorEnv = process.env,
 ): FrameMonitorOptions {
@@ -66,6 +71,7 @@ export function createTuiFrameMonitor(
     ((line: string) => {
       process.stderr.write(line);
     });
+  const memoryUsage = options.memoryUsage ?? (() => process.memoryUsage());
 
   let frameCount = 0;
   let slowFrames = 0;
@@ -81,14 +87,24 @@ export function createTuiFrameMonitor(
           1,
         )} optimize=${phases.optimize.toFixed(1)} write=${phases.write.toFixed(
           1,
-        )} patches=${phases.patches}`
+        )} patches=${phases.patches} yoga=${phases.yoga.toFixed(
+          1,
+        )} commit=${phases.commit.toFixed(1)} yogaVisited=${
+          phases.yogaVisited
+        } yogaMeasured=${phases.yogaMeasured} yogaCacheHits=${
+          phases.yogaCacheHits
+        } yogaLive=${phases.yogaLive}`
       : "";
     const inputSummary =
       inputLatency === null ? "" : ` inputLatency=${inputLatency.toFixed(1)}ms`;
+    const mem = memoryUsage();
+    const memorySummary = ` rss=${formatMiB(mem.rss)} heap=${formatMiB(
+      mem.heapUsed,
+    )}`;
     write(
       `[agenc:tui-frame] ${reason} frame=${frameCount} duration=${event.durationMs.toFixed(
         1,
-      )}ms max=${maxDurationMs.toFixed(1)}ms slow=${slowFrames} flicker=${flickerFrames}${inputSummary}${phaseSummary}\n`,
+      )}ms max=${maxDurationMs.toFixed(1)}ms slow=${slowFrames} flicker=${flickerFrames}${inputSummary}${memorySummary}${phaseSummary}\n`,
     );
   }
 
@@ -125,12 +141,15 @@ export function createTuiFrameMonitor(
       }
 
       if (frameCount % options.reportEvery === 0) {
+        const mem = memoryUsage();
         write(
           `[agenc:tui-frame] summary frames=${frameCount} max=${maxDurationMs.toFixed(
             1,
           )}ms maxInputLatency=${maxInputLatencyMs.toFixed(
             1,
-          )}ms slow=${slowFrames} flicker=${flickerFrames}\n`,
+          )}ms slow=${slowFrames} flicker=${flickerFrames} rss=${formatMiB(
+            mem.rss,
+          )} heap=${formatMiB(mem.heapUsed)}\n`,
         );
       }
     },

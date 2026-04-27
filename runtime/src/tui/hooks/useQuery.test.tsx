@@ -485,6 +485,53 @@ describe("useQuery", () => {
     unmount();
   });
 
+  test("does not retain oversized tool payloads in TUI event state", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    const largeResult = "x".repeat(80_000);
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-1",
+      seq: 1,
+      msg: { type: "turn_started", payload: { turnId: "turn-large" } },
+    });
+    session.emitEventLog({
+      id: "evt-2",
+      seq: 2,
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call-large",
+          result: largeResult,
+          isError: false,
+        },
+      },
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    const completed = latest!.events.find(
+      (event) => event.type === "tool_call_completed",
+    );
+    expect(completed).toBeDefined();
+    expect(
+      completed?.type === "tool_call_completed"
+        ? completed.payload.result.length
+        : largeResult.length,
+    ).toBeLessThan(largeResult.length);
+    expect(
+      completed?.type === "tool_call_completed"
+        ? completed.payload.result
+        : "",
+    ).toContain("omitted from TUI transcript");
+    unmount();
+  });
+
   test("trims TUI history to the previous compact boundary", async () => {
     const session = createFakeSession({
       withEventLog: true,

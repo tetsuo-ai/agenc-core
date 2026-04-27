@@ -92,6 +92,36 @@ export interface ApplyToolResultBudgetResult<T> {
   readonly newlyReplaced: ReadonlyArray<ToolResultReplacementRecord>;
 }
 
+/**
+ * Mirror already-known tool-result replacements back into a live in-memory
+ * transcript. This follows openclaude's `applyToolResultReplacementsToMessages`
+ * contract: once a tool result has been replaced for model use, the original
+ * oversized string must be dropped from the long-lived message array too.
+ */
+export function applyToolResultReplacementsToMessages<T>(
+  messages: T,
+  replacements: ReadonlyMap<string, string>,
+): T {
+  if (replacements.size === 0 || !Array.isArray(messages)) return messages;
+
+  let changed = false;
+  const next = (messages as unknown as ReadonlyArray<LLMMessage>).map(
+    (message) => {
+      if (message.role !== "tool") return message;
+      const id = message.toolCallId;
+      if (typeof id !== "string" || id.length === 0) return message;
+      const replacement = replacements.get(id);
+      if (replacement === undefined || message.content === replacement) {
+        return message;
+      }
+      changed = true;
+      return { ...message, content: replacement };
+    },
+  );
+
+  return (changed ? next : messages) as T;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────
@@ -369,24 +399,14 @@ export async function applyToolResultBudget<T>(
 
   // Build new array with replacements applied. Pass through any
   // message whose id is not in replacementMap by reference.
-  let changed = false;
-  const next: LLMMessage[] = messagesIn.map((message) => {
-    if (message.role !== "tool") return message;
-    const id = message.toolCallId;
-    if (typeof id !== "string" || id.length === 0) return message;
-    const replacement = replacementMap.get(id);
-    if (replacement === undefined) return message;
-    if (message.content === replacement) return message;
-    changed = true;
-    return { ...message, content: replacement };
-  });
+  const next = applyToolResultReplacementsToMessages(messages, replacementMap);
 
   if (newlyReplaced.length > 0 && writeToTranscript) {
     writeToTranscript(newlyReplaced);
   }
 
   return {
-    messages: (changed ? next : messages) as T,
+    messages: next,
     newlyReplaced,
   };
 }

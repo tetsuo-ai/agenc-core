@@ -66,7 +66,10 @@ import type {
 } from "../session/turn-state.js";
 import { finalContextTokensFromLastResponse } from "../recovery/_deps/tokens.js";
 import { tokenCountWithEstimation } from "../llm/compact/_deps/token-counts.js";
-import { applyToolResultBudget } from "./_deps/tool-result-storage.js";
+import {
+  applyToolResultBudget,
+  applyToolResultReplacementsToMessages,
+} from "./_deps/tool-result-storage.js";
 import { recordContentReplacement } from "./_deps/session-storage.js";
 
 /**
@@ -321,6 +324,12 @@ export async function prepareContext(
     skipToolNames,
   );
   messagesForQuery = toolResultBudgetResult.messages as LLMMessage[];
+  if ((state.contentReplacementState?.replacements.size ?? 0) > 0) {
+    state.messages = applyToolResultReplacementsToMessages(
+      state.messages,
+      state.contentReplacementState?.replacements ?? new Map(),
+    );
+  }
 
   // Stage 3: snip compaction.
   let snipTokensFreed = 0;

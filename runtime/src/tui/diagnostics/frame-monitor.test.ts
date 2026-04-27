@@ -23,6 +23,14 @@ describe("TUI frame monitor", () => {
       reportEvery: 100,
       now: () => now,
       write: (line) => lines.push(line),
+      memoryUsage: () =>
+        ({
+          rss: 128 * 1024 * 1024,
+          heapTotal: 64 * 1024 * 1024,
+          heapUsed: 32 * 1024 * 1024,
+          external: 0,
+          arrayBuffers: 0,
+        }) as NodeJS.MemoryUsage,
     });
 
     expect(monitor).not.toBeNull();
@@ -52,6 +60,9 @@ describe("TUI frame monitor", () => {
 
     expect(lines.join("")).toContain("slow-input");
     expect(lines.join("")).toContain("flicker");
+    expect(lines.join("")).toContain("rss=128.0MiB");
+    expect(lines.join("")).toContain("heap=32.0MiB");
+    expect(lines.join("")).toContain("yogaLive=0");
   });
 
   it("returns null when disabled", () => {

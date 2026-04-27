@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
+  DEFAULT_LEGACY_EVENT_QUEUE_DEPTH,
   Session,
   type Event,
   type PendingProviderSwitch,
@@ -161,7 +162,10 @@ function mkProviderWithClient(client: ProviderHttpClient): LLMProvider {
  * permission-registry bootstrap is exercised.
  */
 function buildSession(
-  overrides: { services?: Partial<SessionServices> } = {},
+  overrides: {
+    services?: Partial<SessionServices>;
+    eventQueue?: AsyncQueue<Event> | null;
+  } = {},
 ): Session {
   const services = {
     mcpConnectionManager: {
@@ -192,7 +196,9 @@ function buildSession(
     jsRepl: { id: "repl-test" },
     config: mkConfig(),
     modelInfo: mkModelInfo(),
-    eventQueue: new AsyncQueue<Event>(),
+    ...(overrides.eventQueue === null
+      ? {}
+      : { eventQueue: overrides.eventQueue ?? new AsyncQueue<Event>() }),
   };
   return new Session(opts);
 }
@@ -247,6 +253,29 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
 
     expect(session.services.contextCollapse).toBe(contextCollapseService);
     expect(session.services.querySource).toBe("repl_main_thread");
+  });
+
+  it("bounds the default legacy event queue when no caller supplies one", () => {
+    const session = buildSession({ eventQueue: null });
+
+    for (
+      let index = 0;
+      index < DEFAULT_LEGACY_EVENT_QUEUE_DEPTH + 2;
+      index += 1
+    ) {
+      session.emit({
+        id: `evt-${index}`,
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "test",
+            message: `event ${index}`,
+          },
+        },
+      });
+    }
+
+    expect(session.txEvent.size).toBe(DEFAULT_LEGACY_EVENT_QUEUE_DEPTH);
   });
 
   it("preserves a caller-supplied registry instead of replacing it", () => {

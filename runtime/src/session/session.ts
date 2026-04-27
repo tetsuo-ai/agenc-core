@@ -620,6 +620,8 @@ export interface AppliedProviderSwitchResult {
   readonly reason?: string;
 }
 
+export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
+
 /** Abort reason classification (per I-7). */
 export type AbortReason =
   | "user_interrupt"
@@ -727,7 +729,11 @@ export class Session {
   /** codex: `conversation_id: ThreadId` */
   readonly conversationId: ThreadId;
 
-  /** codex: `tx_event: Sender<Event>` — event log emit channel. T6 sidecars consume. */
+  /**
+   * Legacy event stream. EventLog is the source-of-truth fanout path; this
+   * bounded queue remains only for older consumers that still call
+   * `session.txEvent.stream()`.
+   */
   readonly txEvent: AsyncQueue<Event>;
 
   /** codex: `agent_status: watch::Sender<AgentStatus>` — status with replay-current. */
@@ -891,7 +897,9 @@ export class Session {
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
-    this.txEvent = opts.eventQueue ?? new AsyncQueue<Event>();
+    this.txEvent =
+      opts.eventQueue ??
+      new AsyncQueue<Event>({ maxDepth: DEFAULT_LEGACY_EVENT_QUEUE_DEPTH });
     this.agentStatus = new BehaviorSubject<AgentStatus>(
       opts.agentStatus ?? { status: "idle" },
     );

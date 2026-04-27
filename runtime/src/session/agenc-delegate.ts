@@ -660,7 +660,6 @@ export function spawnAgenCDelegateThread(
     jsRepl: parent.jsRepl,
     config: req.config,
     modelInfo: reviewerModelInfo,
-    eventQueue: new AsyncQueue<Event>(),
     agentStatus: { status: "idle" },
   });
 

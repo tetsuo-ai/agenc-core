@@ -703,6 +703,58 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("caps large tool results in display messages", () => {
+    const largeResult = "x".repeat(80_000);
+    const messages = eventsToMessages([
+      { type: "turn_started", payload: { turnId: "turn-large-result" } },
+      {
+        type: "tool_call_started",
+        payload: { callId: "call-large", toolName: "Read", args: "{}" },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call-large",
+          result: largeResult,
+          isError: false,
+        },
+      },
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.toolResultContent?.length).toBeLessThan(
+      largeResult.length,
+    );
+    expect(messages[0]?.toolResultContent).toContain(
+      "omitted from TUI transcript",
+    );
+  });
+
+  test("caps large exec output in display messages", () => {
+    const stdout = `head\n${"x".repeat(80_000)}\ntail`;
+    const messages = eventsToMessages([
+      { type: "turn_started", payload: { turnId: "turn-large-exec" } },
+      {
+        type: "exec_command_begin",
+        payload: { callId: "exec-large", command: "yes", cwd: "/tmp" },
+      },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-large",
+          exitCode: 0,
+          stdout,
+        },
+      },
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.execStdout?.length).toBeLessThan(stdout.length);
+    expect(messages[0]?.execStdout).toContain("head");
+    expect(messages[0]?.execStdout).toContain("tail");
+    expect(messages[0]?.execStdout).toContain("omitted from TUI transcript");
+  });
+
   test("absorbs phase-event ToolSearch rows silently", () => {
     const events: TranscriptSourceEvent[] = [
       { type: "turn_start", turnIndex: 0 },
