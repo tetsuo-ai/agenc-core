@@ -1,4 +1,5 @@
 import type { GatewayChannelConfig, GatewayChannelStatus } from "./types.js";
+import { buildGatewayConnectorAbiStatus } from "./connector-abi.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -18,6 +19,13 @@ function inferGatewayChannelMode(
   return isRecord(config.webhook) ? "webhook" : "polling";
 }
 
+function isConnectorStatusCandidate(
+  name: string,
+  config: GatewayChannelConfig | undefined,
+): boolean {
+  return name === "telegram" || (isRecord(config) && config.type === "plugin");
+}
+
 export function buildGatewayChannelStatus(
   name: string,
   params: {
@@ -33,6 +41,9 @@ export function buildGatewayChannelStatus(
   const configured = targetConfig !== undefined;
   const enabled = configured && targetConfig.enabled !== false;
   const mode = inferGatewayChannelMode(name, targetConfig);
+  const abi = isConnectorStatusCandidate(name, targetConfig)
+    ? buildGatewayConnectorAbiStatus()
+    : undefined;
 
   let summary: string | undefined;
   if (params.pendingRestart && params.active && !configured) {
@@ -67,6 +78,7 @@ export function buildGatewayChannelStatus(
     health: params.health,
     pendingRestart: params.pendingRestart,
     ...(mode ? { mode } : {}),
+    ...(abi ? { abi } : {}),
     ...(summary ? { summary } : {}),
   };
 }

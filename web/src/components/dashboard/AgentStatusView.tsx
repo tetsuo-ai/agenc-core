@@ -260,6 +260,11 @@ export function AgentStatusView({ status, onRefresh }: AgentStatusViewProps) {
                       {channel.summary ? (
                         <div className="mt-1 text-[11px] text-bbs-gray break-all">{channel.summary}</div>
                       ) : null}
+                      {channel.abi ? (
+                        <div className="mt-1 text-[10px] text-bbs-gray break-all">
+                          ABI plugin {channel.abi.plugin_api_version} / host {channel.abi.host_api_version}
+                        </div>
+                      ) : null}
                     </div>
                     <span className={`ml-auto ${
                       channel.active

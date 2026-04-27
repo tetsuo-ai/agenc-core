@@ -1,9 +1,25 @@
 # @tetsuo-ai/web
 
-Private dashboard/client surface for AgenC operators.
+Daemon-backed dashboard surface for AgenC operators.
 
 This workspace owns the web dashboard build under `src/`, static assets under
 `public/`, and browser-facing tests under `tests/`.
+
+The dashboard is the public `agenc ui` product surface. It is always a client
+of the local daemon/gateway mounted at `/ui/`; it must not create a second
+runtime, independent session store, connector service, or marketplace authority.
+`agenc ui` opens the loopback daemon URL (`http://127.0.0.1:<port>/ui/`) and
+`agenc ui --no-open` prints the same URL for SSH and automation handoff.
+
+Access rules:
+
+- WebSocket state/actions must come from the daemon control plane.
+- The browser connects back to the same daemon origin unless an explicit test
+  URL is provided.
+- If `auth.secret` is configured, local dashboard access requires
+  `auth.localBypass=true`; otherwise `agenc ui` fails before opening a browser.
+- TUI, CLI, shell, and web sessions all share the same daemon session and policy
+  authority.
 
 Current shell split:
 

@@ -265,6 +265,10 @@ describe("connector CLI lifecycle", () => {
               active: true,
               health: "healthy",
               mode: "polling",
+              abi: {
+                plugin_api_version: "1.0.0",
+                host_api_version: "1.0.0",
+              },
               pendingRestart: true,
               summary: "Config changed on disk; restart the daemon to apply connector changes.",
             },
@@ -298,6 +302,10 @@ describe("connector CLI lifecycle", () => {
           name: "telegram",
           active: true,
           pendingRestart: true,
+          abi: {
+            plugin_api_version: "1.0.0",
+            host_api_version: "1.0.0",
+          },
         }),
       ],
     });

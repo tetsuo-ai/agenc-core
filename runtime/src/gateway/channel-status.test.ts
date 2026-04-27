@@ -15,6 +15,10 @@ describe("buildGatewayChannelStatus", () => {
     });
 
     expect(status.mode).toBe("polling");
+    expect(status.abi).toEqual({
+      plugin_api_version: "1.0.0",
+      host_api_version: "1.0.0",
+    });
     expect(status.summary).toBe("Connector is active and healthy.");
   });
 
