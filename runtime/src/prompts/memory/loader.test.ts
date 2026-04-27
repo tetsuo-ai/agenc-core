@@ -25,7 +25,7 @@ async function makeTempMemdir(): Promise<string> {
 }
 
 describe("loadMemoryPrompt", () => {
-  test("happy path: returns index header + each topic file", async () => {
+  test("returns policy text without injecting index or topic files", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
     await writeFile(
@@ -45,10 +45,12 @@ describe("loadMemoryPrompt", () => {
       memoryDir: dir,
       memoryMdPath: mdPath,
     });
-    expect(result.entries.length).toBe(2);
-    expect(result.text).toContain("body A");
-    expect(result.text).toContain("body B");
-    expect(result.text).toContain("# MEMORY.md");
+    expect(result.entries).toEqual([]);
+    expect(result.text).toContain("# Memory");
+    expect(result.text).toContain(dir);
+    expect(result.text).not.toContain("body A");
+    expect(result.text).not.toContain("body B");
+    expect(result.text).not.toContain("# MEMORY.md");
     expect(result.truncated).toBe(false);
   });
 
@@ -63,7 +65,7 @@ describe("loadMemoryPrompt", () => {
     expect(result.truncated).toBe(false);
   });
 
-  test("includes memory_summary.md before MEMORY.md when present", async () => {
+  test("does not inject memory_summary.md or MEMORY.md content", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
     await writeFile(join(dir, "memory_summary.md"), "summary first\n");
@@ -73,59 +75,40 @@ describe("loadMemoryPrompt", () => {
       memoryDir: dir,
       memoryMdPath: mdPath,
     });
-    expect(result.text).toContain("# memory_summary.md\nsummary first");
-    expect(result.text.indexOf("# memory_summary.md")).toBeLessThan(
-      result.text.indexOf("# MEMORY.md"),
-    );
+    expect(result.text).toContain("durable memory");
+    expect(result.text).not.toContain("summary first");
+    expect(result.text).not.toContain("index second");
   });
 
   test("respects maxLines cap", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
-    // Many pointers → many topic files → lots of lines.
-    let indexLines = "# idx\n";
-    for (let i = 0; i < 20; i++) {
-      indexLines += `- [T${i}](t${i}.md)\n`;
-      await writeFile(
-        join(dir, `t${i}.md`),
-        `---\nname: T${i}\ntype: user\n---\n${"line\n".repeat(20)}`,
-      );
-    }
-    await writeFile(mdPath, indexLines);
+    await writeFile(mdPath, "# idx\n- [T](t.md)\n");
 
     const result = await loadMemoryPrompt({
       memoryDir: dir,
       memoryMdPath: mdPath,
-      maxLines: 50,
+      maxLines: 1,
     });
     expect(result.truncated).toBe(true);
-    expect(result.lineCount).toBeLessThanOrEqual(50);
-    expect(result.entries.length).toBeLessThan(20);
+    expect(result.lineCount).toBeLessThanOrEqual(1);
+    expect(result.entries).toEqual([]);
   });
 
   test("respects maxBytes cap", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
-    const big = "x".repeat(5_000);
     await writeFile(mdPath, "# idx\n- [A](a.md)\n- [B](b.md)\n");
-    await writeFile(
-      join(dir, "a.md"),
-      `---\nname: A\ntype: user\n---\n${big}\n`,
-    );
-    await writeFile(
-      join(dir, "b.md"),
-      `---\nname: B\ntype: user\n---\n${big}\n`,
-    );
     const result = await loadMemoryPrompt({
       memoryDir: dir,
       memoryMdPath: mdPath,
-      maxBytes: 6_000,
+      maxBytes: 20,
     });
     expect(result.truncated).toBe(true);
-    expect(result.byteCount).toBeLessThanOrEqual(6_000);
+    expect(result.byteCount).toBeLessThanOrEqual(20);
   });
 
-  test("skips topic files with malformed frontmatter", async () => {
+  test("does not dereference topic files", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
     await writeFile(mdPath, "# idx\n- [Bad](bad.md)\n- [Good](good.md)\n");
@@ -138,8 +121,8 @@ describe("loadMemoryPrompt", () => {
       memoryDir: dir,
       memoryMdPath: mdPath,
     });
-    expect(result.entries.length).toBe(1);
-    expect(result.entries[0].frontmatter.name).toBe("Good");
+    expect(result.entries).toEqual([]);
+    expect(result.text).not.toContain("good body");
   });
 });
 
@@ -193,35 +176,26 @@ describe("loadMemoryPrompt cap precision", () => {
   test("maxLines cap counts actual newlines, not split-piece over-count", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
-    // Index has exactly 2 newlines (`# idx\n- [A](a.md)\n`).
     await writeFile(mdPath, "# idx\n- [A](a.md)\n");
-    // Topic file: frontmatter + 10 body lines. parseFrontmatter strips
-    // the trailing newlines from the body, so body ends up as
-    // "line\nline\n...line" (9 newlines between 10 "line"s). The emitted
-    // chunk is `## A\n<body>\n\n` — that's 1 (header) + 9 (body) + 2
-    // (trailing \n\n) = 12 newlines.
-    const body = "line\n".repeat(10);
-    await writeFile(join(dir, "a.md"), `---\nname: A\ntype: user\n---\n${body}`);
+    const baseline = await loadMemoryPrompt({
+      memoryDir: dir,
+      memoryMdPath: mdPath,
+    });
+    const exactLineCount = baseline.lineCount;
 
-    // The index header chunk is `# MEMORY.md\n<indexText trimmed>\n\n`
-    // i.e. `# MEMORY.md\n# idx\n- [A](a.md)\n\n` -> 4 newlines.
-    // Total newlines accumulated on success: 4 + 12 = 16.
-    // With maxLines=16 both chunks fit; with maxLines=15 the topic chunk
-    // must trip truncation. Under the old over-count (split("\n").length
-    // added one extra per chunk), this boundary was off-by-two.
     const ok = await loadMemoryPrompt({
       memoryDir: dir,
       memoryMdPath: mdPath,
-      maxLines: 16,
+      maxLines: exactLineCount,
     });
     expect(ok.truncated).toBe(false);
-    expect(ok.entries.length).toBe(1);
-    expect(ok.lineCount).toBe(16);
+    expect(ok.entries.length).toBe(0);
+    expect(ok.lineCount).toBe(exactLineCount);
 
     const capped = await loadMemoryPrompt({
       memoryDir: dir,
       memoryMdPath: mdPath,
-      maxLines: 15,
+      maxLines: exactLineCount - 1,
     });
     expect(capped.truncated).toBe(true);
     expect(capped.entries.length).toBe(0);
@@ -231,24 +205,16 @@ describe("loadMemoryPrompt cap precision", () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");
     await writeFile(mdPath, "# idx\n- [A](a.md)\n");
-    // 100 × 4-byte emoji = 400 bytes of body, even though String.length
-    // is 200 (surrogate pairs). Confirms Buffer.byteLength is used.
+    // Multi-byte path confirms Buffer.byteLength is used.
     const emoji = "\u{1F600}";
-    const body = emoji.repeat(100);
-    await writeFile(
-      join(dir, "a.md"),
-      `---\nname: A\ntype: user\n---\n${body}\n`,
-    );
+    const emojiDir = `${dir}${emoji}`;
     const result = await loadMemoryPrompt({
-      memoryDir: dir,
+      memoryDir: emojiDir,
       memoryMdPath: mdPath,
-      // Generous cap to accept header+body. Byte total far exceeds string
-      // length; truncation must NOT fire since we sized against bytes.
       maxBytes: 1_000,
     });
     expect(result.truncated).toBe(false);
-    expect(result.entries.length).toBe(1);
-    // Body alone is 400 bytes → result.byteCount must be > 400.
-    expect(result.byteCount).toBeGreaterThan(400);
+    expect(result.entries.length).toBe(0);
+    expect(result.byteCount).toBeGreaterThan(result.text.length);
   });
 });

@@ -77,17 +77,41 @@ describe("selectRelevantMemoriesForTurn", () => {
       entry("big", "feedback", "big memory", bigBody),
       entry("sm", "user", "small one"),
     ];
-    const picked = selectRelevantMemoriesForTurn(all, "anything", key, {
+    const picked = selectRelevantMemoriesForTurn(all, "tell me small", key, {
       maxBytesPerFile: 4_000,
     });
     expect(picked.map((p) => p.frontmatter.name)).toEqual(["sm"]);
+  });
+
+  test("does not select memories on type or recency without overlap", () => {
+    const key = {};
+    _resetAttachmentBudgetForTest(key);
+    const all = [
+      entry("fresh-project", "project", "m5 shell implementation"),
+      entry("fresh-feedback", "feedback", "renderer guidance"),
+    ];
+    const picked = selectRelevantMemoriesForTurn(
+      all,
+      "tell me about database migrations",
+      key,
+    );
+    expect(picked).toEqual([]);
+  });
+
+  test("skips single-word and greeting prompts", () => {
+    const key = {};
+    _resetAttachmentBudgetForTest(key);
+    const all = [entry("grok", "project", "grok model behavior")];
+
+    expect(selectRelevantMemoriesForTurn(all, "grok", key)).toEqual([]);
+    expect(selectRelevantMemoriesForTurn(all, "hello Grok", key)).toEqual([]);
   });
 
   test("respects per-session cumulative byte cap across turns", () => {
     const key = {};
     _resetAttachmentBudgetForTest(key);
     const mem = (n: string) =>
-      entry(n, "user", "generic", "body content", Date.now());
+      entry(n, "user", "body generic", "body content", Date.now());
     // Force each entry to 1000 bytes.
     const sized = [
       { ...mem("a"), byteLength: 1000 },
@@ -96,13 +120,13 @@ describe("selectRelevantMemoriesForTurn", () => {
       { ...mem("d"), byteLength: 1000 },
     ] as MemoryEntry[];
 
-    const first = selectRelevantMemoriesForTurn(sized, "body", key, {
+    const first = selectRelevantMemoriesForTurn(sized, "body content", key, {
       maxFiles: 4,
       maxBytesPerSession: 2_500,
     });
     expect(first.length).toBe(2);
     // Second call continues consuming the same session budget.
-    const second = selectRelevantMemoriesForTurn(sized, "body", key, {
+    const second = selectRelevantMemoriesForTurn(sized, "body content", key, {
       maxFiles: 4,
       maxBytesPerSession: 2_500,
     });

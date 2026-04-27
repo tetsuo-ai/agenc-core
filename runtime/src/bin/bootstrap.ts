@@ -458,6 +458,9 @@ function buildDeferredConfig(
     ...(config.personality !== undefined
       ? { personality: config.personality }
       : {}),
+    ...(config.autonomous_mode !== undefined
+      ? { autonomousMode: config.autonomous_mode }
+      : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
       : {}),
@@ -621,6 +624,7 @@ export interface LocalRuntimeBootstrap {
   readonly memoryDir: string;
   readonly memoryMdPath: string;
   readonly shutdown: () => Promise<void>;
+  readonly autonomousModeEnabled: boolean;
 }
 
 export async function bootstrapLocalRuntimeSession(
@@ -646,6 +650,8 @@ export async function bootstrapLocalRuntimeSession(
     argv,
   });
   const cli = readStartupCliFlags(argv);
+  const autonomousModeEnabled =
+    cli.autonomousMode === true || startup.config.autonomous_mode === true;
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
@@ -769,7 +775,10 @@ export async function bootstrapLocalRuntimeSession(
   }
   const conversationId =
     options.conversationId ?? `conv-${Date.now().toString(36)}`;
-  const config = buildDeferredConfig(workspaceRoot, model, startup.config);
+  const config = buildDeferredConfig(workspaceRoot, model, {
+    ...startup.config,
+    autonomous_mode: autonomousModeEnabled,
+  });
   const modelsManager = new StaticModelsManager({
     config: startup.config,
     fallbackProvider: resolvedProvider,
@@ -1260,6 +1269,7 @@ export async function bootstrapLocalRuntimeSession(
       memoryDir,
       memoryMdPath,
       shutdown,
+      autonomousModeEnabled,
     };
   } catch (err) {
     await shutdown();

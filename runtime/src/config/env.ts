@@ -9,6 +9,7 @@
 //   AGENC_WORKSPACE                                → workspace root
 //   AGENC_HOME                                     → ~/.agenc override
 //   AGENC_SIMPLE                                   → simple UI/mode
+//   AGENC_AUTONOMOUS                              → autonomous tick mode
 //   AGENC_MAX_BUDGET_USD                           → session cost budget
 //
 // `applyEnvOverrides(config)` layers env values onto a base config and
@@ -28,6 +29,7 @@ export interface EnvSnapshot {
   readonly AGENC_MODEL?: string;
   readonly AGENC_WORKSPACE?: string;
   readonly AGENC_SIMPLE?: string;
+  readonly AGENC_AUTONOMOUS?: string;
   readonly AGENC_MAX_BUDGET_USD?: string;
   readonly XAI_API_KEY?: string;
   readonly GROK_API_KEY?: string;
@@ -196,6 +198,9 @@ export function applyEnvOverrides(
   }
   if (e.AGENC_SIMPLE !== undefined && e.AGENC_SIMPLE.length > 0) {
     override.simpleMode = TRUTHY.has(e.AGENC_SIMPLE.toLowerCase());
+  }
+  if (e.AGENC_AUTONOMOUS !== undefined && e.AGENC_AUTONOMOUS.length > 0) {
+    override.autonomous_mode = TRUTHY.has(e.AGENC_AUTONOMOUS.toLowerCase());
   }
   const maxBudgetUsd = readPositiveNumber(e.AGENC_MAX_BUDGET_USD);
   if (maxBudgetUsd !== undefined) {

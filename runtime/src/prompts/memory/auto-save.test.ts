@@ -158,6 +158,23 @@ describe("isMemoryWorthy", () => {
       }),
     ).toBe(false);
   });
+
+  test("rejects ephemeral current-task status artifacts", () => {
+    expect(
+      isMemoryWorthy({
+        filePath: "/t.md",
+        frontmatter: {
+          name: "agenc-m5-step1-shellstate-inprogress",
+          description:
+            "M5 Step 1 ShellState extensions in progress, creating include/agenc/vars.h for dynamic scope stack per approved plan",
+          type: "project",
+          extra: {},
+        },
+        body:
+          "Current task status: Step 1 is in-progress and positioned for next step after creating include/agenc/vars.h.",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("maybeAutoSaveMemory", () => {

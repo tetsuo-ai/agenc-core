@@ -967,14 +967,16 @@ describe("env: resolvers", () => {
     expect(out.model).toBe(base.model);
   });
 
-  test("applyEnvOverrides propagates AGENC_WORKSPACE and AGENC_SIMPLE", () => {
+  test("applyEnvOverrides propagates AGENC_WORKSPACE, AGENC_SIMPLE, and AGENC_AUTONOMOUS", () => {
     const base = defaultConfig();
     const out = applyEnvOverrides(base, {
       AGENC_WORKSPACE: "/work/project",
       AGENC_SIMPLE: "true",
+      AGENC_AUTONOMOUS: "true",
     });
     expect(out.workspace).toBe("/work/project");
     expect(out.simpleMode).toBe(true);
+    expect(out.autonomous_mode).toBe(true);
   });
 
   test("applyEnvOverrides propagates AGENC_MAX_BUDGET_USD", () => {

@@ -43,7 +43,7 @@ import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import {
   AUTONOMOUS_TICK_TAG,
-  isAutonomousPermissionMode,
+  isAutonomousModeEnabled,
 } from "../session/autonomous-mode.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -512,21 +512,63 @@ The scratchpad is session-specific and isolated from the user's project.`;
 }
 
 export function getAutonomousWorkSection(
+  autonomousMode: boolean | undefined,
   permissionContext: ToolPermissionContext | null,
 ): string | null {
-  if (!isAutonomousPermissionMode(permissionContext)) return null;
-  return `# Autonomous Work
+  if (
+    !isAutonomousModeEnabled({
+      enabled: autonomousMode,
+      permissionContext,
+    })
+  ) {
+    return null;
+  }
+  return `# Autonomous work
 
-You are running autonomously. You may receive \`<${AUTONOMOUS_TICK_TAG}>\` prompts that keep you alive between turns. Treat each tick as "you're awake, continue useful work now." The time inside the tick is the user's current local time.
+You are running autonomously. You will receive \`<${AUTONOMOUS_TICK_TAG}>\` prompts that keep you alive between turns - just treat them as "you're awake, what now?" The time in each \`<${AUTONOMOUS_TICK_TAG}>\` is the user's current local time. Use it to judge the time of day - timestamps from external tools may be in a different timezone.
 
-A tick is not a request for commentary. If work remains, continue by using the appropriate tools. Do not respond with only a status message when there is a concrete next action.
+Multiple ticks may be batched into a single message. This is normal - just process the latest one. Never echo or repeat tick content in your response.
 
-Use the Sleep tool to control pacing when waiting for slow processes or when there is temporarily nothing useful to do. If a tick arrives and there is no useful action to take, call Sleep instead of writing idle status text.
+## Pacing
 
-Bias toward action:
-- Read files, search code, run tests, and make local edits without asking when the next step is routine and reversible.
-- If you are choosing between reasonable low-risk approaches, pick one and continue.
-- Pause for destructive, irreversible, shared-system, or data-exfiltration actions unless the user explicitly authorized that specific action.`;
+Use the Sleep tool to control how long you wait between actions. Sleep longer when waiting for slow processes, shorter when actively iterating. Each wake-up costs an API call, but the prompt cache expires after 5 minutes of inactivity - balance accordingly.
+
+**If you have nothing useful to do on a tick, you MUST call Sleep.** Never respond with only a status message like "still waiting" or "nothing to do" - that wastes a turn and burns tokens for no reason.
+
+## First wake-up
+
+On your very first tick in a new session, greet the user briefly and ask what they'd like to work on. Do not start exploring the codebase or making changes unprompted - wait for direction.
+
+## What to do on subsequent wake-ups
+
+Look for useful work. A good colleague faced with ambiguity doesn't just stop - they investigate, reduce risk, and build understanding. Ask yourself: what don't I know yet? What could go wrong? What would I want to verify before calling this done?
+
+Do not spam the user. If you already asked something and they haven't responded, do not ask again. Do not narrate what you're about to do - just do it.
+
+If a tick arrives and you have no useful action to take (no files to read, no commands to run, no decisions to make), call Sleep immediately. Do not output text narrating that you're idle - the user doesn't need "still waiting" messages.
+
+## Staying responsive
+
+When the user is actively engaging with you, check for and respond to their messages frequently. Treat real-time conversations like pairing - keep the feedback loop tight. If you sense the user is waiting on you, prioritize responding over continuing background work.
+
+## Bias toward action
+
+Act on your best judgment rather than asking for confirmation.
+
+- Read files, search code, explore the project, run tests, check types, run linters - all without asking.
+- Make local code changes when the next step is routine and reversible.
+- Commit only when the user asked for commits or the active session policy explicitly allows it.
+- If you're unsure between two reasonable low-risk approaches, pick one and go. You can always course-correct.
+- Pause for destructive, irreversible, shared-system, data-exfiltration, or remote-publishing actions unless the user explicitly authorized that specific action.
+
+## Be concise
+
+Keep your text output brief and high-level. The user does not need a play-by-play of your thought process or implementation details - they can see your tool calls. Focus text output on:
+- Decisions that need the user's input
+- High-level status updates at natural milestones
+- Errors or blockers that change the plan
+
+Do not narrate each step, list every file you read, or explain routine actions. If you can say it in one sentence, don't use three.`;
 }
 
 /**
@@ -580,6 +622,7 @@ export interface AssembleSystemPromptOpts {
    * mode for the model to reason about.
    */
   readonly permissionContext?: ToolPermissionContext | null;
+  readonly autonomousMode?: boolean;
   /** Override process.env for simple-mode resolution (testing only). */
   readonly envForSimpleMode?: NodeJS.ProcessEnv;
 }
@@ -659,8 +702,11 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "autonomous_work",
-      () => getAutonomousWorkSection(opts.permissionContext ?? null),
-      "autonomous keepalive follows the live permission mode",
+      () => getAutonomousWorkSection(
+        opts.autonomousMode,
+        opts.permissionContext ?? null,
+      ),
+      "autonomous keepalive follows explicit session mode",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",

@@ -351,6 +351,7 @@ export interface Config {
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly personality?: Personality;
+  readonly autonomousMode?: boolean;
   readonly approvalsReviewer?: string;
   readonly cwd: string;
   readonly features: ManagedFeatures;

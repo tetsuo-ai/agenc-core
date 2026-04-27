@@ -54,6 +54,10 @@ import {
   __systemPromptSectionCacheSize,
 } from "../prompts/sections.js";
 import {
+  buildRolloutFilename,
+  getProjectDir,
+} from "../session/session-store.js";
+import {
   loadMemoryPrompt,
   registerAutoSaveSidecar,
   maybeAutoSaveMemory,
@@ -1200,6 +1204,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
       memoryMdPath: mdPath,
     });
     expect(memory.text).toMatch(/MEMORY\.md/);
+    expect(memory.text).not.toContain("example index");
 
     const cfg = defaultConfig();
     const assembled = await assembleSystemPrompt({
@@ -1216,6 +1221,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
     expect(assembled.text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(assembled.text).toMatch(/project/);
     expect(assembled.text).toMatch(/MEMORY\.md/);
+    expect(assembled.text).not.toContain("example index");
     void session;
   });
 
@@ -1254,7 +1260,7 @@ describe("system-prompt assembly: project instructions + memory", () => {
     const session: object = { id: "test-session-cap" };
     // Override per-file cap to permit 40KB entries; session cap = 60KB
     // so only one should fit.
-    const picked = selectRelevantMemoriesForTurn(entries, "foobar", session, {
+    const picked = selectRelevantMemoriesForTurn(entries, "about foobar", session, {
       maxBytesPerFile: 50_000,
       maxBytesPerSession: 60_000,
     });
@@ -1342,7 +1348,8 @@ describe("prepareTurnRuntimeInputs", () => {
       registry: { tools: [{ name: "bash" }] },
     });
     expect(first.projectInstructions).toContain("PROJECT-ONE");
-    expect(first.memoryPromptText).toContain("MEMORY-ONE");
+    expect(first.memoryPromptText).toContain("# Memory");
+    expect(first.memoryPromptText).not.toContain("MEMORY-ONE");
     expect(first.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-ONE" },
     ]);
@@ -1361,7 +1368,8 @@ describe("prepareTurnRuntimeInputs", () => {
     });
     expect(second.projectInstructions).toContain("PROJECT-TWO");
     expect(second.projectInstructions).not.toContain("PROJECT-ONE");
-    expect(second.memoryPromptText).toContain("MEMORY-TWO");
+    expect(second.memoryPromptText).toContain("# Memory");
+    expect(second.memoryPromptText).not.toContain("MEMORY-TWO");
     expect(second.memoryPromptText).not.toContain("MEMORY-ONE");
     expect(second.mcpServers).toEqual([
       { name: "alpha", instructions: "MCP-TWO" },
@@ -2130,8 +2138,15 @@ describe("main() full-IIFE smoke", () => {
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "stub-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    await mkdir(join(tmpHome, "sessions"), { recursive: true });
-    await writeFile(join(tmpHome, "sessions", "resume-123.json"), "{}");
+    const sessionDir = join(getProjectDir(tmpCwd), "sessions", "resume-123");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      join(sessionDir, buildRolloutFilename(Date.now(), "resume-123")),
+      JSON.stringify({
+        type: "user_message",
+        payload: { message: "resume fixture" },
+      }) + "\n",
+    );
 
     const providerMod = await import("../llm/provider.js");
     const createProviderSpy = vi

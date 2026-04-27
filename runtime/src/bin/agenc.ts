@@ -41,7 +41,7 @@ import { Session } from "../session/session.js";
 import {
   AUTONOMOUS_SUBMIT_SOURCE,
   AutonomousKeepaliveScheduler,
-  isAutonomousPermissionMode,
+  isAutonomousModeEnabled,
   type SessionSubmitOptions,
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -74,9 +74,6 @@ import {
 } from "../prompts/agenc-md.js";
 import {
   loadMemoryPrompt,
-  scanMemoryDir,
-  selectRelevantMemoriesForTurn,
-  injectAttachmentsIntoPrompt,
 } from "../prompts/memory/index.js";
 import {
   expandFileMentions,
@@ -129,6 +126,7 @@ export function formatCliHelpText(): string {
     "  --model <name>                           Override the startup model",
     "  --profile <name>                         Use a named config profile",
     "  --permission-mode <mode>                 Override the startup permission mode",
+    "  --autonomous                            Enable autonomous tick mode",
     "  --dangerously-bypass-approvals-and-sandbox",
     "  --yolo",
     "  --allow-dangerously-skip-permissions     Skip approval prompts",
@@ -531,8 +529,7 @@ export interface RunSingleTurnOpts {
  * Drive a single LLM turn through the T10 pipeline:
  *   1. drain the I-47 config-reload latch (between-turn only)
  *   2. assemble the system prompt (tiered instructions + memory tail)
- *   3. inject per-turn memory attachments
- *   4. invoke `runTurn` and forward every event
+ *   3. invoke `runTurn` and forward every event
  *
  * A future multi-turn REPL loop calls this repeatedly with the same
  * session + ctx and a fresh `input` each iteration. Today `main()`
@@ -585,20 +582,13 @@ export async function* runSingleTurn(
     enabledToolNames: turnInputs.enabledToolNames,
     provider: opts.provider,
     permissionContext,
+    autonomousMode:
+      (opts.ctx.config as { readonly autonomousMode?: boolean } | undefined)
+        ?.autonomousMode === true,
   });
 
-  const selectedMemories = selectRelevantMemoriesForTurn(
-    turnInputs.allMemories,
-    opts.displayInput ?? opts.input,
-    opts.session,
-  );
-  const systemPrompt = injectAttachmentsIntoPrompt(
-    assembled.text,
-    selectedMemories,
-  );
-
   const iter = drive(opts.session, opts.ctx, opts.input, {
-    systemPrompt,
+    systemPrompt: assembled.text,
     displayUserMessage: opts.displayInput,
   });
   while (true) {
@@ -658,12 +648,10 @@ export async function prepareTurnRuntimeInputs(params: {
     memoryDir: params.memoryDir,
     memoryMdPath: params.memoryMdPath,
   });
-  const memoryScan = await scanMemoryDir(params.memoryDir);
-
   return {
     projectInstructions: assembledProjectInstructions,
     memoryPromptText: loadedMemory.text,
-    allMemories: memoryScan.entries,
+    allMemories: [],
     enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
     mcpServers: await loadSessionMcpServerInstructions(params.session, currentConfig),
   };
@@ -749,6 +737,7 @@ function installTuiSessionContract(params: {
   readonly configStore: ConfigStore;
   readonly agencHome: string;
   readonly resolvedProvider: string;
+  readonly autonomousModeEnabled: boolean;
   readonly loadTurnInputsFn: () => Promise<PreparedTurnRuntimeInputs>;
 }): () => void {
   const configReloadLatch: ConfigReloadLatch = { requested: false };
@@ -756,7 +745,10 @@ function installTuiSessionContract(params: {
   installSignalHandlers(() => sessionRef, configReloadLatch);
   const autonomousKeepalive = new AutonomousKeepaliveScheduler({
     isActive: () =>
-      isAutonomousPermissionMode(params.session.permissionModeRegistry.current()),
+      isAutonomousModeEnabled({
+        enabled: params.autonomousModeEnabled,
+        permissionContext: params.session.permissionModeRegistry.current(),
+      }),
     submitTick: (tick) =>
       params.session.submit(tick, { source: AUTONOMOUS_SUBMIT_SOURCE }),
     onError: (error) => {
@@ -781,12 +773,20 @@ function installTuiSessionContract(params: {
       if (!isAutonomousTick) autonomousKeepalive.cancel();
       if (
         isAutonomousTick &&
-        !isAutonomousPermissionMode(params.session.permissionModeRegistry.current())
+        !isAutonomousModeEnabled({
+          enabled: params.autonomousModeEnabled,
+          permissionContext: params.session.permissionModeRegistry.current(),
+        })
       ) {
         return;
       }
 
       let completedPromptTurn = false;
+      let lastTurnToolNames = new Set<string>();
+      let lastTurnStopReason: Extract<
+        PhaseEvent,
+        { type: "turn_complete" }
+      >["stopReason"] | null = null;
       const runPromptTurn = async (
         prompt: string,
         opts: { readonly suppressDisplay?: boolean } = {},
@@ -806,6 +806,7 @@ function installTuiSessionContract(params: {
         // would populate the slot before the kernel tried to spawn,
         // and the kernel would then abort it as a "replaced" prior
         // turn.
+        const toolNames = new Set<string>();
         for await (const event of runSingleTurn({
           session: params.session,
           ctx,
@@ -817,9 +818,31 @@ function installTuiSessionContract(params: {
           loadTurnInputsFn: params.loadTurnInputsFn,
           provider: params.resolvedProvider,
         })) {
+          if (event.type === "tool_call") {
+            toolNames.add(event.toolCall.name);
+          }
+          if (event.type === "turn_complete") {
+            lastTurnStopReason = event.stopReason;
+          }
           params.session.emitPhaseEvent(event);
         }
+        lastTurnToolNames = toolNames;
         completedPromptTurn = true;
+        autonomousKeepalive.setContextBlocked(
+          lastTurnStopReason === "error",
+        );
+      };
+
+      const shouldScheduleNextAutonomousTick = (): boolean => {
+        if (!completedPromptTurn) return false;
+        if (lastTurnStopReason !== "completed") return false;
+        if (!autonomousKeepalive.isActive()) return false;
+        if (!isAutonomousTick) return true;
+        if (lastTurnToolNames.has("Sleep")) return true;
+        const activeToolNames = [...lastTurnToolNames].filter(
+          (name) => name !== "Brief" && name !== "SendUserMessage",
+        );
+        return activeToolNames.length > 0;
       };
 
       const emitSlashResult = (
@@ -874,7 +897,9 @@ function installTuiSessionContract(params: {
             return;
           case "passthrough":
             await runPromptTurn(slash.input);
-            if (completedPromptTurn) autonomousKeepalive.scheduleNext();
+            if (shouldScheduleNextAutonomousTick()) {
+              autonomousKeepalive.scheduleNext();
+            }
             return;
           case "unknown":
           case "blocked_by_bridge":
@@ -885,9 +910,14 @@ function installTuiSessionContract(params: {
             return;
           case "dispatched":
             emitSlashResult(message, slash.result);
+            if (slash.result.kind === "compact") {
+              autonomousKeepalive.setContextBlocked(false);
+            }
             if (slash.result.kind === "prompt") {
               await runPromptTurn(slash.result.content);
-              if (completedPromptTurn) autonomousKeepalive.scheduleNext();
+              if (shouldScheduleNextAutonomousTick()) {
+                autonomousKeepalive.scheduleNext();
+              }
               return;
             }
             if (slash.result.kind === "exit") {
@@ -899,7 +929,9 @@ function installTuiSessionContract(params: {
       }
 
       await runPromptTurn(message, { suppressDisplay: isAutonomousTick });
-      if (completedPromptTurn) autonomousKeepalive.scheduleNext();
+      if (shouldScheduleNextAutonomousTick()) {
+        autonomousKeepalive.scheduleNext();
+      }
     },
     flushEventLog: () => {
       params.session.rolloutStore?.flushDurable();
@@ -1278,6 +1310,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       memoryDir,
       memoryMdPath,
       shutdown,
+      autonomousModeEnabled,
     } = await bootstrapLocalRuntimeSession({
       env: process.env,
       argv: process.argv,
@@ -1303,6 +1336,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         configStore,
         agencHome,
         resolvedProvider,
+        autonomousModeEnabled,
         loadTurnInputsFn,
       });
 
