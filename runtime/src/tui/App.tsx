@@ -74,11 +74,13 @@ import {
   DEFAULT_STATUS_LINE_ITEMS,
   StatusLineConfig,
 } from "./cockpit/StatusLineConfig.js";
+import { StatusNotices } from "./cockpit/StatusNotices.js";
 import { MessageList } from "./transcript/MessageList.js";
 import {
   Composer,
   type ComposerSession,
 } from "./composer/Composer.js";
+import { QueuedCommands } from "./composer/QueuedCommands.js";
 import {
   InteractiveHandler,
   type InteractivePermissionRequest,
@@ -567,7 +569,16 @@ function TUIRoot({
     >
       {/* transcript region (middle, flex:1) */}
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-        <MessageList messages={messages} isStreaming={isStreaming} />
+        <StatusNotices
+          session={statusLineSession}
+          messages={messages}
+          pendingApprovalCount={pendingRequests.length}
+        />
+        <MessageList
+          messages={messages}
+          isStreaming={isStreaming}
+          verbose={transcriptMode && showAllInTranscript}
+        />
       </Box>
 
       {/* overlay stack rendered above the composer so modals stay inside
@@ -587,6 +598,7 @@ function TUIRoot({
         ) : null}
         {!transcriptMode ? (
           <>
+            <QueuedCommands session={session} isStreaming={isStreaming} />
             <Composer
               session={composerSession}
               config={

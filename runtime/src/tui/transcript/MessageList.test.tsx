@@ -243,7 +243,7 @@ describe("MessageList", () => {
       />,
     );
     const frame = await captureFrame(stdout);
-    expect(frame).toContain("FileRead");
+    expect(frame).toContain("Read");
     expect(frame).toContain("1→#");
     expect(frame).toContain("AgenC");
     expect(frame).toContain("Implementation");

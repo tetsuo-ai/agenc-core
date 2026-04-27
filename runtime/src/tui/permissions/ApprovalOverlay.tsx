@@ -324,6 +324,119 @@ export const EditFileRequest: React.FC<{ args: unknown }> = ({ args }) => {
   );
 };
 
+export const NotebookRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const path = coerceString(
+    record.notebook_path ?? record.file_path ?? record.path,
+  );
+  const editMode = coerceString(record.mode ?? record.edit_mode);
+  const cellId = coerceString(record.cell_id ?? record.cellId);
+  const source = coerceString(record.source ?? record.new_source ?? record.content);
+  return (
+    <Box flexDirection="column">
+      <Text dim>{`notebook · ${path || "(none)"}`}</Text>
+      {editMode ? <Text dim>{`mode · ${editMode}`}</Text> : null}
+      {cellId ? <Text dim>{`cell · ${cellId}`}</Text> : null}
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{truncateLines(source, MAX_PREVIEW_LINES) || "(empty)"}</Text>
+      </Box>
+    </Box>
+  );
+};
+
+export const WebRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const url = coerceString(record.url);
+  const query = coerceString(record.query ?? record.q);
+  const prompt = coerceString(record.prompt);
+  return (
+    <Box flexDirection="column">
+      {url ? <Text dim>{`url · ${url}`}</Text> : null}
+      {query ? <Text dim>{`query · ${query}`}</Text> : null}
+      {prompt ? <Text dim>{`prompt · ${truncateInline(prompt, 120)}`}</Text> : null}
+      {!url && !query && !prompt ? <Text dim>web request</Text> : null}
+    </Box>
+  );
+};
+
+export const SkillRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const name = coerceString(record.skill ?? record.name ?? record.id);
+  const prompt = coerceString(record.prompt ?? record.message ?? record.input);
+  return (
+    <Box flexDirection="column">
+      <Text dim>{`skill · ${name || "(unknown)"}`}</Text>
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{truncateLines(prompt, MAX_PREVIEW_LINES) || "(no prompt)"}</Text>
+      </Box>
+    </Box>
+  );
+};
+
+export const McpRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const server = coerceString(record.server ?? record.serverName);
+  const uri = coerceString(record.uri ?? record.resourceUri);
+  return (
+    <Box flexDirection="column">
+      {server ? <Text dim>{`server · ${server}`}</Text> : null}
+      {uri ? <Text dim>{`resource · ${uri}`}</Text> : null}
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{truncateLines(safeStringify(args ?? {}), MAX_ARGS_LINES)}</Text>
+      </Box>
+    </Box>
+  );
+};
+
+export const TaskRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const id = coerceString(record.id ?? record.taskId ?? record.task_id);
+  const subject = coerceString(record.subject ?? record.title ?? record.name);
+  const description = coerceString(record.description ?? record.prompt);
+  const status = coerceString(record.status);
+  return (
+    <Box flexDirection="column">
+      {id ? <Text dim>{`id · ${id}`}</Text> : null}
+      {subject ? <Text dim>{`subject · ${subject}`}</Text> : null}
+      {status ? <Text dim>{`status · ${status}`}</Text> : null}
+      {description ? (
+        <Box borderStyle="round" paddingX={1} flexDirection="column">
+          <Text>{truncateLines(description, MAX_PREVIEW_LINES)}</Text>
+        </Box>
+      ) : null}
+      {!id && !subject && !description && !status ? (
+        <Text dim>task/team request</Text>
+      ) : null}
+    </Box>
+  );
+};
+
+export const LspRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const path = extractPath(args);
+  const query = coerceString((args as Record<string, unknown> | null)?.query);
+  return (
+    <Box flexDirection="column">
+      <Text dim>{`path · ${path || "(workspace)"}`}</Text>
+      {query ? <Text dim>{`query · ${query}`}</Text> : null}
+    </Box>
+  );
+};
+
+export const SandboxRequest: React.FC<{ args: unknown }> = ({ args }) => {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const mode = coerceString(record.mode ?? record.policy ?? record.sandbox);
+  const path = extractPath(args);
+  return (
+    <Box flexDirection="column">
+      {mode ? <Text dim>{`mode · ${mode}`}</Text> : null}
+      {path ? <Text dim>{`path · ${path}`}</Text> : null}
+      <Box borderStyle="round" paddingX={1} flexDirection="column">
+        <Text>{truncateLines(safeStringify(args ?? {}), MAX_ARGS_LINES)}</Text>
+      </Box>
+    </Box>
+  );
+};
+
 export const GenericRequest: React.FC<{ args: unknown }> = ({ args }) => {
   const preview = truncateLines(safeStringify(args ?? {}), MAX_ARGS_LINES);
   return (
@@ -366,12 +479,40 @@ export const PlanApprovalRequest: React.FC<{ args: unknown }> = ({ args }) => {
 };
 
 function renderToolBody(tool: string, args: unknown): React.ReactElement {
+  const lowerTool = tool.toLowerCase();
   if (isPlanApprovalTool(tool)) {
     return <PlanApprovalRequest args={args} />;
   }
+  if (tool === "NotebookEdit") return <NotebookRequest args={args} />;
+  if (tool === "WebFetch" || tool === "WebSearch") {
+    return <WebRequest args={args} />;
+  }
+  if (tool === "Skill") return <SkillRequest args={args} />;
+  if (
+    tool === "ListMcpResourcesTool" ||
+    tool === "ReadMcpResourceTool" ||
+    tool === "ListMcpResources" ||
+    tool === "ReadMcpResource" ||
+    lowerTool.startsWith("mcp.")
+  ) {
+    return <McpRequest args={args} />;
+  }
+  if (
+    tool === "TaskCreate" ||
+    tool === "TaskGet" ||
+    tool === "TaskUpdate" ||
+    tool === "TaskList" ||
+    tool === "TeamCreate" ||
+    tool === "TeamDelete"
+  ) {
+    return <TaskRequest args={args} />;
+  }
+  if (tool === "LSP") return <LspRequest args={args} />;
+  if (lowerTool.includes("sandbox")) return <SandboxRequest args={args} />;
   switch (tool) {
     case "Bash":
     case "system.bash":
+    case "PowerShell":
       return <BashRequest args={args} />;
     case "write_file":
     case "Write":

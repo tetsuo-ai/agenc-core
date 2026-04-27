@@ -35,9 +35,11 @@ import { theme } from "../theme.js";
 
 import { StreamingMessage } from "./StreamingMessage.js";
 import { ExecCell, collapseOutput } from "./ExecCell.js";
+import { OffscreenFreeze } from "./OffscreenFreeze.js";
 import { PlanProgress, type PlanEvent } from "./PlanProgress.js";
 import { SlashResultRenderer } from "./SlashResultRenderer.js";
 import { ToolCell } from "./ToolCell.js";
+import { normalizeTranscriptMessages } from "./normalize.js";
 import type { SlashCommandResult } from "../_deps/commands.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -49,6 +51,7 @@ export type TranscriptMessageKind =
   | "assistant"
   | "plan_progress"
   | "tool_call"
+  | "tool_group"
   | "tool_result"
   | "activity"
   | "meta"
@@ -81,6 +84,12 @@ export interface TranscriptMessage {
   readonly slashInput?: string;
   readonly slashResult?: SlashCommandResult;
   readonly planEvents?: readonly PlanEvent[];
+  readonly groupedTools?: readonly {
+    readonly id: string;
+    readonly toolName: string;
+    readonly target: string;
+    readonly isError?: boolean;
+  }[];
 
   /**
    * When the message is a `tool_call` for a shell-exec tool, these
@@ -100,6 +109,8 @@ export interface MessageListProps {
   readonly messages: readonly TranscriptMessage[];
   /** True while an assistant_text stream is still landing deltas. */
   readonly isStreaming?: boolean;
+  /** Show every raw row without grouping/collapse. */
+  readonly verbose?: boolean;
 }
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -253,6 +264,37 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
       );
     }
 
+    case "tool_group": {
+      const groupedTools = message.groupedTools ?? [];
+      return (
+        <Box flexDirection="column">
+          <Box flexDirection="row">
+            <Text color={theme.colors.success}>{BLACK_CIRCLE}</Text>
+            <Text> </Text>
+            <Text bold>Tools</Text>
+            <Text dim>{`(${message.content})`}</Text>
+          </Box>
+          <Box flexDirection="column">
+            {groupedTools.slice(0, 8).map((tool) => (
+              <Box key={tool.id} flexDirection="row">
+                <Text dim>{"  ⎿  "}</Text>
+                <Text dim>{tool.toolName}</Text>
+                {tool.target.length > 0 ? (
+                  <Text dim>{` ${truncate(tool.target, 96)}`}</Text>
+                ) : null}
+              </Box>
+            ))}
+            {groupedTools.length > 8 ? (
+              <Box flexDirection="row">
+                <Text dim>{"  ⎿  "}</Text>
+                <Text dim>{`+${groupedTools.length - 8} more`}</Text>
+              </Box>
+            ) : null}
+          </Box>
+        </Box>
+      );
+    }
+
     case "activity": {
       const color =
         message.progressStream === "stderr"
@@ -344,16 +386,21 @@ function MessageRow({ message }: MessageRowProps): React.ReactElement | null {
 export const MessageList: React.FC<MessageListProps> = ({
   messages,
   isStreaming = false,
+  verbose = false,
 }) => {
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const terminalSize = useContext(TerminalSizeContext);
+  const normalizedMessages = useMemo(
+    () => normalizeTranscriptMessages(messages, { verbose }),
+    [messages, verbose],
+  );
   // Remember whether the operator was glued to the bottom at the moment
   // the last message arrived. Using a ref here instead of state avoids
   // re-rendering the whole list on every scroll tick.
   const stickyRef = useRef<boolean>(true);
-  const lastLengthRef = useRef<number>(messages.length);
+  const lastLengthRef = useRef<number>(normalizedMessages.length);
   const lastMutationKeyRef = useRef<string>(
-    transcriptMutationKey(messages, isStreaming),
+    transcriptMutationKey(normalizedMessages, isStreaming),
   );
 
   // Keep the sticky flag in sync with the real ScrollBox state. `subscribe`
@@ -379,19 +426,19 @@ export const MessageList: React.FC<MessageListProps> = ({
   useEffect(() => {
     const handle = scrollRef.current;
     if (!handle) return;
-    const nextKey = transcriptMutationKey(messages, isStreaming);
+    const nextKey = transcriptMutationKey(normalizedMessages, isStreaming);
     const previousKey = lastMutationKeyRef.current;
     const previousLength = lastLengthRef.current;
-    const grew = messages.length > previousLength;
+    const grew = normalizedMessages.length > previousLength;
     const mutatedInPlace = previousKey !== nextKey && !grew;
-    lastLengthRef.current = messages.length;
+    lastLengthRef.current = normalizedMessages.length;
     lastMutationKeyRef.current = nextKey;
     if (!grew && !mutatedInPlace) return;
     if (stickyRef.current || handle.isSticky()) {
       handle.scrollToBottom();
       stickyRef.current = true;
     }
-  }, [isStreaming, messages]);
+  }, [isStreaming, normalizedMessages]);
 
   const jumpBy = (delta: number): void => {
     const handle = scrollRef.current;
@@ -485,12 +532,12 @@ export const MessageList: React.FC<MessageListProps> = ({
   useKeybinding("scroll:bottom", scrollBottom, "transcript");
 
   const hasInlineStreamingAssistant =
-    messages.length > 0 &&
-    messages[messages.length - 1]?.kind === "assistant" &&
-    messages[messages.length - 1]?.isComplete === false;
+    normalizedMessages.length > 0 &&
+    normalizedMessages[normalizedMessages.length - 1]?.kind === "assistant" &&
+    normalizedMessages[normalizedMessages.length - 1]?.isComplete === false;
   const itemKeys = useMemo(
-    () => messages.map((message, index) => `${message.id}:${index}`),
-    [messages],
+    () => normalizedMessages.map((message, index) => `${message.id}:${index}`),
+    [normalizedMessages],
   );
   const virtual = useVirtualScroll(
     scrollRef,
@@ -498,7 +545,7 @@ export const MessageList: React.FC<MessageListProps> = ({
     terminalSize?.columns ?? 80,
   );
   const [visibleStart, visibleEnd] = virtual.range;
-  const visibleMessages = messages.slice(visibleStart, visibleEnd);
+  const visibleMessages = normalizedMessages.slice(visibleStart, visibleEnd);
 
   return (
     <ScrollBox
@@ -523,7 +570,12 @@ export const MessageList: React.FC<MessageListProps> = ({
               ref={virtual.measureRef(key)}
               flexDirection="column"
             >
-              <MessageRow message={message} />
+              <OffscreenFreeze
+                cacheKey={transcriptMutationKey([message], isStreaming)}
+                freeze={message.isComplete !== false}
+              >
+                <MessageRow message={message} />
+              </OffscreenFreeze>
             </Box>
           );
         })}

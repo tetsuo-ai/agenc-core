@@ -21,6 +21,10 @@ import { theme } from "../theme.js";
 import { DisplayLineBlock } from "./DisplayLineBlock.js";
 import { collapseOutput } from "./ExecCell.js";
 import { sanitizeTranscriptText } from "./sanitize.js";
+import {
+  renderToolPresentation,
+  type ToolRenderTone,
+} from "./tool-renderers.js";
 
 type ToolFamily =
   | "read"
@@ -328,6 +332,35 @@ function buildPresentation(
   }
 }
 
+function familyFromTone(tone: ToolRenderTone | undefined): ToolFamily | null {
+  switch (tone) {
+    case "read":
+      return "read";
+    case "write":
+      return "write";
+    case "edit":
+    case "notebook":
+      return "edit";
+    case "search":
+    case "web":
+    case "lsp":
+      return "search";
+    case "exec":
+      return "exec";
+    case "mcp":
+      return "mcp";
+    case "agent":
+    case "task":
+    case "team":
+    case "schedule":
+    case "plan":
+    case "skill":
+    case "generic":
+    case undefined:
+      return null;
+  }
+}
+
 function stripMcpEnvelope(input: string): string {
   return input.replace(/^Wall time: [^\n]*\nOutput:\n?/u, "").trimEnd();
 }
@@ -490,6 +523,40 @@ function resultDiffLines(value: string): ReturnType<typeof renderDiffDisplayLine
   return looksLikeDiffText(value) ? renderDiffDisplayLines(value) : [];
 }
 
+function diffFromEditArgs(family: ToolFamily, toolArgs: unknown): string {
+  if (family !== "edit") return "";
+  const beforeText = readRawStringField(toolArgs, [
+    "old_string",
+    "oldString",
+    "old_text",
+    "oldText",
+    "before",
+  ]);
+  const afterText = readRawStringField(toolArgs, [
+    "new_string",
+    "newString",
+    "new_text",
+    "newText",
+    "after",
+  ]);
+  if (
+    beforeText === undefined ||
+    afterText === undefined ||
+    beforeText === afterText
+  ) {
+    return "";
+  }
+  const beforeLines = beforeText.split("\n").map((line) => `-${line}`);
+  const afterLines = afterText.split("\n").map((line) => `+${line}`);
+  return [
+    "--- before",
+    "+++ after",
+    "@@ replace @@",
+    ...beforeLines,
+    ...afterLines,
+  ].join("\n");
+}
+
 function isNoOpEditFailure(
   family: ToolFamily,
   toolArgs: unknown,
@@ -590,9 +657,33 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   metadata,
   progress,
 }) => {
+  const rendererPresentation = useMemo(
+    () =>
+      renderToolPresentation({
+        toolName,
+        toolArgs,
+        result,
+        progress,
+        metadata,
+        isComplete,
+        isError,
+      }),
+    [isComplete, isError, metadata, progress, result, toolArgs, toolName],
+  );
   const presentation = useMemo(
-    () => buildPresentation(toolName, toolArgs),
-    [toolName, toolArgs],
+    () => {
+      const fallback = buildPresentation(toolName, toolArgs);
+      const toneFamily = familyFromTone(rendererPresentation?.tone);
+      return {
+        family: toneFamily ?? fallback.family,
+        target: rendererPresentation?.target ?? fallback.target,
+        argsSummary: fallback.argsSummary,
+        preserveResultLines:
+          rendererPresentation?.preserveResultLines ??
+          fallback.preserveResultLines,
+      };
+    },
+    [rendererPresentation, toolName, toolArgs],
   );
   const normalizedResult = useMemo(
     () => normalizeResult(toolName, presentation.family, result),
@@ -612,10 +703,14 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   );
   const diffDetailLines = useMemo(
     () =>
-      shellWriteBlock === null && !isError && normalizedResult.length > 0
-        ? resultDiffLines(normalizedResult)
+      shellWriteBlock === null && !isError
+        ? resultDiffLines(
+            normalizedResult.length > 0
+              ? normalizedResult
+              : diffFromEditArgs(presentation.family, toolArgs),
+          )
         : [],
-    [isError, normalizedResult, shellWriteBlock],
+    [isError, normalizedResult, presentation.family, shellWriteBlock, toolArgs],
   );
   const highlightedReadFilePath = readFilePathForHighlight(
     presentation.family,
@@ -626,6 +721,7 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     highlightedReadFilePath,
   );
   const suppressCell =
+    rendererPresentation?.hide === true ||
     isNoOpEditFailure(
       presentation.family,
       toolArgs,
@@ -654,6 +750,8 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     detail = compactToolErrorResult(presentation.family, normalizedResult);
   } else if (fileMutationSummary !== null) {
     detail = summarizeFileMutation(fileMutationSummary);
+  } else if (rendererPresentation?.detail !== undefined) {
+    detail = sanitizeTranscriptText(rendererPresentation.detail).trimEnd();
   } else if (
     normalizedResult.length > 0 &&
     !(presentation.family === "write" && !isError)
@@ -668,13 +766,15 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     presentation.argsSummary.length > 0 &&
     presentation.argsSummary !== "{}";
   const target = shellWriteBlock?.target ?? presentation.target;
+  const effectiveTitle =
+    shellWriteBlock !== null ? title : rendererPresentation?.title ?? title;
 
   return (
     <Box flexDirection="column">
       <Box flexDirection="row">
         <Text color={statusColor} dim={!isComplete && !isError}>{glyph}</Text>
         <Text> </Text>
-        <Text bold>{title}</Text>
+        <Text bold>{effectiveTitle}</Text>
         {target.length > 0 ? <Text dim>{`(${target})`}</Text> : null}
         {showArgs ? <Text dim>{` ${presentation.argsSummary}`}</Text> : null}
       </Box>

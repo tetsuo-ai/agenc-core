@@ -114,6 +114,8 @@ export interface SessionLike {
   subscribeToEvents?(cb: (event: PhaseEvent) => void): () => void;
   /** Optional submit hook driven from the Composer. */
   submit?(message: string): Promise<void>;
+  /** Whether mailbox/teammate/slash-command input is queued for the next turn. */
+  hasPendingInput?(): boolean;
   /** Turn-local interrupt hook used by Ctrl+C / Esc while a turn is active. */
   abortTurnIfActive?(
     turnId: string,
