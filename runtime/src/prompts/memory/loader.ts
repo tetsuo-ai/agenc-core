@@ -25,6 +25,7 @@ import { parseFrontmatter, type MemoryEntry } from "./types.js";
 import { withFsLock, type FsLockOpts } from "./fs-lock.js";
 import { stat } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
+import { memoryLayout } from "./layout.js";
 
 /** Default line cap for the assembled memory prompt. */
 export const DEFAULT_MEMORY_MAX_LINES = 200;
@@ -67,12 +68,26 @@ export async function loadMemoryPrompt(
   const maxLines = opts.maxLines ?? DEFAULT_MEMORY_MAX_LINES;
   const maxBytes = opts.maxBytes ?? DEFAULT_MEMORY_MAX_BYTES;
 
-  // Read the index first — this is the ordered pointer list.
+  const layout = memoryLayout(opts.memoryDir);
+
+  // Read the v2 summary first when present. This is the bounded
+  // navigation layer; MEMORY.md remains the searchable handbook/index.
+  let summaryText = "";
+  try {
+    summaryText = await readTextFile(layout.memorySummaryPath);
+  } catch {
+    summaryText = "";
+  }
+
+  // Read the index after the summary — this is the ordered pointer list.
   let indexText = "";
   try {
     indexText = await readTextFile(opts.memoryMdPath);
   } catch {
-    // No MEMORY.md — treat as empty memory.
+    indexText = "";
+  }
+
+  if (summaryText.trim().length === 0 && indexText.trim().length === 0) {
     return {
       text: "",
       entries: [],
@@ -113,7 +128,29 @@ export async function loadMemoryPrompt(
     return true;
   };
 
-  // Start with the index itself as the first block.
+  if (summaryText.trim().length > 0) {
+    const header = `# memory_summary.md\n${summaryText.replace(/\n+$/, "")}\n\n`;
+    if (!appendChunk(header)) {
+      const available = Math.max(0, maxBytes - byteCount);
+      if (available > 0) {
+        const sliced = header.slice(0, available);
+        const cutAt = sliced.lastIndexOf("\n");
+        const safe = cutAt > 0 ? sliced.slice(0, cutAt) : sliced;
+        accumulated += safe;
+        lineCount += countNewlines(safe);
+        byteCount += Buffer.byteLength(safe, "utf8");
+      }
+      return {
+        text: accumulated,
+        entries,
+        truncated: true,
+        lineCount,
+        byteCount,
+      };
+    }
+  }
+
+  // Then include the handbook/index itself.
   if (indexText.trim().length > 0) {
     const header = `# MEMORY.md\n${indexText.replace(/\n+$/, "")}\n\n`;
     if (!appendChunk(header)) {

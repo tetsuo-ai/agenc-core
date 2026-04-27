@@ -77,9 +77,12 @@ describe("attachmentsToMessages", () => {
     expect(full[0]?.content).toContain("Plan mode is active");
     expect(full[0]?.content).toContain(planFilePath);
     expect(full[0]?.content).toContain("Write tool");
+    expect(full[0]?.content).toContain("## Plan Workflow");
+    expect(full[0]?.content).toContain("### Phase 5: Call ExitPlanMode");
     expect(sparse[0]?.content).toContain("Plan mode is active");
     expect(sparse[0]?.content).toContain(planFilePath);
-    expect(sparse[0]?.content).toContain("Read-only tools");
+    expect(sparse[0]?.content).toContain("Plan mode still active");
+    expect(sparse[0]?.content).toContain("Read-only except plan file");
   });
 
   test("renders plan_mode_reentry and plan_mode_exit with appropriate prose", () => {
@@ -91,6 +94,7 @@ describe("attachmentsToMessages", () => {
       { kind: "plan_mode_exit", planFilePath, planExists: true },
     ]);
     expect(reentry[0]?.content).toContain("Re-entering plan mode");
+    expect(reentry[0]?.content).toContain("Treat this as a fresh planning session");
     expect(exit[0]?.content).toContain("Exited plan mode");
     expect(exit[0]?.content).toContain(planFilePath);
   });
@@ -104,9 +108,12 @@ describe("attachmentsToMessages", () => {
     ]);
     const exit = attachmentsToMessages([{ kind: "auto_mode_exit" }]);
     expect(full[0]?.content).toContain("Auto mode is active");
-    expect(full[0]?.content).toContain("autonomous");
+    expect(full[0]?.content).toContain("Auto Mode Active");
+    expect(full[0]?.content).toContain("Avoid data exfiltration");
     expect(sparse[0]?.content).toContain("Auto mode is active");
+    expect(sparse[0]?.content).toContain("Auto mode still active");
     expect(exit[0]?.content).toContain("exited auto mode");
+    expect(exit[0]?.content).toContain("clarifying questions");
   });
 
   test("renders date_change with the new date", () => {
@@ -114,7 +121,8 @@ describe("attachmentsToMessages", () => {
       { kind: "date_change", newDate: "2026-04-26" },
     ]);
     expect(out[0]?.content).toContain("2026-04-26");
-    expect(out[0]?.content).toContain("local calendar date");
+    expect(out[0]?.content).toContain("The date has changed");
+    expect(out[0]?.content).toContain("DO NOT mention this to the user");
   });
 
   test("renders critical_system_reminder verbatim", () => {
@@ -132,8 +140,8 @@ describe("attachmentsToMessages", () => {
     const out = attachmentsToMessages([
       { kind: "output_style", style: "minimal" },
     ]);
-    expect(out[0]?.content).toContain("minimal");
-    expect(out[0]?.content).toContain("output style");
+    expect(out[0]?.content).toContain("minimal output style is active");
+    expect(out[0]?.content).toContain("specific guidelines");
   });
 
   test("renders deferred_tools_delta with added and removed lines", () => {
@@ -145,8 +153,13 @@ describe("attachmentsToMessages", () => {
         removedNames: ["system.symbolSearch"],
       },
     ]);
-    expect(out[0]?.content).toContain("Tool catalog updated");
+    expect(out[0]?.content).toContain(
+      "The following deferred tools are now available via ToolSearch",
+    );
     expect(out[0]?.content).toContain("system.gitStatus: report repo state");
+    expect(out[0]?.content).toContain(
+      "The following deferred tools are no longer available",
+    );
     expect(out[0]?.content).toContain("system.symbolSearch");
   });
 
@@ -169,11 +182,17 @@ describe("attachmentsToMessages", () => {
         isInitial: false,
       },
     ]);
-    expect(initial[0]?.content).toContain("Available agents");
+    expect(initial[0]?.content).toContain(
+      "Available agent types for the Agent tool",
+    );
     expect(initial[0]?.content).toContain("explore — codebase exploration");
-    expect(delta[0]?.content).toContain("Agent listing updated");
+    expect(delta[0]?.content).toContain(
+      "New agent types are now available for the Agent tool",
+    );
     expect(delta[0]?.content).toContain("plan-reviewer");
-    expect(delta[0]?.content).toContain("Removed:");
+    expect(delta[0]?.content).toContain(
+      "The following agent types are no longer available",
+    );
   });
 
   test("renders mcp_instructions_delta with named blocks", () => {
@@ -185,9 +204,14 @@ describe("attachmentsToMessages", () => {
         removedNames: ["jira"],
       },
     ]);
-    expect(out[0]?.content).toContain("MCP server instructions updated");
-    expect(out[0]?.content).toContain("### github");
+    expect(out[0]?.content).toContain("# MCP Server Instructions");
+    expect(out[0]?.content).toContain(
+      "provided instructions for how to use their tools and resources",
+    );
     expect(out[0]?.content).toContain("Use the github MCP for issues.");
+    expect(out[0]?.content).toContain(
+      "Their instructions above no longer apply",
+    );
     expect(out[0]?.content).toContain("jira");
   });
 
@@ -201,6 +225,8 @@ describe("attachmentsToMessages", () => {
     ]);
     expect(out[0]?.content).toContain("src/foo.ts");
     expect(out[0]?.content).toContain("@@ -1 +1 @@");
+    expect(out[0]?.content).toContain("This change was intentional");
+    expect(out[0]?.content).toContain("don't revert it unless the user asks");
   });
 
   test("renders edited_image_file as a multimodal message with text + image parts", () => {
@@ -224,7 +250,32 @@ describe("attachmentsToMessages", () => {
       { kind: "agent_mention", agentType: "explore" },
     ]);
     expect(out[0]?.content).toContain("explore");
-    expect(out[0]?.content).toContain("agent");
+    expect(out[0]?.content).toContain(
+      "expressed a desire to invoke the agent",
+    );
+  });
+
+  test("uses AgenC branding and does not leak Claude-branded memory names", () => {
+    const planFilePath = "/home/u/.agenc/plans/active.md";
+    const rendered = attachmentsToMessages([
+      { kind: "plan_mode", variant: "full", planFilePath, planExists: false },
+      {
+        kind: "nested_memory",
+        path: "/repo/AGENC.md",
+        displayPath: "AGENC.md",
+        memoryType: "Project",
+        content: "Project rules go here.",
+        mtimeMs: 1_700_000_000_000,
+      },
+    ])
+      .map((message) =>
+        typeof message.content === "string" ? message.content : "",
+      )
+      .join("\n");
+
+    expect(rendered).toContain("AGENC.md");
+    expect(rendered).not.toContain("CLAUDE.md");
+    expect(rendered).not.toContain("Claude Code");
   });
 
   test("preserves attachment ordering across mixed kinds", () => {

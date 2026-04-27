@@ -24,6 +24,11 @@ import { readdir, stat } from "node:fs/promises";
 import { basename, join, sep } from "node:path";
 import { readTextFile } from "../_deps/file-read.js";
 import { parseFrontmatter, type MemoryEntry } from "./types.js";
+import {
+  MEMORY_INDEX_FILENAME,
+  MEMORY_SUMMARY_FILENAME,
+  RAW_MEMORIES_FILENAME,
+} from "./layout.js";
 
 /** Maximum number of memory files surfaced per scan. */
 export const MAX_MEMORY_FILES = 200;
@@ -35,7 +40,7 @@ export const MAX_MEMORY_BYTES = 25_000;
 export const MAX_SCAN_DEPTH = 3;
 
 /** Entry-file name — never returned from a scan. */
-export const ENTRYPOINT_NAME = "MEMORY.md";
+export const ENTRYPOINT_NAME = MEMORY_INDEX_FILENAME;
 
 export interface ScanResult {
   readonly entries: readonly MemoryEntry[];
@@ -77,7 +82,14 @@ export async function scanMemoryDir(
 
   const candidates = dirents.filter((rel) => {
     if (!rel.endsWith(".md")) return false;
-    if (basename(rel) === ENTRYPOINT_NAME) return false;
+    const base = basename(rel);
+    if (
+      base === ENTRYPOINT_NAME ||
+      base === MEMORY_SUMMARY_FILENAME ||
+      base === RAW_MEMORIES_FILENAME
+    ) {
+      return false;
+    }
     // Hidden files (anywhere in the path).
     for (const segment of rel.split(sep)) {
       if (segment.startsWith(".") && segment !== "." && segment !== "..") {

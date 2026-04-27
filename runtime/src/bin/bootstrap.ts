@@ -20,6 +20,7 @@ import {
   registerAutoSaveSidecar,
   type TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
+import { getSessionMemoryMode } from "../prompts/memory/index.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
@@ -1149,6 +1150,7 @@ export async function bootstrapLocalRuntimeSession(
             session: { memoryDir, memoryMdPath },
             extractor: extractMemoriesFn,
             getTurnState,
+            getMemoryMode: () => getSessionMemoryMode(s),
             emitWarning: (message: string) => {
               if (shutdownStarted) return;
               s.emit({

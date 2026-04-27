@@ -578,6 +578,27 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     expect(tiers.project?.path).toBe(join(pkgDir, "AGENC.md"));
   });
 
+  test("loadTieredInstructions includes unconditional .agenc/rules project rules", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-md-rules-"));
+    try {
+      mkdirSync(join(root, ".git"));
+      writeFileSync(join(root, "AGENC.md"), "ROOT");
+      mkdirSync(join(root, ".agenc", "rules"), { recursive: true });
+      writeFileSync(join(root, ".agenc", "rules", "always.md"), "# Always rule\n");
+
+      const tiers = await loadTieredInstructions({
+        cwd: root,
+        homeDir: join(root, "home"),
+        managedPath: join(root, "managed", "AGENC.md"),
+      });
+      expect(tiers.project?.content).toContain("ROOT");
+      expect(tiers.project?.content).toContain("# Always rule");
+      expect(tiers.project?.content).toContain(".agenc/rules/always.md");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("loadTieredInstructions honors an explicit empty marker list as cwd-only", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");

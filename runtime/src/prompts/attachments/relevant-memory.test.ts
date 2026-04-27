@@ -8,6 +8,11 @@ import { join } from "node:path";
 
 import { _resetAttachmentBudgetForTest } from "../memory/attachments.js";
 import { clearSessionReadState } from "../../tools/system/filesystem.js";
+import { getAttachmentTrackingState } from "../../session/attachment-state.js";
+import {
+  getMemoryCitations,
+  setSessionMemoryMode,
+} from "../memory/index.js";
 import { relevantMemoryProducer } from "./relevant-memory.js";
 import type { GetAttachmentsOptions } from "./orchestrator.js";
 
@@ -58,20 +63,26 @@ ${body}
 describe("relevantMemoryProducer", () => {
   test("returns [] when sessionKey lacks memoryDir", async () => {
     const opts = makeOpts({ sessionKey: { sessionId } as never });
-    const out = await relevantMemoryProducer(opts, {} as never);
+    const out = await relevantMemoryProducer(
+      opts,
+      getAttachmentTrackingState(sessionKey),
+    );
     expect(out).toEqual([]);
   });
 
   test("returns [] when userInput is empty", async () => {
     writeMemory("alpha", "Some body", "alpha description");
-    const out = await relevantMemoryProducer(makeOpts({ userInput: "" }), {} as never);
+    const out = await relevantMemoryProducer(
+      makeOpts({ userInput: "" }),
+      getAttachmentTrackingState(sessionKey),
+    );
     expect(out).toEqual([]);
   });
 
   test("returns [] when memory dir has no files", async () => {
     const out = await relevantMemoryProducer(
       makeOpts({ userInput: "literally anything" }),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(out).toEqual([]);
   });
@@ -81,7 +92,7 @@ describe("relevantMemoryProducer", () => {
     writeMemory("beta", "beta body content", "tokenD tokenE tokenF");
     const out = await relevantMemoryProducer(
       makeOpts({ userInput: "asking about tokenA tokenB" }),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(out).toHaveLength(1);
     if (out[0]?.kind !== "relevant_memories") throw new Error("kind");
@@ -90,6 +101,8 @@ describe("relevantMemoryProducer", () => {
     expect(surfaced.path).toMatch(/alpha\.md$/);
     expect(surfaced.content).toContain("alpha body content");
     expect(surfaced.header).toContain("mtime:");
+    expect(surfaced.citation?.lineStart).toBe(1);
+    expect(getMemoryCitations(sessionKey).length).toBeGreaterThan(0);
   });
 
   test("returns [] when no memories overlap the user input tokens (and no other priorities)", async () => {
@@ -101,7 +114,7 @@ describe("relevantMemoryProducer", () => {
     // Per-file cap is 4_000 bytes — file is dropped entirely.
     const out = await relevantMemoryProducer(
       makeOpts({ userInput: "huge content" }),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(out).toEqual([]);
   });
@@ -135,7 +148,7 @@ derived body
           sessionKey: altSessionKey,
           agencHome,
         },
-        {} as never,
+        getAttachmentTrackingState(altSessionKey),
       );
       expect(out).toHaveLength(1);
       if (out[0]?.kind !== "relevant_memories") throw new Error("kind");
@@ -145,5 +158,15 @@ derived body
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
+  });
+
+  test("memory mode disabled blocks recall", async () => {
+    writeMemory("alpha", "alpha body content", "tokenA tokenB tokenC");
+    setSessionMemoryMode(sessionKey, "disabled");
+    const out = await relevantMemoryProducer(
+      makeOpts({ userInput: "asking about tokenA tokenB" }),
+      getAttachmentTrackingState(sessionKey),
+    );
+    expect(out).toEqual([]);
   });
 });

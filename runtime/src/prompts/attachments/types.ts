@@ -49,6 +49,14 @@ export interface RelevantMemoriesAttachment {
     readonly header?: string;
     /** Truncation marker line count. Undefined for full reads. */
     readonly limit?: number;
+    /** Structured citation metadata for audit/usage tracking. */
+    readonly citation?: {
+      readonly path: string;
+      readonly lineStart: number;
+      readonly lineEnd: number;
+      readonly note: string;
+      readonly rolloutIds: readonly string[];
+    };
   }>;
 }
 

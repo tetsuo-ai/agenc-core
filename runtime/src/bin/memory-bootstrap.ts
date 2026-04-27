@@ -7,6 +7,7 @@ import type {
   MemoryCandidate,
   TurnState as MemoryTurnState,
 } from "../prompts/memory/index.js";
+import { memoryLayout } from "../prompts/memory/index.js";
 
 export const EXTRACT_MEMORIES_TIMEOUT_MS = 30_000;
 
@@ -122,7 +123,7 @@ export function parseExtractedMemoryCandidates(
       .replace(/^-+|-+$/g, "");
     if (slug.length === 0) continue;
     out.push({
-      filePath: join(memoryDir, `${slug}.md`),
+      filePath: join(memoryLayout(memoryDir).entriesDir, `${slug}.md`),
       frontmatter: {
         name,
         description,

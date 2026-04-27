@@ -983,7 +983,7 @@ describe("buildExtractMemoriesViaSubagent adapter", () => {
     expect(out.length).toBe(1);
     expect(out[0]!.frontmatter.name).toBe("user-fact-1");
     expect(out[0]!.frontmatter.type).toBe("user");
-    expect(out[0]!.filePath).toBe("/tmp/mem/user-fact-1.md");
+    expect(out[0]!.filePath).toBe("/tmp/mem/entries/user-fact-1.md");
     expect(delegateFn).toHaveBeenCalledTimes(1);
     const call = delegateFn.mock.calls[0]![0];
     expect(call.role).toBe("explorer");

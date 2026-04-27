@@ -34,6 +34,15 @@ import {
   type FsLockOpts,
 } from "./fs-lock.js";
 import { serializeMemory, type MemoryFrontmatter } from "./types.js";
+import {
+  memoryModeAllowsWrites,
+  type MemoryMode,
+} from "./modes.js";
+import {
+  appendRawMemoryCandidate,
+  consolidateMemoryFiles,
+  ensureMemoryLayout,
+} from "./consolidation.js";
 import type { Sidecar } from "../../session/sidecar.js";
 import type { Event } from "../../session/event-log.js";
 
@@ -344,7 +353,9 @@ export async function maybeAutoSaveMemory(
   turnState: TurnState,
   extractor: ExtractMemoriesFn = stubExtractor,
   emitWarning?: EmitMemoryWarningFn,
+  memoryMode: MemoryMode = "enabled",
 ): Promise<void> {
+  if (!memoryModeAllowsWrites(memoryMode)) return;
   const state = getState(session);
 
   // Overlap guard: if a run is in flight, let it finish.
@@ -354,12 +365,17 @@ export async function maybeAutoSaveMemory(
 
   const run = (async () => {
     try {
+      await ensureMemoryLayout(session.memoryDir);
       const candidates = await extractor(
         turnState.transcript ?? "",
         session,
       );
       for (const candidate of candidates) {
         if (!isMemoryWorthy(candidate)) continue;
+        await appendRawMemoryCandidate({
+          memoryDir: session.memoryDir,
+          candidate,
+        });
         await writeMemoryFile(candidate, undefined, emitWarning);
         await upsertIndexEntry(
           session.memoryMdPath,
@@ -368,6 +384,7 @@ export async function maybeAutoSaveMemory(
           emitWarning,
         );
       }
+      await consolidateMemoryFiles(session.memoryDir);
       state.tokensAtLastExtraction = turnState.tokensConsumed;
       state.toolCallsAtLastExtraction = turnState.toolCallsIssued;
     } finally {
@@ -401,12 +418,14 @@ export function registerAutoSaveSidecar(params: {
    * so contention routes through the typed event bus instead of stderr.
    */
   readonly emitWarning?: EmitMemoryWarningFn;
+  readonly getMemoryMode?: () => MemoryMode;
 }): Sidecar {
   const {
     session,
     extractor = stubExtractor,
     getTurnState,
     emitWarning,
+    getMemoryMode,
   } = params;
   return {
     name: "memory-auto-save",
@@ -420,6 +439,7 @@ export function registerAutoSaveSidecar(params: {
         turnState,
         extractor,
         emitWarning,
+        getMemoryMode?.() ?? "enabled",
       ).catch(() => {});
     },
   };

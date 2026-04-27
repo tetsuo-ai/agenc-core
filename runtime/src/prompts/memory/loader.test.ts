@@ -63,6 +63,22 @@ describe("loadMemoryPrompt", () => {
     expect(result.truncated).toBe(false);
   });
 
+  test("includes memory_summary.md before MEMORY.md when present", async () => {
+    const dir = await makeTempMemdir();
+    const mdPath = join(dir, "MEMORY.md");
+    await writeFile(join(dir, "memory_summary.md"), "summary first\n");
+    await writeFile(mdPath, "index second\n");
+
+    const result = await loadMemoryPrompt({
+      memoryDir: dir,
+      memoryMdPath: mdPath,
+    });
+    expect(result.text).toContain("# memory_summary.md\nsummary first");
+    expect(result.text.indexOf("# memory_summary.md")).toBeLessThan(
+      result.text.indexOf("# MEMORY.md"),
+    );
+  });
+
   test("respects maxLines cap", async () => {
     const dir = await makeTempMemdir();
     const mdPath = join(dir, "MEMORY.md");

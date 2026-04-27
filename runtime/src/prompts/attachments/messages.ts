@@ -2,8 +2,8 @@
  * Attachment-to-LLMMessage conversion.
  *
  * Hand-port of openclaude `createAttachmentMessage()`
- * (`src/utils/attachments.ts:3221`) plus the message-block formatting
- * that lives at the `query.ts:1688-1698` injection site.
+ * (`src/utils/attachments.ts:3221`) plus the model-facing attachment
+ * normalization in `src/utils/messages.ts::normalizeAttachmentForAPI`.
  *
  * Each attachment kind renders as one (or zero) `LLMMessage`. Attachments
  * are emitted on the user channel because openclaude's contract is that
@@ -11,9 +11,12 @@
  * attachments wrap their content in `<system-reminder>` tags inside the
  * user-channel message — matches openclaude's convention.
  *
- * AgenC branding substitutions ONLY: `AGENC.md` for `CLAUDE.md`, `AgenC`
- * for `OpenClaude`/`Claude Code` where the prose names a product. Every
- * other byte of the attachment-rendering prose is verbatim openclaude.
+ * AgenC branding substitutions: `AGENC.md` for `CLAUDE.md`, `AgenC`
+ * for `OpenClaude`/`Claude Code` where the prose names a product, and
+ * AgenC tool names where our model-facing tools differ. Unsupported
+ * openclaude product surfaces (buddy, bagel, teammate swarms, IDE/LSP)
+ * do not render here until AgenC ships the matching producer/runtime
+ * feature.
  *
  * @module
  */
@@ -62,11 +65,8 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       );
     }
     case "plan_mode": {
-      // Plan-mode prose for the per-turn pulse. The producer
-      // (./plan-mode.ts) consults `runtime/src/planning/plan-instructions.ts`
-      // for the actual full / sparse text — this renderer just wraps.
-      // Source: openclaude attachments.ts:566-577 (plan_mode rendering at
-      // the createAttachmentMessage call site).
+      // Plan-mode prose for the per-turn pulse. The producer gates
+      // full/sparse emission; this renderer owns the model-facing text.
       return userContextMessage(
         `<system-reminder>\n${planModeBody(attachment.variant, attachment.planFilePath, attachment.planExists)}\n</system-reminder>`,
       );
@@ -88,12 +88,14 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     }
     case "auto_mode_exit": {
       return userContextMessage(
-        `<system-reminder>\nYou have exited auto mode. Tool approvals are now requested per call.\n</system-reminder>`,
+        `<system-reminder>\n## Exited Auto Mode\n\nYou have exited auto mode. The user may now want to interact more directly. You should ask clarifying questions when the approach is ambiguous rather than making assumptions.\n</system-reminder>`,
       );
     }
     case "date_change": {
       return userContextMessage(
-        `<system-reminder>\nThe local calendar date is now ${attachment.newDate}.\n</system-reminder>`,
+        wrapSystemReminder(
+          `The date has changed. Today's date is now ${attachment.newDate}. DO NOT mention this to the user explicitly because they are already aware.`,
+        ),
       );
     }
     case "critical_system_reminder": {
@@ -103,61 +105,62 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     }
     case "output_style": {
       return userContextMessage(
-        `<system-reminder>\nActive output style: ${attachment.style}.\n</system-reminder>`,
+        wrapSystemReminder(
+          `${attachment.style} output style is active. Remember to follow the specific guidelines for this style.`,
+        ),
       );
     }
     case "deferred_tools_delta": {
-      const lines: string[] = ["<system-reminder>", "## Tool catalog updated"];
+      const parts: string[] = [];
       if (attachment.addedNames.length > 0) {
-        lines.push("Added:", ...attachment.addedLines.map((l) => `- ${l}`));
-      }
-      if (attachment.removedNames.length > 0) {
-        lines.push(
-          "Removed:",
-          ...attachment.removedNames.map((n) => `- ${n}`),
+        parts.push(
+          `The following deferred tools are now available via ToolSearch:\n${attachment.addedLines.join("\n")}`,
         );
       }
-      lines.push("</system-reminder>");
-      return userContextMessage(lines.join("\n"));
+      if (attachment.removedNames.length > 0) {
+        parts.push(
+          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them -- ToolSearch will return no match:\n${attachment.removedNames.join("\n")}`,
+        );
+      }
+      if (parts.length === 0) return null;
+      return userContextMessage(wrapSystemReminder(parts.join("\n\n")));
     }
     case "agent_listing_delta": {
-      const heading = attachment.isInitial
-        ? "## Available agents"
-        : "## Agent listing updated";
-      const lines: string[] = ["<system-reminder>", heading];
+      const parts: string[] = [];
       if (attachment.addedLines.length > 0) {
-        const addedHeading = attachment.isInitial ? "" : "Added:";
-        if (addedHeading.length > 0) lines.push(addedHeading);
-        for (const line of attachment.addedLines) lines.push(`- ${line}`);
+        const header = attachment.isInitial
+          ? "Available agent types for the Agent tool:"
+          : "New agent types are now available for the Agent tool:";
+        parts.push(`${header}\n${attachment.addedLines.join("\n")}`);
       }
       if (attachment.removedTypes.length > 0) {
-        lines.push("Removed:");
-        for (const type of attachment.removedTypes) lines.push(`- ${type}`);
+        parts.push(
+          `The following agent types are no longer available:\n${attachment.removedTypes.map((t) => `- ${t}`).join("\n")}`,
+        );
       }
-      lines.push("</system-reminder>");
-      return userContextMessage(lines.join("\n"));
+      if (parts.length === 0) return null;
+      return userContextMessage(wrapSystemReminder(parts.join("\n\n")));
     }
     case "mcp_instructions_delta": {
-      const lines: string[] = [
-        "<system-reminder>",
-        "## MCP server instructions updated",
-      ];
-      if (attachment.addedNames.length > 0) {
-        for (let i = 0; i < attachment.addedNames.length; i += 1) {
-          lines.push(`### ${attachment.addedNames[i]}`);
-          lines.push(attachment.addedBlocks[i] ?? "");
-        }
+      const parts: string[] = [];
+      if (attachment.addedBlocks.length > 0) {
+        parts.push(
+          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${attachment.addedBlocks.join("\n\n")}`,
+        );
       }
       if (attachment.removedNames.length > 0) {
-        lines.push("Removed:");
-        for (const name of attachment.removedNames) lines.push(`- ${name}`);
+        parts.push(
+          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${attachment.removedNames.join("\n")}`,
+        );
       }
-      lines.push("</system-reminder>");
-      return userContextMessage(lines.join("\n"));
+      if (parts.length === 0) return null;
+      return userContextMessage(wrapSystemReminder(parts.join("\n\n")));
     }
     case "edited_text_file": {
       return userContextMessage(
-        `<system-reminder>\nThe file \`${attachment.filename}\` was modified. Diff:\n\n${attachment.snippet}\n</system-reminder>`,
+        wrapSystemReminder(
+          `Note: ${attachment.filename} was modified, either by the user or by a linter. This change was intentional, so make sure to take it into account as you proceed (ie. don't revert it unless the user asks you to). Don't tell the user this, since they are already aware. Here are the relevant changes (shown with line numbers):\n${attachment.snippet}`,
+        ),
       );
     }
     case "edited_image_file": {
@@ -185,7 +188,9 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     }
     case "agent_mention": {
       return userContextMessage(
-        `<system-reminder>\nThe user mentioned the \`${attachment.agentType}\` agent.\n</system-reminder>`,
+        wrapSystemReminder(
+          `The user has expressed a desire to invoke the agent "${attachment.agentType}". Please invoke the agent appropriately, passing in the required context to it. `,
+        ),
       );
     }
   }
@@ -199,13 +204,16 @@ function userContextMessage(text: string): LLMMessage {
   };
 }
 
+function wrapSystemReminder(content: string): string {
+  return `<system-reminder>\n${content}\n</system-reminder>`;
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // Plan-mode / auto-mode body builders.
 //
-// These are the verbatim openclaude bodies for the per-turn pulse,
-// adapted for AgenC tool names. Prose source:
-// `openclaude/src/utils/attachments.ts:1187-1243` (plan-mode bodies)
-// and `:1336-1378` (auto-mode bodies).
+// These are openclaude-style bodies for the per-turn pulse, adapted for
+// AgenC tool names and the producer surfaces currently present here.
+// Prose source: `openclaude/src/utils/messages.ts` plan/auto rendering.
 //
 // Kept inline rather than re-imported from `planning/plan-instructions.ts`
 // so producers and the renderer share one source of truth and can
@@ -219,12 +227,58 @@ function planModeBody(
   planExists: boolean,
 ): string {
   if (variant === "sparse") {
-    return `Plan mode is active. Read-only tools only; the only writable target is the active AgenC plan file at ${planFilePath}. End your turn with AskUserQuestion or ExitPlanMode.`;
+    return `Plan mode is active. Plan mode still active (see full instructions earlier in conversation). Read-only except plan file (${planFilePath}). Follow the planning workflow: explore codebase, ask the user clarifying questions when needed, and write to the plan incrementally. End turns with AskUserQuestion (for clarifications) or ExitPlanMode (for plan approval). Never ask about plan approval via text or AskUserQuestion.`;
   }
   const planLine = planExists
     ? `A plan file already exists at ${planFilePath}. You can read it and make incremental edits using the Edit tool.`
-    : `No plan file exists yet. Create your plan at ${planFilePath} using the Write tool.`;
-  return `Plan mode is active. The user indicated that they do not want you to execute yet — you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.\n\n## Plan File Info\n${planLine}\n\nYou should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit — other than this you are only allowed to take READ-ONLY actions.`;
+    : `No plan file exists yet. You should create your plan at ${planFilePath} using the Write tool.`;
+  return `Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file mentioned below), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supersedes any other instructions you have received.
+
+## Plan File Info:
+${planLine}
+You should build your plan incrementally by writing to or editing this file. NOTE that this is the only file you are allowed to edit - other than this you are only allowed to take READ-ONLY actions.
+
+## Plan Workflow
+
+### Phase 1: Initial Understanding
+Goal: Gain a comprehensive understanding of the user's request by reading through code and asking them questions.
+
+1. Focus on understanding the user's request and the code associated with their request. Actively search for existing functions, utilities, and patterns that can be reused -- avoid proposing new code when suitable implementations already exist.
+
+2. Use read-only tools to efficiently explore the codebase. If the task is complex and AgenC exposes suitable agent types in this session, you may use agents to parallelize exploration, but keep each agent's scope specific.
+
+### Phase 2: Design
+Goal: Design an implementation approach.
+
+Build an implementation approach based on the user's intent and your exploration results from Phase 1.
+
+**Guidelines:**
+- **Default**: Produce one clear recommended approach for most tasks.
+- **Skip extra process**: For truly trivial tasks (typo fixes, single-line changes, simple renames), keep the plan correspondingly small.
+- **Compare approaches only when useful**: If there are meaningful alternatives, explain the tradeoff briefly and choose one.
+
+### Phase 3: Review
+Goal: Review the plan and ensure alignment with the user's intentions.
+1. Read the critical files identified during exploration to deepen your understanding.
+2. Ensure that the plan aligns with the user's original request.
+3. Use AskUserQuestion to clarify any remaining questions with the user.
+
+### Phase 4: Final Plan
+Goal: Write your final plan to the plan file (the only file you can edit).
+- Begin with a **Context** section: explain why this change is being made -- the problem or need it addresses, what prompted it, and the intended outcome.
+- Include only your recommended approach, not all alternatives.
+- Ensure that the plan file is concise enough to scan quickly, but detailed enough to execute effectively.
+- Include the paths of critical files to be modified.
+- Reference existing functions and utilities you found that should be reused, with their file paths.
+- Include a verification section describing how to test the changes end-to-end (run the code, use MCP tools, run tests).
+
+### Phase 5: Call ExitPlanMode
+At the very end of your turn, once you have asked the user questions and are happy with your final plan file, you should call ExitPlanMode to indicate to the user that you are done planning.
+This is critical - your turn should only end with either using AskUserQuestion OR calling ExitPlanMode. Do not stop unless it's for these 2 reasons.
+
+**Important:** Use AskUserQuestion ONLY to clarify requirements or choose between approaches. Use ExitPlanMode to request plan approval. Do NOT ask about plan approval in any other way - no text questions, no AskUserQuestion. Phrases like "Is this plan okay?", "Should I proceed?", "How does this plan look?", "Any changes before we start?", or similar MUST use ExitPlanMode.
+
+NOTE: At any point in time through this workflow you should feel free to ask the user questions or clarifications using AskUserQuestion. Don't make large assumptions about user intent. The goal is to present a well researched plan to the user, and tie any loose ends before implementation begins.`;
 }
 
 function planModeReentryBody(
@@ -234,7 +288,19 @@ function planModeReentryBody(
   const planLine = planExists
     ? `A plan file exists at ${planFilePath} from a previous planning session.`
     : `No plan file exists yet. Create your plan at ${planFilePath}.`;
-  return `## Re-entering plan mode\n\nYou are returning to plan mode after having previously exited it. ${planLine}\n\nBefore proceeding with any new planning, evaluate the user's current request against any prior plan and decide whether to start fresh or continue. Always edit the plan file before calling ExitPlanMode.`;
+  return `## Re-entering plan mode
+
+You are returning to plan mode after having previously exited it. ${planLine}
+
+**Before proceeding with any new planning, you should:**
+1. Read the existing plan file to understand what was previously planned.
+2. Evaluate the user's current request against that plan.
+3. Decide how to proceed:
+   - **Different task**: If the user's request is for a different task -- even if it's similar or related -- start fresh by overwriting the existing plan.
+   - **Same task, continuing**: If this is explicitly a continuation or refinement of the exact same task, modify the existing plan while cleaning up outdated or irrelevant sections.
+4. Continue on with the plan process and most importantly you should always edit the plan file one way or the other before calling ExitPlanMode.
+
+Treat this as a fresh planning session. Do not assume the existing plan is relevant without evaluating it first.`;
 }
 
 function planModeExitBody(
@@ -244,12 +310,23 @@ function planModeExitBody(
   const planRef = planExists
     ? ` The plan file is located at ${planFilePath} if you need to reference it.`
     : "";
-  return `## Exited plan mode\n\nYou have exited plan mode. You can now make edits, run tools, and take actions.${planRef}`;
+  return `## Exited plan mode
+
+You have exited plan mode. You can now make edits, run tools, and take actions.${planRef}`;
 }
 
 function autoModeBody(variant: "full" | "sparse"): string {
   if (variant === "sparse") {
-    return `Auto mode is active — tool calls do not require per-call approval. Continue working autonomously toward the user's goal; ask for input only when genuinely blocked.`;
+    return `Auto mode is active. Auto mode still active (see full instructions earlier in conversation). Execute autonomously, minimize interruptions, prefer action over planning.`;
   }
-  return `Auto mode is active. The user has authorized autonomous tool execution for this session — tool calls run without per-call approval prompts. Persist until the task is complete; only stop to ask the user when you cannot proceed safely or correctly without their input. Use the same diagnostic and verification habits you would in a normal session.`;
+  return `## Auto Mode Active
+
+Auto mode is active. The user chose continuous, autonomous execution. You should:
+
+1. **Execute immediately** -- Start implementing right away. Make reasonable assumptions and proceed on low-risk work.
+2. **Minimize interruptions** -- Prefer making reasonable assumptions over asking questions for routine decisions.
+3. **Prefer action over planning** -- Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.
+4. **Expect course corrections** -- The user may provide suggestions or course corrections at any point; treat those as normal input.
+5. **Do not take overly destructive actions** -- Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.
+6. **Avoid data exfiltration** -- Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.`;
 }

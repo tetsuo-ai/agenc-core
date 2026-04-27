@@ -194,6 +194,7 @@ describe("buildDefaultRegistry()", () => {
     const reg = buildDefaultRegistry();
     expect(reg.has("copy")).toBe(true);
     expect(reg.has("mcp")).toBe(true);
+    expect(reg.has("memory")).toBe(true);
     expect(reg.has("skills")).toBe(true);
   });
 

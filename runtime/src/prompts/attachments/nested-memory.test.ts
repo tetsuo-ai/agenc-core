@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { clearSessionReadState } from "../../tools/system/filesystem.js";
+import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import {
   getDirectoriesToProcess,
   nestedMemoryProducer,
@@ -77,14 +78,17 @@ describe("getDirectoriesToProcess", () => {
 
 describe("nestedMemoryProducer", () => {
   test("returns [] when userInput is null", async () => {
-    const out = await nestedMemoryProducer(makeOpts(null), {} as never);
+    const out = await nestedMemoryProducer(
+      makeOpts(null),
+      getAttachmentTrackingState(sessionKey),
+    );
     expect(out).toEqual([]);
   });
 
   test("returns [] when userInput has no @ mentions", async () => {
     const out = await nestedMemoryProducer(
       makeOpts("just regular prose without mentions"),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(out).toEqual([]);
   });
@@ -96,7 +100,7 @@ describe("nestedMemoryProducer", () => {
     writeFileSync(file, "export const x = 1;\n");
     const out = await nestedMemoryProducer(
       makeOpts(`look at @sub/leaf.ts please`),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(out).toEqual([]);
   });
@@ -112,7 +116,7 @@ describe("nestedMemoryProducer", () => {
 
     const out = await nestedMemoryProducer(
       makeOpts(`@sub/leaf.ts`),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(out).toHaveLength(1);
     if (out[0]?.kind !== "nested_memory") throw new Error("kind");
@@ -132,13 +136,13 @@ describe("nestedMemoryProducer", () => {
 
     const first = await nestedMemoryProducer(
       makeOpts("@sub/leaf.ts"),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(first).toHaveLength(1);
     // Second invocation should not re-emit the same memory file.
     const second = await nestedMemoryProducer(
       makeOpts("@sub/leaf.ts"),
-      {} as never,
+      getAttachmentTrackingState(sessionKey),
     );
     expect(second).toEqual([]);
   });
@@ -151,9 +155,55 @@ describe("nestedMemoryProducer", () => {
     writeFileSync(join(subdir, "AGENC.md"), "# project tier\n");
     writeFileSync(join(subdir, "AGENC.local.md"), "# local tier\n");
 
-    const out = await nestedMemoryProducer(makeOpts("@sub/leaf.ts"), {} as never);
+    const out = await nestedMemoryProducer(
+      makeOpts("@sub/leaf.ts"),
+      getAttachmentTrackingState(sessionKey),
+    );
     expect(out).toHaveLength(2);
     const types = out.map((a) => (a.kind === "nested_memory" ? a.memoryType : null));
     expect(types).toEqual(expect.arrayContaining(["Project", "Local"]));
+  });
+
+  test("emits matching .agenc/rules conditional rule", async () => {
+    const subdir = join(tmpDir, "sub");
+    mkdirSync(join(subdir, ".agenc", "rules"), { recursive: true });
+    const file = join(subdir, "leaf.ts");
+    writeFileSync(file, "x");
+    writeFileSync(
+      join(subdir, ".agenc", "rules", "ts.md"),
+      `---
+globs: ["*.ts"]
+---
+# TypeScript scoped rule
+`,
+    );
+
+    const out = await nestedMemoryProducer(
+      makeOpts("@sub/leaf.ts"),
+      getAttachmentTrackingState(sessionKey),
+    );
+    expect(out).toHaveLength(1);
+    if (out[0]?.kind !== "nested_memory") throw new Error("kind");
+    expect(out[0].path).toMatch(/\.agenc\/rules\/ts\.md$/);
+    expect(out[0].content).toBe("# TypeScript scoped rule");
+  });
+
+  test("explicit trigger set drives nested memory without @ mention", async () => {
+    const subdir = join(tmpDir, "sub");
+    mkdirSync(subdir);
+    const file = join(subdir, "leaf.ts");
+    writeFileSync(file, "x");
+    writeFileSync(join(subdir, "AGENC.md"), "# trigger rules\n");
+    const state = getAttachmentTrackingState(sessionKey);
+    state.nestedMemoryAttachmentTriggers.add(file);
+
+    const out = await nestedMemoryProducer(
+      makeOpts("plain request"),
+      state,
+    );
+    expect(out).toHaveLength(1);
+    expect(state.nestedMemoryAttachmentTriggers.size).toBe(0);
+    if (out[0]?.kind !== "nested_memory") throw new Error("kind");
+    expect(out[0].content).toContain("trigger rules");
   });
 });

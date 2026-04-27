@@ -91,6 +91,44 @@ export interface AttachmentTrackingState {
    * Persistent: flips true on the first auto-mode exit in this session.
    */
   hasExitedAutoModeInSession: boolean;
+  /**
+   * File paths whose surrounding instruction context should be checked by
+   * the next nested-memory producer run. Populated by file tools, IDE
+   * integrations, and @path mention extraction. Cleared after the
+   * producer consumes it.
+   */
+  nestedMemoryAttachmentTriggers: Set<string>;
+  /**
+   * Non-evicting dedupe set for nested instruction/rule files already
+   * injected into this session. Kept separate from FileRead's read cache
+   * because the read cache can be cleared by compaction or local history
+   * limits, while nested instructions should not be re-injected just
+   * because an implementation cache was trimmed.
+   */
+  loadedNestedMemoryPaths: Set<string>;
+  /**
+   * Paths of learned memory files surfaced by `relevant_memories` in this
+   * session. Relevant-memory recall is allowed to reset after compaction
+   * in future, but a stable set prevents rapid same-session repeats today.
+   */
+  surfacedRelevantMemoryPaths: Set<string>;
+  /**
+   * Memory mode for this thread/session. `disabled` blocks memory recall
+   * and writes; `polluted` blocks writes/consolidation but still permits
+   * recall from already-trusted memory.
+   */
+  memoryMode: "enabled" | "disabled" | "polluted";
+  /**
+   * Citation metadata for memory files surfaced this session. This is
+   * intentionally metadata-only; renderers decide whether/how to expose it.
+   */
+  memoryCitations: Array<{
+    readonly path: string;
+    readonly lineStart: number;
+    readonly lineEnd: number;
+    readonly note: string;
+    readonly rolloutIds: readonly string[];
+  }>;
 }
 
 const sessionAttachmentState = new WeakMap<object, AttachmentTrackingState>();
@@ -110,6 +148,11 @@ export function getAttachmentTrackingState(
       needsAutoModeExitAttachment: false,
       hasExitedPlanModeInSession: false,
       hasExitedAutoModeInSession: false,
+      nestedMemoryAttachmentTriggers: new Set(),
+      loadedNestedMemoryPaths: new Set(),
+      surfacedRelevantMemoryPaths: new Set(),
+      memoryMode: "enabled",
+      memoryCitations: [],
     };
     sessionAttachmentState.set(sessionKey, state);
   }

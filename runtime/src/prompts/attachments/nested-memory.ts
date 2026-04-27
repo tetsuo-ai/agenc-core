@@ -5,27 +5,20 @@
  * (`src/utils/attachments.ts:1793-1863`), adapted to AgenC's instruction
  * filenames. Walks the directory hierarchy between `cwd` and each
  * file path mentioned in the latest user input, collecting
- * `AGENC.md` + `AGENC.local.md` files (the "Project" + "Local" tiers
- * from `agenc-md.ts`) along the way.
+ * `AGENC.md` + `AGENC.local.md` files and `.agenc/rules/*.md`
+ * scoped rules along the way.
  *
- * AgenC does not currently ship the openclaude conditional/unconditional
- * `.claude/rules/*.md` system, so the four-phase walk collapses to:
+ * Processing follows openclaude's four-phase shape, rebranded:
  *
- *   - Phase 1 (Managed/User conditional rules): not implemented — AgenC
- *     does not yet expose conditional Managed/User instructions. The
- *     ambient `loadTieredInstructions()` already injects the
- *     unconditional Managed/User tiers into the system prompt.
- *   - Phase 2 (compute nestedDirs + cwdLevelDirs): implemented.
- *   - Phase 3 (per-nested-dir AGENC.md): implemented for AGENC.md and
- *     AGENC.local.md; the rules subsystem is omitted.
- *   - Phase 4 (cwd-level conditional rules): not implemented — same
- *     reason as phase 1.
+ *   - Phase 1: Managed/User `.agenc/rules/*.md` conditional rules
+ *     matching the trigger path.
+ *   - Phase 2: compute nestedDirs + cwdLevelDirs.
+ *   - Phase 3: per-nested-dir AGENC.md, AGENC.local.md, unconditional
+ *     project rules, and conditional project rules.
+ *   - Phase 4: cwd-level conditional project rules only.
  *
- * Trigger source: openclaude uses an explicit
- * `nestedMemoryAttachmentTriggers` set populated by `FileRead`. AgenC
- * does not have that trigger set, so the producer falls back to the
- * `@<path>` mentions in `opts.userInput`. When userInput has no
- * file mentions, the producer returns [].
+ * Trigger source: explicit `nestedMemoryAttachmentTriggers` state plus
+ * `@<path>` mentions in `opts.userInput`.
  *
  * Dedup: emitted memory paths are recorded in `recordSessionRead` so
  * subsequent turns or producers do not re-inject the same file.
@@ -44,6 +37,7 @@ import {
 } from "node:path";
 
 import {
+  forEachSessionRead,
   hasSessionRead,
   recordSessionRead,
 } from "../../tools/system/filesystem.js";
@@ -52,6 +46,13 @@ import {
   LOCAL_INSTRUCTION_FILENAME,
   USER_INSTRUCTION_FILENAME,
 } from "../agenc-md.js";
+import {
+  discoverInstructionRules,
+  discoverManagedAndUserConditionalRules,
+  projectRulesDir,
+  type InstructionRule,
+} from "../rules/index.js";
+import type { AttachmentTrackingState } from "../../session/attachment-state.js";
 import type { NestedMemoryAttachment } from "./types.js";
 import type {
   AttachmentProducer,
@@ -63,6 +64,15 @@ interface MemoryFileLoad {
   readonly memoryType: NestedMemoryAttachment["memoryType"];
   readonly content: string;
   readonly mtimeMs: number;
+}
+
+function ruleToMemoryFileLoad(rule: InstructionRule): MemoryFileLoad {
+  return {
+    path: rule.path,
+    memoryType: rule.type,
+    content: rule.content,
+    mtimeMs: rule.mtimeMs,
+  };
 }
 
 /**
@@ -160,6 +170,9 @@ async function tryLoadFile(
  */
 async function collectMemoryFilesForDirectory(
   dir: string,
+  targetPath: string,
+  includeUnconditionalRules: boolean,
+  includeConditionalRules: boolean,
 ): Promise<MemoryFileLoad[]> {
   const out: MemoryFileLoad[] = [];
   const projectFile = await tryLoadFile(
@@ -172,7 +185,31 @@ async function collectMemoryFilesForDirectory(
     "Local",
   );
   if (localFile !== null) out.push(localFile);
+  const rules = await discoverInstructionRules({
+    rulesDir: projectRulesDir(dir),
+    type: "Project",
+    boundaryDir: dir,
+    targetPath,
+    includeUnconditional: includeUnconditionalRules,
+    includeConditional: includeConditionalRules,
+  });
+  out.push(...rules.map(ruleToMemoryFileLoad));
   return out;
+}
+
+async function collectConditionalRulesForDirectory(
+  dir: string,
+  targetPath: string,
+): Promise<MemoryFileLoad[]> {
+  const rules = await discoverInstructionRules({
+    rulesDir: projectRulesDir(dir),
+    type: "Project",
+    boundaryDir: dir,
+    targetPath,
+    includeUnconditional: false,
+    includeConditional: true,
+  });
+  return rules.map(ruleToMemoryFileLoad);
 }
 
 /**
@@ -183,13 +220,16 @@ function memoryToAttachment(
   load: MemoryFileLoad,
   cwd: string,
   sessionId: string | undefined,
+  trackingState: AttachmentTrackingState,
 ): NestedMemoryAttachment | null {
+  if (trackingState.loadedNestedMemoryPaths.has(load.path)) return null;
   if (hasSessionRead(sessionId, load.path)) return null;
   recordSessionRead(sessionId, load.path, {
     rawContent: load.content,
     timestamp: load.mtimeMs,
     viewKind: "full",
   });
+  trackingState.loadedNestedMemoryPaths.add(load.path);
   const displayPath = load.path.startsWith(`${cwd}/`)
     ? relative(cwd, load.path)
     : load.path;
@@ -224,26 +264,87 @@ function extractMentionedPaths(
   return out;
 }
 
-export const nestedMemoryProducer: AttachmentProducer = async (opts) => {
-  if (opts.userInput === null || opts.userInput.length === 0) return [];
-  const mentioned = extractMentionedPaths(opts.userInput, opts.cwd);
-  if (mentioned.length === 0) return [];
-
+export const nestedMemoryProducer: AttachmentProducer = async (
+  opts,
+  trackingState,
+) => {
+  const mentioned =
+    opts.userInput === null || opts.userInput.length === 0
+      ? []
+      : extractMentionedPaths(opts.userInput, opts.cwd);
+  const triggered = [...trackingState.nestedMemoryAttachmentTriggers]
+    .map((path) => resolve(path))
+    .filter((path) => isAncestor(resolve(opts.cwd), path));
+  trackingState.nestedMemoryAttachmentTriggers.clear();
+  const readTriggered: string[] = [];
   const sessionId = readSessionId(opts);
+  forEachSessionRead(sessionId, (path) => {
+    const resolved = resolve(path);
+    if (isAncestor(resolve(opts.cwd), resolved)) {
+      readTriggered.push(resolved);
+    }
+  });
+  const allPaths = [...mentioned, ...triggered, ...readTriggered];
+  if (allPaths.length === 0) return [];
+
   const out: NestedMemoryAttachment[] = [];
   const processedDirs = new Set<string>();
+  const processedCwdConditionalDirs = new Set<string>();
+  const processedTargets = new Set<string>();
 
-  for (const filePath of mentioned) {
+  for (const filePath of allPaths) {
     if (opts.signal.aborted) break;
+    if (processedTargets.has(filePath)) continue;
+    processedTargets.add(filePath);
+
+    const managedUserRules = await discoverManagedAndUserConditionalRules({
+      targetPath: filePath,
+    });
+    for (const rule of managedUserRules) {
+      const attachment = memoryToAttachment(
+        ruleToMemoryFileLoad(rule),
+        opts.cwd,
+        sessionId,
+        trackingState,
+      );
+      if (attachment !== null) out.push(attachment);
+    }
+
     const { nestedDirs } = getDirectoriesToProcess(filePath, opts.cwd);
+    const { cwdLevelDirs } = getDirectoriesToProcess(filePath, opts.cwd);
     // Walk the cwd → target chain. Skip dirs we already hit for an
     // earlier mention.
     for (const dir of nestedDirs) {
       if (processedDirs.has(dir)) continue;
       processedDirs.add(dir);
-      const loads = await collectMemoryFilesForDirectory(dir);
+      const loads = await collectMemoryFilesForDirectory(
+        dir,
+        filePath,
+        true,
+        true,
+      );
       for (const load of loads) {
-        const attachment = memoryToAttachment(load, opts.cwd, sessionId);
+        const attachment = memoryToAttachment(
+          load,
+          opts.cwd,
+          sessionId,
+          trackingState,
+        );
+        if (attachment !== null) out.push(attachment);
+      }
+    }
+
+    for (const dir of cwdLevelDirs) {
+      if (processedCwdConditionalDirs.has(dir)) continue;
+      processedCwdConditionalDirs.add(dir);
+      const loads = await collectConditionalRulesForDirectory(dir, filePath);
+      for (const load of loads) {
+        const attachment = memoryToAttachment(
+          load,
+          opts.cwd,
+          sessionId,
+          trackingState,
+        );
         if (attachment !== null) out.push(attachment);
       }
     }

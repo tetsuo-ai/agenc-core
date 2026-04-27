@@ -25,6 +25,18 @@ export {
 } from "./scan.js";
 
 export {
+  MEMORY_ENTRIES_DIRNAME,
+  MEMORY_EXTENSIONS_DIRNAME,
+  MEMORY_INDEX_FILENAME,
+  MEMORY_SKILLS_DIRNAME,
+  MEMORY_SUMMARY_FILENAME,
+  RAW_MEMORIES_FILENAME,
+  ROLLOUT_SUMMARIES_DIRNAME,
+  memoryLayout,
+  type MemoryLayout,
+} from "./layout.js";
+
+export {
   loadMemoryPrompt,
   getMemoryWriteLock,
   DEFAULT_MEMORY_MAX_LINES,
@@ -63,3 +75,29 @@ export {
   ATTACHMENT_MAX_BYTES_PER_SESSION,
 } from "./attachments.js";
 
+export {
+  getSessionMemoryMode,
+  memoryModeAllowsRecall,
+  memoryModeAllowsWrites,
+  parseMemoryMode,
+  setSessionMemoryMode,
+  type MemoryMode,
+} from "./modes.js";
+
+export {
+  clearMemoryCitations,
+  getMemoryCitations,
+  lineCount,
+  recordMemoryCitation,
+  type MemoryCitationEntry,
+} from "./citations.js";
+
+export {
+  appendRawMemoryCandidate,
+  buildConsolidationPrompt,
+  consolidateMemoryFiles,
+  ensureMemoryLayout,
+  redactMemorySecrets,
+  type ConsolidationResult,
+  type RawMemorySource,
+} from "./consolidation.js";

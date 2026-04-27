@@ -36,6 +36,13 @@ import {
   type ProjectInstructionChainEntry,
   type ProjectInstructionsConfig,
 } from "./project-instructions.js";
+import {
+  DEFAULT_MANAGED_RULES_DIR,
+  discoverInstructionRules,
+  formatRulesBlock,
+  projectRulesDir,
+  userRulesDir,
+} from "./rules/index.js";
 
 /** Default max nesting depth for `@include` expansion. */
 export const DEFAULT_INCLUDE_MAX_DEPTH = 10;
@@ -438,6 +445,24 @@ function formatProjectTierChainEntry(
   return `--- project-doc (${entry.path}) ---\n\n${normalizeExternalText(content).trim()}`;
 }
 
+async function appendUnconditionalRules(
+  content: string,
+  rulesDir: string,
+  type: "Managed" | "User" | "Project" | "Local",
+  boundaryDir?: string,
+): Promise<string> {
+  const rules = await discoverInstructionRules({
+    rulesDir,
+    type,
+    ...(boundaryDir !== undefined ? { boundaryDir } : {}),
+    includeUnconditional: true,
+    includeConditional: false,
+  });
+  const block = formatRulesBlock(rules);
+  if (block.length === 0) return content;
+  return content.length === 0 ? block : `${content}\n\n${block}`;
+}
+
 /**
  * Load all four tiers for a given working directory.
  *
@@ -456,13 +481,31 @@ export async function loadTieredInstructions(
     DEFAULT_MANAGED_INSTRUCTION_PATH;
 
   // Managed tier — boundary is the managed file's directory.
-  const managed = await loadTier(
+  const managedBase = await loadTier(
     "managed",
     managedPath,
     pathDir(managedPath),
     includeMaxDepth,
     includeMaxBytes,
   );
+  let managed = managedBase;
+  const managedRuleContent = await appendUnconditionalRules(
+    managedBase?.content ?? "",
+    DEFAULT_MANAGED_RULES_DIR,
+    "Managed",
+  );
+  if (managedRuleContent.length > 0) {
+    managed =
+      managedBase === null
+        ? {
+            tier: "managed",
+            path: DEFAULT_MANAGED_RULES_DIR,
+            content: managedRuleContent,
+            rawContent: managedRuleContent,
+            dropped: [],
+          }
+        : { ...managedBase, content: managedRuleContent };
+  }
 
   // User tier — boundary is `~/.agenc`.
   const agencHome = join(home, ".agenc");
@@ -470,6 +513,24 @@ export async function loadTieredInstructions(
   let user: TierEntry | null = null;
   if (await pathExists(userPrimary)) {
     user = await loadTier("user", userPrimary, agencHome, includeMaxDepth, includeMaxBytes);
+  }
+  const userRuleContent = await appendUnconditionalRules(
+    user?.content ?? "",
+    userRulesDir(home),
+    "User",
+    agencHome,
+  );
+  if (userRuleContent.length > 0) {
+    user =
+      user === null
+        ? {
+            tier: "user",
+            path: userRulesDir(home),
+            content: userRuleContent,
+            rawContent: userRuleContent,
+            dropped: [],
+          }
+        : { ...user, content: userRuleContent };
   }
 
   // Project tier — ancestor-walk via project-instructions loader.
@@ -493,11 +554,17 @@ export async function loadTieredInstructions(
         maxBytes: includeMaxBytes,
       });
       dropped.push(...resolved.dropped);
+      const withRules = await appendUnconditionalRules(
+        resolved.text,
+        projectRulesDir(pathDir(entry.path)),
+        "Project",
+        pathDir(entry.path),
+      );
       if (projectChain.length === 1) {
-        parts.push(resolved.text);
+        parts.push(withRules);
         rawParts.push(entry.content);
       } else {
-        parts.push(formatProjectTierChainEntry(entry, resolved.text));
+        parts.push(formatProjectTierChainEntry(entry, withRules));
         rawParts.push(formatProjectTierChainEntry(entry, entry.content));
       }
     }

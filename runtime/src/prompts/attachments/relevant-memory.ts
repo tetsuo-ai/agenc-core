@@ -32,6 +32,11 @@ import { join } from "node:path";
 import { hasSessionRead } from "../../tools/system/filesystem.js";
 import { scanMemoryDir } from "../memory/scan.js";
 import { selectRelevantMemoriesForTurn } from "../memory/attachments.js";
+import { lineCount, recordMemoryCitation } from "../memory/citations.js";
+import {
+  getSessionMemoryMode,
+  memoryModeAllowsRecall,
+} from "../memory/modes.js";
 import { serializeMemory } from "../memory/types.js";
 import type { RelevantMemoriesAttachment } from "./types.js";
 import type {
@@ -75,7 +80,13 @@ function buildMemoryHeader(path: string, mtimeMs: number): string {
   return `## ${path} (mtime: ${mtimeIso})`;
 }
 
-export const relevantMemoryProducer: AttachmentProducer = async (opts) => {
+export const relevantMemoryProducer: AttachmentProducer = async (
+  opts,
+  trackingState,
+) => {
+  if (!memoryModeAllowsRecall(getSessionMemoryMode(opts.sessionKey))) {
+    return [];
+  }
   const key = readMemoryAwareKey(opts);
   // memoryDir from the session-key shape wins (test fixtures use it
   // directly). Otherwise, derive `<agencHome>/memory` from the option
@@ -99,7 +110,9 @@ export const relevantMemoryProducer: AttachmentProducer = async (opts) => {
 
   // Filter out memory files the model has already read this session.
   const eligible = scan.entries.filter(
-    (entry) => !hasSessionRead(sessionId, entry.filePath),
+    (entry) =>
+      !hasSessionRead(sessionId, entry.filePath) &&
+      !trackingState.surfacedRelevantMemoryPaths.has(entry.filePath),
   );
   if (eligible.length === 0) return [];
 
@@ -124,11 +137,21 @@ export const relevantMemoryProducer: AttachmentProducer = async (opts) => {
       frontmatter: entry.frontmatter,
       body: entry.body,
     });
+    const citation = {
+      path: entry.filePath,
+      lineStart: 1,
+      lineEnd: lineCount(content),
+      note: "relevant memory surfaced for this turn",
+      rolloutIds: [],
+    };
+    recordMemoryCitation(opts.sessionKey, citation);
+    trackingState.surfacedRelevantMemoryPaths.add(entry.filePath);
     memories.push({
       path: entry.filePath,
       content,
       mtimeMs,
       header: buildMemoryHeader(entry.filePath, mtimeMs),
+      citation,
     });
   }
   if (memories.length === 0) return [];
