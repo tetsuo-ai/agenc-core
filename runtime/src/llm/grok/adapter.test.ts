@@ -363,4 +363,36 @@ describe("GrokProvider incremental continuation", () => {
     expect(chunks).toEqual([text]);
     expect(create).toHaveBeenCalledTimes(1);
   });
+
+  test("surfaces xAI stream error events as provider errors", async () => {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model: "grok-4-fast",
+    });
+    const create = vi.fn(() =>
+      withResponse(
+        streamFromEvents([
+          {
+            type: "error",
+            message:
+              "Service temporarily unavailable. The model is at capacity.",
+          },
+        ]),
+      )
+    );
+    (provider as any).client = {
+      responses: { create },
+    };
+
+    const result = await provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      () => {},
+    );
+
+    expect(result.content).toBe("");
+    expect(result.finishReason).toBe("error");
+    expect(result.error?.name).toBe("LLMServerError");
+    expect(result.error?.message).toContain("model is at capacity");
+    expect(result.usage.totalTokens).toBe(0);
+  });
 });

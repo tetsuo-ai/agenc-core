@@ -1264,20 +1264,31 @@ describe("system-prompt assembly: project instructions + memory", () => {
 
 describe("ConfigStore integration shape", () => {
   it("constructs from empty env + defaults and current() is frozen", async () => {
-    const store = new ConfigStore({ env: {} });
-    await store.reload();
-    const cur = store.current();
-    expect(cur.model).toBe("grok-4-fast");
-    // AgenCConfig is deep-frozen — direct writes should throw in strict.
-    expect(Object.isFrozen(cur)).toBe(true);
+    const home = await mkdtemp(join(tmpdir(), "agenc-config-empty-"));
+    try {
+      const store = new ConfigStore({ home, env: {} });
+      await store.reload();
+      const cur = store.current();
+      expect(cur.model).toBe("grok-4-fast");
+      // AgenCConfig is deep-frozen — direct writes should throw in strict.
+      expect(Object.isFrozen(cur)).toBe(true);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("applyEnvOverrides promotes AGENC_MODEL over TOML", async () => {
-    const store = new ConfigStore({
-      env: { AGENC_MODEL: "grok-4" } as NodeJS.ProcessEnv,
-    });
-    await store.reload();
-    expect(store.current().model).toBe("grok-4");
+    const home = await mkdtemp(join(tmpdir(), "agenc-config-env-"));
+    try {
+      const store = new ConfigStore({
+        home,
+        env: { AGENC_MODEL: "grok-4" } as NodeJS.ProcessEnv,
+      });
+      await store.reload();
+      expect(store.current().model).toBe("grok-4");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 

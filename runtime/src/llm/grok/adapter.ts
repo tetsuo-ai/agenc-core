@@ -571,6 +571,54 @@ function emitProviderTraceEvent(
   options?.trace?.onProviderTraceEvent?.(event);
 }
 
+function errorMessageFromStreamEvent(event: unknown): string {
+  if (!event || typeof event !== "object") {
+    return "Provider stream returned an error event";
+  }
+  const record = event as Record<string, unknown>;
+  const nestedError =
+    record.error &&
+    typeof record.error === "object" &&
+    !Array.isArray(record.error)
+      ? (record.error as Record<string, unknown>)
+      : undefined;
+  const message = record.message ?? nestedError?.message ?? record.error;
+  return typeof message === "string" && message.trim().length > 0
+    ? message.trim()
+    : "Provider stream returned an error event";
+}
+
+function statusFromStreamEvent(event: unknown): number | undefined {
+  if (!event || typeof event !== "object") return undefined;
+  const record = event as Record<string, unknown>;
+  const nestedError =
+    record.error &&
+    typeof record.error === "object" &&
+    !Array.isArray(record.error)
+      ? (record.error as Record<string, unknown>)
+      : undefined;
+  const raw =
+    record.status ??
+    record.status_code ??
+    record.statusCode ??
+    nestedError?.status ??
+    nestedError?.status_code ??
+    nestedError?.statusCode ??
+    nestedError?.code;
+  const parsed =
+    typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function errorFromStreamEvent(event: unknown): Error {
+  const message = errorMessageFromStreamEvent(event);
+  const status = statusFromStreamEvent(event);
+  const error = new Error(message) as Error & { status?: number };
+  if (status !== undefined) {
+    error.status = status;
+  }
+  return error;
+}
 
 export class GrokProvider implements LLMProvider {
   readonly name = "grok";
@@ -1153,6 +1201,29 @@ export class GrokProvider implements LLMProvider {
             );
           }
           continue;
+        }
+
+        if (event.type === "error") {
+          receivedTerminalEvent = true;
+          emitProviderTraceEvent(options, {
+            kind: "error",
+            transport: "chat_stream",
+            provider: this.name,
+            model,
+            payload:
+              cloneProviderTracePayload(event) ??
+              { error: "provider_error_trace_unavailable" },
+            context: buildProviderResponseTraceContext(
+              undefined,
+              streamResponseMeta,
+            ),
+          });
+          finishReason = "error";
+          responseError = this.mapError(
+            errorFromStreamEvent(event),
+            streamTimeout.timeoutMs,
+          );
+          break;
         }
 
         if (event.type === "response.completed") {
