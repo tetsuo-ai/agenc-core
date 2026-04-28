@@ -1,8 +1,17 @@
-import type { AgentStatus, Session } from "../session/session.js";
+import { readFileSync } from "node:fs";
+import type { Session } from "../session/session.js";
+import type { RolloutItem } from "../session/rollout-item.js";
+import { parseRolloutLine } from "../session/rollout-item.js";
 import { threadConfigSnapshot } from "../session/turn-context.js";
 import type { InterAgentCommunication } from "./mailbox.js";
+import type { AgentStatus } from "./status.js";
+import { BehaviorSubject } from "./_deps/behavior-subject.js";
 import type { AgentPath, AgentRegistry, ThreadId } from "./registry.js";
 import type { AgentControl, LiveAgent } from "./control.js";
+import {
+  forkSnapshotRollout,
+  type ForkSnapshot,
+} from "./thread-rollout-truncation.js";
 
 export type ThreadManagerOp =
   | { readonly type: "user_input"; readonly input: string }
@@ -10,6 +19,7 @@ export type ThreadManagerOp =
       readonly type: "inter_agent_communication";
       readonly communication: Omit<InterAgentCommunication, "seq" | "direction">;
     }
+  | { readonly type: "append_message"; readonly message: string }
   | { readonly type: "interrupt"; readonly reason?: string }
   | { readonly type: "shutdown"; readonly reason?: string }
   | { readonly type: "refresh_mcp_servers"; readonly config: unknown };
@@ -20,10 +30,15 @@ export interface ManagedThread {
   readonly parentThreadId?: ThreadId;
   readonly kind: "root" | "agent";
   status(): AgentStatus;
+  subscribeStatus(listener: (status: AgentStatus) => void): () => void;
   submit(op: ThreadManagerOp): Promise<string>;
+  appendMessage(message: string): Promise<string>;
   shutdown(reason?: string): Promise<void>;
+  totalTokenUsage?(): unknown;
   configSnapshot?(): Record<string, unknown> | undefined;
   rolloutPath?(): string | undefined;
+  ensureRolloutMaterialized?(): Promise<void> | void;
+  flushRollout?(): Promise<void> | void;
 }
 
 export interface ThreadShutdownReport {
@@ -33,6 +48,40 @@ export interface ThreadShutdownReport {
 }
 
 type ThreadCreatedListener = (threadId: ThreadId) => void;
+const ROOT_THREAD_AGENT_PATH = "/root" as AgentPath;
+
+type SessionAgentStatus = Session["agentStatus"]["value"];
+
+function normalizeSessionStatus(status: SessionAgentStatus): AgentStatus {
+  switch (status.status) {
+    case "completed":
+      return {
+        status: "completed",
+        turnId: status.turnId,
+        endedAtMs: status.endedAtMs,
+      };
+    case "errored":
+      return {
+        status: "errored",
+        turnId: status.turnId,
+        error: status.error,
+        endedAtMs: Date.now(),
+      };
+    case "shutdown":
+      return { status: "shutdown", endedAtMs: Date.now() };
+    case "interrupted":
+      return {
+        status: "interrupted",
+        turnId: status.turnId,
+        reason: "interrupted",
+        endedAtMs: Date.now(),
+      };
+    case "running":
+      return status;
+    case "idle":
+      return status;
+  }
+}
 
 export interface ThreadManagerOpts {
   readonly rootSession?: Session;
@@ -43,6 +92,7 @@ export interface ThreadManagerOpts {
 export interface NewManagedThread {
   readonly threadId: ThreadId;
   readonly thread: ManagedThread;
+  readonly sessionConfigured?: unknown;
 }
 
 export type SpawnManagedLiveAgentOptions = Parameters<AgentControl["spawn"]>[0];
@@ -54,54 +104,191 @@ export class ThreadNotManagedError extends Error {
   }
 }
 
+export class CodexThread implements ManagedThread {
+  readonly threadId: ThreadId;
+  readonly agentPath?: AgentPath;
+  readonly parentThreadId?: ThreadId;
+  readonly kind: "root" | "agent";
+  private readonly session?: Session;
+  private readonly live?: LiveAgent;
+  private readonly statusSubject: BehaviorSubject<AgentStatus>;
+
+  constructor(opts: {
+    readonly threadId: ThreadId;
+    readonly kind: "root" | "agent";
+    readonly agentPath?: AgentPath;
+    readonly parentThreadId?: ThreadId;
+    readonly session?: Session;
+    readonly live?: LiveAgent;
+  }) {
+    this.threadId = opts.threadId;
+    this.kind = opts.kind;
+    if (opts.agentPath !== undefined) this.agentPath = opts.agentPath;
+    if (opts.parentThreadId !== undefined) this.parentThreadId = opts.parentThreadId;
+    if (opts.session !== undefined) this.session = opts.session;
+    if (opts.live !== undefined) this.live = opts.live;
+    this.statusSubject = new BehaviorSubject<AgentStatus>(this.readStatus());
+    opts.live?.status.subscribe((status) => this.statusSubject.next(status));
+    opts.session?.agentStatus?.subscribe?.((status) => {
+      this.statusSubject.next(normalizeSessionStatus(status));
+    });
+  }
+
+  status(): AgentStatus {
+    return this.readStatus();
+  }
+
+  subscribeStatus(listener: (status: AgentStatus) => void): () => void {
+    return this.statusSubject.subscribe(listener);
+  }
+
+  async submit(op: ThreadManagerOp): Promise<string> {
+    if (this.session) return submitToSession(this.session, op);
+    if (this.live) return submitToLiveAgent(this.live, op);
+    return this.threadId;
+  }
+
+  async appendMessage(message: string): Promise<string> {
+    return this.submit({ type: "append_message", message });
+  }
+
+  async shutdown(reason?: string): Promise<void> {
+    await this.submit({ type: "shutdown", reason: reason ?? "shutdown" });
+    this.statusSubject.complete();
+  }
+
+  totalTokenUsage(): unknown {
+    if (this.session) {
+      return this.session.state?.unsafePeek?.().totalTokenUsage;
+    }
+    return this.live?.tokenUsage;
+  }
+
+  sourceSession(): Session | undefined {
+    return this.session;
+  }
+
+  configSnapshot(): Record<string, unknown> | undefined {
+    if (this.session) {
+      return threadConfigSnapshot(
+        this.session.sessionConfiguration,
+      ) as unknown as Record<string, unknown>;
+    }
+    return this.live?.configSnapshot;
+  }
+
+  rolloutPath(): string | undefined {
+    return this.session?.rolloutStore?.rolloutPath ?? this.live?.rolloutPath;
+  }
+
+  async ensureRolloutMaterialized(): Promise<void> {
+    this.session?.rolloutStore?.flushDurable();
+  }
+
+  async flushRollout(): Promise<void> {
+    this.session?.rolloutStore?.flushDurable();
+  }
+
+  private readStatus(): AgentStatus {
+    if (this.session?.agentStatus?.value) {
+      return normalizeSessionStatus(this.session.agentStatus.value);
+    }
+    if (this.live) return this.live.status.value as AgentStatus;
+    return { status: "idle" };
+  }
+}
+
+export class ThreadManagerState {
+  readonly threads = new Map<ThreadId, ManagedThread>();
+  readonly createdListeners = new Set<ThreadCreatedListener>();
+  control: AgentControl | undefined;
+  registry: AgentRegistry | undefined;
+
+  constructor(opts: {
+    readonly control?: AgentControl;
+    readonly registry?: AgentRegistry;
+  } = {}) {
+    this.control = opts.control;
+    this.registry = opts.registry;
+  }
+
+  listThreadIds(): ThreadId[] {
+    return Array.from(this.threads.keys());
+  }
+
+  getThread(threadId: ThreadId): ManagedThread {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new ThreadNotManagedError(threadId);
+    return thread;
+  }
+
+  setThread(thread: ManagedThread): void {
+    const existed = this.threads.has(thread.threadId);
+    this.threads.set(thread.threadId, thread);
+    if (existed) return;
+    for (const listener of this.createdListeners) {
+      listener(thread.threadId);
+    }
+  }
+
+  async sendOp(threadId: ThreadId, op: ThreadManagerOp): Promise<string> {
+    return this.getThread(threadId).submit(op);
+  }
+
+  async appendMessage(threadId: ThreadId, message: string): Promise<string> {
+    return this.getThread(threadId).appendMessage(message);
+  }
+
+  removeThread(threadId: ThreadId): ManagedThread | undefined {
+    const thread = this.threads.get(threadId);
+    this.threads.delete(threadId);
+    return thread;
+  }
+
+  notifyThreadCreated(threadId: ThreadId): void {
+    for (const listener of this.createdListeners) {
+      listener(threadId);
+    }
+  }
+}
+
 export class ThreadManager {
-  private readonly threads = new Map<ThreadId, ManagedThread>();
-  private readonly createdListeners = new Set<ThreadCreatedListener>();
-  private control: AgentControl | undefined;
-  private registry: AgentRegistry | undefined;
+  readonly state: ThreadManagerState;
 
   constructor(rootOrOpts?: Session | ThreadManagerOpts) {
     const opts =
       rootOrOpts && "conversationId" in rootOrOpts
         ? { rootSession: rootOrOpts }
         : (rootOrOpts ?? {});
-    this.control = opts.control;
-    this.registry = opts.registry;
+    this.state = new ThreadManagerState({
+      control: opts.control,
+      registry: opts.registry,
+    });
     if (opts.rootSession) this.registerRootSession(opts.rootSession);
   }
 
   bindAgentControl(control: AgentControl): void {
-    this.control = control;
+    this.state.control = control;
   }
 
   bindRegistry(registry: AgentRegistry): void {
-    this.registry = registry;
+    this.state.registry = registry;
   }
 
   registerRootSession(session: Session): ManagedThread {
-    const thread: ManagedThread = {
+    const thread = new CodexThread({
       threadId: session.conversationId,
-      agentPath: "/root",
+      agentPath: ROOT_THREAD_AGENT_PATH,
       kind: "root",
-      status: () => session.agentStatus.value,
-      submit: (op) => submitToSession(session, op),
-      shutdown: async () => {
-        await session.shutdown();
-      },
-      configSnapshot: () =>
-        threadConfigSnapshot(session.sessionConfiguration) as unknown as Record<
-          string,
-          unknown
-        >,
-      rolloutPath: () => session.rolloutStore?.rolloutPath,
-    };
+      session,
+    });
     if (
-      typeof this.registry?.registerRootThread === "function" &&
+      typeof this.state.registry?.registerRootThread === "function" &&
       typeof session.conversationId === "string"
     ) {
-      this.registry.registerRootThread(session.conversationId);
+      this.state.registry.registerRootThread(session.conversationId);
     }
-    this.setThread(thread);
+    this.state.setThread(thread);
     return thread;
   }
 
@@ -114,6 +301,12 @@ export class ThreadManager {
     return this.startThread(session);
   }
 
+  async startThreadWithToolsAndServiceName(
+    session: Session,
+  ): Promise<NewManagedThread> {
+    return this.startThread(session);
+  }
+
   async resumeThreadWithHistory(session: Session): Promise<NewManagedThread> {
     const thread = this.registerRootSession(session);
     return { threadId: thread.threadId, thread };
@@ -123,21 +316,59 @@ export class ThreadManager {
     return this.resumeThreadWithHistory(session);
   }
 
-  async forkThread(session: Session): Promise<NewManagedThread> {
+  async resumeThreadFromRolloutWithSource(
+    session: Session,
+  ): Promise<NewManagedThread> {
+    return this.resumeThreadWithHistory(session);
+  }
+
+  async forkThread(
+    session: Session,
+    snapshot: ForkSnapshot = { kind: "interrupted" },
+  ): Promise<NewManagedThread> {
+    const rollout = session.rolloutStore?.readAll() ?? [];
+    const forkedHistory = forkSnapshotRollout(rollout, snapshot);
+    void forkedHistory;
     const thread = this.registerRootSession(session);
+    return { threadId: thread.threadId, thread };
+  }
+
+  async forkThreadWithSource(
+    session: Session,
+    snapshot: ForkSnapshot = { kind: "interrupted" },
+  ): Promise<NewManagedThread> {
+    return this.forkThread(session, snapshot);
+  }
+
+  async spawnNewThreadWithSource(
+    opts: SpawnManagedLiveAgentOptions,
+  ): Promise<NewManagedThread> {
+    return this.spawnThreadWithSource(opts);
+  }
+
+  async spawnThreadWithSource(
+    opts: SpawnManagedLiveAgentOptions,
+  ): Promise<NewManagedThread> {
+    const live = await this.spawnLiveAgent(opts);
+    const thread = this.getThread(live.agentId);
+    return { threadId: live.agentId, thread };
+  }
+
+  async finalizeThreadSpawn(thread: ManagedThread): Promise<NewManagedThread> {
+    this.state.setThread(thread);
     return { threadId: thread.threadId, thread };
   }
 
   async spawnLiveAgent(
     opts: SpawnManagedLiveAgentOptions,
   ): Promise<LiveAgent> {
-    if (!this.control) {
+    if (!this.state.control) {
       throw new Error("ThreadManager cannot spawn an agent before AgentControl is bound");
     }
-    const live = await this.control.spawnLiveAgentForThreadManager(opts);
+    const live = await this.state.control.spawnLiveAgentForThreadManager(opts);
     const parentThreadId =
-      typeof this.registry?.agentIdForPath === "function"
-        ? this.registry.agentIdForPath(opts.parentPath)
+      typeof this.state.registry?.agentIdForPath === "function"
+        ? this.state.registry.agentIdForPath(opts.parentPath)
         : undefined;
     this.registerLiveAgent(live, {
       ...(parentThreadId !== undefined ? { parentThreadId } : {}),
@@ -149,85 +380,57 @@ export class ThreadManager {
     live: LiveAgent,
     opts: { readonly parentThreadId?: ThreadId } = {},
   ): ManagedThread {
-    const thread: ManagedThread = {
+    const thread = new CodexThread({
       threadId: live.agentId,
       agentPath: live.agentPath,
       kind: "agent",
+      live,
       ...(opts.parentThreadId !== undefined
         ? { parentThreadId: opts.parentThreadId }
         : {}),
-      status: () => live.status.value,
-      submit: async (op) => {
-        switch (op.type) {
-          case "user_input":
-            live.downInbox.send({
-              author: live.agentPath,
-              recipient: live.agentPath,
-              content: op.input,
-              triggerTurn: true,
-              direction: "down",
-              metadata: { kind: "user_input" },
-            });
-            return live.agentId;
-          case "inter_agent_communication":
-            live.downInbox.send({
-              ...op.communication,
-              direction: "down",
-              metadata: { kind: "inter_agent_communication" },
-            });
-            return live.agentId;
-          case "interrupt":
-            if (!live.abortController.signal.aborted) {
-              live.abortController.abort(op.reason ?? "interrupt");
-            }
-            live.status.markInterrupted(live.agentId, op.reason ?? "interrupt");
-            return live.agentId;
-          case "shutdown":
-            live.upInbox.close(op.reason ?? "shutdown");
-            live.downInbox.close(op.reason ?? "shutdown");
-            live.status.markShutdown();
-            live.status.complete();
-            return live.agentId;
-          case "refresh_mcp_servers":
-            return live.agentId;
-        }
-      },
-      shutdown: async (reason) => {
-        await thread.submit({ type: "shutdown", reason: reason ?? "shutdown" });
-      },
-      configSnapshot: () => live.configSnapshot,
-      rolloutPath: () => live.rolloutPath,
-    };
-    this.setThread(thread);
+    });
+    this.state.setThread(thread);
     return thread;
   }
 
   getThread(threadId: ThreadId): ManagedThread {
-    const thread = this.threads.get(threadId);
-    if (!thread) throw new ThreadNotManagedError(threadId);
-    return thread;
+    return this.state.getThread(threadId);
   }
 
   hasThread(threadId: ThreadId): boolean {
-    return this.threads.has(threadId);
+    return this.state.threads.has(threadId);
   }
 
   listThreadIds(): readonly ThreadId[] {
-    return Array.from(this.threads.keys());
+    return this.state.listThreadIds();
   }
 
   removeThread(threadId: ThreadId): ManagedThread | undefined {
-    const thread = this.threads.get(threadId);
-    this.threads.delete(threadId);
-    return thread;
+    return this.state.removeThread(threadId);
   }
 
   async sendOp(threadId: ThreadId, op: ThreadManagerOp): Promise<string> {
-    return this.getThread(threadId).submit(op);
+    return this.state.sendOp(threadId, op);
+  }
+
+  async appendMessage(threadId: ThreadId, message: string): Promise<string> {
+    return this.state.appendMessage(threadId, message);
+  }
+
+  async refreshMcpServers(config: unknown): Promise<void> {
+    await Promise.all(
+      Array.from(this.state.threads.values()).map(async (thread) => {
+        try {
+          await thread.submit({ type: "refresh_mcp_servers", config });
+        } catch {
+          /* refresh is best-effort across the managed tree */
+        }
+      }),
+    );
   }
 
   async shutdownAllThreadsBounded(timeoutMs: number): Promise<ThreadShutdownReport> {
-    const entries = Array.from(this.threads.entries());
+    const entries = Array.from(this.state.threads.entries());
     const report: ThreadShutdownReport = {
       completed: [],
       submitFailed: [],
@@ -240,7 +443,7 @@ export class ThreadManager {
       }),
     );
     for (const threadId of report.completed) {
-      this.threads.delete(threadId);
+      this.state.threads.delete(threadId);
     }
     report.completed.sort();
     report.submitFailed.sort();
@@ -249,19 +452,66 @@ export class ThreadManager {
   }
 
   subscribeThreadCreated(listener: ThreadCreatedListener): () => void {
-    this.createdListeners.add(listener);
+    this.state.createdListeners.add(listener);
     return () => {
-      this.createdListeners.delete(listener);
+      this.state.createdListeners.delete(listener);
     };
   }
 
-  private setThread(thread: ManagedThread): void {
-    const existed = this.threads.has(thread.threadId);
-    this.threads.set(thread.threadId, thread);
-    if (existed) return;
-    for (const listener of this.createdListeners) {
-      listener(thread.threadId);
+  listAgentSubtreeThreadIds(rootThreadId: ThreadId): readonly ThreadId[] {
+    const result: ThreadId[] = [];
+    const seen = new Set<ThreadId>();
+    const push = (threadId: ThreadId): void => {
+      if (seen.has(threadId)) return;
+      seen.add(threadId);
+      result.push(threadId);
+    };
+    push(rootThreadId);
+
+    const root = this.state.threads.get(rootThreadId);
+    const rolloutStore = root?.kind === "root"
+      ? undefined
+      : undefined;
+    void rolloutStore;
+
+    const anyThread = this.state.threads.get(rootThreadId);
+    const rootSession = anyThread instanceof CodexThread
+      ? undefined
+      : undefined;
+    void rootSession;
+
+    const session = Array.from(this.state.threads.values())
+      .map((thread) =>
+        thread instanceof CodexThread ? thread.sourceSession() : undefined,
+      )
+      .find((candidate): candidate is Session => candidate !== undefined);
+    const rollout = session?.rolloutStore;
+    if (rollout) {
+      for (const status of ["open", "closed"] as const) {
+        for (const edge of rollout.listThreadSpawnDescendantsWithStatus(
+          rootThreadId,
+          status,
+        )) {
+          push(edge.childThreadId);
+        }
+      }
     }
+
+    const byParent = new Map<ThreadId, ThreadId[]>();
+    for (const thread of this.state.threads.values()) {
+      if (!thread.parentThreadId) continue;
+      const bucket = byParent.get(thread.parentThreadId) ?? [];
+      bucket.push(thread.threadId);
+      byParent.set(thread.parentThreadId, bucket);
+    }
+    for (const bucket of byParent.values()) bucket.sort();
+    const queue = [...(byParent.get(rootThreadId) ?? [])];
+    while (queue.length > 0) {
+      const next = queue.shift()!;
+      push(next);
+      queue.push(...(byParent.get(next) ?? []));
+    }
+    return result;
   }
 }
 
@@ -283,6 +533,16 @@ async function submitToSession(
         await session.submit(op.communication.content);
       }
       return session.conversationId;
+    case "append_message":
+      session.mailbox.send({
+        author: ROOT_THREAD_AGENT_PATH,
+        recipient: ROOT_THREAD_AGENT_PATH,
+        content: op.message,
+        triggerTurn: false,
+        direction: "up",
+        metadata: { kind: "append_message" },
+      });
+      return session.conversationId;
     case "interrupt":
       session.abortTerminal("user_interrupt");
       return session.conversationId;
@@ -292,6 +552,55 @@ async function submitToSession(
     case "refresh_mcp_servers":
       await session.services.mcpManager.refreshFromConfig?.(op.config);
       return session.conversationId;
+  }
+}
+
+async function submitToLiveAgent(
+  live: LiveAgent,
+  op: ThreadManagerOp,
+): Promise<string> {
+  switch (op.type) {
+    case "user_input":
+      live.downInbox.send({
+        author: live.agentPath,
+        recipient: live.agentPath,
+        content: op.input,
+        triggerTurn: true,
+        direction: "down",
+        metadata: { kind: "user_input" },
+      });
+      return live.agentId;
+    case "inter_agent_communication":
+      live.downInbox.send({
+        ...op.communication,
+        direction: "down",
+        metadata: { kind: "inter_agent_communication" },
+      });
+      return live.agentId;
+    case "append_message":
+      live.downInbox.send({
+        author: live.agentPath,
+        recipient: live.agentPath,
+        content: op.message,
+        triggerTurn: false,
+        direction: "down",
+        metadata: { kind: "append_message" },
+      });
+      return live.agentId;
+    case "interrupt":
+      if (!live.abortController.signal.aborted) {
+        live.abortController.abort(op.reason ?? "interrupt");
+      }
+      live.status.markInterrupted(live.agentId, op.reason ?? "interrupt");
+      return live.agentId;
+    case "shutdown":
+      live.upInbox.close(op.reason ?? "shutdown");
+      live.downInbox.close(op.reason ?? "shutdown");
+      live.status.markShutdown();
+      live.status.complete();
+      return live.agentId;
+    case "refresh_mcp_servers":
+      return live.agentId;
   }
 }
 
@@ -320,4 +629,13 @@ async function shutdownWithTimeout(
       clearTimeout(timeout);
     }
   }
+}
+
+export function readRolloutHistory(path: string): RolloutItem[] {
+  return readFileSync(path, "utf8")
+    .split(/\r?\n/u)
+    .flatMap((line) => {
+      const item = parseRolloutLine(line);
+      return item === null ? [] : [item];
+    });
 }

@@ -37,6 +37,26 @@ import type { Session } from "../session/session.js";
 // Test harness
 // ---------------------------------------------------------------------------
 
+async function withEnv<T>(
+  overrides: Record<string, string | undefined>,
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(overrides)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 type HarnessOverrides = {
   mode?: "default" | "acceptEdits" | "plan" | "bypassPermissions" | "dontAsk" | "auto";
   shouldAvoidPermissionPrompts?: boolean;
@@ -459,18 +479,23 @@ describe("hasPermissionsToUseTool — step 4 auto mode activates classifier", ()
   });
 
   it("runs the classifier pipeline when the gate is enabled", async () => {
-    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
-    try {
-      const tool = makeTool({ name: "SomeUnknownTool" });
-      const { context } = buildHarness({ mode: "auto" });
-      const result = await hasPermissionsToUseTool(tool, {}, context);
-      expect(result.behavior).toBe("ask");
-      if (result.behavior === "ask") {
-        expect(result.message).toContain("Permission required");
+    await withEnv(
+      { XAI_API_KEY: undefined, GROK_API_KEY: undefined, AGENC_XAI_API_KEY: undefined },
+      async () => {
+        const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+        try {
+          const tool = makeTool({ name: "SomeUnknownTool" });
+          const { context } = buildHarness({ mode: "auto" });
+          const result = await hasPermissionsToUseTool(tool, {}, context);
+          expect(result.behavior).toBe("ask");
+          if (result.behavior === "ask") {
+            expect(result.message).toContain("Permission required");
+          }
+        } finally {
+          restoreGate();
+        }
       }
-    } finally {
-      restoreGate();
-    }
+    );
   });
 
   it("passes session history into the classifier transcript", async () => {
@@ -628,15 +653,20 @@ describe("hasPermissionsToUseTool — denial limits", () => {
   });
 
   it("classifier fallback returns ask for unsupported tools when the gate is open", async () => {
-    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
-    try {
-      const tool = makeTool({ name: "NotAllowlisted" });
-      const { context } = buildHarness({ mode: "auto" });
-      const result = await hasPermissionsToUseTool(tool, {}, context);
-      expect(result.behavior).toBe("ask");
-    } finally {
-      restoreGate();
-    }
+    await withEnv(
+      { XAI_API_KEY: undefined, GROK_API_KEY: undefined, AGENC_XAI_API_KEY: undefined },
+      async () => {
+        const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+        try {
+          const tool = makeTool({ name: "NotAllowlisted" });
+          const { context } = buildHarness({ mode: "auto" });
+          const result = await hasPermissionsToUseTool(tool, {}, context);
+          expect(result.behavior).toBe("ask");
+        } finally {
+          restoreGate();
+        }
+      }
+    );
   });
 
   it("consecutiveDenials=3 triggers fallback-to-prompting (CLI)", async () => {

@@ -15,7 +15,7 @@ import {
   join,
   resolve,
 } from "node:path";
-import { delegate } from "../agents/delegate.js";
+import type { SpawnAgentForkMode } from "../agents/control.js";
 import {
   ROOT_AGENT_PATH,
   normalizeAgentNameForPath,
@@ -381,6 +381,18 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode {
   );
 }
 
+function toControlForkMode(mode: ForkMode): SpawnAgentForkMode | undefined {
+  switch (mode.kind) {
+    case "full_history":
+      return { kind: "full_history" };
+    case "last_n_turns":
+      return { kind: "last_n_turns", n: mode.n };
+    case "new":
+    case "explicit":
+      return undefined;
+  }
+}
+
 function waitTimeoutMs(args: Record<string, unknown>): ToolResult | number {
   const supplied = numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs);
   if (supplied !== undefined && supplied <= 0) {
@@ -498,7 +510,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         true,
       );
     }
-    const { control, registry } = ensureAgentControl(session);
+    const { control } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
     const role =
       stringValue(args.agent_type) ??
@@ -566,21 +578,24 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       },
     });
 
-    const outcome = await delegate({
-      parent: session,
-      parentPath: current.agentPath,
-      control,
-      registry,
-      taskPrompt: prompt,
-      ...(role !== undefined ? { role } : {}),
-      agentName,
-      ...(model !== undefined ? { model } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      forkMode,
-      runInBackground,
-    });
-
-    if (outcome.kind === "rejected") {
+    let live;
+    try {
+      live = await control.spawnAgentWithMetadata(current.agentPath, {
+        agentName,
+        ...(role !== undefined ? { roleName: role } : {}),
+        ...(toControlForkMode(forkMode) !== undefined
+          ? { forkMode: toControlForkMode(forkMode) }
+          : {}),
+        forkParentSpawnCallId: callId,
+      });
+      await control.sendInterAgentCommunication(live.agentId, {
+        author: current.agentPath,
+        recipient: live.agentPath,
+        content: prompt,
+        triggerTurn: true,
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       emit(session, {
         type: "collab_agent_spawn_end",
         payload: {
@@ -591,64 +606,52 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           reasoningEffort:
             reasoningEffort ??
             session.sessionConfiguration.collaborationMode.reasoningEffort,
-          status: { status: "errored", turnId: callId, endedAtMs: Date.now(), error: outcome.reason },
+          status: { status: "errored", turnId: callId, endedAtMs: Date.now(), error: reason },
         },
       });
-      return json({ error: outcome.reason }, true);
+      return json({ error: reason }, true);
     }
-    const thread = outcome.thread;
     const spawned = spawnedAgentsForSession(session);
-    spawned.set(thread.threadId, {
-      threadId: thread.threadId,
-      agentPath: thread.agentPath,
-      nickname: thread.nickname,
-      join: () => thread.join(),
-      status: () => thread.currentStatus,
+    spawned.set(live.agentId, {
+      threadId: live.agentId,
+      agentPath: live.agentPath,
+      nickname: live.nickname,
+      join: async () => live.status.value,
+      status: () => live.status.value as AgentStatus,
     });
-    spawned.set(thread.agentPath, spawned.get(thread.threadId)!);
-    spawned.set(thread.nickname, spawned.get(thread.threadId)!);
+    spawned.set(live.agentPath, spawned.get(live.agentId)!);
+    spawned.set(live.nickname, spawned.get(live.agentId)!);
     emit(session, {
       type: "collab_agent_spawn_end",
       payload: {
         callId,
         senderThreadId: current.threadId,
-        newThreadId: thread.threadId,
-        newAgentNickname: thread.nickname,
+        newThreadId: live.agentId,
+        newAgentNickname: live.nickname,
         newAgentRole: role,
         prompt,
         model: model ?? session.sessionConfiguration.collaborationMode.model,
         reasoningEffort:
           reasoningEffort ??
           session.sessionConfiguration.collaborationMode.reasoningEffort,
-        status: thread.currentStatus,
+        status: live.status.value,
       },
     });
 
     if (aliasName === "spawn_agent") {
       return json({
-        task_name: thread.agentPath,
-        ...(thread.nickname ? { nickname: thread.nickname } : {}),
+        task_name: live.agentPath,
+        ...(live.nickname ? { nickname: live.nickname } : {}),
       });
     }
 
-    if (outcome.kind === "sync_completed") {
-      return json({
-        tool: aliasName,
-        status: "completed",
-        task_name: thread.agentPath,
-        agent_id: thread.threadId,
-        agent_path: thread.agentPath,
-        nickname: thread.nickname,
-        result: outcome.result,
-      });
-    }
     return json({
       tool: aliasName,
-      status: "running",
-      task_name: thread.agentPath,
-      agent_id: thread.threadId,
-      agent_path: thread.agentPath,
-      nickname: thread.nickname,
+      status: runInBackground ? "running" : live.status.value.status,
+      task_name: live.agentPath,
+      agent_id: live.agentId,
+      agent_path: live.agentPath,
+      nickname: live.nickname,
     });
   };
 

@@ -667,41 +667,43 @@ describe("Session.consumePendingProviderSwitch", () => {
   });
 
   it("refuses impossible switches without mutating the live session", async () => {
-    const startingProvider = createProvider("grok", {
-      apiKey: "test-key",
-      model: "grok-4",
-    });
-    const session = buildSession({
-      services: {
-        provider: startingProvider,
-      },
-    });
-    session.setPendingProviderSwitch({
-      provider: "openai",
-      model: "gpt-5",
-    });
-
-    const applied = await session.consumePendingProviderSwitch();
-    const state = session.state.unsafePeek();
-    const emitted = session.txEvent.tryRecv();
-
-    expect(applied.applied).toBe(false);
-    expect(applied.reason).toMatch(/OPENAI_API_KEY|apiKey/i);
-    expect(state.sessionConfiguration.provider).toBeUndefined();
-    expect(state.sessionConfiguration.collaborationMode.model).toBe(
-      "test-model",
-    );
-    expect(session.config.model).toBe("test-model");
-    expect(session.modelInfo.slug).toBe("test-model");
-    expect(session.services.provider).toBe(startingProvider);
-    expect(session.pendingProviderSwitch).toBeNull();
-    expect(emitted).toMatchObject({
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "provider_switch_rejected",
+    await withEnv({ OPENAI_API_KEY: undefined }, async () => {
+      const startingProvider = createProvider("grok", {
+        apiKey: "test-key",
+        model: "grok-4",
+      });
+      const session = buildSession({
+        services: {
+          provider: startingProvider,
         },
-      },
+      });
+      session.setPendingProviderSwitch({
+        provider: "openai",
+        model: "gpt-5",
+      });
+
+      const applied = await session.consumePendingProviderSwitch();
+      const state = session.state.unsafePeek();
+      const emitted = session.txEvent.tryRecv();
+
+      expect(applied.applied).toBe(false);
+      expect(applied.reason).toMatch(/OPENAI_API_KEY|apiKey/i);
+      expect(state.sessionConfiguration.provider).toBeUndefined();
+      expect(state.sessionConfiguration.collaborationMode.model).toBe(
+        "test-model",
+      );
+      expect(session.config.model).toBe("test-model");
+      expect(session.modelInfo.slug).toBe("test-model");
+      expect(session.services.provider).toBe(startingProvider);
+      expect(session.pendingProviderSwitch).toBeNull();
+      expect(emitted).toMatchObject({
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "provider_switch_rejected",
+          },
+        },
+      });
     });
   });
 

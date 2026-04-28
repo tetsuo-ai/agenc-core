@@ -1385,9 +1385,13 @@ export async function* runTurnKernel(
   }
   session.bindProviderConversation();
 
+  const pendingInputMessages =
+    typeof session.drainPendingInputMessages === "function"
+      ? session.drainPendingInputMessages()
+      : [];
   userMessage = mergePendingInputIntoUserMessage(
     userMessage,
-    session.drainPendingInputMessages(),
+    pendingInputMessages,
   );
 
   // AgenC runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`

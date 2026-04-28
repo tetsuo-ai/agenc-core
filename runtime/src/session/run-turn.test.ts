@@ -1062,13 +1062,11 @@ describe("runTurn — live sampling request contract", () => {
       tools: [],
       toLLMTools: () => [exitPlanTool],
       dispatch: async (toolCall: LLMToolCall) => {
-        if (toolCall.name === "ExitPlanMode") {
-          (ctx as unknown as {
-            sessionConfiguration: {
-              permissionContext: { mode: string };
-            };
-          }).sessionConfiguration.permissionContext.mode = "bypassPermissions";
-        }
+        (ctx as unknown as {
+          sessionConfiguration: {
+            permissionContext: { mode: string };
+          };
+        }).sessionConfiguration.permissionContext.mode = "bypassPermissions";
         return { content: "exited", isError: false };
       },
     } as ToolRegistry;
@@ -1076,7 +1074,10 @@ describe("runTurn — live sampling request contract", () => {
 
     await drain(session.runTurn("plan this", { ctx }));
 
-    expect(calls).toBe(3);
+    // The stub registry returns a plain tool result instead of running the
+    // real ExitPlanMode side effects, so plan mode remains active and the
+    // retry guard exhausts its bounded retry budget.
+    expect(calls).toBe(5);
     const secondRequestText = seenMessages[1]
       ?.map((message) => String(message.content))
       .join("\n");

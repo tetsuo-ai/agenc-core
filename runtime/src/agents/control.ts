@@ -553,6 +553,10 @@ export class AgentControl {
    * triggering message append.
    */
   async appendMessage(threadId: ThreadId, message: string): Promise<void> {
+    if (this.threadManager?.hasThread(threadId)) {
+      await this.threadManager.appendMessage(threadId, message);
+      return;
+    }
     const agent = this.requireLive(threadId);
     try {
       agent.downInbox.send({
@@ -633,6 +637,12 @@ export class AgentControl {
    * up + aborts. Cascades to descendants.
    */
   interrupt(threadId: ThreadId, reason: string): void {
+    if (this.threadManager?.hasThread(threadId)) {
+      void this.threadManager.sendOp(threadId, {
+        type: "interrupt",
+        reason,
+      });
+    }
     const agent = this.live.get(threadId);
     if (!agent) return;
 
@@ -706,6 +716,14 @@ export class AgentControl {
     if (edgeStatus !== null) {
       await this.setThreadSpawnEdgeStatus(threadId, edgeStatus);
     }
+  }
+
+  async closeAgent(threadId: ThreadId): Promise<void> {
+    await this.shutdown(threadId, "closed_by_tool");
+  }
+
+  interruptAgent(threadId: ThreadId): void {
+    this.interrupt(threadId, "interrupt");
   }
 
   /**
@@ -980,6 +998,42 @@ export class AgentControl {
     };
   }
 
+  async getStatus(threadId: ThreadId): Promise<AgentStatus> {
+    if (this.threadManager?.hasThread(threadId)) {
+      return this.threadManager.getThread(threadId).status();
+    }
+    return this.live.get(threadId)?.status.value ?? { status: "idle" };
+  }
+
+  async subscribeStatus(
+    threadId: ThreadId,
+  ): Promise<{ readonly value: AgentStatus; readonly unsubscribe: () => void }> {
+    if (this.threadManager?.hasThread(threadId)) {
+      const thread = this.threadManager.getThread(threadId);
+      let value = thread.status();
+      const unsubscribe = thread.subscribeStatus((next) => {
+        value = next;
+      });
+      return {
+        get value() {
+          return value;
+        },
+        unsubscribe,
+      };
+    }
+    const agent = this.requireLive(threadId);
+    let value = agent.status.value;
+    const unsubscribe = agent.status.subscribe((next) => {
+      value = next;
+    });
+    return {
+      get value() {
+        return value;
+      },
+      unsubscribe,
+    };
+  }
+
   /**
    * Port of AgenC runtime `resolve_agent_reference` (`control.rs:757`).
    * Supports `@nickname`, `@/absolute/path`, and `@relative/path`.
@@ -1032,6 +1086,13 @@ export class AgentControl {
       outputTokens,
       totalTokens: inputTokens + outputTokens,
     };
+  }
+
+  async getTotalTokenUsageForAgent(threadId: ThreadId): Promise<unknown> {
+    if (this.threadManager?.hasThread(threadId)) {
+      return this.threadManager.getThread(threadId).totalTokenUsage?.();
+    }
+    return this.live.get(threadId)?.tokenUsage;
   }
 
   /**

@@ -243,6 +243,7 @@ describe("createProvider", () => {
       env: {
         LMSTUDIO_BASE_URL: undefined,
         LMSTUDIO_MODEL: "qwen2.5-coder:7b",
+        OPENAI_API_KEY: undefined,
         OPENAI_BASE_URL: undefined,
         OPENAI_MODEL: "wrong-openai-model",
       },

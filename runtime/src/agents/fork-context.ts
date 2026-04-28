@@ -22,6 +22,10 @@
 import type { LLMMessage } from "../llm/types.js";
 import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { Session } from "../session/session.js";
+import {
+  filterForkedRolloutItems,
+  truncateRolloutToLastNForkTurns,
+} from "./thread-rollout-truncation.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fork modes
@@ -149,7 +153,13 @@ function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
   const rolloutStore = input.parent.rolloutStore;
   if (!rolloutStore) return [...input.parentMessages];
   try {
-    const rolloutMessages = rolloutItemsToForkMessages(rolloutStore.readAll());
+    const rolloutItems =
+      input.mode.kind === "last_n_turns"
+        ? truncateRolloutToLastNForkTurns(rolloutStore.readAll(), input.mode.n)
+        : rolloutStore.readAll();
+    const rolloutMessages = rolloutItemsToForkMessages(
+      filterForkedRolloutItems(rolloutItems),
+    );
     return rolloutMessages.length > 0
       ? rolloutMessages
       : [...input.parentMessages];
@@ -205,7 +215,9 @@ export async function forkSubagent(
     case "last_n_turns":
       return {
         messages: [
-          ...lastNUserTurns(parentMessages, input.mode.n),
+          ...(input.parent.rolloutStore
+            ? parentMessages
+            : lastNUserTurns(parentMessages, input.mode.n)),
           directiveMessage,
         ],
         directivePrompt,

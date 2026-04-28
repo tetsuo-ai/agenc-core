@@ -75,13 +75,11 @@ describe("collapseOutput", () => {
     const input = lines.join("\n");
     const out = collapseOutput(input);
     const outLines = out.split("\n");
-    // 5 head + 1 marker + 5 tail = 11 lines total.
-    expect(outLines.length).toBe(11);
+    // Default collapse keeps 3 head lines and a marker.
+    expect(outLines.length).toBe(4);
     expect(outLines[0]).toBe("line 1");
-    expect(outLines[4]).toBe("line 5");
-    expect(outLines[5]).toMatch(/^\.\.\. \(20 lines elided\) \.\.\.$/);
-    expect(outLines[6]).toBe("line 26");
-    expect(outLines[10]).toBe("line 30");
+    expect(outLines[2]).toBe("line 3");
+    expect(outLines[3]).toBe("... +27 lines (Ctrl+O to expand)");
   });
 });
 
