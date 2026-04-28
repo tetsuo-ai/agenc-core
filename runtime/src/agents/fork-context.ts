@@ -20,6 +20,7 @@
  */
 
 import type { LLMMessage } from "../llm/types.js";
+import type { ResponseItem, RolloutItem } from "../session/rollout-item.js";
 import type { Session } from "../session/session.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -102,6 +103,61 @@ function buildDirective(input: ForkContextInput): string {
   return lines.join("\n");
 }
 
+function responseItemToForkMessage(item: ResponseItem): LLMMessage | null {
+  if (item.role === "tool") return null;
+  if (item.role === "assistant") {
+    if (item.phase === "commentary") return null;
+    if (item.toolCallId || item.toolName) return null;
+  }
+  return {
+    role: item.role,
+    content: (typeof item.content === "string"
+      ? item.content
+      : item.content.map((part) => ({ ...part }))) as LLMMessage["content"],
+    ...(item.phase === "commentary" || item.phase === "final_answer"
+      ? { phase: item.phase }
+      : {}),
+  };
+}
+
+function responseItemsToForkMessages(
+  items: ReadonlyArray<ResponseItem>,
+): LLMMessage[] {
+  return items.flatMap((item) => {
+    const message = responseItemToForkMessage(item);
+    return message ? [message] : [];
+  });
+}
+
+function rolloutItemsToForkMessages(
+  items: ReadonlyArray<RolloutItem>,
+): LLMMessage[] {
+  let messages: LLMMessage[] = [];
+  for (const item of items) {
+    if (item.type === "compacted" && item.payload.replacementHistory) {
+      messages = responseItemsToForkMessages(item.payload.replacementHistory);
+      continue;
+    }
+    if (item.type !== "response_item") continue;
+    const message = responseItemToForkMessage(item.payload);
+    if (message) messages.push(message);
+  }
+  return messages;
+}
+
+function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
+  const rolloutStore = input.parent.rolloutStore;
+  if (!rolloutStore) return [...input.parentMessages];
+  try {
+    const rolloutMessages = rolloutItemsToForkMessages(rolloutStore.readAll());
+    return rolloutMessages.length > 0
+      ? rolloutMessages
+      : [...input.parentMessages];
+  } catch {
+    return [...input.parentMessages];
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // forkSubagent — the main entry
 // ─────────────────────────────────────────────────────────────────────
@@ -131,6 +187,7 @@ export async function forkSubagent(
     role: "user",
     content: directivePrompt,
   };
+  const parentMessages = rolloutBackedParentMessages(input);
 
   switch (input.mode.kind) {
     case "new":
@@ -141,14 +198,14 @@ export async function forkSubagent(
 
     case "full_history":
       return {
-        messages: [...input.parentMessages, directiveMessage],
+        messages: [...parentMessages, directiveMessage],
         directivePrompt,
       };
 
     case "last_n_turns":
       return {
         messages: [
-          ...lastNUserTurns(input.parentMessages, input.mode.n),
+          ...lastNUserTurns(parentMessages, input.mode.n),
           directiveMessage,
         ],
         directivePrompt,

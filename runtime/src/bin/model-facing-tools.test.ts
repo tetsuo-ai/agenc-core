@@ -110,8 +110,22 @@ describe("model-facing tools", () => {
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toEqual(
-      expect.arrayContaining(["WebFetch", "WebSearch", "Skill", "spawn_agent"]),
+      expect.arrayContaining([
+        "WebFetch",
+        "WebSearch",
+        "Skill",
+        "spawn_agent",
+        "followup_task",
+        "send_message",
+        "wait_agent",
+        "close_agent",
+        "list_agents",
+      ]),
     );
+    expect(allNames).not.toContain("system.agent.delegate");
+    expect(visibleNames).not.toContain("system.agent.delegate");
+    expect(visibleNames).not.toContain("resume_agent");
+    expect(visibleNames).not.toContain("send_input");
     expect(visibleNames).not.toContain("NotebookEdit");
     expect(visibleNames).not.toContain("TaskCreate");
   });
@@ -165,6 +179,119 @@ describe("model-facing tools", () => {
       uri: "resource://one",
     });
     expect(JSON.parse(read.content).resource.text).toBe("resource body");
+  });
+
+  it("rejects legacy fields on strict Codex v2 agent tools", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    const spawn = await byName.get("spawn_agent")!.execute({
+      message: "inspect",
+      task_name: "task_1",
+      items: [{ text: "legacy" }],
+    });
+    expect(spawn.isError).toBe(true);
+    expect(JSON.parse(spawn.content).error).toContain("unknown field `items`");
+
+    const send = await byName.get("send_message")!.execute({
+      target: "/root/task_1",
+      message: "hello",
+      interrupt: true,
+    });
+    expect(send.isError).toBe(true);
+    expect(JSON.parse(send.content).error).toContain("unknown field `interrupt`");
+
+    const followup = await byName.get("followup_task")!.execute({
+      target: "/root/task_1",
+      message: "hello",
+      items: [],
+    });
+    expect(followup.isError).toBe(true);
+    expect(JSON.parse(followup.content).error).toContain("unknown field `items`");
+  });
+
+  it("rejects invalid strict spawn_agent arguments before delegation", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    });
+    const spawnAgent = tools.find((tool) => tool.name === "spawn_agent")!;
+
+    const missingTaskName = await spawnAgent.execute({ message: "inspect" });
+    expect(missingTaskName.isError).toBe(true);
+    expect(JSON.parse(missingTaskName.content).error).toBe("task_name is required");
+
+    const forkContext = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      fork_context: true,
+    });
+    expect(forkContext.isError).toBe(true);
+    expect(JSON.parse(forkContext.content).error).toContain(
+      "fork_context is not supported",
+    );
+
+    const forkTurns = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      fork_turns: "0",
+    });
+    expect(forkTurns.isError).toBe(true);
+    expect(JSON.parse(forkTurns.content).error).toBe(
+      "fork_turns must be `none`, `all`, or a positive integer string",
+    );
+  });
+
+  it("rejects empty v2 agent messages before dispatch", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    const result = await byName.get("send_message")!.execute({
+      target: "/root/task_1",
+      message: "   ",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe(
+      "Empty message can't be sent to an agent",
+    );
+  });
+
+  it("does not fall back to raw unresolved agent targets", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    const result = await byName.get("send_message")!.execute({
+      target: "missing_child",
+      message: "hello",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      "agent reference cannot be resolved",
+    );
+  });
+
+  it("rejects closing the root agent", async () => {
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    });
+    const close = tools.find((tool) => tool.name === "close_agent")!;
+
+    const result = await close.execute({ target: "/root" });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe("root is not a spawned agent");
   });
 
   it("edits notebook cells structurally", async () => {

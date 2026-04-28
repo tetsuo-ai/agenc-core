@@ -65,6 +65,7 @@ import type {
   ContextCollapseSnapshotEntry,
 } from "./_deps/types-logs.js";
 import { AgentControl } from "../agents/control.js";
+import { ThreadManager } from "../agents/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
   type BuildToolRegistryOptions,
@@ -940,11 +941,19 @@ export async function bootstrapLocalRuntimeSession(
           session: s,
           registry: agentRegistry,
         });
+        const threadManager = new ThreadManager({
+          rootSession: s,
+          control: agentControl,
+          registry: agentRegistry,
+        });
+        agentControl.bindThreadManager(threadManager);
         agentControl.registerSessionRoot(conversationId);
         bindSessionAgentControl(s, {
           control: agentControl,
           registry: agentRegistry,
         });
+        (s.services as { threadManager?: ThreadManager }).threadManager =
+          threadManager;
         agentControlForShutdown = agentControl;
 
         setCurrentRuntimeSession(s);

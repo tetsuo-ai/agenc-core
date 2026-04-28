@@ -2108,9 +2108,14 @@ describe("main() full-IIFE smoke", () => {
       expect(capturedSession).not.toBeNull();
       expect(
         capturedSession!.services.registry.tools.some(
-          (tool) => tool.name === "system.agent.delegate",
+          (tool) => tool.name === "spawn_agent",
         ),
       ).toBe(true);
+      expect(
+        capturedSession!.services.registry.tools.some(
+          (tool) => tool.name === "system.agent.delegate",
+        ),
+      ).toBe(false);
       expect(typeof capturedSession!.submit).toBe("function");
       expect(typeof capturedSession!.subscribeToEvents).toBe("function");
       expect(typeof capturedSession!.flushEventLog).toBe("function");

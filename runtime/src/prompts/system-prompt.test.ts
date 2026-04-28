@@ -247,18 +247,9 @@ describe("static section emitters", () => {
     );
   });
 
-  test("agent_tool renders standard delegation prose when system.agent.delegate is enabled", () => {
+  test("agent_tool does not advertise legacy system.agent.delegate", () => {
     const s = getAgentToolSection(new Set(["system.agent.delegate"]));
-    expect(s).not.toBeNull();
-    const text = String(s);
-    expect(text).toContain("# Subagents");
-    expect(text).toContain("system.agent.delegate");
-    expect(text).toContain(
-      "Use the system.agent.delegate tool with specialized agents when the task at hand matches the agent's description",
-    );
-    expect(text).toContain(
-      "avoid duplicating work that subagents are already doing",
-    );
+    expect(s).toBeNull();
   });
 
   test("agent_tool returns null when system.agent.delegate is not enabled (gated)", () => {
@@ -421,7 +412,7 @@ describe("assembleSystemPrompt", () => {
     expect(sections[2]).toContain("# Environment");
   });
 
-  test("agent_tool section appears in static head when system.agent.delegate is enabled", async () => {
+  test("legacy system.agent.delegate does not add subagent prompt prose", async () => {
     const { text, sections } = await assembleSystemPrompt({
       session: fakeSession,
       ctx: fakeCtx(),
@@ -433,13 +424,12 @@ describe("assembleSystemPrompt", () => {
       ]),
       envForSimpleMode: {},
     });
-    expect(text).toContain("# Subagents");
-    expect(text).toContain("system.agent.delegate");
-    // It lives in the cacheable head, not the dynamic tail.
+    expect(text).not.toContain("# Subagents");
+    expect(text).not.toContain("system.agent.delegate");
     const boundaryIdx = sections.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(
       sections.slice(0, boundaryIdx).some((s) => s.includes("# Subagents")),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test("all optional inputs produce a coherent combined output", async () => {
@@ -481,8 +471,7 @@ describe("assembleSystemPrompt", () => {
     expect(text).toContain("# MCP Server Instructions");
     expect(text).toContain("## searchsrv");
     expect(text).toContain("# Scratchpad Directory");
-    // Agent tool section also rendered when system.agent.delegate is visible.
-    expect(text).toContain("# Subagents");
+    expect(text).not.toContain("# Subagents");
     expect(text).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
     expect(sections.length).toBeGreaterThan(8);
   });

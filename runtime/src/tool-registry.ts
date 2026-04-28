@@ -263,7 +263,6 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "EnterPlanMode",
   "ExitPlanMode",
   "AskUserQuestion",
-  "system.agent.delegate",
   "system.searchTools",
   "exec",
   "wait",
@@ -349,10 +348,9 @@ export interface BuildToolRegistryOptions {
   /** Upstream-style JavaScript code-mode service for exec/wait. */
   readonly codeModeService?: CodeModeService;
   /**
-   * T9 integration seam: extra tools to register beyond the default
-   * coding-profile catalog. The CLI entrypoint uses this to expose
-   * `system.agent.delegate` (the subagent spawn dispatcher) as a
-   * first-class tool the model can invoke.
+   * Runtime integration seam: extra tools to register beyond the default
+   * coding-profile catalog. The CLI uses this for Codex-style model-facing
+   * tools such as `spawn_agent`.
    */
   readonly extraTools?: ReadonlyArray<Tool>;
 }

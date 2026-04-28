@@ -310,21 +310,16 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
 /**
  * 6. agent_tool — guidance for the multi-agent delegation surface.
  *
- * Lifted from AgenC `getAgentToolSection` (prompts.ts:316). Adapted:
- *   - `${AGENT_TOOL_NAME}` → `system.agent.delegate`
- *   - dropped the AgenC `isForkSubagentEnabled()` fork branch — AgenC
- *     does not ship a fork-subagent runtime; only the standard delegation
- *     prose remains
- *
- * Gated on `system.agent.delegate` being in the visible tool catalog.
+ * Codex exposes delegation through the `spawn_agent` tool spec itself.
+ * Do not add separate prompt guidance for AgenC's legacy
+ * `system.agent.delegate` compatibility shim; surfacing that tool here
+ * causes the model to bypass Codex's task-name/background semantics.
  */
 export function getAgentToolSection(
   enabledTools: ReadonlySet<string>,
 ): string | null {
-  if (!enabledTools.has("system.agent.delegate")) return null;
-  return `# Subagents
-
-Use the system.agent.delegate tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.`;
+  void enabledTools;
+  return null;
 }
 
 /**

@@ -80,6 +80,38 @@ function runResult(result: {
 }
 
 describe("delegate lifecycle recovery", () => {
+  it("launches in the background by default", async () => {
+    const live = makeLive("thread-bg", "/root/background");
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    mockRunAgent.mockImplementationOnce(() =>
+      runResult({
+        threadId: "thread-bg",
+        durationMs: 5,
+        outcome: "completed",
+        finalMessage: "done",
+      }),
+    );
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "run separately",
+    });
+
+    expect(outcome.kind).toBe("async_launched");
+    if (outcome.kind !== "async_launched") {
+      throw new Error("expected async_launched");
+    }
+    await outcome.thread.join();
+    expect(control.shutdown).not.toHaveBeenCalled();
+  });
+
   it("passes normalized parent history into forkSubagent for inherited fork modes", async () => {
     const live = makeLive("thread-1", "/root/alpha");
     const control = {
@@ -227,6 +259,7 @@ describe("delegate lifecycle recovery", () => {
       control: control as never,
       registry: {} as never,
       taskPrompt: "fix it",
+      runInBackground: false,
       resumeManager: resumeManager as never,
     });
 
@@ -294,6 +327,7 @@ describe("delegate lifecycle recovery", () => {
       control: control as never,
       registry: {} as never,
       taskPrompt: "fix it",
+      runInBackground: false,
       resumeManager: resumeManager as never,
     });
 

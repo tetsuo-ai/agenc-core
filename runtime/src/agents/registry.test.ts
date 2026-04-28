@@ -76,7 +76,7 @@ describe("AgentRegistry", () => {
   });
 
   it(
-    "registry is the single source of truth: releaseSpawnedThread frees the nickname for reuse",
+    "releaseSpawnedThread keeps nicknames reserved like Codex",
     async () => {
       const reg = new AgentRegistry();
       const role = resolveAgentRole(undefined);
@@ -93,14 +93,10 @@ describe("AgentRegistry", () => {
         }),
       );
       expect(reg.hasNickname(nickname)).toBe(true);
-      // Full thread release should drop the nickname (no second
-      // bookkeeping set holding it).
       await reg.releaseSpawnedThread("t-reuse");
-      expect(reg.hasNickname(nickname)).toBe(false);
-      // Re-allocating with the same empty pool returns the same
-      // deterministic first candidate — proves no stale reservation.
-      const reused = reg.allocateNickname(role);
-      expect(reused).toBe(nickname);
+      expect(reg.hasNickname(nickname)).toBe(true);
+      const next = reg.allocateNickname(role);
+      expect(next).not.toBe(nickname);
     },
   );
 

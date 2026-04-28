@@ -575,6 +575,7 @@ export interface SessionServices {
    * `bindSessionAgentControl`, never mutated afterwards.
    */
   agentControl: AgentControl;
+  readonly threadManager?: import("../agents/thread-manager.js").ThreadManager;
   readonly networkProxy?: NetworkProxy;
   readonly networkApproval: NetworkApprovalService;
   readonly stateDb?: StateDbContext;

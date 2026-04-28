@@ -88,6 +88,22 @@ interface SpawnedAgentRecord {
   readonly status: () => AgentStatus;
 }
 
+const SESSION_SPAWNED_AGENTS = new WeakMap<
+  Session,
+  Map<string, SpawnedAgentRecord>
+>();
+
+function spawnedAgentsForSession(
+  session: Session,
+): Map<string, SpawnedAgentRecord> {
+  let records = SESSION_SPAWNED_AGENTS.get(session);
+  if (!records) {
+    records = new Map<string, SpawnedAgentRecord>();
+    SESSION_SPAWNED_AGENTS.set(session, records);
+  }
+  return records;
+}
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MIN_WAIT_TIMEOUT_MS = 10_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
@@ -233,6 +249,32 @@ function parseTarget(args: Record<string, unknown>): string | undefined {
   );
 }
 
+function strictArgs(
+  args: Record<string, unknown>,
+  opts: {
+    readonly allowed: ReadonlySet<string>;
+    readonly required?: ReadonlyArray<string>;
+  },
+): ToolResult | null {
+  const allowed = new Set<string>([
+    ...opts.allowed,
+    "__callId",
+    SESSION_ID_ARG,
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowed.has(key)) {
+      return json({ error: `unknown field \`${key}\`` }, true);
+    }
+  }
+  for (const key of opts.required ?? []) {
+    const value = args[key];
+    if (typeof value !== "string") {
+      return json({ error: `${key} is required` }, true);
+    }
+  }
+  return null;
+}
+
 function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
   if (
     value === "low" ||
@@ -283,14 +325,10 @@ function resolveAgentId(
   currentAgentPath: AgentPath,
 ): ThreadId {
   const { control } = ensureAgentControl(session);
-  try {
-    return control.resolveAgentReference({
-      currentAgentPath,
-      reference: target,
-    });
-  } catch {
-    return target;
-  }
+  return control.resolveAgentReference({
+    currentAgentPath,
+    reference: target,
+  });
 }
 
 function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
@@ -338,7 +376,7 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode {
     }
   }
   return json(
-    { error: "fork_turns must be `all`, `none`, or a positive integer" },
+    { error: "fork_turns must be `none`, `all`, or a positive integer string" },
     true,
   );
 }
@@ -354,9 +392,52 @@ function waitTimeoutMs(args: Record<string, unknown>): ToolResult | number {
   );
 }
 
-function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
-  const spawned = new Map<string, SpawnedAgentRecord>();
+async function validateSpawnModelOverrides(opts: {
+  readonly session: Session;
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
+}): Promise<ToolResult | null> {
+  if (opts.model === undefined && opts.reasoningEffort === undefined) {
+    return null;
+  }
+  const modelsManager = opts.session.services.modelsManager;
+  const currentModel = opts.session.modelInfo.slug;
+  const model = opts.model ?? currentModel;
+  if (opts.model !== undefined) {
+    const listed =
+      modelsManager.tryListModels() ?? (await modelsManager.listModels());
+    if (!listed.some((candidate) => candidate.slug === opts.model)) {
+      const available = listed.map((candidate) => candidate.slug).join(", ");
+      return json(
+        {
+          error: `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${available}`,
+        },
+        true,
+      );
+    }
+  }
+  if (
+    opts.reasoningEffort !== undefined &&
+    opts.reasoningEffort !== "none"
+  ) {
+    const modelInfo =
+      opts.model === undefined
+        ? opts.session.modelInfo
+        : await modelsManager.getModelInfo(model);
+    if (!modelInfo.supportedReasoningLevels.includes(opts.reasoningEffort)) {
+      const supported = modelInfo.supportedReasoningLevels.join(", ");
+      return json(
+        {
+          error: `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${supported}`,
+        },
+        true,
+      );
+    }
+  }
+  return null;
+}
 
+function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const emit = (session: Session, msg: Parameters<Session["emit"]>[0]["msg"]): void => {
     session.emit({
       id: session.nextInternalSubId(),
@@ -371,8 +452,44 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
-    const prompt = promptFromAgentArgs(args);
-    if (!prompt) {
+    if (aliasName === "spawn_agent") {
+      const strict = strictArgs(args, {
+        allowed: new Set([
+          "message",
+          "task_name",
+          "agent_type",
+          "model",
+          "reasoning_effort",
+          "fork_turns",
+          "fork_context",
+        ]),
+        required: ["message", "task_name"],
+      });
+      if (strict) return strict;
+      for (const key of [
+        "message",
+        "task_name",
+        "agent_type",
+        "model",
+        "reasoning_effort",
+        "fork_turns",
+      ]) {
+        if (args[key] !== undefined && typeof args[key] !== "string") {
+          return json({ error: `${key} must be a string` }, true);
+        }
+      }
+      if (
+        args.fork_context !== undefined &&
+        typeof args.fork_context !== "boolean"
+      ) {
+        return json({ error: "fork_context must be a boolean" }, true);
+      }
+    }
+    const prompt =
+      aliasName === "spawn_agent"
+        ? stringValue(args.message)
+        : promptFromAgentArgs(args);
+    if (!prompt || prompt.trim().length === 0) {
       return json({ error: "message or task prompt is required" }, true);
     }
     if (aliasName === "spawn_agent" && args.fork_context !== undefined) {
@@ -389,9 +506,11 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       stringValue(args.subagent_type) ??
       stringValue(args.role);
     const model = stringValue(args.model);
-    const reasoningEffort = parseReasoningEffort(
-      args.reasoning_effort ?? args.reasoningEffort,
-    );
+    const rawReasoningEffort = args.reasoning_effort ?? args.reasoningEffort;
+    const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
+    if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
+      return json({ error: "invalid reasoning_effort" }, true);
+    }
     const forkMode =
       aliasName === "spawn_agent"
         ? parseForkTurns(args.fork_turns ?? args.forkTurns)
@@ -412,12 +531,18 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         true,
       );
     }
+    const overrideError = await validateSpawnModelOverrides({
+      session,
+      ...(model !== undefined ? { model } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    });
+    if (overrideError) return overrideError;
     const taskName =
-      stringValue(args.task_name) ??
-      stringValue(args.taskName) ??
-      (aliasName === "spawn_agent"
-        ? undefined
-        : normalizeAgentNameForPath(role ?? prompt.slice(0, 48)));
+      aliasName === "spawn_agent"
+        ? stringValue(args.task_name)
+        : stringValue(args.task_name) ??
+          stringValue(args.taskName) ??
+          normalizeAgentNameForPath(role ?? prompt.slice(0, 48));
     if (!taskName) {
       return json({ error: "task_name is required" }, true);
     }
@@ -472,6 +597,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: outcome.reason }, true);
     }
     const thread = outcome.thread;
+    const spawned = spawnedAgentsForSession(session);
     spawned.set(thread.threadId, {
       threadId: thread.threadId,
       agentPath: thread.agentPath,
@@ -498,6 +624,13 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       },
     });
 
+    if (aliasName === "spawn_agent") {
+      return json({
+        task_name: thread.agentPath,
+        ...(thread.nickname ? { nickname: thread.nickname } : {}),
+      });
+    }
+
     if (outcome.kind === "sync_completed") {
       return json({
         tool: aliasName,
@@ -522,6 +655,8 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const waitForAgent = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
+    const strict = strictArgs(args, { allowed: new Set(["timeout_ms"]) });
+    if (strict) return strict;
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const timeoutMs = waitTimeoutMs(args);
@@ -579,6 +714,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const statuses: Record<string, unknown> = {};
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
+    const spawned = spawnedAgentsForSession(sessionOrError);
     for (const item of allTargets) {
       const record = spawned.get(item);
       if (record) {
@@ -612,14 +748,31 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
 
   const closeAgent = async (
     args: Record<string, unknown>,
+    aliasName: "close_agent" | "TaskStop",
   ): Promise<ToolResult> => {
-    const target = parseTarget(args);
+    if (aliasName === "close_agent") {
+      const strict = strictArgs(args, {
+        allowed: new Set(["target"]),
+        required: ["target"],
+      });
+      if (strict) return strict;
+    }
+    const target =
+      aliasName === "close_agent" ? stringValue(args.target) : parseTarget(args);
     if (!target) return json({ error: "target is required" }, true);
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
     const current = currentAgentContext(sessionOrError, args);
-    const agentId = resolveAgentId(sessionOrError, target, current.agentPath);
+    let agentId: ThreadId;
+    try {
+      agentId = resolveAgentId(sessionOrError, target, current.agentPath);
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
     if (agentId === sessionOrError.conversationId) {
       return json({ error: "root is not a spawned agent" }, true);
     }
@@ -632,11 +785,8 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         receiverThreadId: agentId,
       },
     });
-    const previous =
-      spawned.get(target)?.status() ??
-      spawned.get(agentId)?.status() ??
-      { status: "unknown" };
-    await control.shutdown(agentId, stringValue(args.reason) ?? "closed_by_tool");
+    const previous = control.getLive(agentId)?.status.value ?? { status: "unknown" };
+    await control.shutdown(agentId, "closed_by_tool");
     emit(sessionOrError, {
       type: "collab_close_end",
       payload: {
@@ -651,22 +801,62 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
 
   const sendInput = async (
     args: Record<string, unknown>,
-    triggerTurn: boolean,
+    optsForSend: {
+      readonly triggerTurn: boolean;
+      readonly aliasName:
+        | "followup_task"
+        | "send_message"
+        | "send_input"
+        | "SendMessage";
+    },
   ): Promise<ToolResult> => {
-    const target = parseTarget(args);
+    if (optsForSend.aliasName === "send_message") {
+      const strict = strictArgs(args, {
+        allowed: new Set(["target", "message"]),
+        required: ["target", "message"],
+      });
+      if (strict) return strict;
+    } else if (optsForSend.aliasName === "followup_task") {
+      const strict = strictArgs(args, {
+        allowed: new Set(["target", "message", "interrupt"]),
+        required: ["target", "message"],
+      });
+      if (strict) return strict;
+    }
+    const target =
+      optsForSend.aliasName === "send_message" ||
+      optsForSend.aliasName === "followup_task"
+        ? stringValue(args.target)
+        : parseTarget(args);
     const message =
-      stringValue(args.message) ??
-      stringValue(args.input) ??
-      stringValue(args.prompt);
+      optsForSend.aliasName === "send_message" ||
+      optsForSend.aliasName === "followup_task"
+        ? typeof args.message === "string"
+          ? args.message
+          : undefined
+        : stringValue(args.message) ??
+          stringValue(args.input) ??
+          stringValue(args.prompt);
     if (!target || !message) {
       return json({ error: "target and message are required" }, true);
+    }
+    if (message.trim().length === 0) {
+      return json({ error: "Empty message can't be sent to an agent" }, true);
     }
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
     const current = currentAgentContext(sessionOrError, args);
-    const agentId = resolveAgentId(sessionOrError, target, current.agentPath);
-    if (triggerTurn && agentId === sessionOrError.conversationId) {
+    let agentId: ThreadId;
+    try {
+      agentId = resolveAgentId(sessionOrError, target, current.agentPath);
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
+    if (optsForSend.triggerTurn && agentId === sessionOrError.conversationId) {
       return json({ error: "Tasks can't be assigned to the root agent" }, true);
     }
     const callId = callIdFromArgs(args, "message");
@@ -679,7 +869,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         prompt: message,
       },
     });
-    if (triggerTurn && boolValue(args.interrupt) === true) {
+    if (optsForSend.triggerTurn && boolValue(args.interrupt) === true) {
       control.interrupt(agentId, "followup_task_interrupt");
     }
     try {
@@ -687,7 +877,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         author: current.agentPath,
         recipient: target,
         content: message,
-        triggerTurn,
+        triggerTurn: optsForSend.triggerTurn,
       });
     } catch (error) {
       return json(
@@ -712,12 +902,24 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: live?.status.value ?? { status: "idle" },
       },
     });
-    return json({ accepted: true, target: agentId, trigger_turn: triggerTurn });
+    if (
+      optsForSend.aliasName === "send_message" ||
+      optsForSend.aliasName === "followup_task"
+    ) {
+      return { content: "" };
+    }
+    return json({
+      accepted: true,
+      target: agentId,
+      trigger_turn: optsForSend.triggerTurn,
+    });
   };
 
   const listAgents = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
+    const strict = strictArgs(args, { allowed: new Set(["path_prefix"]) });
+    if (strict) return strict;
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
@@ -743,6 +945,21 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     });
   };
 
+  const spawnAgentSchema = {
+    type: "object",
+    properties: {
+      message: { type: "string" },
+      task_name: { type: "string" },
+      agent_type: { type: "string" },
+      model: { type: "string" },
+      reasoning_effort: { type: "string" },
+      fork_turns: { type: "string" },
+      fork_context: { type: "boolean" },
+    },
+    required: ["message", "task_name"],
+    additionalProperties: false,
+  };
+
   const agentSchema = {
     type: "object",
     properties: {
@@ -765,13 +982,13 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "spawn_agent",
       description:
-        "Spawn a background agent for a bounded task. Provide task_name for the canonical agent path segment. Returns the canonical task name, agent id, path, and nickname.",
+        "Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "spawn", "delegate", "subagent"],
       }),
       requiresApproval: true,
-      inputSchema: agentSchema,
+      inputSchema: spawnAgentSchema,
       execute: (args) => spawn(args, "spawn_agent"),
     },
     {
@@ -790,7 +1007,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "wait_agent",
       description:
-        "Wait for new mailbox activity from spawned agents, or until timeout.",
+        "Wait for new messages from any agent. Returns when a message is ready or timeout elapses.",
       metadata: toolMetadata("agent", { keywords: ["agent", "wait", "status"] }),
       isReadOnly: true,
       inputSchema: {
@@ -836,12 +1053,11 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         type: "object",
         properties: {
           target: { type: "string" },
-          agent_id: { type: "string" },
-          reason: { type: "string" },
         },
+        required: ["target"],
         additionalProperties: false,
       },
-      execute: closeAgent,
+      execute: (args) => closeAgent(args, "close_agent"),
     },
     {
       name: "TaskStop",
@@ -862,11 +1078,12 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         },
         additionalProperties: true,
       },
-      execute: closeAgent,
+      execute: (args) => closeAgent(args, "TaskStop"),
     },
     {
       name: "followup_task",
-      description: "Send a follow-up task to a spawned agent and wake it for another turn.",
+      description:
+        "Send a string message to an existing non-root agent and trigger a turn in the target. Use interrupt=true to redirect work immediately. If interrupt=false and the target's turn has not completed, the message is queued and starts the target's next turn after the current turn completes.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "followup", "task"],
@@ -881,13 +1098,16 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         required: ["target", "message"],
         additionalProperties: false,
       },
-      execute: (args) => sendInput(args, true),
+      execute: (args) =>
+        sendInput(args, { triggerTurn: true, aliasName: "followup_task" }),
     },
     {
       name: "send_input",
-      description: "Send input to a spawned agent and wake it for another turn.",
+      description:
+        "Compatibility alias for followup_task. Prefer followup_task for new AgenC calls.",
       metadata: toolMetadata("agent", {
         mutating: true,
+        deferred: true,
         keywords: ["agent", "input", "message"],
       }),
       inputSchema: {
@@ -899,12 +1119,13 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         },
         additionalProperties: false,
       },
-      execute: (args) => sendInput(args, true),
+      execute: (args) =>
+        sendInput(args, { triggerTurn: true, aliasName: "send_input" }),
     },
     {
       name: "send_message",
       description:
-        "Queue a message for a spawned agent without forcing an immediate turn.",
+        "Send a string message to an existing agent without triggering a new turn.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "message", "mailbox"],
@@ -917,7 +1138,8 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         },
         additionalProperties: false,
       },
-      execute: (args) => sendInput(args, false),
+      execute: (args) =>
+        sendInput(args, { triggerTurn: false, aliasName: "send_message" }),
     },
     {
       name: "SendMessage",
@@ -936,14 +1158,16 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         },
         additionalProperties: true,
       },
-      execute: (args) => sendInput(args, false),
+      execute: (args) =>
+        sendInput(args, { triggerTurn: false, aliasName: "SendMessage" }),
     },
     {
       name: "resume_agent",
       description:
-        "Report whether an agent is known to the live runtime. Rollout-backed rehydration is used when the session has the required metadata.",
+        "Compatibility alias for legacy multi-agent sessions. Codex multi-agent v2 does not expose resume_agent by default.",
       metadata: toolMetadata("agent", {
         mutating: true,
+        deferred: true,
         keywords: ["agent", "resume"],
       }),
       inputSchema: {
@@ -954,7 +1178,9 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       execute: async (args) => {
         const target = parseTarget(args);
         if (!target) return json({ error: "target is required" }, true);
-        const record = spawned.get(target);
+        const sessionOrError = getSessionOrError(opts);
+        if (!("conversationId" in sessionOrError)) return sessionOrError;
+        const record = spawnedAgentsForSession(sessionOrError).get(target);
         if (record) {
           return json({
             status: record.status(),
@@ -974,8 +1200,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       inputSchema: {
         type: "object",
         properties: {
-          role: { type: "string" },
-          agent_type: { type: "string" },
           path_prefix: { type: "string" },
         },
         additionalProperties: false,
@@ -1037,7 +1261,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const targets = stringArray(args.targets);
         const closed: unknown[] = [];
         for (const target of targets) {
-          const result = await closeAgent({ target });
+          const result = await closeAgent({ target }, "TaskStop");
           closed.push(JSON.parse(result.content));
         }
         return json({ closed });

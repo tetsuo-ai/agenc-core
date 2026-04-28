@@ -626,6 +626,7 @@ function buildChildSession(
     );
     if (childRolloutStore) {
       childSession.mountRolloutStore(childRolloutStore);
+      params.live.rolloutPath = childRolloutStore.rolloutPath;
     }
   } catch (err) {
     emitWarning(

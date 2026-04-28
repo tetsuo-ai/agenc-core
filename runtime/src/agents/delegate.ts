@@ -77,7 +77,7 @@ export async function delegate(
 ): Promise<DelegateOutcome> {
   const isolation = opts.isolation ?? "none";
   const forkMode = opts.forkMode ?? { kind: "new" };
-  const runInBackground = opts.runInBackground ?? false;
+  const runInBackground = opts.runInBackground ?? true;
 
   if (
     isolation === "worktree" &&
@@ -205,6 +205,7 @@ export async function delegate(
           control: opts.control,
           registry: opts.registry,
           parent: opts.parent,
+          shutdownAgent: false,
           ...(baseCommit !== null ? { baseCommit } : {}),
         });
       }
@@ -224,6 +225,7 @@ export async function delegate(
       control: opts.control,
       registry: opts.registry,
       parent: opts.parent,
+      shutdownAgent: true,
       ...(baseCommit !== null ? { baseCommit } : {}),
     });
   }
@@ -408,12 +410,15 @@ async function teardown(opts: {
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly parent: Session;
+  readonly shutdownAgent: boolean;
   readonly baseCommit?: string;
 }): Promise<void> {
   void opts.registry;
 
-  // Shut down the live agent (cascades descendants, closes mailboxes).
-  await opts.control.shutdown(opts.thread.threadId, "delegate_teardown");
+  if (opts.shutdownAgent) {
+    // Sync compatibility callers still expect delegate-scoped teardown.
+    await opts.control.shutdown(opts.thread.threadId, "delegate_teardown");
+  }
 
   // If we own a worktree, decide keep-vs-remove.
   if (opts.thread.worktree && opts.baseCommit) {

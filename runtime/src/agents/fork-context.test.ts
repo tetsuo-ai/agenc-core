@@ -4,7 +4,12 @@ import { buildCacheSafeParams, forkSubagent } from "./fork-context.js";
 import type { Session } from "../session/session.js";
 
 function stubSession(
-  rolloutStore: { flushDurable: ReturnType<typeof vi.fn> } | null = null,
+  rolloutStore:
+    | {
+        flushDurable: ReturnType<typeof vi.fn>;
+        readAll?: () => readonly unknown[];
+      }
+    | null = null,
 ): Session {
   return {
     rolloutStore,
@@ -80,6 +85,46 @@ describe("forkSubagent", () => {
       taskPrompt: "t",
     });
     expect(flush).toHaveBeenCalledOnce();
+  });
+
+  it("prefers flushed rollout history and filters tool/commentary items for inherited forks", async () => {
+    const flush = vi.fn();
+    const parent = stubSession({
+      flushDurable: flush,
+      readAll: () => [
+        { type: "response_item", payload: { role: "user", content: "rollout user" } },
+        {
+          type: "response_item",
+          payload: {
+            role: "assistant",
+            content: "working",
+            phase: "commentary",
+          },
+        },
+        {
+          type: "response_item",
+          payload: { role: "tool", content: "tool output" },
+        },
+        {
+          type: "response_item",
+          payload: { role: "assistant", content: "rollout final" },
+        },
+      ],
+    });
+
+    const res = await forkSubagent({
+      parent,
+      parentMessages: history,
+      mode: { kind: "full_history" },
+      taskPrompt: "t",
+    });
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(res.messages.map((message) => message.content)).toEqual([
+      "rollout user",
+      "rollout final",
+      expect.stringContaining("Task: t"),
+    ]);
   });
 
   it("mentions the worktree path when provided", async () => {

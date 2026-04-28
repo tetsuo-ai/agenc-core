@@ -182,17 +182,18 @@ export class AgentRegistry {
 
   /**
    * Release a completed/shutdown agent. Decrements the slot counter
-   * + removes the path + nickname entries. Idempotent.
+   * and removes the path entry. Codex deliberately does not release
+   * nicknames here; used nicknames remain reserved until the nickname
+   * allocator exhausts its candidate pool and advances the suffix cycle.
+   * This prevents sequential short-lived sibling agents from all reusing
+   * the same display name/path.
    */
   async releaseSpawnedThread(threadId: ThreadId): Promise<void> {
     return this.slotLock.with(() => {
       const entry = this.findEntryByThreadId(threadId);
       if (!entry) return;
-      const [path, metadata] = entry;
+      const [path] = entry;
       this.byPath.delete(path);
-      if (metadata.agentNickname) {
-        this.usedNicknames.delete(metadata.agentNickname);
-      }
       this.totalCount = Math.max(0, this.totalCount - 1);
     });
   }
@@ -269,10 +270,10 @@ export class AgentRegistry {
   }
 
   /**
-   * Release a nickname back into the pool. Idempotent. Called both
-   * by failed-spawn rollback and by `releaseSpawnedThread` via the
-   * `usedNicknames` drop inside `finalizeSpawnReservation`'s mirror
-   * path.
+   * Release a nickname back into the pool. Idempotent. This is only
+   * for failed-spawn rollback before the child becomes a live thread.
+   * Normal thread shutdown intentionally keeps the nickname reserved,
+   * matching Codex registry behavior.
    */
   releaseNickname(nickname: string): void {
     this.usedNicknames.delete(nickname);

@@ -55,7 +55,6 @@ import {
   createBashExecObserverForSlot,
   type SessionSlot,
 } from "../session/observer-wiring.js";
-import { buildDelegateTool } from "./delegate-tool.js";
 import {
   runSlashCommand,
 } from "./slash.js";
@@ -669,15 +668,12 @@ function createSharedBootstrapTooling(): {
     current: null,
   };
   const bashExecObserver = createBashExecObserverForSlot(sessionSlot);
-  const delegateTool = buildDelegateTool({
-    getSession: () => delegateSessionHolder.current,
-  });
   return {
     sessionSlot,
     delegateSessionHolder,
     toolRegistryOptions: {
       bashExecObserver,
-      extraTools: [delegateTool],
+      extraTools: [],
     },
   };
 }

@@ -21,6 +21,7 @@
 import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { delegate, type IsolationMode } from "../agents/delegate.js";
 import { AgentRegistry, type AgentPath } from "../agents/registry.js";
+import { ThreadManager } from "../agents/thread-manager.js";
 import type { Session } from "../session/session.js";
 import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import { safeStringify } from "./_deps/tools-types.js";
@@ -121,6 +122,7 @@ export function ensureAgentControl(session: Session): {
   if (cached) return cached;
   const services = (session.services ?? {}) as unknown as {
     agentControl?: unknown;
+    threadManager?: unknown;
   };
   const bound = services.agentControl;
   if (bound instanceof AgentControl) {
@@ -132,7 +134,16 @@ export function ensureAgentControl(session: Session): {
     }
   }
   const registry = new AgentRegistry();
-  const control = new AgentControl({ session, registry });
+  const existingThreadManager =
+    services.threadManager instanceof ThreadManager
+      ? services.threadManager
+      : new ThreadManager({ rootSession: session, registry });
+  const control = new AgentControl({
+    session,
+    registry,
+    threadManager: existingThreadManager,
+  });
+  existingThreadManager.bindAgentControl(control);
   control.registerSessionRoot(session.conversationId);
   const pair = { control, registry };
   bindSessionAgentControl(session, pair);

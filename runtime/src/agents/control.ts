@@ -67,6 +67,7 @@ import {
   type RoleShapedConfig,
 } from "./role.js";
 import { AgentStatusTracker, isFinal, type AgentStatus } from "./status.js";
+import type { ThreadManager } from "./thread-manager.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Constants
@@ -207,6 +208,8 @@ export interface LiveAgent {
   readonly tokenUsage: AgentTokenUsage;
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
+  /** Local rollout path for the live child session once initialized. */
+  rolloutPath?: string;
 }
 
 export interface AgentMemoryEntry {
@@ -230,6 +233,7 @@ export interface AgentControlOpts {
   readonly registry: AgentRegistry;
   /** Override MAX_AGENT_DEPTH for this session (tests/config). */
   readonly maxDepth?: number;
+  readonly threadManager?: ThreadManager;
 }
 
 export class AgentControl {
@@ -244,11 +248,18 @@ export class AgentControl {
   /** Parent linkage: childId → parentId (for open_thread_spawn_children
    *  and subtree cascade, since we have no state-db in-tree yet). */
   private readonly parentOf = new Map<ThreadId, ThreadId>();
+  private threadManager: ThreadManager | undefined;
 
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
     this.registry = opts.registry;
     this.maxDepth = opts.maxDepth ?? MAX_AGENT_DEPTH;
+    this.threadManager = opts.threadManager;
+  }
+
+  bindThreadManager(threadManager: ThreadManager): void {
+    this.threadManager = threadManager;
+    threadManager.bindAgentControl(this);
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -272,6 +283,20 @@ export class AgentControl {
    * drive the child session.
    */
   async spawn(opts: {
+    readonly parentPath: AgentPath;
+    readonly roleName?: string;
+    readonly threadId?: ThreadId;
+    readonly agentName?: string;
+    readonly agentPath?: AgentPath;
+    readonly preferredNickname?: string;
+  }): Promise<LiveAgent> {
+    if (this.threadManager) {
+      return this.threadManager.spawnLiveAgent(opts);
+    }
+    return this.spawnLiveAgentForThreadManager(opts);
+  }
+
+  async spawnLiveAgentForThreadManager(opts: {
     readonly parentPath: AgentPath;
     readonly roleName?: string;
     readonly threadId?: ThreadId;
@@ -402,7 +427,6 @@ export class AgentControl {
     if (parentId) {
       this.parentOf.set(threadId, parentId);
     }
-
     // Register a per-agent parent cancellation token so nested
     // spawns (grandchildren) observe the parent's token.
     if (!this.parentTokens.has(agent.agentPath)) {
@@ -497,6 +521,14 @@ export class AgentControl {
    * and records the preview for `ListedAgent.lastTaskMessage`.
    */
   async sendInput(threadId: ThreadId, input: string): Promise<void> {
+    if (this.threadManager?.hasThread(threadId)) {
+      await this.threadManager.sendOp(threadId, {
+        type: "user_input",
+        input,
+      });
+      this.registry.updateLastTaskMessage(threadId, renderInputPreview(input));
+      return;
+    }
     const agent = this.requireLive(threadId);
     try {
       agent.downInbox.send({
@@ -553,6 +585,14 @@ export class AgentControl {
       readonly triggerTurn: boolean;
     },
   ): Promise<void> {
+    if (this.threadManager?.hasThread(threadId)) {
+      await this.threadManager.sendOp(threadId, {
+        type: "inter_agent_communication",
+        communication,
+      });
+      this.registry.updateLastTaskMessage(threadId, communication.content);
+      return;
+    }
     if (this.rootThreadId !== undefined && threadId === this.rootThreadId) {
       this.session.mailbox.send({
         author: communication.author,
@@ -654,15 +694,15 @@ export class AgentControl {
       agent.abortController.abort(reason);
     }
 
-    // `releaseSpawnedThread` already removes the nickname from the
-    // registry's pool. Leave the explicit call out to keep a single
-    // release path (and avoid the false impression that we maintain
-    // two sets).
+    // `releaseSpawnedThread` mirrors Codex registry behavior: it frees
+    // the live slot and path, but leaves the nickname reserved so the
+    // next sibling does not immediately reuse the same display name.
     await this.registry.releaseSpawnedThread(threadId);
     this.parentTokens.delete(agent.agentPath);
     this.session.childInboxes.delete(threadId);
     this.parentOf.delete(threadId);
     this.live.delete(threadId);
+    this.threadManager?.removeThread(threadId);
     if (edgeStatus !== null) {
       await this.setThreadSpawnEdgeStatus(threadId, edgeStatus);
     }
@@ -788,6 +828,9 @@ export class AgentControl {
     if (parentId) {
       this.parentOf.set(threadId, parentId);
     }
+    this.threadManager?.registerLiveAgent(agent, {
+      ...(parentId !== undefined ? { parentThreadId: parentId } : {}),
+    });
     if (!this.parentTokens.has(agent.agentPath)) {
       this.parentTokens.set(agent.agentPath, agent.abortController);
     }
@@ -1400,6 +1443,8 @@ function edgeStatusForShutdownReason(
   reason: string,
 ): ThreadSpawnEdgeStatus | null {
   if (
+    reason.includes("closed_by_tool") ||
+    reason.includes("close_agent") ||
     reason.includes("delegate_restart") ||
     reason.includes("delegate_teardown")
   ) {
