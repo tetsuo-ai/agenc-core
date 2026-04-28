@@ -142,12 +142,7 @@ describe("buildDelegateTool — system.agent.delegate", () => {
       ]),
     );
     const roleSchema = props.role as { enum: string[] };
-    expect(roleSchema.enum).toEqual([
-      "default",
-      "explorer",
-      "awaiter",
-      "worker",
-    ]);
+    expect(roleSchema.enum).toEqual(["default", "explorer", "worker"]);
   });
 
   it("rejects invocation with missing taskPrompt", async () => {

@@ -170,11 +170,13 @@ export {
 
 /** AgenC runtime `AgentStatus` FSM. T9 (subagents) expands. */
 export type AgentStatus =
+  | { readonly status: "pending_init" }
   | { readonly status: "idle" }
   | { readonly status: "running"; readonly turnId: string; readonly startedAtMs: number }
   | { readonly status: "completed"; readonly turnId: string; readonly endedAtMs: number }
   | { readonly status: "errored"; readonly turnId: string; readonly error: string }
   | { readonly status: "shutdown" }
+  | { readonly status: "not_found" }
   | { readonly status: "interrupted"; readonly turnId: string };
 
 /** AgenC runtime `SessionState`. Mutable state under `state` mutex. */

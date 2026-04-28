@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { AgentStatusTracker, isFinal } from "./status.js";
 
 describe("AgentStatusTracker", () => {
-  it("starts idle", () => {
+  it("starts pending_init", () => {
     const t = new AgentStatusTracker();
-    expect(t.value.status).toBe("idle");
+    expect(t.value.status).toBe("pending_init");
   });
 
   it("transitions through the lifecycle", () => {
@@ -39,8 +39,10 @@ describe("AgentStatusTracker", () => {
   });
 
   it("isFinal classifies terminal states", () => {
+    expect(isFinal({ status: "pending_init" })).toBe(false);
     expect(isFinal({ status: "idle" })).toBe(false);
     expect(isFinal({ status: "shutdown", endedAtMs: 0 })).toBe(true);
+    expect(isFinal({ status: "not_found" })).toBe(true);
     // interrupted is non-final (matches AgenC semantics).
     expect(
       isFinal({
@@ -74,7 +76,7 @@ describe("AgentStatusTracker", () => {
     const unsub = t.subscribe((s) => {
       seen = s.status;
     });
-    expect(seen).toBe("idle");
+    expect(seen).toBe("pending_init");
     t.markRunning("turn-1");
     expect(seen).toBe("running");
     unsub();

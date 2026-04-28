@@ -1,20 +1,13 @@
 /**
  * Agent roles — built-in + user-configurable.
  *
- * Subset port of AgenC runtime `core/src/agent/role.rs`. Ports:
+ * Subset port of Codex runtime `core/src/agent/role.rs`. Ports:
  *   - Role enum + nickname allocation (Wave 1).
  *   - Role/config loading (`loadRoleLayerToml`, `applyRoleToConfig`,
  *     `buildConfigLayerStack`, `formatRoleList`) (Wave 3).
  *
- * AgenC divergences from AgenC runtime upstream:
+ * TypeScript port notes:
  *
- *   - Awaiter kept active. AgenC runtime has `awaiter` commented out at
- *     `role.rs:398-414` ("awaiter is temp removed"). AgenC keeps it
- *     because the MCP + long-running tool-poll use case needs a
- *     background polling role.
- *   - Deterministic nickname ordering. AgenC runtime shuffles candidates with
- *     `rand::rng()`; AgenC cycles in declaration order so spawn tests
- *     stay reproducible and allocation-collision tests don't flake.
  *   - Registry-as-single-nickname-source. AgenC's `AgentRegistry`
  *     owns nickname bookkeeping, not a process-global pool; free
  *     functions here are thin delegators.
@@ -27,14 +20,11 @@
  *
  * Built-in roles:
  *   - `default`  — unrestricted; inherits parent config
- *   - `explorer` — codebase queries; loads AgenC runtime's built-in
+ *   - `explorer` — codebase queries; loads Codex runtime's built-in
  *                  `explorer.toml` role layer
  *   - `worker`   — execution/production work; inherits parent tool
- *                  catalog (mirrors AgenC runtime `agent/role.rs:383`
+ *                  catalog (mirrors Codex runtime `agent/role.rs:383`
  *                  `worker` entry)
- *   - `awaiter`  — long-running polling; keeps AgenC's active awaiter
- *                  behavior but sources its role config from the AgenC runtime
- *                  `awaiter.toml` content
  *
  * User roles register via `registerAgentRole({ name, config })` and
  * override the built-ins.
@@ -89,10 +79,9 @@ export interface AgentRole {
 
 const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
   "explorer.toml": "",
-  // AgenC runtime's built-in awaiter role also carries developer_instructions,
-  // but role.ts strips role metadata before applying the config layer
-  // and AgenC's current inline TOML parser does not support multiline
-  // strings. Keep only the config fields this module consumes.
+  // Codex keeps awaiter temporarily removed from the built-in role set, but
+  // still exposes the embedded role file for user-defined roles that reference
+  // `awaiter.toml`.
   "awaiter.toml": `background_terminal_max_timeout = 3600000
 model_reasoning_effort = "low"`,
 } as const);
@@ -104,6 +93,127 @@ const ROLE_DECLARATION_METADATA_KEYS = Object.freeze([
   "developer_instructions",
 ] as const);
 
+const DEFAULT_AGENT_NICKNAME_CANDIDATES = Object.freeze([
+  "Euclid",
+  "Archimedes",
+  "Ptolemy",
+  "Hypatia",
+  "Avicenna",
+  "Averroes",
+  "Aquinas",
+  "Copernicus",
+  "Kepler",
+  "Galileo",
+  "Bacon",
+  "Descartes",
+  "Pascal",
+  "Fermat",
+  "Huygens",
+  "Leibniz",
+  "Newton",
+  "Halley",
+  "Euler",
+  "Lagrange",
+  "Laplace",
+  "Volta",
+  "Gauss",
+  "Ampere",
+  "Faraday",
+  "Darwin",
+  "Lovelace",
+  "Boole",
+  "Pasteur",
+  "Maxwell",
+  "Mendel",
+  "Curie",
+  "Planck",
+  "Tesla",
+  "Poincare",
+  "Noether",
+  "Hilbert",
+  "Einstein",
+  "Raman",
+  "Bohr",
+  "Turing",
+  "Hubble",
+  "Feynman",
+  "Franklin",
+  "McClintock",
+  "Meitner",
+  "Herschel",
+  "Linnaeus",
+  "Wegener",
+  "Chandrasekhar",
+  "Sagan",
+  "Goodall",
+  "Carson",
+  "Carver",
+  "Socrates",
+  "Plato",
+  "Aristotle",
+  "Epicurus",
+  "Cicero",
+  "Confucius",
+  "Mencius",
+  "Zeno",
+  "Locke",
+  "Hume",
+  "Kant",
+  "Hegel",
+  "Kierkegaard",
+  "Mill",
+  "Nietzsche",
+  "Peirce",
+  "James",
+  "Dewey",
+  "Russell",
+  "Popper",
+  "Sartre",
+  "Beauvoir",
+  "Arendt",
+  "Rawls",
+  "Singer",
+  "Anscombe",
+  "Parfit",
+  "Kuhn",
+  "Boyle",
+  "Hooke",
+  "Harvey",
+  "Dalton",
+  "Ohm",
+  "Helmholtz",
+  "Gibbs",
+  "Lorentz",
+  "Schrodinger",
+  "Heisenberg",
+  "Pauli",
+  "Dirac",
+  "Bernoulli",
+  "Godel",
+  "Nash",
+  "Banach",
+  "Ramanujan",
+  "Erdos",
+  "Jason",
+] as const);
+
+const EXPLORER_DESCRIPTION = `Use \`explorer\` for specific codebase questions.
+Explorers are fast and authoritative.
+They must be used to ask specific, well-scoped questions on the codebase.
+Rules:
+- In order to avoid redundant work, you should avoid exploring the same problem that explorers have already covered. Typically, you should trust the explorer results without additional verification. You are still allowed to inspect the code yourself to gain the needed context!
+- You are encouraged to spawn up multiple explorers in parallel when you have multiple distinct questions to ask about the codebase that can be answered independently. This allows you to get more information faster without waiting for one question to finish before asking the next. While waiting for the explorer results, you can continue working on other local tasks that do not depend on those results. This parallelism is a key advantage of delegation, so use it whenever you have multiple questions to ask.
+- Reuse existing explorers for related questions.`;
+
+const WORKER_DESCRIPTION = `Use for execution and production work.
+Typical tasks:
+- Implement part of a feature
+- Fix tests or bugs
+- Split large refactors into independent chunks
+Rules:
+- Explicitly assign **ownership** of the task (files / responsibility). When the subtask involves code changes, you should clearly specify which files or modules the worker is responsible for. This helps avoid merge conflicts and ensures accountability. For example, you can say "Worker 1 is responsible for updating the authentication module, while Worker 2 will handle the database layer." By defining clear ownership, you can delegate more effectively and reduce coordination overhead.
+- Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of other's work to avoid conflicts and ensure a cohesive final product.`;
+
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
 // ─────────────────────────────────────────────────────────────────────
@@ -112,45 +222,21 @@ const DEFAULT_ROLE: AgentRole = freezeRole({
   name: "default",
   config: {
     description: "Default agent.",
-    nicknameCandidates: [
-      "alpha",
-      "beta",
-      "gamma",
-      "delta",
-      "epsilon",
-      "zeta",
-      "eta",
-      "theta",
-    ],
   },
 });
 
 const EXPLORER_ROLE: AgentRole = freezeRole({
   name: "explorer",
   config: {
-    description: "Fast codebase exploration.",
+    description: EXPLORER_DESCRIPTION,
     configFile: "explorer.toml",
-    nicknameCandidates: ["scout", "ranger", "pathfinder", "seeker"],
   },
 });
 
 const WORKER_ROLE: AgentRole = freezeRole({
   name: "worker",
   config: {
-    description:
-      "Execution/production work — implement features, fix tests/bugs, " +
-      "split large refactors.",
-    nicknameCandidates: ["builder", "smith", "forge", "weaver"],
-  },
-});
-
-const AWAITER_ROLE: AgentRole = freezeRole({
-  name: "awaiter",
-  config: {
-    description: "Long-running polling subagent.",
-    configFile: "awaiter.toml",
-    background: true,
-    nicknameCandidates: ["sentinel", "watcher", "guardian", "keeper"],
+    description: WORKER_DESCRIPTION,
   },
 });
 
@@ -158,7 +244,6 @@ const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
   EXPLORER_ROLE,
   WORKER_ROLE,
-  AWAITER_ROLE,
 ]);
 
 // ─────────────────────────────────────────────────────────────────────
@@ -182,6 +267,15 @@ export function getDefaultAgentRole(): AgentRole {
 
 export function listAgentRoles(): ReadonlyArray<AgentRole> {
   return Array.from(registry.values());
+}
+
+export function defaultAgentNicknameCandidates(): ReadonlyArray<string> {
+  return DEFAULT_AGENT_NICKNAME_CANDIDATES;
+}
+
+export function _resetAgentRolesForTesting(): void {
+  registry.clear();
+  for (const role of BUILT_INS) registry.set(role.name, role);
 }
 
 export function resolveAgentRole(name: string | undefined): AgentRole {
@@ -210,7 +304,7 @@ export function tryResolveRoleConfig(
 // spawn-slot authority, and nicknames live for the same lifetime as
 // spawn slots. `allocateNickname`/`releaseNickname` are thin
 // delegators that route into the registry's internal pool so there
-// is exactly one source of truth for live nicknames.
+// is exactly one source of truth for nicknames.
 // ─────────────────────────────────────────────────────────────────────
 
 /**

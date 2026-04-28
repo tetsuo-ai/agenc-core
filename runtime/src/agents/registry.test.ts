@@ -37,6 +37,17 @@ describe("AgentRegistry", () => {
     expect(r2).toBeDefined();
   });
 
+  it("failed spawn rollback keeps the allocated nickname reserved like Codex", async () => {
+    const reg = new AgentRegistry({ maxThreads: 1 });
+    const role = resolveAgentRole(undefined);
+    const nickname = reg.allocateNickname(role);
+    const r = await reg.reserveSpawnSlot();
+    r.release();
+
+    expect(reg.activeCount).toBe(0);
+    expect(reg.hasNickname(nickname)).toBe(true);
+  });
+
   it("I-37: reserveAgentPath throws AgentPathExistsError on collision", async () => {
     const reg = new AgentRegistry();
     const r = await reg.reserveSpawnSlot();

@@ -15,7 +15,6 @@ import {
   join,
   resolve,
 } from "node:path";
-import type { SpawnAgentForkMode } from "../agents/control.js";
 import {
   ROOT_AGENT_PATH,
   normalizeAgentNameForPath,
@@ -24,6 +23,7 @@ import {
   type ThreadId,
 } from "../agents/registry.js";
 import type { ForkMode } from "../agents/fork-context.js";
+import type { AgentThread } from "../agents/thread.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { Session } from "../session/session.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
@@ -39,6 +39,7 @@ import {
   CodeIntelManager,
   toRelativeWorkspacePath,
 } from "../tools/system/code-intel.js";
+import { delegate } from "../agents/delegate.js";
 import { ensureAgentControl } from "./delegate-tool.js";
 
 export interface ModelFacingToolOptions {
@@ -381,18 +382,6 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode {
   );
 }
 
-function toControlForkMode(mode: ForkMode): SpawnAgentForkMode | undefined {
-  switch (mode.kind) {
-    case "full_history":
-      return { kind: "full_history" };
-    case "last_n_turns":
-      return { kind: "last_n_turns", n: mode.n };
-    case "new":
-    case "explicit":
-      return undefined;
-  }
-}
-
 function waitTimeoutMs(args: Record<string, unknown>): ToolResult | number {
   const supplied = numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs);
   if (supplied !== undefined && supplied <= 0) {
@@ -510,7 +499,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         true,
       );
     }
-    const { control } = ensureAgentControl(session);
+    const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
     const role =
       stringValue(args.agent_type) ??
@@ -578,22 +567,25 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       },
     });
 
-    let live;
+    let thread: AgentThread | undefined;
     try {
-      live = await control.spawnAgentWithMetadata(current.agentPath, {
+      const outcome = await delegate({
+        parent: session,
+        parentPath: current.agentPath,
+        control,
+        registry,
+        taskPrompt: prompt,
         agentName,
-        ...(role !== undefined ? { roleName: role } : {}),
-        ...(toControlForkMode(forkMode) !== undefined
-          ? { forkMode: toControlForkMode(forkMode) }
-          : {}),
-        forkParentSpawnCallId: callId,
+        forkMode,
+        runInBackground,
+        ...(role !== undefined ? { role } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       });
-      await control.sendInterAgentCommunication(live.agentId, {
-        author: current.agentPath,
-        recipient: live.agentPath,
-        content: prompt,
-        triggerTurn: true,
-      });
+      if (outcome.kind === "rejected") {
+        throw new Error(outcome.reason);
+      }
+      thread = outcome.thread;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       emit(session, {
@@ -611,12 +603,16 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       });
       return json({ error: reason }, true);
     }
+    if (thread === undefined) {
+      return json({ error: "spawn_agent did not return an agent thread" }, true);
+    }
+    const live = thread.live;
     const spawned = spawnedAgentsForSession(session);
     spawned.set(live.agentId, {
       threadId: live.agentId,
       agentPath: live.agentPath,
       nickname: live.nickname,
-      join: async () => live.status.value,
+      join: () => thread.join(),
       status: () => live.status.value as AgentStatus,
     });
     spawned.set(live.agentPath, spawned.get(live.agentId)!);
@@ -628,7 +624,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         senderThreadId: current.threadId,
         newThreadId: live.agentId,
         newAgentNickname: live.nickname,
-        newAgentRole: role,
+        newAgentRole: live.role.name,
         prompt,
         model: model ?? session.sessionConfiguration.collaborationMode.model,
         reasoningEffort:
@@ -902,7 +898,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           ? { receiverAgentRole: live.role.name }
           : {}),
         prompt: message,
-        status: live?.status.value ?? { status: "idle" },
+        status: live?.status.value ?? { status: "not_found" },
       },
     });
     if (

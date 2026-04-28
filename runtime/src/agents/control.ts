@@ -19,12 +19,8 @@
  *     persistence owner in memory.
  *
  * Invariants wired:
- *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `childDepth > cap`.
- *        AgenC raises the cap from AgenC runtime's `DEFAULT_AGENT_MAX_DEPTH=1`
- *        (`AgenC runtime-rs/core/src/config/mod.rs:127`) to 4 because AgenC's
- *        subagent workflow (delegate/worktree/fork-context) routinely
- *        nests 2–3 levels deep for multi-role planner → implementer →
- *        verifier chains.
+ *   I-1  (MAX_AGENT_DEPTH=1) — spawn rejects `childDepth > cap`.
+ *        Matches Codex runtime's `DEFAULT_AGENT_MAX_DEPTH=1`.
  *   I-5  (bidirectional mailbox) — routing methods (send_input /
  *        append_message / IAC / interrupt) go through the child's
  *        `downInbox` with `direction: 'down'`.
@@ -61,7 +57,6 @@ import {
 import {
   allocateNickname,
   applyRoleToConfig,
-  releaseNickname,
   resolveAgentRole,
   type AgentRole,
   type RoleShapedConfig,
@@ -74,34 +69,55 @@ import type { ThreadManager } from "./thread-manager.js";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * I-1 default cap. Overrideable via `config.agents.maxDepth` (T10) or the
+ * I-1 default cap. Overrideable via `config.agent_max_depth` or the
  * `AGENC_AGENT_MAX_DEPTH` env var (test/ops escape hatch).
  *
  * Semantics: `spawn` rejects when `childDepth > cap`, so the cap value is the
- * deepest allowed child depth. Cap=4 means root (depth 0) may spawn depths
- * 1, 2, 3, and 4; depth 5 is rejected.
- *
- * Divergence from AgenC runtime: AgenC defaults to `DEFAULT_AGENT_MAX_DEPTH=1`
- * (`AgenC runtime-rs/core/src/config/mod.rs:127`), which permits only a single
- * layer of subagents under root. AgenC raises the default to 4 because
- * its multi-role delegate pipeline (planner → implementer → verifier,
- * optionally with a fork-context scout) routinely exercises 2–3 levels
- * of nesting. Ops can still dial it back to AgenC runtime's default via
- * `AGENC_AGENT_MAX_DEPTH=1` or the per-session `maxDepth` override.
+ * deepest allowed child depth. Cap=1 means root (depth 0) may spawn one
+ * subagent layer; depth 2 is rejected.
  */
-const DEFAULT_MAX_AGENT_DEPTH = 4;
+const DEFAULT_MAX_AGENT_DEPTH = 1;
 
-function resolveDefaultMaxDepth(): number {
-  const raw = process.env.AGENC_AGENT_MAX_DEPTH;
+function asPositiveIntegerDepth(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    return undefined;
+  }
+  return value;
+}
+
+function parseDepthOverride(raw: string | undefined): number | undefined {
   if (!raw) return DEFAULT_MAX_AGENT_DEPTH;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < 1) {
-    return DEFAULT_MAX_AGENT_DEPTH;
+    return undefined;
   }
   return parsed;
 }
 
+function resolveDefaultMaxDepth(env: NodeJS.ProcessEnv = process.env): number {
+  return parseDepthOverride(env.AGENC_AGENT_MAX_DEPTH) ?? DEFAULT_MAX_AGENT_DEPTH;
+}
+
 export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
+
+function resolveSessionMaxDepth(session: Session): number | undefined {
+  const configDepth = asPositiveIntegerDepth(
+    (session.config as { agent_max_depth?: unknown } | undefined)
+      ?.agent_max_depth,
+  );
+  if (configDepth !== undefined) return configDepth;
+
+  const originalDepth = asPositiveIntegerDepth(
+    (
+      session.sessionConfiguration?.originalConfigDoNotUse as
+        | { agent_max_depth?: unknown }
+        | undefined
+    )?.agent_max_depth,
+  );
+  if (originalDepth !== undefined) return originalDepth;
+
+  return undefined;
+}
 
 function getChildBaseConfig(session: Session): RoleShapedConfig | undefined {
   return session.config as unknown as RoleShapedConfig;
@@ -253,7 +269,8 @@ export class AgentControl {
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
     this.registry = opts.registry;
-    this.maxDepth = opts.maxDepth ?? MAX_AGENT_DEPTH;
+    this.maxDepth =
+      opts.maxDepth ?? resolveSessionMaxDepth(opts.session) ?? MAX_AGENT_DEPTH;
     this.threadManager = opts.threadManager;
   }
 
@@ -353,7 +370,6 @@ export class AgentControl {
     const parentToken = this.parentTokens.get(opts.parentPath);
     if (parentToken?.signal.aborted) {
       reservation.release();
-      releaseNickname(this.registry, nickname);
       emitWarning(
         this.session.eventLog,
         this.session.nextInternalSubId(),
@@ -368,7 +384,7 @@ export class AgentControl {
     try {
       reservation.finalize(metadata);
     } catch (err) {
-      releaseNickname(this.registry, nickname);
+      reservation.release();
       if (err instanceof AgentPathExistsError) {
         emitError(this.session.eventLog, this.session.nextInternalSubId(), {
           cause: "agent_path_collision",
@@ -1002,7 +1018,7 @@ export class AgentControl {
     if (this.threadManager?.hasThread(threadId)) {
       return this.threadManager.getThread(threadId).status();
     }
-    return this.live.get(threadId)?.status.value ?? { status: "idle" };
+    return this.live.get(threadId)?.status.value ?? { status: "not_found" };
   }
 
   async subscribeStatus(

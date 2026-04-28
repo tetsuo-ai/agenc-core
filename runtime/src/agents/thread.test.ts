@@ -97,7 +97,7 @@ describe("AgentThread", () => {
     expect(thread.threadId).toBe("thread-2");
     expect(thread.agentPath).toBe("/root/beta");
     expect(thread.nickname).toBe("beta");
-    expect(seen).toContain("idle");
+    expect(seen).toContain("pending_init");
     expect(seen).toContain("running");
   });
 

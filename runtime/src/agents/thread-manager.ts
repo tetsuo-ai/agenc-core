@@ -80,6 +80,10 @@ function normalizeSessionStatus(status: SessionAgentStatus): AgentStatus {
       return status;
     case "idle":
       return status;
+    case "pending_init":
+      return status;
+    case "not_found":
+      return status;
   }
 }
 
@@ -194,7 +198,7 @@ export class CodexThread implements ManagedThread {
       return normalizeSessionStatus(this.session.agentStatus.value);
     }
     if (this.live) return this.live.status.value as AgentStatus;
-    return { status: "idle" };
+    return { status: "not_found" };
   }
 }
 
