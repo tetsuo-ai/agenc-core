@@ -738,6 +738,65 @@ describe("TaskOperations", () => {
   });
 
   describe("claimTask", () => {
+    it("previews claim task signer intent without submitting", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+
+      const intent = await ops.previewClaimTaskIntent(taskPda, task);
+
+      expect(intent.kind).toBe("claim_task");
+      expect(intent.programId).toBe(PROGRAM_ID.toBase58());
+      expect(intent.taskPda).toBe(taskPda.toBase58());
+      expect(intent.rewardLamports).toBe("1000000");
+      expect(intent.accountMetas.map((account) => account.name)).toEqual([
+        "task",
+        "claim",
+        "protocolConfig",
+        "worker",
+        "authority",
+        "systemProgram",
+      ]);
+      expect(mocks.claimTaskRpc).not.toHaveBeenCalled();
+    });
+
+    it("previews claimTaskWithJobSpec when local job spec metadata verifies", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const storeDir = await mkdtemp(join(tmpdir(), "agenc-job-spec-preview-"));
+      const stored = await persistMarketplaceJobSpec(
+        {
+          description: "Verified marketplace task",
+          acceptanceCriteria: ["Do the verified work"],
+          deliverables: ["A short report"],
+        },
+        { rootDir: storeDir },
+      );
+      const jobSpecHashBytes = Uint8Array.from(Buffer.from(stored.hash, "hex"));
+      const opsWithStore = new TaskOperations({
+        program: mockProgram,
+        agentId,
+        logger: silentLogger,
+        jobSpecStoreDir: storeDir,
+      });
+
+      mocks.taskJobSpecFetch.mockResolvedValue({
+        task: taskPda,
+        creator: Keypair.generate().publicKey,
+        jobSpecHash: Array.from(jobSpecHashBytes),
+        jobSpecUri: stored.uri,
+        createdAt: { toNumber: () => 1700000000 },
+        updatedAt: { toNumber: () => 1700000000 },
+        bump: 255,
+      });
+
+      const intent = await opsWithStore.previewClaimTaskIntent(taskPda, task);
+
+      expect(intent.kind).toBe("claim_task_with_job_spec");
+      expect(intent.jobSpecHash).toBe(stored.hash);
+      expect(intent.accountMetas.some((account) => account.name === "taskJobSpec")).toBe(true);
+      expect(mocks.claimTaskWithJobSpecRpc).not.toHaveBeenCalled();
+    });
+
     it("calls claimTask with correct accounts", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
@@ -933,6 +992,43 @@ describe("TaskOperations", () => {
   });
 
   describe("completeTask", () => {
+    it("previews public completion signer intent without submitting", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+
+      const intent = await ops.previewCompleteTaskIntent(taskPda, task);
+
+      expect(intent.kind).toBe("complete_task");
+      expect(intent.taskPda).toBe(taskPda.toBase58());
+      expect(intent.rewardLamports).toBe("1000000");
+      expect(intent.accountMetas.map((account) => account.name)).toEqual(
+        expect.arrayContaining([
+          "task",
+          "claim",
+          "escrow",
+          "creator",
+          "worker",
+          "protocolConfig",
+          "treasury",
+          "authority",
+          "systemProgram",
+        ]),
+      );
+      expect(mocks.completeTaskRpc).not.toHaveBeenCalled();
+    });
+
+    it("previews manual-validation completion as submitTaskResult", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask({
+        constraintHash: new Uint8Array(MANUAL_VALIDATION_SENTINEL),
+      });
+
+      const intent = await ops.previewCompleteTaskIntent(taskPda, task);
+
+      expect(intent.kind).toBe("submit_task_result");
+      expect(mocks.submitTaskResultRpc).not.toHaveBeenCalled();
+    });
+
     it("calls completeTask with correct arguments", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
@@ -1020,6 +1116,37 @@ describe("TaskOperations", () => {
   });
 
   describe("completeTaskPrivate", () => {
+    it("previews private completion signer intent without submitting", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask({
+        constraintHash: new Uint8Array(32).fill(0xee),
+      });
+      const bindingSeed = new Uint8Array(HASH_SIZE).fill(0x04);
+      const nullifierSeed = new Uint8Array(HASH_SIZE).fill(0x05);
+
+      const intent = await ops.previewCompleteTaskPrivateIntent(
+        taskPda,
+        task,
+        bindingSeed,
+        nullifierSeed,
+      );
+
+      expect(intent.kind).toBe("complete_task_private");
+      expect(intent.constraintHash).toBe("ee".repeat(32));
+      expect(intent.accountMetas.map((account) => account.name)).toEqual(
+        expect.arrayContaining([
+          "zkConfig",
+          "bindingSpend",
+          "nullifierSpend",
+          "routerProgram",
+          "router",
+          "verifierEntry",
+          "verifierProgram",
+        ]),
+      );
+      expect(mocks.completeTaskPrivateRpc).not.toHaveBeenCalled();
+    });
+
     it("calls completeTaskPrivate with correct arguments", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();

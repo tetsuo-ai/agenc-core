@@ -7,6 +7,8 @@ import {
   createAgencTools,
   type MarketplaceSignerPolicy,
 } from "./index.js";
+import { evaluateMarketplaceSignerPolicyForIntent } from "./signer-policy.js";
+import type { MarketplaceTransactionIntent } from "../../task/transaction-intent.js";
 import { keypairToWallet } from "../../types/wallet.js";
 import { silentLogger } from "../../utils/logger.js";
 
@@ -87,5 +89,142 @@ describe("AgenC protocol tool factory", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("STAKE_LIMIT_EXCEEDED");
+  });
+
+  it("evaluates transaction intent previews against signer policy", () => {
+    const intent: MarketplaceTransactionIntent = {
+      kind: "claim_task_with_job_spec",
+      programId: "Market11111111111111111111111111111111111111",
+      signer: "Signer11111111111111111111111111111111111111",
+      taskPda: "Task111111111111111111111111111111111111111",
+      jobSpecHash: "a".repeat(64),
+      constraintHash: "0".repeat(64),
+      rewardLamports: "100",
+      rewardMint: "SOL",
+      accountMetas: [],
+    };
+
+    expect(
+      evaluateMarketplaceSignerPolicyForIntent(
+        {
+          allowedTools: ["agenc.claimTask"],
+          allowedProgramIds: [intent.programId],
+          allowedTaskPdas: [intent.taskPda!],
+          allowedJobSpecHashes: [intent.jobSpecHash!],
+          maxRewardLamports: "100",
+          allowedRewardMints: ["SOL"],
+        },
+        intent,
+      ).allowed,
+    ).toBe(true);
+
+    const denied = evaluateMarketplaceSignerPolicyForIntent(
+      {
+        allowedTools: ["agenc.claimTask"],
+        allowedConstraintHashes: ["f".repeat(64)],
+      },
+      intent,
+    );
+    expect(denied.allowed).toBe(false);
+    expect(denied.code).toBe("CONSTRAINT_HASH_NOT_ALLOWED");
+  });
+
+  it("rejects intent previews that violate signer policy bounds", () => {
+    const intent: MarketplaceTransactionIntent = {
+      kind: "complete_task",
+      programId: "Market11111111111111111111111111111111111111",
+      signer: "Signer11111111111111111111111111111111111111",
+      taskPda: "Task111111111111111111111111111111111111111",
+      jobSpecHash: "a".repeat(64),
+      constraintHash: "b".repeat(64),
+      rewardLamports: "101",
+      rewardMint: "SOL",
+      accountMetas: [
+        {
+          name: "task",
+          pubkey: "Task111111111111111111111111111111111111111",
+          isSigner: false,
+          isWritable: true,
+        },
+      ],
+    };
+
+    const cases: Array<{
+      name: string;
+      policy: MarketplaceSignerPolicy;
+      code: string;
+    }> = [
+      {
+        name: "wrong program",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          allowedProgramIds: ["Other1111111111111111111111111111111111111"],
+        },
+        code: "PROGRAM_NOT_ALLOWED",
+      },
+      {
+        name: "wrong task",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          allowedTaskPdas: ["OtherTask111111111111111111111111111111111"],
+        },
+        code: "TASK_NOT_ALLOWED",
+      },
+      {
+        name: "wrong job spec",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          allowedJobSpecHashes: ["c".repeat(64)],
+        },
+        code: "JOB_SPEC_HASH_NOT_ALLOWED",
+      },
+      {
+        name: "wrong constraint",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          allowedConstraintHashes: ["d".repeat(64)],
+        },
+        code: "CONSTRAINT_HASH_NOT_ALLOWED",
+      },
+      {
+        name: "excessive reward",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          maxRewardLamports: "100",
+        },
+        code: "REWARD_LIMIT_EXCEEDED",
+      },
+      {
+        name: "wrong mint",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          allowedRewardMints: ["USDC"],
+        },
+        code: "REWARD_MINT_NOT_ALLOWED",
+      },
+      {
+        name: "mutated account meta",
+        policy: {
+          allowedTools: ["agenc.completeTask"],
+          expectedAccountMetas: [
+            {
+              name: "task",
+              pubkey: "OtherTask111111111111111111111111111111111",
+              isWritable: true,
+            },
+          ],
+        },
+        code: "ACCOUNT_META_PUBKEY_MISMATCH",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const decision = evaluateMarketplaceSignerPolicyForIntent(
+        testCase.policy,
+        intent,
+      );
+      expect(decision.allowed, testCase.name).toBe(false);
+      expect(decision.code, testCase.name).toBe(testCase.code);
+    }
   });
 });

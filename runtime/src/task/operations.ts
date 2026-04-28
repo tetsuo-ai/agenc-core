@@ -78,6 +78,12 @@ import {
   validateNonZeroBytes,
 } from "../types/errors.js";
 import { encodeStatusByte, queryWithFallback } from "../utils/query.js";
+import {
+  accountMetaToIntentMeta,
+  hexBytes,
+  namedAccountMeta,
+  type MarketplaceTransactionIntent,
+} from "./transaction-intent.js";
 
 // ============================================================================
 // Account Layout Constants
@@ -420,8 +426,7 @@ export class TaskOperations {
    * @returns Claim result with signature and claim PDA
    */
   async claimTask(taskPda: PublicKey, task: OnChainTask): Promise<ClaimResult> {
-    const verifiedJobSpecPointer =
-      await this.assertClaimJobSpecVerified(taskPda);
+    const intent = await this.previewClaimTaskIntent(taskPda, task);
 
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
@@ -442,14 +447,15 @@ export class TaskOperations {
         authority: this.program.provider.publicKey,
         systemProgram: SystemProgram.programId,
       };
-      const signature = verifiedJobSpecPointer
+      const taskJobSpec = intent.accountMetas.find(
+        (account) => account.name === "taskJobSpec",
+      )?.pubkey;
+      const signature = taskJobSpec
         ? await (this.program.methods as any)
             .claimTaskWithJobSpec()
             .accountsPartial({
               ...baseAccounts,
-              taskJobSpec: new PublicKey(
-                verifiedJobSpecPointer.taskJobSpecPda,
-              ),
+              taskJobSpec: new PublicKey(taskJobSpec),
             })
             .rpc()
         : await this.program.methods
@@ -523,6 +529,51 @@ export class TaskOperations {
       this.logger.error(`Failed to claim task ${taskPda.toBase58()}: ${err}`);
       throw err;
     }
+  }
+
+  async previewClaimTaskIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+  ): Promise<MarketplaceTransactionIntent> {
+    const verifiedJobSpecPointer =
+      await this.assertClaimJobSpecVerified(taskPda);
+    const workerPda = this.getAgentPda();
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+    const accountMetas = [
+      namedAccountMeta("task", taskPda, true),
+      namedAccountMeta("claim", claimPda, true),
+      namedAccountMeta("protocolConfig", protocolPda, false),
+      namedAccountMeta("worker", workerPda, true),
+      namedAccountMeta("authority", this.program.provider.publicKey!, true, true),
+      namedAccountMeta("systemProgram", SystemProgram.programId, false),
+    ];
+    if (verifiedJobSpecPointer) {
+      accountMetas.push(
+        namedAccountMeta(
+          "taskJobSpec",
+          new PublicKey(verifiedJobSpecPointer.taskJobSpecPda),
+          false,
+        ),
+      );
+    }
+
+    return {
+      kind: verifiedJobSpecPointer ? "claim_task_with_job_spec" : "claim_task",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      jobSpecHash: verifiedJobSpecPointer?.jobSpecHash ?? null,
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas,
+    };
   }
 
   /**
@@ -1208,6 +1259,7 @@ export class TaskOperations {
       };
     }
 
+    await this.previewCompleteTaskIntent(taskPda, task, options);
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
       taskPda,
@@ -1277,6 +1329,62 @@ export class TaskOperations {
     }
   }
 
+  async previewCompleteTaskIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    options?: TaskCompletionOptions,
+  ): Promise<MarketplaceTransactionIntent> {
+    const workerPda = this.getAgentPda();
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const { address: escrowPda } = deriveEscrowPda(
+      taskPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+    const treasury = await this.getProtocolTreasury();
+    const tokenAccounts = buildCompleteTaskTokenAccounts(
+      task.rewardMint,
+      escrowPda,
+      this.program.provider.publicKey!,
+      treasury,
+    );
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      this.program.provider.publicKey ?? undefined,
+    );
+    return {
+      kind: isManualValidationTask(task) ? "submit_task_result" : "complete_task",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("creator", task.creator, true),
+        namedAccountMeta("worker", workerPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("treasury", treasury, true),
+        namedAccountMeta("authority", this.program.provider.publicKey!, true, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
+  }
+
   /**
    * Complete a task with a private ZK proof.
    *
@@ -1317,6 +1425,13 @@ export class TaskOperations {
       throw new Error("sealBytes selector does not match trusted selector");
     }
 
+    await this.previewCompleteTaskPrivateIntent(
+      taskPda,
+      task,
+      bindingSeed,
+      nullifierSeed,
+      options,
+    );
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
       taskPda,
@@ -1431,6 +1546,93 @@ export class TaskOperations {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  async previewCompleteTaskPrivateIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    bindingSeed: Uint8Array,
+    nullifierSeed: Uint8Array,
+    options?: TaskCompletionOptions,
+  ): Promise<MarketplaceTransactionIntent> {
+    validateByteLength(bindingSeed, HASH_SIZE, "bindingSeed");
+    validateByteLength(nullifierSeed, HASH_SIZE, "nullifierSeed");
+    validateNonZeroBytes(bindingSeed, "bindingSeed");
+    validateNonZeroBytes(nullifierSeed, "nullifierSeed");
+
+    const workerPda = this.getAgentPda();
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const { address: escrowPda } = deriveEscrowPda(
+      taskPda,
+      this.program.programId,
+    );
+    const protocolPda = findProtocolPda(this.program.programId);
+    const [bindingSpend] = PublicKey.findProgramAddressSync(
+      [BINDING_SPEND_SEED, Buffer.from(bindingSeed)],
+      this.program.programId,
+    );
+    const [nullifierSpend] = PublicKey.findProgramAddressSync(
+      [NULLIFIER_SPEND_SEED, Buffer.from(nullifierSeed)],
+      this.program.programId,
+    );
+    const [router] = PublicKey.findProgramAddressSync(
+      [ROUTER_SEED],
+      TRUSTED_RISC0_ROUTER_PROGRAM_ID,
+    );
+    const [verifierEntry] = PublicKey.findProgramAddressSync(
+      [VERIFIER_SEED, Buffer.from(TRUSTED_RISC0_SELECTOR)],
+      TRUSTED_RISC0_ROUTER_PROGRAM_ID,
+    );
+    const zkConfigPda = deriveZkConfigPda(this.program.programId);
+    const treasury = await this.getProtocolTreasury();
+    const tokenAccounts = buildCompleteTaskTokenAccounts(
+      task.rewardMint,
+      escrowPda,
+      this.program.provider.publicKey!,
+      treasury,
+    );
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      this.program.provider.publicKey ?? undefined,
+    );
+    return {
+      kind: "complete_task_private",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("creator", task.creator, true),
+        namedAccountMeta("worker", workerPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("zkConfig", zkConfigPda, false),
+        namedAccountMeta("bindingSpend", bindingSpend, true),
+        namedAccountMeta("nullifierSpend", nullifierSpend, true),
+        namedAccountMeta("treasury", treasury, true),
+        namedAccountMeta("authority", this.program.provider.publicKey!, true, true),
+        namedAccountMeta("routerProgram", TRUSTED_RISC0_ROUTER_PROGRAM_ID, false),
+        namedAccountMeta("router", router, false),
+        namedAccountMeta("verifierEntry", verifierEntry, false),
+        namedAccountMeta("verifierProgram", TRUSTED_RISC0_VERIFIER_PROGRAM_ID, false),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
   }
 
   // ==========================================================================

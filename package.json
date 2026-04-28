@@ -44,6 +44,7 @@
     "pack:smoke": "npm run build && node scripts/pack-smoke.mjs",
     "pack:smoke:skip-build": "node scripts/pack-smoke.mjs",
   "smoke:marketplace:devnet": "tsx scripts/marketplace-devnet-smoke.ts",
+  "smoke:marketplace:hardening:devnet": "tsx scripts/marketplace-hardening-devnet-matrix.ts",
   "smoke:marketplace:tui:devnet": "tsx scripts/marketplace-tui-devnet-smoke.ts",
   "drill:sandbox:fleet": "tsx scripts/sandbox-fleet-drill.ts",
   "drill:compiled-job:operator-live": "tsx scripts/compiled-job-phase1-operator-drill.ts",

@@ -99,7 +99,9 @@ export {
   createDelegateReputationTool,
 } from "./mutation-tools.js";
 export {
+  evaluateMarketplaceSignerPolicyForIntent,
   wrapMarketplaceSignerPolicy,
+  type MarketplaceSignerPolicyEvaluation,
   type MarketplaceSignerPolicy,
 } from "./signer-policy.js";
 
