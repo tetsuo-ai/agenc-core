@@ -43,7 +43,7 @@ export type UseMultiSelectStateProps<T> = {
   /**
    * Options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Initially selected values.
@@ -126,7 +126,7 @@ export type MultiSelectState<T> = {
   /**
    * All options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Visible options.
@@ -185,7 +185,8 @@ export function useMultiSelectState<T>({
 
   // Reset selectedValues when options change (e.g. async-loaded data changes
   // defaultValue after mount). Mirrors the reset pattern in use-select-navigation.ts.
-  const [lastOptions, setLastOptions] = useState(options)
+  const [lastOptions, setLastOptions] =
+    useState<readonly OptionWithDescription<T>[]>(options)
   if (options !== lastOptions && !optionsNavigateEqual(options, lastOptions)) {
     setSelectedValues(defaultValue)
     setLastOptions(options)

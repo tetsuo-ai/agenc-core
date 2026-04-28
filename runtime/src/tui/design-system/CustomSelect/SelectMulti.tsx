@@ -9,7 +9,7 @@ import { useMultiSelectState } from './use-multi-select-state.js'
 export type SelectMultiProps<T> = {
   readonly isDisabled?: boolean
   readonly visibleOptionCount?: number
-  readonly options: OptionWithDescription<T>[]
+  readonly options: readonly OptionWithDescription<T>[]
   readonly defaultValue?: T[]
   readonly onCancel: () => void
   readonly onChange?: (values: T[]) => void

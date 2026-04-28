@@ -16,8 +16,8 @@ import type { OptionWithDescription } from './select.js'
  * each render) but don't change navigation semantics.
  */
 export function optionsNavigateEqual<T>(
-  a: OptionWithDescription<T>[],
-  b: OptionWithDescription<T>[],
+  a: readonly OptionWithDescription<T>[],
+  b: readonly OptionWithDescription<T>[],
 ): boolean {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
@@ -363,7 +363,7 @@ export type UseSelectNavigationProps<T> = {
   /**
    * Options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Initially focused option's value.
@@ -406,7 +406,7 @@ export type SelectNavigation<T> = {
   /**
    * All options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Visible options.
@@ -546,7 +546,8 @@ export function useSelectNavigation<T>({
   const onFocusRef = useRef(onFocus)
   onFocusRef.current = onFocus
 
-  const [lastOptions, setLastOptions] = useState(options)
+  const [lastOptions, setLastOptions] =
+    useState<readonly OptionWithDescription<T>[]>(options)
 
   if (options !== lastOptions && !optionsNavigateEqual(options, lastOptions)) {
     dispatch({

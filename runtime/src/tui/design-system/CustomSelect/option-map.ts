@@ -14,7 +14,7 @@ export default class OptionMap<T> extends Map<T, OptionMapItem<T>> {
   readonly first: OptionMapItem<T> | undefined
   readonly last: OptionMapItem<T> | undefined
 
-  constructor(options: OptionWithDescription<T>[]) {
+  constructor(options: readonly OptionWithDescription<T>[]) {
     const items: Array<[T, OptionMapItem<T>]> = []
     let firstItem: OptionMapItem<T> | undefined
     let lastItem: OptionMapItem<T> | undefined

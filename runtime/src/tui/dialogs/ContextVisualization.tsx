@@ -14,7 +14,7 @@
 
 import React from 'react'
 
-import { Box, Text } from '../ink-public.js'
+import { Box, Text, type TextProps } from '../ink-public.js'
 
 import {
   ContextSuggestions,
@@ -31,11 +31,13 @@ const GLYPH_RESERVED = '⛝'
 const GLYPH_INDICATOR_RESERVED = '⛝'
 const GLYPH_INDICATOR_FILLED = '⛁'
 
+type ContextColor = TextProps['color']
+
 export interface ContextCategory {
   readonly name: string
   readonly tokens: number
   /** Theme color key or raw color literal. Drives the legend swatch. */
-  readonly color?: string
+  readonly color?: ContextColor
   /**
    * Marks tokens that are not yet loaded into the active window
    * (e.g. on-demand MCP tools). Rendered with `N/A` percentage.
@@ -45,7 +47,7 @@ export interface ContextCategory {
 
 export interface ContextGridSquare {
   readonly categoryName: string
-  readonly color?: string
+  readonly color?: ContextColor
   /** 0..1, where 1 is "this square is fully drawn from the category". */
   readonly squareFullness: number
 }

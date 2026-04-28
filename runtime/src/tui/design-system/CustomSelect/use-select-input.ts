@@ -50,7 +50,7 @@ export type UseSelectProps<T> = {
   /**
    * Options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Whether this is a multi-select component.

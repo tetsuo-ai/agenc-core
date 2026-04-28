@@ -13,7 +13,7 @@ export type UseSelectStateProps<T> = {
   /**
    * Options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Initially selected option's value.
@@ -76,7 +76,7 @@ export type SelectState<T> = {
   /**
    * All options.
    */
-  options: OptionWithDescription<T>[]
+  options: readonly OptionWithDescription<T>[]
 
   /**
    * Visible options.

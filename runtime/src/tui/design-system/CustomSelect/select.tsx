@@ -107,7 +107,7 @@ export type SelectProps<T> = {
   /**
    * Options.
    */
-  readonly options: OptionWithDescription<T>[]
+  readonly options: readonly OptionWithDescription<T>[]
 
   /**
    * Default value.

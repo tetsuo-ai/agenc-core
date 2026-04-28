@@ -17,7 +17,7 @@
  */
 import * as React from 'react'
 
-import { Box, Text } from '../../ink-public.js'
+import { Box, Text, type TextProps } from '../../ink-public.js'
 
 import FullWidthRow from '../../design-system/FullWidthRow.js'
 
@@ -68,7 +68,7 @@ function Line({
   dimColor = true,
 }: {
   children: React.ReactNode
-  color?: string
+  color?: TextProps['color']
   dimColor?: boolean
 }): React.ReactNode {
   return (

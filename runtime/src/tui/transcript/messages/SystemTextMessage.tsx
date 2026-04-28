@@ -18,7 +18,7 @@
 
 import React from 'react'
 
-import { Box, Text } from '../../ink-public.js'
+import { Box, Text, type TextProps } from '../../ink-public.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { theme } from '../../theme.js'
 
@@ -84,8 +84,8 @@ interface InnerProps {
   readonly content: string
   readonly addMargin: boolean
   readonly showDot: boolean
-  readonly dotColor: string
-  readonly textColor: string | undefined
+  readonly dotColor: TextProps['color']
+  readonly textColor: TextProps['color'] | undefined
   readonly dimColor: boolean
 }
 

@@ -12,6 +12,7 @@
  */
 
 import type { PermissionMode } from "../permissions/types.js";
+import type { Color } from "./ink/styles.js";
 
 /**
  * Shape of the theme exposed to the TUI. The structure is stable so Wave
@@ -20,25 +21,25 @@ import type { PermissionMode } from "../permissions/types.js";
  */
 export type Theme = {
   readonly colors: {
-    readonly primary: string;
-    readonly secondary: string;
-    readonly accent: string;
-    readonly error: string;
-    readonly warning: string;
-    readonly success: string;
-    readonly dim: string;
-    readonly ink: string;
-    readonly muted: string;
-    readonly info: string;
-    readonly line: string;
-    readonly lineStrong: string;
-    readonly surface: string;
-    readonly surfaceAlt: string;
-    readonly modeDefault: string;
-    readonly modeAcceptEdits: string;
-    readonly modePlan: string;
-    readonly modeBypass: string;
-    readonly modeAuto: string;
+    readonly primary: Color;
+    readonly secondary: Color;
+    readonly accent: Color;
+    readonly error: Color;
+    readonly warning: Color;
+    readonly success: Color;
+    readonly dim: Color;
+    readonly ink: Color;
+    readonly muted: Color;
+    readonly info: Color;
+    readonly line: Color;
+    readonly lineStrong: Color;
+    readonly surface: Color;
+    readonly surfaceAlt: Color;
+    readonly modeDefault: Color;
+    readonly modeAcceptEdits: Color;
+    readonly modePlan: Color;
+    readonly modeBypass: Color;
+    readonly modeAuto: Color;
   };
   readonly border: {
     readonly soft: string;
@@ -187,7 +188,7 @@ type WatchPrimitivesModule = {
 let cachedTheme: Theme | null = null;
 let loadAttempted = false;
 
-const NAMED_COLOR_MAP: Readonly<Record<string, string>> = Object.freeze({
+const NAMED_COLOR_MAP: Readonly<Record<string, Color>> = Object.freeze({
   black: "ansi:black",
   red: "ansi:red",
   green: "ansi:green",
@@ -211,7 +212,7 @@ const NAMED_COLOR_MAP: Readonly<Record<string, string>> = Object.freeze({
 const ANSI_256_RE = /^\x1b\[(?:38|48);5;(\d+)m$/;
 const ANSI_RGB_RE = /^\x1b\[(?:38|48);2;(\d+);(\d+);(\d+)m$/;
 
-function normalizeColor(input: unknown, fallback: string): string {
+function normalizeColor(input: unknown, fallback: Color): Color {
   if (typeof input !== "string" || input.length === 0) return fallback;
   if (
     input.startsWith("ansi:") ||
@@ -219,7 +220,7 @@ function normalizeColor(input: unknown, fallback: string): string {
     input.startsWith("rgb(") ||
     input.startsWith("#")
   ) {
-    return input;
+    return input as Color;
   }
 
   const named = NAMED_COLOR_MAP[input];
@@ -227,12 +228,18 @@ function normalizeColor(input: unknown, fallback: string): string {
 
   const indexed = ANSI_256_RE.exec(input);
   if (indexed !== null) {
-    return `ansi256(${indexed[1]})`;
+    const value = Number(indexed[1]);
+    if (Number.isFinite(value)) return `ansi256(${value})`;
   }
 
   const rgb = ANSI_RGB_RE.exec(input);
   if (rgb !== null) {
-    return `rgb(${rgb[1]},${rgb[2]},${rgb[3]})`;
+    const red = Number(rgb[1]);
+    const green = Number(rgb[2]);
+    const blue = Number(rgb[3]);
+    if (Number.isFinite(red) && Number.isFinite(green) && Number.isFinite(blue)) {
+      return `rgb(${red},${green},${blue})`;
+    }
   }
 
   return fallback;
