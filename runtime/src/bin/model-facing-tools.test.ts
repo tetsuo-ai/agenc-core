@@ -158,6 +158,7 @@ describe("model-facing tools", () => {
         "Brief",
         "SendUserMessage",
         "VerifyPlanExecution",
+        "StructuredOutput",
       ]),
     );
     expect(allNames.some((name) => name.startsWith("system.http"))).toBe(false);

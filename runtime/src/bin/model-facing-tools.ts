@@ -52,6 +52,7 @@ import {
   type TaskStoreOptions,
   type UpdateTaskInput,
 } from "./task-store.js";
+import { createStructuredOutputTool } from "./structured-output-tool.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionRuleValue,
@@ -2416,5 +2417,6 @@ export function createModelFacingTools(
     ...createCronAndWorkflowTools(opts),
     createRemoteTriggerTool(opts),
     ...createPowerShellTool(opts),
+    createStructuredOutputTool(),
   ];
 }
