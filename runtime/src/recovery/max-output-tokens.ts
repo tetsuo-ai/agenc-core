@@ -86,6 +86,16 @@ function discardExecutorForMaxOutputTokens(
   );
 }
 
+function removeTruncatedAssistantForRetry(state: TurnState): void {
+  // Escalation retries the same request with a larger output ceiling.
+  // Do not carry the truncated assistant/tool batch into that retry.
+  state.messages = [...state.messagesForQuery];
+  state.assistantMessages = [];
+  state.toolUseBlocks = [];
+  state.toolResults = [];
+  state.needsFollowUp = false;
+}
+
 /**
  * Decide + mutate state for the next iteration. Called by phase-3
  * post-sample-recovery after `isWithheldMaxOutputTokens` fires.
@@ -110,6 +120,7 @@ export function runMaxOutputTokensRecovery(
     state.maxOutputTokensOverride = MAX_OUTPUT_TOKENS_ESCALATED;
     state.transition = { reason: "max_output_tokens_escalate" };
     discardExecutorForMaxOutputTokens(session, state);
+    removeTruncatedAssistantForRetry(state);
     return { kind: "escalate" };
   }
 

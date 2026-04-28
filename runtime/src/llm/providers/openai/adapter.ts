@@ -808,9 +808,12 @@ export class OpenAIProvider implements LLMProvider {
       }
     }
 
-    const toolCalls = Array.from(toolCallAccumulator.values()).filter(
-      (toolCall) => toolCall.id.length > 0 && toolCall.name.length > 0,
-    );
+    const includeToolCalls = finishReason !== "length";
+    const toolCalls = includeToolCalls
+      ? Array.from(toolCallAccumulator.values()).filter(
+        (toolCall) => toolCall.id.length > 0 && toolCall.name.length > 0,
+      )
+      : [];
     const parsed = withStreamingMetrics(
       parseChatCompletionsResponse(
         requestModel,
@@ -857,7 +860,9 @@ export class OpenAIProvider implements LLMProvider {
     onChunk({
       content: "",
       done: true,
-      ...(parsed.toolCalls.length > 0 ? { toolCalls: parsed.toolCalls } : {}),
+      ...(includeToolCalls && parsed.toolCalls.length > 0
+        ? { toolCalls: parsed.toolCalls }
+        : {}),
     });
     return parsed;
   }
