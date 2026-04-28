@@ -113,4 +113,58 @@ describe('TaskCard', () => {
     expect(onClaim).not.toHaveBeenCalled();
     expect(onCancel).not.toHaveBeenCalled();
   });
+
+  it('shows protocol-derived delivery artifact references for buyer review', () => {
+    render(
+      <TaskCard
+        task={{
+          id: 'task-delivered',
+          status: 'completed',
+          description: 'Delivered task',
+          deliveryArtifact: {
+            source: 'task-submission',
+            sha256: 'a'.repeat(64),
+            verified: true,
+            uri: 'ipfs://bafybeigdyrzt',
+            fileName: 'report.md',
+            mediaType: 'text/markdown; charset=utf-8',
+            sizeBytes: 1024,
+          },
+        }}
+        onClaim={vi.fn()}
+        onComplete={vi.fn()}
+        onDispute={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('delivery artifact')).toBeTruthy();
+    expect(screen.getByText('uri: ipfs://bafybeigdyrzt')).toBeTruthy();
+    expect(screen.getByText('file: report.md')).toBeTruthy();
+    expect(screen.getByText(`sha256: ${'a'.repeat(64)}`)).toBeTruthy();
+  });
+
+  it('flags unverified delivery artifacts so the dashboard does not pretend they are local', () => {
+    render(
+      <TaskCard
+        task={{
+          id: 'task-unresolved',
+          status: 'completed',
+          description: 'Pending hydration',
+          deliveryArtifact: {
+            source: 'task-submission',
+            sha256: 'b'.repeat(64),
+            verified: false,
+          },
+        }}
+        onClaim={vi.fn()}
+        onComplete={vi.fn()}
+        onDispute={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('[unresolved]')).toBeTruthy();
+    expect(screen.getByText(`sha256: ${'b'.repeat(64)}`)).toBeTruthy();
+  });
 });

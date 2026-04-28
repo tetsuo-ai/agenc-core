@@ -179,6 +179,23 @@ export type SkillInfo = ToolInfo;
 // Tasks
 // ============================================================================
 
+export interface TaskDeliveryArtifactInfo {
+  /** Where the dashboard learned about the artifact reference. */
+  source: 'protocol-result-data' | 'task-submission';
+  /** Lowercase hex SHA-256 digest of the artifact bytes (from the protocol). */
+  sha256: string;
+  /**
+   * `true` when the runtime resolved a local-store reference (uri, fileName,
+   * mediaType, sizeBytes available); `false` when only the protocol-level
+   * sha256 is known.
+   */
+  verified: boolean;
+  uri?: string;
+  fileName?: string;
+  mediaType?: string;
+  sizeBytes?: number;
+}
+
 export interface TaskInfo {
   id: string;
   status: string;
@@ -186,6 +203,8 @@ export interface TaskInfo {
   creator?: string;
   worker?: string;
   description?: string;
+  resultPreview?: string;
+  deliveryArtifact?: TaskDeliveryArtifactInfo | null;
   viewerAgentPda?: string;
   ownedBySigner?: boolean;
   assignedToSigner?: boolean;

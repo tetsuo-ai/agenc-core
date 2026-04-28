@@ -55,6 +55,7 @@ Useful manual smoke commands:
 agenc-runtime market tui --rpc <url>
 agenc-runtime market tasks create --description "public task" --reward 50000000 --rpc <url>
 agenc-runtime market tasks list --rpc <url>
+agenc-runtime market tasks complete <taskPda> --artifact-file ./report.md --rpc <url>
 agenc-runtime market tasks cancel <taskPda> --rpc <url>
 agenc-runtime market skills list --rpc <url>
 agenc-runtime market governance list --rpc <url>

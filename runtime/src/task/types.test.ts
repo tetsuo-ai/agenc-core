@@ -4,11 +4,14 @@ import { TaskType } from "../events/types.js";
 import {
   MANUAL_VALIDATION_SENTINEL,
   OnChainTaskStatus,
+  TaskSubmissionStatus,
   isManualValidationTask,
   parseTaskStatus,
+  parseTaskSubmissionStatus,
   parseTaskType,
   parseOnChainTask,
   parseOnChainTaskClaim,
+  parseOnChainTaskSubmission,
   isPrivateTask,
   isTaskExpired,
   isTaskClaimable,
@@ -63,6 +66,28 @@ function createMockRawTaskClaim(overrides: Record<string, unknown> = {}) {
     isValidated: false,
     rewardPaid: { toString: () => "0" },
     bump: 254,
+    ...overrides,
+  };
+}
+
+/**
+ * Creates a mock raw task submission matching RawOnChainTaskSubmission shape.
+ */
+function createMockRawTaskSubmission(overrides: Record<string, unknown> = {}) {
+  return {
+    task: Keypair.generate().publicKey,
+    claim: Keypair.generate().publicKey,
+    worker: Keypair.generate().publicKey,
+    status: { submitted: {} },
+    proofHash: new Array(32).fill(1),
+    resultData: new Array(64).fill(0),
+    submissionCount: 2,
+    submittedAt: { toNumber: () => 1700000100 },
+    reviewDeadlineAt: { toNumber: () => 1700003700 },
+    acceptedAt: { toNumber: () => 0 },
+    rejectedAt: { toNumber: () => 0 },
+    rejectionHash: new Array(32).fill(0),
+    bump: 252,
     ...overrides,
   };
 }
@@ -154,6 +179,39 @@ describe("parseTaskStatus", () => {
   it("throws on invalid object input", () => {
     expect(() => parseTaskStatus({} as any)).toThrow(
       "Invalid task status format",
+    );
+  });
+});
+
+describe("parseTaskSubmissionStatus", () => {
+  it("parses numeric values (0-3)", () => {
+    expect(parseTaskSubmissionStatus(0)).toBe(TaskSubmissionStatus.Idle);
+    expect(parseTaskSubmissionStatus(1)).toBe(TaskSubmissionStatus.Submitted);
+    expect(parseTaskSubmissionStatus(2)).toBe(TaskSubmissionStatus.Accepted);
+    expect(parseTaskSubmissionStatus(3)).toBe(TaskSubmissionStatus.Rejected);
+  });
+
+  it("parses Anchor enum objects", () => {
+    expect(parseTaskSubmissionStatus({ idle: {} })).toBe(
+      TaskSubmissionStatus.Idle,
+    );
+    expect(parseTaskSubmissionStatus({ submitted: {} })).toBe(
+      TaskSubmissionStatus.Submitted,
+    );
+    expect(parseTaskSubmissionStatus({ accepted: {} })).toBe(
+      TaskSubmissionStatus.Accepted,
+    );
+    expect(parseTaskSubmissionStatus({ rejected: {} })).toBe(
+      TaskSubmissionStatus.Rejected,
+    );
+  });
+
+  it("throws on invalid input", () => {
+    expect(() => parseTaskSubmissionStatus(4)).toThrow(
+      "Invalid task submission status value: 4",
+    );
+    expect(() => parseTaskSubmissionStatus({} as any)).toThrow(
+      "Invalid task submission status format",
     );
   });
 });
@@ -355,6 +413,51 @@ describe("parseOnChainTaskClaim", () => {
       "Invalid task claim data",
     );
     expect(() => parseOnChainTaskClaim({})).toThrow("Invalid task claim data");
+  });
+});
+
+describe("parseOnChainTaskSubmission", () => {
+  it("converts submission fields for indexer hydration", () => {
+    const resultData = new TextEncoder().encode("ipfs://bafybeigdyrzt");
+    const paddedResultData = new Uint8Array(64);
+    paddedResultData.set(resultData);
+    const raw = createMockRawTaskSubmission({
+      resultData: paddedResultData,
+      status: { accepted: {} },
+      acceptedAt: { toNumber: () => 1700000200 },
+    });
+    const parsed = parseOnChainTaskSubmission(raw);
+
+    expect(parsed.status).toBe(TaskSubmissionStatus.Accepted);
+    expect(parsed.proofHash).toBeInstanceOf(Uint8Array);
+    expect(parsed.resultData).toBeInstanceOf(Uint8Array);
+    expect(parsed.resultData.length).toBe(64);
+    expect(parsed.submissionCount).toBe(2);
+    expect(parsed.submittedAt).toBe(1700000100);
+    expect(parsed.acceptedAt).toBe(1700000200);
+    expect(parsed.bump).toBe(252);
+  });
+
+  it("preserves PublicKey fields", () => {
+    const task = Keypair.generate().publicKey;
+    const claim = Keypair.generate().publicKey;
+    const worker = Keypair.generate().publicKey;
+    const parsed = parseOnChainTaskSubmission(
+      createMockRawTaskSubmission({ task, claim, worker }),
+    );
+
+    expect(parsed.task.equals(task)).toBe(true);
+    expect(parsed.claim.equals(claim)).toBe(true);
+    expect(parsed.worker.equals(worker)).toBe(true);
+  });
+
+  it("throws on invalid data", () => {
+    expect(() => parseOnChainTaskSubmission(null)).toThrow(
+      "Invalid task submission data",
+    );
+    expect(() => parseOnChainTaskSubmission({})).toThrow(
+      "Invalid task submission data",
+    );
   });
 });
 

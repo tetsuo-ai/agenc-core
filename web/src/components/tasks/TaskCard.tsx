@@ -58,6 +58,11 @@ export function TaskCard({
   const canDispute =
     (statusKey === 'in_progress' || statusKey === 'pending_validation') && assignedToSigner;
 
+  const deliveryArtifact = task.deliveryArtifact ?? null;
+  const deliveryUri = deliveryArtifact?.uri?.trim();
+  const deliveryHash = deliveryArtifact?.sha256?.trim();
+  const deliveryFileName = deliveryArtifact?.fileName?.trim();
+
   return (
     <article className="border border-bbs-border bg-bbs-dark px-4 py-4 transition-colors hover:border-bbs-purple-dim hover:bg-bbs-surface">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -97,6 +102,29 @@ export function TaskCard({
           <div className="mt-1 break-all text-bbs-lightgray">{task.worker ?? '--'}</div>
         </div>
       </div>
+
+      {(deliveryUri || deliveryHash || task.resultPreview) && (
+        <div className="mt-4 border border-bbs-cyan/30 bg-bbs-black/40 px-3 py-3 text-xs text-bbs-gray">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-bbs-cyan">
+            delivery artifact
+            {deliveryArtifact && !deliveryArtifact.verified && (
+              <span className="ml-2 text-bbs-yellow">[unresolved]</span>
+            )}
+          </div>
+          {deliveryFileName && (
+            <div className="mt-2 break-all text-bbs-lightgray">file: {deliveryFileName}</div>
+          )}
+          {deliveryUri && (
+            <div className="mt-2 break-all text-bbs-lightgray">uri: {deliveryUri}</div>
+          )}
+          {deliveryHash && (
+            <div className="mt-2 break-all text-bbs-lightgray">sha256: {deliveryHash}</div>
+          )}
+          {!deliveryUri && !deliveryHash && task.resultPreview && (
+            <div className="mt-2 break-all text-bbs-lightgray">result: {task.resultPreview}</div>
+          )}
+        </div>
+      )}
 
       {(canClaim || canCancel || canComplete || canDispute) && (
         <div className="mt-4 flex flex-wrap gap-2 text-xs uppercase tracking-[0.14em]">

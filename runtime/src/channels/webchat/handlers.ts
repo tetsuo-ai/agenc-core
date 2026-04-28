@@ -36,6 +36,11 @@ import {
   serializeMarketplaceTask,
   serializeMarketplaceTaskEntry,
 } from '../../marketplace/serialization.js';
+import {
+  decodeMarketplaceArtifactSha256FromResultData,
+  readMarketplaceArtifactReference,
+  type MarketplaceArtifactReference,
+} from '../../marketplace/artifact-delivery.js';
 import { TaskOperations } from '../../task/operations.js';
 import { findEscrowPda } from '../../task/pda.js';
 import { lamportsToSol } from '../../utils/encoding.js';
@@ -253,12 +258,78 @@ interface TaskViewerContext {
   claimedTaskIds: Set<string>;
 }
 
+interface SubmissionDeliveryHydration {
+  /** sha256 hex decoded from the submission's resultData (if any). */
+  readonly sha256: string;
+  /** Resolved local-store reference for that sha256 (if persisted locally). */
+  readonly reference: MarketplaceArtifactReference | null;
+}
+
+interface TaskSummaryDeliveryArtifact {
+  source: 'protocol-result-data' | 'task-submission';
+  sha256: string;
+  verified: boolean;
+  uri?: string;
+  fileName?: string;
+  mediaType?: string;
+  sizeBytes?: number;
+}
+
+interface TaskSummaryPayload {
+  id: string;
+  status: string;
+  reward: string;
+  creator: string;
+  description: string;
+  worker?: string;
+  resultPreview?: string;
+  deliveryArtifact?: TaskSummaryDeliveryArtifact;
+  viewerAgentPda?: string;
+  ownedBySigner?: boolean;
+  assignedToSigner?: boolean;
+  claimableBySigner?: boolean;
+}
+
 function mapTaskSummary(
   entry: Awaited<ReturnType<TaskOperations['fetchAllTasks']>>[number],
   viewerContext?: TaskViewerContext,
-) {
+  submissionDeliveryByTask?: Map<string, SubmissionDeliveryHydration>,
+): TaskSummaryPayload {
   const task = serializeMarketplaceTaskEntry(entry);
-  const summary = {
+
+  // Prefer the on-chain task's `task.result` artifact reference (already
+  // surfaced by serializeMarketplaceTask). For creator-review tasks the result
+  // lives in a separate `task_submission` PDA, so fall back to the latest
+  // submission's resultData when the task itself didn't expose one.
+  const submissionDelivery = submissionDeliveryByTask?.get(task.taskPda);
+  const deliveryArtifact: TaskSummaryDeliveryArtifact | undefined =
+    task.deliveryArtifact
+      ? {
+          source: task.deliveryArtifact.source,
+          sha256: task.deliveryArtifact.sha256,
+          verified: task.deliveryArtifact.verified,
+        }
+      : submissionDelivery
+        ? {
+            source: 'task-submission',
+            sha256: submissionDelivery.sha256,
+            verified: submissionDelivery.reference !== null,
+            ...(submissionDelivery.reference?.uri
+              ? { uri: submissionDelivery.reference.uri }
+              : {}),
+            ...(submissionDelivery.reference?.fileName
+              ? { fileName: submissionDelivery.reference.fileName }
+              : {}),
+            ...(submissionDelivery.reference?.mediaType
+              ? { mediaType: submissionDelivery.reference.mediaType }
+              : {}),
+            ...(submissionDelivery.reference?.sizeBytes !== undefined
+              ? { sizeBytes: submissionDelivery.reference.sizeBytes }
+              : {}),
+          }
+        : undefined;
+
+  const summary: TaskSummaryPayload = {
     id: task.taskPda,
     status: task.status,
     reward: lamportsToSol(BigInt(task.rewardLamports)),
@@ -266,6 +337,8 @@ function mapTaskSummary(
     description: task.description,
     worker: task.currentWorkers > 0 ? `${task.currentWorkers} worker(s)` : undefined,
   };
+  if (task.resultPreview) summary.resultPreview = task.resultPreview;
+  if (deliveryArtifact) summary.deliveryArtifact = deliveryArtifact;
 
   if (!viewerContext) {
     return summary;
@@ -281,6 +354,49 @@ function mapTaskSummary(
     assignedToSigner,
     claimableBySigner: task.status === 'open' && !ownedBySigner && !assignedToSigner,
   };
+}
+
+async function buildSubmissionDeliveryMap(
+  ops: TaskOperations,
+): Promise<Map<string, SubmissionDeliveryHydration>> {
+  const map = new Map<string, SubmissionDeliveryHydration>();
+  let submissions: Awaited<ReturnType<TaskOperations['fetchAllTaskSubmissions']>>;
+  try {
+    submissions = await ops.fetchAllTaskSubmissions();
+  } catch {
+    return map;
+  }
+  if (!Array.isArray(submissions)) {
+    return map;
+  }
+
+  // Pick the latest submission per task (highest submittedAt).
+  const latestByTask = new Map<string, { submittedAt: number; resultData: Uint8Array }>();
+  for (const { submission } of submissions) {
+    const taskPda = submission.task.toBase58();
+    const existing = latestByTask.get(taskPda);
+    if (!existing || submission.submittedAt >= existing.submittedAt) {
+      latestByTask.set(taskPda, {
+        submittedAt: submission.submittedAt,
+        resultData: submission.resultData,
+      });
+    }
+  }
+
+  for (const [taskPda, entry] of latestByTask.entries()) {
+    const sha256 = decodeMarketplaceArtifactSha256FromResultData(entry.resultData);
+    if (!sha256) continue;
+
+    let reference: MarketplaceArtifactReference | null = null;
+    try {
+      reference = await readMarketplaceArtifactReference(sha256);
+    } catch {
+      reference = null;
+    }
+    map.set(taskPda, { sha256, reference });
+  }
+
+  return map;
 }
 
 function mapSkillSummary(
@@ -1140,9 +1256,14 @@ async function sendTaskList(
     viewerContext = undefined;
   }
 
+  // Hydrate creator-review delivery artifacts from the latest submission per
+  // task (the on-chain task.result is empty for review-mode tasks, so the
+  // dashboard would otherwise see no buyer-facing artifact).
+  const submissionDeliveryByTask = await buildSubmissionDeliveryMap(ops);
+
   const payload = allTasks
     .sort((left, right) => right.task.createdAt - left.task.createdAt)
-    .map((entry) => mapTaskSummary(entry, viewerContext))
+    .map((entry) => mapTaskSummary(entry, viewerContext, submissionDeliveryByTask))
     .filter((entry) => statuses.length === 0 || statuses.includes(entry.status));
   send({ type: 'tasks.list', payload, id });
 }
@@ -1394,9 +1515,30 @@ async function handleTasksComplete(
     send({ type: 'error', error: 'Missing taskId in payload', id });
     return;
   }
-  const resultData = typeof payload?.resultData === 'string' && payload.resultData.trim().length > 0
-    ? payload.resultData.trim()
-    : 'Task completed via dashboard';
+  const artifactUriPayload =
+    typeof payload?.artifactUri === 'string' && payload.artifactUri.trim().length > 0
+      ? payload.artifactUri.trim()
+      : undefined;
+  const artifactSha256Payload =
+    typeof payload?.artifactSha256 === 'string' && payload.artifactSha256.trim().length > 0
+      ? payload.artifactSha256.trim()
+      : undefined;
+  const artifactMediaTypePayload =
+    typeof payload?.artifactMediaType === 'string' && payload.artifactMediaType.trim().length > 0
+      ? payload.artifactMediaType.trim()
+      : undefined;
+  const hasArtifact = Boolean(artifactUriPayload || artifactSha256Payload);
+
+  // When the caller delivers a buyer-facing artifact, the proofHash + resultData
+  // are derived from the artifact reference inside the tool — do NOT fall back
+  // to the "Task completed via dashboard" placeholder, which would clash with
+  // artifact-only completions.
+  const resultData =
+    typeof payload?.resultData === 'string' && payload.resultData.trim().length > 0
+      ? payload.resultData.trim()
+      : hasArtifact
+        ? undefined
+        : 'Task completed via dashboard';
   if (!deps.connection) {
     send({ type: 'error', error: SOLANA_NOT_CONFIGURED, id });
     return;
@@ -1404,12 +1546,17 @@ async function handleTasksComplete(
 
   try {
     const { program } = await createProgramContext(deps);
-    const proofHash = createHash('sha256').update(resultData).digest('hex');
+    const proofHash = resultData
+      ? createHash('sha256').update(resultData).digest('hex')
+      : undefined;
     const tool = createCompleteTaskTool(program, silentLogger);
     const result = await tool.execute({
       taskPda: taskId,
-      proofHash,
-      resultData,
+      ...(proofHash ? { proofHash } : {}),
+      ...(resultData ? { resultData } : {}),
+      ...(artifactUriPayload ? { artifactUri: artifactUriPayload } : {}),
+      ...(artifactSha256Payload ? { artifactSha256: artifactSha256Payload } : {}),
+      ...(artifactMediaTypePayload ? { artifactMediaType: artifactMediaTypePayload } : {}),
     });
     if (result.isError) {
       send({ type: 'error', error: `Failed to complete task: ${parseToolError(result)}`, id });

@@ -90,6 +90,12 @@ Current operator marketplace entrypoint:
 
 - `agenc-runtime market ...` for non-interactive terminal marketplace flows
 - `agenc-runtime market tui` for the interactive terminal marketplace workspace
+- `agenc-runtime market tasks complete <taskPda> --artifact-file ./report.md`
+  records a compact delivery reference in `resultData`; use
+  `--artifact-uri ipfs://... --artifact-sha256 <hex>` for already-published
+  buyer-facing artifacts. The dashboard task list hydrates this reference for
+  buyer review (including for creator-review tasks where the result lands in a
+  separate `task_submission` PDA).
 - automated LiteSVM operator coverage: `npm --prefix runtime run test:marketplace-integration`
 - dashboard MARKET/TOOLS routing is documented in
   [`runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md`](docs/MARKETPLACE_OPERATOR_SURFACE.md)
