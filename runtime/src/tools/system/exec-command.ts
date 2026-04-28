@@ -11,6 +11,7 @@ import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
+import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -182,6 +183,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
                 "Shell workspace write policy blocked the command.",
             }),
             isError: true,
+            metadata: buildRecoverableToolFailureMetadata(
+              "shell_workspace_write_policy",
+            ),
           };
         }
       }

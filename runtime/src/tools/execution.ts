@@ -92,6 +92,7 @@ import {
   formatSchemaValidationError,
   getSchemaValidationErrorOverride,
 } from "./schema-errors.js";
+import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
 // Inline copies of AgenC `utils/messages.ts` constants. The full
 // messages.ts is a heavy port that pulls in `bun:bundle`, analytics,
 // and the entire session service graph; importing two constants from
@@ -1258,6 +1259,7 @@ export async function runToolUse(
         invocation,
         content: `<tool_use_error>${message}</tool_use_error>`,
         elapsedMs: performance.now() - startedAt,
+        metadata: buildRecoverableToolFailureMetadata("input_validation"),
       });
     }
   }
@@ -1574,6 +1576,17 @@ export async function runToolUse(
       writable: false,
       configurable: true,
     });
+    const sessionId = (invocation.session as unknown as {
+      readonly conversationId?: unknown;
+    }).conversationId;
+    if (typeof sessionId === "string" && sessionId.length > 0) {
+      Object.defineProperty(argsForTool, "__agencSessionId", {
+        value: sessionId,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
   }
 
   // Step 5: I-9 timeout + abort race.
@@ -1860,6 +1873,7 @@ function errorOutput(opts: {
   readonly invocation: ToolInvocation;
   readonly content: string;
   readonly elapsedMs: number;
+  readonly metadata?: Record<string, unknown>;
 }): ToolOutput {
   return functionToolOutput({
     callId: opts.invocation.callId,
@@ -1868,6 +1882,7 @@ function errorOutput(opts: {
     content: opts.content,
     isError: true,
     durationMs: opts.elapsedMs,
+    ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
   });
 }
 

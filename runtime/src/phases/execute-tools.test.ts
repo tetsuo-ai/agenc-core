@@ -419,6 +419,61 @@ describe("executeTools — T7 gap #109 pipeline", () => {
     expect(progressEvents).toEqual(["line-1", "line-2"]);
   });
 
+  test("live path validates normalized args before exec_command can run", async () => {
+    let executed = 0;
+    const tool: Tool = {
+      name: "exec_command",
+      description: "strict shell",
+      inputSchema: {
+        type: "object",
+        properties: {
+          cmd: { type: "string" },
+          command: { type: "string" },
+        },
+        anyOf: [{ required: ["cmd"] }, { required: ["command"] }],
+        additionalProperties: false,
+      },
+      execute: async () => {
+        executed += 1;
+        return { content: "cmd must be a non-empty string", isError: true };
+      },
+    };
+    const log = new EventLog();
+    const errorCauses: string[] = [];
+    log.subscribe((ev) => {
+      const msg = ev.msg as { type: string; payload?: { cause?: string } };
+      if (msg.type === "error" && msg.payload?.cause) {
+        errorCauses.push(msg.payload.cause);
+      }
+    });
+    const session = mkSession({ log, registry: mkRegistry([tool]) });
+    const state = mkState({
+      toolCalls: [
+        {
+          id: "bad-exec",
+          name: "exec_command",
+          arguments: JSON.stringify({ cd: "/tmp" }),
+        },
+      ],
+    });
+
+    await executeTools(state, mkCtx(), session);
+
+    expect(executed).toBe(0);
+    expect(errorCauses).toContain("schema_validation_failed");
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]!.content).toContain("InputValidationError");
+    expect(state.messages[0]!.content).not.toContain(
+      "cmd must be a non-empty string",
+    );
+    expect(state.messages[0]!.runtimeOnly).toMatchObject({
+      recoverableToolFailure: {
+        hiddenFromTranscript: true,
+        kind: "input_validation",
+      },
+    });
+  });
+
   test("mid-stream queued tools are not re-dispatched and keep progress before completion", async () => {
     let executed = 0;
     const eventTypes: string[] = [];

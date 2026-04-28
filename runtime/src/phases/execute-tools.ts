@@ -67,16 +67,29 @@ import {
   type ToolEvaluatorContext,
 } from "../permissions/evaluator.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
+import {
+  recoverableFailureKind,
+} from "../tools/result-metadata.js";
 
 function toolResultMessage(
   callId: string,
   result: ToolDispatchResult,
 ): LLMMessage {
-  return {
+  const message: LLMMessage = {
     role: "tool",
     toolCallId: callId,
     content: toolResultContent(result),
   };
+  const failureKind = recoverableFailureKind(result.metadata);
+  if (failureKind !== null) {
+    message.runtimeOnly = {
+      recoverableToolFailure: {
+        hiddenFromTranscript: true,
+        kind: failureKind,
+      },
+    };
+  }
+  return message;
 }
 
 function toolResultContent(result: ToolDispatchResult): LLMMessage["content"] {
@@ -436,10 +449,8 @@ export async function executeTools(
   const assistantToolCalls = assistant?.toolCalls ?? [];
   const batch = validateToolCallsForDispatch(assistantToolCalls, session);
   const validCallIds = new Set(batch.valid.map((c) => c.id));
-  const filteredToolCalls = assistantToolCalls.filter((c) =>
-    validCallIds.has(c.id),
-  );
-  if (filteredToolCalls.length === 0 && state.streamingToolExecutor === null) {
+  const normalizedToolCalls = batch.valid.filter((c) => validCallIds.has(c.id));
+  if (normalizedToolCalls.length === 0 && state.streamingToolExecutor === null) {
     // All calls malformed — nothing to dispatch. Return so post-
     // sample recovery / continuation can route via the normal
     // `needsFollowUp` flow.
@@ -459,7 +470,7 @@ export async function executeTools(
     state.toolUseBlocks.map((block) => [block.id, block] as const),
   );
 
-  for (const call of filteredToolCalls) {
+  for (const call of normalizedToolCalls) {
     const block = toolBlocksById.get(call.id);
     if (!block) continue;
 

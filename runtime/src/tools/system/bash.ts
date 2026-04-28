@@ -33,6 +33,7 @@ import {
 import { silentLogger } from "../../utils/logger.js";
 import type { Logger } from "../../utils/logger.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
+import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -95,11 +96,18 @@ const SHELL_PREFIX_COMMANDS = new Set([
 ]);
 const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=.*/;
 
-function errorResult(message: string): ToolResult {
+function errorResult(
+  message: string,
+  metadata?: Readonly<Record<string, unknown>>,
+): ToolResult {
   // Plain-text content; structured fields (none here) absent. Mirrors
   // AgenC's `tool_result` shape — errors are strings the model can
   // read directly without an extra JSON.parse hop.
-  return { content: message, isError: true };
+  return {
+    content: message,
+    isError: true,
+    ...(metadata !== undefined ? { metadata } : {}),
+  };
 }
 
 function toText(value: unknown): string {
@@ -970,7 +978,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
           workspaceWriteDecision.message ??
           "Shell workspace write policy blocked the command.";
         logger.warn(`Bash tool shell write denied: ${rejectionMessage}`);
-        return errorResult(rejectionMessage);
+        return errorResult(
+          rejectionMessage,
+          buildRecoverableToolFailureMetadata("shell_workspace_write_policy"),
+        );
       }
 
       const cwdValidationError = validateWorkingDirectory(cwd);

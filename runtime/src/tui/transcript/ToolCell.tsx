@@ -25,6 +25,10 @@ import {
   renderToolPresentation,
   type ToolRenderTone,
 } from "./tool-renderers.js";
+import {
+  compactRecoverableToolFailureMessage,
+  recoverableFailureKind,
+} from "../../tools/result-metadata.js";
 
 type ToolFamily =
   | "read"
@@ -708,8 +712,15 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     [progress],
   );
   const shellWriteBlock = useMemo(
-    () => summarizeShellWriteBlock(result),
-    [result],
+    () =>
+      recoverableFailureKind(metadata) === "shell_workspace_write_policy"
+        ? null
+        : summarizeShellWriteBlock(result),
+    [metadata, result],
+  );
+  const recoverableFailureDetail = useMemo(
+    () => compactRecoverableToolFailureMessage(metadata),
+    [metadata],
   );
   const fileMutationSummary = useMemo(
     () => readFileMutationSummary(metadata),
@@ -765,7 +776,9 @@ export const ToolCell: React.FC<ToolCellProps> = ({
     shellWriteBlock !== null,
   );
   let detail = "";
-  if (shellWriteBlock) {
+  if (recoverableFailureDetail !== null) {
+    detail = recoverableFailureDetail;
+  } else if (shellWriteBlock) {
     detail = shellWriteBlock.detail;
   } else if (isError && normalizedResult.length > 0) {
     detail = compactToolErrorResult(presentation.family, normalizedResult);

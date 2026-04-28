@@ -71,6 +71,7 @@ import {
   applyToolResultReplacementsToMessages,
 } from "./_deps/tool-result-storage.js";
 import { recordContentReplacement } from "./_deps/session-storage.js";
+import { compactRecoverableToolFailureMessage } from "../tools/result-metadata.js";
 
 /**
  * Dynamic loader for the compact/ subsystem. Each compact stage is
@@ -155,6 +156,43 @@ function getMessagesAfterCompactBoundary(
     }
   }
   return messages.map((x) => ({ ...x }));
+}
+
+function isHiddenRecoverableToolMessage(message: LLMMessage): boolean {
+  return (
+    message.role === "tool" &&
+    message.runtimeOnly?.recoverableToolFailure?.hiddenFromTranscript === true
+  );
+}
+
+function compactHiddenRecoverableToolMessage(message: LLMMessage): LLMMessage {
+  const compact = compactRecoverableToolFailureMessage({
+    recoverable: true,
+    hiddenFromTranscript: true,
+    kind: message.runtimeOnly?.recoverableToolFailure?.kind,
+  });
+  if (!compact) return message;
+  return { ...message, content: compact };
+}
+
+export function summarizeOlderHiddenRecoverableToolFailures(
+  messages: ReadonlyArray<LLMMessage>,
+): LLMMessage[] {
+  let firstProtectedTailTool = messages.length;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role !== "tool") break;
+    firstProtectedTailTool = i;
+  }
+
+  let changed = false;
+  const next = messages.map((message, index) => {
+    if (index >= firstProtectedTailTool || !isHiddenRecoverableToolMessage(message)) {
+      return message;
+    }
+    changed = true;
+    return compactHiddenRecoverableToolMessage(message);
+  });
+  return changed ? next : [...messages];
 }
 
 interface AutoCompactModule {
@@ -286,6 +324,7 @@ export async function prepareContext(
 
   // Stage 1: compact-boundary projection (AgenC query.ts:369).
   let messagesForQuery = getMessagesAfterCompactBoundary(state.messages);
+  messagesForQuery = summarizeOlderHiddenRecoverableToolFailures(messagesForQuery);
 
   // Stages 2-7: compaction pipeline. Stages 3/4/6 dynamically import
   // into `runtime/src/llm/compact/**` via `safeCompactImport` so

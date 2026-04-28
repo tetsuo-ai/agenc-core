@@ -48,6 +48,66 @@ describe("validateToolCallDetailed", () => {
     });
   });
 
+  test("normalizes plain string exec_command arguments into the cmd field", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2c",
+      name: "exec_command",
+      arguments: "pwd",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2c",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
+  });
+
+  test("preserves valid structured exec_command arguments unchanged", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2d",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2d",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
+  });
+
+  test("keeps malformed object-like exec_command arguments as empty structured input", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2e",
+      name: "exec_command",
+      arguments: '{cd: "/tmp"}',
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2e",
+      name: "exec_command",
+      arguments: JSON.stringify({}),
+    });
+  });
+
+  test("does not repair object-shaped bad exec_command args into shell commands", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2f",
+      name: "exec_command",
+      arguments: JSON.stringify({ cd: "/tmp" }),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2f",
+      name: "exec_command",
+      arguments: JSON.stringify({ cd: "/tmp" }),
+    });
+  });
+
   test("keeps malformed structured file arguments from being rewrapped as a fake path", () => {
     const result = validateToolCallDetailed({
       id: "call-3",

@@ -10,6 +10,7 @@ import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
+import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
 
 export interface WriteStdinToolConfig {
   readonly cwd?: string;
@@ -123,6 +124,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
                 "Shell workspace write policy blocked the input.",
             }),
             isError: true,
+            metadata: buildRecoverableToolFailureMetadata(
+              "shell_workspace_write_policy",
+            ),
           };
         }
       }

@@ -690,6 +690,11 @@ describe("runToolUse — schema validation integration", () => {
     expect(out.content).toContain("InputValidationError");
     expect(out.content).toContain("required parameter");
     expect(out.content).toContain("name");
+    expect(out.metadata).toMatchObject({
+      recoverable: true,
+      hiddenFromTranscript: true,
+      kind: "input_validation",
+    });
     const err = events.find((e) => e.type === "error" && e.payload.cause === "schema_validation_failed");
     expect(err).toBeDefined();
   });

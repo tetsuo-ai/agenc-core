@@ -75,6 +75,11 @@ import type {
   PostToolUseHook,
   PreToolUseHook,
 } from "./hooks.js";
+import {
+  getPlan,
+  getPlanFilePath,
+  type PlanFileContext,
+} from "../planning/plan-files.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -142,6 +147,7 @@ export interface LiveToolDispatchOptions {
   readonly permissionContext?: ToolEvaluatorContext | null;
   readonly modeChangeRegistry?: PermissionModeRegistry;
   readonly discoveredToolNames?: ReadonlySet<string>;
+  readonly agencHome?: string;
   readonly onProgress?: ToolProgressCallback;
   readonly onHookError?: (
     phase: "pre" | "post" | "failure",
@@ -503,14 +509,23 @@ export class ToolRouter {
       payload: routed.payload,
       source: opts.source ?? "direct",
     };
+    const rawArgs = rawPayloadArguments(routed.payload);
+    const parsedArgs = parseToolArgsWithBigInt(rawArgs) ?? {};
+    const approvalArgs = withPlanApprovalPreview(
+      toolCall.name,
+      parsedArgs,
+      opts,
+    );
+    const approvalInvocation: ToolInvocation = {
+      ...invocation,
+      payload: buildPayloadForArgs(routed.payload, approvalArgs),
+    };
     const approvalCtx: ApprovalCtx = {
-      invocation,
+      invocation: approvalInvocation,
       callId: toolCall.id,
       toolName: toolCall.name,
       turnId: opts.turn.subId,
     };
-    const rawArgs = rawPayloadArguments(routed.payload);
-    const parsedArgs = parseToolArgsWithBigInt(rawArgs) ?? {};
 
     const toolAbortController = new AbortController();
     const forwardAbort = (): void => {
@@ -559,7 +574,7 @@ export class ToolRouter {
         approvalPolicy: opts.approvalPolicy,
         sandboxMode: opts.sandboxMode,
         payload: routed.payload,
-        approvalArgs: parsedArgs,
+        approvalArgs,
         ...(opts.granular !== undefined ? { granular: opts.granular } : {}),
         ...(opts.permissionHooks !== undefined
           ? { permissionHooks: opts.permissionHooks }
@@ -631,6 +646,62 @@ function rawPayloadArguments(payload: ToolPayload): string {
   }
 }
 
+function buildPayloadForArgs(
+  payload: ToolPayload,
+  args: Record<string, unknown>,
+): ToolPayload {
+  const serialized = JSON.stringify(args);
+  switch (payload.kind) {
+    case "function":
+      return { kind: "function", arguments: serialized };
+    case "mcp":
+      return {
+        kind: "mcp",
+        server: payload.server,
+        tool: payload.tool,
+        rawArguments: serialized,
+      };
+    case "custom":
+    case "tool_search":
+    case "local_shell":
+      return payload;
+  }
+}
+
+function planFileContextForApproval(
+  options: Pick<LiveToolDispatchOptions, "agencHome" | "session">,
+): PlanFileContext {
+  return {
+    ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+    ...(typeof options.session.conversationId === "string" &&
+    options.session.conversationId.length > 0
+      ? { sessionId: options.session.conversationId }
+      : {}),
+  };
+}
+
+function withPlanApprovalPreview(
+  toolName: string,
+  args: Record<string, unknown>,
+  options: Pick<LiveToolDispatchOptions, "agencHome" | "session">,
+): Record<string, unknown> {
+  if (toolName !== "ExitPlanMode") return args;
+
+  const currentPlan =
+    typeof args["plan"] === "string" && args["plan"].trim().length > 0
+      ? args["plan"]
+      : getPlan(planFileContextForApproval(options));
+  if (typeof currentPlan !== "string" || currentPlan.trim().length === 0) {
+    return args;
+  }
+
+  return {
+    ...args,
+    plan: currentPlan,
+    planFilePath: getPlanFilePath(planFileContextForApproval(options)),
+  };
+}
+
 function rawDispatchOptions(
   rawArgs: string,
   opts: LiveToolDispatchOptions & {
@@ -663,7 +734,7 @@ function rawDispatchOptions(
     ...(opts.discoveredToolNames !== undefined
       ? { discoveredToolNames: opts.discoveredToolNames }
       : {}),
-    ...(opts.approvalResolver !== undefined
+    ...(opts.approvalResolver !== undefined && opts.canUseTool !== undefined
       ? {
           requestApproval: approvalRequestFromResolver(
             opts.invocation,
