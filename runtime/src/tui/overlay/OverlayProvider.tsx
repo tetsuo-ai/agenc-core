@@ -110,3 +110,24 @@ export function useOverlayStack(): OverlayContextValue {
   }
   return ctx;
 }
+
+/**
+ * Reactive check for whether any modal overlay is currently mounted.
+ * Composer/text-input surfaces use this to suppress focus while a
+ * modal is on screen so typing doesn't bleed past the dialog.
+ *
+ * Mirrors upstream's `useIsModalOverlayActive()`. Upstream split out a
+ * non-modal kind for `autocomplete`; AgenC's overlay stack only hosts
+ * modal entries today, so any non-empty stack is modal. When AgenC
+ * grows non-modal overlays, add a `kind` field to {@link OverlayEntry}
+ * and gate this check on it.
+ *
+ * Returns `false` when called outside an {@link OverlayProvider} so
+ * surfaces that may render before the provider is mounted (or in
+ * focused unit tests) don't blow up.
+ */
+export function useIsModalOverlayActive(): boolean {
+  const ctx = useContext(OverlayContext);
+  if (ctx === null) return false;
+  return ctx.overlays.length > 0;
+}
