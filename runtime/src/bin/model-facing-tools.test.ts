@@ -282,6 +282,60 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("TaskCreate auto-expands the tasks panel via the appStateBridge", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-tool-home-"));
+    try {
+      const expansions: Array<"none" | "tasks"> = [];
+      const session = {
+        appStateBridge: {
+          setExpandedView: (next: "none" | "tasks") => expansions.push(next),
+        },
+      } as unknown as Session;
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        agencHome: home,
+        getSession: () => session,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+      await byName.get("TaskCreate")!.execute({ subject: "auto-expand" });
+      expect(expansions).toEqual(["tasks"]);
+
+      // TaskUpdate must NOT auto-expand (only create does).
+      const task = JSON.parse(
+        (
+          await byName.get("TaskCreate")!.execute({ subject: "second" })
+        ).content,
+      ).task as { id: string };
+      expansions.length = 0;
+      await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        status: "in_progress",
+      });
+      expect(expansions).toEqual([]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("TaskCreate is a no-op for the bridge when the TUI is not mounted", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-tool-home-"));
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        agencHome: home,
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName
+        .get("TaskCreate")!
+        .execute({ subject: "no-tui" });
+      expect(result.isError).toBeUndefined();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("lists and reads MCP resources through the live session manager", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),

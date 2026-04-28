@@ -343,6 +343,25 @@ function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
   return session;
 }
 
+// Auto-expand the sticky tasks panel when a task is created. Uses the
+// session-side `appStateBridge` (published by `tui/state/AppState.tsx`)
+// so non-React callers don't need to import the React state setters.
+// No-op if the TUI is not mounted (CLI / one-shot mode).
+function tryAutoExpandTaskPanel(opts: ModelFacingToolOptions): void {
+  try {
+    const session = opts.getSession();
+    if (!session) return;
+    const bridge = (
+      session as unknown as {
+        appStateBridge?: { setExpandedView?: (next: "none" | "tasks") => void };
+      }
+    ).appStateBridge;
+    bridge?.setExpandedView?.("tasks");
+  } catch {
+    // Bridge access must never break a tool call.
+  }
+}
+
 function promptFromAgentArgs(args: Record<string, unknown>): string | undefined {
   const direct =
     stringValue(args.message) ??
@@ -2011,6 +2030,7 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
           ...(owner !== undefined ? { owner } : {}),
           ...(metadata !== undefined ? { metadata } : {}),
         });
+        tryAutoExpandTaskPanel(opts);
         return json({ task: publicTask(task) });
       },
     },

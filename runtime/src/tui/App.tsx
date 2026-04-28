@@ -70,6 +70,8 @@ import {
 } from "./keybindings/loadUserBindings.js";
 import { getDisplayForCommand } from "./keybindings/shortcutFormat.js";
 import { OverlayProvider, useOverlayStack } from "./overlay/OverlayProvider.js";
+import { TasksPanel } from "./components/TasksPanel.js";
+import type { TaskStoreOptions } from "../bin/task-store.js";
 import {
   DEFAULT_STATUS_LINE_ITEMS,
   StatusLineConfig,
@@ -306,6 +308,7 @@ function TUIRoot({
     permissionQueueOps,
     setStreaming,
     model: liveModel,
+    expandedView,
   } =
     useAgenCAppState();
   // The AppState-side `SessionLike` is intentionally permissive (every
@@ -339,6 +342,25 @@ function TUIRoot({
   );
 
   const tuiConfigView = useTuiConfigView(configStore);
+
+  // Source of truth for the per-project task store. `agencHome` falls
+  // through to `homedir() + "/.agenc"` inside the store when undefined;
+  // the TUI only needs to pin it explicitly when tests or non-default
+  // configs override it.
+  const taskStoreOptions = useMemo<TaskStoreOptions>(() => {
+    const cwd =
+      typeof session.cwd === "string" && session.cwd.length > 0
+        ? session.cwd
+        : process.cwd();
+    const explicitAgencHome = (
+      session as unknown as {
+        sessionConfiguration?: { agencHome?: string };
+      }
+    ).sessionConfiguration?.agencHome;
+    return explicitAgencHome !== undefined
+      ? { workspaceRoot: cwd, agencHome: explicitAgencHome }
+      : { workspaceRoot: cwd };
+  }, [session]);
   const statusLineItems =
     tuiConfigView.statusLineItems ?? DEFAULT_STATUS_LINE_ITEMS;
   const composerAttachmentsConfig = tuiConfigView.composerAttachmentsConfig;
@@ -650,6 +672,13 @@ function TUIRoot({
           />
         ) : null}
       </Box>
+
+      {/* sticky tasks panel — auto-expanded by TaskCreate, collapsed
+          on demand via setExpandedView('none'). Sits between the
+          transcript and any overlay/composer so it stays anchored. */}
+      {expandedView === "tasks" ? (
+        <TasksPanel storeOptions={taskStoreOptions} />
+      ) : null}
 
       {/* overlay stack rendered above the composer so modals stay inside
           the visible viewport while the transcript flexes around them. */}

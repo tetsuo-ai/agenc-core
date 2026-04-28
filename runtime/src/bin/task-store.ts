@@ -95,10 +95,24 @@ const LOCK_OPTIONS = {
 const tasksUpdated = createSignal();
 export const onTasksUpdated = tasksUpdated.subscribe;
 
+// Fires on create only. Separate from `onTasksUpdated` so consumers
+// (e.g. the TUI auto-expand on the task panel) can react to task
+// creation without flapping on every status edit.
+const taskCreated = createSignal<[StoredTask]>();
+export const onTaskCreated = taskCreated.subscribe;
+
 function notifyTasksUpdated(): void {
   // Listener errors must not propagate to the mutation caller.
   try {
     tasksUpdated.emit();
+  } catch {
+    // Swallow listener errors.
+  }
+}
+
+function notifyTaskCreated(task: StoredTask): void {
+  try {
+    taskCreated.emit(task);
   } catch {
     // Swallow listener errors.
   }
@@ -297,6 +311,7 @@ export async function createNew(
     await writeHighWaterMark(opts, next);
     return created;
   });
+  notifyTaskCreated(task);
   notifyTasksUpdated();
   return task;
 }

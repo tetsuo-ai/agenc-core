@@ -296,4 +296,38 @@ describe("AgenCAppStateProvider", () => {
     });
     unmount();
   });
+
+  test("exposes expandedView default and bridges setExpandedView onto the session", async () => {
+    const session = createFakeSession() as SessionLike & {
+      appStateBridge?: {
+        setModel?: (next: string) => void;
+        setExpandedView?: (next: "none" | "tasks") => void;
+      };
+    };
+    const snapshots: Array<"none" | "tasks"> = [];
+
+    function Consumer(): null {
+      const { expandedView } = useAgenCAppState();
+      snapshots.push(expandedView);
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    expect(snapshots[0]).toBe("none");
+    expect(session.appStateBridge?.setExpandedView).toBeDefined();
+
+    session.appStateBridge?.setExpandedView?.("tasks");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(snapshots).toContain("tasks");
+
+    session.appStateBridge?.setExpandedView?.("none");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(snapshots[snapshots.length - 1]).toBe("none");
+    unmount();
+  });
 });
