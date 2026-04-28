@@ -717,14 +717,21 @@ export const ToolCell: React.FC<ToolCellProps> = ({
   );
   const diffDetailLines = useMemo(
     () =>
-      shellWriteBlock === null && !isError
+      shellWriteBlock === null && !isError && isComplete
         ? resultDiffLines(
             normalizedResult.length > 0
               ? normalizedResult
               : diffFromEditArgs(presentation.family, toolArgs),
           )
         : [],
-    [isError, normalizedResult, presentation.family, shellWriteBlock, toolArgs],
+    [
+      isComplete,
+      isError,
+      normalizedResult,
+      presentation.family,
+      shellWriteBlock,
+      toolArgs,
+    ],
   );
   const highlightedReadFilePath = readFilePathForHighlight(
     presentation.family,

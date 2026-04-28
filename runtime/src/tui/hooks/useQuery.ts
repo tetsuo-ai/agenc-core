@@ -77,6 +77,7 @@ interface QueryState {
   currentTurnId: string | null;
   seenEventKeys: Set<string>;
   lastEventSeq: number;
+  eventCharCost: number;
 }
 
 const MAX_BUFFERED_TRANSCRIPT_EVENTS = 2_500;
@@ -237,18 +238,17 @@ function isPruneBoundaryEvent(event: TranscriptSourceEvent): boolean {
 
 function pruneBufferedTranscriptEvents(
   events: readonly TranscriptSourceEvent[],
+  charCost: number,
 ): {
   readonly events: TranscriptSourceEvent[];
+  readonly charCost: number;
   readonly rebuiltSeenKeys: boolean;
 } {
-  if (events.length <= MAX_BUFFERED_TRANSCRIPT_EVENTS) {
-    const totalChars = events.reduce(
-      (sum, event) => sum + eventStringCost(event),
-      0,
-    );
-    if (totalChars <= MAX_BUFFERED_TRANSCRIPT_CHARS) {
-      return { events: [...events], rebuiltSeenKeys: false };
-    }
+  if (
+    events.length <= MAX_BUFFERED_TRANSCRIPT_EVENTS &&
+    charCost <= MAX_BUFFERED_TRANSCRIPT_CHARS
+  ) {
+    return { events: [...events], charCost, rebuiltSeenKeys: false };
   }
 
   let startIndex = Math.max(0, events.length - TARGET_BUFFERED_TRANSCRIPT_EVENTS);
@@ -272,10 +272,15 @@ function pruneBufferedTranscriptEvents(
   }
 
   if (startIndex <= 0) {
-    return { events: [...events], rebuiltSeenKeys: false };
+    return { events: [...events], charCost, rebuiltSeenKeys: false };
   }
+  const retainedEvents = events.slice(startIndex);
   return {
-    events: events.slice(startIndex),
+    events: retainedEvents,
+    charCost: retainedEvents.reduce(
+      (sum, event) => sum + eventStringCost(event),
+      0,
+    ),
     rebuiltSeenKeys: true,
   };
 }
@@ -338,22 +343,34 @@ function sameProgressSlot(
 function bufferTranscriptEvent(
   events: readonly TranscriptSourceEvent[],
   rawEvent: TranscriptSourceEvent,
+  charCost: number,
 ): {
   readonly events: TranscriptSourceEvent[];
+  readonly charCost: number;
   readonly rebuiltSeenKeys: boolean;
 } {
   const event = sanitizeTranscriptEventForTui(rawEvent);
+  const eventCost = eventStringCost(event);
   if (isCompactBoundaryEvent(event)) {
     const previousBoundary = findLastCompactBoundaryIndex(events);
     const retained =
       previousBoundary >= 0 ? events.slice(previousBoundary + 1) : [...events];
+    const retainedCharCost =
+      previousBoundary >= 0
+        ? retained.reduce((sum, entry) => sum + eventStringCost(entry), 0)
+        : charCost;
     const compacted = {
       events: [...retained, event],
+      charCost: retainedCharCost + eventCost,
       rebuiltSeenKeys: previousBoundary >= 0,
     };
-    const pruned = pruneBufferedTranscriptEvents(compacted.events);
+    const pruned = pruneBufferedTranscriptEvents(
+      compacted.events,
+      compacted.charCost,
+    );
     return {
       events: pruned.events,
+      charCost: pruned.charCost,
       rebuiltSeenKeys: compacted.rebuiltSeenKeys || pruned.rebuiltSeenKeys,
     };
   }
@@ -364,26 +381,42 @@ function bufferTranscriptEvent(
     isAgentMessageDeltaEvent(last) &&
     isAgentMessageDeltaEvent(event)
   ) {
+    const previousCost = eventStringCost(last);
+    const nextEvent = {
+      ...event,
+      payload: {
+        delta: appendBoundedTranscriptText(
+          last.payload.delta,
+          event.payload.delta,
+        ),
+      },
+    };
     const coalesced = [
       ...events.slice(0, -1),
-      {
-        ...event,
-        payload: {
-          delta: appendBoundedTranscriptText(
-            last.payload.delta,
-            event.payload.delta,
-          ),
-        },
-      },
+      nextEvent,
     ];
-    const pruned = pruneBufferedTranscriptEvents(coalesced);
-    return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
+    const pruned = pruneBufferedTranscriptEvents(
+      coalesced,
+      charCost - previousCost + eventStringCost(nextEvent),
+    );
+    return {
+      events: pruned.events,
+      charCost: pruned.charCost,
+      rebuiltSeenKeys: pruned.rebuiltSeenKeys,
+    };
   }
 
   if (last && isAgentMessageDeltaEvent(last) && isAgentMessageEvent(event)) {
     const replaced = [...events.slice(0, -1), event];
-    const pruned = pruneBufferedTranscriptEvents(replaced);
-    return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
+    const pruned = pruneBufferedTranscriptEvents(
+      replaced,
+      charCost - eventStringCost(last) + eventCost,
+    );
+    return {
+      events: pruned.events,
+      charCost: pruned.charCost,
+      rebuiltSeenKeys: pruned.rebuiltSeenKeys,
+    };
   }
 
   if (
@@ -397,33 +430,47 @@ function bufferTranscriptEvent(
       stream === "stdout" || stream === "stderr"
         ? appendBoundedTranscriptText(last.payload.chunk, event.payload.chunk)
         : event.payload.chunk;
+    const nextEvent = {
+      ...event,
+      payload: {
+        ...event.payload,
+        chunk,
+      },
+    };
     const coalesced = [
       ...events.slice(0, -1),
-      {
-        ...event,
-        payload: {
-          ...event.payload,
-          chunk,
-        },
-      },
+      nextEvent,
     ];
-    const pruned = pruneBufferedTranscriptEvents(coalesced);
-    return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
+    const pruned = pruneBufferedTranscriptEvents(
+      coalesced,
+      charCost - eventStringCost(last) + eventStringCost(nextEvent),
+    );
+    return {
+      events: pruned.events,
+      charCost: pruned.charCost,
+      rebuiltSeenKeys: pruned.rebuiltSeenKeys,
+    };
   }
 
   const appended = [...events, event];
-  const pruned = pruneBufferedTranscriptEvents(appended);
-  return { events: pruned.events, rebuiltSeenKeys: pruned.rebuiltSeenKeys };
+  const pruned = pruneBufferedTranscriptEvents(appended, charCost + eventCost);
+  return {
+    events: pruned.events,
+    charCost: pruned.charCost,
+    rebuiltSeenKeys: pruned.rebuiltSeenKeys,
+  };
 }
 
 function buildEventIndex(events: readonly TranscriptSourceEvent[]): {
   readonly events: TranscriptSourceEvent[];
   readonly seenEventKeys: Set<string>;
   readonly lastEventSeq: number;
+  readonly eventCharCost: number;
 } {
   const dedupeKeys = new Set<string>();
   let buffered: TranscriptSourceEvent[] = [];
   let lastEventSeq = 0;
+  let eventCharCost = 0;
   for (const rawEvent of events) {
     const event = sanitizeTranscriptEventForTui(rawEvent);
     const seq = transcriptEventSeq(event);
@@ -440,12 +487,15 @@ function buildEventIndex(events: readonly TranscriptSourceEvent[]): {
     if (seq !== null) {
       lastEventSeq = Math.max(lastEventSeq, seq);
     }
-    buffered = bufferTranscriptEvent(buffered, event).events;
+    const next = bufferTranscriptEvent(buffered, event, eventCharCost);
+    buffered = next.events;
+    eventCharCost = next.charCost;
   }
   return {
     events: buffered,
     seenEventKeys: rebuildSeenEventKeys(buffered),
     lastEventSeq,
+    eventCharCost,
   };
 }
 
@@ -489,6 +539,7 @@ function createInitialState(
     currentTurnId: liveTurnId ?? currentTurnId,
     seenEventKeys: indexed.seenEventKeys,
     lastEventSeq: indexed.lastEventSeq,
+    eventCharCost: indexed.eventCharCost,
   };
 }
 
@@ -526,7 +577,11 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
       if (eventKey !== null && state.seenEventKeys.has(eventKey)) {
         return state;
       }
-      const buffered = bufferTranscriptEvent(state.events, event);
+      const buffered = bufferTranscriptEvent(
+        state.events,
+        event,
+        state.eventCharCost,
+      );
       const nextSeenEventKeys = buffered.rebuiltSeenKeys
         ? rebuildSeenEventKeys(buffered.events)
         : new Set(state.seenEventKeys);
@@ -542,6 +597,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
           currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
           seenEventKeys: nextSeenEventKeys,
           lastEventSeq: nextLastEventSeq,
+          eventCharCost: buffered.charCost,
         };
       }
       if (event.type === "turn_complete" || event.type === "turn_aborted") {
@@ -551,6 +607,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
           currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
           seenEventKeys: nextSeenEventKeys,
           lastEventSeq: nextLastEventSeq,
+          eventCharCost: buffered.charCost,
         };
       }
       return {
@@ -559,6 +616,7 @@ function reducer(state: QueryState, action: QueryAction): QueryState {
         currentTurnId: reduceCurrentTurnId(state.currentTurnId, event),
         seenEventKeys: nextSeenEventKeys,
         lastEventSeq: nextLastEventSeq,
+        eventCharCost: buffered.charCost,
       };
     }
     default:
