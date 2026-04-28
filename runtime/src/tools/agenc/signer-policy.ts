@@ -1,5 +1,6 @@
 import type { PublicKey } from "@solana/web3.js";
 
+import type { MarketplaceTransactionIntent } from "../../task/transaction-intent.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import type { Logger } from "../../utils/logger.js";
@@ -18,6 +19,8 @@ export interface MarketplaceSignerPolicy {
   readonly allowedTemplateIds?: readonly string[];
   /** Restrict task creation/claim paths to specific job spec hashes. */
   readonly allowedJobSpecHashes?: readonly string[];
+  /** Restrict private ZK settlement paths to specific circuit/constraint hashes. */
+  readonly allowedConstraintHashes?: readonly string[];
   /** Max task reward/rewardLamports accepted by local signer policy. */
   readonly maxRewardLamports?: string;
   /** Max stake/delegation/purchase amount accepted by local signer policy. */
@@ -26,9 +29,19 @@ export interface MarketplaceSignerPolicy {
    * Reward mint allowlist. Use "SOL" for native SOL / omitted rewardMint.
    */
   readonly allowedRewardMints?: readonly string[];
+  /**
+   * Optional exact account-meta expectations for intent previews. This lets a
+   * signer boundary reject a preview whose PDA set was mutated before signing.
+   */
+  readonly expectedAccountMetas?: readonly {
+    readonly name: string;
+    readonly pubkey?: string;
+    readonly isSigner?: boolean;
+    readonly isWritable?: boolean;
+  }[];
 }
 
-interface MarketplaceSignerPolicyEvaluation {
+export interface MarketplaceSignerPolicyEvaluation {
   readonly allowed: boolean;
   readonly code?: string;
   readonly reason?: string;
@@ -150,6 +163,21 @@ function evaluateMarketplaceSignerPolicy(params: {
     };
   }
 
+  const allowedConstraintHashes = normalizeList(params.policy.allowedConstraintHashes);
+  const constraintHash = readString(params.args, ["constraintHash"]);
+  if (
+    allowedConstraintHashes.size > 0 &&
+    constraintHash &&
+    !allowedConstraintHashes.has(constraintHash)
+  ) {
+    return {
+      allowed: false,
+      code: "CONSTRAINT_HASH_NOT_ALLOWED",
+      reason: `Constraint hash ${constraintHash} is not allowed by marketplace signer policy`,
+      metadata: { constraintHash },
+    };
+  }
+
   const reward = readBigInt(params.args, ["reward", "rewardLamports"]);
   const maxReward = parseLimit(params.policy.maxRewardLamports, "maxRewardLamports");
   if (reward !== null && maxReward !== null && reward > maxReward) {
@@ -196,6 +224,96 @@ function evaluateMarketplaceSignerPolicy(params: {
       signer: params.signer?.toBase58() ?? null,
     },
   };
+}
+
+function toolNameForIntent(kind: MarketplaceTransactionIntent["kind"]): string {
+  switch (kind) {
+    case "create_task":
+      return "agenc.createTask";
+    case "claim_task":
+    case "claim_task_with_job_spec":
+      return "agenc.claimTask";
+    case "complete_task":
+    case "complete_task_private":
+    case "submit_task_result":
+      return "agenc.completeTask";
+  }
+}
+
+export function evaluateMarketplaceSignerPolicyForIntent(
+  policy: MarketplaceSignerPolicy,
+  intent: MarketplaceTransactionIntent,
+): MarketplaceSignerPolicyEvaluation {
+  const programId = { toBase58: () => intent.programId } as PublicKey;
+  const signer = intent.signer
+    ? ({ toBase58: () => intent.signer } as PublicKey)
+    : null;
+  const baseDecision = evaluateMarketplaceSignerPolicy({
+    policy,
+    toolName: toolNameForIntent(intent.kind),
+    programId,
+    signer,
+    args: {
+      ...(intent.taskPda ? { taskPda: intent.taskPda } : {}),
+      ...(intent.jobSpecHash ? { jobSpecHash: intent.jobSpecHash } : {}),
+      ...(intent.constraintHash ? { constraintHash: intent.constraintHash } : {}),
+      ...(intent.rewardLamports ? { reward: intent.rewardLamports } : {}),
+      ...(intent.rewardMint ? { rewardMint: intent.rewardMint } : { rewardMint: "SOL" }),
+    },
+  });
+  if (!baseDecision.allowed) {
+    return baseDecision;
+  }
+
+  for (const expected of policy.expectedAccountMetas ?? []) {
+    const actual = intent.accountMetas.find(
+      (account) => account.name === expected.name,
+    );
+    if (!actual) {
+      return {
+        allowed: false,
+        code: "ACCOUNT_META_MISSING",
+        reason: `Required account meta ${expected.name} is missing from transaction intent`,
+        metadata: { accountName: expected.name },
+      };
+    }
+    if (expected.pubkey && actual.pubkey !== expected.pubkey) {
+      return {
+        allowed: false,
+        code: "ACCOUNT_META_PUBKEY_MISMATCH",
+        reason: `Account meta ${expected.name} pubkey does not match signer policy`,
+        metadata: {
+          accountName: expected.name,
+          expectedPubkey: expected.pubkey,
+          actualPubkey: actual.pubkey,
+        },
+      };
+    }
+    if (
+      expected.isSigner !== undefined &&
+      actual.isSigner !== expected.isSigner
+    ) {
+      return {
+        allowed: false,
+        code: "ACCOUNT_META_SIGNER_MISMATCH",
+        reason: `Account meta ${expected.name} signer flag does not match signer policy`,
+        metadata: { accountName: expected.name },
+      };
+    }
+    if (
+      expected.isWritable !== undefined &&
+      actual.isWritable !== expected.isWritable
+    ) {
+      return {
+        allowed: false,
+        code: "ACCOUNT_META_WRITABLE_MISMATCH",
+        reason: `Account meta ${expected.name} writable flag does not match signer policy`,
+        metadata: { accountName: expected.name },
+      };
+    }
+  }
+
+  return baseDecision;
 }
 
 export function wrapMarketplaceSignerPolicy(

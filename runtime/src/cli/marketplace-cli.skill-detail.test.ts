@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 
 const { parseAgentState, serializeMarketplaceSkill, isPurchased } = vi.hoisted(
   () => ({
@@ -43,6 +43,7 @@ vi.mock("../skills/registry/payment.js", () => ({
 
 import {
   resetMarketplaceCliProgramContextOverrides,
+  runMarketTaskCreateCommand,
   runMarketSkillDetailCommand,
   setMarketplaceCliProgramContextOverrides,
 } from "./marketplace-cli.js";
@@ -103,6 +104,7 @@ describe("runMarketSkillDetailCommand", () => {
 
   afterEach(() => {
     resetMarketplaceCliProgramContextOverrides();
+    vi.unstubAllEnvs();
   });
 
   it("returns bare skill detail when signer context is unavailable", async () => {
@@ -191,6 +193,97 @@ describe("runMarketSkillDetailCommand", () => {
         status: "error",
         code: "MARKET_SKILL_DETAIL_FAILED",
         message: "429 Too Many Requests",
+      }),
+    );
+  });
+});
+
+describe("marketplace CLI signer policy", () => {
+  afterEach(() => {
+    resetMarketplaceCliProgramContextOverrides();
+    vi.unstubAllEnvs();
+  });
+
+  it("denies task creation from AGENC_MARKETPLACE_SIGNER_POLICY before signing", async () => {
+    const signerAuthority = new PublicKey(
+      "5rUtdMbmkNsQ1wbVaKAkyWv16ZLzGka5CgWqQZRqxGcS",
+    );
+    setMarketplaceCliProgramContextOverrides({
+      async createSignerProgramContext() {
+        return {
+          connection: {} as never,
+          program: {
+            programId: new PublicKey(BASE_OPTIONS.programId),
+            provider: {
+              publicKey: signerAuthority,
+            },
+          } as never,
+        };
+      },
+    });
+    vi.stubEnv(
+      "AGENC_MARKETPLACE_SIGNER_POLICY",
+      JSON.stringify({ allowedTools: ["agenc.claimTask"] }),
+    );
+
+    const { context, output, error } = createContext();
+    const status = await runMarketTaskCreateCommand(context, {
+      ...BASE_OPTIONS,
+      description: "blocked signer policy task",
+      reward: "1000",
+      requiredCapabilities: "1",
+    });
+
+    expect(status).toBe(1);
+    expect(output).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        code: "MARKET_TASK_CREATE_FAILED",
+        message: expect.stringContaining("agenc.createTask is not allowed"),
+      }),
+    );
+  });
+
+  it("extracts jobSpec hash from CLI jobSpec input for signer policy", async () => {
+    const signerAuthority = Keypair.generate().publicKey;
+    setMarketplaceCliProgramContextOverrides({
+      async createSignerProgramContext() {
+        return {
+          connection: {} as never,
+          program: {
+            programId: new PublicKey(BASE_OPTIONS.programId),
+            provider: {
+              publicKey: signerAuthority,
+            },
+          } as never,
+        };
+      },
+    });
+    vi.stubEnv(
+      "AGENC_MARKETPLACE_SIGNER_POLICY",
+      JSON.stringify({
+        allowedTools: ["agenc.createTask"],
+        allowedJobSpecHashes: ["b".repeat(64)],
+      }),
+    );
+
+    const { context, output, error } = createContext();
+    const status = await runMarketTaskCreateCommand(context, {
+      ...BASE_OPTIONS,
+      description: "wrong job spec hash",
+      reward: "1000",
+      requiredCapabilities: "1",
+      jobSpec: JSON.stringify({ hash: "a".repeat(64), uri: "agenc://job-spec" }),
+    });
+
+    expect(status).toBe(1);
+    expect(output).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "error",
+        code: "MARKET_TASK_CREATE_FAILED",
+        message: expect.stringContaining("Job spec hash"),
       }),
     );
   });

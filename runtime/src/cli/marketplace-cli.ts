@@ -66,8 +66,12 @@ import {
   createStakeReputationTool,
   createVoteProposalTool,
 } from "../tools/agenc/mutation-tools.js";
+import {
+  wrapMarketplaceSignerPolicy,
+  type MarketplaceSignerPolicy,
+} from "../tools/agenc/signer-policy.js";
 import { createCreateTaskTool } from "../tools/agenc/tools.js";
-import type { ToolResult } from "../tools/types.js";
+import type { Tool, ToolResult } from "../tools/types.js";
 import { silentLogger } from "../utils/logger.js";
 import type { BaseCliOptions, CliRuntimeContext, CliStatusCode } from "./types.js";
 
@@ -278,6 +282,7 @@ const AGENT_ACCT_DISCRIMINATOR = Buffer.from([
 const AGENT_ID_OFFSET = 8;
 const AGENT_AUTHORITY_OFFSET = 40;
 const ZERO_AGENT_ID = new Uint8Array(32);
+const MARKETPLACE_SIGNER_POLICY_ENV = "AGENC_MARKETPLACE_SIGNER_POLICY";
 
 interface SignerAgentChoice {
   registered: true;
@@ -331,6 +336,78 @@ function parseToolPayload(result: ToolResult): unknown {
   } catch {
     return { raw: result.content };
   }
+}
+
+function readMarketplaceSignerPolicyFromEnv():
+  | MarketplaceSignerPolicy
+  | undefined {
+  const raw = process.env[MARKETPLACE_SIGNER_POLICY_ENV]?.trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${MARKETPLACE_SIGNER_POLICY_ENV} must be valid JSON: ${message}`,
+    );
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${MARKETPLACE_SIGNER_POLICY_ENV} must be a JSON object`);
+  }
+
+  return parsed as MarketplaceSignerPolicy;
+}
+
+function withMarketplaceSignerPolicy(
+  tool: Tool,
+  program: MarketProgram,
+): Tool {
+  return wrapMarketplaceSignerPolicy(tool, {
+    policy: readMarketplaceSignerPolicyFromEnv(),
+    programId: program.programId,
+    signer: program.provider.publicKey,
+    logger: silentLogger,
+  });
+}
+
+function extractJobSpecHashForPolicy(
+  jobSpec: unknown,
+  jobSpecUri?: string,
+): string | undefined {
+  const fromObject =
+    jobSpec && typeof jobSpec === "object" && !Array.isArray(jobSpec)
+      ? (jobSpec as Record<string, unknown>).hash
+      : undefined;
+  if (typeof fromObject === "string" && /^[a-f0-9]{64}$/i.test(fromObject)) {
+    return fromObject.toLowerCase();
+  }
+
+  if (typeof jobSpec === "string") {
+    try {
+      const parsed = JSON.parse(jobSpec) as unknown;
+      const fromParsed =
+        parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>).hash
+          : undefined;
+      if (
+        typeof fromParsed === "string" &&
+        /^[a-f0-9]{64}$/i.test(fromParsed)
+      ) {
+        return fromParsed.toLowerCase();
+      }
+    } catch {
+      // Non-JSON strings are still valid for the underlying tool; they just
+      // cannot satisfy a job-spec-hash allowlist at the signer boundary.
+    }
+  }
+
+  const uriMatch = jobSpecUri?.match(/sha256\/([a-f0-9]{64})(?:$|[/?#])/i);
+  return uriMatch?.[1]?.toLowerCase();
 }
 
 function requireRpcUrl(
@@ -1130,7 +1207,10 @@ export async function runMarketTaskCreateCommand(
       // this — see CreateTaskToolOptions.allowVerifiedAttestationFilePath.
       allowVerifiedAttestationFilePath: true,
     };
-    const tool = createCreateTaskTool(program, silentLogger, createTaskOptions);
+    const tool = withMarketplaceSignerPolicy(
+      createCreateTaskTool(program, silentLogger, createTaskOptions),
+      program,
+    );
     const result = await tool.execute({
       description: options.description,
       reward: options.reward,
@@ -1144,6 +1224,7 @@ export async function runMarketTaskCreateCommand(
       validationMode: options.validationMode,
       reviewWindowSecs: options.reviewWindowSecs,
       creatorAgentPda: options.creatorAgentPda,
+      jobSpecHash: extractJobSpecHashForPolicy(options.jobSpec, options.jobSpecUri),
       jobSpec: options.jobSpec,
       jobSpecUri: options.jobSpecUri,
       jobSpecPublishUri: options.jobSpecPublishUri,
@@ -1291,20 +1372,23 @@ export async function runMarketTaskClaimCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
-    const tool = createClaimTaskTool(
+    const tool = withMarketplaceSignerPolicy(
+      createClaimTaskTool(
+        program,
+        silentLogger,
+        {
+          ...(options.jobSpecStoreDir
+            ? {
+                jobSpecStoreDir: options.jobSpecStoreDir,
+              }
+            : {}),
+          ...(options.allowRemoteJobSpecResolution
+            ? { allowRemoteJobSpecResolution: true }
+            : {}),
+          claimJobSpecVerification: "required",
+        },
+      ),
       program,
-      silentLogger,
-      {
-        ...(options.jobSpecStoreDir
-          ? {
-              jobSpecStoreDir: options.jobSpecStoreDir,
-            }
-          : {}),
-        ...(options.allowRemoteJobSpecResolution
-          ? { allowRemoteJobSpecResolution: true }
-          : {}),
-        claimJobSpecVerification: "required",
-      },
     );
     const result = await tool.execute({
       taskPda: options.taskPda,
@@ -1347,7 +1431,10 @@ export async function runMarketTaskCompleteCommand(
       options.resultData?.trim() || "Task completed via agenc-runtime market";
     const proofHash =
       options.proofHash ?? createHash("sha256").update(resultData).digest("hex");
-    const tool = createCompleteTaskTool(program, silentLogger);
+    const tool = withMarketplaceSignerPolicy(
+      createCompleteTaskTool(program, silentLogger),
+      program,
+    );
     const result = await tool.execute({
       taskPda: options.taskPda,
       proofHash,
