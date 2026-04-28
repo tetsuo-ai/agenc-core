@@ -1026,4 +1026,60 @@ describe("eventsToMessages", () => {
       content: "no noise",
     });
   });
+
+  test("renders collab agent lifecycle events as compact meta rows", () => {
+    const messages = eventsToMessages([
+      { type: "turn_started", payload: { turnId: "turn-agent" } },
+      {
+        type: "collab_agent_spawn_begin",
+        payload: {
+          callId: "spawn-1",
+          senderThreadId: "root",
+          prompt: "go inspect the parser",
+          model: "model-a",
+        },
+      },
+      {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId: "spawn-1",
+          senderThreadId: "root",
+          newThreadId: "child-1",
+          newAgentNickname: "scout",
+          prompt: "go inspect the parser",
+          model: "model-a",
+          status: { status: "running", turnId: "t", startedAtMs: 1 },
+        },
+      },
+      {
+        type: "collab_waiting_begin",
+        payload: {
+          senderThreadId: "root",
+          receiverThreadIds: ["child-1"],
+          callId: "wait-1",
+        },
+      },
+      {
+        type: "collab_waiting_end",
+        payload: {
+          senderThreadId: "root",
+          callId: "wait-1",
+          statuses: {
+            "child-1": {
+              status: "completed",
+              turnId: "t",
+              endedAtMs: 2,
+              lastMessage: "done",
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(messages.map((message) => message.content)).toEqual([
+      "scout running",
+      "Waiting on 1 agent",
+      "Agent wait complete",
+    ]);
+  });
 });

@@ -54,6 +54,14 @@ type TranscriptEventMsg = Extract<
       | "error"
       | "stream_error"
       | "deprecation_notice"
+      | "collab_agent_spawn_begin"
+      | "collab_agent_spawn_end"
+      | "collab_agent_interaction_begin"
+      | "collab_agent_interaction_end"
+      | "collab_waiting_begin"
+      | "collab_waiting_end"
+      | "collab_close_begin"
+      | "collab_close_end"
       | "plan_started"
       | "plan_delta"
       | "plan_item_completed"
@@ -382,6 +390,23 @@ function formatDeprecation(
       ? ` -> ${payload.replacement}`
       : "";
   return `Deprecated ${payload.subject}${replacement}: ${payload.reason}`;
+}
+
+function agentStatusLabel(status: { readonly status: string }): string {
+  switch (status.status) {
+    case "completed":
+      return "completed";
+    case "errored":
+      return "failed";
+    case "shutdown":
+      return "closed";
+    case "interrupted":
+      return "interrupted";
+    case "running":
+      return "running";
+    default:
+      return status.status;
+  }
 }
 
 function formatSessionConfigured(
@@ -1230,6 +1255,105 @@ export function eventsToMessages(
           kind: "meta",
           label: "deprecated",
           content: formatDeprecation(event.payload),
+          timestamp,
+        });
+        break;
+      }
+      case "collab_agent_spawn_begin": {
+        if (options.includeHidden === true) {
+          messages.push({
+            id: event.id ?? `agent-spawn-begin-${event.payload.callId}`,
+            turnId: ensureTurnId(currentTurnId),
+            kind: "meta",
+            label: "agent",
+            content: `Starting agent: ${truncateTranscriptText(event.payload.prompt, 300)}`,
+            timestamp,
+          });
+        }
+        break;
+      }
+      case "collab_agent_spawn_end": {
+        const name =
+          event.payload.newAgentNickname ??
+          event.payload.newThreadId ??
+          "agent";
+        messages.push({
+          id: event.id ?? `agent-spawn-end-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind:
+            event.payload.status.status === "errored" ? "error" : "meta",
+          label: "agent",
+          content: `${name} ${agentStatusLabel(event.payload.status)}`,
+          timestamp,
+        });
+        break;
+      }
+      case "collab_agent_interaction_begin": {
+        if (options.includeHidden === true) {
+          messages.push({
+            id: event.id ?? `agent-interaction-begin-${event.payload.callId}`,
+            turnId: ensureTurnId(currentTurnId),
+            kind: "meta",
+            label: "agent",
+            content: `Message to ${event.payload.receiverThreadId}`,
+            timestamp,
+          });
+        }
+        break;
+      }
+      case "collab_agent_interaction_end": {
+        messages.push({
+          id: event.id ?? `agent-interaction-end-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind: "meta",
+          label: "agent",
+          content: `Sent to ${event.payload.receiverAgentNickname ?? event.payload.receiverThreadId}`,
+          timestamp,
+        });
+        break;
+      }
+      case "collab_waiting_begin": {
+        messages.push({
+          id: event.id ?? `agent-wait-begin-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind: "meta",
+          label: "agent",
+          content: `Waiting on ${event.payload.receiverThreadIds.length} agent${event.payload.receiverThreadIds.length === 1 ? "" : "s"}`,
+          timestamp,
+        });
+        break;
+      }
+      case "collab_waiting_end": {
+        messages.push({
+          id: event.id ?? `agent-wait-end-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind: "meta",
+          label: "agent",
+          content: `Agent wait complete`,
+          timestamp,
+        });
+        break;
+      }
+      case "collab_close_begin": {
+        if (options.includeHidden === true) {
+          messages.push({
+            id: event.id ?? `agent-close-begin-${event.payload.callId}`,
+            turnId: ensureTurnId(currentTurnId),
+            kind: "meta",
+            label: "agent",
+            content: `Closing ${event.payload.receiverThreadId}`,
+            timestamp,
+          });
+        }
+        break;
+      }
+      case "collab_close_end": {
+        messages.push({
+          id: event.id ?? `agent-close-end-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind: "meta",
+          label: "agent",
+          content: `${event.payload.receiverAgentNickname ?? event.payload.receiverThreadId} closed`,
           timestamp,
         });
         break;

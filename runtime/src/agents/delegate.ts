@@ -25,6 +25,7 @@ import type { ForkMode } from "./fork-context.js";
 import type { WorktreeHandle } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
 import type { RunAgentResult } from "./run-agent.js";
+import type { ReasoningEffort } from "../session/turn-context.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
 import { forkSubagent } from "./fork-context.js";
@@ -51,6 +52,9 @@ export interface DelegateOpts {
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
   readonly role?: string;
+  readonly agentName?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
   readonly forkMode?: ForkMode;
@@ -121,6 +125,7 @@ export async function delegate(
     live = await opts.control.spawn({
       parentPath: opts.parentPath,
       ...(opts.role !== undefined ? { roleName: opts.role } : {}),
+      ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
     });
   } catch (err) {
     // Teardown worktree if we created one — slot reservation rolled back.
@@ -178,6 +183,10 @@ export async function delegate(
       ...(worktree !== undefined ? { worktree } : {}),
       ...(opts.toolAllowlist !== undefined
         ? { toolAllowlist: opts.toolAllowlist }
+        : {}),
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(opts.reasoningEffort !== undefined
+        ? { reasoningEffort: opts.reasoningEffort }
         : {}),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
@@ -248,6 +257,8 @@ async function runDelegateAgentLoop(opts: {
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly worktree?: WorktreeHandle;
   readonly toolAllowlist?: ReadonlyArray<string>;
+  readonly model?: string;
+  readonly reasoningEffort?: ReasoningEffort;
   readonly resumeManager?: ResumeManager;
 }): Promise<RunAgentResult> {
   while (true) {
@@ -260,6 +271,10 @@ async function runDelegateAgentLoop(opts: {
       ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
       ...(opts.toolAllowlist !== undefined
         ? { toolAllowlist: opts.toolAllowlist }
+        : {}),
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
+      ...(opts.reasoningEffort !== undefined
+        ? { reasoningEffort: opts.reasoningEffort }
         : {}),
     });
 
@@ -370,6 +385,8 @@ async function restartLiveAgent(opts: {
     return await opts.control.spawn({
       parentPath: opts.parentPath,
       roleName: live.metadata.agentRole ?? live.role.name,
+      agentPath: live.agentPath,
+      preferredNickname: live.nickname,
     });
   } catch (err) {
     emitWarning(

@@ -22,6 +22,7 @@ import type {
   LLMChatOptions,
   LLMMessage,
   LLMProvider,
+  LLMUsage,
 } from "../llm/types.js";
 import { readProviderIdentity } from "../llm/provider.js";
 import type { ToolRegistry, ToolDispatchResult } from "./_deps/tool-registry.js";
@@ -33,6 +34,10 @@ import {
 import { Session as ChildSession, type Session } from "../session/session.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
+import {
+  threadConfigSnapshot,
+  type ReasoningEffort,
+} from "../session/turn-context.js";
 import type { LiveAgent } from "./control.js";
 import {
   isAgentExitedSentinel,
@@ -57,6 +62,10 @@ export interface RunAgentParams {
   readonly toolAllowlist?: ReadonlyArray<string>;
   /** Per-turn timeout override (from role config). */
   readonly timeoutMs?: number;
+  /** Optional child model override. */
+  readonly model?: string;
+  /** Optional child reasoning-effort override. */
+  readonly reasoningEffort?: ReasoningEffort;
   /** Optional AbortSignal merged with the live agent's controller. */
   readonly externalSignal?: AbortSignal;
 }
@@ -253,6 +262,16 @@ function relayToParentMailbox(params: {
       direction: "up",
       metadata: params.metadata,
     });
+    if (params.triggerTurn) {
+      params.parent.mailbox.send({
+        author: params.live.agentPath,
+        recipient: params.parent.conversationId ?? "/root",
+        content: params.content,
+        triggerTurn: true,
+        direction: "up",
+        metadata: params.metadata,
+      });
+    }
   } catch (err) {
     emitWarning(
       params.parent.eventLog,
@@ -426,21 +445,44 @@ function wrapToolForChild(
 
 function cloneSessionConfiguration(
   parent: Session,
+  live: LiveAgent,
   worktree?: WorktreeHandle,
+  overrides: {
+    readonly model?: string;
+    readonly reasoningEffort?: ReasoningEffort;
+  } = {},
 ): Session["sessionConfiguration"] {
   const base = parent.sessionConfiguration;
   const cwd = worktree?.path ?? base.cwd;
+  const collaborationMode = {
+    ...base.collaborationMode,
+    ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+    ...(overrides.reasoningEffort !== undefined
+      ? { reasoningEffort: overrides.reasoningEffort }
+      : {}),
+  };
   return {
     ...base,
     cwd,
-    sessionSource: "cli_subagent",
+    collaborationMode,
+    sessionSource: {
+      kind: "subagent",
+      source: {
+        kind: "thread_spawn",
+        parentThreadId: parent.conversationId,
+        depth: live.depth,
+        agentPath: live.agentPath,
+        agentNickname: live.nickname,
+        agentRole: live.role.name,
+      },
+    },
     ...(base.originalConfigDoNotUse
       ? {
           originalConfigDoNotUse: {
             ...base.originalConfigDoNotUse,
             cwd,
-            model: base.collaborationMode.model,
-            modelReasoningEffort: base.collaborationMode.reasoningEffort,
+            model: collaborationMode.model,
+            modelReasoningEffort: collaborationMode.reasoningEffort,
             modelReasoningSummary: base.modelReasoningSummary,
             serviceTier: base.serviceTier,
             personality: base.personality,
@@ -536,7 +578,14 @@ function buildChildSession(
 ): ChildSession {
   const sessionConfiguration = cloneSessionConfiguration(
     params.parent,
+    params.live,
     params.worktree,
+    {
+      ...(params.model !== undefined ? { model: params.model } : {}),
+      ...(params.reasoningEffort !== undefined
+        ? { reasoningEffort: params.reasoningEffort }
+        : {}),
+    },
   );
   const registry = buildFilteredRegistry(
     params.parent.services.registry,
@@ -567,6 +616,7 @@ function buildChildSession(
     config: buildChildConfig(params.parent, sessionConfiguration),
     modelInfo: buildChildModelInfo(params.parent, sessionConfiguration),
   });
+  params.live.configSnapshot = threadConfigSnapshot(sessionConfiguration) as unknown as Record<string, unknown>;
 
   try {
     const childRolloutStore = createChildRolloutStore(
@@ -686,6 +736,11 @@ export async function* runAgent(
 
     // Stream the fork-context messages as progress events so callers
     // observing the generator can record the child's initial history.
+    if (live.messages.length === 0) {
+      live.messages.push(
+        ...params.initialMessages.map((message) => ({ ...message })),
+      );
+    }
     for (const message of params.initialMessages) {
       yield { kind: "message", message };
     }
@@ -761,6 +816,7 @@ export async function* runAgent(
     let toolCallCount = 0;
     while (true) {
       let turnAssistantText = "";
+      let turnUsage: LLMUsage | undefined;
       let stopReason:
         | "completed"
         | "max_turns"
@@ -818,10 +874,18 @@ export async function* runAgent(
         if (event.type === "turn_complete") {
           turnAssistantText = event.content;
           stopReason = event.stopReason;
+          turnUsage = event.usage;
         }
       }
 
       assistantText = turnAssistantText;
+      if (turnUsage !== undefined) {
+        live.tokenUsage.inputTokens += turnUsage.promptTokens ?? 0;
+        live.tokenUsage.outputTokens += turnUsage.completionTokens ?? 0;
+        live.tokenUsage.totalTokens +=
+          turnUsage.totalTokens ??
+          (turnUsage.promptTokens ?? 0) + (turnUsage.completionTokens ?? 0);
+      }
 
       if (stopReason === "error") {
         const message =
@@ -853,6 +917,9 @@ export async function* runAgent(
       }
 
       firstTurn = false;
+      if (assistantText.length > 0) {
+        live.messages.push({ role: "assistant", content: assistantText });
+      }
       const pendingChildInput = drainChildMailbox(live);
       if (pendingChildInput.interruptReason) {
         if (!merged.signal.aborted) {
@@ -862,6 +929,7 @@ export async function* runAgent(
       }
       if (pendingChildInput.nextUserMessage !== undefined) {
         nextUserMessage = pendingChildInput.nextUserMessage;
+        live.messages.push({ role: "user", content: nextUserMessage });
         relayToParentMailbox({
           live,
           parent,

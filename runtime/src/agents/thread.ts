@@ -16,7 +16,7 @@
  */
 
 import type { LLMMessage } from "../llm/types.js";
-import type { LiveAgent } from "./control.js";
+import type { AgentMemoryEntry, LiveAgent } from "./control.js";
 import type { WorktreeHandle } from "./worktree.js";
 import type { ForkMode } from "./fork-context.js";
 import type { AgentStatus } from "./status.js";
@@ -29,16 +29,7 @@ import {
 import type { RunAgentResult } from "./run-agent.js";
 import type { AgentPath } from "./registry.js";
 
-/**
- * Minimal memory entry shape. Full memory wiring lands in T10; the
- * stub here keeps the getter surface live so AgenC-compatible
- * callers can iterate without branching on capability.
- */
-export interface MemoryEntry {
-  readonly key: string;
-  readonly value: unknown;
-  readonly at: number;
-}
+export type MemoryEntry = AgentMemoryEntry;
 
 export interface AgentThreadOpts {
   readonly live: LiveAgent;
@@ -102,8 +93,6 @@ export class AgentThread {
   readonly taskPrompt: string;
   readonly createdAtMs: number;
 
-  /** Mutable stub for memory — T10 replaces with real persisted store. */
-  private readonly memoryEntries: MemoryEntry[] = [];
   private readonly wiring: AgentThreadWiring;
   private liveHandle: LiveAgent;
   private readonly statusListeners = new Set<(status: AgentStatus) => void>();
@@ -151,15 +140,11 @@ export class AgentThread {
     return this.liveHandle.nickname || this.liveHandle.agentId;
   }
 
-  /**
-   * The messages that seeded this thread — the fork context result.
-   * Today this mirrors `initialMessages` because the subagent runtime
-   * does not expose a live message log through `LiveAgent`. T10 will
-   * thread the live message store (per-subagent rollout) through
-   * here, keeping the getter name stable.
-   */
   get messages(): ReadonlyArray<LLMMessage> {
-    return this.initialMessages;
+    const liveMessages = this.liveHandle.messages ?? [];
+    return liveMessages.length > 0
+      ? liveMessages
+      : this.initialMessages;
   }
 
   /** Resume metadata mirror from the current live handle. */
@@ -167,14 +152,8 @@ export class AgentThread {
     return this.liveHandle.metadata;
   }
 
-  /**
-   * Memory scratch for the subagent. Returns the current entries;
-   * the underlying array is not mutated by callers. T10 wires the
-   * real memory store; today this returns `[]` so AgenC-compatible
-   * callers can iterate unconditionally.
-   */
   get memory(): ReadonlyArray<MemoryEntry> {
-    return this.memoryEntries;
+    return this.liveHandle.memoryEntries ?? [];
   }
 
   /** AgenC-compatible alias for `worktree?.path`. */

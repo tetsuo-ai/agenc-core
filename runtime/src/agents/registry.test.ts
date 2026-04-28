@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentLimitReachedError,
+  InvalidAgentPathError,
   AgentPathExistsError,
   AgentRegistry,
+  MEMORY_AGENT_PATH,
+  ROOT_AGENT_PATH,
   buildChildMetadata,
   depthOfAgentPath,
+  agentPathName,
   joinAgentPath,
+  normalizeAgentNameForPath,
+  resolveAgentPath,
 } from "./registry.js";
 import { resolveAgentRole } from "./role.js";
 
@@ -106,18 +112,49 @@ describe("AgentRegistry", () => {
 });
 
 describe("path helpers", () => {
+  it("exposes root and memory consolidation paths", () => {
+    expect(ROOT_AGENT_PATH).toBe("/root");
+    expect(MEMORY_AGENT_PATH).toBe("/morpheus");
+    expect(agentPathName(ROOT_AGENT_PATH)).toBe("root");
+    expect(agentPathName(MEMORY_AGENT_PATH)).toBe("morpheus");
+  });
+
   it("joinAgentPath composes paths", () => {
     expect(joinAgentPath("/root", "worker")).toBe("/root/worker");
     expect(joinAgentPath("/root/worker", "sub")).toBe("/root/worker/sub");
   });
 
-  it("joinAgentPath sanitizes invalid chars", () => {
-    expect(joinAgentPath("/root", "bad name!!")).toBe("/root/bad-name-");
+  it("joinAgentPath rejects invalid chars", () => {
+    expect(() => joinAgentPath("/root", "bad name!!")).toThrow(
+      InvalidAgentPathError,
+    );
   });
 
   it("depthOfAgentPath counts hops past root", () => {
     expect(depthOfAgentPath("/root")).toBe(0);
     expect(depthOfAgentPath("/root/a")).toBe(1);
     expect(depthOfAgentPath("/root/a/b/c")).toBe(3);
+  });
+
+  it("resolveAgentPath supports relative and absolute references", () => {
+    expect(resolveAgentPath("/root/researcher", "worker")).toBe(
+      "/root/researcher/worker",
+    );
+    expect(resolveAgentPath("/root/researcher", "/root/other")).toBe(
+      "/root/other",
+    );
+  });
+
+  it("normalizes display nicknames into valid path segments before metadata build", () => {
+    expect(normalizeAgentNameForPath("Scout the 2nd")).toBe("scout_the_2nd");
+    const meta = buildChildMetadata({
+      agentId: "t3",
+      parentPath: "/root",
+      role: resolveAgentRole(undefined),
+      nickname: "Scout the 2nd",
+      depth: 1,
+    });
+    expect(meta.agentPath).toBe("/root/scout_the_2nd");
+    expect(meta.agentNickname).toBe("Scout the 2nd");
   });
 });

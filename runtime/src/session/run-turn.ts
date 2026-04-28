@@ -165,6 +165,25 @@ function buildSeedMessages(
   return { system, prior, user };
 }
 
+function messageText(message: LLMMessage): string {
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+  return safeStringify(message.content);
+}
+
+function mergePendingInputIntoUserMessage(
+  userMessage: string,
+  pending: readonly LLMMessage[],
+): string {
+  if (pending.length === 0) return userMessage;
+  const parts = [
+    userMessage.trim().length > 0 ? userMessage : "",
+    ...pending.map(messageText).filter((part) => part.trim().length > 0),
+  ].filter((part) => part.length > 0);
+  return parts.join("\n\n");
+}
+
 function mergeSignals(
   a: AbortSignal | undefined,
   b: AbortSignal,
@@ -1366,6 +1385,11 @@ export async function* runTurnKernel(
   }
   session.bindProviderConversation();
 
+  userMessage = mergePendingInputIntoUserMessage(
+    userMessage,
+    session.drainPendingInputMessages(),
+  );
+
   // AgenC runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
   // turn. Callers that want to force work must enqueue pending input or
@@ -1528,7 +1552,17 @@ async function* runTurnKernelInner(
   // equivalent operates on the session-held conversation directly;
   // AgenC's phase machine reads `state.messages`, so the compact result
   // has to land there.
-  const { system, prior, user } = buildSeedMessages(opts, userMessage);
+  const ctxBaseInstructions =
+    typeof (ctx as TurnContext & { baseInstructions?: unknown })
+      .baseInstructions === "string"
+      ? (ctx as TurnContext & { baseInstructions: string }).baseInstructions
+      : undefined;
+  const { system, prior, user } = buildSeedMessages(
+    opts.systemPrompt !== undefined || ctxBaseInstructions === undefined
+      ? opts
+      : { ...opts, systemPrompt: ctxBaseInstructions },
+    userMessage,
+  );
   const priorFull = system ? [system, ...prior] : prior;
   const durableHistoryStartIndex = system ? 1 : 0;
 

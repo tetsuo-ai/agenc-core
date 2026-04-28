@@ -320,13 +320,76 @@ export interface SessionSettingsUpdate {
   readonly finalOutputJsonSchema?: { readonly value: unknown | undefined };
 }
 
+export type SubAgentSource =
+  | { readonly kind: "review" }
+  | { readonly kind: "compact" }
+  | {
+      readonly kind: "thread_spawn";
+      readonly parentThreadId: string;
+      readonly depth: number;
+      readonly agentPath?: string;
+      readonly agentNickname?: string;
+      readonly agentRole?: string;
+    }
+  | { readonly kind: "memory_consolidation" }
+  | { readonly kind: "other"; readonly label: string };
+
 /** AgenC runtime `SessionSource`. */
 export type SessionSource =
   | "cli_main"
   | "cli_subagent"
   | "sdk"
   | "ide"
+  | { readonly kind: "subagent"; readonly source: SubAgentSource }
   | { kind: "unknown"; raw: string };
+
+export function formatSubAgentSource(source: SubAgentSource): string {
+  switch (source.kind) {
+    case "review":
+      return "review";
+    case "compact":
+      return "compact";
+    case "memory_consolidation":
+      return "memory_consolidation";
+    case "thread_spawn":
+      return `thread_spawn_${source.parentThreadId}_d${source.depth}`;
+    case "other":
+      return source.label;
+  }
+}
+
+export function formatSessionSource(source: SessionSource): string {
+  if (typeof source === "string") return source;
+  if (source.kind === "unknown") return source.raw;
+  return `subagent_${formatSubAgentSource(source.source)}`;
+}
+
+export function sessionSourceAgentPath(
+  source: SessionSource,
+): string | undefined {
+  if (typeof source === "string" || source.kind === "unknown") return undefined;
+  if (source.source.kind === "thread_spawn") return source.source.agentPath;
+  if (source.source.kind === "memory_consolidation") return "/morpheus";
+  return undefined;
+}
+
+export function sessionSourceNickname(
+  source: SessionSource,
+): string | undefined {
+  if (typeof source === "string" || source.kind === "unknown") return undefined;
+  if (source.source.kind === "thread_spawn") return source.source.agentNickname;
+  if (source.source.kind === "memory_consolidation") return "Morpheus";
+  return undefined;
+}
+
+export function sessionSourceAgentRole(
+  source: SessionSource,
+): string | undefined {
+  if (typeof source === "string" || source.kind === "unknown") return undefined;
+  if (source.source.kind === "thread_spawn") return source.source.agentRole;
+  if (source.source.kind === "memory_consolidation") return "memory builder";
+  return undefined;
+}
 
 /**
  * Stage 2 (tool-result budgeting) knobs. Ports AgenC's
