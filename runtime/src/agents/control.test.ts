@@ -140,14 +140,26 @@ describe("AgentControl", () => {
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
   });
 
-  it("MAX_AGENT_DEPTH default is 4", () => {
-    expect(MAX_AGENT_DEPTH).toBe(4);
+  it("MAX_AGENT_DEPTH default is 1", () => {
+    expect(MAX_AGENT_DEPTH).toBe(1);
+  });
+
+  it("reads agent_max_depth from the session config when no explicit override is provided", async () => {
+    const session = stubSession() as ReturnType<typeof stubSession> & {
+      config: { agent_max_depth: number };
+    };
+    session.config = { agent_max_depth: 2 };
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const parent = await control.spawn({ parentPath: "/root" });
+    const child = await control.spawn({ parentPath: parent.agentPath });
+    expect(child.depth).toBe(2);
   });
 
   it("interrupt() cascades to descendants and fires AbortController", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const parent = await control.spawn({ parentPath: "/root" });
     const child = await control.spawn({ parentPath: parent.agentPath });
     control.interrupt(parent.agentId, "user_interrupt");
@@ -158,7 +170,7 @@ describe("AgentControl", () => {
   it("shutdown() clears live + registry + childInboxes", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const live = await control.spawn({ parentPath: "/root" });
     expect(control.listLive().length).toBe(1);
     await control.shutdown(live.agentId);
@@ -182,7 +194,7 @@ describe("AgentControl", () => {
   it("descendantsOf() filters by path prefix", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const parent = await control.spawn({ parentPath: "/root" });
     const child = await control.spawn({ parentPath: parent.agentPath });
     const other = await control.spawn({ parentPath: "/root" });
@@ -393,7 +405,7 @@ describe("AgentControl", () => {
   it("listLiveAgentSubtreeThreadIds() returns self + descendants", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const parent = await control.spawn({ parentPath: "/root" });
     const child = await control.spawn({ parentPath: parent.agentPath });
     const sub = control.listLiveAgentSubtreeThreadIds(parent.agentId);
@@ -418,7 +430,7 @@ describe("AgentControl", () => {
   it("listAgents() applies pathPrefix filter", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     control.registerSessionRoot("root-id");
     const p = await control.spawn({ parentPath: "/root" });
     await control.spawn({ parentPath: p.agentPath });
@@ -447,7 +459,7 @@ describe("AgentControl", () => {
   it("formatEnvironmentContextSubagents() produces a textual subtree", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const parent = await control.spawn({ parentPath: "/root" });
     const child = await control.spawn({ parentPath: parent.agentPath });
     const text = control.formatEnvironmentContextSubagents(parent.agentId);
@@ -507,7 +519,7 @@ describe("AgentControl", () => {
   it("maybeStartCompletionWatcher() emits IAC to parent on child completion", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const parent = await control.spawn({ parentPath: "/root" });
     const child = await control.spawn({ parentPath: parent.agentPath });
     control.maybeStartCompletionWatcher({
@@ -533,7 +545,7 @@ describe("AgentControl", () => {
     try {
       const session = stubSession({ rolloutStore });
       const registry = new AgentRegistry();
-      const control = new AgentControl({ session, registry });
+      const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
@@ -575,6 +587,7 @@ describe("AgentControl", () => {
       const originalControl = new AgentControl({
         session: originalSession,
         registry: originalRegistry,
+        maxDepth: 3,
       });
       const root = await originalControl.spawn({ parentPath: "/root" });
       const child = await originalControl.spawn({ parentPath: root.agentPath });
@@ -598,6 +611,7 @@ describe("AgentControl", () => {
       const resumedControl = new AgentControl({
         session: resumedSession,
         registry: resumedRegistry,
+        maxDepth: 3,
       });
 
       const result = await resumedControl.resumeAgentFromRollout({
@@ -630,7 +644,7 @@ describe("AgentControl", () => {
     try {
       const session = stubSession({ rolloutStore });
       const registry = new AgentRegistry();
-      const control = new AgentControl({ session, registry });
+      const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
@@ -662,7 +676,7 @@ describe("AgentControl", () => {
     try {
       const session = stubSession({ rolloutStore });
       const registry = new AgentRegistry();
-      const control = new AgentControl({ session, registry });
+      const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
@@ -702,7 +716,7 @@ describe("AgentControl", () => {
     try {
       const session = stubSession({ rolloutStore });
       const registry = new AgentRegistry();
-      const control = new AgentControl({ session, registry });
+      const control = new AgentControl({ session, registry, maxDepth: 3 });
       const root = await control.spawn({ parentPath: "/root" });
       const child = await control.spawn({ parentPath: root.agentPath });
       const grandchild = await control.spawn({ parentPath: child.agentPath });
@@ -791,7 +805,7 @@ describe("AgentControl", () => {
   it("openThreadSpawnChildren() returns direct children in path order", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 2 });
     const parent = await control.spawn({ parentPath: "/root" });
     const a = await control.spawn({ parentPath: parent.agentPath });
     const b = await control.spawn({ parentPath: parent.agentPath });
@@ -807,7 +821,7 @@ describe("AgentControl", () => {
   it("liveThreadSpawnDescendants() walks the full tree", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
+    const control = new AgentControl({ session, registry, maxDepth: 3 });
     const a = await control.spawn({ parentPath: "/root" });
     const b = await control.spawn({ parentPath: a.agentPath });
     const c = await control.spawn({ parentPath: b.agentPath });
