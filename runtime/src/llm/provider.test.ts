@@ -61,6 +61,36 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test("preserves OpenAI-compatible context budget metadata", async () => {
+    const provider = withEnv(
+      {
+        OPENAI_API_KEY: "local-token",
+        OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
+      },
+      () =>
+        createProvider("openai", {
+          model: "qwen-local",
+          extra: {
+            useResponsesApi: false,
+            contextWindowTokens: 262_144,
+            maxTokens: 8192,
+          },
+        }),
+    );
+
+    const config = (provider as unknown as { config: OpenAIProviderConfig })
+      .config;
+    expect(config.contextWindowTokens).toBe(262_144);
+    expect(readProviderFactoryOptions(provider).extra).toMatchObject({
+      contextWindowTokens: 262_144,
+      maxTokens: 8192,
+    });
+    await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
+      contextWindowTokens: 262_144,
+      maxOutputTokens: 8192,
+    });
+  });
+
   test("preserves the live provider identity on OpenAI-compatible providers", () => {
     const provider = withEnv(
       {

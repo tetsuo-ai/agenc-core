@@ -13,6 +13,7 @@ import type {
   LLMResponse,
   LLMStoredResponse,
   LLMStoredResponseDeleteResult,
+  LLMTool,
   StreamProgressCallback,
 } from "../../types.js";
 import { validateToolCall } from "../../types.js";
@@ -36,7 +37,10 @@ import {
 } from "../../_deps/openai-error-classification.js";
 import {
   buildChatCompletionsRequest,
+  collectChatCompletionsRequestMetadata,
   parseChatCompletionsResponse,
+  type ChatCompletionsMaxTokenField,
+  type ChatCompletionsRequestMetadata,
 } from "../../wire/chat-completions.js";
 import {
   buildOpenAIResponsesRequest,
@@ -67,6 +71,29 @@ function normalizeTimeoutMs(
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   if (value <= 0) return undefined;
   return Math.max(1, Math.floor(value));
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
+function isLocalBaseURL(baseURL: string | undefined): boolean {
+  if (!baseURL) return false;
+  try {
+    const host = new URL(baseURL).hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function providerHttpBodyToString(body: unknown): string {
@@ -254,6 +281,7 @@ export class OpenAIProvider implements LLMProvider {
             tools: requestTools,
             options,
             store: this.config.store,
+            maxOutputTokens: this.resolveRequestMaxTokens(options),
           });
           const response = await session.requestJson<Record<string, unknown>>({
             api: "responses",
@@ -272,6 +300,7 @@ export class OpenAIProvider implements LLMProvider {
               tools: requestTools,
               options,
               store: this.config.store,
+              maxOutputTokens: this.resolveRequestMaxTokens(options),
             },
           );
         }
@@ -279,7 +308,7 @@ export class OpenAIProvider implements LLMProvider {
         const session = this.client.createTurnSession({
           wireApi: "chat_completions",
         });
-        const request = buildChatCompletionsRequest({
+        const request = this.prepareChatCompletionsRequest({
           model,
           messages,
           tools: requestTools,
@@ -298,6 +327,8 @@ export class OpenAIProvider implements LLMProvider {
           messages,
           tools: requestTools,
           options,
+          maxTokens: this.resolveRequestMaxTokens(options),
+          maxTokenField: this.resolveChatCompletionsMaxTokenField(),
         });
       });
     } catch (error) {
@@ -362,6 +393,22 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
+  async getExecutionProfile() {
+    return {
+      provider: this.name,
+      model: this.config.model,
+      ...(this.config.contextWindowTokens !== undefined
+        ? { contextWindowTokens: this.config.contextWindowTokens }
+        : {}),
+      ...(this.config.contextWindowTokens !== undefined
+        ? { contextWindowSource: "explicit_config" as const }
+        : {}),
+      ...(this.config.maxTokens !== undefined
+        ? { maxOutputTokens: this.config.maxTokens }
+        : {}),
+    };
+  }
+
   async retrieveStoredResponse(responseId: string): Promise<LLMStoredResponse> {
     const session = this.client.createTurnSession({
       wireApi: "responses",
@@ -417,6 +464,94 @@ export class OpenAIProvider implements LLMProvider {
     };
   }
 
+  private resolveChatCompletionsMaxTokenField(): ChatCompletionsMaxTokenField {
+    if (this.name !== "openai" || isLocalBaseURL(this.config.baseURL)) {
+      return "max_tokens";
+    }
+    return "max_completion_tokens";
+  }
+
+  private resolveRequestMaxTokens(
+    options: LLMChatOptions | undefined,
+  ): number | undefined {
+    return (
+      normalizePositiveInteger(options?.maxOutputTokens) ??
+      normalizePositiveInteger(this.config.maxTokens)
+    );
+  }
+
+  private resolveContextWindowTokens(
+    options: LLMChatOptions | undefined,
+  ): number | undefined {
+    return (
+      normalizePositiveInteger(options?.contextWindowTokens) ??
+      normalizePositiveInteger(this.config.contextWindowTokens)
+    );
+  }
+
+  private emitRequestMetadata(
+    api: "chat_completions",
+    metadata: ChatCompletionsRequestMetadata,
+  ): void {
+    this.config.emitWarning?.({
+      cause: "llm_request_metadata",
+      message: JSON.stringify({
+        provider: this.name,
+        api,
+        model: metadata.model,
+        messageCount: metadata.messageCount,
+        roleSequence: metadata.roleSequence,
+        estimatedPromptTokens: metadata.estimatedPromptTokens,
+        maxTokens: metadata.maxTokens,
+        maxTokenField: metadata.maxTokenField,
+        toolsAttached: metadata.toolsAttached,
+        toolCount: metadata.toolCount,
+      }),
+    });
+  }
+
+  private assertWithinContextWindow(
+    metadata: ChatCompletionsRequestMetadata,
+    contextWindowTokens: number | undefined,
+  ): void {
+    if (contextWindowTokens === undefined || metadata.maxTokens === undefined) {
+      return;
+    }
+    const requestedTokens = metadata.estimatedPromptTokens + metadata.maxTokens;
+    if (requestedTokens <= contextWindowTokens) return;
+    throw new LLMContextWindowExceededError(
+      this.name,
+      `estimated prompt (${metadata.estimatedPromptTokens}) plus reserved output (${metadata.maxTokens}) exceeds context window (${contextWindowTokens})`,
+      {
+        effectiveTokens: requestedTokens,
+        maxTokens: contextWindowTokens,
+      },
+    );
+  }
+
+  private prepareChatCompletionsRequest(args: {
+    readonly model: string;
+    readonly messages: readonly LLMMessage[];
+    readonly tools: readonly LLMTool[];
+    readonly options?: LLMChatOptions;
+  }): Record<string, unknown> {
+    const request = buildChatCompletionsRequest({
+      model: args.model,
+      messages: args.messages,
+      tools: args.tools,
+      options: args.options,
+      maxTokens: this.resolveRequestMaxTokens(args.options),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+    });
+    const metadata = collectChatCompletionsRequestMetadata(request);
+    this.emitRequestMetadata("chat_completions", metadata);
+    this.assertWithinContextWindow(
+      metadata,
+      this.resolveContextWindowTokens(args.options),
+    );
+    return request;
+  }
+
   private async streamResponses(
     messages: LLMMessage[],
     onChunk: StreamProgressCallback,
@@ -430,6 +565,7 @@ export class OpenAIProvider implements LLMProvider {
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       store: this.config.store,
+      maxOutputTokens: this.resolveRequestMaxTokens(options),
     };
     const request = {
       ...buildOpenAIResponsesRequest(requestOptions),
@@ -566,9 +702,11 @@ export class OpenAIProvider implements LLMProvider {
       messages,
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
+      maxTokens: this.resolveRequestMaxTokens(options),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
     };
     const request = {
-      ...buildChatCompletionsRequest(requestOptions),
+      ...this.prepareChatCompletionsRequest(requestOptions),
       stream: true,
       stream_options: { include_usage: true },
     };

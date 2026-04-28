@@ -83,18 +83,27 @@ export function buildAnthropicMessagesRequest(
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
   const systemMessages = messages.filter((message) => message.role === "system");
-  const systemBlocks = systemMessages.flatMap((message) => {
-    const normalized = normalizeAnthropicMessageContent(message);
-    if (typeof normalized === "string") {
-      return normalized.length > 0
-        ? [{
-          type: "text",
-          text: normalized,
-        }]
-        : [];
-    }
-    return normalized.filter((block) => block.type === "text");
-  });
+  const optionSystemPrompt = input.options?.systemPrompt?.trim();
+  const systemBlocks = [
+    ...(optionSystemPrompt
+      ? [{
+        type: "text",
+        text: optionSystemPrompt,
+      }]
+      : []),
+    ...systemMessages.flatMap((message) => {
+      const normalized = normalizeAnthropicMessageContent(message);
+      if (typeof normalized === "string") {
+        return normalized.length > 0
+          ? [{
+            type: "text",
+            text: normalized,
+          }]
+          : [];
+      }
+      return normalized.filter((block) => block.type === "text");
+    }),
+  ];
   const system =
     systemBlocks.length === 0
       ? ""

@@ -10,6 +10,7 @@ import type { Message } from "./_deps/types-message.js";
 import type { CacheSafeParams } from "./_deps/forked-agent.js";
 import type { Session } from "./session.js";
 import {
+  modelContextWindow,
   toTurnContextItem,
   type TurnContext,
   type TurnContextItem,
@@ -35,6 +36,8 @@ export interface CompactRuntimeAppState {
 export interface CompactRuntimeOptions {
   tools: Tool[];
   mainLoopModel: string;
+  contextWindowTokens?: number;
+  maxOutputTokens?: number;
   mcpClients: readonly unknown[];
   customSystemPrompt?: string;
   appendSystemPrompt?: string;
@@ -242,6 +245,9 @@ export function createSessionBackedCompactContext(
   const readFileState = surface.readFileState ?? new Map<string, unknown>();
   const loadedNestedMemoryPaths =
     surface.loadedNestedMemoryPaths ?? new Set<string>();
+  const contextWindowTokens = opts.turnContext
+    ? modelContextWindow(opts.turnContext) ?? opts.turnContext.modelInfo.contextWindow
+    : undefined;
   return {
     abortController: session.abortController ?? new AbortController(),
     agentId: undefined,
@@ -249,6 +255,12 @@ export function createSessionBackedCompactContext(
     options: {
       tools: session.services.registry?.toLLMTools?.() ?? [],
       mainLoopModel: readMainLoopModel(session, opts.turnContext),
+      ...(contextWindowTokens !== undefined
+        ? { contextWindowTokens }
+        : {}),
+      ...(opts.turnContext?.modelInfo.maxOutputTokens !== undefined
+        ? { maxOutputTokens: opts.turnContext.modelInfo.maxOutputTokens }
+        : {}),
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       customSystemPrompt: opts.customSystemPrompt,
       appendSystemPrompt: opts.appendSystemPrompt,

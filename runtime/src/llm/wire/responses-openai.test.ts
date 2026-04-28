@@ -23,6 +23,24 @@ const TEST_TOOLS: LLMTool[] = [
 ];
 
 describe("buildOpenAIResponsesRequest", () => {
+  test("keeps request instructions in the Responses instructions field", () => {
+    const request = buildOpenAIResponsesRequest({
+      model: "gpt-5",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "hello" },
+      ],
+      tools: [],
+      options: {
+        systemPrompt: "base instructions",
+        maxOutputTokens: 8192,
+      },
+    });
+
+    expect(request.instructions).toBe("base instructions\n\nstable prefix");
+    expect(request.max_output_tokens).toBe(8192);
+  });
+
   test("uses AgenC-style response items and disables store by default", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",

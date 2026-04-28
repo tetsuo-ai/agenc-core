@@ -580,6 +580,9 @@ function buildOpenAICompatibleProvider(
       input.defaultBaseURL,
     useResponsesApi: extra.useResponsesApi ?? input.useResponsesApi,
     ...(extra.store !== undefined ? { store: extra.store } : {}),
+    ...(extra.contextWindowTokens !== undefined
+      ? { contextWindowTokens: extra.contextWindowTokens }
+      : {}),
     ...(extra.authMode ? { authMode: extra.authMode } : {}),
     ...(oauthConfig ? { oauth: oauthConfig } : {}),
     ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
@@ -712,6 +715,9 @@ export function createProvider(
           "https://api.openai.com/v1",
         useResponsesApi: extra.useResponsesApi ?? true,
         ...(extra.store !== undefined ? { store: extra.store } : {}),
+        ...(extra.contextWindowTokens !== undefined
+          ? { contextWindowTokens: extra.contextWindowTokens }
+          : {}),
         ...(extra.authMode ? { authMode: extra.authMode } : {}),
         ...(oauthConfig ? { oauth: oauthConfig } : {}),
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),

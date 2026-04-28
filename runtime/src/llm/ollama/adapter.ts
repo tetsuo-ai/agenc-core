@@ -506,7 +506,11 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
     toolSelection?: ToolSelectionDiagnostics,
   ): Record<string, unknown> {
-    const repairedMessages = repairToolTurnSequence(messages);
+    const requestMessages =
+      options?.systemPrompt?.trim()
+        ? [{ role: "system" as const, content: options.systemPrompt.trim() }, ...messages]
+        : messages;
+    const repairedMessages = repairToolTurnSequence(requestMessages);
     validateToolTurnSequence(repairedMessages, { providerName: this.name });
 
     const params: Record<string, unknown> = {
@@ -519,11 +523,13 @@ export class OllamaProvider implements LLMProvider {
     if (this.config.temperature !== undefined)
       modelOptions.temperature = this.config.temperature;
     if (
-      typeof this.config.maxTokens === "number" &&
-      Number.isFinite(this.config.maxTokens) &&
-      this.config.maxTokens > 0
+      typeof (options?.maxOutputTokens ?? this.config.maxTokens) === "number" &&
+      Number.isFinite(options?.maxOutputTokens ?? this.config.maxTokens) &&
+      (options?.maxOutputTokens ?? this.config.maxTokens)! > 0
     )
-      modelOptions.num_predict = this.config.maxTokens;
+      modelOptions.num_predict = Math.floor(
+        (options?.maxOutputTokens ?? this.config.maxTokens)!,
+      );
     if (this.config.numCtx !== undefined) modelOptions.num_ctx = this.config.numCtx;
     if (this.config.numGpu !== undefined) modelOptions.num_gpu = this.config.numGpu;
     if (Object.keys(modelOptions).length > 0) params.options = modelOptions;

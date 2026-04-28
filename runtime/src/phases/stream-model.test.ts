@@ -266,6 +266,44 @@ describe("streamModel — live assistant text sanitization", () => {
     });
   });
 
+  test("keeps base instructions out of provider transcript messages", async () => {
+    const ctx = mkCtx("chat");
+    const seenMessages: LLMMessage[][] = [];
+    const seenOptions: LLMChatOptions[] = [];
+    const provider = mkProvider(async (messages, _onChunk, options) => {
+      seenMessages.push(messages);
+      seenOptions.push(options ?? {});
+      return {
+        content: "ok",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider);
+    const state = mkState(ctx);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "hello" }]),
+        baseInstructions: "base system",
+        contextWindowTokens: 1024,
+        maxOutputTokens: 256,
+      },
+    );
+
+    expect(seenMessages[0]).toEqual([{ role: "user", content: "hello" }]);
+    expect(seenOptions[0]).toMatchObject({
+      systemPrompt: "base system",
+      contextWindowTokens: 1024,
+      maxOutputTokens: 256,
+    });
+  });
+
   test("requires a tool choice in plan mode when tools are available", async () => {
     const ctx = mkCtx("plan");
     const state = mkState(ctx);
