@@ -22,33 +22,22 @@
  *   - File-backed `TraceWriter` (manifest.json + trace.jsonl + payloads/*.json)
  *   - Raw event envelope + schema versioning
  *
- * Stubbed as no-op, INCOMPLETE vs upstream:
- *   - `codeCellTraceContext(...)`  → always returns a disabled context; upstream
- *     returns a live `CodeCellTraceContext` when enabled. Needs the code-mode
- *     runtime cell lifecycle port before it can record.
- *   - `startToolDispatchTrace(...)` → always returns a disabled context.
- *     Needs the dispatch-level tool invocation/result model.
- *   - `inferenceTraceContext(...)`  → always returns a disabled context.
- *     Needs the inference attempt + request/response payload ports.
- *   - `compactionTraceContext(...)` → always returns a disabled context.
- *     Needs the remote-compaction checkpoint port.
+ * Implemented (WIRED) — live child trace contexts when the recorder is enabled:
+ *   - `codeCellTraceContext(...)`
+ *   - `startToolDispatchTrace(...)`
+ *   - `inferenceTraceContext(...)`
+ *   - `compactionTraceContext(...)`
  *   - Reducer (`replay_bundle`)     → not ported. Replay / reduced-state
  *     projection lives in a separate tranche.
  *
  * Not ported (honest INCOMPLETE flags):
  *   - Upstream emits `RolloutEnded`, `ThreadEnded`, and `AgenC runtimeTurnEnded` raw
  *     events from context-destruction and reducer paths, not from standalone
- *     `record_*` methods on the recorder. Those paths (runtime cells, tool
- *     dispatch, inference, compaction) land in future tranches; the raw event
- *     variants for them have not been defined yet and will appear when the
- *     producing subsystems are ported.
- *   - The `start_code_cell_trace` convenience wrapper is not ported because
- *     its child context does not have a working lifecycle yet.
+ *     `record_*` methods on the recorder.
  *
- * The stubbed context factories preserve call-site shape so downstream code can
- * call them unconditionally without branching on whether diagnostic recording
- * is enabled, matching upstream's no-op-capable design. They simply never land
- * an event until their respective ports complete.
+ * Context factories preserve call-site shape so downstream code can call them
+ * unconditionally without branching on whether diagnostic recording is enabled,
+ * matching upstream's no-op-capable design.
  *
  * @module
  */
@@ -137,11 +126,6 @@ export interface RawTraceEventContext {
 
 /**
  * Narrow subset of upstream `RawTraceEventPayload`.
- *
- * Only the lifecycle variants actually emitted by the ported recorder surface
- * appear here. Additional variants (inference, tool-dispatch, code-cell,
- * compaction, agent-result, protocol-event, rollout/thread/turn-ended) remain
- * in upstream and will be mirrored as each subsystem port lands.
  */
 export type RawTraceEventPayload =
   | {
@@ -159,6 +143,69 @@ export type RawTraceEventPayload =
       readonly type: "agenc_turn_started";
       readonly agencTurnId: AgenCTurnId;
       readonly threadId: AgentThreadId;
+    }
+  | {
+      readonly type: "code_cell_started";
+      readonly runtimeCellId: string;
+      readonly modelVisibleCallId?: string;
+      readonly sourcePayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "code_cell_initial_response";
+      readonly runtimeCellId: string;
+      readonly responsePayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "code_cell_ended";
+      readonly runtimeCellId: string;
+      readonly status: string;
+      readonly resultPayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "tool_dispatch_started";
+      readonly toolCallId: string;
+      readonly toolName?: string;
+      readonly requester?: string;
+      readonly invocationPayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "tool_dispatch_ended";
+      readonly toolCallId: string;
+      readonly status: string;
+      readonly resultPayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "inference_attempt_started";
+      readonly inferenceAttemptId: string;
+      readonly model: string;
+      readonly providerName: string;
+      readonly requestPayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "inference_attempt_ended";
+      readonly inferenceAttemptId: string;
+      readonly status: string;
+      readonly responsePayload?: RawPayloadRef;
+      readonly error?: string;
+    }
+  | {
+      readonly type: "compaction_request_started";
+      readonly compactionId: CompactionId;
+      readonly model: string;
+      readonly providerName: string;
+      readonly requestPayload?: RawPayloadRef;
+    }
+  | {
+      readonly type: "compaction_request_ended";
+      readonly compactionId: CompactionId;
+      readonly status: string;
+      readonly responsePayload?: RawPayloadRef;
+      readonly error?: string;
+    }
+  | {
+      readonly type: "compaction_installed";
+      readonly compactionId: CompactionId;
+      readonly checkpointPayload?: RawPayloadRef;
     };
 
 /** Upstream `RawTraceEvent`. */
@@ -374,62 +421,104 @@ export class TraceWriter {
 }
 
 // ---------------------------------------------------------------------------
-// No-op context stubs
+// Child trace contexts
 // ---------------------------------------------------------------------------
 
-/**
- * Disabled-only stub for upstream `CodeCellTraceContext`.
- *
- * Upstream exposes a rich lifecycle: `recordInitialResponse`, `recordEnded`,
- * nested tool dispatch start, etc. Those require the code-mode runtime-cell
- * port to land first. This stub keeps the recorder's factory shape usable.
- */
+/** Live/no-op-capable mirror of upstream `CodeCellTraceContext`. */
 export interface CodeCellTraceContext {
   readonly enabled: boolean;
-  /** Stub: no-op until the code-cell lifecycle port lands. */
-  recordEnded(status: string): void;
+  recordStarted(modelVisibleCallId?: string, source?: unknown): void;
+  recordInitialResponse(response: unknown): void;
+  recordEnded(status: string, result?: unknown): void;
 }
 
-/** Disabled-only stub for upstream `ToolDispatchTraceContext`. */
+/** Live/no-op-capable mirror of upstream `ToolDispatchTraceContext`. */
 export interface ToolDispatchTraceContext {
   readonly enabled: boolean;
-  /** Stub: no-op until the tool-dispatch payload port lands. */
-  recordResult(status: string): void;
+  recordResult(status: string, result?: unknown): void;
+  recordCompleted(status?: string, result?: unknown): void;
+  recordFailed(error: unknown): void;
 }
 
-/** Disabled-only stub for upstream `InferenceTraceContext`. */
+/** One inference attempt inside an `InferenceTraceContext`. */
+export interface InferenceTraceAttempt {
+  readonly enabled: boolean;
+  recordCompleted(response?: unknown): void;
+  recordFailed(error: unknown): void;
+}
+
+/** Live/no-op-capable mirror of upstream `InferenceTraceContext`. */
 export interface InferenceTraceContext {
   readonly enabled: boolean;
-  /** Stub: no-op until the inference attempt port lands. */
-  startAttempt(): void;
+  startAttempt(request?: unknown): InferenceTraceAttempt;
 }
 
-/** Disabled-only stub for upstream `CompactionTraceContext`. */
+/** One compaction request attempt. */
+export interface CompactionTraceAttempt {
+  readonly enabled: boolean;
+  recordCompleted(response?: unknown): void;
+  recordFailed(error: unknown): void;
+}
+
+/** Live/no-op-capable mirror of upstream `CompactionTraceContext`. */
 export interface CompactionTraceContext {
   readonly enabled: boolean;
-  /** Stub: no-op until the remote-compaction checkpoint port lands. */
-  recordInstalled(): void;
+  startRequest(request?: unknown): CompactionTraceAttempt;
+  recordInstalled(checkpoint?: unknown): void;
 }
+
+const DISABLED_INFERENCE_ATTEMPT: InferenceTraceAttempt = Object.freeze({
+  enabled: false,
+  recordCompleted: () => {},
+  recordFailed: () => {},
+});
+
+const DISABLED_COMPACTION_ATTEMPT: CompactionTraceAttempt = Object.freeze({
+  enabled: false,
+  recordCompleted: () => {},
+  recordFailed: () => {},
+});
 
 const DISABLED_CODE_CELL_CONTEXT: CodeCellTraceContext = Object.freeze({
   enabled: false,
+  recordStarted: () => {},
+  recordInitialResponse: () => {},
   recordEnded: () => {},
 });
 
 const DISABLED_TOOL_DISPATCH_CONTEXT: ToolDispatchTraceContext = Object.freeze({
   enabled: false,
   recordResult: () => {},
+  recordCompleted: () => {},
+  recordFailed: () => {},
 });
 
 const DISABLED_INFERENCE_CONTEXT: InferenceTraceContext = Object.freeze({
   enabled: false,
-  startAttempt: () => {},
+  startAttempt: () => DISABLED_INFERENCE_ATTEMPT,
 });
 
 const DISABLED_COMPACTION_CONTEXT: CompactionTraceContext = Object.freeze({
   enabled: false,
+  startRequest: () => DISABLED_COMPACTION_ATTEMPT,
   recordInstalled: () => {},
 });
+
+function errorToTraceString(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack || error.message || error.name;
+  }
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // RolloutTraceRecorder — session-scoped handle
@@ -444,6 +533,8 @@ const DISABLED_COMPACTION_CONTEXT: CompactionTraceContext = Object.freeze({
  */
 export class RolloutTraceRecorder {
   private readonly writer: TraceWriter | undefined;
+  private nextToolDispatchOrdinal = 1;
+  private nextInferenceAttemptOrdinal = 1;
 
   private constructor(writer: TraceWriter | undefined) {
     this.writer = writer;
@@ -571,62 +662,267 @@ export class RolloutTraceRecorder {
   }
 
   // --- Higher-level context factories ---------------------------------------
-  // These match upstream shape but always return disabled contexts because
-  // their child subsystems (code-mode runtime, tool-dispatch payloads,
-  // inference attempts, remote compaction) have not been ported yet.
-  // Call sites can use them unconditionally; they land nothing until the
-  // respective port completes. INCOMPLETE relative to upstream.
 
-  /**
-   * INCOMPLETE: always returns a disabled context. See module header.
-   * Upstream: returns a live `CodeCellTraceContext` when enabled.
-   */
-  codeCellTraceContext(_: {
+  codeCellTraceContext(args: {
     readonly threadId: AgentThreadId;
     readonly agencTurnId: AgenCTurnId;
     readonly runtimeCellId: string;
   }): CodeCellTraceContext {
-    return DISABLED_CODE_CELL_CONTEXT;
+    if (!this.writer) return DISABLED_CODE_CELL_CONTEXT;
+    const context: RawTraceEventContext = {
+      threadId: args.threadId,
+      agencTurnId: args.agencTurnId,
+    };
+    const runtimeCellId = args.runtimeCellId;
+    return {
+      enabled: true,
+      recordStarted: (modelVisibleCallId?: string, source?: unknown) => {
+        const sourcePayload =
+          source === undefined
+            ? undefined
+            : this.writeJsonPayloadBestEffort("terminal_runtime_event", source);
+        this.appendWithContextBestEffort(context, {
+          type: "code_cell_started",
+          runtimeCellId,
+          ...(modelVisibleCallId !== undefined ? { modelVisibleCallId } : {}),
+          ...(sourcePayload !== undefined ? { sourcePayload } : {}),
+        });
+      },
+      recordInitialResponse: (response: unknown) => {
+        const responsePayload = this.writeJsonPayloadBestEffort(
+          "terminal_runtime_event",
+          response,
+        );
+        this.appendWithContextBestEffort(context, {
+          type: "code_cell_initial_response",
+          runtimeCellId,
+          ...(responsePayload !== undefined ? { responsePayload } : {}),
+        });
+      },
+      recordEnded: (status: string, result?: unknown) => {
+        const resultPayload =
+          result === undefined
+            ? undefined
+            : this.writeJsonPayloadBestEffort("terminal_runtime_event", result);
+        this.appendWithContextBestEffort(context, {
+          type: "code_cell_ended",
+          runtimeCellId,
+          status,
+          ...(resultPayload !== undefined ? { resultPayload } : {}),
+        });
+      },
+    };
   }
 
-  /**
-   * INCOMPLETE: always returns a disabled context. See module header.
-   * Upstream: returns a live `ToolDispatchTraceContext` when enabled.
-   */
   startToolDispatchTrace(
-    _invocation: () => unknown | undefined,
+    invocation: () => unknown | undefined,
   ): ToolDispatchTraceContext {
-    return DISABLED_TOOL_DISPATCH_CONTEXT;
+    if (!this.writer) return DISABLED_TOOL_DISPATCH_CONTEXT;
+    const captured = this.captureToolInvocation(invocation);
+    const context: RawTraceEventContext = {
+      ...(captured.threadId !== undefined ? { threadId: captured.threadId } : {}),
+      ...(captured.agencTurnId !== undefined
+        ? { agencTurnId: captured.agencTurnId }
+        : {}),
+    };
+    this.appendWithContextBestEffort(context, {
+      type: "tool_dispatch_started",
+      toolCallId: captured.toolCallId,
+      ...(captured.toolName !== undefined ? { toolName: captured.toolName } : {}),
+      ...(captured.requester !== undefined ? { requester: captured.requester } : {}),
+      ...(captured.invocationPayload !== undefined
+        ? { invocationPayload: captured.invocationPayload }
+        : {}),
+    });
+    const recordEnd = (status: string, result?: unknown): void => {
+      const resultPayload =
+        result === undefined
+          ? undefined
+          : this.writeJsonPayloadBestEffort("tool_result", result);
+      this.appendWithContextBestEffort(context, {
+        type: "tool_dispatch_ended",
+        toolCallId: captured.toolCallId,
+        status,
+        ...(resultPayload !== undefined ? { resultPayload } : {}),
+      });
+    };
+    return {
+      enabled: true,
+      recordResult: recordEnd,
+      recordCompleted: (status = "completed", result?: unknown) => {
+        recordEnd(status, result);
+      },
+      recordFailed: (error: unknown) => {
+        recordEnd("failed", { error: errorToTraceString(error) });
+      },
+    };
   }
 
-  /**
-   * INCOMPLETE: always returns a disabled context. See module header.
-   * Upstream: returns a live `InferenceTraceContext` when enabled.
-   */
-  inferenceTraceContext(_: {
+  inferenceTraceContext(args: {
     readonly threadId: AgentThreadId;
     readonly agencTurnId: AgenCTurnId;
     readonly model: string;
     readonly providerName: string;
   }): InferenceTraceContext {
-    return DISABLED_INFERENCE_CONTEXT;
+    if (!this.writer) return DISABLED_INFERENCE_CONTEXT;
+    const context: RawTraceEventContext = {
+      threadId: args.threadId,
+      agencTurnId: args.agencTurnId,
+    };
+    return {
+      enabled: true,
+      startAttempt: (request?: unknown): InferenceTraceAttempt => {
+        const inferenceAttemptId =
+          `${args.agencTurnId}:inference:${this.nextInferenceAttemptOrdinal++}`;
+        const requestPayload =
+          request === undefined
+            ? undefined
+            : this.writeJsonPayloadBestEffort("inference_request", request);
+        this.appendWithContextBestEffort(context, {
+          type: "inference_attempt_started",
+          inferenceAttemptId,
+          model: args.model,
+          providerName: args.providerName,
+          ...(requestPayload !== undefined ? { requestPayload } : {}),
+        });
+        return {
+          enabled: true,
+          recordCompleted: (response?: unknown) => {
+            const responsePayload =
+              response === undefined
+                ? undefined
+                : this.writeJsonPayloadBestEffort("inference_response", response);
+            this.appendWithContextBestEffort(context, {
+              type: "inference_attempt_ended",
+              inferenceAttemptId,
+              status: "completed",
+              ...(responsePayload !== undefined ? { responsePayload } : {}),
+            });
+          },
+          recordFailed: (error: unknown) => {
+            this.appendWithContextBestEffort(context, {
+              type: "inference_attempt_ended",
+              inferenceAttemptId,
+              status: "failed",
+              error: errorToTraceString(error),
+            });
+          },
+        };
+      },
+    };
   }
 
-  /**
-   * INCOMPLETE: always returns a disabled context. See module header.
-   * Upstream: returns a live `CompactionTraceContext` when enabled.
-   */
-  compactionTraceContext(_: {
+  compactionTraceContext(args: {
     readonly threadId: AgentThreadId;
     readonly agencTurnId: AgenCTurnId;
     readonly compactionId: CompactionId;
     readonly model: string;
     readonly providerName: string;
   }): CompactionTraceContext {
-    return DISABLED_COMPACTION_CONTEXT;
+    if (!this.writer) return DISABLED_COMPACTION_CONTEXT;
+    const context: RawTraceEventContext = {
+      threadId: args.threadId,
+      agencTurnId: args.agencTurnId,
+    };
+    return {
+      enabled: true,
+      startRequest: (request?: unknown): CompactionTraceAttempt => {
+        const requestPayload =
+          request === undefined
+            ? undefined
+            : this.writeJsonPayloadBestEffort("compaction_request", request);
+        this.appendWithContextBestEffort(context, {
+          type: "compaction_request_started",
+          compactionId: args.compactionId,
+          model: args.model,
+          providerName: args.providerName,
+          ...(requestPayload !== undefined ? { requestPayload } : {}),
+        });
+        return {
+          enabled: true,
+          recordCompleted: (response?: unknown) => {
+            const responsePayload =
+              response === undefined
+                ? undefined
+                : this.writeJsonPayloadBestEffort("compaction_response", response);
+            this.appendWithContextBestEffort(context, {
+              type: "compaction_request_ended",
+              compactionId: args.compactionId,
+              status: "completed",
+              ...(responsePayload !== undefined ? { responsePayload } : {}),
+            });
+          },
+          recordFailed: (error: unknown) => {
+            this.appendWithContextBestEffort(context, {
+              type: "compaction_request_ended",
+              compactionId: args.compactionId,
+              status: "failed",
+              error: errorToTraceString(error),
+            });
+          },
+        };
+      },
+      recordInstalled: (checkpoint?: unknown) => {
+        const checkpointPayload =
+          checkpoint === undefined
+            ? undefined
+            : this.writeJsonPayloadBestEffort("compaction_checkpoint", checkpoint);
+        this.appendWithContextBestEffort(context, {
+          type: "compaction_installed",
+          compactionId: args.compactionId,
+          ...(checkpointPayload !== undefined ? { checkpointPayload } : {}),
+        });
+      },
+    };
   }
 
   // --- Internal helpers -----------------------------------------------------
+
+  private captureToolInvocation(invocation: () => unknown | undefined): {
+    readonly threadId?: AgentThreadId;
+    readonly agencTurnId?: AgenCTurnId;
+    readonly toolCallId: string;
+    readonly toolName?: string;
+    readonly requester?: string;
+    readonly invocationPayload?: RawPayloadRef;
+  } {
+    let value: unknown;
+    try {
+      value = invocation();
+    } catch (error) {
+      const payload = this.writeJsonPayloadBestEffort("tool_invocation", {
+        error: errorToTraceString(error),
+      });
+      return {
+        toolCallId: `tool:${this.nextToolDispatchOrdinal++}`,
+        ...(payload !== undefined ? { invocationPayload: payload } : {}),
+      };
+    }
+    const record = value !== null && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+    const toolCallId =
+      stringField(record.toolCallId) ??
+      stringField(record.id) ??
+      `tool:${this.nextToolDispatchOrdinal++}`;
+    const payload = this.writeJsonPayloadBestEffort("tool_invocation", value);
+    return {
+      ...(stringField(record.threadId) !== undefined
+        ? { threadId: stringField(record.threadId)! }
+        : {}),
+      ...(stringField(record.agencTurnId) !== undefined
+        ? { agencTurnId: stringField(record.agencTurnId)! }
+        : {}),
+      toolCallId,
+      ...(stringField(record.toolName) !== undefined
+        ? { toolName: stringField(record.toolName)! }
+        : {}),
+      ...(stringField(record.requester) !== undefined
+        ? { requester: stringField(record.requester)! }
+        : {}),
+      ...(payload !== undefined ? { invocationPayload: payload } : {}),
+    };
+  }
 
   private appendBestEffort(payload: RawTraceEventPayload): void {
     if (!this.writer) return;

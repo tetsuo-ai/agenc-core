@@ -19,6 +19,10 @@ export interface VirtualScrollWindow {
   readonly topSpacer: number;
   readonly bottomSpacer: number;
   readonly measureRef: (key: string) => (el: DOMElement | null) => void;
+  readonly getItemTop: (index: number) => number;
+  readonly getItemElement: (index: number) => DOMElement | null;
+  readonly getItemHeight: (index: number) => number | undefined;
+  readonly scrollToIndex: (index: number) => void;
 }
 
 function buildOffsets(
@@ -223,10 +227,47 @@ export function useVirtualScroll(
     return cached;
   }, []);
 
+  const getItemTop = useCallback(
+    (index: number): number => {
+      if (index < 0 || index >= itemKeys.length) return -1;
+      return offsets[index] ?? -1;
+    },
+    [itemKeys.length, offsets],
+  );
+
+  const getItemElement = useCallback(
+    (index: number): DOMElement | null => {
+      const key = itemKeys[index];
+      return key ? itemRefs.current.get(key) ?? null : null;
+    },
+    [itemKeys],
+  );
+
+  const getItemHeight = useCallback(
+    (index: number): number | undefined => {
+      const key = itemKeys[index];
+      return key ? heightsRef.current.get(key) : undefined;
+    },
+    [itemKeys],
+  );
+
+  const scrollToIndex = useCallback(
+    (index: number): void => {
+      if (index < 0 || index >= itemKeys.length) return;
+      scrollRef.current?.scrollTo(Math.max(0, offsets[index] ?? 0));
+      invalidate();
+    },
+    [invalidate, itemKeys.length, offsets, scrollRef],
+  );
+
   return {
     range: [start, end],
     topSpacer,
     bottomSpacer,
     measureRef,
+    getItemTop,
+    getItemElement,
+    getItemHeight,
+    scrollToIndex,
   };
 }

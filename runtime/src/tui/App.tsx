@@ -94,9 +94,11 @@ import {
 import { readPickerCommandIntent } from "./picker-intents.js";
 import { usePickerController } from "./picker-controller.js";
 import { useTuiConfigView } from "./config-view.js";
+import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import {
   buildStatusLineSession,
 } from "./status-derivation.js";
+import { createVoiceInputService } from "./voice-input.js";
 import type { PendingPermissionRequest } from "../permissions/context.js";
 import {
   getNextPermissionMode,
@@ -104,6 +106,10 @@ import {
   type BypassConsentRequiredError,
 } from "../permissions/mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
+import { checkNpmUpdate } from "../utils/auto-updater.js";
+
+const RUNTIME_PACKAGE_NAME = "@tetsuo-ai/runtime";
+const RUNTIME_PACKAGE_VERSION = "0.2.0";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public surface
@@ -317,6 +323,8 @@ function TUIRoot({
   const setKeybindingContext = useSetKeybindingContext();
   const [transcriptMode, setTranscriptMode] = useState(false);
   const [showAllInTranscript, setShowAllInTranscript] = useState(false);
+  const [updateNotice, setUpdateNotice] = useState<string | null>(null);
+  const { columns } = useTerminalSize();
 
   // Derive transcript messages from phase events on every render. The
   // adapter is pure and cheap, so useMemo's only job here is to keep
@@ -334,10 +342,52 @@ function TUIRoot({
   const statusLineItems =
     tuiConfigView.statusLineItems ?? DEFAULT_STATUS_LINE_ITEMS;
   const composerAttachmentsConfig = tuiConfigView.composerAttachmentsConfig;
+  const layoutConfig = tuiConfigView.tuiLayout;
+  const multiPane =
+    layoutConfig?.mode === "multi-pane" &&
+    (layoutConfig.sidePane ?? "status") !== "none" &&
+    columns >= (layoutConfig.minColumns ?? 120);
+  const voiceInputService = useMemo(
+    () =>
+      createVoiceInputService({
+        config: tuiConfigView.voiceInput,
+        cwd:
+          typeof session.cwd === "string" && session.cwd.length > 0
+            ? session.cwd
+            : process.cwd(),
+      }),
+    [session.cwd, tuiConfigView.voiceInput],
+  );
 
   useEffect(() => {
     setStreaming(isStreaming);
   }, [isStreaming, setStreaming]);
+
+  useEffect(() => {
+    if (tuiConfigView.autoUpdates !== true) {
+      setUpdateNotice(null);
+      return undefined;
+    }
+    let alive = true;
+    void checkNpmUpdate({
+      packageName: RUNTIME_PACKAGE_NAME,
+      currentVersion: RUNTIME_PACKAGE_VERSION,
+    })
+      .then((result) => {
+        if (!alive) return;
+        setUpdateNotice(
+          result.updateAvailable && result.latestVersion
+            ? `${result.packageName} ${result.latestVersion} available`
+            : null,
+        );
+      })
+      .catch(() => {
+        if (alive) setUpdateNotice(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tuiConfigView.autoUpdates]);
 
   useEffect(() => {
     if (overlay.overlays.length > 0) return;
@@ -399,8 +449,11 @@ function TUIRoot({
           readonly appsManager?: ComposerSession["appsManager"];
         }
       ).appsManager,
+      ...(voiceInputService !== undefined
+        ? { voiceInput: () => voiceInputService.transcribeOnce() }
+        : {}),
     }),
-    [session],
+    [session, voiceInputService],
   );
   // Prefer the live AppState model (updated synchronously by `/model`)
   // over the seeded prop so the status bar refreshes on the next render
@@ -568,17 +621,34 @@ function TUIRoot({
       width="100%"
     >
       {/* transcript region (middle, flex:1) */}
-      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
-        <StatusNotices
-          session={statusLineSession}
-          messages={messages}
-          pendingApprovalCount={pendingRequests.length}
-        />
-        <MessageList
-          messages={messages}
-          isStreaming={isStreaming}
-          verbose={transcriptMode && showAllInTranscript}
-        />
+      <Box
+        flexDirection={multiPane ? "row" : "column"}
+        flexGrow={1}
+        flexShrink={1}
+        minHeight={0}
+      >
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+          <StatusNotices
+            session={statusLineSession}
+            messages={messages}
+            pendingApprovalCount={pendingRequests.length}
+          />
+          <MessageList
+            messages={messages}
+            isStreaming={isStreaming}
+            verbose={transcriptMode && showAllInTranscript}
+          />
+        </Box>
+        {multiPane ? (
+          <SidePane
+            model={effectiveModel}
+            mode={mode}
+            cwd={composerSession.cwd}
+            messageCount={messages.length}
+            pendingApprovalCount={pendingRequests.length}
+            isStreaming={isStreaming}
+          />
+        ) : null}
       </Box>
 
       {/* overlay stack rendered above the composer so modals stay inside
@@ -615,6 +685,9 @@ function TUIRoot({
               session={statusLineSession}
               cwd={composerSession.cwd}
             />
+            {updateNotice !== null ? (
+              <Text dim>{updateNotice}</Text>
+            ) : null}
           </>
         ) : null}
       </Box>
@@ -627,6 +700,44 @@ function TUIRoot({
 
 function OverlayFrame({ children }: { readonly children: ReactNode }) {
   return <Box flexDirection="column">{children}</Box>;
+}
+
+function SidePane({
+  model,
+  mode,
+  cwd,
+  messageCount,
+  pendingApprovalCount,
+  isStreaming,
+}: {
+  readonly model?: string;
+  readonly mode: string;
+  readonly cwd: string;
+  readonly messageCount: number;
+  readonly pendingApprovalCount: number;
+  readonly isStreaming: boolean;
+}): React.ReactElement {
+  const cwdLabel = cwd.split(/[\\/]/u).filter(Boolean).at(-1) ?? cwd;
+  return (
+    <Box
+      flexDirection="column"
+      flexShrink={0}
+      width={32}
+      paddingLeft={1}
+      borderStyle="single"
+      borderColor="ansi:blackBright"
+    >
+      <Text dim>Session</Text>
+      <Text>{model ?? "model unset"}</Text>
+      <Text dim>{mode}</Text>
+      <Text dim>{cwdLabel}</Text>
+      <Text dim>{`${messageCount} messages`}</Text>
+      {pendingApprovalCount > 0 ? (
+        <Text color="yellow">{`${pendingApprovalCount} approvals`}</Text>
+      ) : null}
+      {isStreaming ? <Text color="cyan">streaming</Text> : null}
+    </Box>
+  );
 }
 
 function TranscriptModeFooter({

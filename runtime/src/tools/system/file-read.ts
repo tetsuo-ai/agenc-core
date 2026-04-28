@@ -14,11 +14,9 @@
  *     base64-encoded, and returned via `contentItems` as
  *     `input_image` with a data URL. The text `content` carries a
  *     short summary so the AgenC runtime envelope is never empty.
- *   - PDF schema is exposed (the `pages` arg) but actual PDF parsing
- *     is currently a polite "not implemented" — AgenC depended on
- *     `pdfjs-dist`/`poppler-utils`/`sharp` which AgenC has not pulled
- *     in. Returning an actionable error preserves the surface shape
- *     while we defer the dep decision.
+ *   - PDF text extraction uses the upstream-style Poppler path
+ *     (`pdfinfo` + `pdftotext`) with page-range guards and a large-PDF
+ *     prompt that asks the model to request explicit pages.
  *   - Binary files that aren't images or PDFs return an actionable
  *     error directing the model to use a different tool, instead of
  *     leaking unprintable bytes into the conversation.
@@ -37,6 +35,7 @@
  * @module
  */
 
+import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { extname, isAbsolute, resolve } from "node:path";
 
@@ -78,6 +77,14 @@ const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
 
 /** Default output cap for image reads in bytes. */
 const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** Default output cap for PDF files in bytes. */
+const DEFAULT_MAX_PDF_BYTES = 32 * 1024 * 1024;
+
+/** Upstream PDF safety limits. */
+const PDF_LARGE_PAGE_THRESHOLD = 10;
+const PDF_MAX_PAGES_PER_REQUEST = 20;
+const PDF_SUBPROCESS_TIMEOUT_MS = 120_000;
 
 /** Default upper line count when no explicit `limit` is supplied. */
 const DEFAULT_LINE_LIMIT = 2000;
@@ -174,6 +181,8 @@ export interface FileReadToolConfig {
   readonly maxTextBytes?: number;
   /** Raw byte cap for image reads (default: 10 MB). */
   readonly maxImageBytes?: number;
+  /** Raw byte cap for PDF reads (default: 32 MB). */
+  readonly maxPdfBytes?: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -279,6 +288,97 @@ function sliceLines(text: string, offset: number, limit: number | undefined): Sl
     numLines: selected.length,
     isPartial,
   };
+}
+
+interface CommandResult {
+  readonly exitCode: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+function execFileNoThrow(
+  command: string,
+  args: readonly string[],
+  timeoutMs = PDF_SUBPROCESS_TIMEOUT_MS,
+): Promise<CommandResult> {
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      [...args],
+      {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: timeoutMs,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        const exitCode =
+          error && typeof (error as { code?: unknown }).code === "number"
+            ? ((error as { code: number }).code)
+            : error
+              ? 1
+              : 0;
+        resolve({
+          exitCode,
+          stdout: typeof stdout === "string" ? stdout : String(stdout ?? ""),
+          stderr: typeof stderr === "string" ? stderr : String(stderr ?? ""),
+        });
+      },
+    );
+  });
+}
+
+function parsePDFPageRange(
+  pages: unknown,
+): { firstPage: number; lastPage: number } | { err: string } | null {
+  if (pages === undefined || pages === null) return null;
+  if (typeof pages !== "string" || pages.trim().length === 0) {
+    return { err: "pages must be a non-empty string when provided" };
+  }
+
+  const trimmed = pages.trim();
+  if (trimmed.endsWith("-")) {
+    const firstPage = Number.parseInt(trimmed.slice(0, -1), 10);
+    if (!Number.isFinite(firstPage) || firstPage < 1) {
+      return { err: `Invalid PDF page range: ${trimmed}` };
+    }
+    return { firstPage, lastPage: Infinity };
+  }
+
+  const dash = trimmed.indexOf("-");
+  if (dash === -1) {
+    const page = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(page) || page < 1) {
+      return { err: `Invalid PDF page range: ${trimmed}` };
+    }
+    return { firstPage: page, lastPage: page };
+  }
+
+  const firstPage = Number.parseInt(trimmed.slice(0, dash), 10);
+  const lastPage = Number.parseInt(trimmed.slice(dash + 1), 10);
+  if (
+    !Number.isFinite(firstPage) ||
+    !Number.isFinite(lastPage) ||
+    firstPage < 1 ||
+    lastPage < firstPage
+  ) {
+    return { err: `Invalid PDF page range: ${trimmed}` };
+  }
+  return { firstPage, lastPage };
+}
+
+function pageRangeLength(range: { firstPage: number; lastPage: number }): number {
+  if (range.lastPage === Infinity) return Infinity;
+  return range.lastPage - range.firstPage + 1;
+}
+
+async function getPDFPageCount(filePath: string): Promise<number | null> {
+  const result = await execFileNoThrow("pdfinfo", [filePath], 10_000);
+  if (result.exitCode !== 0) return null;
+  const match = /^Pages:\s+(\d+)/mu.exec(result.stdout);
+  if (!match) return null;
+  const count = Number.parseInt(match[1]!, 10);
+  return Number.isFinite(count) && count > 0 ? count : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -431,6 +531,148 @@ interface ImageReadOpts {
   readonly maxImageBytes: number;
 }
 
+interface PDFReadOpts {
+  readonly displayPath: string;
+  readonly maxPdfBytes: number;
+  readonly pages: unknown;
+  readonly maxTokens: number;
+}
+
+async function readPDFFile(
+  resolvedPath: ResolvedPath,
+  opts: PDFReadOpts,
+  sessionId: string | undefined,
+): Promise<ToolResult> {
+  const fileStats = await stat(resolvedPath.canonical);
+  if (!fileStats.isFile()) {
+    return errorResult("Path is not a regular file");
+  }
+  if (fileStats.size === 0) {
+    return errorResult(`PDF file is empty: ${opts.displayPath}`);
+  }
+  if (fileStats.size > opts.maxPdfBytes) {
+    return errorResult(
+      `PDF size ${formatBytes(fileStats.size)} exceeds the PDF-read limit of ${formatBytes(
+        opts.maxPdfBytes,
+      )}. Provide a smaller PDF or extract the relevant pages first.`,
+    );
+  }
+
+  const header = (await readFile(resolvedPath.canonical))
+    .subarray(0, 5)
+    .toString("ascii");
+  if (!header.startsWith("%PDF-")) {
+    return errorResult(
+      `File is not a valid PDF (missing %PDF- header): ${opts.displayPath}`,
+    );
+  }
+
+  const parsedRange = parsePDFPageRange(opts.pages);
+  if (parsedRange && "err" in parsedRange) {
+    return errorResult(parsedRange.err);
+  }
+
+  const pageCount = await getPDFPageCount(resolvedPath.canonical);
+  const selectedRange =
+    parsedRange ??
+    (pageCount === null
+      ? null
+      : { firstPage: 1, lastPage: pageCount });
+
+  if (
+    pageCount !== null &&
+    parsedRange === null &&
+    pageCount > PDF_LARGE_PAGE_THRESHOLD
+  ) {
+    return errorResult(
+      `PDF has ${pageCount} pages. Provide the pages parameter for PDFs over ${PDF_LARGE_PAGE_THRESHOLD} pages (maximum ${PDF_MAX_PAGES_PER_REQUEST} pages per request).`,
+    );
+  }
+  if (
+    selectedRange !== null &&
+    pageRangeLength(selectedRange) > PDF_MAX_PAGES_PER_REQUEST
+  ) {
+    return errorResult(
+      `PDF page range is too large. Maximum ${PDF_MAX_PAGES_PER_REQUEST} pages per request.`,
+    );
+  }
+
+  const args = ["-layout", "-nopgbrk", "-q"];
+  if (selectedRange !== null) {
+    args.push("-f", String(selectedRange.firstPage));
+    if (selectedRange.lastPage !== Infinity) {
+      args.push("-l", String(selectedRange.lastPage));
+    }
+  }
+  args.push(resolvedPath.canonical, "-");
+
+  const extracted = await execFileNoThrow("pdftotext", args);
+  if (extracted.exitCode !== 0) {
+    const detail = extracted.stderr.trim();
+    return errorResult(
+      detail.length > 0
+        ? `PDF text extraction failed: ${detail}`
+        : "PDF text extraction failed. Install poppler-utils (`pdftotext`) to enable PDF reading.",
+    );
+  }
+
+  const text = extracted.stdout.trimEnd();
+  const estimated = estimateTokens(text);
+  if (estimated > opts.maxTokens) {
+    return errorResult(
+      `PDF content (${estimated} tokens) exceeds maximum allowed tokens (${opts.maxTokens}). Provide a narrower pages range.`,
+    );
+  }
+
+  recordSessionRead(sessionId, resolvedPath.canonical, {
+    content: text,
+    timestamp:
+      typeof fileStats.mtimeMs === "number" && Number.isFinite(fileStats.mtimeMs)
+        ? fileStats.mtimeMs
+        : Date.now(),
+    viewKind: parsedRange ? "partial" : "full",
+    ...(parsedRange ? { readOffset: selectedRange?.firstPage ?? 1 } : {}),
+    ...(parsedRange && selectedRange && selectedRange.lastPage !== Infinity
+      ? { readLimit: pageRangeLength(selectedRange) }
+      : {}),
+    ...(parsedRange ? {} : { rawContent: text }),
+  });
+
+  if (text.length === 0) {
+    return {
+      content:
+        "<system-reminder>Warning: the PDF exists but no extractable text was found.</system-reminder>",
+      metadata: {
+        filePath: opts.displayPath,
+        mediaType: "application/pdf",
+        totalPages: pageCount,
+        isPartial: parsedRange !== null,
+      },
+    };
+  }
+
+  const rangeLabel =
+    selectedRange === null
+      ? pageCount === null
+        ? "all detected text"
+        : `pages 1-${pageCount}`
+      : selectedRange.lastPage === Infinity
+        ? `pages ${selectedRange.firstPage}-end`
+        : `pages ${selectedRange.firstPage}-${selectedRange.lastPage}`;
+
+  return {
+    content: `Read PDF ${opts.displayPath} (${rangeLabel})\n\n${text}`,
+    metadata: {
+      filePath: opts.displayPath,
+      mediaType: "application/pdf",
+      sizeBytes: fileStats.size,
+      totalPages: pageCount,
+      pageRange: rangeLabel,
+      isPartial: parsedRange !== null,
+    },
+  };
+}
+
 async function readImageFile(
   resolvedPath: ResolvedPath,
   opts: ImageReadOpts,
@@ -495,18 +737,6 @@ async function readImageFile(
   };
 }
 
-// PDF support is intentionally NOT implemented yet — AgenC depends
-// on `pdfjs-dist`/`poppler-utils`/`sharp`, which the AgenC runtime does
-// not currently bundle. Returning an actionable error here preserves
-// the schema and lets the parent decide which dep to take on later.
-function pdfNotImplemented(displayPath: string): ToolResult {
-  return errorResult(
-    `PDF reading is not yet implemented in this build. ` +
-      `Path: ${displayPath}. Use a shell tool (e.g. \`pdftotext\`) to ` +
-      `extract text, or convert to images and read them as image files.`,
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Tool factory
 // ─────────────────────────────────────────────────────────────────────
@@ -524,6 +754,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
   const maxTokens = config.maxTokens ?? envOrDefault(DEFAULT_MAX_OUTPUT_TOKENS);
   const maxTextBytes = config.maxTextBytes ?? DEFAULT_MAX_TEXT_BYTES;
   const maxImageBytes = config.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
+  const maxPdfBytes = config.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
 
   return {
     name: FILE_READ_TOOL_NAME,
@@ -599,7 +830,16 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
           );
         }
         if (isPdf) {
-          return pdfNotImplemented(filePath);
+          return await readPDFFile(
+            resolved,
+            {
+              displayPath: filePath,
+              maxPdfBytes,
+              pages: args.pages,
+              maxTokens,
+            },
+            sessionId,
+          );
         }
         return await readTextFile(
           resolved,

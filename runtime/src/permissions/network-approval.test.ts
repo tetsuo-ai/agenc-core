@@ -616,15 +616,39 @@ describe("NetworkApprovalService — abort signal", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Deferred-mode stub
+// Deferred-mode registrations
 // ─────────────────────────────────────────────────────────────────────
 
-describe("NetworkApprovalService — deferred stub", () => {
-  test("requestDeferredApproval falls through to immediate decision path", async () => {
+describe("NetworkApprovalService — deferred registrations", () => {
+  test("requestDeferredApproval returns a deferred handle for allowed requests", async () => {
     const svc = new NetworkApprovalService();
-    const decision = await svc.requestDeferredApproval(
+    const result = await svc.requestDeferredApproval(
       baseOpts({ resolver: staticResolver({ kind: "approved" }) }),
     );
-    expect(decision).toEqual({ kind: "allow" });
+    expect(result.kind).toBe("allow");
+    expect(result.deferredApproval).toBeDefined();
+    expect(svc.activeApprovalSize()).toBe(1);
+    await result.deferredApproval!.finish();
+    expect(svc.activeApprovalSize()).toBe(0);
+  });
+
+  test("denied deferred requests do not leave active registrations", async () => {
+    const svc = new NetworkApprovalService();
+    const result = await svc.requestDeferredApproval(
+      baseOpts({ resolver: staticResolver({ kind: "denied" }) }),
+    );
+    expect(result.kind).toBe("deny");
+    expect(result.deferredApproval).toBeUndefined();
+    expect(svc.activeApprovalSize()).toBe(0);
+  });
+
+  test("manual active registrations can be converted to deferred and finished", async () => {
+    const svc = new NetworkApprovalService();
+    const active = svc.beginNetworkApproval(baseOpts({ mode: "immediate" }));
+    expect(svc.activeApprovalSize()).toBe(1);
+    const deferred = active.intoDeferred();
+    expect(deferred.id).toBe(active.id);
+    await deferred.finish();
+    expect(svc.activeApprovalSize()).toBe(0);
   });
 });

@@ -203,6 +203,78 @@ describe("RolloutTraceRecorder.createInRootForTest — filesystem semantics", ()
     recorder.close();
   });
 
+  test("enabled child contexts emit code, tool, inference, and compaction events", () => {
+    const recorder = RolloutTraceRecorder.createInRootForTest(root, "thread-h");
+    const codeCell = recorder.codeCellTraceContext({
+      threadId: "thread-h",
+      agencTurnId: "turn-1",
+      runtimeCellId: "cell-1",
+    });
+    expect(codeCell.enabled).toBe(true);
+    codeCell.recordStarted("call-1", { source: "1 + 1" });
+    codeCell.recordInitialResponse({ stdout: "2" });
+    codeCell.recordEnded("completed", { exitCode: 0 });
+
+    const dispatch = recorder.startToolDispatchTrace(() => ({
+      threadId: "thread-h",
+      agencTurnId: "turn-1",
+      toolCallId: "tool-1",
+      toolName: "FileRead",
+      requester: "model",
+      args: { file_path: "README.md" },
+    }));
+    expect(dispatch.enabled).toBe(true);
+    dispatch.recordCompleted("completed", { ok: true });
+
+    const inference = recorder.inferenceTraceContext({
+      threadId: "thread-h",
+      agencTurnId: "turn-1",
+      model: "m",
+      providerName: "p",
+    });
+    const inferenceAttempt = inference.startAttempt({ messages: [] });
+    expect(inferenceAttempt.enabled).toBe(true);
+    inferenceAttempt.recordCompleted({ id: "resp-1" });
+
+    const compaction = recorder.compactionTraceContext({
+      threadId: "thread-h",
+      agencTurnId: "turn-1",
+      compactionId: "compact-1",
+      model: "m",
+      providerName: "p",
+    });
+    const compactionAttempt = compaction.startRequest({ input: [] });
+    expect(compactionAttempt.enabled).toBe(true);
+    compactionAttempt.recordCompleted({ output: [] });
+    compaction.recordInstalled({ replacementHistory: [] });
+
+    recorder.flush();
+    const events = readEventLog(recorder.bundleDir!);
+    expect(events.map((e) => e.payload.type)).toEqual([
+      "rollout_started",
+      "code_cell_started",
+      "code_cell_initial_response",
+      "code_cell_ended",
+      "tool_dispatch_started",
+      "tool_dispatch_ended",
+      "inference_attempt_started",
+      "inference_attempt_ended",
+      "compaction_request_started",
+      "compaction_request_ended",
+      "compaction_installed",
+    ]);
+    expect(
+      events.every(
+        (e) =>
+          e.payload.type === "rollout_started" ||
+          (e.threadId === "thread-h" && e.agencTurnId === "turn-1"),
+      ),
+    ).toBe(true);
+    const payloadFiles = readdirSync(join(recorder.bundleDir!, "payloads"));
+    expect(payloadFiles.length).toBeGreaterThan(0);
+    recorder.close();
+  });
+
   test("event sequence numbers are monotonic across mixed lifecycle calls", () => {
     const recorder = RolloutTraceRecorder.createInRootForTest(root, "thread-f");
     recorder.recordThreadStarted(sampleMetadata({ threadId: "thread-f" }));

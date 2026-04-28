@@ -14,17 +14,10 @@
  *
  * AgenC adaptations
  * -----------------
- *   - upstream's `useVirtualScroll` returned a much wider surface than
- *     AgenC's: `offsets`, `getItemTop`, `getItemElement`, `getItemHeight`,
- *     `spacerRef`, `scrollToIndex`. AgenC's hook (`tui/hooks/useVirtualScroll.ts`)
- *     currently exposes only `range`, `topSpacer`, `bottomSpacer`, and
- *     `measureRef`. The two-phase jump engine, message-relative position
- *     scan, sticky-prompt tracker, and search-anchor logic from upstream
- *     therefore degrade to the methods the hook supports today; the rest
- *     of the `JumpHandle` API is exported but the index-based methods are
- *     stubbed with `// TODO(useVirtualScroll-extension)` notes so the lead
- *     can broaden the hook in a future tranche without changing this
- *     component's signature.
+ *   - `useVirtualScroll` exposes the upstream navigation seam
+ *     (`getItemTop`, `getItemElement`, `getItemHeight`, `scrollToIndex`)
+ *     so `JumpHandle` methods can move to offscreen rows instead of
+ *     silently no-oping.
  *   - `useSearchHighlight` from `tui/ink/hooks/use-search-highlight.js`
  *     is wired for the screen-buffer overlay path so a future search box
  *     can call `setSearchQuery` and have all visible matches inverted.
@@ -50,14 +43,18 @@ import type { TranscriptMessage } from "./MessageList.js";
 import { OffscreenFreeze } from "./OffscreenFreeze.js";
 import { useVirtualScroll } from "../hooks/useVirtualScroll.js";
 
+const HEADROOM_ROWS = 3;
+
 /**
  * Imperative handle for transcript navigation.
  *
- * `jumpToIndex`, `nextMatch`, `prevMatch`, and `setAnchor` require
- * scroll-position arithmetic that AgenC's `useVirtualScroll` doesn't yet
- * expose. They are wired to no-op stubs that log a TODO at first use.
- * `setSearchQuery` and `disarmSearch` route through the screen-buffer
- * highlight (`useSearchHighlight`) which works today.
+ * Search/jump navigation mirrors upstream's high-level contract:
+ * `setSearchQuery` builds a message-index match list, `nextMatch` and
+ * `prevMatch` cycle through it, and `jumpToIndex` delegates to the
+ * virtual-scroll hook so offscreen rows are mounted before the next paint.
+ * AgenC's reduced renderer does not yet scan per-cell match coordinates,
+ * so the screen-buffer overlay still highlights visible text by query while
+ * navigation lands at the matched message row.
  */
 export interface JumpHandle {
   readonly jumpToIndex: (index: number) => void;
@@ -166,31 +163,63 @@ export function VirtualMessageList({
   const searchAnchorRef = useRef<number>(-1);
   const lastQueryRef = useRef<string>("");
   const matchCountRef = useRef<number>(0);
+  const matchIndicesRef = useRef<number[]>([]);
+  const matchPtrRef = useRef<number>(0);
   const indexWarmedRef = useRef<boolean>(false);
 
-  const recomputeMatchCount = useCallback(
-    (query: string): number => {
-      if (query.length === 0) return 0;
+  const recomputeMatches = useCallback(
+    (query: string): number[] => {
+      if (query.length === 0) return [];
       const lq = query.toLowerCase();
-      let count = 0;
-      for (const message of messages) {
+      const matches: number[] = [];
+      for (let index = 0; index < messages.length; index += 1) {
+        const message = messages[index]!;
         const text = extractSearchText(message);
-        if (text.indexOf(lq) >= 0) count += 1;
+        if (text.indexOf(lq) >= 0) matches.push(index);
       }
-      return count;
+      return matches;
     },
     [extractSearchText, messages],
+  );
+
+  const jumpToIndex = useCallback(
+    (index: number): void => {
+      if (!Number.isFinite(index)) return;
+      const bounded = Math.max(0, Math.min(messages.length - 1, Math.trunc(index)));
+      const top = window.getItemTop(bounded);
+      if (top >= 0) {
+        scrollRef.current?.scrollTo(Math.max(0, top - HEADROOM_ROWS));
+        return;
+      }
+      window.scrollToIndex(bounded);
+    },
+    [messages.length, scrollRef, window],
+  );
+
+  const publishMatchPosition = useCallback(
+    (matches: readonly number[], ptr: number): void => {
+      const total = matches.length;
+      matchCountRef.current = total;
+      onSearchMatchesChange?.(total, total > 0 ? ptr + 1 : 0);
+    },
+    [onSearchMatchesChange],
   );
 
   const setSearchQuery = useCallback(
     (query: string): void => {
       lastQueryRef.current = query;
       highlight.setQuery(query);
-      const total = recomputeMatchCount(query);
-      matchCountRef.current = total;
-      onSearchMatchesChange?.(total, total > 0 ? 1 : 0);
+      const matches = recomputeMatches(query);
+      matchIndicesRef.current = matches;
+      matchPtrRef.current = 0;
+      publishMatchPosition(matches, 0);
+      if (matches.length > 0) {
+        jumpToIndex(matches[0]!);
+      } else if (searchAnchorRef.current >= 0) {
+        scrollRef.current?.scrollTo(searchAnchorRef.current);
+      }
     },
-    [highlight, onSearchMatchesChange, recomputeMatchCount],
+    [highlight, jumpToIndex, publishMatchPosition, recomputeMatches, scrollRef],
   );
 
   const setAnchor = useCallback((): void => {
@@ -217,27 +246,23 @@ export function VirtualMessageList({
     return Math.round(now() - tStart);
   }, [extractSearchText, messages]);
 
-  // TODO(useVirtualScroll-extension): the next/prev/jumpToIndex APIs need
-  // `getItemTop`/`getItemElement`/`scrollToIndex` plumbing from
-  // `tui/hooks/useVirtualScroll.ts`. Until that lands they short-circuit
-  // to no-ops that update the match-count badge so callers don't break.
   const nextMatch = useCallback((): void => {
-    const total = matchCountRef.current;
-    if (total <= 0) return;
-    onSearchMatchesChange?.(total, 1);
-  }, [onSearchMatchesChange]);
+    const matches = matchIndicesRef.current;
+    if (matches.length <= 0) return;
+    const ptr = (matchPtrRef.current + 1) % matches.length;
+    matchPtrRef.current = ptr;
+    publishMatchPosition(matches, ptr);
+    jumpToIndex(matches[ptr]!);
+  }, [jumpToIndex, publishMatchPosition]);
 
   const prevMatch = useCallback((): void => {
-    const total = matchCountRef.current;
-    if (total <= 0) return;
-    onSearchMatchesChange?.(total, total);
-  }, [onSearchMatchesChange]);
-
-  const jumpToIndex = useCallback((_index: number): void => {
-    void _index;
-    // TODO(useVirtualScroll-extension): scroll the viewport so message
-    // index `_index` lands HEADROOM rows below the viewport top.
-  }, []);
+    const matches = matchIndicesRef.current;
+    if (matches.length <= 0) return;
+    const ptr = (matchPtrRef.current - 1 + matches.length) % matches.length;
+    matchPtrRef.current = ptr;
+    publishMatchPosition(matches, ptr);
+    jumpToIndex(matches[ptr]!);
+  }, [jumpToIndex, publishMatchPosition]);
 
   useImperativeHandle(
     jumpRef,

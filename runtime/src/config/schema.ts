@@ -38,6 +38,8 @@ export type ServiceTier = "fast" | "flex";
 
 export type ApprovalsReviewer = "user" | "auto_review" | "guardian_subagent";
 
+export type EditorMode = "default" | "vim";
+
 /**
  * Permission mode variants accepted by the runtime. Mirrors the
  * `PermissionMode` union in `src/permissions/types.ts` — kept inline here
@@ -213,6 +215,18 @@ export interface AttachmentsConfig {
   readonly allowedRoots?: readonly string[];
 }
 
+export interface VoiceInputConfig {
+  readonly enabled?: boolean;
+  readonly command?: string;
+  readonly timeout_ms?: number;
+}
+
+export interface TuiLayoutConfig {
+  readonly mode?: "single" | "multi-pane";
+  readonly sidePane?: "status" | "context" | "none";
+  readonly minColumns?: number;
+}
+
 /**
  * Permissions block as it appears in `~/.agenc/config.toml` (or any
  * settings.json the loader folds in). Mirrors the subset of
@@ -312,6 +326,9 @@ export interface AgenCConfig {
   readonly statusLine?: PartialStatusLineConfig;
   readonly outputStyle?: PartialOutputStyleConfig;
   readonly attachments?: AttachmentsConfig;
+  readonly editorMode?: EditorMode;
+  readonly voiceInput?: VoiceInputConfig;
+  readonly tuiLayout?: TuiLayoutConfig;
   readonly telemetryOptIn?: boolean;
 
   // ── AgenC-specific additions ──────────────────────────────────────
@@ -365,6 +382,11 @@ export interface AgenCConfig {
  *
  * Lit up by T13 closeout:
  *   - attachments      → see `AttachmentsConfig` above.
+ *
+ * Lit up by runtime/TUI upstream closeout:
+ *   - editorMode       → see `EditorMode` above.
+ *   - voiceInput       → see `VoiceInputConfig` above.
+ *   - tuiLayout        → see `TuiLayoutConfig` above.
  *
  * Adding one of these to the schema means: (a) add it to
  * `KNOWN_CONFIG_KEYS`, (b) add a typed field to `AgenCConfig`, (c)
@@ -427,6 +449,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "statusLine",
   "outputStyle",
   "attachments",
+  "editorMode",
+  "voiceInput",
+  "tuiLayout",
   "telemetryOptIn",
   "toolBudget",
   "stream_watchdog_timeout_ms",
@@ -457,6 +482,16 @@ export function defaultConfig(): AgenCConfig {
     project_doc_max_bytes: 32_768,
     stream_watchdog_timeout_ms: 30_000,
     max_turns: 50,
+    autoUpdates: false,
+    editorMode: "default" as EditorMode,
+    voiceInput: Object.freeze({
+      enabled: false,
+    }) as VoiceInputConfig,
+    tuiLayout: Object.freeze({
+      mode: "single",
+      sidePane: "status",
+      minColumns: 120,
+    }) as TuiLayoutConfig,
     toolBudget: Object.freeze({
       max_calls_per_turn: 32,
       max_bytes_per_call: 256_000,

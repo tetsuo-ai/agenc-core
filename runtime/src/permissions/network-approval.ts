@@ -14,8 +14,8 @@
  *   - Wildcard/URL matching — T13 upstream allowlist.
  *   - Execpolicy amendment persistence backend — T11 just calls the
  *     `persistAmendment` hook; T12/T13 wires the actual on-disk write.
- *   - Deferred long-running tool coordination — T12/T13; `requestDeferredApproval`
- *     stub falls through to the immediate path.
+ *   - Wildcard process-level network attribution — callers must still pass
+ *     the host key being approved.
  *
  * Invariants:
  *   - Exact AgenC runtime short-circuit order: sandbox gate, then approval-policy
@@ -30,6 +30,8 @@
  *
  * @module
  */
+
+import { randomUUID } from "node:crypto";
 
 import { AsyncLock } from "./_deps/async-lock.js";
 
@@ -271,6 +273,64 @@ export interface RequestNetworkApprovalOptions {
   readonly signal?: AbortSignal;
 }
 
+export type NetworkApprovalOutcome =
+  | { readonly kind: "allowed" }
+  | { readonly kind: "denied_by_user"; readonly reason?: string }
+  | { readonly kind: "denied_by_policy"; readonly reason: string }
+  | { readonly kind: "cancelled"; readonly reason?: string };
+
+export interface NetworkApprovalRegistration {
+  readonly id: string;
+  readonly key: HostApprovalKey;
+  readonly mode: NetworkApprovalMode;
+  readonly context: NetworkApprovalContext;
+  readonly createdAtUnixMs: number;
+}
+
+interface MutableNetworkApprovalRegistration {
+  readonly registration: NetworkApprovalRegistration;
+  state: "active" | "deferred" | "finished";
+  outcome: NetworkApprovalOutcome | null;
+}
+
+export class DeferredNetworkApproval {
+  constructor(
+    private readonly service: NetworkApprovalService,
+    readonly registration: NetworkApprovalRegistration,
+  ) {}
+
+  get id(): string {
+    return this.registration.id;
+  }
+
+  finish(): Promise<void> {
+    return this.service.finishDeferredNetworkApproval(this);
+  }
+}
+
+export class ActiveNetworkApproval {
+  constructor(
+    private readonly service: NetworkApprovalService,
+    readonly registration: NetworkApprovalRegistration,
+  ) {}
+
+  get id(): string {
+    return this.registration.id;
+  }
+
+  intoDeferred(): DeferredNetworkApproval {
+    return this.service.deferNetworkApproval(this);
+  }
+
+  finishImmediate(): Promise<void> {
+    return this.service.finishImmediateNetworkApproval(this);
+  }
+}
+
+export type DeferredNetworkApprovalDecision = NetworkDecision & {
+  readonly deferredApproval?: DeferredNetworkApproval;
+};
+
 /** Distinguishable rejection: the user actively denied the prompt. */
 export class DeniedByUser extends Error {
   readonly kind = "denied_by_user" as const;
@@ -312,6 +372,10 @@ export class NetworkApprovalService {
     map: new Map(),
   });
 
+  /** Active/deferred network approvals keyed by registration ID. */
+  private readonly activeNetworkApprovals =
+    new Map<string, MutableNetworkApprovalRegistration>();
+
   // ───── Session reset ────────────────────────────────────────────────
 
   /**
@@ -337,6 +401,57 @@ export class NetworkApprovalService {
   /** Test/observability helper: in-flight pending approval count. */
   pendingSize(): number {
     return this.pendingLock.unsafePeek().map.size;
+  }
+
+  /** Test/observability helper: active + deferred approval registration count. */
+  activeApprovalSize(): number {
+    return this.activeNetworkApprovals.size;
+  }
+
+  beginNetworkApproval(
+    opts: RequestNetworkApprovalOptions,
+  ): ActiveNetworkApproval {
+    const normalizedKey = canonicalKey(opts.key);
+    const context: NetworkApprovalContext = {
+      host: normalizedKey.host,
+      protocol: normalizedKey.protocol,
+      port: normalizedKey.port,
+      target: formatNetworkTarget(normalizedKey),
+    };
+    const registration: NetworkApprovalRegistration = {
+      id: randomUUID(),
+      key: normalizedKey,
+      mode: opts.mode ?? "immediate",
+      context,
+      createdAtUnixMs: Date.now(),
+    };
+    this.activeNetworkApprovals.set(registration.id, {
+      registration,
+      state: "active",
+      outcome: null,
+    });
+    return new ActiveNetworkApproval(this, registration);
+  }
+
+  deferNetworkApproval(active: ActiveNetworkApproval): DeferredNetworkApproval {
+    const record = this.activeNetworkApprovals.get(active.id);
+    if (!record || record.state === "finished") {
+      throw new Error(`network approval ${active.id} is not active`);
+    }
+    record.state = "deferred";
+    return new DeferredNetworkApproval(this, active.registration);
+  }
+
+  async finishImmediateNetworkApproval(
+    active: ActiveNetworkApproval,
+  ): Promise<void> {
+    this.finishNetworkApproval(active.id);
+  }
+
+  async finishDeferredNetworkApproval(
+    deferred: DeferredNetworkApproval,
+  ): Promise<void> {
+    this.finishNetworkApproval(deferred.id);
   }
 
   // ───── Main entrypoint ──────────────────────────────────────────────
@@ -428,22 +543,89 @@ export class NetworkApprovalService {
     }
   }
 
-  /**
-   * T11 immediate-mode entrypoint — parity delegate. `mode` on the
-   * options is inspected for compatibility with future deferred flow.
-   *
-   * TODO T12/T13: deferred mode requires long-running tool coordination
-   * via `DeferredNetworkApproval` handles and an out-of-band registration
-   * store. For T11 we only ship the immediate path; the deferred stub
-   * falls through to the same decision computation.
-   */
   async requestDeferredApproval(
     opts: RequestNetworkApprovalOptions,
-  ): Promise<NetworkDecision> {
-    return this.requestNetworkApproval({ ...opts, mode: "deferred" });
+  ): Promise<DeferredNetworkApprovalDecision> {
+    const active = this.beginNetworkApproval({ ...opts, mode: "deferred" });
+    try {
+      const decision = await this.requestNetworkApproval({
+        ...opts,
+        mode: "deferred",
+      });
+      this.recordApprovalDecision(active.id, decision);
+      if (decision.kind === "allow") {
+        return {
+          ...decision,
+          deferredApproval: active.intoDeferred(),
+        };
+      }
+      this.finishNetworkApprovalWithoutThrow(active.id);
+      return decision;
+    } catch (err) {
+      this.recordApprovalError(active.id, err);
+      this.finishNetworkApprovalWithoutThrow(active.id);
+      throw err;
+    }
   }
 
   // ───── Internals ────────────────────────────────────────────────────
+
+  private recordApprovalDecision(
+    registrationId: string,
+    decision: NetworkDecision,
+  ): void {
+    const record = this.activeNetworkApprovals.get(registrationId);
+    if (!record) return;
+    record.outcome =
+      decision.kind === "allow"
+        ? { kind: "allowed" }
+        : { kind: "denied_by_user", reason: decision.reason };
+  }
+
+  private recordApprovalError(registrationId: string, err: unknown): void {
+    const record = this.activeNetworkApprovals.get(registrationId);
+    if (!record) return;
+    if (err instanceof DeniedByPolicy) {
+      record.outcome = { kind: "denied_by_policy", reason: err.message };
+      return;
+    }
+    if (err instanceof DeniedByUser) {
+      record.outcome = { kind: "denied_by_user", reason: err.message };
+      return;
+    }
+    if (err instanceof Error && err.name === "AbortError") {
+      record.outcome = { kind: "cancelled", reason: err.message };
+      return;
+    }
+    record.outcome = { kind: "cancelled", reason: String(err) };
+  }
+
+  private finishNetworkApprovalWithoutThrow(registrationId: string): void {
+    try {
+      this.finishNetworkApproval(registrationId);
+    } catch {
+      // The caller already has the decision/error from the approval path.
+    }
+  }
+
+  private finishNetworkApproval(registrationId: string): void {
+    const record = this.activeNetworkApprovals.get(registrationId);
+    if (!record) return;
+    record.state = "finished";
+    this.activeNetworkApprovals.delete(registrationId);
+    switch (record.outcome?.kind) {
+      case "denied_by_user":
+        throw new DeniedByUser(record.outcome.reason ?? "rejected by user");
+      case "denied_by_policy":
+        throw new DeniedByPolicy(record.outcome.reason);
+      case "cancelled":
+        throw new Error(record.outcome.reason ?? "network approval cancelled");
+      case "allowed":
+      case undefined:
+      default:
+        return;
+    }
+  }
 
   private async getOrCreatePending(
     stringKey: string,

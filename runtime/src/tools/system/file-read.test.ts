@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,13 +19,16 @@ import {
 
 describe("FileRead tool", () => {
   let root = "";
+  let savedPath: string | undefined;
   const sessionId = "sess-file-read-test";
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-file-read-"));
+    savedPath = process.env.PATH;
   });
 
   afterEach(async () => {
+    process.env.PATH = savedPath;
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
     clearSessionReadState(sessionId);
@@ -191,14 +194,52 @@ describe("FileRead tool", () => {
     }
   });
 
-  test("PDF schema is accepted but PDF reads are not yet implemented", async () => {
+  async function installFakePoppler(
+    pages: number,
+    text = "PDF title\nPDF body",
+  ): Promise<void> {
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    const pdfinfo = join(bin, "pdfinfo");
+    const pdftotext = join(bin, "pdftotext");
+    await writeFile(
+      pdfinfo,
+      `#!/bin/sh\nprintf 'Title: fake\\nPages: ${pages}\\n'\n`,
+      "utf8",
+    );
+    await writeFile(
+      pdftotext,
+      `#!/bin/sh\ncat <<'EOF'\n${text}\nEOF\n`,
+      "utf8",
+    );
+    await chmod(pdfinfo, 0o755);
+    await chmod(pdftotext, 0o755);
+    process.env.PATH = `${bin}:${savedPath ?? ""}`;
+  }
+
+  test("PDF reads extract text through poppler and honor page ranges", async () => {
     const file = join(root, "doc.pdf");
     await writeFile(file, "%PDF-1.4\n", "utf8");
+    await installFakePoppler(2, "First page\nSecond page");
     const tool = createFileReadTool({ allowedPaths: [root] });
 
     const result = await tool.execute({ file_path: file, pages: "1-2" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("Read PDF");
+    expect(result.content).toContain("First page");
+    expect(result.metadata?.mediaType).toBe("application/pdf");
+    expect(result.metadata?.isPartial).toBe(true);
+  });
+
+  test("large PDFs require an explicit page range", async () => {
+    const file = join(root, "large.pdf");
+    await writeFile(file, "%PDF-1.4\n", "utf8");
+    await installFakePoppler(12);
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({ file_path: file });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("PDF reading is not yet implemented");
+    expect(result.content).toContain("Provide the pages parameter");
   });
 
   test("text file with embedded null bytes is rejected as binary", async () => {

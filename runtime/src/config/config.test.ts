@@ -60,6 +60,9 @@ describe("schema: defaultConfig", () => {
     expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
     expect(cfg.max_turns).toBeGreaterThan(0);
+    expect(cfg.editorMode).toBe("default");
+    expect(cfg.voiceInput?.enabled).toBe(false);
+    expect(cfg.tuiLayout?.mode).toBe("single");
     expect(Object.isFrozen(cfg)).toBe(true);
   });
 });
@@ -147,6 +150,25 @@ describe("schema: normalizeRawConfig", () => {
       capability_overrides: {
         acceptsThinkingHistory: true,
       },
+    });
+    expect(out._unknown).toBeUndefined();
+  });
+
+  test("preserves runtime/TUI feature config on the typed path", () => {
+    const out = normalizeRawConfig({
+      editorMode: "vim",
+      voiceInput: { enabled: true, command: "agenc-voice" },
+      tuiLayout: { mode: "multi-pane", sidePane: "context", minColumns: 100 },
+    });
+    expect(out.editorMode).toBe("vim");
+    expect(out.voiceInput).toEqual({
+      enabled: true,
+      command: "agenc-voice",
+    });
+    expect(out.tuiLayout).toEqual({
+      mode: "multi-pane",
+      sidePane: "context",
+      minColumns: 100,
     });
     expect(out._unknown).toBeUndefined();
   });

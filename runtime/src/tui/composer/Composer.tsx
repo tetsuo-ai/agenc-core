@@ -116,6 +116,8 @@ export interface ComposerSession {
    * insertion handler can route them to the correct runtime resolver.
    */
   readonly appsManager?: AppMentionServiceLike;
+  /** Optional upstream-style one-shot voice input provider. */
+  readonly voiceInput?: () => Promise<string | null | undefined>;
 }
 
 export interface ComposerAttachmentsConfig {
@@ -927,11 +929,45 @@ export const Composer: React.FC<ComposerProps> = ({
     state.historySearch,
   ]);
 
+  const handleVoiceInput = useCallback((): void => {
+    if (inputLocked) return;
+    flushPendingPlainChar();
+    if (state.historySearch !== null) return;
+    if (showSlashPalette || showMentionPalette || showSkillPalette) return;
+    const readVoice = session.voiceInput;
+    if (typeof readVoice !== "function") {
+      session.emit?.("warning:voice_input_unavailable", {
+        reason: "voice input service is not configured",
+      });
+      return;
+    }
+    void readVoice()
+      .then((transcript) => {
+        if (typeof transcript !== "string" || transcript.length === 0) return;
+        dispatch({ type: "INSERT", text: transcript });
+      })
+      .catch((error: unknown) => {
+        session.emit?.("warning:voice_input_failed", {
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [
+    dispatch,
+    flushPendingPlainChar,
+    inputLocked,
+    session,
+    showMentionPalette,
+    showSkillPalette,
+    showSlashPalette,
+    state.historySearch,
+  ]);
+
   useKeybinding("chat:submit", handleSubmit, "chat");
   useKeybinding("chat:cancel", handleCancel, "chat");
   useKeybinding("chat:newline", handleNewline, "chat");
   useKeybinding("chat:killToEnd", handleKillToEnd, "chat");
   useKeybinding("chat:yank", handleYank, "chat");
+  useKeybinding("chat:voiceInput", handleVoiceInput, "chat");
   useKeybinding("history:prev", handleHistoryPrev, "chat");
   useKeybinding("history:next", handleHistoryNext, "chat");
   useKeybinding("history:search", handleHistorySearch, "global");

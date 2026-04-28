@@ -4,21 +4,28 @@
  * Renamed from upstream's `utils.ts` to `promptInput-utils.ts` so the
  * import does not collide with the rest of `tui/composer/`.
  *
- * `isVimModeEnabled` is a stub: AgenC has no `editorMode: "vim"` config
- * slot today. Toggle resolution is wired up in tranche 5B.
+ * `isVimModeEnabled` mirrors upstream's config/env gate while keeping the
+ * composer independent from the full ConfigStore.
  */
 
 import type { Key } from "../ink-public.js";
+import type { AgenCConfig } from "../../config/schema.js";
 
 /**
- * Return whether vim-mode editing is active for the composer. AgenC
- * config currently has no `editorMode` slot, so this always returns
- * `false`. The hook is kept as a function so the eventual config wiring
- * stays a one-line change.
+ * Return whether vim-mode editing is active for the composer.
+ *
+ * Config wins; `AGENC_EDITOR_MODE=vim` is a process-level escape hatch for
+ * tests, development builds, and operators who need to enable it before
+ * config reload wiring runs.
  */
-// TODO(tranche-5): wire vim mode to AgenC config
-export function isVimModeEnabled(): boolean {
-  return false;
+export function isVimModeEnabled(
+  config?: Pick<AgenCConfig, "editorMode"> | null,
+  env: Partial<Pick<NodeJS.ProcessEnv, "AGENC_EDITOR_MODE">> = process.env,
+): boolean {
+  if (config?.editorMode !== undefined) {
+    return config.editorMode === "vim";
+  }
+  return env.AGENC_EDITOR_MODE === "vim";
 }
 
 /**
