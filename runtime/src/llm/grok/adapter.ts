@@ -1504,6 +1504,7 @@ export class GrokProvider implements LLMProvider {
       structuredOutput: options?.structuredOutput,
       toolSelection,
       promptCacheKey: options?.promptCacheKey?.trim() || undefined,
+      systemPrompt: options?.systemPrompt?.trim() || undefined,
       disableIncremental: overrides?.disableIncremental,
     });
     return {
@@ -1546,6 +1547,7 @@ export class GrokProvider implements LLMProvider {
       toolSelection?: ToolSelectionDiagnostics;
       model?: string;
       promptCacheKey?: string;
+      systemPrompt?: string;
       disableIncremental?: boolean;
     },
   ): {
@@ -1554,7 +1556,11 @@ export class GrokProvider implements LLMProvider {
     requestMessages: readonly LLMMessage[];
   } {
     const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
-    const repairedMessages = repairToolTurnSequence(messages);
+    const requestMessages =
+      options?.systemPrompt && options.systemPrompt.length > 0
+        ? [{ role: "system" as const, content: options.systemPrompt }, ...messages]
+        : messages;
+    const repairedMessages = repairToolTurnSequence(requestMessages);
     validateToolTurnSequence(repairedMessages, {
       providerName: this.name,
     });

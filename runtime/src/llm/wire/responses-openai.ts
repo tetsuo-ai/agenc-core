@@ -33,6 +33,13 @@ export interface OpenAIResponsesRequestOptions {
   readonly tools: readonly LLMTool[];
   readonly options?: LLMChatOptions;
   readonly store?: boolean;
+  readonly maxOutputTokens?: number;
+}
+
+function positiveInteger(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
 }
 
 function normalizeFunctionCallId(toolCallId: string | undefined): {
@@ -153,9 +160,14 @@ export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
-  const instructions = messages
+  const instructions = [
+    input.options?.systemPrompt?.trim(),
+    ...messages
     .filter((message) => message.role === "system")
     .map((message) => messageTextContent(message.content))
+      .map((text) => text.trim()),
+  ]
+    .filter((text): text is string => typeof text === "string" && text.length > 0)
     .join("\n\n");
   const responseInput: Array<Record<string, unknown>> = [];
 
@@ -230,6 +242,12 @@ export function buildOpenAIResponsesRequest(
   }
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;
+  }
+  const maxOutputTokens =
+    positiveInteger(input.maxOutputTokens) ??
+    positiveInteger(input.options?.maxOutputTokens);
+  if (maxOutputTokens !== undefined) {
+    body.max_output_tokens = maxOutputTokens;
   }
   if (input.options?.includeEncryptedReasoning) {
     body.include = ["reasoning.encrypted_content"];

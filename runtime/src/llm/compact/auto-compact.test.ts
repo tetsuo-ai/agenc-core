@@ -26,6 +26,15 @@ describe('getEffectiveContextWindowSize', () => {
       delete process.env.AGENC_USE_OPENAI
     }
   })
+
+  test('uses resolved turn context and output-token overrides', () => {
+    const effective = getEffectiveContextWindowSize('unknown-local-model', {
+      contextWindowTokens: 262_144,
+      maxOutputTokens: 8_192,
+    })
+
+    expect(effective).toBe(253_952)
+  })
 })
 
 describe('getAutoCompactThreshold', () => {

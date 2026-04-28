@@ -5,6 +5,35 @@ import {
 } from "./messages-anthropic.js";
 
 describe("buildAnthropicMessagesRequest", () => {
+  test("merges request instructions into the Anthropic system field", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        { role: "system", content: "stable prefix" },
+        { role: "user", content: "hello" },
+      ],
+      tools: [],
+      options: {
+        systemPrompt: "base instructions",
+        maxOutputTokens: 8192,
+      },
+      maxTokens: 4096,
+    });
+
+    expect(request.system).toEqual([
+      {
+        type: "text",
+        text: "base instructions",
+      },
+      {
+        type: "text",
+        text: "stable prefix",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    expect(request.max_tokens).toBe(4096);
+  });
+
   test("drops orphan tool results instead of synthesizing tool_use blocks", () => {
     const request = buildAnthropicMessagesRequest({
       model: "claude-sonnet-4.5",

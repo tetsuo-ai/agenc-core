@@ -501,6 +501,16 @@ export interface LLMChatOptions {
    */
   readonly model?: string;
   /**
+   * Stable request instructions kept out of the conversation transcript.
+   * Provider adapters serialize this through their native system/instructions
+   * field instead of injecting a mid-conversation system message.
+   */
+  readonly systemPrompt?: string;
+  /** Effective input context window for this request. */
+  readonly contextWindowTokens?: number;
+  /** Positive output-token budget for this request. */
+  readonly maxOutputTokens?: number;
+  /**
    * Optional stable session key passed to providers that expose a
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
    * optimization — has no effect on correctness. No server-side

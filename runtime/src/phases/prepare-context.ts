@@ -58,7 +58,7 @@ import {
 } from "../session/compact-runtime-context.js";
 import { PROMPT_TOO_LONG_ERROR_MESSAGE } from "../recovery/api-errors.js";
 import type { Session } from "../session/session.js";
-import type { TurnContext } from "../session/turn-context.js";
+import { modelContextWindow, type TurnContext } from "../session/turn-context.js";
 import type {
   AssistantMessage,
   Terminal,
@@ -567,6 +567,15 @@ export async function prepareContext(
   }
   const reactiveCompactEnabled =
     isReactiveCompactEnabledForPrepareContext(runtimeOptions);
+  const contextWindowTokens = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
+  const budgetOverrides = {
+    ...(contextWindowTokens !== undefined
+      ? { contextWindowTokens }
+      : {}),
+    ...(ctx.modelInfo.maxOutputTokens !== undefined
+      ? { maxOutputTokens: ctx.modelInfo.maxOutputTokens }
+      : {}),
+  };
   if (
     !compactedThisIteration &&
     runtimeOptions.querySource !== "compact" &&
@@ -577,6 +586,7 @@ export async function prepareContext(
     const { isAtBlockingLimit } = calculateTokenWarningState(
       tokenCountWithEstimation(messagesForQuery) - snipTokensFreed,
       ctx.modelInfo.slug,
+      budgetOverrides,
     );
     if (isAtBlockingLimit) {
       setPrepareContextTerminal(state, PROMPT_TOO_LONG_ERROR_MESSAGE);
@@ -593,6 +603,7 @@ export async function prepareContext(
     const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
       tokenUsage,
       ctx.modelInfo.slug,
+      budgetOverrides,
     );
     if (isAboveAutoCompactThreshold) {
       setPrepareContextTerminal(

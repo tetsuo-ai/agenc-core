@@ -65,6 +65,8 @@ export interface StreamModelRequestContract {
   readonly tools: ReadonlyArray<LLMTool>;
   readonly parallelToolCalls: boolean;
   readonly baseInstructions: string;
+  readonly contextWindowTokens?: number;
+  readonly maxOutputTokens?: number;
 }
 
 interface AssistantDisplayState {
@@ -120,15 +122,7 @@ function toVisibleAssistantText(
 function buildProviderMessages(
   request: StreamModelRequestContract,
 ): LLMMessage[] {
-  const input = [...request.input];
-  const baseInstructions = request.baseInstructions.trim();
-  if (
-    baseInstructions.length === 0 ||
-    input[0]?.role === "system"
-  ) {
-    return input;
-  }
-  return [{ role: "system", content: baseInstructions }, ...input];
+  return [...request.input];
 }
 
 function buildProviderOptions(
@@ -138,10 +132,18 @@ function buildProviderOptions(
 ): LLMChatOptions {
   const allowedToolNames = request.tools.map((spec) => spec.function.name);
   const planMode = isPlanMode(ctx);
+  const systemPrompt = request.baseInstructions.trim();
   return {
     signal,
     tools: request.tools,
     parallelToolCalls: request.parallelToolCalls,
+    ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+    ...(request.contextWindowTokens !== undefined
+      ? { contextWindowTokens: request.contextWindowTokens }
+      : {}),
+    ...(request.maxOutputTokens !== undefined
+      ? { maxOutputTokens: request.maxOutputTokens }
+      : {}),
     ...(planMode && request.tools.length > 0
       ? { toolChoice: "required" as const }
       : {}),

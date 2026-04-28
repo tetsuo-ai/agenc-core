@@ -21,6 +21,7 @@ export type OpenAIProviderAuthStrategy =
 export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly apiKey?: string;
   readonly baseURL?: string;
+  readonly contextWindowTokens?: number;
   readonly organization?: string;
   readonly project?: string;
   readonly useResponsesApi?: boolean;

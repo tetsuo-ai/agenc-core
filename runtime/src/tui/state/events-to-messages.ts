@@ -287,6 +287,7 @@ const HIDDEN_WARNING_CAUSES = new Set([
   "tool_routing_classified",
   "compact_prompt_build_slow",
   "compact_tool_result_dropped",
+  "llm_request_metadata",
   "mode_changed",
   "mode_changed_to_plan",
   "mode_exited_plan",

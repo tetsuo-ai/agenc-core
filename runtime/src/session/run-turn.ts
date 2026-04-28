@@ -615,6 +615,8 @@ export interface BuiltPrompt {
   readonly tools: ReadonlyArray<LLMTool>;
   readonly parallelToolCalls: boolean;
   readonly baseInstructions: string;
+  readonly contextWindowTokens?: number;
+  readonly maxOutputTokens?: number;
 }
 
 /**
@@ -635,6 +637,7 @@ export function buildPrompt(
   );
   const visibleTools =
     deferred.size === 0 ? tools : tools.filter((spec) => !deferred.has(spec.function.name));
+  const contextWindowTokens = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
   return {
     input,
     tools: visibleTools,
@@ -642,6 +645,12 @@ export function buildPrompt(
       (ctx.modelInfo as unknown as { supportsParallelToolCalls?: boolean })
         .supportsParallelToolCalls ?? false,
     baseInstructions,
+    ...(contextWindowTokens !== undefined
+      ? { contextWindowTokens }
+      : {}),
+    ...(ctx.modelInfo.maxOutputTokens !== undefined
+      ? { maxOutputTokens: ctx.modelInfo.maxOutputTokens }
+      : {}),
   };
 }
 
@@ -719,12 +728,18 @@ function buildSamplingRequestContract(
   const baseInstructions = (
     ctx as TurnContext & { baseInstructions?: string }
   ).baseInstructions;
-  return buildPrompt(
+  const request = buildPrompt(
     state.messagesForQuery,
     builtTools(session, ctx),
     ctx,
     baseInstructions ?? "",
   );
+  return {
+    ...request,
+    ...(state.maxOutputTokensOverride !== undefined
+      ? { maxOutputTokens: state.maxOutputTokensOverride }
+      : {}),
+  };
 }
 
 function removeLastAssistantMessage(state: TurnState): void {

@@ -50,6 +50,16 @@ function withStreamingMetrics(response: LLMResponse): LLMResponse {
   };
 }
 
+function resolveMaxTokens(
+  options: LLMChatOptions | undefined,
+  fallback: number | undefined,
+): number | undefined {
+  const value = options?.maxOutputTokens ?? fallback;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 ? normalized : undefined;
+}
+
 function mergeAnthropicUsage(
   usage: {
     readonly input_tokens: number;
@@ -146,7 +156,7 @@ export class AnthropicProvider implements LLMProvider {
         messages,
         tools: requestTools,
         options,
-        maxTokens: this.config.maxTokens,
+        maxTokens: resolveMaxTokens(options, this.config.maxTokens),
         contextManagement: this.config.contextManagement,
       });
       const response = await session.requestJson<Record<string, unknown>>({
@@ -161,7 +171,7 @@ export class AnthropicProvider implements LLMProvider {
         messages,
         tools: requestTools,
         options,
-        maxTokens: this.config.maxTokens,
+        maxTokens: resolveMaxTokens(options, this.config.maxTokens),
       });
     } catch (error) {
       if (error instanceof ProviderHttpError && error.status === 401) {
@@ -182,7 +192,7 @@ export class AnthropicProvider implements LLMProvider {
       messages,
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
-      maxTokens: this.config.maxTokens,
+      maxTokens: resolveMaxTokens(options, this.config.maxTokens),
       contextManagement: this.config.contextManagement,
     };
     const request = {
