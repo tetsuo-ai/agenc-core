@@ -15,6 +15,7 @@ import type { SocialPeerDirectoryEntry } from "../social/types.js";
 import type { LLMXaiCapabilitySurface } from "../llm/types.js";
 import type { StopHookRuntimeConfig } from "../llm/hooks/stop-hooks.js";
 import type { UserHooksSettings } from "../llm/hooks/user-config.js";
+import type { MarketplaceSignerPolicy } from "../tools/agenc/index.js";
 
 // ============================================================================
 // Gateway Configuration
@@ -444,6 +445,11 @@ export interface GatewayPolicyConfig {
    * daemon. This still requires gateway approvals to be enabled.
    */
   marketplaceSigningToolsEnabled?: boolean;
+  /**
+   * Capability envelope checked at the local signer boundary before any
+   * signer-backed AgenC marketplace mutation tool executes.
+   */
+  marketplaceSignerPolicy?: MarketplaceSignerPolicy;
   credentialAllowList?: string[];
   networkAccess?: {
     allowHosts?: string[];

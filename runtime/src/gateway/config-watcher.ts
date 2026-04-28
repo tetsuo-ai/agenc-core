@@ -757,6 +757,37 @@ function validatePolicySectionAtPath(
   ) {
     errors.push(`${path}.marketplaceSigningToolsEnabled must be a boolean`);
   }
+  if (policy.marketplaceSignerPolicy !== undefined) {
+    if (!isRecord(policy.marketplaceSignerPolicy)) {
+      errors.push(`${path}.marketplaceSignerPolicy must be an object`);
+    } else {
+      const signerPolicy = policy.marketplaceSignerPolicy;
+      for (const key of [
+        "allowedTools",
+        "allowedProgramIds",
+        "allowedTaskPdas",
+        "allowedTemplateIds",
+        "allowedJobSpecHashes",
+        "allowedRewardMints",
+      ]) {
+        if (
+          signerPolicy[key] !== undefined &&
+          !isStringArray(signerPolicy[key])
+        ) {
+          errors.push(`${path}.marketplaceSignerPolicy.${key} must be an array of strings`);
+        }
+      }
+      for (const key of ["maxRewardLamports", "maxStakeLamports"]) {
+        if (
+          signerPolicy[key] !== undefined &&
+          (typeof signerPolicy[key] !== "string" ||
+            !/^\d+$/.test(signerPolicy[key]))
+        ) {
+          errors.push(`${path}.marketplaceSignerPolicy.${key} must be a decimal string`);
+        }
+      }
+    }
+  }
   if (
     policy.credentialAllowList !== undefined &&
     !isStringArray(policy.credentialAllowList)

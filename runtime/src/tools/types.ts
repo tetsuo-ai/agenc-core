@@ -13,6 +13,7 @@ import type { AgencCoordination } from "../types/agenc_coordination.js";
 import type { Wallet } from "../types/wallet.js";
 import type { Logger } from "../utils/logger.js";
 import type { PolicyEngine } from "../policy/engine.js";
+import type { MarketplaceSignerPolicy } from "./agenc/signer-policy.js";
 
 /**
  * JSON Schema type alias.
@@ -113,6 +114,8 @@ export interface ToolContext {
   readonly programId?: PublicKey;
   /** Logger instance */
   readonly logger: Logger;
+  /** Optional local signer policy for signer-backed AgenC marketplace tools. */
+  readonly marketplaceSignerPolicy?: MarketplaceSignerPolicy;
 }
 
 /**

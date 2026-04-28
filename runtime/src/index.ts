@@ -909,6 +909,7 @@ export {
   createAgencReadOnlyTools,
   createAgencMutationTools,
   type CreateAgencToolsOptions,
+  type MarketplaceSignerPolicy,
   createListTasksTool,
   createGetTaskTool,
   createGetTokenBalanceTool,

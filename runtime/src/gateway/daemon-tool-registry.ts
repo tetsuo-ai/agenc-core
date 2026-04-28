@@ -852,6 +852,12 @@ export async function createDaemonToolRegistry(
             connection: connMgr.getConnection(),
             wallet: walletResult?.wallet,
             ...(configuredProgramId ? { programId: configuredProgramId } : {}),
+            ...(includeMutationTools
+              ? {
+                  marketplaceSignerPolicy:
+                    config.policy?.marketplaceSignerPolicy ?? { allowedTools: [] },
+                }
+              : {}),
             logger,
           },
           { includeMutationTools },

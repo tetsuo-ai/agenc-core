@@ -168,6 +168,28 @@ For daemon/gateway deployments, mutation tools are still fail-closed unless
 `policy.marketplaceSigningToolsEnabled: true`, a wallet is loaded, and gateway
 approvals are enabled.
 
+Daemon signing should also include a local signer capability policy. Without one,
+the daemon registers mutation tools behind approvals but denies every marketplace
+signature attempt:
+
+```json
+{
+  "policy": {
+    "marketplaceSigningToolsEnabled": true,
+    "marketplaceSignerPolicy": {
+      "allowedTools": ["agenc.claimTask", "agenc.completeTask"],
+      "allowedProgramIds": ["2jdBSJ8U5ixfwgs1bRLPtRRnpZAPm8Xv1tEdu8yjHJC7"],
+      "allowedTaskPdas": ["..."],
+      "maxRewardLamports": "100000000",
+      "allowedRewardMints": ["SOL"]
+    }
+  },
+  "approvals": {
+    "enabled": true
+  }
+}
+```
+
 ### Memory Integration
 
 ```typescript

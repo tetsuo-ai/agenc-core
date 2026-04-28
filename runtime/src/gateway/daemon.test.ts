@@ -2202,7 +2202,50 @@ describe("DaemonManager", () => {
     });
 
     expect(mockCreateAgencTools).toHaveBeenCalledWith(
-      expect.any(Object),
+      expect.objectContaining({
+        marketplaceSignerPolicy: { allowedTools: [] },
+      }),
+      { includeMutationTools: true },
+    );
+  });
+
+  it("passes configured marketplace signer policy into agenc mutation tools", async () => {
+    const walletPublicKey = new PublicKey("11111111111111111111111111111111");
+    vi.mocked(loadWallet).mockResolvedValueOnce({
+      keypair: {} as never,
+      agentId: new Uint8Array(32),
+      wallet: {
+        publicKey: walletPublicKey,
+        signTransaction: vi.fn(),
+        signAllTransactions: vi.fn(),
+      },
+    });
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+
+    await (dm as any).createToolRegistry({
+      desktop: { enabled: false },
+      connection: {
+        rpcUrl: "http://localhost:8899",
+      },
+      approvals: {
+        enabled: true,
+      },
+      policy: {
+        marketplaceSigningToolsEnabled: true,
+        marketplaceSignerPolicy: {
+          allowedTools: ["agenc.claimTask"],
+          allowedTaskPdas: ["Task111111111111111111111111111111111111"],
+        },
+      },
+    });
+
+    expect(mockCreateAgencTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        marketplaceSignerPolicy: {
+          allowedTools: ["agenc.claimTask"],
+          allowedTaskPdas: ["Task111111111111111111111111111111111111"],
+        },
+      }),
       { includeMutationTools: true },
     );
   });

@@ -5,16 +5,18 @@ import {
   createAgencMutationTools,
   createAgencReadOnlyTools,
   createAgencTools,
+  type MarketplaceSignerPolicy,
 } from "./index.js";
 import { keypairToWallet } from "../../types/wallet.js";
 import { silentLogger } from "../../utils/logger.js";
 
-function makeContext() {
+function makeContext(marketplaceSignerPolicy?: MarketplaceSignerPolicy) {
   const keypair = Keypair.generate();
   return {
     connection: new Connection("http://localhost:8899", "confirmed"),
     wallet: keypairToWallet(keypair),
     logger: silentLogger,
+    marketplaceSignerPolicy,
   };
 }
 
@@ -57,5 +59,33 @@ describe("AgenC protocol tool factory", () => {
     expect(readOnlyNames).not.toContain("agenc.createTask");
     expect(mutationNames).toContain("agenc.createTask");
     expect(mutationNames).not.toContain("agenc.listTasks");
+  });
+
+  it("denies mutation execution before signing when signer policy does not allow the tool", async () => {
+    const registerTool = createAgencMutationTools(
+      makeContext({ allowedTools: ["agenc.claimTask"] }),
+    ).find((tool) => tool.name === "agenc.registerAgent");
+
+    expect(registerTool).toBeDefined();
+    const result = await registerTool!.execute({ stakeAmount: "1" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("MARKETPLACE_SIGNER_POLICY_DENIED");
+    expect(result.content).toContain("TOOL_NOT_ALLOWED");
+  });
+
+  it("enforces signer policy lamport caps before execution", async () => {
+    const registerTool = createAgencMutationTools(
+      makeContext({
+        allowedTools: ["agenc.registerAgent"],
+        maxStakeLamports: "1",
+      }),
+    ).find((tool) => tool.name === "agenc.registerAgent");
+
+    expect(registerTool).toBeDefined();
+    const result = await registerTool!.execute({ stakeAmount: "2" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("STAKE_LIMIT_EXCEEDED");
   });
 });

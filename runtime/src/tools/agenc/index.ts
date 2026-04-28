@@ -12,6 +12,7 @@ import type { Tool, ToolContext } from "../types.js";
 import { TaskOperations } from "../../task/operations.js";
 import { createProgram, createReadOnlyProgram } from "../../idl.js";
 import { AnchorProvider } from "@coral-xyz/anchor";
+import { wrapMarketplaceSignerPolicy } from "./signer-policy.js";
 import {
   createListTasksTool,
   createInspectMarketplaceTool,
@@ -97,6 +98,10 @@ export {
   createStakeReputationTool,
   createDelegateReputationTool,
 } from "./mutation-tools.js";
+export {
+  wrapMarketplaceSignerPolicy,
+  type MarketplaceSignerPolicy,
+} from "./signer-policy.js";
 
 export interface CreateAgencToolsOptions {
   /**
@@ -189,7 +194,7 @@ export function createAgencReadOnlyTools(context: ToolContext): Tool[] {
  */
 export function createAgencMutationTools(context: ToolContext): Tool[] {
   const program = createAgencProgram(context, { signerBacked: true });
-  return [
+  const tools = [
     createCreateTaskFromTemplateTool(program, context.logger),
     createSubmitTaskTemplateProposalTool(context.logger),
     createRegisterAgentTool(program, context.logger),
@@ -206,6 +211,14 @@ export function createAgencMutationTools(context: ToolContext): Tool[] {
     createStakeReputationTool(program, context.logger),
     createDelegateReputationTool(program, context.logger),
   ];
+  return tools.map((tool) =>
+    wrapMarketplaceSignerPolicy(tool, {
+      policy: context.marketplaceSignerPolicy,
+      programId: program.programId,
+      signer: program.provider.publicKey,
+      logger: context.logger,
+    }),
+  );
 }
 
 /**
