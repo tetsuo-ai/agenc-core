@@ -178,6 +178,53 @@ function safeJsonParse(input: string): unknown {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFileMutationToolName(toolName: string | undefined): boolean {
+  if (typeof toolName !== "string") return false;
+  const normalized = toolName.toLowerCase();
+  return (
+    normalized === "edit" ||
+    normalized === "editfile" ||
+    normalized === "edit_file" ||
+    normalized === "write" ||
+    normalized === "writefile" ||
+    normalized === "write_file" ||
+    normalized === "notebookedit" ||
+    normalized === "notebook_edit"
+  );
+}
+
+const FILE_MUTATION_PAYLOAD_FIELDS = new Set([
+  "content",
+  "old_string",
+  "oldString",
+  "old_text",
+  "oldText",
+  "new_string",
+  "newString",
+  "new_text",
+  "newText",
+  "before",
+  "after",
+  "edits",
+]);
+
+function sanitizeToolArgsForTranscript(
+  toolName: string | undefined,
+  args: unknown,
+): unknown {
+  if (!isFileMutationToolName(toolName) || !isRecord(args)) return args;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (FILE_MUTATION_PAYLOAD_FIELDS.has(key)) continue;
+    sanitized[key] = value;
+  }
+  return sanitized;
+}
+
 function isPhaseEvent(event: TranscriptSourceEvent): event is PhaseEvent {
   return (
     event.type === "turn_start" ||
@@ -714,7 +761,10 @@ export function eventsToMessages(
           toolNameByCallId.set(event.toolCall.id, event.toolCall.name);
           toolArgsByCallId.set(
             event.toolCall.id,
-            safeJsonParse(event.toolCall.arguments),
+            sanitizeToolArgsForTranscript(
+              event.toolCall.name,
+              safeJsonParse(event.toolCall.arguments),
+            ),
           );
           if (
             isSilentTranscriptToolName(event.toolCall.name) &&
@@ -906,7 +956,10 @@ export function eventsToMessages(
       }
       case "tool_call_started": {
         markAssistantComplete();
-        const parsedArgs = safeJsonParse(event.payload.args);
+        const parsedArgs = sanitizeToolArgsForTranscript(
+          event.payload.toolName,
+          safeJsonParse(event.payload.args),
+        );
         toolNameByCallId.set(event.payload.callId, event.payload.toolName);
         toolArgsByCallId.set(event.payload.callId, parsedArgs);
         if (

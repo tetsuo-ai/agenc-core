@@ -525,6 +525,35 @@ describe("MessageList", () => {
     unmount();
   });
 
+  test("does not render edit payload previews while a tool is running", async () => {
+    const oldString = "int main(void) { return 0; }";
+    const newString = "int main(void) { return 1; }";
+    const { unmount, stdout } = await mount(
+      <MessageList
+        messages={[
+          mkMsg({
+            id: "edit-live",
+            kind: "tool_call",
+            toolName: "Edit",
+            toolArgs: {
+              path: "src/main.c",
+              old_string: oldString,
+              new_string: newString,
+            },
+            isComplete: false,
+          }),
+        ]}
+        isStreaming
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Editing(src/main.c)");
+    expect(frame).not.toContain("@@ replace @@");
+    expect(frame).not.toContain(oldString);
+    expect(frame).not.toContain(newString);
+    unmount();
+  });
+
   test("collapses read/search bursts to one upstream-style summary row", async () => {
     const { unmount, stdout } = await mount(
       <MessageList

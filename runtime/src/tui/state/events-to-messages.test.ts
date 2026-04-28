@@ -131,6 +131,36 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("drops raw file mutation payloads from TUI tool args", () => {
+    const messages = eventsToMessages([
+      { type: "turn_started", payload: { turnId: "turn-redacted" } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "call-edit",
+          toolName: "Edit",
+          args: JSON.stringify({
+            file_path: "src/App.tsx",
+            old_string: "before",
+            new_string: "after",
+            replace_all: true,
+          }),
+        },
+      },
+    ]);
+
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "Edit",
+      toolArgs: {
+        file_path: "src/App.tsx",
+        replace_all: true,
+      },
+    });
+    expect(JSON.stringify(messages[0]?.toolArgs)).not.toContain("before");
+    expect(JSON.stringify(messages[0]?.toolArgs)).not.toContain("after");
+  });
+
   test("final agent_message without preceding deltas still creates one row", () => {
     // Sanity: providers that don't emit `agent_message_delta` at all
     // (final-only) must still produce exactly one assistant row.
