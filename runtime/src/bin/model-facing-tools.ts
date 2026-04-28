@@ -53,6 +53,7 @@ import {
   type UpdateTaskInput,
 } from "./task-store.js";
 import { createStructuredOutputTool } from "./structured-output-tool.js";
+import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionRuleValue,
@@ -198,6 +199,36 @@ function resolveWorkspacePath(opts: ModelFacingToolOptions, input: string): stri
     throw new Error(`path is outside the workspace: ${input}`);
   }
   return resolved;
+}
+
+// Turndown drags in an HTML parser; lazy-load via dynamic import so the
+// cost is only paid when an HTML response is actually fetched.
+// Mirrors the lazy pattern in `utils/lockfile.ts`.
+type TurndownInstance = {
+  turndown: (html: string) => string;
+  remove: (filter: string | string[]) => unknown;
+};
+let cachedTurndown: TurndownInstance | undefined;
+
+async function getTurndown(): Promise<TurndownInstance> {
+  if (cachedTurndown) return cachedTurndown;
+  const mod = (await import("turndown")) as unknown as {
+    default: new (opts?: Record<string, unknown>) => TurndownInstance;
+  };
+  const service = new mod.default({
+    headingStyle: "atx",
+    codeBlockStyle: "fenced",
+    bulletListMarker: "-",
+    emDelimiter: "_",
+  });
+  service.remove(["script", "style", "noscript"]);
+  cachedTurndown = service;
+  return service;
+}
+
+async function htmlToMarkdown(html: string): Promise<string> {
+  const service = await getTurndown();
+  return service.turndown(html).trim();
 }
 
 function htmlToText(input: string): string {
@@ -1599,13 +1630,31 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const url = stringValue(args.url);
         if (!url) return json({ error: "url is required" }, true);
         const normalized = normalizeUrl(url);
+        const parsed = new URL(normalized);
+        const preapproved = isPreapprovedHost(parsed.hostname, parsed.pathname);
         const response = await fetchWithTimeout(
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
         );
         const contentType = response.headers.get("content-type") ?? "";
         const raw = await response.text();
-        const body = contentType.includes("html") ? htmlToText(raw) : raw;
+        const isHtml = contentType.includes("html");
+        let body: string;
+        let renderedAs: "markdown" | "text" | "passthrough";
+        if (isHtml) {
+          try {
+            body = await htmlToMarkdown(raw);
+            renderedAs = "markdown";
+          } catch {
+            // Turndown / parser failure: fall back to the regex strip
+            // so a single bad page doesn't break WebFetch entirely.
+            body = htmlToText(raw);
+            renderedAs = "text";
+          }
+        } else {
+          body = raw;
+          renderedAs = "passthrough";
+        }
         const maxChars = Math.max(
           1_000,
           Math.min(numberValue(args.max_chars) ?? MAX_FETCH_CHARS, MAX_FETCH_CHARS),
@@ -1620,6 +1669,8 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           url: normalized,
           final_url: response.url,
           content_type: contentType,
+          preapproved,
+          rendered_as: renderedAs,
           prompt: stringValue(args.prompt),
           content: textBody,
         }, response.ok ? undefined : true);

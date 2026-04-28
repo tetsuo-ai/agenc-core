@@ -337,6 +337,83 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("WebFetch renders HTML through Turndown and reports preapproved hosts", async () => {
+    const html =
+      "<!doctype html><html><head><title>x</title><style>body{}</style></head><body>" +
+      "<h1>Hello</h1>" +
+      "<p>This is a <strong>test</strong> with a <a href=\"https://example.com\">link</a>.</p>" +
+      "<ul><li>one</li><li>two</li></ul>" +
+      "<script>alert('x')</script>" +
+      "</body></html>";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://docs.python.org/3/library/asyncio.html",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+      },
+      text: async () => html,
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("WebFetch")!.execute({
+        url: "https://docs.python.org/3/library/asyncio.html",
+      });
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed.preapproved).toBe(true);
+      expect(parsed.rendered_as).toBe("markdown");
+      expect(parsed.content).toContain("# Hello");
+      expect(parsed.content).toContain("**test**");
+      expect(parsed.content).toContain("[link](https://example.com)");
+      // List bullet rendered with the configured "-" marker.
+      expect(parsed.content).toMatch(/-\s+one/);
+      // Scripts and styles must not leak into the markdown.
+      expect(parsed.content).not.toContain("alert");
+      expect(parsed.content).not.toContain("<style>");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("WebFetch flags non-preapproved hosts as preapproved=false", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://random.example.com/page",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/plain" : null,
+      },
+      text: async () => "plain body",
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("WebFetch")!.execute({
+        url: "https://random.example.com/page",
+      });
+      const parsed = JSON.parse(result.content);
+      expect(parsed.preapproved).toBe(false);
+      expect(parsed.rendered_as).toBe("passthrough");
+      expect(parsed.content).toBe("plain body");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("lists and reads MCP resources through the live session manager", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
