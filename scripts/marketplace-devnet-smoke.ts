@@ -130,12 +130,12 @@ function usage(): void {
   npm run smoke:marketplace:devnet -- --resume /tmp/agenc-marketplace-smoke/marketplace-devnet-smoke-....json
 
 Environment:
-  CREATOR_WALLET                Required for initial run.
-  WORKER_WALLET                 Required for initial run.
-  ARBITER_A_WALLET              Required for initial run.
-  ARBITER_B_WALLET              Required for initial run.
-  ARBITER_C_WALLET              Required for initial run.
-  PROTOCOL_AUTHORITY_WALLET     Required in both modes.
+  CREATOR_WALLET                Required for all initial flows.
+  WORKER_WALLET                 Required for all initial flows.
+  ARBITER_A_WALLET              Required for --flow dispute.
+  ARBITER_B_WALLET              Required for --flow dispute.
+  ARBITER_C_WALLET              Required for --flow dispute.
+  PROTOCOL_AUTHORITY_WALLET     Required for --flow dispute and --resume.
   AGENC_RPC_URL                 Optional. Defaults to ${DEFAULT_RPC_URL}
   AGENC_PROGRAM_ID              Optional. Defaults to the runtime program ID.
   AGENC_REWARD_LAMPORTS         Optional. Defaults to ${DEFAULT_REWARD_LAMPORTS.toString()}
@@ -910,6 +910,7 @@ async function initial(): Promise<void> {
     DEFAULT_MAX_WAIT_SECONDS,
   );
   const artifactPath = getFlagValue("--artifact");
+  const flow = parseInitialFlow();
   const connection = new Connection(rpcUrl, "confirmed");
 
   const creatorSigner = createSignerContext(
@@ -924,6 +925,100 @@ async function initial(): Promise<void> {
     connection,
     programId,
   );
+  const readOnlyProgram = programId
+    ? createReadOnlyProgram(connection, programId)
+    : createReadOnlyProgram(connection);
+
+  const protocolConfig = await loadProtocolConfig(readOnlyProgram);
+  await validateProtocolConfigHealth(connection, readOnlyProgram, protocolConfig);
+
+  const creatorStake = maxBigInt(
+    protocolConfig.minAgentStake,
+    protocolConfig.minStakeForDispute * 2n,
+  );
+  const workerStake = protocolConfig.minAgentStake;
+  const arbiterStake = maxBigInt(
+    protocolConfig.minAgentStake,
+    protocolConfig.minArbiterStake,
+  );
+
+  if (flow === "reviewed-public-artifact") {
+    ensureDistinctWallets([creatorSigner, workerSigner]);
+    await Promise.all([
+      ensureBalance(
+        connection,
+        "creator",
+        creatorSigner.keypair.publicKey,
+        creatorStake + rewardLamports + DEFAULT_FEE_BUFFER_LAMPORTS,
+      ),
+      ensureBalance(
+        connection,
+        "worker",
+        workerSigner.keypair.publicKey,
+        workerStake + DEFAULT_FEE_BUFFER_LAMPORTS,
+      ),
+    ]);
+
+    console.log(`[config] rpc: ${rpcUrl}`);
+    console.log(`[config] program: ${readOnlyProgram.programId.toBase58()}`);
+    console.log(`[config] flow: ${flow}`);
+    console.log(`[config] reward lamports: ${rewardLamports.toString()}`);
+    console.log(`[config] creator wallet: ${creatorSigner.keypair.publicKey.toBase58()}`);
+    console.log(`[config] worker wallet: ${workerSigner.keypair.publicKey.toBase58()}`);
+
+    const creator = await registerOrLoadAgent(
+      creatorSigner,
+      connection,
+      programId,
+      AgentCapabilities.COMPUTE,
+      creatorStake,
+      maxBigInt(protocolConfig.minAgentStake, protocolConfig.minStakeForDispute),
+    );
+    const worker = await registerOrLoadAgent(
+      workerSigner,
+      connection,
+      programId,
+      AgentCapabilities.COMPUTE,
+      workerStake,
+      workerStake,
+    );
+
+    console.log(`[agent] creator: ${creator.agentPda.toBase58()}`);
+    console.log(`[agent] worker: ${worker.agentPda.toBase58()}`);
+
+    const runtime: SmokeRuntime = {
+      connection,
+      readOnlyProgram,
+      signersByKey: new Map<string, SignerContext>([
+        [creator.agentPda.toBase58(), creator],
+        [worker.agentPda.toBase58(), worker],
+      ]),
+    };
+    installMarketplaceCliOverrides(runtime);
+
+    const baseOptions = buildBaseOptions(
+      rpcUrl,
+      readOnlyProgram.programId.toBase58(),
+    );
+    const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+    try {
+      await runReviewedPublicArtifactFlow({
+        baseOptions,
+        rpcUrl,
+        programId: readOnlyProgram.programId.toBase58(),
+        rewardLamports,
+        runId,
+        creator,
+        worker,
+        artifactPath,
+      });
+      return;
+    } finally {
+      resetMarketplaceCliProgramContextOverrides();
+    }
+  }
+
   const arbiterASigner = createSignerContext(
     "arbiter-a",
     env("ARBITER_A_WALLET"),
@@ -948,10 +1043,6 @@ async function initial(): Promise<void> {
     connection,
     programId,
   );
-  const readOnlyProgram = programId
-    ? createReadOnlyProgram(connection, programId)
-    : createReadOnlyProgram(connection);
-
   ensureDistinctWallets([
     creatorSigner,
     workerSigner,
@@ -960,24 +1051,11 @@ async function initial(): Promise<void> {
     arbiterCSigner,
     authoritySigner,
   ]);
-
-  const protocolConfig = await loadProtocolConfig(readOnlyProgram);
   if (!authoritySigner.keypair.publicKey.equals(protocolConfig.authority)) {
     throw new Error(
       `PROTOCOL_AUTHORITY_WALLET ${authoritySigner.keypair.publicKey.toBase58()} does not match protocol authority ${protocolConfig.authority.toBase58()}`,
     );
   }
-  await validateProtocolConfigHealth(connection, readOnlyProgram, protocolConfig);
-
-  const creatorStake = maxBigInt(
-    protocolConfig.minAgentStake,
-    protocolConfig.minStakeForDispute * 2n,
-  );
-  const workerStake = protocolConfig.minAgentStake;
-  const arbiterStake = maxBigInt(
-    protocolConfig.minAgentStake,
-    protocolConfig.minArbiterStake,
-  );
 
   await Promise.all([
     ensureBalance(
@@ -1020,6 +1098,7 @@ async function initial(): Promise<void> {
 
   console.log(`[config] rpc: ${rpcUrl}`);
   console.log(`[config] program: ${readOnlyProgram.programId.toBase58()}`);
+  console.log(`[config] flow: ${flow}`);
   console.log(`[config] reward lamports: ${rewardLamports.toString()}`);
   console.log(`[config] max wait seconds: ${maxWaitSeconds}`);
   console.log(`[config] creator wallet: ${creatorSigner.keypair.publicKey.toBase58()}`);
@@ -1094,26 +1173,6 @@ async function initial(): Promise<void> {
     readOnlyProgram.programId.toBase58(),
   );
   const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const flow = parseInitialFlow();
-
-  if (flow === "reviewed-public-artifact") {
-    try {
-      await runReviewedPublicArtifactFlow({
-        baseOptions,
-        rpcUrl,
-        programId: readOnlyProgram.programId.toBase58(),
-        rewardLamports,
-        runId,
-        creator,
-        worker,
-        artifactPath,
-      });
-      return;
-    } finally {
-      resetMarketplaceCliProgramContextOverrides();
-    }
-  }
-
   const description = `devnet smoke ${runId}`;
 
   try {
