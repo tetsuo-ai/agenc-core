@@ -16,11 +16,20 @@ import {
   resolve,
 } from "node:path";
 import { delegate } from "../agents/delegate.js";
-import type { AgentPath, ThreadId } from "../agents/registry.js";
+import {
+  ROOT_AGENT_PATH,
+  normalizeAgentNameForPath,
+  resolveAgentPath,
+  type AgentPath,
+  type ThreadId,
+} from "../agents/registry.js";
+import type { ForkMode } from "../agents/fork-context.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { Session } from "../session/session.js";
+import type { ReasoningEffort } from "../session/turn-context.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { safeStringify } from "../tools/types.js";
+import { SESSION_ID_ARG } from "../agents/_deps/filesystem-args.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/index.js";
 import {
   formatUnifiedExecToolContent,
@@ -80,6 +89,9 @@ interface SpawnedAgentRecord {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MIN_WAIT_TIMEOUT_MS = 10_000;
+const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+const MAX_WAIT_TIMEOUT_MS = 3_600_000;
 const MAX_FETCH_CHARS = 120_000;
 const MAX_SEARCH_RESULTS = 8;
 
@@ -221,14 +233,59 @@ function parseTarget(args: Record<string, unknown>): string | undefined {
   );
 }
 
+function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  if (
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "none"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function callIdFromArgs(
+  args: Record<string, unknown>,
+  prefix: string,
+): string {
+  return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
+}
+
+function currentAgentContext(session: Session, args: Record<string, unknown>): {
+  readonly threadId: ThreadId;
+  readonly agentPath: AgentPath;
+  readonly agentNickname?: string;
+  readonly agentRole?: string;
+} {
+  const { control } = ensureAgentControl(session);
+  const injectedSessionId = stringValue(args[SESSION_ID_ARG]);
+  if (injectedSessionId) {
+    const live = control.getLive(injectedSessionId);
+    if (live) {
+      return {
+        threadId: live.agentId,
+        agentPath: live.agentPath,
+        agentNickname: live.nickname,
+        agentRole: live.role.name,
+      };
+    }
+  }
+  return {
+    threadId: session.conversationId,
+    agentPath: ROOT_AGENT_PATH,
+  };
+}
+
 function resolveAgentId(
   session: Session,
   target: string,
+  currentAgentPath: AgentPath,
 ): ThreadId {
   const { control } = ensureAgentControl(session);
   try {
     return control.resolveAgentReference({
-      currentAgentPath: "/root",
+      currentAgentPath,
       reference: target,
     });
   } catch {
@@ -264,8 +321,48 @@ function promptFromAgentArgs(args: Record<string, unknown>): string | undefined 
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
+function parseForkTurns(value: unknown): ToolResult | ForkMode {
+  const raw = value === undefined ? "all" : value;
+  if (raw === "none") return { kind: "new" };
+  if (raw === "all") return { kind: "full_history" };
+  if (typeof raw === "number" && Number.isInteger(raw) && raw > 0) {
+    return { kind: "last_n_turns", n: raw };
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed === "none") return { kind: "new" };
+    if (trimmed === "all") return { kind: "full_history" };
+    const parsed = Number.parseInt(trimmed, 10);
+    if (String(parsed) === trimmed && parsed > 0) {
+      return { kind: "last_n_turns", n: parsed };
+    }
+  }
+  return json(
+    { error: "fork_turns must be `all`, `none`, or a positive integer" },
+    true,
+  );
+}
+
+function waitTimeoutMs(args: Record<string, unknown>): ToolResult | number {
+  const supplied = numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs);
+  if (supplied !== undefined && supplied <= 0) {
+    return json({ error: "timeout_ms must be greater than 0" }, true);
+  }
+  return Math.min(
+    MAX_WAIT_TIMEOUT_MS,
+    Math.max(MIN_WAIT_TIMEOUT_MS, supplied ?? DEFAULT_WAIT_TIMEOUT_MS),
+  );
+}
+
 function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const spawned = new Map<string, SpawnedAgentRecord>();
+
+  const emit = (session: Session, msg: Parameters<Session["emit"]>[0]["msg"]): void => {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg,
+    });
+  };
 
   const spawn = async (
     args: Record<string, unknown>,
@@ -278,33 +375,100 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (!prompt) {
       return json({ error: "message or task prompt is required" }, true);
     }
+    if (aliasName === "spawn_agent" && args.fork_context !== undefined) {
+      return json(
+        { error: "fork_context is not supported; use fork_turns instead" },
+        true,
+      );
+    }
     const { control, registry } = ensureAgentControl(session);
+    const current = currentAgentContext(session, args);
     const role =
       stringValue(args.agent_type) ??
       stringValue(args.agentType) ??
       stringValue(args.subagent_type) ??
       stringValue(args.role);
-    const forkContext =
-      boolValue(args.fork_context) ??
-      boolValue(args.forkContext) ??
-      boolValue(args.fork_turns);
+    const model = stringValue(args.model);
+    const reasoningEffort = parseReasoningEffort(
+      args.reasoning_effort ?? args.reasoningEffort,
+    );
+    const forkMode =
+      aliasName === "spawn_agent"
+        ? parseForkTurns(args.fork_turns ?? args.forkTurns)
+        : boolValue(args.fork_context) === true ||
+            boolValue(args.forkContext) === true
+          ? { kind: "full_history" as const }
+          : parseForkTurns(args.fork_turns ?? args.forkTurns ?? "none");
+    if ("content" in forkMode) return forkMode;
+    if (
+      forkMode.kind === "full_history" &&
+      (role !== undefined || model !== undefined || reasoningEffort !== undefined)
+    ) {
+      return json(
+        {
+          error:
+            "Full-history forked agents inherit the current agent configuration; use fork_turns `none` or a positive integer with overrides.",
+        },
+        true,
+      );
+    }
+    const taskName =
+      stringValue(args.task_name) ??
+      stringValue(args.taskName) ??
+      (aliasName === "spawn_agent"
+        ? undefined
+        : normalizeAgentNameForPath(role ?? prompt.slice(0, 48)));
+    if (!taskName) {
+      return json({ error: "task_name is required" }, true);
+    }
+    const agentName = normalizeAgentNameForPath(taskName);
     const runInBackground =
       boolValue(args.run_in_background) ??
       boolValue(args.runInBackground) ??
       true;
+    const callId = callIdFromArgs(args, "agent");
+
+    emit(session, {
+      type: "collab_agent_spawn_begin",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        prompt,
+        model: model ?? session.sessionConfiguration.collaborationMode.model,
+        reasoningEffort:
+          reasoningEffort ??
+          session.sessionConfiguration.collaborationMode.reasoningEffort,
+      },
+    });
 
     const outcome = await delegate({
       parent: session,
-      parentPath: "/root" as AgentPath,
+      parentPath: current.agentPath,
       control,
       registry,
       taskPrompt: prompt,
       ...(role !== undefined ? { role } : {}),
-      forkMode: forkContext === true ? { kind: "full_history" } : { kind: "new" },
+      agentName,
+      ...(model !== undefined ? { model } : {}),
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      forkMode,
       runInBackground,
     });
 
     if (outcome.kind === "rejected") {
+      emit(session, {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId,
+          senderThreadId: current.threadId,
+          prompt,
+          model: model ?? session.sessionConfiguration.collaborationMode.model,
+          reasoningEffort:
+            reasoningEffort ??
+            session.sessionConfiguration.collaborationMode.reasoningEffort,
+          status: { status: "errored", turnId: callId, endedAtMs: Date.now(), error: outcome.reason },
+        },
+      });
       return json({ error: outcome.reason }, true);
     }
     const thread = outcome.thread;
@@ -317,11 +481,28 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     });
     spawned.set(thread.agentPath, spawned.get(thread.threadId)!);
     spawned.set(thread.nickname, spawned.get(thread.threadId)!);
+    emit(session, {
+      type: "collab_agent_spawn_end",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        newThreadId: thread.threadId,
+        newAgentNickname: thread.nickname,
+        newAgentRole: role,
+        prompt,
+        model: model ?? session.sessionConfiguration.collaborationMode.model,
+        reasoningEffort:
+          reasoningEffort ??
+          session.sessionConfiguration.collaborationMode.reasoningEffort,
+        status: thread.currentStatus,
+      },
+    });
 
     if (outcome.kind === "sync_completed") {
       return json({
         tool: aliasName,
         status: "completed",
+        task_name: thread.agentPath,
         agent_id: thread.threadId,
         agent_path: thread.agentPath,
         nickname: thread.nickname,
@@ -331,6 +512,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     return json({
       tool: aliasName,
       status: "running",
+      task_name: thread.agentPath,
       agent_id: thread.threadId,
       agent_path: thread.agentPath,
       nickname: thread.nickname,
@@ -340,6 +522,44 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const waitForAgent = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
+    const sessionOrError = getSessionOrError(opts);
+    if (!("conversationId" in sessionOrError)) return sessionOrError;
+    const timeoutMs = waitTimeoutMs(args);
+    if (typeof timeoutMs !== "number") return timeoutMs;
+    const current = currentAgentContext(sessionOrError, args);
+    const waitCallId = callIdFromArgs(args, "wait");
+    emit(sessionOrError, {
+      type: "collab_waiting_begin",
+      payload: {
+        senderThreadId: current.threadId,
+        receiverThreadIds: [],
+        receiverAgents: [],
+        callId: waitCallId,
+      },
+    });
+    const changed =
+      typeof sessionOrError.waitForMailboxChange === "function"
+        ? await sessionOrError.waitForMailboxChange(timeoutMs)
+        : await new Promise<boolean>((resolvePromise) =>
+            setTimeout(() => resolvePromise(sessionOrError.mailbox.hasPending()), timeoutMs),
+          );
+    emit(sessionOrError, {
+      type: "collab_waiting_end",
+      payload: {
+        senderThreadId: current.threadId,
+        callId: waitCallId,
+        statuses: {},
+      },
+    });
+    return json({
+      message: changed ? "Wait completed." : "Wait timed out.",
+      timed_out: !changed,
+    });
+  };
+
+  const taskOutput = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
     const targets = stringArray(args.targets);
     const target =
       parseTarget(args) ??
@@ -347,10 +567,18 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (!target && targets.length === 0) {
       return json({ error: "target or targets is required" }, true);
     }
-    const timeoutMs = Math.max(0, Math.min(numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs) ?? 30_000, 3_600_000));
+    const timeoutMs = Math.max(
+      0,
+      Math.min(
+        numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs) ?? 30_000,
+        MAX_WAIT_TIMEOUT_MS,
+      ),
+    );
     const allTargets = targets.length > 0 ? targets : [target!];
     const deadline = Date.now() + timeoutMs;
     const statuses: Record<string, unknown> = {};
+    const sessionOrError = getSessionOrError(opts);
+    if (!("conversationId" in sessionOrError)) return sessionOrError;
     for (const item of allTargets) {
       const record = spawned.get(item);
       if (record) {
@@ -373,8 +601,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         }
         continue;
       }
-      const sessionOrError = getSessionOrError(opts);
-      if (!("conversationId" in sessionOrError)) return sessionOrError;
       const { control } = ensureAgentControl(sessionOrError);
       const listed = control.listAgents();
       statuses[item] =
@@ -392,12 +618,34 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
-    const agentId = resolveAgentId(sessionOrError, target);
+    const current = currentAgentContext(sessionOrError, args);
+    const agentId = resolveAgentId(sessionOrError, target, current.agentPath);
+    if (agentId === sessionOrError.conversationId) {
+      return json({ error: "root is not a spawned agent" }, true);
+    }
+    const callId = callIdFromArgs(args, "close");
+    emit(sessionOrError, {
+      type: "collab_close_begin",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        receiverThreadId: agentId,
+      },
+    });
     const previous =
       spawned.get(target)?.status() ??
       spawned.get(agentId)?.status() ??
       { status: "unknown" };
     await control.shutdown(agentId, stringValue(args.reason) ?? "closed_by_tool");
+    emit(sessionOrError, {
+      type: "collab_close_end",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        receiverThreadId: agentId,
+        status: previous as AgentStatus,
+      },
+    });
     return json({ previous_status: previous });
   };
 
@@ -416,12 +664,54 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
-    const agentId = resolveAgentId(sessionOrError, target);
-    if (triggerTurn) {
-      await control.sendInput(agentId, message);
-    } else {
-      await control.appendMessage(agentId, message);
+    const current = currentAgentContext(sessionOrError, args);
+    const agentId = resolveAgentId(sessionOrError, target, current.agentPath);
+    if (triggerTurn && agentId === sessionOrError.conversationId) {
+      return json({ error: "Tasks can't be assigned to the root agent" }, true);
     }
+    const callId = callIdFromArgs(args, "message");
+    emit(sessionOrError, {
+      type: "collab_agent_interaction_begin",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        receiverThreadId: agentId,
+        prompt: message,
+      },
+    });
+    if (triggerTurn && boolValue(args.interrupt) === true) {
+      control.interrupt(agentId, "followup_task_interrupt");
+    }
+    try {
+      await control.sendInterAgentCommunication(agentId, {
+        author: current.agentPath,
+        recipient: target,
+        content: message,
+        triggerTurn,
+      });
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
+    const live = control.getLive(agentId);
+    emit(sessionOrError, {
+      type: "collab_agent_interaction_end",
+      payload: {
+        callId,
+        senderThreadId: current.threadId,
+        receiverThreadId: agentId,
+        ...(live?.nickname !== undefined
+          ? { receiverAgentNickname: live.nickname }
+          : {}),
+        ...(live?.role.name !== undefined
+          ? { receiverAgentRole: live.role.name }
+          : {}),
+        prompt: message,
+        status: live?.status.value ?? { status: "idle" },
+      },
+    });
     return json({ accepted: true, target: agentId, trigger_turn: triggerTurn });
   };
 
@@ -431,12 +721,24 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
+    const current = currentAgentContext(sessionOrError, args);
     const roleName = stringValue(args.role) ?? stringValue(args.agent_type);
-    const pathPrefix = stringValue(args.path_prefix) ?? stringValue(args.pathPrefix);
+    const pathPrefixRaw = stringValue(args.path_prefix) ?? stringValue(args.pathPrefix);
+    let resolvedPathPrefix: AgentPath | undefined;
+    if (pathPrefixRaw !== undefined) {
+      try {
+        resolvedPathPrefix = resolveAgentPath(current.agentPath, pathPrefixRaw);
+      } catch (error) {
+        return json(
+          { error: error instanceof Error ? error.message : String(error) },
+          true,
+        );
+      }
+    }
     return json({
       agents: control.listAgents({
         ...(roleName !== undefined ? { roleName } : {}),
-        ...(pathPrefix !== undefined ? { pathPrefix: pathPrefix as AgentPath } : {}),
+        ...(resolvedPathPrefix !== undefined ? { pathPrefix: resolvedPathPrefix } : {}),
       }),
     });
   };
@@ -445,12 +747,15 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     type: "object",
     properties: {
       message: { type: "string" },
+      task_name: { type: "string" },
       prompt: { type: "string" },
       task: { type: "string" },
       items: { type: "array" },
       agent_type: { type: "string" },
       role: { type: "string" },
-      fork_context: { type: "boolean" },
+      model: { type: "string" },
+      reasoning_effort: { type: "string" },
+      fork_turns: { type: ["string", "number"] },
       run_in_background: { type: "boolean" },
     },
     additionalProperties: true,
@@ -460,7 +765,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "spawn_agent",
       description:
-        "Spawn a background agent for a bounded task. Returns an agent id, path, and nickname.",
+        "Spawn a background agent for a bounded task. Provide task_name for the canonical agent path segment. Returns the canonical task name, agent id, path, and nickname.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "spawn", "delegate", "subagent"],
@@ -485,14 +790,12 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "wait_agent",
       description:
-        "Wait for one or more spawned agents to reach a terminal status and return their current status.",
+        "Wait for new mailbox activity from spawned agents, or until timeout.",
       metadata: toolMetadata("agent", { keywords: ["agent", "wait", "status"] }),
       isReadOnly: true,
       inputSchema: {
         type: "object",
         properties: {
-          target: { type: "string" },
-          targets: { type: "array", items: { type: "string" } },
           timeout_ms: { type: "number" },
         },
         additionalProperties: false,
@@ -513,11 +816,13 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         properties: {
           task_id: { type: "string" },
           agent_id: { type: "string" },
+          target: { type: "string" },
+          targets: { type: "array", items: { type: "string" } },
           timeout_ms: { type: "number" },
         },
         additionalProperties: true,
       },
-      execute: waitForAgent,
+      execute: taskOutput,
     },
     {
       name: "close_agent",
@@ -558,6 +863,25 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         additionalProperties: true,
       },
       execute: closeAgent,
+    },
+    {
+      name: "followup_task",
+      description: "Send a follow-up task to a spawned agent and wake it for another turn.",
+      metadata: toolMetadata("agent", {
+        mutating: true,
+        keywords: ["agent", "followup", "task"],
+      }),
+      inputSchema: {
+        type: "object",
+        properties: {
+          target: { type: "string" },
+          message: { type: "string" },
+          interrupt: { type: "boolean" },
+        },
+        required: ["target", "message"],
+        additionalProperties: false,
+      },
+      execute: (args) => sendInput(args, true),
     },
     {
       name: "send_input",

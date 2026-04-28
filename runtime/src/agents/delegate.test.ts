@@ -49,6 +49,9 @@ function makeLive(
     downInbox: new Mailbox({ threadId: `${agentId}-down` }),
     abortController: new AbortController(),
     metadata,
+    messages: [],
+    memoryEntries: [],
+    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   };
 }
 

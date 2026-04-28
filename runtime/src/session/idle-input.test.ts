@@ -101,4 +101,33 @@ describe("Session idle-input → mailbox merge", () => {
     const session = buildSession();
     expect(session.drainIdleInput()).toEqual([]);
   });
+
+  it("drainPendingInputMessages converts idle and agent mailbox traffic into model input", () => {
+    const session = buildSession();
+    session.enqueueIdleInput({ role: "user", content: "from idle" });
+    session.mailbox.send({
+      author: "/root/task_3",
+      recipient: "/root",
+      content: "from agent",
+      triggerTurn: true,
+    });
+    const drained = session.drainPendingInputMessages();
+    expect(drained).toEqual([
+      { role: "user", content: "from idle" },
+      { role: "user", content: "Message from /root/task_3:\nfrom agent" },
+    ]);
+    expect(session.hasPendingInput()).toBe(false);
+  });
+
+  it("waitForMailboxChange resolves when mailbox traffic arrives", async () => {
+    const session = buildSession();
+    const waiting = session.waitForMailboxChange(1_000);
+    session.mailbox.send({
+      author: "/root/task_3",
+      recipient: "/root",
+      content: "ready",
+      triggerTurn: true,
+    });
+    await expect(waiting).resolves.toBe(true);
+  });
 });

@@ -308,11 +308,13 @@ export class SimpleMailbox<T extends { seq: number }> implements Mailbox<T> {
   private nextSeq = 0;
   private readonly queue: T[] = [];
   private closed = false;
+  readonly seqWatch = new BehaviorSubject<number>(0);
 
   send(msg: Omit<T, "seq">): number {
     if (this.closed) return -1;
     const seq = ++this.nextSeq;
     this.queue.push({ ...(msg as object), seq } as T);
+    this.seqWatch.next(seq);
     return seq;
   }
 
@@ -326,6 +328,7 @@ export class SimpleMailbox<T extends { seq: number }> implements Mailbox<T> {
 
   close(): void {
     this.closed = true;
+    this.seqWatch.complete();
   }
 
   get isClosed(): boolean {
@@ -780,6 +783,9 @@ export class Session {
   /** AgenC runtime: `mailbox: Mailbox` — Session's own inbox (parent or peer can send). */
   readonly mailbox: Mailbox;
 
+  /** Sequence watcher for root mailbox delivery. */
+  readonly mailboxSeqWatch: BehaviorSubject<number>;
+
   /** AgenC runtime: `mailbox_rx: Mutex<MailboxReceiver>` — drain receiver. T9 wires the full impl. */
   readonly mailboxRx: AsyncLock<{ drain(): InterAgentCommunication[] }>;
 
@@ -929,9 +935,11 @@ export class Session {
       runningState: () => Promise.resolve(undefined),
     };
     this.activeTurn = new AsyncLock<ActiveTurn | null>(null);
-    this.mailbox = new SimpleMailbox<
+    const mailbox = new SimpleMailbox<
       InterAgentCommunication & { seq: number }
-    >() as unknown as Mailbox;
+    >();
+    this.mailbox = mailbox as unknown as Mailbox;
+    this.mailboxSeqWatch = mailbox.seqWatch;
     this.mailboxRx = new AsyncLock<{ drain(): InterAgentCommunication[] }>({
       drain: () => this.mailbox.drain(),
     });
@@ -1519,6 +1527,32 @@ export class Session {
     return this.mailbox.hasPending();
   }
 
+  async waitForMailboxChange(timeoutMs: number): Promise<boolean> {
+    if (this.mailbox.hasPending()) {
+      return true;
+    }
+    if (this.mailboxSeqWatch.isClosed) {
+      return false;
+    }
+    const startSeq = this.mailboxSeqWatch.value;
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      const unsubscribe = this.mailboxSeqWatch.subscribe((seq) => {
+        if (seq !== startSeq) {
+          finish(true);
+        }
+      });
+    });
+  }
+
   /**
    * Idle-input merge into the session mailbox. Replaces the old
    * `idlePendingInput: AsyncLock<unknown[]>` slot. Idle input is
@@ -1576,6 +1610,37 @@ export class Session {
       this.mailbox.send(rest);
     }
     return idleItems;
+  }
+
+  drainPendingInputMessages(): LLMMessage[] {
+    const drained = this.mailbox.drain();
+    const messages: LLMMessage[] = [];
+    for (const msg of drained) {
+      const source = msg.metadata?.source;
+      if (source === MAILBOX_SOURCE_IDLE_INPUT) {
+        const payload = msg.metadata?.payload;
+        if (
+          payload !== null &&
+          typeof payload === "object" &&
+          "role" in payload &&
+          "content" in payload
+        ) {
+          messages.push(payload as LLMMessage);
+        } else if (typeof payload === "string" && payload.trim().length > 0) {
+          messages.push({ role: "user", content: payload });
+        }
+        continue;
+      }
+      if (msg.content.trim().length === 0) {
+        continue;
+      }
+      const author = msg.author.trim().length > 0 ? msg.author : "agent";
+      messages.push({
+        role: "user",
+        content: `Message from ${author}:\n${msg.content}`,
+      });
+    }
+    return messages;
   }
 
   /**

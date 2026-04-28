@@ -8,33 +8,23 @@
  * token totals / environment context), completion watcher, fork-mode
  * spawn helpers, and subtree genealogy bookkeeping.
  *
- * Deferred (subsystems not yet in AgenC — track T10/T13):
+ * Remaining deferred subsystem:
  *   - Rollout-driven rehydrate restores live handles + descendant
  *     tree shape from the rollout-store-owned spawn-edge snapshot.
  *     Full AgenC behavior still needs the broader T6/T10 rollout/state
  *     rehydrate surface for pending turn/tool state.
- *   - Exec-policy + shell-snapshot inheritance
- *     (`inheritedExecPolicyForSource`, `inheritedShellSnapshotForSource`)
- *     is stubbed pending T13's config refactor. Safe default: return
- *     undefined (child uses its own defaults).
  *   - Spawn-edge tracking is delegated to `RolloutStore`, which owns
  *     the durable edge snapshot in this slice. AgentControl only
  *     writes/reads through that API; it does not keep a second
  *     persistence owner in memory.
- *   - `getAgentConfigSnapshot` / `getTotalTokenUsage` currently return
- *     conservative fallbacks (role-config blob + zeros). The AgenC runtime
- *     parity surface is preserved so callers upgrade once the live
- *     thread config snapshot lands.
  *
  * Invariants wired:
- *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `childDepth >= cap`.
+ *   I-1  (MAX_AGENT_DEPTH=4) — spawn rejects `childDepth > cap`.
  *        AgenC raises the cap from AgenC runtime's `DEFAULT_AGENT_MAX_DEPTH=1`
  *        (`AgenC runtime-rs/core/src/config/mod.rs:127`) to 4 because AgenC's
  *        subagent workflow (delegate/worktree/fork-context) routinely
  *        nests 2–3 levels deep for multi-role planner → implementer →
- *        verifier chains. Comparison operator matches AgenC runtime's `>=`
- *        form (`AgenC runtime-rs/core/src/agent/control.rs:486`,
- *        `AgenC runtime-rs/core/src/agent/multi_agents_common.rs:283`).
+ *        verifier chains.
  *   I-5  (bidirectional mailbox) — routing methods (send_input /
  *        append_message / IAC / interrupt) go through the child's
  *        `downInbox` with `direction: 'down'`.
@@ -49,6 +39,7 @@
  */
 
 import { emitError, emitWarning } from "../session/event-log.js";
+import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import type {
   ThreadSpawnEdgeStatus,
 } from "../session/rollout-store.js";
@@ -64,6 +55,8 @@ import {
   buildChildMetadata,
   depthOfAgentPath,
   joinAgentPath,
+  normalizeAgentNameForPath,
+  resolveAgentPath,
 } from "./registry.js";
 import {
   allocateNickname,
@@ -83,9 +76,9 @@ import { AgentStatusTracker, isFinal, type AgentStatus } from "./status.js";
  * I-1 default cap. Overrideable via `config.agents.maxDepth` (T10) or the
  * `AGENC_AGENT_MAX_DEPTH` env var (test/ops escape hatch).
  *
- * Semantics match AgenC runtime: `spawn` rejects when `childDepth >= cap`, so the
- * cap value is the smallest depth that is NOT allowed. Cap=4 means root
- * (depth 0) may spawn depths 1, 2, and 3; depth 4 is rejected.
+ * Semantics: `spawn` rejects when `childDepth > cap`, so the cap value is the
+ * deepest allowed child depth. Cap=4 means root (depth 0) may spawn depths
+ * 1, 2, 3, and 4; depth 5 is rejected.
  *
  * Divergence from AgenC runtime: AgenC defaults to `DEFAULT_AGENT_MAX_DEPTH=1`
  * (`AgenC runtime-rs/core/src/config/mod.rs:127`), which permits only a single
@@ -109,25 +102,8 @@ function resolveDefaultMaxDepth(): number {
 
 export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
 
-/**
- * Accessor stub for the session-level child-base-config blob.
- *
- * TODO(T10): Replace with a real accessor once `SessionConfiguration`
- * carries a stable child-config source. AgenC runtime derives the child's
- * base config from `Session.state.config` (`role.rs:40`); AgenC's
- * `Session.state.sessionConfiguration` exists but is not yet the
- * authoritative source for subagent config layering. Returning
- * `undefined` today is deliberate: it forces `applyRoleToConfig` to
- * project onto an empty blob so the seam stays live without faking a
- * config source that doesn't exist yet.
- */
 function getChildBaseConfig(session: Session): RoleShapedConfig | undefined {
-  // Intentionally not reaching into session.state here — that state
-  // is an async-locked mutex whose contents are still under active
-  // reshape for T10. The live accessor will replace this with a
-  // proper snapshot read.
-  void session;
-  return undefined;
+  return session.config as unknown as RoleShapedConfig;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -185,6 +161,9 @@ export type SpawnAgentForkMode =
 export interface SpawnAgentOptions {
   readonly threadId?: ThreadId;
   readonly roleName?: string;
+  readonly agentName?: string;
+  readonly agentPath?: AgentPath;
+  readonly preferredNickname?: string;
   /** Caller-supplied metadata fields to merge into the allocated
    *  record (e.g. inherited `agentRole` from a resume payload). */
   readonly metadata?: Partial<AgentMetadata>;
@@ -220,6 +199,26 @@ export interface LiveAgent {
   readonly abortController: AbortController;
   /** Cached metadata snapshot at spawn time (AgenC runtime `LiveAgent.metadata`). */
   readonly metadata: AgentMetadata;
+  /** Live child transcript, updated by the child run loop. */
+  readonly messages: LLMMessage[];
+  /** Scratch memory entries associated with this child. */
+  readonly memoryEntries: AgentMemoryEntry[];
+  /** Cumulative child token usage. */
+  readonly tokenUsage: AgentTokenUsage;
+  /** Effective child configuration snapshot once the child session is built. */
+  configSnapshot?: Record<string, unknown>;
+}
+
+export interface AgentMemoryEntry {
+  readonly key: string;
+  readonly value: unknown;
+  readonly at: number;
+}
+
+export interface AgentTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -276,13 +275,14 @@ export class AgentControl {
     readonly parentPath: AgentPath;
     readonly roleName?: string;
     readonly threadId?: ThreadId;
+    readonly agentName?: string;
+    readonly agentPath?: AgentPath;
+    readonly preferredNickname?: string;
   }): Promise<LiveAgent> {
     const parentDepth = depthOfAgentPath(opts.parentPath);
     const childDepth = parentDepth + 1;
 
-    // I-1: depth cap. Matches AgenC runtime `>=` comparison semantics
-    // (`control.rs:486`): cap is the smallest rejected depth.
-    if (childDepth >= this.maxDepth) {
+    if (childDepth > this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
         cause: "max_depth_exceeded",
         message: `subagent depth ${childDepth} exceeds cap ${this.maxDepth}`,
@@ -307,19 +307,9 @@ export class AgentControl {
     }
 
     const role = resolveAgentRole(opts.roleName);
-    // Project the role's overrides onto the child's effective config.
-    // T10 replaces the accessor below with a real config source on
-    // the session. For now we read whatever blob is available and
-    // re-apply; the returned object is intentionally unused today
-    // (the child session config path is not wired yet) but this call
-    // keeps the spawn seam live and fails fast on type drift.
     const baseChildConfig = getChildBaseConfig(this.session) ?? {};
-    // TODO(T10): thread the child effective config into the child
-    // session's SessionConfiguration once the config source lives on
-    // session state. For now this materializes the role-projection
-    // locally so the integration is test-covered.
     void applyRoleToConfig(role, baseChildConfig);
-    const nickname = allocateNickname(role, this.registry);
+    const nickname = opts.preferredNickname ?? allocateNickname(role, this.registry);
     const threadId = opts.threadId ?? crypto.randomUUID();
     const metadata: AgentMetadata = buildChildMetadata({
       agentId: threadId,
@@ -327,6 +317,8 @@ export class AgentControl {
       role,
       nickname,
       depth: childDepth,
+      ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
+      ...(opts.agentPath !== undefined ? { agentPath: opts.agentPath } : {}),
     });
 
     // I-32: check cancellation before finalize. If the parent was
@@ -395,6 +387,9 @@ export class AgentControl {
       downInbox,
       abortController: new AbortController(),
       metadata,
+      messages: [],
+      memoryEntries: [],
+      tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     };
 
     // I-5: wire the child's upInbox into the session's childInboxes
@@ -447,6 +442,22 @@ export class AgentControl {
     }
     if (options.threadId !== undefined) {
       (spawnOpts as { threadId?: ThreadId }).threadId = options.threadId;
+    }
+    if (options.agentName !== undefined) {
+      (spawnOpts as { agentName?: string }).agentName = options.agentName;
+    } else if (options.metadata?.agentPath) {
+      (spawnOpts as { agentPath?: AgentPath }).agentPath =
+        options.metadata.agentPath;
+    }
+    if (options.agentPath !== undefined) {
+      (spawnOpts as { agentPath?: AgentPath }).agentPath = options.agentPath;
+    }
+    if (options.preferredNickname !== undefined) {
+      (spawnOpts as { preferredNickname?: string }).preferredNickname =
+        options.preferredNickname;
+    } else if (options.metadata?.agentNickname) {
+      (spawnOpts as { preferredNickname?: string }).preferredNickname =
+        options.metadata.agentNickname;
     }
     const live = await this.spawn(spawnOpts);
     // Fork annotation: the live handle is already wired; the parent-
@@ -542,6 +553,17 @@ export class AgentControl {
       readonly triggerTurn: boolean;
     },
   ): Promise<void> {
+    if (this.rootThreadId !== undefined && threadId === this.rootThreadId) {
+      this.session.mailbox.send({
+        author: communication.author,
+        recipient: communication.recipient,
+        content: communication.content,
+        triggerTurn: communication.triggerTurn,
+        direction: "up",
+        metadata: { kind: "inter_agent_communication" },
+      });
+      return;
+    }
     const agent = this.requireLive(threadId);
     try {
       agent.downInbox.send({
@@ -695,7 +717,7 @@ export class AgentControl {
     // Matches AgenC runtime `>=` comparison (`multi_agents_common.rs:283`).
     const depth =
       metadata.depth ?? depthOfAgentPath(parentPath) + 1;
-    if (depth >= this.maxDepth) {
+    if (depth > this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
         cause: "max_depth_exceeded",
         message: `resume depth ${depth} exceeds cap ${this.maxDepth}`,
@@ -755,6 +777,9 @@ export class AgentControl {
       downInbox,
       abortController: new AbortController(),
       metadata,
+      messages: [],
+      memoryEntries: [],
+      tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     };
 
     this.session.childInboxes.set(threadId, upInbox as unknown as never);
@@ -895,16 +920,13 @@ export class AgentControl {
     return [rootThreadId, ...this.liveThreadSpawnDescendants(rootThreadId)];
   }
 
-  /**
-   * Port of AgenC runtime `get_agent_config_snapshot` (`control.rs:744`).
-   * Deferred (T13): no per-thread config snapshot yet. Returns a
-   * compact best-effort snapshot assembled from the live handle.
-   */
+  /** Port of AgenC runtime `get_agent_config_snapshot` (`control.rs:744`). */
   getAgentConfigSnapshot(
     threadId: ThreadId,
   ): Record<string, unknown> | undefined {
     const agent = this.live.get(threadId);
     if (!agent) return undefined;
+    if (agent.configSnapshot) return { ...agent.configSnapshot };
     return {
       threadId: agent.agentId,
       agentPath: agent.agentPath,
@@ -941,7 +963,7 @@ export class AgentControl {
     }
 
     const base = opts.currentAgentPath ?? "/root";
-    const resolved = joinAgentPath(base, ref);
+    const resolved = resolveAgentPath(base, ref);
     const resolvedId = this.agentIdForPath(resolved);
     if (resolvedId) return resolvedId;
 
@@ -950,18 +972,17 @@ export class AgentControl {
 
   /**
    * Port of AgenC runtime `get_total_token_usage` (`control.rs:788`).
-   * Deferred (T13): AgenC doesn't expose per-thread totals yet.
-   * Returns zeros until the budget tracker wiring lands.
    */
   getTotalTokenUsage(): {
     readonly inputTokens: number;
     readonly outputTokens: number;
     readonly totalTokens: number;
   } {
-    const inputTokens = 0;
-    const outputTokens = 0;
-    for (const _agent of this.live.values()) {
-      void _agent;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    for (const agent of this.live.values()) {
+      inputTokens += agent.tokenUsage.inputTokens;
+      outputTokens += agent.tokenUsage.outputTokens;
     }
     return {
       inputTokens,
@@ -1134,26 +1155,28 @@ export class AgentControl {
     return { metadata, role };
   }
 
-  /**
-   * Port of AgenC runtime `inherited_shell_snapshot_for_source`
-   * (`control.rs:1010`). Deferred (T13 config refactor).
-   */
   inheritedShellSnapshotForSource(
     _parentThreadId: ThreadId | undefined,
   ): unknown | undefined {
     void _parentThreadId;
-    return undefined;
+    const services = this.session.services as unknown as Record<string, unknown>;
+    return (
+      services.shellSnapshot ??
+      services.shell_snapshot ??
+      (services.shell as { shellSnapshot?: unknown } | undefined)?.shellSnapshot
+    );
   }
 
-  /**
-   * Port of AgenC runtime `inherited_exec_policy_for_source`
-   * (`control.rs:1045`). Deferred (T13 config refactor).
-   */
   inheritedExecPolicyForSource(
     _parentThreadId: ThreadId | undefined,
   ): unknown | undefined {
     void _parentThreadId;
-    return undefined;
+    const services = this.session.services as unknown as Record<string, unknown>;
+    return (
+      services.execPolicy ??
+      services.exec_policy ??
+      services.execPolicyManager
+    );
   }
 
   /**
@@ -1303,7 +1326,41 @@ export class AgentControl {
 
   /** Join a new child path onto an existing parent path. */
   pathFor(parentPath: AgentPath, nickname: string): AgentPath {
-    return joinAgentPath(parentPath, nickname);
+    return joinAgentPath(parentPath, normalizeAgentNameForPath(nickname));
+  }
+
+  recordAgentMessages(
+    threadId: ThreadId,
+    messages: ReadonlyArray<LLMMessage>,
+  ): void {
+    const agent = this.live.get(threadId);
+    if (!agent || messages.length === 0) return;
+    agent.messages.push(...messages.map((message) => ({ ...message })));
+  }
+
+  recordAgentUsage(threadId: ThreadId, usage: LLMUsage | undefined): void {
+    const agent = this.live.get(threadId);
+    if (!agent || usage === undefined) return;
+    agent.tokenUsage.inputTokens += usage.promptTokens ?? 0;
+    agent.tokenUsage.outputTokens += usage.completionTokens ?? 0;
+    agent.tokenUsage.totalTokens +=
+      usage.totalTokens ??
+      (usage.promptTokens ?? 0) + (usage.completionTokens ?? 0);
+  }
+
+  setAgentConfigSnapshot(
+    threadId: ThreadId,
+    snapshot: Record<string, unknown>,
+  ): void {
+    const agent = this.live.get(threadId);
+    if (!agent) return;
+    agent.configSnapshot = { ...snapshot };
+  }
+
+  writeAgentMemory(threadId: ThreadId, entry: AgentMemoryEntry): void {
+    const agent = this.live.get(threadId);
+    if (!agent) return;
+    agent.memoryEntries.push(entry);
   }
 }
 

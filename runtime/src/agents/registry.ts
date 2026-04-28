@@ -28,6 +28,9 @@ import { formatNicknameWithSuffix, type AgentRole } from "./role.js";
 export type AgentPath = string; // "/root" | "/root/worker" | "/root/worker/sub"
 export type ThreadId = string;
 
+export const ROOT_AGENT_PATH = "/root" as AgentPath;
+export const MEMORY_AGENT_PATH = "/morpheus" as AgentPath;
+
 export interface AgentMetadata {
   readonly agentId?: ThreadId;
   readonly agentPath?: AgentPath;
@@ -52,6 +55,13 @@ export class AgentPathExistsError extends Error {
   constructor(public readonly path: AgentPath) {
     super(`agent path already exists: ${path}`);
     this.name = "AgentPathExistsError";
+  }
+}
+
+export class InvalidAgentPathError extends Error {
+  constructor(public readonly path: string, message: string) {
+    super(message);
+    this.name = "InvalidAgentPathError";
   }
 }
 
@@ -159,6 +169,7 @@ export class AgentRegistry {
     _reservation: SpawnReservation,
   ): void {
     if (metadata.agentPath) {
+      assertValidAgentPath(metadata.agentPath);
       if (this.byPath.has(metadata.agentPath)) {
         throw new AgentPathExistsError(metadata.agentPath);
       }
@@ -188,11 +199,10 @@ export class AgentRegistry {
 
   /** Register the session's root thread — never counted against maxThreads. */
   registerRootThread(threadId: ThreadId): void {
-    const ROOT_PATH = "/root";
-    if (this.byPath.has(ROOT_PATH)) return;
-    this.byPath.set(ROOT_PATH, {
+    if (this.byPath.has(ROOT_AGENT_PATH)) return;
+    this.byPath.set(ROOT_AGENT_PATH, {
       agentId: threadId,
-      agentPath: ROOT_PATH,
+      agentPath: ROOT_AGENT_PATH,
       depth: 0,
     });
   }
@@ -223,6 +233,7 @@ export class AgentRegistry {
    * collision. Called by control.ts before spawn finalize.
    */
   reserveAgentPath(path: AgentPath): void {
+    assertValidAgentPath(path);
     if (this.byPath.has(path)) {
       throw new AgentPathExistsError(path);
     }
@@ -299,14 +310,114 @@ export class AgentRegistry {
 // ─────────────────────────────────────────────────────────────────────
 
 export function joinAgentPath(parent: AgentPath, segment: string): AgentPath {
-  const sanitized = segment.replace(/[^a-zA-Z0-9._-]+/g, "-");
-  return parent === "/root"
-    ? `/root/${sanitized}`
-    : `${parent}/${sanitized}`;
+  assertValidAgentPath(parent);
+  assertValidAgentName(segment);
+  if (parent === MEMORY_AGENT_PATH) {
+    throw new InvalidAgentPathError(
+      parent,
+      "memory consolidation agent path cannot have children",
+    );
+  }
+  return `${parent}/${segment}`;
 }
 
 export function depthOfAgentPath(path: AgentPath): number {
+  assertValidAgentPath(path);
+  if (path === MEMORY_AGENT_PATH) return 0;
   return Math.max(0, path.split("/").filter(Boolean).length - 1);
+}
+
+export function agentPathName(path: AgentPath): string {
+  assertValidAgentPath(path);
+  if (path === ROOT_AGENT_PATH) return "root";
+  const last = path.split("/").pop();
+  return last && last.length > 0 ? last : "root";
+}
+
+export function resolveAgentPath(
+  current: AgentPath,
+  reference: string,
+): AgentPath {
+  assertValidAgentPath(current);
+  if (reference.length === 0) {
+    throw new InvalidAgentPathError(reference, "agent path must not be empty");
+  }
+  if (reference === ROOT_AGENT_PATH) return ROOT_AGENT_PATH;
+  if (reference === MEMORY_AGENT_PATH) return MEMORY_AGENT_PATH;
+  if (reference.startsWith("/")) {
+    assertValidAgentPath(reference);
+    return reference;
+  }
+  if (current === MEMORY_AGENT_PATH) {
+    throw new InvalidAgentPathError(
+      reference,
+      "relative references cannot resolve below the memory consolidation agent",
+    );
+  }
+  for (const segment of reference.split("/")) {
+    assertValidAgentName(segment);
+  }
+  return `${current}/${reference}`;
+}
+
+export function normalizeAgentNameForPath(input: string): string {
+  const lowered = input.trim().toLowerCase();
+  const normalized = lowered
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+  const candidate = normalized.length > 0 ? normalized : "agent";
+  if (candidate === "root" || candidate === "." || candidate === "..") {
+    return `agent_${candidate.replace(/\W+/g, "_")}`;
+  }
+  return candidate;
+}
+
+export function assertValidAgentPath(path: string): asserts path is AgentPath {
+  if (path === MEMORY_AGENT_PATH) return;
+  if (!path.startsWith("/")) {
+    throw new InvalidAgentPathError(
+      path,
+      "absolute agent paths must start with `/root` or be `/morpheus`",
+    );
+  }
+  if (path.endsWith("/")) {
+    throw new InvalidAgentPathError(
+      path,
+      "absolute agent path must not end with `/`",
+    );
+  }
+  const segments = path.slice(1).split("/");
+  if (segments[0] !== "root") {
+    throw new InvalidAgentPathError(
+      path,
+      "absolute agent paths must start with `/root` or be `/morpheus`",
+    );
+  }
+  for (const segment of segments.slice(1)) {
+    assertValidAgentName(segment);
+  }
+}
+
+export function assertValidAgentName(name: string): void {
+  if (name.length === 0) {
+    throw new InvalidAgentPathError(name, "agent_name must not be empty");
+  }
+  if (name === "root") {
+    throw new InvalidAgentPathError(name, "agent_name `root` is reserved");
+  }
+  if (name === "." || name === "..") {
+    throw new InvalidAgentPathError(name, `agent_name \`${name}\` is reserved`);
+  }
+  if (name.includes("/")) {
+    throw new InvalidAgentPathError(name, "agent_name must not contain `/`");
+  }
+  if (!/^[a-z0-9_]+$/u.test(name)) {
+    throw new InvalidAgentPathError(
+      name,
+      "agent_name must use only lowercase letters, digits, and underscores",
+    );
+  }
 }
 
 /** Compose metadata from a role + allocated nickname. */
@@ -316,10 +427,19 @@ export function buildChildMetadata(opts: {
   readonly role: AgentRole;
   readonly nickname: string;
   readonly depth: number;
+  readonly agentName?: string;
+  readonly agentPath?: AgentPath;
 }): AgentMetadata {
+  const agentPath =
+    opts.agentPath ??
+    joinAgentPath(
+      opts.parentPath,
+      opts.agentName ?? normalizeAgentNameForPath(opts.nickname),
+    );
+  assertValidAgentPath(agentPath);
   return {
     agentId: opts.agentId,
-    agentPath: joinAgentPath(opts.parentPath, opts.nickname),
+    agentPath,
     agentNickname: opts.nickname,
     agentRole: opts.role.name,
     depth: opts.depth,

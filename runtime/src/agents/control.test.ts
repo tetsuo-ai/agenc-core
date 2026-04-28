@@ -13,6 +13,7 @@ import {
 import { AgentRegistry, type AgentMetadata } from "./registry.js";
 import { _resetNicknamePoolForTesting } from "./role.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { SimpleMailbox, type InterAgentCommunication } from "../session/session.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -22,6 +23,7 @@ function stubSession(opts: {
   conversationId?: string;
 } = {}) {
   const emitted: unknown[] = [];
+  const mailbox = new SimpleMailbox<InterAgentCommunication & { seq: number }>();
   return {
     emit: (e: unknown) => {
       emitted.push(e);
@@ -34,6 +36,7 @@ function stubSession(opts: {
     },
     nextInternalSubId: () => `sub-${emitted.length}`,
     childInboxes: new Map(),
+    mailbox,
     rolloutStore: opts.rolloutStore ?? null,
     conversationId: opts.conversationId ?? "session-test",
     _emitted: emitted,
@@ -88,36 +91,50 @@ describe("AgentControl", () => {
     expect(live.depth).toBe(1);
   });
 
-  it("I-1: depth at cap is rejected (AgenC `>=` semantics)", async () => {
-    // maxDepth=2 means childDepth=2 rejects; depth=1 is the last
-    // accepted level. Matches AgenC runtime `depth >= config.agent_max_depth`.
+  it("spawn() can use an explicit task-name path segment", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const live = await control.spawn({
+      parentPath: "/root",
+      agentName: "task_3",
+    });
+    expect(live.agentPath).toBe("/root/task_3");
+    expect(live.metadata.agentPath).toBe("/root/task_3");
+  });
+
+  it("I-1: depth beyond cap is rejected", async () => {
+    // maxDepth=2 means depth=2 is accepted and depth=3 rejects.
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 2 });
     const first = await control.spawn({ parentPath: "/root" });
     expect(first.depth).toBe(1);
+    const second = await control.spawn({ parentPath: first.agentPath });
+    expect(second.depth).toBe(2);
     await expect(
-      control.spawn({ parentPath: first.agentPath }),
+      control.spawn({ parentPath: second.agentPath }),
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
   });
 
-  it("I-1: depth = cap-1 is accepted", async () => {
+  it("I-1: depth = cap is accepted", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 3 });
     const d1 = await control.spawn({ parentPath: "/root" });
     const d2 = await control.spawn({ parentPath: d1.agentPath });
-    expect(d2.depth).toBe(2); // cap - 1
+    const d3 = await control.spawn({ parentPath: d2.agentPath });
+    expect(d3.depth).toBe(3);
     await expect(
-      control.spawn({ parentPath: d2.agentPath }),
+      control.spawn({ parentPath: d3.agentPath }),
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
   });
 
   it("AgentControlOpts.maxDepth override is honored", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry, maxDepth: 1 });
-    // cap=1 matches AgenC default: root (depth 0) may not spawn.
+    const control = new AgentControl({ session, registry, maxDepth: 0 });
+    // cap=0 permits only the root session.
     await expect(
       control.spawn({ parentPath: "/root" }),
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
@@ -337,6 +354,27 @@ describe("AgentControl", () => {
     expect(meta?.lastTaskMessage).toBe("iac payload");
   });
 
+  it("sendInterAgentCommunication() can queue a message to the root session", async () => {
+    const session = stubSession({ conversationId: "root-thread" });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    control.registerSessionRoot("root-thread");
+    await control.sendInterAgentCommunication("root-thread", {
+      author: "/root/task_3",
+      recipient: "/root",
+      content: "final answer",
+      triggerTurn: true,
+    });
+    const drained = session.mailbox.drain();
+    expect(drained).toHaveLength(1);
+    expect(drained[0]).toMatchObject({
+      author: "/root/task_3",
+      recipient: "/root",
+      content: "final answer",
+      triggerTurn: true,
+    });
+  });
+
   // ───────────────────────────────────────────────────────────
   // Priority-2 metadata + subtree queries
   // ───────────────────────────────────────────────────────────
@@ -390,15 +428,20 @@ describe("AgentControl", () => {
     expect(scoped.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("getTotalTokenUsage() returns zeros until budget wiring lands", async () => {
+  it("getTotalTokenUsage() aggregates live child usage", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
-    await control.spawn({ parentPath: "/root" });
+    const child = await control.spawn({ parentPath: "/root" });
+    control.recordAgentUsage(child.agentId, {
+      promptTokens: 11,
+      completionTokens: 7,
+      totalTokens: 18,
+    });
     const usage = control.getTotalTokenUsage();
-    expect(usage.inputTokens).toBe(0);
-    expect(usage.outputTokens).toBe(0);
-    expect(usage.totalTokens).toBe(0);
+    expect(usage.inputTokens).toBe(11);
+    expect(usage.outputTokens).toBe(7);
+    expect(usage.totalTokens).toBe(18);
   });
 
   it("formatEnvironmentContextSubagents() produces a textual subtree", async () => {

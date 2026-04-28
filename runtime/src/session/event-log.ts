@@ -20,6 +20,7 @@
  */
 
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
+import type { AgentStatus } from "../agents/status.js";
 import type {
   CollaborationMode,
   FileSystemSandboxPolicy,
@@ -280,6 +281,82 @@ export interface PlanApprovalCompletedEvent {
   readonly completedAt: number;
 }
 
+export interface CollabAgentRef {
+  readonly threadId: string;
+  readonly agentNickname?: string;
+  readonly agentRole?: string;
+}
+
+export interface CollabAgentStatusEntry extends CollabAgentRef {
+  readonly status: AgentStatus;
+}
+
+export interface CollabAgentSpawnBeginEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly prompt: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+}
+
+export interface CollabAgentSpawnEndEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly newThreadId?: string;
+  readonly newAgentNickname?: string;
+  readonly newAgentRole?: string;
+  readonly prompt: string;
+  readonly model: string;
+  readonly reasoningEffort?: string;
+  readonly status: AgentStatus;
+}
+
+export interface CollabAgentInteractionBeginEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly receiverThreadId: string;
+  readonly prompt: string;
+}
+
+export interface CollabAgentInteractionEndEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly receiverThreadId: string;
+  readonly receiverAgentNickname?: string;
+  readonly receiverAgentRole?: string;
+  readonly prompt: string;
+  readonly status: AgentStatus;
+}
+
+export interface CollabWaitingBeginEvent {
+  readonly senderThreadId: string;
+  readonly receiverThreadIds: ReadonlyArray<string>;
+  readonly receiverAgents?: ReadonlyArray<CollabAgentRef>;
+  readonly callId: string;
+}
+
+export interface CollabWaitingEndEvent {
+  readonly senderThreadId: string;
+  readonly callId: string;
+  readonly agentStatuses?: ReadonlyArray<CollabAgentStatusEntry>;
+  readonly statuses: Readonly<Record<string, AgentStatus>>;
+}
+
+export interface CollabCloseBeginEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly receiverThreadId: string;
+}
+
+export interface CollabCloseEndEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly receiverThreadId: string;
+  readonly receiverAgentNickname?: string;
+  readonly receiverAgentRole?: string;
+  readonly status: AgentStatus;
+}
+
 /**
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
@@ -438,6 +515,38 @@ export type EventMsg =
       readonly payload: PlanApprovalCompletedEvent;
     }
   | {
+      readonly type: "collab_agent_spawn_begin";
+      readonly payload: CollabAgentSpawnBeginEvent;
+    }
+  | {
+      readonly type: "collab_agent_spawn_end";
+      readonly payload: CollabAgentSpawnEndEvent;
+    }
+  | {
+      readonly type: "collab_agent_interaction_begin";
+      readonly payload: CollabAgentInteractionBeginEvent;
+    }
+  | {
+      readonly type: "collab_agent_interaction_end";
+      readonly payload: CollabAgentInteractionEndEvent;
+    }
+  | {
+      readonly type: "collab_waiting_begin";
+      readonly payload: CollabWaitingBeginEvent;
+    }
+  | {
+      readonly type: "collab_waiting_end";
+      readonly payload: CollabWaitingEndEvent;
+    }
+  | {
+      readonly type: "collab_close_begin";
+      readonly payload: CollabCloseBeginEvent;
+    }
+  | {
+      readonly type: "collab_close_end";
+      readonly payload: CollabCloseEndEvent;
+    }
+  | {
       readonly type: "entered_review_mode";
       readonly payload: import("./review.js").ReviewRequest;
     }
@@ -559,6 +668,14 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "review_delegate_completed",
     "plan_approval_requested",
     "plan_approval_completed",
+    "collab_agent_spawn_begin",
+    "collab_agent_spawn_end",
+    "collab_agent_interaction_begin",
+    "collab_agent_interaction_end",
+    "collab_waiting_begin",
+    "collab_waiting_end",
+    "collab_close_begin",
+    "collab_close_end",
     "entered_review_mode",
     "deprecation_notice",
     "plan_started",

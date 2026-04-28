@@ -78,6 +78,7 @@ describe("model-facing tools", () => {
         "wait_agent",
         "resume_agent",
         "close_agent",
+        "followup_task",
         "send_input",
         "send_message",
         "list_agents",

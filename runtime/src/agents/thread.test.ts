@@ -24,6 +24,9 @@ function makeLive(): LiveAgent {
       agentRole: "default",
       depth: 1,
     },
+    messages: [],
+    memoryEntries: [],
+    tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   };
 }
 
@@ -162,7 +165,7 @@ describe("AgentThread — AgenC-compatible getters", () => {
     expect(t.threadName).toBe("alpha");
   });
 
-  it("messages mirrors initialMessages", () => {
+  it("messages mirrors initialMessages until live transcript exists", () => {
     const msgs: LLMMessage[] = [
       { role: "user", content: "hello" },
       { role: "assistant", content: "hi there" },
@@ -176,6 +179,18 @@ describe("AgentThread — AgenC-compatible getters", () => {
     expect(t.messages).toEqual(msgs);
   });
 
+  it("messages returns the live transcript once populated", () => {
+    const live = makeLive();
+    live.messages.push({ role: "assistant", content: "live reply" });
+    const t = new AgentThread({
+      live,
+      initialMessages: [{ role: "user", content: "seed" }],
+      forkMode: { kind: "new" },
+      taskPrompt: "hi",
+    });
+    expect(t.messages).toEqual([{ role: "assistant", content: "live reply" }]);
+  });
+
   it("metadata mirrors the current live handle", () => {
     const t = new AgentThread({
       live: makeLive(),
@@ -187,14 +202,16 @@ describe("AgentThread — AgenC-compatible getters", () => {
     expect(t.metadata.agentNickname).toBe("alpha");
   });
 
-  it("memory returns [] until T10 wires the real store", () => {
+  it("memory returns live memory entries", () => {
+    const live = makeLive();
+    live.memoryEntries.push({ key: "k", value: "v", at: 1 });
     const t = new AgentThread({
-      live: makeLive(),
+      live,
       initialMessages: [],
       forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
-    expect(t.memory).toEqual([]);
+    expect(t.memory).toEqual([{ key: "k", value: "v", at: 1 }]);
   });
 
   it("worktreePath aliases worktree.path", () => {
