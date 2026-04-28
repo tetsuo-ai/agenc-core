@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createNew,
+  deleteTask,
   deriveUnresolvedBlockers,
   listWithUnresolved,
   loadAll,
   loadOne,
+  onTasksUpdated,
   tasksDir,
   updateOne,
   type StoredTask,
@@ -38,7 +40,8 @@ describe("task-store", () => {
         metadata: { ticket: "ABC-7" },
       });
 
-      expect(created.id).toMatch(/^task-\d+$/);
+      expect(created.id).toMatch(/^\d+$/);
+      expect(created.id).toBe("1");
       expect(created.status).toBe("pending");
       expect(created.owner).toBe("/root/task_3");
       expect(created.metadata).toEqual({ ticket: "ABC-7" });
@@ -55,7 +58,7 @@ describe("task-store", () => {
     });
   });
 
-  it("allocates unique ids under concurrent creates", async () => {
+  it("allocates sequential ids under concurrent creates", async () => {
     await withTempStore(async (opts) => {
       const results = await Promise.all([
         createNew(opts, { subject: "A" }),
@@ -66,16 +69,43 @@ describe("task-store", () => {
       ]);
       const ids = new Set(results.map((task) => task.id));
       expect(ids.size).toBe(5);
+      expect([...ids].sort((a, b) => Number(a) - Number(b))).toEqual([
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+      ]);
 
       const files = await readdir(tasksDir(opts));
-      const taskFiles = files.filter((name) => name.startsWith("task-"));
+      const taskFiles = files.filter((name) => name.endsWith(".json"));
       expect(taskFiles).toHaveLength(5);
+    });
+  });
+
+  it("never recycles deleted ids", async () => {
+    await withTempStore(async (opts) => {
+      const a = await createNew(opts, { subject: "A" });
+      const b = await createNew(opts, { subject: "B" });
+      expect(a.id).toBe("1");
+      expect(b.id).toBe("2");
+      // deleteTask uses status=deleted (tombstone). The next allocator
+      // must skip past the high-water mark, not reuse "2".
+      await deleteTask(opts, b.id);
+      // Tombstone keeps the file present, so this exercises the
+      // file-discovery path. Now physically remove the tombstone to
+      // exercise the high-water-mark path: the allocator must still
+      // not reuse "2".
+      const { unlink } = await import("node:fs/promises");
+      await unlink(join(tasksDir(opts), `${b.id}.json`));
+      const c = await createNew(opts, { subject: "C" });
+      expect(c.id).toBe("3");
     });
   });
 
   it("returns null for missing or malformed ids", async () => {
     await withTempStore(async (opts) => {
-      expect(await loadOne(opts, "task-9999")).toBeNull();
+      expect(await loadOne(opts, "9999")).toBeNull();
       expect(await loadOne(opts, "not-a-task")).toBeNull();
     });
   });
@@ -95,7 +125,7 @@ describe("task-store", () => {
 
   it("updateOne reports Task not found for missing id", async () => {
     await withTempStore(async (opts) => {
-      const outcome = await updateOne(opts, "task-9999", { status: "completed" });
+      const outcome = await updateOne(opts, "9999", { status: "completed" });
       expect(outcome.task).toBeUndefined();
       expect(outcome.error?.message).toBe("Task not found");
     });
@@ -104,12 +134,10 @@ describe("task-store", () => {
   it("rejects unknown task references when adding dependencies", async () => {
     await withTempStore(async (opts) => {
       const a = await createNew(opts, { subject: "A" });
-      const outcome = await updateOne(opts, a.id, {
-        addBlocks: ["task-9999"],
-      });
+      const outcome = await updateOne(opts, a.id, { addBlocks: ["9999"] });
       expect(outcome.task).toBeUndefined();
       expect(outcome.error?.message).toBe("Unknown task reference");
-      expect(outcome.error?.missing).toEqual(["task-9999"]);
+      expect(outcome.error?.missing).toEqual(["9999"]);
     });
   });
 
@@ -132,31 +160,46 @@ describe("task-store", () => {
     });
   });
 
-  it("dedupes added dependency ids", async () => {
+  it("auto-mirrors addBlocks on both endpoints", async () => {
     await withTempStore(async (opts) => {
       const a = await createNew(opts, { subject: "A" });
       const b = await createNew(opts, { subject: "B" });
 
-      const first = await updateOne(opts, a.id, { addBlocks: [b.id] });
-      expect(first.task?.blocks).toEqual([b.id]);
+      const result = await updateOne(opts, a.id, { addBlocks: [b.id] });
+      expect(result.task?.blocks).toEqual([b.id]);
 
-      const second = await updateOne(opts, a.id, { addBlocks: [b.id, b.id] });
-      expect(second.task?.blocks).toEqual([b.id]);
+      const reloadedA = await loadOne(opts, a.id);
+      const reloadedB = await loadOne(opts, b.id);
+      expect(reloadedA?.blocks).toEqual([b.id]);
+      expect(reloadedB?.blockedBy).toEqual([a.id]);
     });
   });
 
-  it("applies remove + add in the same call", async () => {
+  it("auto-mirrors addBlockedBy with the inverse direction", async () => {
     await withTempStore(async (opts) => {
       const a = await createNew(opts, { subject: "A" });
       const b = await createNew(opts, { subject: "B" });
-      const c = await createNew(opts, { subject: "C" });
+
+      // "A is blockedBy B" means B blocks A.
+      const result = await updateOne(opts, a.id, { addBlockedBy: [b.id] });
+      expect(result.task?.blockedBy).toEqual([b.id]);
+
+      const reloadedB = await loadOne(opts, b.id);
+      expect(reloadedB?.blocks).toEqual([a.id]);
+    });
+  });
+
+  it("dedupes duplicate edge adds", async () => {
+    await withTempStore(async (opts) => {
+      const a = await createNew(opts, { subject: "A" });
+      const b = await createNew(opts, { subject: "B" });
 
       await updateOne(opts, a.id, { addBlocks: [b.id] });
-      const swapped = await updateOne(opts, a.id, {
-        addBlocks: [c.id],
-        removeBlocks: [b.id],
-      });
-      expect(swapped.task?.blocks).toEqual([c.id]);
+      const second = await updateOne(opts, a.id, { addBlocks: [b.id, b.id] });
+      expect(second.task?.blocks).toEqual([b.id]);
+
+      const reloadedB = await loadOne(opts, b.id);
+      expect(reloadedB?.blockedBy).toEqual([a.id]);
     });
   });
 
@@ -195,9 +238,7 @@ describe("task-store", () => {
       expect(visible.map((t) => t.id)).toEqual([a.id]);
 
       const withDeleted = await listWithUnresolved(opts, { includeDeleted: true });
-      expect(withDeleted.map((t) => t.id).sort()).toEqual(
-        [a.id, b.id].sort(),
-      );
+      expect(withDeleted.map((t) => t.id).sort()).toEqual([a.id, b.id].sort());
 
       const onlyDeleted = await listWithUnresolved(opts, { status: "deleted" });
       expect(onlyDeleted.map((t) => t.id)).toEqual([b.id]);
@@ -210,29 +251,27 @@ describe("task-store", () => {
       const b = await createNew(opts, { subject: "B" });
       const c = await createNew(opts, { subject: "C" });
 
-      // T blocked by A (pending), B (completed), and a missing id.
       const t = await createNew(opts, { subject: "T" });
       await updateOne(opts, t.id, { addBlockedBy: [a.id, b.id] });
-      // Manually inject a stale blocker by directly editing the file
-      // — simulates a deleted-then-removed-from-disk blocker.
+
+      // Inject a stale reference (simulates a blocker file removed
+      // out of band).
       const path = join(tasksDir(opts), `${t.id}.json`);
       const raw = await readFile(path, "utf8");
       const parsed = JSON.parse(raw) as StoredTask;
       const tampered: StoredTask = {
         ...parsed,
-        blockedBy: [...parsed.blockedBy, "task-9999"],
+        blockedBy: [...parsed.blockedBy, "9999"],
       };
       const { writeFile } = await import("node:fs/promises");
       await writeFile(path, JSON.stringify(tampered), "utf8");
 
-      // Mark B completed.
       await updateOne(opts, b.id, { status: "completed" });
 
       const list = await listWithUnresolved(opts);
       const tListed = list.find((task) => task.id === t.id);
       expect(tListed?.unresolvedBlockers).toEqual([a.id]);
 
-      // C is unaffected.
       const cListed = list.find((task) => task.id === c.id);
       expect(cListed?.unresolvedBlockers).toEqual([]);
     });
@@ -240,20 +279,20 @@ describe("task-store", () => {
 
   it("deriveUnresolvedBlockers is pure over its inputs", () => {
     const taskA: StoredTask = {
-      id: "task-1",
+      id: "1",
       subject: "A",
       description: "",
       status: "pending",
       blocks: [],
-      blockedBy: ["task-2", "task-3", "task-4"],
+      blockedBy: ["2", "3", "4"],
       createdAt: "0",
       updatedAt: "0",
     };
     const byId = new Map<string, StoredTask>([
       [
-        "task-2",
+        "2",
         {
-          id: "task-2",
+          id: "2",
           subject: "B",
           description: "",
           status: "completed",
@@ -264,9 +303,9 @@ describe("task-store", () => {
         },
       ],
       [
-        "task-3",
+        "3",
         {
-          id: "task-3",
+          id: "3",
           subject: "C",
           description: "",
           status: "in_progress",
@@ -277,9 +316,9 @@ describe("task-store", () => {
         },
       ],
       [
-        "task-4",
+        "4",
         {
-          id: "task-4",
+          id: "4",
           subject: "D",
           description: "",
           status: "deleted",
@@ -290,6 +329,23 @@ describe("task-store", () => {
         },
       ],
     ]);
-    expect(deriveUnresolvedBlockers(taskA, byId)).toEqual(["task-3"]);
+    expect(deriveUnresolvedBlockers(taskA, byId)).toEqual(["3"]);
+  });
+
+  it("emits onTasksUpdated on create and update", async () => {
+    await withTempStore(async (opts) => {
+      let count = 0;
+      const unsubscribe = onTasksUpdated(() => {
+        count += 1;
+      });
+      try {
+        const t = await createNew(opts, { subject: "A" });
+        expect(count).toBe(1);
+        await updateOne(opts, t.id, { status: "in_progress" });
+        expect(count).toBe(2);
+      } finally {
+        unsubscribe();
+      }
+    });
   });
 });

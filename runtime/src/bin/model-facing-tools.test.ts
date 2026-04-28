@@ -204,7 +204,7 @@ describe("model-facing tools", () => {
         owner?: string;
         status: string;
       };
-      expect(task.id).toMatch(/^task-\d+$/);
+      expect(task.id).toMatch(/^\d+$/);
       expect(task.owner).toBe("/root/task_3");
       expect(task.status).toBe("pending");
 
@@ -219,6 +219,13 @@ describe("model-facing tools", () => {
         blockedBy: readonly string[];
       };
       expect(linkedTask.blockedBy).toEqual([blockerTask.id]);
+
+      // Auto-mirror under the list lock: blocker.blocks should now
+      // contain task.id with no separate update call.
+      const blockerAfter = await byName.get("TaskGet")!.execute({
+        taskId: blockerTask.id,
+      });
+      expect(JSON.parse(blockerAfter.content).task.blocks).toEqual([task.id]);
 
       const listed = JSON.parse(
         (await byName.get("TaskList")!.execute({})).content,
@@ -260,18 +267,16 @@ describe("model-facing tools", () => {
       expect(got.isError).toBeUndefined();
       expect(JSON.parse(got.content).task.subject).toBe("Wire tools");
 
-      const missing = await byName.get("TaskGet")!.execute({
-        taskId: "task-9999",
-      });
+      const missing = await byName.get("TaskGet")!.execute({ taskId: "9999" });
       expect(missing.isError).toBe(true);
       expect(JSON.parse(missing.content).error).toBe("Task not found");
 
       const badRef = await byName.get("TaskUpdate")!.execute({
         taskId: blockerTask.id,
-        addBlocks: ["task-9999"],
+        addBlocks: ["9999"],
       });
       expect(badRef.isError).toBe(true);
-      expect(JSON.parse(badRef.content).missing).toEqual(["task-9999"]);
+      expect(JSON.parse(badRef.content).missing).toEqual(["9999"]);
     } finally {
       await rm(home, { recursive: true, force: true });
     }

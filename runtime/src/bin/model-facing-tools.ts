@@ -2042,7 +2042,7 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
     },
     {
       name: "TaskUpdate",
-      description: `Update a durable AgenC task: status, fields, owner, dependencies, metadata. Rejects unknown task references and self-references. ${TASK_BOARD_GUIDANCE}`,
+      description: `Update a durable AgenC task: status, fields, owner, metadata, and dependency edges. Edges are append-only (addBlocks / addBlockedBy) and auto-mirrored on both endpoints under the list lock. To clear a dependency, mark the blocker completed or deleted. Rejects unknown task references and self-references. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
         deferred: true,
@@ -2063,9 +2063,7 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
           },
           owner: { type: ["string", "null"] },
           addBlocks: { type: "array", items: { type: "string" } },
-          removeBlocks: { type: "array", items: { type: "string" } },
           addBlockedBy: { type: "array", items: { type: "string" } },
-          removeBlockedBy: { type: "array", items: { type: "string" } },
           metadata: { type: "object" },
         },
         additionalProperties: false,
@@ -2100,17 +2098,9 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
         if (addBlocks.length > 0) {
           (update as { addBlocks?: readonly string[] }).addBlocks = addBlocks;
         }
-        const removeBlocks = stringArray(args.removeBlocks);
-        if (removeBlocks.length > 0) {
-          (update as { removeBlocks?: readonly string[] }).removeBlocks = removeBlocks;
-        }
         const addBlockedBy = stringArray(args.addBlockedBy);
         if (addBlockedBy.length > 0) {
           (update as { addBlockedBy?: readonly string[] }).addBlockedBy = addBlockedBy;
-        }
-        const removeBlockedBy = stringArray(args.removeBlockedBy);
-        if (removeBlockedBy.length > 0) {
-          (update as { removeBlockedBy?: readonly string[] }).removeBlockedBy = removeBlockedBy;
         }
         const metadata = metadataObject(args.metadata);
         if (metadata !== undefined) {
