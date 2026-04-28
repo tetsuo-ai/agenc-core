@@ -506,6 +506,64 @@ describe("streamModel — live assistant text sanitization", () => {
     ).toBe(true);
   });
 
+  test("marks length responses for max-output recovery and drops tool calls", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const registry = mkRegistry([
+      {
+        name: "Write",
+        description: "writes a file",
+        inputSchema: {
+          type: "object",
+          properties: {
+            file_path: { type: "string" },
+            content: { type: "string" },
+          },
+          required: ["file_path", "content"],
+        },
+        execute: async () => ({ content: "wrote" }),
+      },
+    ]);
+    const provider = mkProvider(async () => ({
+      content: "Let me start with the parser rewrite.",
+      toolCalls: [
+        {
+          id: "tool-1",
+          name: "Write",
+          arguments: JSON.stringify({ file_path: "/tmp/parser.c" }),
+        },
+      ],
+      usage: { promptTokens: 85_000, completionTokens: 4_096, totalTokens: 89_096 },
+      model: "test-model",
+      finishReason: "length",
+    }));
+    const { session, events } = mkSession(provider, null, registry);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      {
+        ...mkRequest([{ role: "user", content: "rewrite parser" }]),
+        tools: registry.toLLMTools(),
+      },
+      undefined,
+    );
+
+    expect(state.assistantMessages.at(-1)?.apiError).toBe("max_output_tokens");
+    expect(state.assistantMessages.at(-1)?.toolCalls).toEqual([]);
+    expect(state.toolUseBlocks).toEqual([]);
+    expect(state.needsFollowUp).toBe(false);
+    expect(state.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Let me start with the parser rewrite.",
+    });
+    expect((state.messages.at(-1) as { toolCalls?: unknown }).toolCalls).toBeUndefined();
+    expect(streamedDispatchCalls).toEqual([]);
+    expect(events.some((event) => event.msg.type === "tool_call_started")).toBe(false);
+  });
+
   test("strips hidden tags and spoof patterns before delta/final event emission", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

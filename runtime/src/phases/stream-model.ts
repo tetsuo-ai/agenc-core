@@ -229,18 +229,25 @@ function assistantMessageFromResponse(
   providerName: string,
 ): AssistantMessage {
   const visible = toVisibleAssistantText(response.content ?? "", planMode);
+  const apiError =
+    response.finishReason === "length"
+      ? "max_output_tokens"
+      : response.finishReason === "error"
+        ? "provider_error"
+        : undefined;
+  const allowToolCalls = response.finishReason !== "length";
   // I-55: normalize tool_use blocks into canonical shape before the
   // validator sees them (provider-family quirks collapsed here).
   const normalizedToolCalls = normalizeToolCallsForProvider(
     providerName,
-    response.toolCalls ?? [],
+    allowToolCalls ? response.toolCalls ?? [] : [],
   );
   return {
     uuid: crypto.randomUUID(),
     role: "assistant",
     text: visible.text,
     toolCalls: normalizedToolCalls,
-    apiError: response.finishReason === "error" ? "provider_error" : undefined,
+    apiError,
   };
 }
 
@@ -463,7 +470,10 @@ export async function streamModel(
     planMode,
     providerName,
   );
-  const mergedToolCalls = new Map(streamedToolCalls);
+  const maxOutputTruncated = response.finishReason === "length";
+  const mergedToolCalls = maxOutputTruncated
+    ? new Map<string, LLMToolCall>()
+    : new Map(streamedToolCalls);
   for (const call of assistant.toolCalls) {
     mergedToolCalls.set(call.id, call);
   }
@@ -487,16 +497,21 @@ export async function streamModel(
     };
   }
   state.assistantMessages = [assistant];
-  const mergedToolBlocks = new Map(streamedToolBlocks);
-  for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
-    mergedToolBlocks.set(block.id, block);
+  if (maxOutputTruncated) {
+    state.toolUseBlocks = [];
+    state.needsFollowUp = false;
+  } else {
+    const mergedToolBlocks = new Map(streamedToolBlocks);
+    for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
+      mergedToolBlocks.set(block.id, block);
+    }
+    state.toolUseBlocks = [...mergedToolBlocks.values()];
+    state.needsFollowUp = state.toolUseBlocks.length > 0;
   }
-  state.toolUseBlocks = [...mergedToolBlocks.values()];
-  state.needsFollowUp = state.toolUseBlocks.length > 0;
 
   // Full final assistant_message event for renderers that batch on
   // completion rather than consuming per-chunk deltas.
-  if (assistant.text && assistant.text.length > 0) {
+  if (!maxOutputTruncated && assistant.text && assistant.text.length > 0) {
     session.emit({
       id: session.nextInternalSubId(),
       msg: {
@@ -551,7 +566,9 @@ export async function streamModel(
     role: "assistant",
     content: response.content,
     toolCalls:
-      assistant.toolCalls.length > 0 ? [...assistant.toolCalls] : undefined,
+      !maxOutputTruncated && assistant.toolCalls.length > 0
+        ? [...assistant.toolCalls]
+        : undefined,
   });
 
   // I-22: boundary check uses provider-reported completion tokens.

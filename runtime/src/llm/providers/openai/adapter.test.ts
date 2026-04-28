@@ -518,6 +518,40 @@ describe("OpenAIProvider", () => {
     expect(request.stream_options).toEqual({ include_usage: true });
   });
 
+  test("does not surface truncated chat-completions tool calls as executable calls", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"content":"Let me write that."}}]}\n\n',
+        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Write","arguments":"{\\"file_path\\":\\"/tmp/parser.c\\"}"}}]}}]}\n\n',
+        'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"finish_reason":"length"}],"usage":{"prompt_tokens":85000,"completion_tokens":4096,"total_tokens":89096}}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-5",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+    const chunks: Array<{
+      content: string;
+      done: boolean;
+      toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+    }> = [];
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "rewrite parser" }],
+      (chunk) => chunks.push(chunk),
+    );
+
+    expect(response.finishReason).toBe("length");
+    expect(response.toolCalls).toEqual([]);
+    expect(chunks).toEqual([
+      { content: "Let me write that.", done: false },
+      { content: "", done: true },
+    ]);
+  });
+
   test("surfaces streaming 429s as typed rate-limit errors", async () => {
     const provider = new OpenAIProvider({
       apiKey: "sk-test",
