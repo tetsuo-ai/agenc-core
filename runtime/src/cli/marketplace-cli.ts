@@ -123,6 +123,11 @@ export interface MarketTaskClaimOptions extends MarketTaskDetailOptions {
 export interface MarketTaskCompleteOptions extends MarketTaskDetailOptions {
   proofHash?: string;
   resultData?: string;
+  artifactFile?: string;
+  artifactUri?: string;
+  artifactSha256?: string;
+  artifactMediaType?: string;
+  artifactStoreDir?: string;
   workerAgentPda?: string;
 }
 
@@ -1427,10 +1432,15 @@ export async function runMarketTaskCompleteCommand(
 
   try {
     const { program } = await createSignerProgramContext(options);
-    const resultData =
-      options.resultData?.trim() || "Task completed via agenc-runtime market";
+    const hasArtifact = Boolean(options.artifactFile?.trim() || options.artifactUri?.trim());
+    const resultData = hasArtifact
+      ? options.resultData?.trim()
+      : options.resultData?.trim() || "Task completed via agenc-runtime market";
     const proofHash =
-      options.proofHash ?? createHash("sha256").update(resultData).digest("hex");
+      options.proofHash ??
+      (hasArtifact || !resultData
+        ? undefined
+        : createHash("sha256").update(resultData).digest("hex"));
     const tool = withMarketplaceSignerPolicy(
       createCompleteTaskTool(program, silentLogger),
       program,
@@ -1439,6 +1449,11 @@ export async function runMarketTaskCompleteCommand(
       taskPda: options.taskPda,
       proofHash,
       resultData,
+      artifactFile: options.artifactFile,
+      artifactUri: options.artifactUri,
+      artifactSha256: options.artifactSha256,
+      artifactMediaType: options.artifactMediaType,
+      artifactStoreDir: options.artifactStoreDir,
       workerAgentPda: options.workerAgentPda,
     });
     if (result.isError) {

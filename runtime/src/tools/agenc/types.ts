@@ -61,6 +61,21 @@ export interface SerializedTaskJobSpec {
 }
 
 /**
+ * Buyer-facing delivery artifact committed through the fixed on-chain result
+ * field. The full artifact remains off-chain; the on-chain field carries a
+ * compact hash reference that indexers/storefronts can hydrate.
+ */
+export interface SerializedTaskDeliveryArtifact {
+  sha256: string;
+  uri?: string;
+  source: 'protocol-result-data' | 'local-artifact-store';
+  verified: boolean;
+  mediaType?: string;
+  sizeBytes?: number;
+  fileName?: string;
+}
+
+/**
  * JSON-safe representation of an on-chain Task.
  */
 export interface SerializedTask {
@@ -87,6 +102,8 @@ export interface SerializedTask {
   constraintHash: string;
   result: string;
   resultText: string | null;
+  /** Optional buyer-facing delivery artifact reference committed in resultData. */
+  deliveryArtifact?: SerializedTaskDeliveryArtifact | null;
   rewardMint: string | null;
   /** Optional symbol for known reward mints (SOL, USDC, USDT, etc.) */
   rewardSymbol?: string;

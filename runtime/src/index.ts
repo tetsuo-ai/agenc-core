@@ -1937,6 +1937,27 @@ export {
   ReputationEconomyOperations,
 } from "./reputation/index.js";
 
+// Marketplace artifact delivery
+export {
+  MARKETPLACE_ARTIFACT_REFERENCE_KIND,
+  MARKETPLACE_ARTIFACT_REFERENCE_SCHEMA_VERSION,
+  MARKETPLACE_ARTIFACT_RESULT_PREFIX,
+  MARKETPLACE_ARTIFACT_RESULT_BYTES,
+  DEFAULT_MARKETPLACE_ARTIFACT_MAX_BYTES,
+  DEFAULT_MARKETPLACE_ARTIFACT_STORE_DIR,
+  encodeMarketplaceArtifactResultData,
+  decodeMarketplaceArtifactSha256FromResultData,
+  hasMarketplaceArtifactDeliveryInput,
+  prepareMarketplaceArtifactDelivery,
+  readMarketplaceArtifactReference,
+  resolveMarketplaceArtifactReferenceFromResultData,
+  type MarketplaceArtifactReference,
+  type MarketplaceArtifactReferenceSource,
+  type PrepareMarketplaceArtifactDeliveryInput,
+  type PreparedMarketplaceArtifactDelivery,
+  type ResolveMarketplaceArtifactReferenceOptions,
+} from "./marketplace/artifact-delivery.js";
+
 // Desktop Sandbox
 export {
   // Types
