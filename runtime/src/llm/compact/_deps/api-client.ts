@@ -50,6 +50,93 @@ interface QueryArgs {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type CompactStreamEvent = any;
 
+type CompactToolLike = {
+  readonly name?: unknown;
+  readonly description?: unknown;
+  readonly input_schema?: unknown;
+  readonly inputSchema?: unknown;
+  readonly function?: {
+    readonly name?: unknown;
+    readonly description?: unknown;
+    readonly parameters?: unknown;
+  };
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonSchemaRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : { type: "object", properties: {} };
+}
+
+function isLLMTool(value: unknown): value is LLMTool {
+  if (!isRecord(value)) return false;
+  const maybe = value as CompactToolLike;
+  return (
+    value.type === "function" &&
+    isRecord(maybe.function) &&
+    typeof maybe.function.name === "string" &&
+    maybe.function.name.trim().length > 0
+  );
+}
+
+function compactToolName(tool: CompactToolLike): string | null {
+  const direct = typeof tool.name === "string" ? tool.name.trim() : "";
+  if (direct.length > 0) return direct;
+  const functionName =
+    typeof tool.function?.name === "string" ? tool.function.name.trim() : "";
+  return functionName.length > 0 ? functionName : null;
+}
+
+function compactToolDescription(tool: CompactToolLike): string {
+  if (typeof tool.description === "string") return tool.description;
+  if (typeof tool.function?.description === "string") {
+    return tool.function.description;
+  }
+  return "";
+}
+
+function compactToolParameters(tool: CompactToolLike): Record<string, unknown> {
+  return isJsonSchemaRecord(
+    tool.function?.parameters ?? tool.input_schema ?? tool.inputSchema,
+  );
+}
+
+/**
+ * Compact is an upstream-shaped subsystem: it passes compact tool objects
+ * (`{ name, input_schema }`) and lightweight placeholders
+ * (`{ name }`). AgenC's provider boundary accepts `LLMTool`
+ * (`{ type: "function", function: { name, parameters } }`).
+ *
+ * Keep that conversion localized to AgenC's compact adapter so malformed
+ * compact tool placeholders do not reach provider request serialization.
+ */
+export function adaptCompactToolsForProvider(
+  tools: ReadonlyArray<unknown>,
+): LLMTool[] {
+  const out: LLMTool[] = [];
+  for (const raw of tools) {
+    if (isLLMTool(raw)) {
+      out.push(raw);
+      continue;
+    }
+    if (!isRecord(raw)) continue;
+    const tool = raw as CompactToolLike;
+    const name = compactToolName(tool);
+    if (!name) continue;
+    out.push({
+      type: "function",
+      function: {
+        name,
+        description: compactToolDescription(tool),
+        parameters: compactToolParameters(tool),
+      },
+    });
+  }
+  return out;
+}
+
 function flattenSystemPrompt(systemPrompt: unknown): string {
   if (!systemPrompt) return "";
   if (typeof systemPrompt === "string") return systemPrompt;
@@ -214,12 +301,13 @@ export async function* queryModelWithStreaming(
   }
 
   const providerName = resolveProviderNameFromEnv();
+  const tools = adaptCompactToolsForProvider(args.tools ?? []);
   const provider = createProvider(providerName, {
     ...(args.options?.model ? { model: args.options.model } : {}),
     ...(args.options?.maxOutputTokensOverride
       ? { extra: { maxTokens: args.options.maxOutputTokensOverride } }
       : {}),
-    tools: (args.tools ?? []) as ReadonlyArray<LLMTool>,
+    tools,
   });
 
   const queue = createChunkQueue();
