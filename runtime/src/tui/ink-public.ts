@@ -1,8 +1,8 @@
 /**
  * AgenC public Ink barrel.
  *
- * Mirrors openclaude's `src/ink.ts` shape so consumers (design-system
- * widgets, message renderers, dialogs ported from openclaude) can write
+ * Mirrors the upstream `src/ink.ts` shape so consumers (design-system
+ * widgets, message renderers, ported dialogs) can write
  * `import { Box, Text, useTheme } from '../ink-public.js'` and get the
  * theme-aware Box/Text plus the public Ink API in one place.
  *

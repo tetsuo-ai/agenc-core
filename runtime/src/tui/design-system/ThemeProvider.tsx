@@ -29,7 +29,7 @@ type Props = {
  *
  * AgenC ships a single brand palette (cyberpunk; defined in
  * `runtime/src/tui/theme.ts`). There is no light/dark switcher and no
- * system-theme detection — the openclaude theme picker, system theme
+ * system-theme detection — the upstream theme picker, system theme
  * watcher, and `auto` setting were intentionally dropped during the
  * parity port. ThemeProvider exists to give downstream widgets a
  * `useTheme()` hook so they can react to test overrides without each
