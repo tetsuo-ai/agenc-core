@@ -107,6 +107,19 @@ npm run smoke:marketplace:devnet -- --flow reviewed-public-artifact
 That flow creates a creator-review task, claims it, completes it with
 `--artifact-file`, accepts it from the creator side, and asserts that task
 detail reconstructs the buyer-facing artifact digest from on-chain `resultData`.
+It also checks `tasks.list` visibility after create, claim, and accept so the
+explorer/indexing lane is covered without requiring the storefront.
+
+The operator lane runs:
+
+```bash
+npm run smoke:marketplace:mainnet-v1:devnet -- --mode operator
+```
+
+That wraps `scripts/compiled-job-phase1-operator-drill.ts` and only passes when
+the generated host-drill artifact has `overallPassed: true`. A dry local run
+without real alert routing or on-call acknowledgement is expected to fail the
+mainnet gate.
 
 ## Supporting Drills
 

@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -71,7 +71,7 @@ Modes:
   reviewed-public    Creator-review lifecycle gate using the live artifact smoke.
   artifact           Buyer-facing artifact rail gate, local tests plus live devnet smoke.
   dispute            Dispute lifecycle using the plain devnet smoke.
-  explorer           Explorer/indexing visibility gate. Currently required and pending.
+  explorer           Explorer/indexing visibility using the live artifact smoke.
   safety             Wallet/signer safety gate using hardening matrix.
   soak               Repeated selected devnet smokes for stability evidence.
   operator           Operator-control evidence gate. Currently requires host evidence.
@@ -178,21 +178,6 @@ async function runChild(lane: string, required: boolean, command: string, args: 
   };
 }
 
-function pendingLane(lane: string, required: boolean, notes: string): LaneResult {
-  const now = new Date().toISOString();
-  return {
-    lane,
-    status: "pending",
-    required,
-    command: null,
-    startedAt: now,
-    finishedAt: now,
-    durationMs: 0,
-    notes,
-    exitCode: null,
-  };
-}
-
 async function runPreflight(): Promise<LaneResult> {
   return runChild("preflight", true, "tsx", ["scripts/marketplace-hardening-devnet-matrix.ts"]);
 }
@@ -244,10 +229,15 @@ async function runReviewedPublic(): Promise<LaneResult> {
 }
 
 async function runExplorer(): Promise<LaneResult> {
-  return pendingLane(
+  return runChild(
     "explorer-indexing-visibility",
     true,
-    "Missing automated devnet assertion that newly-created, claimed, completed, and disputed task PDAs appear in the explorer/indexing view within the expected polling window.",
+    "tsx",
+    [
+      "scripts/marketplace-devnet-smoke.ts",
+      "--flow",
+      "reviewed-public-artifact",
+    ],
   );
 }
 
@@ -256,11 +246,50 @@ async function runSafety(): Promise<LaneResult> {
 }
 
 async function runOperator(): Promise<LaneResult> {
-  return pendingLane(
+  const outputPath = path.join(
+    os.tmpdir(),
+    "agenc-marketplace-mainnet-v1-devnet",
+    `operator-live-drill-${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}.json`,
+  );
+  const result = await runChild(
     "operator-controls-live-drill",
     true,
-    "Requires runtime-host evidence for pause/disable/rollback/alert acknowledgement. This cannot be proven by devnet RPC alone.",
+    "tsx",
+    ["scripts/compiled-job-phase1-operator-drill.ts", "--output", outputPath],
   );
+  if (result.status === "fail") {
+    return result;
+  }
+
+  try {
+    const parsed = JSON.parse(await readFile(outputPath, "utf8")) as {
+      overallPassed?: unknown;
+      alertRoutingStatus?: { status?: unknown };
+      onCallStatus?: { status?: unknown };
+    };
+    if (parsed.overallPassed === true) {
+      return {
+        ...result,
+        notes: `operator live drill passed with artifact ${outputPath}`,
+      };
+    }
+    return {
+      ...result,
+      status: "fail",
+      notes:
+        `operator live drill did not pass; artifact=${outputPath}, ` +
+        `alertRouting=${String(parsed.alertRoutingStatus?.status ?? "unknown")}, ` +
+        `onCall=${String(parsed.onCallStatus?.status ?? "unknown")}`,
+    };
+  } catch (error) {
+    return {
+      ...result,
+      status: "fail",
+      notes: `operator live drill artifact could not be parsed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
 }
 
 async function runSoak(options: CliOptions): Promise<LaneResult[]> {

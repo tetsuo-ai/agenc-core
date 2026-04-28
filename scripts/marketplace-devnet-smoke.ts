@@ -27,6 +27,7 @@ import {
   resetMarketplaceCliProgramContextOverrides,
   runMarketDisputeDetailCommand,
   runMarketDisputeResolveCommand,
+  runMarketTasksListCommand,
   runMarketTaskAcceptCommand,
   runMarketTaskClaimCommand,
   runMarketTaskCompleteCommand,
@@ -105,6 +106,12 @@ interface ReviewedPublicArtifactSmokeArtifact {
   artifactFile: string;
   artifactSha256: string;
   deliveryArtifact: Record<string, unknown>;
+  visibilityChecks: Array<{
+    stage: string;
+    status: string;
+    taskPda: string;
+    observedAt: string;
+  }>;
 }
 
 type MarketRunner = (
@@ -714,6 +721,50 @@ async function writeReviewedPublicArtifact(
   return filePath;
 }
 
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function assertTaskVisibleInList(
+  baseOptions: BaseCliOptions,
+  taskPda: string,
+  expectedStatus: string,
+  stage: string,
+): Promise<{ stage: string; status: string; taskPda: string; observedAt: string }> {
+  const statuses = ["open", "in_progress", "completed", "cancelled", "disputed"];
+
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    const output = await runMarketCommand(
+      baseOptions,
+      runMarketTasksListCommand as MarketRunner,
+      { statuses },
+    );
+    const tasks = Array.isArray(output.tasks)
+      ? (output.tasks as Record<string, unknown>[])
+      : [];
+    const task = tasks.find((entry) => entry.taskPda === taskPda);
+    if (task) {
+      const status = getStringField(task, "status", `${stage}.tasksList`);
+      if (status === expectedStatus) {
+        const observedAt = new Date().toISOString();
+        console.log(`[visible] ${stage}: ${taskPda} status=${status}`);
+        return { stage, status, taskPda, observedAt };
+      }
+      throw new Error(
+        `${stage}: task ${taskPda} is visible but status=${status}, expected ${expectedStatus}`,
+      );
+    }
+
+    if (attempt < 8) {
+      await sleep(1_500);
+    }
+  }
+
+  throw new Error(
+    `${stage}: task ${taskPda} did not appear in tasks.list with status=${expectedStatus}`,
+  );
+}
+
 async function readArtifact(filePath: string): Promise<SmokeArtifact> {
   const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
   const artifact = asRecord(parsed, "artifact");
@@ -770,6 +821,7 @@ async function runReviewedPublicArtifactFlow(params: {
   const artifactSha256 = createHash("sha256")
     .update(artifactBody)
     .digest("hex");
+  const visibilityChecks: ReviewedPublicArtifactSmokeArtifact["visibilityChecks"] = [];
 
   const createOutput = await runMarketCommand(
     baseOptions,
@@ -800,6 +852,9 @@ async function runReviewedPublicArtifactFlow(params: {
     "reviewedCreate.result",
   );
   console.log(`[reviewed] created ${taskPda}`);
+  visibilityChecks.push(
+    await assertTaskVisibleInList(baseOptions, taskPda, "open", "after-create"),
+  );
 
   const claimOutput = await runMarketCommand(
     baseOptions,
@@ -817,6 +872,9 @@ async function runReviewedPublicArtifactFlow(params: {
     "reviewedClaim.result",
   );
   console.log(`[reviewed] claimed ${workerClaimPda}`);
+  visibilityChecks.push(
+    await assertTaskVisibleInList(baseOptions, taskPda, "in_progress", "after-claim"),
+  );
 
   await runMarketCommand(
     baseOptions,
@@ -842,6 +900,9 @@ async function runReviewedPublicArtifactFlow(params: {
     creator.agentPda.toBase58(),
   );
   console.log(`[reviewed] accepted ${taskPda}`);
+  visibilityChecks.push(
+    await assertTaskVisibleInList(baseOptions, taskPda, "completed", "after-accept"),
+  );
 
   const detailOutput = await runMarketCommand(
     baseOptions,
@@ -888,6 +949,7 @@ async function runReviewedPublicArtifactFlow(params: {
       artifactFile,
       artifactSha256,
       deliveryArtifact,
+      visibilityChecks,
     },
     artifactPath,
   );
