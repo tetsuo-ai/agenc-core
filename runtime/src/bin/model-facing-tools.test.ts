@@ -184,7 +184,7 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("TaskCreate");
   });
 
-  it("persists TaskCreate/TaskGet/TaskUpdate/TaskList in the AgenC state dir", async () => {
+  it("persists TaskCreate/TaskGet/TaskUpdate/TaskList against the per-project task board", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-tool-home-"));
     try {
       const tools = createModelFacingTools({
@@ -197,22 +197,81 @@ describe("model-facing tools", () => {
       const created = await byName.get("TaskCreate")!.execute({
         subject: "Wire tools",
         description: "Add missing model-facing tools",
+        owner: "/root/task_3",
       });
-      const task = JSON.parse(created.content).task as { id: string };
+      const task = JSON.parse(created.content).task as {
+        id: string;
+        owner?: string;
+        status: string;
+      };
+      expect(task.id).toMatch(/^task-\d+$/);
+      expect(task.owner).toBe("/root/task_3");
+      expect(task.status).toBe("pending");
 
-      const updated = await byName.get("TaskUpdate")!.execute({
+      const blocker = await byName.get("TaskCreate")!.execute({ subject: "B" });
+      const blockerTask = JSON.parse(blocker.content).task as { id: string };
+
+      const linked = await byName.get("TaskUpdate")!.execute({
         taskId: task.id,
+        addBlockedBy: [blockerTask.id, blockerTask.id],
+      });
+      const linkedTask = JSON.parse(linked.content).task as {
+        blockedBy: readonly string[];
+      };
+      expect(linkedTask.blockedBy).toEqual([blockerTask.id]);
+
+      const listed = JSON.parse(
+        (await byName.get("TaskList")!.execute({})).content,
+      ).tasks as readonly {
+        id: string;
+        unresolvedBlockers: readonly string[];
+      }[];
+      const tEntry = listed.find((t) => t.id === task.id);
+      expect(tEntry?.unresolvedBlockers).toEqual([blockerTask.id]);
+
+      const completed = await byName.get("TaskUpdate")!.execute({
+        taskId: blockerTask.id,
         status: "completed",
       });
-      expect(JSON.parse(updated.content).task.status).toBe("completed");
+      expect(JSON.parse(completed.content).task.status).toBe("completed");
+
+      const refreshed = JSON.parse(
+        (await byName.get("TaskList")!.execute({})).content,
+      ).tasks as readonly {
+        id: string;
+        unresolvedBlockers: readonly string[];
+      }[];
+      expect(
+        refreshed.find((t) => t.id === task.id)?.unresolvedBlockers,
+      ).toEqual([]);
+
+      const tombstoned = await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        status: "deleted",
+      });
+      expect(JSON.parse(tombstoned.content).task.status).toBe("deleted");
+
+      const visibleAfterDelete = JSON.parse(
+        (await byName.get("TaskList")!.execute({})).content,
+      ).tasks as readonly { id: string }[];
+      expect(visibleAfterDelete.map((t) => t.id)).not.toContain(task.id);
 
       const got = await byName.get("TaskGet")!.execute({ taskId: task.id });
+      expect(got.isError).toBeUndefined();
       expect(JSON.parse(got.content).task.subject).toBe("Wire tools");
 
-      const listed = await byName.get("TaskList")!.execute({
-        status: "completed",
+      const missing = await byName.get("TaskGet")!.execute({
+        taskId: "task-9999",
       });
-      expect(JSON.parse(listed.content).tasks).toHaveLength(1);
+      expect(missing.isError).toBe(true);
+      expect(JSON.parse(missing.content).error).toBe("Task not found");
+
+      const badRef = await byName.get("TaskUpdate")!.execute({
+        taskId: blockerTask.id,
+        addBlocks: ["task-9999"],
+      });
+      expect(badRef.isError).toBe(true);
+      expect(JSON.parse(badRef.content).missing).toEqual(["task-9999"]);
     } finally {
       await rm(home, { recursive: true, force: true });
     }

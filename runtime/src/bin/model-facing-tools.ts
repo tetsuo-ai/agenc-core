@@ -41,6 +41,17 @@ import {
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
 import { ensureAgentControl } from "./delegate-tool.js";
+import { sharedServer } from "../tools/concurrency.js";
+import {
+  createNew as taskCreateNew,
+  listWithUnresolved as taskListWithUnresolved,
+  loadOne as taskLoadOne,
+  updateOne as taskUpdateOne,
+  type StoredTask,
+  type TaskStatus,
+  type TaskStoreOptions,
+  type UpdateTaskInput,
+} from "./task-store.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
 import type {
   PermissionRuleValue,
@@ -61,19 +72,6 @@ export interface ModelFacingToolOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-interface StoredTask {
-  readonly id: string;
-  readonly subject: string;
-  readonly description: string;
-  readonly activeForm?: string;
-  readonly status: "pending" | "in_progress" | "completed" | "cancelled";
-  readonly blocks: readonly string[];
-  readonly blockedBy: readonly string[];
-  readonly metadata?: Record<string, unknown>;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
 interface StoredCron {
   readonly id: string;
   readonly schedule: string;
@@ -84,7 +82,6 @@ interface StoredCron {
 }
 
 interface ToolState {
-  readonly tasks: readonly StoredTask[];
   readonly crons: readonly StoredCron[];
 }
 
@@ -175,12 +172,11 @@ async function readState(opts: ModelFacingToolOptions): Promise<ToolState> {
     const raw = await readFile(stateFile(opts), "utf8");
     const parsed = JSON.parse(raw) as Partial<ToolState>;
     return {
-      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
       crons: Array.isArray(parsed.crons) ? parsed.crons : [],
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { tasks: [], crons: [] };
+      return { crons: [] };
     }
     throw error;
   }
@@ -1933,27 +1929,69 @@ function createPlanAndMessageTools(opts: ModelFacingToolOptions): readonly Tool[
   ];
 }
 
+// Durable project / subagent coordination board. Distinct from the
+// per-session `TodoWrite` checklist: tasks here persist across runs
+// under `<agencHome>/projects/<slug>/tasks/`, carry an `owner` (agent
+// path or thread id), and support dependency edges for subagent
+// coordination.
+const TASK_BOARD_GUIDANCE =
+  "Use TodoWrite for per-session checklists. Use these Task tools when work spans multiple turns, multiple agents, or needs explicit dependency tracking. The owner field is an AgenC agent path (e.g. /root/task_3) or thread id. Dependency edges are not auto-mirrored — set both sides explicitly.";
+
+const TASK_CONCURRENCY = sharedServer("agenc-tasks");
+
+function taskStoreOpts(opts: ModelFacingToolOptions): TaskStoreOptions {
+  return opts.agencHome !== undefined
+    ? { workspaceRoot: opts.workspaceRoot, agencHome: opts.agencHome }
+    : { workspaceRoot: opts.workspaceRoot };
+}
+
+function metadataObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+const VALID_TASK_STATUS: ReadonlySet<TaskStatus> = new Set([
+  "pending",
+  "in_progress",
+  "completed",
+  "deleted",
+]);
+
+function normalizeTaskStatus(value: unknown): TaskStatus | undefined {
+  if (typeof value === "string" && VALID_TASK_STATUS.has(value as TaskStatus)) {
+    return value as TaskStatus;
+  }
+  return undefined;
+}
+
+function publicTask(task: StoredTask): Record<string, unknown> {
+  // Identity passthrough today; reserved as a seam if internal fields
+  // are ever added that the model should not see.
+  return task as unknown as Record<string, unknown>;
+}
+
 function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
-  const saveTasks = async (tasks: readonly StoredTask[]): Promise<void> => {
-    const state = await readState(opts);
-    await writeState(opts, { ...state, tasks });
-  };
+  const storeOpts = taskStoreOpts(opts);
 
   return [
     {
       name: "TaskCreate",
-      description: "Create a durable AgenC task in the local task list.",
+      description: `Create a durable AgenC task on the project task board. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
         deferred: true,
-        keywords: ["task", "create", "todo"],
+        keywords: ["task", "create", "coordination", "subagent"],
       }),
+      concurrencyClass: TASK_CONCURRENCY,
       inputSchema: {
         type: "object",
         properties: {
           subject: { type: "string" },
           description: { type: "string" },
           activeForm: { type: "string" },
+          owner: { type: "string" },
           metadata: { type: "object" },
         },
         required: ["subject"],
@@ -1962,56 +2000,55 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
       execute: async (args) => {
         const subject = stringValue(args.subject);
         if (!subject) return json({ error: "subject is required" }, true);
-        const state = await readState(opts);
-        const now = new Date().toISOString();
-        const task: StoredTask = {
-          id: `task-${randomUUID()}`,
+        const description = stringValue(args.description);
+        const activeForm = stringValue(args.activeForm);
+        const owner = stringValue(args.owner);
+        const metadata = metadataObject(args.metadata);
+        const task = await taskCreateNew(storeOpts, {
           subject,
-          description: stringValue(args.description) ?? "",
-          ...(stringValue(args.activeForm) !== undefined
-            ? { activeForm: stringValue(args.activeForm) }
-            : {}),
-          status: "pending",
-          blocks: [],
-          blockedBy: [],
-          ...(typeof args.metadata === "object" && args.metadata !== null
-            ? { metadata: args.metadata as Record<string, unknown> }
-            : {}),
-          createdAt: now,
-          updatedAt: now,
-        };
-        await writeState(opts, { ...state, tasks: [...state.tasks, task] });
-        return json({ task });
+          ...(description !== undefined ? { description } : {}),
+          ...(activeForm !== undefined ? { activeForm } : {}),
+          ...(owner !== undefined ? { owner } : {}),
+          ...(metadata !== undefined ? { metadata } : {}),
+        });
+        return json({ task: publicTask(task) });
       },
     },
     {
       name: "TaskGet",
-      description: "Retrieve a durable AgenC task by id.",
+      description: `Retrieve a durable AgenC task by id. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         deferred: true,
-        keywords: ["task", "get"],
+        keywords: ["task", "get", "coordination"],
       }),
       isReadOnly: true,
       inputSchema: {
         type: "object",
-        properties: { taskId: { type: "string" }, task_id: { type: "string" } },
+        properties: {
+          taskId: { type: "string" },
+          task_id: { type: "string" },
+        },
         additionalProperties: false,
       },
       execute: async (args) => {
         const taskId = stringValue(args.taskId) ?? stringValue(args.task_id);
         if (!taskId) return json({ error: "taskId is required" }, true);
-        const state = await readState(opts);
-        return json({ task: state.tasks.find((task) => task.id === taskId) ?? null });
+        const task = await taskLoadOne(storeOpts, taskId);
+        if (task === null) {
+          return json({ error: "Task not found", task_id: taskId }, true);
+        }
+        return json({ task: publicTask(task) });
       },
     },
     {
       name: "TaskUpdate",
-      description: "Update a durable AgenC task.",
+      description: `Update a durable AgenC task: status, fields, owner, dependencies, metadata. Rejects unknown task references and self-references. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
         deferred: true,
-        keywords: ["task", "update"],
+        keywords: ["task", "update", "coordination", "dependencies"],
       }),
+      concurrencyClass: TASK_CONCURRENCY,
       inputSchema: {
         type: "object",
         properties: {
@@ -2022,59 +2059,103 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
           activeForm: { type: "string" },
           status: {
             type: "string",
-            enum: ["pending", "in_progress", "completed", "cancelled"],
+            enum: ["pending", "in_progress", "completed", "deleted"],
           },
+          owner: { type: ["string", "null"] },
+          addBlocks: { type: "array", items: { type: "string" } },
+          removeBlocks: { type: "array", items: { type: "string" } },
+          addBlockedBy: { type: "array", items: { type: "string" } },
+          removeBlockedBy: { type: "array", items: { type: "string" } },
+          metadata: { type: "object" },
         },
         additionalProperties: false,
       },
       execute: async (args) => {
         const taskId = stringValue(args.taskId) ?? stringValue(args.task_id);
         if (!taskId) return json({ error: "taskId is required" }, true);
-        const state = await readState(opts);
-        let updated: StoredTask | null = null;
-        const tasks = state.tasks.map((task) => {
-          if (task.id !== taskId) return task;
-          updated = {
-            ...task,
-            ...(stringValue(args.subject) !== undefined ? { subject: stringValue(args.subject)! } : {}),
-            ...(stringValue(args.description) !== undefined ? { description: stringValue(args.description)! } : {}),
-            ...(stringValue(args.activeForm) !== undefined ? { activeForm: stringValue(args.activeForm)! } : {}),
-            ...(stringValue(args.status) !== undefined
-              ? { status: stringValue(args.status)! as StoredTask["status"] }
-              : {}),
-            updatedAt: new Date().toISOString(),
+        const update: UpdateTaskInput = {};
+        const subject = stringValue(args.subject);
+        if (subject !== undefined) (update as { subject?: string }).subject = subject;
+        const description = stringValue(args.description);
+        if (description !== undefined) {
+          (update as { description?: string }).description = description;
+        }
+        const activeForm = stringValue(args.activeForm);
+        if (activeForm !== undefined) {
+          (update as { activeForm?: string }).activeForm = activeForm;
+        }
+        const status = normalizeTaskStatus(args.status);
+        if (status !== undefined) {
+          (update as { status?: TaskStatus }).status = status;
+        }
+        if (args.owner === null) {
+          (update as { owner?: string | null }).owner = null;
+        } else {
+          const owner = stringValue(args.owner);
+          if (owner !== undefined) {
+            (update as { owner?: string | null }).owner = owner;
+          }
+        }
+        const addBlocks = stringArray(args.addBlocks);
+        if (addBlocks.length > 0) {
+          (update as { addBlocks?: readonly string[] }).addBlocks = addBlocks;
+        }
+        const removeBlocks = stringArray(args.removeBlocks);
+        if (removeBlocks.length > 0) {
+          (update as { removeBlocks?: readonly string[] }).removeBlocks = removeBlocks;
+        }
+        const addBlockedBy = stringArray(args.addBlockedBy);
+        if (addBlockedBy.length > 0) {
+          (update as { addBlockedBy?: readonly string[] }).addBlockedBy = addBlockedBy;
+        }
+        const removeBlockedBy = stringArray(args.removeBlockedBy);
+        if (removeBlockedBy.length > 0) {
+          (update as { removeBlockedBy?: readonly string[] }).removeBlockedBy = removeBlockedBy;
+        }
+        const metadata = metadataObject(args.metadata);
+        if (metadata !== undefined) {
+          (update as { metadata?: Record<string, unknown> }).metadata = metadata;
+        }
+
+        const outcome = await taskUpdateOne(storeOpts, taskId, update);
+        if (outcome.error) {
+          const payload: Record<string, unknown> = {
+            error: outcome.error.message,
+            task_id: taskId,
           };
-          return updated;
-        });
-        if (updated === null) return json({ error: `task not found: ${taskId}` }, true);
-        await saveTasks(tasks);
-        return json({ task: updated });
+          if (outcome.error.missing) payload.missing = outcome.error.missing;
+          return json(payload, true);
+        }
+        return json({ task: publicTask(outcome.task!) });
       },
     },
     {
       name: "TaskList",
-      description: "List durable AgenC tasks.",
+      description: `List durable AgenC tasks (excludes deleted by default). Includes owner and unresolvedBlockers per task. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         deferred: true,
-        keywords: ["task", "list"],
+        keywords: ["task", "list", "coordination", "subagent"],
       }),
       isReadOnly: true,
       inputSchema: {
         type: "object",
         properties: {
-          status: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["pending", "in_progress", "completed", "deleted"],
+          },
+          includeDeleted: { type: "boolean" },
         },
         additionalProperties: false,
       },
       execute: async (args) => {
-        const state = await readState(opts);
-        const status = stringValue(args.status);
-        return json({
-          tasks:
-            status !== undefined
-              ? state.tasks.filter((task) => task.status === status)
-              : state.tasks,
-        });
+        const status = normalizeTaskStatus(args.status);
+        const includeDeleted = boolValue(args.includeDeleted) ?? false;
+        const filter: { status?: TaskStatus; includeDeleted?: boolean } = {};
+        if (status !== undefined) filter.status = status;
+        if (includeDeleted) filter.includeDeleted = true;
+        const tasks = await taskListWithUnresolved(storeOpts, filter);
+        return json({ tasks });
       },
     },
   ];
