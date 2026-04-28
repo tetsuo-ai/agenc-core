@@ -859,6 +859,54 @@ describe("TaskOperations", () => {
       );
     });
 
+    it("falls back to legacy claimTask when the deployed program lacks claimTaskWithJobSpec", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const storeDir = await mkdtemp(join(tmpdir(), "agenc-job-spec-"));
+      const stored = await persistMarketplaceJobSpec(
+        {
+          description: "Verified marketplace task",
+          acceptanceCriteria: ["Do the verified work"],
+          deliverables: ["A short report"],
+        },
+        { rootDir: storeDir },
+      );
+      const jobSpecHashBytes = Uint8Array.from(Buffer.from(stored.hash, "hex"));
+      const opsWithStore = new TaskOperations({
+        program: mockProgram,
+        agentId,
+        logger: silentLogger,
+        jobSpecStoreDir: storeDir,
+      });
+
+      mocks.taskJobSpecFetch.mockResolvedValue({
+        task: taskPda,
+        creator: Keypair.generate().publicKey,
+        jobSpecHash: Array.from(jobSpecHashBytes),
+        jobSpecUri: stored.uri,
+        createdAt: { toNumber: () => 1700000000 },
+        updatedAt: { toNumber: () => 1700000000 },
+        bump: 255,
+      });
+      mocks.claimTaskWithJobSpecRpc.mockRejectedValue(
+        new Error(
+          "InstructionFallbackNotFound: Fallback functions are not supported",
+        ),
+      );
+
+      const result = await opsWithStore.claimTask(taskPda, task);
+
+      expect(result.transactionSignature).toBe("claim-sig");
+      expect(mocks.claimTaskWithJobSpecRpc).toHaveBeenCalledOnce();
+      expect(mocks.claimTaskRpc).toHaveBeenCalledOnce();
+      expect(mocks.claimTaskBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          task: taskPda,
+          systemProgram: SystemProgram.programId,
+        }),
+      );
+    });
+
     it("rejects marketplace claims when on-chain jobSpec metadata cannot be verified", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();

@@ -450,18 +450,34 @@ export class TaskOperations {
       const taskJobSpec = intent.accountMetas.find(
         (account) => account.name === "taskJobSpec",
       )?.pubkey;
-      const signature = taskJobSpec
-        ? await (this.program.methods as any)
+      let signature: string;
+      if (taskJobSpec) {
+        try {
+          signature = await (this.program.methods as any)
             .claimTaskWithJobSpec()
             .accountsPartial({
               ...baseAccounts,
               taskJobSpec: new PublicKey(taskJobSpec),
             })
-            .rpc()
-        : await this.program.methods
+            .rpc();
+        } catch (err) {
+          if (!isInstructionFallbackNotFound(err)) {
+            throw err;
+          }
+          this.logger.warn(
+            `Program ${this.program.programId.toBase58()} does not expose claimTaskWithJobSpec; falling back to legacy claimTask after local job spec verification`,
+          );
+          signature = await this.program.methods
             .claimTask()
             .accountsPartial(baseAccounts)
             .rpc();
+        }
+      } else {
+        signature = await this.program.methods
+          .claimTask()
+          .accountsPartial(baseAccounts)
+          .rpc();
+      }
 
       this.logger.info(`Task claimed: ${signature}`);
 
@@ -1758,4 +1774,12 @@ function isAccountNotFoundError(err: unknown): boolean {
 
 function formatUnknownError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function isInstructionFallbackNotFound(err: unknown): boolean {
+  const message = formatUnknownError(err);
+  return (
+    message.includes("InstructionFallbackNotFound") ||
+    message.includes("Fallback functions are not supported")
+  );
 }
