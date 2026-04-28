@@ -4,7 +4,7 @@ import type {
   CliRuntimeContext,
   CliStatusCode,
 } from "./types.js";
-import { createAgencTools } from "../tools/agenc/index.js";
+import { createAgencMutationTools } from "../tools/agenc/index.js";
 import {
   getDefaultKeypairPath,
   keypairToWallet,
@@ -60,7 +60,7 @@ export async function runAgentRegisterCommand(
       ...context.logger,
       setLevel: () => {},
     };
-    const tool = createAgencTools({
+    const tool = createAgencMutationTools({
       connection: new Connection(options.rpcUrl, "confirmed"),
       wallet,
       programId: options.programId

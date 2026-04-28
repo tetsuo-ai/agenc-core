@@ -583,6 +583,7 @@ describe("validateGatewayConfig policy bundles", () => {
         defaultTenantId: "tenant-a",
         defaultProjectId: "project-x",
         simulationMode: "shadow",
+        marketplaceSigningToolsEnabled: true,
         networkAccess: {
           allowHosts: ["api.example.com"],
           denyHosts: ["blocked.example.com"],
@@ -682,6 +683,7 @@ describe("validateGatewayConfig policy bundles", () => {
       policy: {
         enabled: true,
         simulationMode: "preview",
+        marketplaceSigningToolsEnabled: "yes" as unknown as boolean,
         networkAccess: {
           allowHosts: "api.example.com" as unknown as string[],
         },
@@ -746,6 +748,9 @@ describe("validateGatewayConfig policy bundles", () => {
     expect(result.valid).toBe(false);
     expect(result.errors).toContain(
       "policy.simulationMode must be one of: off, shadow",
+    );
+    expect(result.errors).toContain(
+      "policy.marketplaceSigningToolsEnabled must be a boolean",
     );
     expect(result.errors).toContain(
       "policy.networkAccess.allowHosts must be an array of strings",

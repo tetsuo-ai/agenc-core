@@ -582,12 +582,15 @@ async function registerOrLoadAgent(
     };
   }
 
-  const registerTool = createAgencTools({
-    connection,
-    wallet: keypairToWallet(signer.keypair),
-    programId,
-    logger: silentLogger,
-  }).find((tool) => tool.name === "agenc.registerAgent");
+  const registerTool = createAgencTools(
+    {
+      connection,
+      wallet: keypairToWallet(signer.keypair),
+      programId,
+      logger: silentLogger,
+    },
+    { includeMutationTools: true },
+  ).find((tool) => tool.name === "agenc.registerAgent");
 
   if (!registerTool) {
     throw new Error("agenc.registerAgent tool is not available");
@@ -747,12 +750,15 @@ async function executeToolJson(
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   return withRpcRateLimitRetry(toolName, async () => {
-    const tool = createAgencTools({
-      connection,
-      wallet: keypairToWallet(signer.keypair),
-      programId,
-      logger: silentLogger,
-    }).find((entry) => entry.name === toolName);
+    const tool = createAgencTools(
+      {
+        connection,
+        wallet: keypairToWallet(signer.keypair),
+        programId,
+        logger: silentLogger,
+      },
+      { includeMutationTools: true },
+    ).find((entry) => entry.name === toolName);
 
     if (!tool) {
       throw new Error(`${toolName} is not available`);

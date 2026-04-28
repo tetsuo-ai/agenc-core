@@ -455,12 +455,15 @@ async function registerOrLoadAgent(
     };
   }
 
-  const registerTool = createAgencTools({
-    connection,
-    wallet: keypairToWallet(signer.keypair),
-    programId,
-    logger: silentLogger,
-  }).find((tool) => tool.name === "agenc.registerAgent");
+  const registerTool = createAgencTools(
+    {
+      connection,
+      wallet: keypairToWallet(signer.keypair),
+      programId,
+      logger: silentLogger,
+    },
+    { includeMutationTools: true },
+  ).find((tool) => tool.name === "agenc.registerAgent");
 
   if (!registerTool) {
     throw new Error("agenc.registerAgent tool is not available");

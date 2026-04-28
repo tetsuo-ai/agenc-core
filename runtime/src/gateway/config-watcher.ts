@@ -752,6 +752,12 @@ function validatePolicySectionAtPath(
     errors.push(`${path}.toolDenyList must be an array of strings`);
   }
   if (
+    policy.marketplaceSigningToolsEnabled !== undefined &&
+    typeof policy.marketplaceSigningToolsEnabled !== "boolean"
+  ) {
+    errors.push(`${path}.marketplaceSigningToolsEnabled must be a boolean`);
+  }
+  if (
     policy.credentialAllowList !== undefined &&
     !isStringArray(policy.credentialAllowList)
   ) {

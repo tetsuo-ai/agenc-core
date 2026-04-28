@@ -174,12 +174,15 @@ async function ensureCreatorAgent(
 
   // No agent — register one.
   info("no creator agent found; registering one");
-  const tools = createAgencTools({
-    connection,
-    wallet: keypairToWallet(creator),
-    programId: program.programId,
-    logger: silentLogger,
-  });
+  const tools = createAgencTools(
+    {
+      connection,
+      wallet: keypairToWallet(creator),
+      programId: program.programId,
+      logger: silentLogger,
+    },
+    { includeMutationTools: true },
+  );
   const registerTool = tools.find((t) => t.name === "agenc.registerAgent");
   if (!registerTool) throw new Error("agenc.registerAgent tool unavailable");
   const result = await registerTool.execute({

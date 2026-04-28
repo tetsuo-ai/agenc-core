@@ -1,5 +1,9 @@
 /**
- * Built-in AgenC protocol query tools.
+ * Built-in AgenC protocol tools.
+ *
+ * The default export surface is intentionally read-only. Signing/mutation tools
+ * must be opted into explicitly so daemon/webchat contexts fail closed when a
+ * wallet is loaded but signer policy is not configured.
  *
  * @module
  */
@@ -94,8 +98,54 @@ export {
   createDelegateReputationTool,
 } from "./mutation-tools.js";
 
+export interface CreateAgencToolsOptions {
+  /**
+   * Include tools that can mutate protocol state or require a signer-backed
+   * program context. Defaults to false.
+   */
+  readonly includeMutationTools?: boolean;
+}
+
+function createAgencProgram(
+  context: ToolContext,
+  options: { readonly signerBacked?: boolean } = {},
+) {
+  return (
+    context.program ??
+    (() => {
+      if (options.signerBacked === true && context.wallet) {
+        const provider = new AnchorProvider(
+          context.connection,
+          context.wallet,
+          { commitment: "confirmed" },
+        );
+        return context.programId
+          ? createProgram(provider, context.programId)
+          : createProgram(provider);
+      }
+      return context.programId
+        ? createReadOnlyProgram(context.connection, context.programId)
+        : createReadOnlyProgram(context.connection);
+    })()
+  );
+}
+
+function createTaskOperations(context: ToolContext) {
+  // Dummy agentId — built-in query tools do not reference agentId.
+  const dummyAgentId = new Uint8Array(32);
+  const program = createAgencProgram(context, { signerBacked: false });
+  return {
+    program,
+    ops: new TaskOperations({
+      program,
+      agentId: dummyAgentId,
+      logger: context.logger,
+    }),
+  };
+}
+
 /**
- * Create all built-in AgenC protocol tools.
+ * Create read-only built-in AgenC protocol tools.
  *
  * The factory creates a single `TaskOperations` instance shared by
  * all tools. If no program is provided in the context, a read-only
@@ -110,34 +160,8 @@ export {
  * registry.registerAll(tools);
  * ```
  */
-export function createAgencTools(context: ToolContext): Tool[] {
-  const program =
-    context.program ??
-    (() => {
-      if (context.wallet) {
-        const provider = new AnchorProvider(
-          context.connection,
-          context.wallet,
-          { commitment: "confirmed" },
-        );
-        return context.programId
-          ? createProgram(provider, context.programId)
-          : createProgram(provider);
-      }
-      return context.programId
-        ? createReadOnlyProgram(context.connection, context.programId)
-        : createReadOnlyProgram(context.connection);
-    })();
-
-  // Dummy agentId — built-in tools only use query methods that don't reference agentId
-  const dummyAgentId = new Uint8Array(32);
-
-  const ops = new TaskOperations({
-    program,
-    agentId: dummyAgentId,
-    logger: context.logger,
-  });
-
+export function createAgencReadOnlyTools(context: ToolContext): Tool[] {
+  const { program, ops } = createTaskOperations(context);
   return [
     createInspectMarketplaceTool(program, context.logger),
     createListTasksTool(ops, context.logger, { program }),
@@ -153,6 +177,19 @@ export function createAgencTools(context: ToolContext): Tool[] {
     createGetTokenBalanceTool(program, context.logger),
     createListApprovedTaskTemplatesTool(context.logger),
     createGetApprovedTaskTemplateTool(context.logger),
+    createGetAgentTool(program, context.logger),
+    createGetProtocolConfigTool(program, context.logger),
+  ];
+}
+
+/**
+ * Create AgenC protocol tools that can mutate state or require signer-backed
+ * execution. Daemon/webchat callers should only register these after explicit
+ * signer policy/approval gates are configured.
+ */
+export function createAgencMutationTools(context: ToolContext): Tool[] {
+  const program = createAgencProgram(context, { signerBacked: true });
+  return [
     createCreateTaskFromTemplateTool(program, context.logger),
     createSubmitTaskTemplateProposalTool(context.logger),
     createRegisterAgentTool(program, context.logger),
@@ -168,7 +205,19 @@ export function createAgencTools(context: ToolContext): Tool[] {
     createResolveDisputeTool(program, context.logger),
     createStakeReputationTool(program, context.logger),
     createDelegateReputationTool(program, context.logger),
-    createGetAgentTool(program, context.logger),
-    createGetProtocolConfigTool(program, context.logger),
   ];
+}
+
+/**
+ * Create built-in AgenC protocol tools. Defaults to the read-only surface.
+ */
+export function createAgencTools(
+  context: ToolContext,
+  options: CreateAgencToolsOptions = {},
+): Tool[] {
+  const readOnlyTools = createAgencReadOnlyTools(context);
+  if (options.includeMutationTools !== true) {
+    return readOnlyTools;
+  }
+  return [...readOnlyTools, ...createAgencMutationTools(context)];
 }

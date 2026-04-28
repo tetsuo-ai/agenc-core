@@ -84,6 +84,45 @@ import {
 const CHROMIUM_SHIM_DIR_SEGMENTS = [".agenc", "bin"] as const;
 const DEFAULT_SANDBOX_MAX_TRACKED_JOBS_ENV =
   "AGENC_SYSTEM_SANDBOX_MAX_TRACKED_JOBS";
+const MARKETPLACE_SIGNING_TOOLS_ENABLED_ENV =
+  "AGENC_MARKETPLACE_SIGNING_TOOLS_ENABLED";
+
+function readBooleanFlag(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
+}
+
+function shouldRegisterMarketplaceMutationTools(params: {
+  readonly config: GatewayConfig;
+  readonly walletAvailable: boolean;
+  readonly logger: Logger;
+}): boolean {
+  const requested =
+    params.config.policy?.marketplaceSigningToolsEnabled === true ||
+    readBooleanFlag(process.env[MARKETPLACE_SIGNING_TOOLS_ENABLED_ENV]);
+  if (!requested) {
+    return false;
+  }
+  if (!params.walletAvailable) {
+    params.logger.warn?.(
+      "Marketplace signing tools requested but no wallet is loaded; registering read-only AgenC tools.",
+    );
+    return false;
+  }
+  if (params.config.approvals?.enabled !== true) {
+    params.logger.warn?.(
+      "Marketplace signing tools requested but gateway approvals are disabled; registering read-only AgenC tools.",
+    );
+    return false;
+  }
+  return true;
+}
 
 function prependPathEntry(
   pathValue: string | undefined,
@@ -802,13 +841,21 @@ export async function createDaemonToolRegistry(
         : undefined;
 
       const { createAgencTools } = await import("../tools/agenc/index.js");
+      const includeMutationTools = shouldRegisterMarketplaceMutationTools({
+        config,
+        walletAvailable: walletResult?.wallet !== undefined,
+        logger,
+      });
       registry.registerAll(
-        createAgencTools({
-          connection: connMgr.getConnection(),
-          wallet: walletResult?.wallet,
-          ...(configuredProgramId ? { programId: configuredProgramId } : {}),
-          logger,
-        }),
+        createAgencTools(
+          {
+            connection: connMgr.getConnection(),
+            wallet: walletResult?.wallet,
+            ...(configuredProgramId ? { programId: configuredProgramId } : {}),
+            logger,
+          },
+          { includeMutationTools },
+        ),
       );
     } catch (error) {
       logger.warn?.("AgenC protocol tools unavailable:", error);

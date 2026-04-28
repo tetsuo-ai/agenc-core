@@ -2138,11 +2138,73 @@ describe("DaemonManager", () => {
       expect.objectContaining({
         programId: expect.any(PublicKey),
       }),
+      { includeMutationTools: false },
     );
     const registrationArgs = mockCreateAgencTools.mock.calls[0]?.[0] as {
       programId?: PublicKey;
     };
     expect(registrationArgs.programId?.toBase58()).toBe(programId);
+  });
+
+  it("keeps agenc marketplace mutation tools disabled unless signer policy gates are enabled", async () => {
+    const walletPublicKey = new PublicKey("11111111111111111111111111111111");
+    vi.mocked(loadWallet).mockResolvedValueOnce({
+      keypair: {} as never,
+      agentId: new Uint8Array(32),
+      wallet: {
+        publicKey: walletPublicKey,
+        signTransaction: vi.fn(),
+        signAllTransactions: vi.fn(),
+      },
+    });
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+
+    await (dm as any).createToolRegistry({
+      desktop: { enabled: false },
+      connection: {
+        rpcUrl: "http://localhost:8899",
+      },
+      policy: {
+        marketplaceSigningToolsEnabled: true,
+      },
+    });
+
+    expect(mockCreateAgencTools).toHaveBeenCalledWith(
+      expect.any(Object),
+      { includeMutationTools: false },
+    );
+  });
+
+  it("registers agenc marketplace mutation tools only with explicit opt-in and approvals", async () => {
+    const walletPublicKey = new PublicKey("11111111111111111111111111111111");
+    vi.mocked(loadWallet).mockResolvedValueOnce({
+      keypair: {} as never,
+      agentId: new Uint8Array(32),
+      wallet: {
+        publicKey: walletPublicKey,
+        signTransaction: vi.fn(),
+        signAllTransactions: vi.fn(),
+      },
+    });
+    const dm = new DaemonManager({ configPath: "/tmp/config.json" });
+
+    await (dm as any).createToolRegistry({
+      desktop: { enabled: false },
+      connection: {
+        rpcUrl: "http://localhost:8899",
+      },
+      approvals: {
+        enabled: true,
+      },
+      policy: {
+        marketplaceSigningToolsEnabled: true,
+      },
+    });
+
+    expect(mockCreateAgencTools).toHaveBeenCalledWith(
+      expect.any(Object),
+      { includeMutationTools: true },
+    );
   });
 
   it("preserves durable web-session task tracker state during session reset", async () => {

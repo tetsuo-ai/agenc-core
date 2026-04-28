@@ -439,6 +439,11 @@ export interface GatewayPolicyConfig {
   simulationMode?: "off" | "shadow";
   toolAllowList?: string[];
   toolDenyList?: string[];
+  /**
+   * Opt into registering signer-backed AgenC marketplace mutation tools in the
+   * daemon. This still requires gateway approvals to be enabled.
+   */
+  marketplaceSigningToolsEnabled?: boolean;
   credentialAllowList?: string[];
   networkAccess?: {
     allowHosts?: string[];
