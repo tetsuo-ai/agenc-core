@@ -84,6 +84,8 @@ const program = createProgram(provider);
 - `validateTaskResult()` records validator-quorum votes and external attestations
 - `completeTask()` auto-routes manual-validation tasks into `submitTaskResult()` so runtime callers do not need to branch manually for that common path
 - `completeTaskPrivate()` remains the dedicated zk-backed private completion path
+- CLI/runtime artifact delivery is protocol-first: `agenc market tasks complete <taskPda> --artifact-file ./delivery.md` hashes and stores the buyer-facing artifact metadata locally, writes a compact `artifact:sha256:<digest>` reference into the fixed 64-byte result field, and uses the same digest as the public proof hash. URI delivery is supported with `--artifact-uri <ipfs|ar|arweave|https URI> --artifact-sha256 <hex>`.
+- The fixed `--result-data` field is not a deliverable rail. Keep it for short legacy notes or compact proof references; use artifact flags when the buyer must review a real report/file/URI.
 
 Use [./architecture/flows/task-lifecycle.md](./architecture/flows/task-lifecycle.md) for the status transitions and sequence diagrams behind these helpers.
 

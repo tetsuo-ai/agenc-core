@@ -41,6 +41,7 @@ const {
   runMarketTasksListCommand,
   runMarketTaskCreateCommand,
   runMarketTaskClaimCommand,
+  runMarketTaskCompleteCommand,
   runMarketTaskAcceptCommand,
   runMarketTaskRejectCommand,
   runMarketGovernanceVoteCommand,
@@ -50,6 +51,7 @@ const {
   runMarketTasksListCommand: vi.fn(async () => 0),
   runMarketTaskCreateCommand: vi.fn(async () => 0),
   runMarketTaskClaimCommand: vi.fn(async () => 0),
+  runMarketTaskCompleteCommand: vi.fn(async () => 0),
   runMarketTaskAcceptCommand: vi.fn(async () => 0),
   runMarketTaskRejectCommand: vi.fn(async () => 0),
   runMarketGovernanceVoteCommand: vi.fn(async () => 0),
@@ -107,6 +109,7 @@ vi.mock("./marketplace-cli.js", async () => {
     runMarketTasksListCommand,
     runMarketTaskCreateCommand,
     runMarketTaskClaimCommand,
+    runMarketTaskCompleteCommand,
     runMarketTaskAcceptCommand,
     runMarketTaskRejectCommand,
     runMarketGovernanceVoteCommand,
@@ -806,6 +809,45 @@ describe("runtime root CLI", () => {
         taskPda: "Task111111111111111111111111111111111111111",
         workerAgentPda: "Agent11111111111111111111111111111111111111",
         jobSpecStoreDir: "/tmp/agenc-job-specs",
+      }),
+    );
+  });
+
+  it("routes market task artifact completion through the root CLI command surface", async () => {
+    const stdout = captureStream();
+    const stderr = captureStream();
+
+    const code = await runCli({
+      argv: [
+        "market",
+        "tasks",
+        "complete",
+        "Task111111111111111111111111111111111111111",
+        "--artifact-file",
+        "/tmp/delivery.md",
+        "--artifact-store-dir",
+        "/tmp/agenc-artifacts",
+        "--artifact-media-type",
+        "text/markdown",
+        "--worker-agent-pda",
+        "Agent11111111111111111111111111111111111111",
+        "--output",
+        "json",
+      ],
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+    });
+
+    expect(code).toBe(0);
+    expect(stderr.data()).toBe("");
+    expect(runMarketTaskCompleteCommand).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        taskPda: "Task111111111111111111111111111111111111111",
+        artifactFile: "/tmp/delivery.md",
+        artifactStoreDir: "/tmp/agenc-artifacts",
+        artifactMediaType: "text/markdown",
+        workerAgentPda: "Agent11111111111111111111111111111111111111",
       }),
     );
   });

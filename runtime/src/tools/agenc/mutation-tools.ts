@@ -26,7 +26,12 @@ import {
   findBidderMarketStatePda,
   findClaimPda,
 } from '../../task/pda.js';
-import { parseOnChainTaskClaim } from '../../task/types.js';
+import { isPrivateTask, parseOnChainTaskClaim } from '../../task/types.js';
+import {
+  hasMarketplaceArtifactDeliveryInput,
+  prepareMarketplaceArtifactDelivery,
+  type MarketplaceArtifactReference,
+} from '../../marketplace/artifact-delivery.js';
 import type { Logger } from '../../utils/logger.js';
 import { bytesToHex, generateAgentId, hexToBytes } from '../../utils/encoding.js';
 import type { Tool, ToolResult } from '../types.js';
@@ -665,7 +670,7 @@ export function createCompleteTaskTool(
 ): Tool {
   return {
     name: 'agenc.completeTask',
-    description: 'Complete an AgenC task with a public proof hash.',
+    description: 'Complete an AgenC task with a public proof hash and optional buyer-facing artifact reference.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -681,19 +686,43 @@ export function createCompleteTaskTool(
           type: 'string',
           description: 'Optional UTF-8 result data, padded to the fixed 64-byte on-chain field',
         },
+        artifactFile: {
+          type: 'string',
+          description: 'Optional buyer-facing artifact file to hash, store locally, and commit through resultData',
+        },
+        artifactUri: {
+          type: 'string',
+          description: 'Optional buyer-facing artifact URI (ipfs://, ar://, arweave://, or https://)',
+        },
+        artifactSha256: {
+          type: 'string',
+          description: 'Required 32-byte hex SHA-256 digest when artifactUri is used',
+        },
+        artifactMediaType: {
+          type: 'string',
+          description: 'Optional artifact media type, such as text/markdown or application/pdf',
+        },
+        artifactStoreDir: {
+          type: 'string',
+          description: 'Optional local artifact metadata store override',
+        },
         workerAgentPda: {
           type: 'string',
           description: 'Optional explicit worker agent PDA when the signer controls multiple agents',
         },
       },
-      required: ['taskPda', 'proofHash'],
+      required: ['taskPda'],
     },
     async execute(args: Record<string, unknown>): Promise<ToolResult> {
       const [taskPda, taskErr] = parseBase58(args.taskPda, 'taskPda');
       if (taskErr || !taskPda) return taskErr ?? errorResult('Invalid taskPda');
 
-      const [proofHash, proofErr] = parseFixedHexBytes(args.proofHash, 'proofHash', HASH_BYTES);
-      if (proofErr || !proofHash) return proofErr ?? errorResult('Invalid proofHash');
+      let proofHash: Uint8Array | null = null;
+      if (args.proofHash !== undefined) {
+        const [parsedProofHash, proofErr] = parseFixedHexBytes(args.proofHash, 'proofHash', HASH_BYTES);
+        if (proofErr || !parsedProofHash) return proofErr ?? errorResult('Invalid proofHash');
+        proofHash = parsedProofHash;
+      }
 
       const [signerAgent, signerErr] = await resolveSignerAgentContext(
         program,
@@ -701,13 +730,6 @@ export function createCompleteTaskTool(
         'workerAgentPda',
       );
       if (signerErr || !signerAgent) return signerErr ?? errorResult('Unable to resolve worker agent');
-
-      let resultData: Uint8Array | null = null;
-      let resultErr: ToolResult | null = null;
-      if (args.resultData !== undefined) {
-        [resultData, resultErr] = parseFixedUtf8Bytes(args.resultData, 'resultData', RESULT_BYTES);
-      }
-      if (resultErr) return resultErr;
 
       try {
         const ops = new TaskOperations({
@@ -717,6 +739,42 @@ export function createCompleteTaskTool(
         });
         const task = await ops.fetchTask(taskPda);
         if (!task) return errorResult(`Task not found: ${taskPda.toBase58()}`);
+
+        let deliveryArtifact: MarketplaceArtifactReference | null = null;
+        let resultData: Uint8Array | null = null;
+        if (hasMarketplaceArtifactDeliveryInput(args)) {
+          if (args.resultData !== undefined) {
+            return errorResult('resultData cannot be combined with artifactFile or artifactUri');
+          }
+          if (isPrivateTask(task)) {
+            return errorResult('Buyer-facing artifact delivery is disabled for private ZK tasks');
+          }
+          const preparedArtifact = await prepareMarketplaceArtifactDelivery({
+            artifactFile: typeof args.artifactFile === 'string' ? args.artifactFile : undefined,
+            artifactUri: typeof args.artifactUri === 'string' ? args.artifactUri : undefined,
+            artifactSha256: typeof args.artifactSha256 === 'string' ? args.artifactSha256 : undefined,
+            artifactMediaType: typeof args.artifactMediaType === 'string' ? args.artifactMediaType : undefined,
+            artifactStoreDir: typeof args.artifactStoreDir === 'string' ? args.artifactStoreDir : undefined,
+          });
+          if (proofHash && bytesToHex(proofHash) !== preparedArtifact.reference.sha256) {
+            return errorResult('proofHash must match the artifact SHA-256 digest');
+          }
+          proofHash = preparedArtifact.proofHash;
+          resultData = preparedArtifact.resultData;
+          deliveryArtifact = preparedArtifact.reference;
+        } else {
+          if (!proofHash) {
+            return errorResult('Missing proofHash or artifactFile/artifactUri');
+          }
+          let resultErr: ToolResult | null = null;
+          if (args.resultData !== undefined) {
+            [resultData, resultErr] = parseFixedUtf8Bytes(args.resultData, 'resultData', RESULT_BYTES);
+          }
+          if (resultErr) return resultErr;
+        }
+        if (!proofHash) {
+          return errorResult('Missing proofHash or artifactFile/artifactUri');
+        }
 
         const completionOptions =
           task.taskType === TaskType.BidExclusive
@@ -744,6 +802,8 @@ export function createCompleteTaskTool(
             taskId: bytesToHex(result.taskId),
             workerAgentPda: signerAgent.agentPda.toBase58(),
             proofHash: bytesToHex(proofHash),
+            resultData: resultData ? bytesToHex(resultData) : null,
+            deliveryArtifact,
             transactionSignature: result.transactionSignature,
           }),
         };

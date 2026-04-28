@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PublicKey } from '@solana/web3.js';
 import type { ToolResult } from '../types.js';
@@ -13,6 +17,7 @@ import {
   findBidPda,
   findBidderMarketStatePda,
 } from '../../task/pda.js';
+import { decodeMarketplaceArtifactSha256FromResultData } from '../../marketplace/artifact-delivery.js';
 import {
   createClaimTaskTool,
   createCompleteTaskTool,
@@ -38,6 +43,13 @@ const PROPOSAL_PDA = PublicKey.unique();
 const DELEGATION_PDA = PublicKey.unique();
 const TREASURY = PublicKey.unique();
 const STAKE_PDA = PublicKey.unique();
+const tempDirs: string[] = [];
+
+async function makeTempDir(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'agenc-mutation-tools-'));
+  tempDirs.push(dir);
+  return dir;
+}
 
 function parseJson(result: ToolResult) {
   return JSON.parse(result.content) as Record<string, unknown>;
@@ -138,8 +150,9 @@ function createMockProgram(options: { signer?: PublicKey | null } = {}) {
   return program;
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe('agenc mutation tools', () => {
@@ -252,6 +265,71 @@ describe('agenc mutation tools', () => {
 
     expect(result.isError).toBe(true);
     expect(String(parseJson(result).error)).toContain('proofHash');
+  });
+
+  it('agenc.completeTask commits artifact files through resultData and proofHash', async () => {
+    const rootDir = await makeTempDir();
+    const artifactFile = path.join(rootDir, 'delivery.md');
+    const content = '# Delivery\n\nReport for buyer review.\n';
+    await writeFile(artifactFile, content, 'utf8');
+    const sha256 = createHash('sha256').update(content).digest('hex');
+    const program = createMockProgram();
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: CREATOR_WALLET,
+      taskType: TaskType.Exclusive,
+      constraintHash: new Uint8Array(32),
+    } as never);
+    const completeSpy = vi
+      .spyOn(TaskOperations.prototype, 'completeTask')
+      .mockResolvedValue({
+        success: true,
+        taskId: new Uint8Array(32).fill(3),
+        isPrivate: false,
+        transactionSignature: 'complete-sig',
+      });
+
+    const tool = createCompleteTaskTool(program as never, silentLogger);
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      artifactFile,
+      artifactStoreDir: path.join(rootDir, 'store'),
+      workerAgentPda: AGENT_PDA.toBase58(),
+    });
+    const parsed = parseJson(result);
+
+    expect(result.isError).toBeUndefined();
+    expect(parsed.proofHash).toBe(sha256);
+    expect(parsed.deliveryArtifact).toMatchObject({
+      sha256,
+      source: 'file',
+      fileName: 'delivery.md',
+    });
+    const resultData = completeSpy.mock.calls[0]?.[3] as Uint8Array;
+    expect(decodeMarketplaceArtifactSha256FromResultData(resultData)).toBe(sha256);
+  });
+
+  it('agenc.completeTask fails closed for buyer-facing artifacts on private ZK tasks', async () => {
+    const rootDir = await makeTempDir();
+    const artifactFile = path.join(rootDir, 'delivery.md');
+    await writeFile(artifactFile, '# Delivery\n', 'utf8');
+    const program = createMockProgram();
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: CREATOR_WALLET,
+      taskType: TaskType.Exclusive,
+      constraintHash: new Uint8Array(32).fill(9),
+    } as never);
+    const completeSpy = vi.spyOn(TaskOperations.prototype, 'completeTask');
+
+    const tool = createCompleteTaskTool(program as never, silentLogger);
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      artifactFile,
+      workerAgentPda: AGENT_PDA.toBase58(),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(parseJson(result).error)).toContain('private ZK');
+    expect(completeSpy).not.toHaveBeenCalled();
   });
 
   it('agenc.completeTask derives accepted-bid settlement accounts for bid-exclusive tasks', async () => {

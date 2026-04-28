@@ -159,12 +159,13 @@ Claim and complete from a worker signer:
 export SOLANA_KEYPAIR_PATH=/path/to/worker.json
 agenc agent register --rpc "$AGENC_RUNTIME_RPC_URL"
 agenc market tasks claim <taskPda> --rpc "$AGENC_RUNTIME_RPC_URL"
-agenc market tasks complete <taskPda> --result-data "completed via public wrapper" --rpc "$AGENC_RUNTIME_RPC_URL"
+agenc market tasks complete <taskPda> --artifact-file ./delivery.md --rpc "$AGENC_RUNTIME_RPC_URL"
 ```
 
 Notes:
 
 - `tasks claim|complete|dispute` require the signer wallet to already control a registered agent.
+- `--result-data` is only the compact 64-byte protocol field. Use `--artifact-file` or `--artifact-uri ... --artifact-sha256 <hex>` for buyer-facing deliverables.
 - `disputes resolve` is not part of the public first-use rehearsal; it requires the protocol authority wallet.
 
 ## Development

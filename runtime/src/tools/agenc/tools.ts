@@ -61,6 +61,7 @@ import {
   serializeMarketplaceSkill,
   serializeMarketplaceTaskEntry,
 } from '../../marketplace/serialization.js';
+import { decodeMarketplaceArtifactSha256FromResultData } from '../../marketplace/artifact-delivery.js';
 import {
   buildMarketplaceInspectOverview,
   buildMarketplaceInspectSurface,
@@ -132,6 +133,7 @@ import type {
   SerializedReputationSummary,
   SerializedSkill,
   SerializedTask,
+  SerializedTaskDeliveryArtifact,
   SerializedTaskJobSpec,
 } from './types.js';
 
@@ -931,7 +933,15 @@ function serializeTask(
   extras?: Partial<Pick<SerializedTask, 'escrowTokenAccount' | 'escrowTokenBalance' | 'jobSpec'>>,
 ): SerializedTask {
   const descriptionText = decodeFixedBytes(task.description);
+  const artifactSha256 = decodeMarketplaceArtifactSha256FromResultData(task.result);
   const resultText = decodeFixedBytes(task.result);
+  const deliveryArtifact: SerializedTaskDeliveryArtifact | null = artifactSha256
+    ? {
+        sha256: artifactSha256,
+        source: 'protocol-result-data',
+        verified: false,
+      }
+    : null;
 
   return {
     taskPda: taskPda.toBase58(),
@@ -956,7 +966,8 @@ function serializeTask(
     descriptionHex: bytesToHex(task.description),
     constraintHash: bytesToHex(task.constraintHash),
     result: bytesToHex(task.result),
-    resultText: resultText || null,
+    resultText: artifactSha256 ? null : resultText || null,
+    deliveryArtifact,
     rewardMint: task.rewardMint?.toBase58() ?? null,
     rewardSymbol: getRewardSymbol(task.rewardMint),
     ...extras,

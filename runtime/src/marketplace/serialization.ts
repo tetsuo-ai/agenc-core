@@ -18,6 +18,7 @@ import {
   taskTypeToKey,
   taskTypeToString,
 } from "../task/types.js";
+import { decodeMarketplaceArtifactSha256FromResultData } from "./artifact-delivery.js";
 import { lamportsToSol } from "../utils/encoding.js";
 import { silentLogger } from "../utils/logger.js";
 
@@ -58,6 +59,11 @@ interface SerializedMarketplaceTask {
   completedAt: number;
   escrow: string;
   resultPreview?: string;
+  deliveryArtifact?: {
+    sha256: string;
+    source: "protocol-result-data";
+    verified: false;
+  };
 }
 
 interface SerializedMarketplaceSkill {
@@ -276,6 +282,7 @@ export function serializeMarketplaceTask(
   taskPda: PublicKey,
   task: TaskRecord,
 ): SerializedMarketplaceTask {
+  const deliveryArtifactSha256 = decodeMarketplaceArtifactSha256FromResultData(task.result);
   return {
     taskPda: taskPda.toBase58(),
     taskId: encodeHex(task.taskId),
@@ -298,7 +305,16 @@ export function serializeMarketplaceTask(
     createdAt: task.createdAt,
     completedAt: task.completedAt,
     escrow: task.escrow.toBase58(),
-    resultPreview: decodeTaskBytes(task.result) || undefined,
+    resultPreview: deliveryArtifactSha256
+      ? undefined
+      : decodeTaskBytes(task.result) || undefined,
+    deliveryArtifact: deliveryArtifactSha256
+      ? {
+          sha256: deliveryArtifactSha256,
+          source: "protocol-result-data",
+          verified: false,
+        }
+      : undefined,
   };
 }
 
