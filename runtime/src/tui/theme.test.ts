@@ -61,14 +61,14 @@ describe("theme", () => {
     }
   });
 
-  test("falls back to the default palette when watch primitives are missing", () => {
+  test("falls back to the cyberpunk default palette when watch primitives are missing", () => {
     // Before any loadTheme() invocation getTheme() returns the frozen
     // default, which is already the fallback path we want to exercise.
     __resetThemeForTests();
     const snapshot = getTheme();
-    expect(snapshot.colors.primary).toBe("ansi256(117)");
-    expect(snapshot.colors.error).toBe("ansi256(203)");
-    expect(snapshot.colors.surface).toBe("rgb(37,31,55)");
+    expect(snapshot.colors.primary).toBe("rgb(217,70,239)");
+    expect(snapshot.colors.error).toBe("rgb(255,0,60)");
+    expect(snapshot.colors.surface).toBe("rgb(5,2,8)");
     expect(snapshot.modeIndicatorChar.default).toBe("›");
   });
 });
