@@ -359,6 +359,8 @@ function createTuiApprovalResolver(
   };
 }
 
+export type ExpandedView = "none" | "tasks";
+
 export interface AgenCAppStateValue {
   readonly mode: PermissionMode;
   readonly session: SessionLike;
@@ -380,6 +382,12 @@ export interface AgenCAppStateValue {
   readonly activePermissionRequestId: string | null;
   /** Total queued permission requests, including the active one. */
   readonly queuedPermissionCount: number;
+  /**
+   * Currently expanded sticky panel. `"tasks"` flips the persistent
+   * task-board panel into view; `"none"` collapses it. Mirrors
+   * openclaude `AppState.expandedView` (`state/AppStateStore.ts:95`).
+   */
+  readonly expandedView: ExpandedView;
   /** Bump `isStreaming` on so the composer/status footer tracks active turns. */
   setStreaming: (next: boolean) => void;
   /**
@@ -388,6 +396,8 @@ export interface AgenCAppStateValue {
    * mainLoopModel: model})` at `commands/model/model.tsx:59-63`.
    */
   setModel: (next: string) => void;
+  /** Flip the sticky panel selector. */
+  setExpandedView: (next: ExpandedView) => void;
   /**
    * Queue ops exposed so non-React callers (evaluator, daemon bridge,
    * tests) can push pending requests without going through React
@@ -425,6 +435,7 @@ export function AgenCAppStateProvider({
     return sc?.collaborationMode?.model;
   });
   const [isStreaming, setStreaming] = useState<boolean>(false);
+  const [expandedView, setExpandedView] = useState<ExpandedView>("none");
   const [permissionQueue, setPermissionQueue] = useState<
     readonly PendingPermissionRequest[]
   >([]);
@@ -470,6 +481,9 @@ export function AgenCAppStateProvider({
   const memoSetModel = useCallback((next: string) => {
     setModel(next);
   }, []);
+  const memoSetExpandedView = useCallback((next: ExpandedView) => {
+    setExpandedView(next);
+  }, []);
 
   useEffect(() => {
     // The live evaluator/runtime bridge needs a session-level handle it
@@ -481,7 +495,10 @@ export function AgenCAppStateProvider({
         approvalResolver?: ApprovalResolver;
       };
       permissionQueueOps?: PermissionQueueOps;
-      appStateBridge?: { setModel?: (next: string) => void };
+      appStateBridge?: {
+        setModel?: (next: string) => void;
+        setExpandedView?: (next: ExpandedView) => void;
+      };
     };
     const previous = sessionWithQueueOps.permissionQueueOps;
     const previousApprovalResolver =
@@ -491,10 +508,14 @@ export function AgenCAppStateProvider({
     sessionWithQueueOps.services.approvalResolver =
       createTuiApprovalResolver(exposedOps, session);
     // Publish the React-side setters so non-React callers (the slash
-    // dispatcher in `bin/agenc.ts`) can refresh AppState synchronously
-    // — mirrors AgenC's `setAppState({...prev, mainLoopModel})`
-    // pattern adapted to AgenC's session-as-bridge convention.
-    sessionWithQueueOps.appStateBridge = { setModel: memoSetModel };
+    // dispatcher in `bin/agenc.ts`, model-facing tools that auto-expand
+    // the task panel) can refresh AppState synchronously — mirrors
+    // AgenC's `setAppState({...prev, mainLoopModel})` pattern adapted
+    // to AgenC's session-as-bridge convention.
+    sessionWithQueueOps.appStateBridge = {
+      setModel: memoSetModel,
+      setExpandedView: memoSetExpandedView,
+    };
     return () => {
       if (sessionWithQueueOps.permissionQueueOps === exposedOps) {
         sessionWithQueueOps.permissionQueueOps = previous;
@@ -508,7 +529,7 @@ export function AgenCAppStateProvider({
       }
       sessionWithQueueOps.appStateBridge = previousBridge;
     };
-  }, [session, exposedOps, memoSetModel]);
+  }, [session, exposedOps, memoSetModel, memoSetExpandedView]);
 
   const value = useMemo<AgenCAppStateValue>(
     () => ({
@@ -521,8 +542,10 @@ export function AgenCAppStateProvider({
       pendingRequests,
       activePermissionRequestId,
       queuedPermissionCount: permissionQueue.length,
+      expandedView,
       setStreaming: memoSetStreaming,
       setModel: memoSetModel,
+      setExpandedView: memoSetExpandedView,
       permissionQueueOps: exposedOps,
     }),
     [
@@ -534,8 +557,10 @@ export function AgenCAppStateProvider({
       permissionQueue,
       pendingRequests,
       activePermissionRequestId,
+      expandedView,
       memoSetStreaming,
       memoSetModel,
+      memoSetExpandedView,
       exposedOps,
     ],
   );

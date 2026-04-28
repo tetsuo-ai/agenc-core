@@ -158,6 +158,7 @@ describe("model-facing tools", () => {
         "Brief",
         "SendUserMessage",
         "VerifyPlanExecution",
+        "StructuredOutput",
       ]),
     );
     expect(allNames.some((name) => name.startsWith("system.http"))).toBe(false);
@@ -184,7 +185,7 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("TaskCreate");
   });
 
-  it("persists TaskCreate/TaskGet/TaskUpdate/TaskList in the AgenC state dir", async () => {
+  it("persists TaskCreate/TaskGet/TaskUpdate/TaskList against the per-project task board", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-tool-home-"));
     try {
       const tools = createModelFacingTools({
@@ -197,24 +198,219 @@ describe("model-facing tools", () => {
       const created = await byName.get("TaskCreate")!.execute({
         subject: "Wire tools",
         description: "Add missing model-facing tools",
+        owner: "/root/task_3",
       });
-      const task = JSON.parse(created.content).task as { id: string };
+      const task = JSON.parse(created.content).task as {
+        id: string;
+        owner?: string;
+        status: string;
+      };
+      expect(task.id).toMatch(/^\d+$/);
+      expect(task.owner).toBe("/root/task_3");
+      expect(task.status).toBe("pending");
 
-      const updated = await byName.get("TaskUpdate")!.execute({
+      const blocker = await byName.get("TaskCreate")!.execute({ subject: "B" });
+      const blockerTask = JSON.parse(blocker.content).task as { id: string };
+
+      const linked = await byName.get("TaskUpdate")!.execute({
         taskId: task.id,
+        addBlockedBy: [blockerTask.id, blockerTask.id],
+      });
+      const linkedTask = JSON.parse(linked.content).task as {
+        blockedBy: readonly string[];
+      };
+      expect(linkedTask.blockedBy).toEqual([blockerTask.id]);
+
+      // Auto-mirror under the list lock: blocker.blocks should now
+      // contain task.id with no separate update call.
+      const blockerAfter = await byName.get("TaskGet")!.execute({
+        taskId: blockerTask.id,
+      });
+      expect(JSON.parse(blockerAfter.content).task.blocks).toEqual([task.id]);
+
+      const listed = JSON.parse(
+        (await byName.get("TaskList")!.execute({})).content,
+      ).tasks as readonly {
+        id: string;
+        unresolvedBlockers: readonly string[];
+      }[];
+      const tEntry = listed.find((t) => t.id === task.id);
+      expect(tEntry?.unresolvedBlockers).toEqual([blockerTask.id]);
+
+      const completed = await byName.get("TaskUpdate")!.execute({
+        taskId: blockerTask.id,
         status: "completed",
       });
-      expect(JSON.parse(updated.content).task.status).toBe("completed");
+      expect(JSON.parse(completed.content).task.status).toBe("completed");
+
+      const refreshed = JSON.parse(
+        (await byName.get("TaskList")!.execute({})).content,
+      ).tasks as readonly {
+        id: string;
+        unresolvedBlockers: readonly string[];
+      }[];
+      expect(
+        refreshed.find((t) => t.id === task.id)?.unresolvedBlockers,
+      ).toEqual([]);
+
+      const tombstoned = await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        status: "deleted",
+      });
+      expect(JSON.parse(tombstoned.content).task.status).toBe("deleted");
+
+      const visibleAfterDelete = JSON.parse(
+        (await byName.get("TaskList")!.execute({})).content,
+      ).tasks as readonly { id: string }[];
+      expect(visibleAfterDelete.map((t) => t.id)).not.toContain(task.id);
 
       const got = await byName.get("TaskGet")!.execute({ taskId: task.id });
+      expect(got.isError).toBeUndefined();
       expect(JSON.parse(got.content).task.subject).toBe("Wire tools");
 
-      const listed = await byName.get("TaskList")!.execute({
-        status: "completed",
+      const missing = await byName.get("TaskGet")!.execute({ taskId: "9999" });
+      expect(missing.isError).toBe(true);
+      expect(JSON.parse(missing.content).error).toBe("Task not found");
+
+      const badRef = await byName.get("TaskUpdate")!.execute({
+        taskId: blockerTask.id,
+        addBlocks: ["9999"],
       });
-      expect(JSON.parse(listed.content).tasks).toHaveLength(1);
+      expect(badRef.isError).toBe(true);
+      expect(JSON.parse(badRef.content).missing).toEqual(["9999"]);
     } finally {
       await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("TaskCreate auto-expands the tasks panel via the appStateBridge", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-tool-home-"));
+    try {
+      const expansions: Array<"none" | "tasks"> = [];
+      const session = {
+        appStateBridge: {
+          setExpandedView: (next: "none" | "tasks") => expansions.push(next),
+        },
+      } as unknown as Session;
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        agencHome: home,
+        getSession: () => session,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+      await byName.get("TaskCreate")!.execute({ subject: "auto-expand" });
+      expect(expansions).toEqual(["tasks"]);
+
+      // TaskUpdate must NOT auto-expand (only create does).
+      const task = JSON.parse(
+        (
+          await byName.get("TaskCreate")!.execute({ subject: "second" })
+        ).content,
+      ).task as { id: string };
+      expansions.length = 0;
+      await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        status: "in_progress",
+      });
+      expect(expansions).toEqual([]);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("TaskCreate is a no-op for the bridge when the TUI is not mounted", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-tool-home-"));
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        agencHome: home,
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName
+        .get("TaskCreate")!
+        .execute({ subject: "no-tui" });
+      expect(result.isError).toBeUndefined();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("WebFetch renders HTML through Turndown and reports preapproved hosts", async () => {
+    const html =
+      "<!doctype html><html><head><title>x</title><style>body{}</style></head><body>" +
+      "<h1>Hello</h1>" +
+      "<p>This is a <strong>test</strong> with a <a href=\"https://example.com\">link</a>.</p>" +
+      "<ul><li>one</li><li>two</li></ul>" +
+      "<script>alert('x')</script>" +
+      "</body></html>";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://docs.python.org/3/library/asyncio.html",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/html; charset=utf-8" : null,
+      },
+      text: async () => html,
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("WebFetch")!.execute({
+        url: "https://docs.python.org/3/library/asyncio.html",
+      });
+      expect(result.isError).toBeUndefined();
+      const parsed = JSON.parse(result.content);
+      expect(parsed.preapproved).toBe(true);
+      expect(parsed.rendered_as).toBe("markdown");
+      expect(parsed.content).toContain("# Hello");
+      expect(parsed.content).toContain("**test**");
+      expect(parsed.content).toContain("[link](https://example.com)");
+      // List bullet rendered with the configured "-" marker.
+      expect(parsed.content).toMatch(/-\s+one/);
+      // Scripts and styles must not leak into the markdown.
+      expect(parsed.content).not.toContain("alert");
+      expect(parsed.content).not.toContain("<style>");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("WebFetch flags non-preapproved hosts as preapproved=false", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      url: "https://random.example.com/page",
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "content-type" ? "text/plain" : null,
+      },
+      text: async () => "plain body",
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => null,
+      });
+      const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      const result = await byName.get("WebFetch")!.execute({
+        url: "https://random.example.com/page",
+      });
+      const parsed = JSON.parse(result.content);
+      expect(parsed.preapproved).toBe(false);
+      expect(parsed.rendered_as).toBe("passthrough");
+      expect(parsed.content).toBe("plain body");
+    } finally {
+      globalThis.fetch = previousFetch;
     }
   });
 
