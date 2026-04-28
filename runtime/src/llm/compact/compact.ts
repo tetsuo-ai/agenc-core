@@ -77,6 +77,7 @@ import {
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
 } from './prompt.js'
+import { getInvokedSkillsForAgent as readInvokedSkillsForAgent } from '../../skills/local-loader.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -2240,14 +2241,9 @@ export function createPlanAttachmentIfNeeded(
  * without leaking skills from other agent contexts.
  */
 export function createSkillAttachmentIfNeeded(
-  _agentId?: string,
+  agentId?: string,
 ): AttachmentMessage | null {
-  // T5: the legacy `getInvokedSkillsForAgent` resolved to a no-op stub
-  // proxy (runtime/src/bootstrap/state.ts). There is no T5 owner for
-  // the invoked-skills registry yet; when one lands it should be
-  // threaded through CompactRuntimeContext. Until then, the attachment
-  // is always empty and the function short-circuits to null.
-  const invokedSkills: ReadonlyMap<string, never> = new Map<string, never>()
+  const invokedSkills = readInvokedSkillsForAgent(agentId)
 
   if (invokedSkills.size === 0) {
     return null
@@ -2257,9 +2253,9 @@ export function createSkillAttachmentIfNeeded(
   // Per-skill truncation keeps the head of each file (where setup/usage
   // instructions typically live) rather than dropping whole skills.
   let usedTokens = 0
-  const skills = (Array.from(invokedSkills.values()) as any[])
-    .sort((a: any, b: any) => b.invokedAt - a.invokedAt)
-    .map((skill: any) => ({
+  const skills = Array.from(invokedSkills.values())
+    .sort((a, b) => b.invokedAt - a.invokedAt)
+    .map(skill => ({
       name: skill.skillName,
       path: skill.skillPath,
       content: truncateToTokens(
@@ -2267,7 +2263,7 @@ export function createSkillAttachmentIfNeeded(
         POST_COMPACT_MAX_TOKENS_PER_SKILL,
       ),
     }))
-    .filter((skill: any) => {
+    .filter(skill => {
       const tokens = roughTokenCountEstimation(skill.content)
       if (usedTokens + tokens > POST_COMPACT_SKILLS_TOKEN_BUDGET) {
         return false

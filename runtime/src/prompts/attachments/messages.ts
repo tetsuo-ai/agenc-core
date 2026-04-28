@@ -231,6 +231,13 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         ),
       );
     }
+    case "skill_listing": {
+      return userContextMessage(
+        wrapSystemReminder(
+          `The following skills are available for use with the Skill tool. If a skill matches the user's request, invoke the Skill tool before responding.\n\n${attachment.content}`,
+        ),
+      );
+    }
   }
 }
 

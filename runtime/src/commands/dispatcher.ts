@@ -46,8 +46,8 @@ export interface ParsedSlashCommand {
   readonly isMcp: boolean;
 }
 
-/** First-line command shape: `/name(MCP)? [args]`. */
-const FIRST_LINE_RE = /^\/([a-z][a-z0-9_-]*)(\(MCP\))?(?:\s+(.*))?$/;
+/** First-line command shape: `/name(MCP)? [args]`. Skill names may contain namespaces. */
+const FIRST_LINE_RE = /^\/([a-z][a-z0-9_:-]*)(\(MCP\))?(?:\s+(.*))?$/;
 
 /**
  * Extract the first line of `input` (everything up to the first `\n`).
@@ -156,6 +156,9 @@ export async function dispatchSlashCommand(
   const command = registry.find(parsed.name);
 
   if (!command) {
+    const skillOutcome = await dispatchSkillSlashCommand(parsed, ctx);
+    if (skillOutcome !== null) return skillOutcome;
+
     const hint = await buildMistypedPathHint(ctx.cwd, parsed.name);
     if (hint !== null) {
       return {
@@ -305,4 +308,80 @@ const BRIDGE_SAFE: ReadonlySet<string> = new Set([
 
 export function isBridgeSafeCommand(name: string): boolean {
   return BRIDGE_SAFE.has(name);
+}
+
+async function dispatchSkillSlashCommand(
+  parsed: ParsedSlashCommand,
+  ctx: SlashCommandContext,
+): Promise<DispatchOutcome | null> {
+  const manager = ctx.session.services?.skillsManager;
+  if (!manager || typeof manager.resolveSkill !== "function") return null;
+
+  const skill = await manager.resolveSkill(parsed.name);
+  if (skill === null) return null;
+
+  if (skill.userInvocable === false) {
+    const message = `/${skill.name} is not user-invocable; ask the model to use this instead`;
+    return {
+      result: { kind: "error", message },
+      immediate: false,
+      trace: {
+        name: skill.name,
+        aliasUsed: parsed.name,
+        argsRaw: parsed.argsRaw,
+        sensitive: false,
+        immediate: false,
+        isMcp: parsed.isMcp,
+        resultKind: "error",
+      },
+    };
+  }
+
+  const rendered = await manager.renderSkill?.({
+    name: skill.name,
+    args: parsed.argsRaw,
+    sessionId: ctx.session.conversationId,
+  });
+  if (!rendered) {
+    return {
+      result: {
+        kind: "error",
+        message: `Failed to load skill: /${skill.name}`,
+      },
+      immediate: false,
+      trace: {
+        name: skill.name,
+        aliasUsed: parsed.name,
+        argsRaw: parsed.argsRaw,
+        sensitive: false,
+        immediate: false,
+        isMcp: parsed.isMcp,
+        resultKind: "error",
+      },
+    };
+  }
+
+  manager.recordInvokedSkill?.({
+    skillName: rendered.skill.name,
+    skillPath: rendered.skill.path,
+    content: rendered.content,
+    invokedAt: Date.now(),
+  });
+
+  return {
+    result: {
+      kind: "prompt",
+      content: `<command-name>${rendered.skill.name}</command-name>\n${rendered.content}`,
+    },
+    immediate: false,
+    trace: {
+      name: rendered.skill.name,
+      aliasUsed: parsed.name,
+      argsRaw: parsed.argsRaw,
+      sensitive: false,
+      immediate: false,
+      isMcp: parsed.isMcp,
+      resultKind: "prompt",
+    },
+  };
 }

@@ -49,9 +49,14 @@ import {
   DEFAULT_COMPACTION_MIN_SHRINK_RATIO,
   assertCompactionShrank,
   buildPostCompactMessages,
+  createSkillAttachmentIfNeeded,
   createReferenceContextMessages,
   getCompactionMinShrinkRatio,
 } from './compact.ts'
+import {
+  clearInvokedSkills,
+  recordInvokedSkill,
+} from '../../skills/local-loader.js'
 
 // ─────────────────────────────────────────────────────────────────────
 // Part 1: pure assertion helper
@@ -152,6 +157,34 @@ describe('assertCompactionShrank (I-18)', () => {
       expect(err.postCompactTokenCount).toBe(950)
       expect(err.minShrinkRatio).toBe(0.7)
     }
+  })
+})
+
+describe('createSkillAttachmentIfNeeded', () => {
+  afterEach(() => {
+    clearInvokedSkills()
+  })
+
+  test('restores invoked skill content for compaction', () => {
+    recordInvokedSkill({
+      skillName: 'repo-docs',
+      skillPath: '/skills/repo-docs/SKILL.md',
+      content: 'Use repository docs.',
+      invokedAt: 10,
+    })
+
+    const attachment = createSkillAttachmentIfNeeded()
+
+    expect(attachment?.attachment).toMatchObject({
+      type: 'invoked_skills',
+      skills: [
+        {
+          name: 'repo-docs',
+          path: '/skills/repo-docs/SKILL.md',
+          content: 'Use repository docs.',
+        },
+      ],
+    })
   })
 })
 

@@ -40,6 +40,7 @@ import { changedFilesProducer } from "./changed-files.js";
 import { nestedMemoryProducer } from "./nested-memory.js";
 import { relevantMemoryProducer } from "./relevant-memory.js";
 import { agentMentionsProducer } from "./agent-mentions.js";
+import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
 
 /**
@@ -96,6 +97,20 @@ export interface GetAttachmentsOptions {
   readonly agencHome?: string;
   /** Provider-neutral token/cost/context snapshot built by the session sidecar. */
   readonly usageSnapshot?: UsageNoticeSnapshot;
+  /** Runtime skill manager used to announce Skill-tool candidates. */
+  readonly skillsManager?: {
+    skillsForConfig(input: unknown, fs: unknown): Promise<{
+      readonly availableSkills?: ReadonlyArray<{
+        readonly name: string;
+        readonly description?: string;
+        readonly whenToUse?: string;
+        readonly disableModelInvocation?: boolean;
+        readonly loadedFrom?: string;
+      }>;
+    }>;
+  };
+  /** Current model context window, if known, for listing budget sizing. */
+  readonly contextWindowTokens?: number;
 }
 
 /**
@@ -140,6 +155,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   nestedMemoryProducer,
   relevantMemoryProducer,
   agentMentionsProducer,
+  skillListingProducer,
 ];
 
 /**

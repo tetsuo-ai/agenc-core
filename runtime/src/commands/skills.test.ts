@@ -8,6 +8,12 @@ import type { Session } from "../session/session.js";
 
 function stubSession(opts: {
   invokedSkills?: readonly string[];
+  availableSkills?: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string;
+    readonly scope?: string;
+    readonly loadedFrom?: string;
+  }>;
   roots?: unknown;
 }): Session {
   return {
@@ -16,6 +22,7 @@ function stubSession(opts: {
       skillsManager: {
         skillsForConfig: async () => ({
           invokedSkills: opts.invokedSkills ?? [],
+          availableSkills: opts.availableSkills ?? [],
         }),
       },
       pluginsManager: {
@@ -28,28 +35,55 @@ function stubSession(opts: {
 }
 
 describe("skillsCommand", () => {
-  it("collects sorted invoked skills and plugin roots", async () => {
+  it("collects sorted available skills, invoked skills, and plugin roots", async () => {
     const snapshot = await collectSkillsSnapshot(
       stubSession({
         invokedSkills: ["zeta", "alpha"],
+        availableSkills: [{ name: "zeta" }, { name: "alpha" }],
         roots: new Set(["/z", "/a"]),
       }),
     );
     expect(snapshot).toEqual({
       invokedSkills: ["alpha", "zeta"],
+      availableSkills: [
+        {
+          name: "alpha",
+          description: undefined,
+          scope: undefined,
+          loadedFrom: undefined,
+          userInvocable: undefined,
+          disableModelInvocation: undefined,
+        },
+        {
+          name: "zeta",
+          description: undefined,
+          scope: undefined,
+          loadedFrom: undefined,
+          userInvocable: undefined,
+          disableModelInvocation: undefined,
+        },
+      ],
       effectiveSkillRoots: ["/a", "/z"],
     });
   });
 
   it("formats empty state explicitly", () => {
     expect(
-      formatSkillsSnapshot({ invokedSkills: [], effectiveSkillRoots: [] }),
-    ).toBe("Skills:\n  loaded: none\n  plugin roots: none");
+      formatSkillsSnapshot({
+        invokedSkills: [],
+        availableSkills: [],
+        effectiveSkillRoots: [],
+      }),
+    ).toBe("Skills:\n  available: none\n  invoked: none\n  plugin roots: none");
   });
 
   it("executes /skills list", async () => {
     const result = await skillsCommand.execute({
-      session: stubSession({ invokedSkills: ["debug"], roots: ["/skills"] }),
+      session: stubSession({
+        invokedSkills: ["debug"],
+        availableSkills: [{ name: "debug" }],
+        roots: ["/skills"],
+      }),
       argsRaw: "list",
       cwd: "/tmp/ws",
       home: "/home/test",
@@ -57,7 +91,8 @@ describe("skillsCommand", () => {
 
     expect(result.kind).toBe("text");
     if (result.kind === "text") {
-      expect(result.text).toContain("loaded: debug");
+      expect(result.text).toContain("available: debug");
+      expect(result.text).toContain("invoked: debug");
       expect(result.text).toContain("plugin roots: /skills");
     }
   });

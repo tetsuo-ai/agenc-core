@@ -19,6 +19,14 @@ import {
 
 export interface SkillsSnapshot {
   readonly invokedSkills: ReadonlyArray<string>;
+  readonly availableSkills: ReadonlyArray<{
+    readonly name: string;
+    readonly description?: string;
+    readonly scope?: string;
+    readonly loadedFrom?: string;
+    readonly userInvocable?: boolean;
+    readonly disableModelInvocation?: boolean;
+  }>;
   readonly effectiveSkillRoots: ReadonlyArray<string>;
 }
 
@@ -51,6 +59,16 @@ export async function collectSkillsSnapshot(
     invokedSkills: [...outcome.invokedSkills].sort((a, b) =>
       a.localeCompare(b),
     ),
+    availableSkills: [...(outcome.availableSkills ?? [])]
+      .map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        scope: skill.scope,
+        loadedFrom: skill.loadedFrom,
+        userInvocable: skill.userInvocable,
+        disableModelInvocation: skill.disableModelInvocation,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
     effectiveSkillRoots: normalizeRoots(pluginView.effectiveSkillRoots()).sort(
       (a, b) => a.localeCompare(b),
     ),
@@ -59,10 +77,18 @@ export async function collectSkillsSnapshot(
 
 export function formatSkillsSnapshot(snapshot: SkillsSnapshot): string {
   const lines: string[] = ["Skills:"];
-  if (snapshot.invokedSkills.length === 0) {
-    lines.push("  loaded: none");
+  if (snapshot.availableSkills.length === 0) {
+    lines.push("  available: none");
   } else {
-    lines.push(`  loaded: ${snapshot.invokedSkills.join(", ")}`);
+    lines.push(
+      `  available: ${snapshot.availableSkills.map((skill) => skill.name).join(", ")}`,
+    );
+  }
+
+  if (snapshot.invokedSkills.length === 0) {
+    lines.push("  invoked: none");
+  } else {
+    lines.push(`  invoked: ${snapshot.invokedSkills.join(", ")}`);
   }
 
   if (snapshot.effectiveSkillRoots.length === 0) {
