@@ -671,11 +671,14 @@ function TUIRoot({
             <QueuedCommands session={session} isStreaming={isStreaming} />
             <Composer
               session={composerSession}
-              config={
-                composerAttachmentsConfig !== undefined
+              config={{
+                ...(composerAttachmentsConfig !== undefined
                   ? { attachments: composerAttachmentsConfig }
-                  : undefined
-              }
+                  : {}),
+                ...(tuiConfigView.editorMode !== undefined
+                  ? { editorMode: tuiConfigView.editorMode }
+                  : {}),
+              }}
               onSubmit={handleSubmit}
               onCancel={handleCancel}
               initialValue={initialComposerText}

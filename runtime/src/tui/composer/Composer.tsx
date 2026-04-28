@@ -96,6 +96,8 @@ import {
   readSlashDraft,
 } from "./drafts.js";
 import { buildHistorySearchStatusLine } from "./status-line.js";
+import { isVimModeEnabled } from "./promptInput-utils.js";
+import type { EditorMode } from "../../config/schema.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public types
@@ -124,10 +126,15 @@ export interface ComposerAttachmentsConfig {
   readonly allowedRoots?: readonly string[];
 }
 
+export interface ComposerConfig {
+  readonly attachments?: ComposerAttachmentsConfig;
+  readonly editorMode?: EditorMode;
+}
+
 export interface ComposerProps {
   readonly session: ComposerSession;
   /** Optional attachments config — resolves `config.attachments.allowedRoots`. */
-  readonly config?: { readonly attachments?: ComposerAttachmentsConfig };
+  readonly config?: ComposerConfig;
   /** Fired on a non-paste-gated Enter with the full buffer value. */
   readonly onSubmit: (value: string) => void;
   /** Fired on `chat:cancel` (Escape). */
@@ -293,6 +300,10 @@ export const Composer: React.FC<ComposerProps> = ({
     initialHistory: [],
     initialValue,
   });
+  const vimEnabled = isVimModeEnabled(
+    config?.editorMode !== undefined ? { editorMode: config.editorMode } : null,
+  );
+  const [vimMode, setVimMode] = useState<"INSERT" | "NORMAL">("INSERT");
 
   // Seed history asynchronously. The reducer owns merging so prompts
   // submitted before the disk read resolves remain newer than loaded
@@ -591,6 +602,53 @@ export const Composer: React.FC<ComposerProps> = ({
       if (activeKeybindingContext === "modal") {
         return;
       }
+      if (vimEnabled && event.key.escape) {
+        clearPendingPlainChar();
+        setVimMode("NORMAL");
+        return;
+      }
+      if (vimEnabled && vimMode === "NORMAL") {
+        if (!isPrintableInputEvent(event)) return;
+        switch (event.input) {
+          case "i":
+            setVimMode("INSERT");
+            return;
+          case "a":
+            dispatch({ type: "MOVE_CURSOR", delta: 1 });
+            setVimMode("INSERT");
+            return;
+          case "A":
+            dispatch({ type: "MOVE_CURSOR_END" });
+            setVimMode("INSERT");
+            return;
+          case "I":
+            dispatch({ type: "MOVE_CURSOR_HOME" });
+            setVimMode("INSERT");
+            return;
+          case "o":
+            dispatch({ type: "MOVE_CURSOR_END" });
+            dispatch({ type: "NEWLINE" });
+            setVimMode("INSERT");
+            return;
+          case "h":
+            dispatch({ type: "MOVE_CURSOR", delta: -1 });
+            return;
+          case "l":
+            dispatch({ type: "MOVE_CURSOR", delta: 1 });
+            return;
+          case "0":
+            dispatch({ type: "MOVE_CURSOR_HOME" });
+            return;
+          case "$":
+            dispatch({ type: "MOVE_CURSOR_END" });
+            return;
+          case "x":
+            dispatch({ type: "DELETE_FORWARD" });
+            return;
+          default:
+            return;
+        }
+      }
       if (state.historySearch !== null) {
         if (!isPrintableInputEvent(event)) {
           flushPendingPlainChar();
@@ -701,6 +759,7 @@ export const Composer: React.FC<ComposerProps> = ({
   }, [
     activeKeybindingContext,
     beginPasteBurst,
+    clearPendingPlainChar,
     dispatch,
     flushPendingPlainChar,
     inputLocked,
@@ -709,6 +768,8 @@ export const Composer: React.FC<ComposerProps> = ({
     state.selectedRemoteImageIndex,
     stdin,
     store,
+    vimEnabled,
+    vimMode,
   ]);
 
   // ── keybindings ────────────────────────────────────────────────────
@@ -800,6 +861,11 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleCancel = useCallback((): void => {
     if (inputLocked) return;
+    if (vimEnabled && vimMode === "INSERT") {
+      flushPendingPlainChar();
+      setVimMode("NORMAL");
+      return;
+    }
     const effectiveValue = valueAfterFlushingPendingPlainChar();
     if (state.historySearch !== null) {
       dispatch({ type: "HISTORY_SEARCH_CANCEL" });
@@ -829,6 +895,9 @@ export const Composer: React.FC<ComposerProps> = ({
     state.localImages.length,
     state.remoteImages.length,
     valueAfterFlushingPendingPlainChar,
+    vimEnabled,
+    vimMode,
+    flushPendingPlainChar,
   ]);
 
   const handleNewline = useCallback((): void => {
@@ -1187,6 +1256,12 @@ export const Composer: React.FC<ComposerProps> = ({
         text: "Slash commands submit on a single line. Extra lines keep this as plain text.",
       };
     }
+    if (vimEnabled && vimMode === "NORMAL") {
+      return {
+        color: colors.primary,
+        text: "VIM NORMAL. i/a/o insert. h/l move. x delete. Enter submits.",
+      };
+    }
     if (slashDraft && slashDraft.query.length === 0) {
       return {
         color: colors.primary,
@@ -1266,6 +1341,8 @@ export const Composer: React.FC<ComposerProps> = ({
     state.selectedRemoteImageIndex,
     state.historySearch,
     submitKey,
+    vimEnabled,
+    vimMode,
   ]);
   const showInstructionLine =
     state.historySearch !== null ||
@@ -1275,7 +1352,8 @@ export const Composer: React.FC<ComposerProps> = ({
     slashConflict ||
     slashDraft !== null ||
     mentionDraft !== null ||
-    skillDraft !== null;
+    skillDraft !== null ||
+    (vimEnabled && vimMode === "NORMAL");
   const placeholderText =
     state.value.length === 0 && !showInstructionLine
       ? "Ask AgenC to do anything"
