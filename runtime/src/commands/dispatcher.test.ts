@@ -120,6 +120,14 @@ describe("parseSlashCommand — happy paths", () => {
       isMcp: false,
     });
   });
+
+  it("parses namespaced skill names", () => {
+    expect(parseSlashCommand("/frontend:react:form input")).toEqual({
+      name: "frontend:react:form",
+      argsRaw: "input",
+      isMcp: false,
+    });
+  });
 });
 
 describe("parseSlashCommand — rejections", () => {
@@ -309,6 +317,80 @@ describe("dispatchSlashCommand", () => {
       kind: "error",
       message: "Unknown command: /does-not-exist",
     });
+  });
+
+  it("dispatches unknown slash commands as user-invocable skills", async () => {
+    const out = await dispatchSlashCommand(
+      { name: "review-pr", argsRaw: "123", isMcp: false },
+      stubCtx({
+        session: {
+          conversationId: "session-1",
+          services: {
+            skillsManager: {
+              resolveSkill: async (name: string) =>
+                name === "review-pr"
+                  ? {
+                      name,
+                      description: "Review a pull request",
+                      path: "/skills/review-pr/SKILL.md",
+                      root: "/skills/review-pr",
+                      scope: "project",
+                      userInvocable: true,
+                    }
+                  : null,
+              renderSkill: async () => ({
+                skill: {
+                  name: "review-pr",
+                  description: "Review a pull request",
+                  path: "/skills/review-pr/SKILL.md",
+                  root: "/skills/review-pr",
+                  scope: "project",
+                },
+                content: "Review PR 123",
+              }),
+              recordInvokedSkill: vi.fn(),
+              skillsForConfig: async () => ({ invokedSkills: [] }),
+            },
+          },
+        } as unknown as SlashCommandContext["session"],
+      }),
+      registry,
+    );
+
+    expect(out.result).toEqual({
+      kind: "prompt",
+      content: "<command-name>review-pr</command-name>\nReview PR 123",
+    });
+    expect(out.trace.name).toBe("review-pr");
+  });
+
+  it("rejects model-only skills from slash dispatch", async () => {
+    const out = await dispatchSlashCommand(
+      { name: "hidden", argsRaw: "", isMcp: false },
+      stubCtx({
+        session: {
+          services: {
+            skillsManager: {
+              resolveSkill: async () => ({
+                name: "hidden",
+                description: "Hidden",
+                path: "/skills/hidden/SKILL.md",
+                root: "/skills/hidden",
+                scope: "project",
+                userInvocable: false,
+              }),
+              skillsForConfig: async () => ({ invokedSkills: [] }),
+            },
+          },
+        } as unknown as SlashCommandContext["session"],
+      }),
+      registry,
+    );
+
+    expect(out.result.kind).toBe("error");
+    if (out.result.kind === "error") {
+      expect(out.result.message).toContain("not user-invocable");
+    }
   });
 
   it("returns { kind: 'skip' } when the cwd has a file matching the unknown name", async () => {

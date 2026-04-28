@@ -434,6 +434,37 @@ export interface Hooks {
 /** AgenC runtime `SkillsManager` + `SkillsWatcher` + `PluginsManager`. T10 wires. */
 export interface SkillsManager {
   skillsForConfig(input: unknown, fs: unknown): Promise<SkillLoadOutcome>;
+  resolveSkill?(
+    name: string,
+  ): Promise<NonNullable<SkillLoadOutcome["availableSkills"]>[number] | null>;
+  renderSkill?(opts: {
+    readonly name: string;
+    readonly args?: string;
+    readonly sessionId?: string;
+  }): Promise<{
+    readonly skill: NonNullable<SkillLoadOutcome["availableSkills"]>[number];
+    readonly content: string;
+  } | null>;
+  recordInvokedSkill?(record: {
+    readonly skillName: string;
+    readonly skillPath: string;
+    readonly content: string;
+    readonly invokedAt: number;
+    readonly agentId?: string;
+  }): void;
+  getInvokedSkillsForAgent?(agentId?: string): ReadonlyMap<
+    string,
+    {
+      readonly skillName: string;
+      readonly skillPath: string;
+      readonly content: string;
+      readonly invokedAt: number;
+      readonly agentId?: string;
+    }
+  >;
+  clearInvokedSkillsForAgent?(agentId?: string): void;
+  clearSkillCaches?(): void;
+  discoverSkillDirsForPaths?(paths: readonly string[]): Promise<readonly string[]>;
 }
 export interface SkillsWatcher {
   start(): void;

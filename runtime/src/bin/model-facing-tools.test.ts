@@ -75,6 +75,32 @@ function fakeSession(): Session {
             },
           ],
         }),
+        resolveSkill: async (name: string) =>
+          name === "demo-skill"
+            ? {
+                name: "demo-skill",
+                description: "Demo skill",
+                path: join(tmpdir(), "demo-skill", "SKILL.md"),
+                root: join(tmpdir(), "demo-skill"),
+                scope: "user",
+                allowedTools: [],
+              }
+            : null,
+        renderSkill: async ({ name, args }: { name: string; args?: string }) =>
+          name === "demo-skill"
+            ? {
+                skill: {
+                  name: "demo-skill",
+                  description: "Demo skill",
+                  path: join(tmpdir(), "demo-skill", "SKILL.md"),
+                  root: join(tmpdir(), "demo-skill"),
+                  scope: "user",
+                  allowedTools: [],
+                },
+                content: `Demo content${args ? ` ${args}` : ""}`,
+              }
+            : null,
+        recordInvokedSkill: () => {},
       },
     },
     emit: () => {},
@@ -207,6 +233,58 @@ describe("model-facing tools", () => {
       uri: "resource://one",
     });
     expect(JSON.parse(read.content).resource.text).toBe("resource body");
+  });
+
+  it("loads skills through the Skill tool and records invocations", async () => {
+    const recordInvokedSkill = vi.fn();
+    const session = fakeSession();
+    (session.services.skillsManager as {
+      recordInvokedSkill?: typeof recordInvokedSkill;
+    }).recordInvokedSkill = recordInvokedSkill;
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const skill = tools.find((tool) => tool.name === "Skill")!;
+
+    const result = await skill.execute({
+      skill: "demo-skill",
+      args: "focus",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("<command-name>demo-skill</command-name>");
+    expect(result.content).toContain("Demo content focus");
+    expect(recordInvokedSkill).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skillName: "demo-skill",
+      }),
+    );
+  });
+
+  it("rejects model-disabled skills", async () => {
+    const session = fakeSession();
+    (session.services.skillsManager as {
+      renderSkill?: (opts: { name: string }) => Promise<unknown>;
+    }).renderSkill = async () => ({
+      skill: {
+        name: "debug",
+        path: "/skills/debug/SKILL.md",
+        root: "/skills/debug",
+        scope: "bundled",
+        disableModelInvocation: true,
+      },
+      content: "debug",
+    });
+    const skill = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "Skill")!;
+
+    const result = await skill.execute({ skill: "debug" });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain("not model-invocable");
   });
 
   it("rejects legacy fields on strict Codex v2 agent tools", async () => {

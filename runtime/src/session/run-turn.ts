@@ -905,6 +905,8 @@ async function tryRunSamplingRequest(
     ...(typeof agencHome === "string" && agencHome.length > 0
       ? { agencHome }
       : {}),
+    skillsManager: session.services.skillsManager,
+    contextWindowTokens: ctx.modelInfo.contextWindow,
   });
   if (attachments.length > 0) {
     const attachmentMessages = attachmentsToMessages(attachments);

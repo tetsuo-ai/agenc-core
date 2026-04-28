@@ -6,7 +6,7 @@
  * that have an AgenC analog. Variants tied to features AgenC doesn't ship
  * (`ultrathink_effort`, `bagel_console_errors`, `buddy_intro`,
  * `lsp_diagnostics`, `ide_selection`,
- * `structured_output`, `skill_*`) are intentionally absent — when AgenC
+ * `structured_output`) are intentionally absent — when AgenC
  * adds the underlying feature, the variant lands here alongside its
  * producer. Provider-neutral usage/budget notices are AgenC runtime
  * surfaces and intentionally do not mirror any provider account upsell.
@@ -255,6 +255,15 @@ export interface AgentMentionAttachment {
 }
 
 /**
+ * Available skills listing for the model-facing Skill tool.
+ * Source: OpenClaude `tools/SkillTool/prompt.ts` listing behavior.
+ */
+export interface SkillListingAttachment {
+  readonly kind: "skill_listing";
+  readonly content: string;
+}
+
+/**
  * Discriminated union of every attachment kind currently shipped by AgenC.
  *
  * To add a new kind: declare its interface above, append to this union,
@@ -282,7 +291,8 @@ export type Attachment =
   | McpInstructionsDeltaAttachment
   | EditedTextFileAttachment
   | EditedImageFileAttachment
-  | AgentMentionAttachment;
+  | AgentMentionAttachment
+  | SkillListingAttachment;
 
 /** All possible `Attachment.kind` values. */
 export type AttachmentKind = Attachment["kind"];

@@ -56,6 +56,8 @@ export interface AttachmentTrackingState {
   lastAgentListingSet?: ReadonlyMap<string, string>;
   /** Hash of the MCP server instructions last announced. */
   lastMcpInstructionsHash?: string;
+  /** Hash of the skill listing last announced to the model. */
+  lastSkillListingHash?: string;
   /**
    * Map of MCP server name → instruction block last announced. Same
    * rationale as `lastDeferredToolsSet`. MCP instructions are immutable

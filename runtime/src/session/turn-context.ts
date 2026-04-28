@@ -209,10 +209,29 @@ export interface SkillLoadOutcome {
   readonly invokedSkills: ReadonlyArray<string>;
   readonly availableSkills?: ReadonlyArray<{
     readonly name: string;
+    readonly displayName?: string;
     readonly description?: string;
     readonly path: string;
     readonly root: string;
-    readonly scope: "user" | "project" | "plugin";
+    readonly scope: string;
+    readonly source?: string;
+    readonly loadedFrom?: string;
+    readonly aliases?: readonly string[];
+    readonly allowedTools?: readonly string[];
+    readonly argumentHint?: string;
+    readonly argNames?: readonly string[];
+    readonly whenToUse?: string;
+    readonly version?: string;
+    readonly model?: string;
+    readonly disableModelInvocation?: boolean;
+    readonly userInvocable?: boolean;
+    readonly hooks?: unknown;
+    readonly context?: "inline" | "fork";
+    readonly agent?: string;
+    readonly effort?: string;
+    readonly shell?: "bash" | "powershell";
+    readonly paths?: readonly string[];
+    readonly contentLength?: number;
   }>;
 }
 export class TurnSkillsContext {

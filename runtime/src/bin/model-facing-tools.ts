@@ -41,6 +41,13 @@ import {
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
 import { ensureAgentControl } from "./delegate-tool.js";
+import { getRuleByContentsForTool } from "../permissions/rules.js";
+import type {
+  PermissionRuleValue,
+  PermissionUpdate,
+  ToolPermissionContext,
+} from "../permissions/types.js";
+import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 
 export interface ModelFacingToolOptions {
   readonly workspaceRoot: string;
@@ -1346,7 +1353,7 @@ function createSkillTool(opts: ModelFacingToolOptions): Tool {
   return {
     name: "Skill",
     description:
-      "Load a local AgenC skill by name and return its instructions for this turn.",
+      "Execute a skill within the main conversation. When a skill matches the user's request, call this tool before responding. Pass the skill name and optional arguments; available skills are listed in system reminders.",
     metadata: toolMetadata("skill", {
       keywords: ["skill", "instructions", "capability"],
     }),
@@ -1356,32 +1363,198 @@ function createSkillTool(opts: ModelFacingToolOptions): Tool {
       properties: {
         skill: { type: "string" },
         name: { type: "string" },
+        args: { type: "string" },
       },
       additionalProperties: false,
     },
+    checkPermissions: async (input, context) =>
+      checkSkillPermissions(input, context),
     execute: async (args) => {
-      const skillName = stringValue(args.skill) ?? stringValue(args.name);
+      const skillName = normalizeSkillName(
+        stringValue(args.skill) ?? stringValue(args.name) ?? "",
+      );
       if (!skillName) return json({ error: "skill is required" }, true);
       const sessionOrError = getSessionOrError(opts);
       if (!("conversationId" in sessionOrError)) return sessionOrError;
-      const outcome = await sessionOrError.services.skillsManager.skillsForConfig({}, null);
-      const skill = outcome.availableSkills?.find((entry) => entry.name === skillName);
-      if (!skill) {
+      const rendered =
+        (await sessionOrError.services.skillsManager.renderSkill?.({
+          name: skillName,
+          args: stringValue(args.args),
+          sessionId: sessionOrError.conversationId,
+        })) ?? null;
+      if (!rendered) {
+        const outcome = await sessionOrError.services.skillsManager.skillsForConfig(
+          {},
+          null,
+        );
         return json({
           error: `skill not found: ${skillName}`,
           available: outcome.availableSkills?.map((entry) => entry.name) ?? [],
         }, true);
       }
-      const content = await readFile(skill.path, "utf8");
-      return json({
-        skill: skill.name,
-        description: skill.description,
-        path: skill.path,
-        scope: skill.scope,
-        content,
+
+      if (rendered.skill.disableModelInvocation === true) {
+        return json({
+          error: `skill is not model-invocable: ${rendered.skill.name}`,
+        }, true);
+      }
+
+      const content = formatLoadedSkillForModel(
+        rendered.skill.name,
+        rendered.content,
+      );
+      sessionOrError.services.skillsManager.recordInvokedSkill?.({
+        skillName: rendered.skill.name,
+        skillPath: rendered.skill.path,
+        content: rendered.content,
+        invokedAt: Date.now(),
       });
+      return { content };
     },
   };
+}
+
+function normalizeSkillName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed.startsWith("/") ? trimmed.slice(1) : trimmed;
+}
+
+function formatLoadedSkillForModel(skillName: string, content: string): string {
+  return `<command-name>${skillName}</command-name>\n${content}`;
+}
+
+async function checkSkillPermissions(
+  input: unknown,
+  context: ToolEvaluatorContext,
+) {
+  const skillName = normalizeSkillName(
+    stringValue((input as { skill?: unknown })?.skill) ??
+      stringValue((input as { name?: unknown })?.name) ??
+      "",
+  );
+  if (skillName.length === 0) {
+    return {
+      behavior: "deny" as const,
+      message: "Skill name is required.",
+      decisionReason: {
+        type: "other" as const,
+        reason: "missing skill name",
+      },
+    };
+  }
+
+  const permissionContext = context.getAppState().toolPermissionContext;
+  const denyRule = getMatchingSkillContentRule(
+    permissionContext,
+    "deny",
+    skillName,
+  );
+  if (denyRule !== null) {
+    return {
+      behavior: "deny" as const,
+      message: `Permission to use Skill(${skillName}) has been denied.`,
+      decisionReason: { type: "rule" as const, rule: denyRule },
+    };
+  }
+
+  const allowRule = getMatchingSkillContentRule(
+    permissionContext,
+    "allow",
+    skillName,
+  );
+  if (allowRule !== null) {
+    return {
+      behavior: "allow" as const,
+      decisionReason: { type: "rule" as const, rule: allowRule },
+    };
+  }
+
+  const skill =
+    (await context.session.services.skillsManager.resolveSkill?.(skillName)) ??
+    null;
+  if (skill === null) {
+    return {
+      behavior: "deny" as const,
+      message: `Unknown skill: ${skillName}`,
+      decisionReason: {
+        type: "other" as const,
+        reason: "unknown skill",
+      },
+    };
+  }
+
+  if (isSkillAutoAllowable(skill)) {
+    return { behavior: "allow" as const };
+  }
+
+  return {
+    behavior: "ask" as const,
+    message: `Allow AgenC to load Skill(${skill.name})?`,
+    suggestions: skillPermissionSuggestions(skill.name),
+    decisionReason: {
+      type: "other" as const,
+      reason: "skill requires approval",
+    },
+  };
+}
+
+function getMatchingSkillContentRule(
+  permissionContext: ToolPermissionContext,
+  behavior: "allow" | "deny",
+  skillName: string,
+) {
+  const rules = getRuleByContentsForTool(permissionContext, "Skill", behavior);
+  for (const [content, rule] of rules.entries()) {
+    if (content === skillName) return rule;
+    if (content.endsWith(":*")) {
+      const prefix = content.slice(0, -1);
+      if (skillName.startsWith(prefix)) return rule;
+    }
+  }
+  return null;
+}
+
+function isSkillAutoAllowable(skill: {
+  readonly allowedTools?: readonly string[];
+  readonly model?: string;
+  readonly hooks?: unknown;
+  readonly context?: string;
+  readonly agent?: string;
+  readonly effort?: string;
+  readonly shell?: string;
+  readonly disableModelInvocation?: boolean;
+}): boolean {
+  return (
+    (skill.allowedTools?.length ?? 0) === 0 &&
+    skill.model === undefined &&
+    skill.hooks === undefined &&
+    skill.context === undefined &&
+    skill.agent === undefined &&
+    skill.effort === undefined &&
+    skill.shell === undefined &&
+    skill.disableModelInvocation !== true
+  );
+}
+
+function skillPermissionSuggestions(skillName: string): readonly PermissionUpdate[] {
+  const rules: PermissionRuleValue[] = [
+    { toolName: "Skill", ruleContent: skillName },
+  ];
+  const colonIndex = skillName.indexOf(":");
+  if (colonIndex > 0) {
+    rules.push({
+      toolName: "Skill",
+      ruleContent: `${skillName.slice(0, colonIndex)}:*`,
+    });
+  }
+  return [
+    {
+      type: "addRules",
+      destination: "session",
+      rules,
+      behavior: "allow",
+    },
+  ];
 }
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
