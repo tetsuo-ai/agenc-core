@@ -98,6 +98,16 @@ export AGENC_REWARD_LAMPORTS=10000000
 export AGENC_MAX_WAIT_SECONDS=300
 ```
 
+The reviewed-public artifact lane can also be run directly:
+
+```bash
+npm run smoke:marketplace:devnet -- --flow reviewed-public-artifact
+```
+
+That flow creates a creator-review task, claims it, completes it with
+`--artifact-file`, accepts it from the creator side, and asserts that task
+detail reconstructs the buyer-facing artifact digest from on-chain `resultData`.
+
 ## Supporting Drills
 
 The mainnet-v1 runner is the top-level gate. These scripts remain useful for

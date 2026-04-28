@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +27,9 @@ import {
   resetMarketplaceCliProgramContextOverrides,
   runMarketDisputeDetailCommand,
   runMarketDisputeResolveCommand,
+  runMarketTaskAcceptCommand,
   runMarketTaskClaimCommand,
+  runMarketTaskCompleteCommand,
   runMarketTaskCreateCommand,
   runMarketTaskDetailCommand,
   runMarketTaskDisputeCommand,
@@ -86,10 +89,30 @@ interface SmokeArtifact {
   arbiterVotes: Array<{ votePda: string; arbiterAgentPda: string }>;
 }
 
+interface ReviewedPublicArtifactSmokeArtifact {
+  version: 1;
+  kind: "marketplace-reviewed-public-artifact-devnet-smoke";
+  createdAt: string;
+  rpcUrl: string;
+  programId: string;
+  runId: string;
+  description: string;
+  rewardLamports: string;
+  creatorAgentPda: string;
+  workerAgentPda: string;
+  workerClaimPda: string;
+  taskPda: string;
+  artifactFile: string;
+  artifactSha256: string;
+  deliveryArtifact: Record<string, unknown>;
+}
+
 type MarketRunner = (
   context: CliRuntimeContext,
   options: Record<string, unknown>,
 ) => Promise<0 | 1 | 2>;
+
+type InitialFlow = "dispute" | "reviewed-public-artifact";
 
 let activeSignerKey: string | null = null;
 
@@ -121,6 +144,7 @@ Environment:
 Flags:
   --resume <path>               Resume a previously-created artifact and resolve.
   --artifact <path>             Custom output path for the resume artifact.
+  --flow <name>                 Initial flow: dispute | reviewed-public-artifact.
   --help                        Show this message.
 `);
 }
@@ -149,6 +173,14 @@ function getFlagValue(flag: string): string | null {
   }
 
   return value;
+}
+
+function parseInitialFlow(): InitialFlow {
+  const raw = getFlagValue("--flow") ?? "dispute";
+  if (raw === "dispute" || raw === "reviewed-public-artifact") {
+    return raw;
+  }
+  throw new Error(`Unsupported --flow ${raw}`);
 }
 
 function parseOptionalProgramId(): PublicKey | undefined {
@@ -666,6 +698,22 @@ async function writeArtifact(
   return filePath;
 }
 
+async function writeReviewedPublicArtifact(
+  artifact: ReviewedPublicArtifactSmokeArtifact,
+  explicitPath?: string | null,
+): Promise<string> {
+  const filePath =
+    explicitPath ??
+    path.join(
+      ARTIFACT_DIR,
+      `marketplace-reviewed-public-artifact-devnet-smoke-${Date.now()}.json`,
+    );
+
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(artifact, null, 2)}\n`, "utf8");
+  return filePath;
+}
+
 async function readArtifact(filePath: string): Promise<SmokeArtifact> {
   const parsed = JSON.parse(await readFile(filePath, "utf8")) as unknown;
   const artifact = asRecord(parsed, "artifact");
@@ -681,6 +729,173 @@ async function readArtifact(filePath: string): Promise<SmokeArtifact> {
   }
 
   return artifact as unknown as SmokeArtifact;
+}
+
+async function runReviewedPublicArtifactFlow(params: {
+  baseOptions: BaseCliOptions;
+  rpcUrl: string;
+  programId: string;
+  rewardLamports: bigint;
+  runId: string;
+  creator: AgentActor;
+  worker: AgentActor;
+  artifactPath?: string | null;
+}): Promise<void> {
+  const {
+    baseOptions,
+    rpcUrl,
+    programId,
+    rewardLamports,
+    runId,
+    creator,
+    worker,
+    artifactPath,
+  } = params;
+  const description = `reviewed artifact smoke ${runId}`;
+  const artifactRoot = path.join(ARTIFACT_DIR, `reviewed-public-${runId}`);
+  const artifactFile = path.join(artifactRoot, "delivery.md");
+  const artifactStoreDir = path.join(artifactRoot, "artifact-store");
+  const artifactBody = [
+    "# Reviewed public artifact smoke",
+    "",
+    `Run: ${runId}`,
+    `Creator agent: ${creator.agentPda.toBase58()}`,
+    `Worker agent: ${worker.agentPda.toBase58()}`,
+    "",
+    "This markdown file is the buyer-facing artifact committed through the protocol result rail.",
+    "",
+  ].join("\n");
+  await mkdir(artifactRoot, { recursive: true });
+  await writeFile(artifactFile, artifactBody, "utf8");
+  const artifactSha256 = createHash("sha256")
+    .update(artifactBody)
+    .digest("hex");
+
+  const createOutput = await runMarketCommand(
+    baseOptions,
+    runMarketTaskCreateCommand as MarketRunner,
+    {
+      description,
+      reward: rewardLamports.toString(),
+      requiredCapabilities: AgentCapabilities.COMPUTE.toString(),
+      creatorAgentPda: creator.agentPda.toBase58(),
+      validationMode: "creator-review",
+      reviewWindowSecs: 3_600,
+      fullDescription:
+        "Live devnet smoke for creator-review artifact settlement without storefront.",
+      acceptanceCriteria: [
+        "Worker submits a real artifact file through the CLI/runtime completion rail.",
+        "Creator accepts the reviewed result.",
+        "Task detail reconstructs the artifact digest from on-chain resultData.",
+      ],
+      deliverables: ["Markdown delivery artifact"],
+      constraints: ["No Private ZK and no storefront dependencies."],
+    },
+    creator.agentPda.toBase58(),
+  );
+  const createResult = asRecord(createOutput.result, "reviewedCreate.result");
+  const taskPda = getStringField(
+    createResult,
+    "taskPda",
+    "reviewedCreate.result",
+  );
+  console.log(`[reviewed] created ${taskPda}`);
+
+  const claimOutput = await runMarketCommand(
+    baseOptions,
+    runMarketTaskClaimCommand as MarketRunner,
+    {
+      taskPda,
+      workerAgentPda: worker.agentPda.toBase58(),
+    },
+    worker.agentPda.toBase58(),
+  );
+  const claimResult = asRecord(claimOutput.result, "reviewedClaim.result");
+  const workerClaimPda = getStringField(
+    claimResult,
+    "claimPda",
+    "reviewedClaim.result",
+  );
+  console.log(`[reviewed] claimed ${workerClaimPda}`);
+
+  await runMarketCommand(
+    baseOptions,
+    runMarketTaskCompleteCommand as MarketRunner,
+    {
+      taskPda,
+      artifactFile,
+      artifactStoreDir,
+      artifactMediaType: "text/markdown",
+      workerAgentPda: worker.agentPda.toBase58(),
+    },
+    worker.agentPda.toBase58(),
+  );
+  console.log(`[reviewed] submitted artifact ${artifactFile}`);
+
+  await runMarketCommand(
+    baseOptions,
+    runMarketTaskAcceptCommand as MarketRunner,
+    {
+      taskPda,
+      workerAgentPda: worker.agentPda.toBase58(),
+    },
+    creator.agentPda.toBase58(),
+  );
+  console.log(`[reviewed] accepted ${taskPda}`);
+
+  const detailOutput = await runMarketCommand(
+    baseOptions,
+    runMarketTaskDetailCommand as MarketRunner,
+    {
+      taskPda,
+    },
+  );
+  const task = asRecord(detailOutput.task, "reviewedDetail.task");
+  const status = getStringField(task, "status", "reviewedDetail.task");
+  if (status !== "completed") {
+    throw new Error(`Reviewed artifact task ${taskPda} ended with status=${status}`);
+  }
+
+  const deliveryArtifact = asRecord(
+    task.deliveryArtifact,
+    "reviewedDetail.task.deliveryArtifact",
+  );
+  const observedSha256 = getStringField(
+    deliveryArtifact,
+    "sha256",
+    "reviewedDetail.task.deliveryArtifact",
+  );
+  if (observedSha256 !== artifactSha256) {
+    throw new Error(
+      `Artifact digest mismatch: expected ${artifactSha256}, got ${observedSha256}`,
+    );
+  }
+
+  const savedPath = await writeReviewedPublicArtifact(
+    {
+      version: 1,
+      kind: "marketplace-reviewed-public-artifact-devnet-smoke",
+      createdAt: new Date().toISOString(),
+      rpcUrl,
+      programId,
+      runId,
+      description,
+      rewardLamports: rewardLamports.toString(),
+      creatorAgentPda: creator.agentPda.toBase58(),
+      workerAgentPda: worker.agentPda.toBase58(),
+      workerClaimPda,
+      taskPda,
+      artifactFile,
+      artifactSha256,
+      deliveryArtifact,
+    },
+    artifactPath,
+  );
+
+  console.log(
+    `[ok] reviewed-public artifact lifecycle complete for ${taskPda}: artifact=${artifactSha256}`,
+  );
+  console.log(`[artifact] ${savedPath}`);
 }
 
 async function initial(): Promise<void> {
@@ -879,6 +1094,26 @@ async function initial(): Promise<void> {
     readOnlyProgram.programId.toBase58(),
   );
   const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const flow = parseInitialFlow();
+
+  if (flow === "reviewed-public-artifact") {
+    try {
+      await runReviewedPublicArtifactFlow({
+        baseOptions,
+        rpcUrl,
+        programId: readOnlyProgram.programId.toBase58(),
+        rewardLamports,
+        runId,
+        creator,
+        worker,
+        artifactPath,
+      });
+      return;
+    } finally {
+      resetMarketplaceCliProgramContextOverrides();
+    }
+  }
+
   const description = `devnet smoke ${runId}`;
 
   try {

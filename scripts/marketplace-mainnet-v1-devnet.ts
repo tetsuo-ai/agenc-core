@@ -68,13 +68,13 @@ function usage(): void {
 Modes:
   preflight          RPC reachability and mutation signer-policy hardening.
   public             Public protocol lifecycle using the plain devnet smoke.
-  reviewed-public    Creator-review lifecycle gate. Currently required and pending.
-  artifact           Buyer-facing artifact rail gate. Runs local artifact tests, live lane pending.
+  reviewed-public    Creator-review lifecycle gate using the live artifact smoke.
+  artifact           Buyer-facing artifact rail gate, local tests plus live devnet smoke.
   dispute            Dispute lifecycle using the plain devnet smoke.
   explorer           Explorer/indexing visibility gate. Currently required and pending.
   safety             Wallet/signer safety gate using hardening matrix.
   soak               Repeated selected devnet smokes for stability evidence.
-  operator           Operator-control evidence gate. Currently required and pending.
+  operator           Operator-control evidence gate. Currently requires host evidence.
   all                Runs every mainnet-v1 lane.
 
 Flags:
@@ -217,19 +217,29 @@ async function runArtifact(): Promise<LaneResult[]> {
 
   return [
     localArtifactTests,
-    pendingLane(
+    await runChild(
       "artifact-result-rail-live-devnet",
       true,
-      "Missing dedicated live devnet smoke that creates a task, completes through CLI/runtime with --artifact-file or --artifact-uri, re-reads the task, and verifies the artifact digest/reference survives on-chain resultData.",
+      "tsx",
+      [
+        "scripts/marketplace-devnet-smoke.ts",
+        "--flow",
+        "reviewed-public-artifact",
+      ],
     ),
   ];
 }
 
 async function runReviewedPublic(): Promise<LaneResult> {
-  return pendingLane(
+  return runChild(
     "reviewed-public-lifecycle",
     true,
-    "Missing dedicated live devnet smoke for configure creator-review, worker submit result, creator accept/reject, timeout behavior, and final settlement. Existing public/TUI smokes do not prove this lane.",
+    "tsx",
+    [
+      "scripts/marketplace-devnet-smoke.ts",
+      "--flow",
+      "reviewed-public-artifact",
+    ],
   );
 }
 
