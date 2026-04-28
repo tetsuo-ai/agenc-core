@@ -905,7 +905,7 @@ describe("MessageList", () => {
     unmount();
   });
 
-  test("renders shell write policy failures as compact blocked cells", async () => {
+  test("hides shell write policy failures in normal transcript rendering", async () => {
     const result = JSON.stringify({
       error:
         "shell_workspace_file_write_disallowed: Workflow implementation turns must use structured file tools for project file authoring. Use `Edit` or `Write` for source edits instead of shell redirection. Blocked target(s): /repo/CMakeLists.txt",
@@ -921,6 +921,11 @@ describe("MessageList", () => {
               cmd: "cat > CMakeLists.txt << 'EOF'\nproject(x)\nEOF",
             },
             toolResultContent: result,
+            toolResultMetadata: {
+              recoverable: true,
+              hiddenFromTranscript: true,
+              kind: "shell_workspace_write_policy",
+            },
             isComplete: true,
             isError: true,
           }),
@@ -928,15 +933,62 @@ describe("MessageList", () => {
       />,
     );
     const frame = latestFrameText(stdout);
-    expect(frame).toContain("● Blocked(shell write)");
-    expect(frame).toContain("Blocked target: /repo/CMakeLists.txt");
-    // Match the recommendation in two halves: the rendered text wraps
-    // across lines at the terminal-width boundary, so we can't assert
-    // the full sentence as a single substring.
-    expect(frame).toContain("Use Edit (or Write for new files) for");
-    expect(frame).toContain("source edits");
+    expect(frame).not.toContain("● Blocked(shell write)");
+    expect(frame).not.toContain("Shell write blocked");
     expect(frame).not.toContain("Workflow implementation turns");
     expect(frame).not.toContain("cat > CMakeLists.txt");
+    unmount();
+  });
+
+  test("renders recoverable failures compactly in verbose transcript mode", async () => {
+    const { unmount, stdout } = await mount(
+      <MessageList
+        verbose
+        messages={[
+          mkMsg({
+            id: "exec-block-debug",
+            kind: "tool_call",
+            toolName: "exec_command",
+            toolArgs: {
+              cmd: "cat > CMakeLists.txt << 'EOF'\nproject(x)\nEOF",
+            },
+            toolResultContent: JSON.stringify({
+              error:
+                "shell_workspace_file_write_disallowed: Workflow implementation turns must use structured file tools for project file authoring. Blocked target(s): /repo/CMakeLists.txt",
+            }),
+            toolResultMetadata: {
+              recoverable: true,
+              hiddenFromTranscript: true,
+              kind: "shell_workspace_write_policy",
+            },
+            isComplete: true,
+            isError: true,
+          }),
+          mkMsg({
+            id: "bad-args-debug",
+            kind: "tool_call",
+            toolName: "exec_command",
+            toolArgs: { cd: "/tmp" },
+            toolResultContent:
+              "<tool_use_error>InputValidationError: required parameter `cmd` was not provided</tool_use_error>",
+            toolResultMetadata: {
+              recoverable: true,
+              hiddenFromTranscript: true,
+              kind: "input_validation",
+            },
+            isComplete: true,
+            isError: true,
+          }),
+        ]}
+      />,
+    );
+    const frame = latestFrameText(stdout);
+    expect(frame).toContain("Shell write blocked");
+    expect(frame).toContain("Invalid tool parameters");
+    expect(frame).not.toContain("cat > CMakeLists.txt");
+    expect(frame).not.toContain("Workflow implementation turns");
+    expect(frame).not.toContain("InputValidationError");
+    expect(frame).not.toContain('"cd"');
     unmount();
   });
 

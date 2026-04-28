@@ -26,6 +26,7 @@ import { createContentReplacementState } from "../session/_deps/tool-result-stor
 import {
   getPrepareContextTerminal,
   prepareContext,
+  summarizeOlderHiddenRecoverableToolFailures,
 } from "./prepare-context.js";
 
 function repeat(n: number, ch = "x"): string {
@@ -140,6 +141,66 @@ function mkState(messages: LLMMessage[]): TurnState {
 }
 
 describe("prepareContext Stage 2 wiring", () => {
+  test("keeps immediate recoverable tool result pairs for the next provider call", () => {
+    const messages = [
+      mkUserMsg("run pwd"),
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "bad-now", name: "exec_command", arguments: "{}" }],
+      } as LLMMessage,
+      {
+        role: "tool",
+        toolCallId: "bad-now",
+        toolName: "exec_command",
+        content:
+          "<tool_use_error>InputValidationError: required parameter `cmd` was not provided</tool_use_error>",
+        runtimeOnly: {
+          recoverableToolFailure: {
+            hiddenFromTranscript: true,
+            kind: "input_validation",
+          },
+        },
+      } as LLMMessage,
+    ];
+
+    expect(summarizeOlderHiddenRecoverableToolFailures(messages)).toEqual(
+      messages,
+    );
+  });
+
+  test("summarizes older recoverable hidden tool failures before long-context requests", () => {
+    const messages: LLMMessage[] = [
+      mkUserMsg("older"),
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "bad-old", name: "exec_command", arguments: "{}" }],
+      } as LLMMessage,
+      {
+        role: "tool",
+        toolCallId: "bad-old",
+        toolName: "exec_command",
+        content:
+          "<tool_use_error>InputValidationError: raw schema failure payload</tool_use_error>",
+        runtimeOnly: {
+          recoverableToolFailure: {
+            hiddenFromTranscript: true,
+            kind: "input_validation",
+          },
+        },
+      },
+      mkUserMsg("continue"),
+    ];
+
+    const summarized = summarizeOlderHiddenRecoverableToolFailures(messages);
+
+    expect(summarized[2]?.content).toBe("Invalid tool parameters");
+    expect(String(summarized[2]?.content)).not.toContain(
+      "InputValidationError",
+    );
+  });
+
   test("is a no-op when content replacement state is not provisioned", async () => {
     const events: Event[] = [];
     const session = mkSession(events);

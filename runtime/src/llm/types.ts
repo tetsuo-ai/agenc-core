@@ -57,6 +57,12 @@ export interface LLMMessage {
      * accumulate indefinitely inflate post-compact history.
      */
     readonly anchorPreserve?: boolean;
+    readonly recoverableToolFailure?: {
+      readonly hiddenFromTranscript: true;
+      readonly kind:
+        | "input_validation"
+        | "shell_workspace_write_policy";
+    };
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];
@@ -113,6 +119,8 @@ const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
   "system.stat": "path",
   "system.mkdir": "path",
   "system.delete": "path",
+  Glob: "pattern",
+  Grep: "pattern",
   "system.glob": "pattern",
   exec: "code",
 };

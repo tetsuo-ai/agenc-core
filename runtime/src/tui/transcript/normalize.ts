@@ -1,5 +1,9 @@
 import type { TranscriptMessage } from "./MessageList.js";
 import { readStringField, toolRendererTone } from "./tool-renderers.js";
+import {
+  compactRecoverableToolFailureMessage,
+  isHiddenRecoverableToolFailure,
+} from "../../tools/result-metadata.js";
 
 export interface NormalizedTranscriptOptions {
   readonly verbose?: boolean;
@@ -284,11 +288,43 @@ export function normalizeTranscriptMessages(
   messages: readonly TranscriptMessage[],
   options: NormalizedTranscriptOptions = {},
 ): TranscriptMessage[] {
-  if (options.verbose === true) return [...messages];
+  if (options.verbose === true) {
+    return messages.map((message) => {
+      const compact = compactRecoverableToolFailureMessage(
+        message.toolResultMetadata,
+      );
+      if (compact === null) return message;
+      const {
+        execCommand: _execCommand,
+        execStdout: _execStdout,
+        execStderr: _execStderr,
+        execExitCode: _execExitCode,
+        execDurationMs: _execDurationMs,
+        execTimedOut: _execTimedOut,
+        toolArgs: _toolArgs,
+        ...rest
+      } = message;
+      void _execCommand;
+      void _execStdout;
+      void _execStderr;
+      void _execExitCode;
+      void _execDurationMs;
+      void _execTimedOut;
+      void _toolArgs;
+      return {
+        ...rest,
+        content: compact,
+        toolResultContent: compact,
+      };
+    });
+  }
+  const visible = messages.filter(
+    (message) => !isHiddenRecoverableToolFailure(message.toolResultMetadata),
+  );
   return collapseTeammateShutdowns(
     collapseBackgroundShellNotifications(
       collapseHookSummaries(
-        collapseReadSearchGroups(collapseRepeatedEditFailures(messages)),
+        collapseReadSearchGroups(collapseRepeatedEditFailures(visible)),
       ),
     ),
   );

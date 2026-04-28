@@ -47,8 +47,11 @@ import {
   type PostToolUseFailureHook,
   type PermissionDecisionHook,
 } from "../../tools/hooks.js";
-import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
-import type { FunctionCallOutputContentItem } from "../../tools/context.js";
+import type {
+  FunctionCallOutputContentItem,
+  ToolInvocation,
+  ToolPayload,
+} from "../../tools/context.js";
 import type { Tool } from "../../tools/types.js";
 import {
   ApprovalRejectedError,
@@ -59,12 +62,17 @@ import {
   type SandboxMode,
 } from "../../tools/orchestrator.js";
 import { SESSION_AGENC_HOME_ARG } from "../../tools/system/filesystem.js";
+import {
+  routerFromRegistry as realRouterFromRegistry,
+  type ToolRouter as RealToolRouter,
+} from "../../tools/router.js";
 
 interface ToolDispatchResultLike {
   readonly content: string;
   readonly isError?: boolean;
   readonly codeModeResult?: unknown;
   readonly contentItems?: readonly FunctionCallOutputContentItem[];
+  readonly metadata?: Record<string, unknown>;
 }
 
 interface ToolRegistryLike {
@@ -112,13 +120,18 @@ export class ToolCallRuntime {
 
 export interface ToolRouterLike {
   readonly registry: ToolRegistryLike;
+  dispatchModelToolCall?(
+    toolCall: LLMToolCall,
+    opts: Record<string, unknown>,
+  ): Promise<ToolDispatchResultLike>;
 }
 
 export function routerFromRegistry(
   registry: ToolRegistryLike,
   _opts: Record<string, unknown> = {},
 ): ToolRouterLike {
-  return { registry };
+  return realRouterFromRegistry(registry as never, _opts) as unknown as
+    ToolRouterLike;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -236,7 +249,7 @@ export interface StreamingToolExecutorOptions {
   readonly runtime?: ToolCallRuntime;
   readonly onSiblingAbort?: (reason: string) => void;
   readonly liveToolDispatch?: {
-    readonly router: ToolRouterLike;
+    readonly router: ToolRouterLike | RealToolRouter;
     readonly options: LiveDispatchOptions;
   };
   readonly [extra: string]: unknown;
@@ -406,6 +419,10 @@ function emitOn(
 export class StreamingToolExecutor {
   private readonly registry: ToolRegistryLike;
   private readonly abortSignal?: AbortSignal;
+  private readonly liveToolDispatch?: {
+    readonly router: ToolRouterLike | RealToolRouter;
+    readonly options: LiveDispatchOptions;
+  };
   private readonly liveOptions?: LiveDispatchOptions;
   private readonly tools: TrackedTool[] = [];
   private readonly inflight: Set<TrackedTool> = new Set();
@@ -414,6 +431,7 @@ export class StreamingToolExecutor {
   constructor(opts: StreamingToolExecutorOptions) {
     this.registry = opts.registry;
     this.abortSignal = opts.abortSignal;
+    this.liveToolDispatch = opts.liveToolDispatch;
     this.liveOptions = opts.liveToolDispatch?.options;
   }
 
@@ -553,6 +571,17 @@ export class StreamingToolExecutor {
           content: tool.drainErrorMessage,
           isError: true,
         };
+        return tool;
+      }
+
+      if (this.liveToolDispatch?.router.dispatchModelToolCall) {
+        tool.result = await this.liveToolDispatch.router.dispatchModelToolCall(
+          tool.toolCall,
+          {
+            ...this.liveToolDispatch.options,
+            ...(this.abortSignal !== undefined ? { signal: this.abortSignal } : {}),
+          } as never,
+        );
         return tool;
       }
 
