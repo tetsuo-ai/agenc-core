@@ -19,7 +19,11 @@
  */
 
 import { AsyncLock } from "./_deps/async-lock.js";
-import { formatNicknameWithSuffix, type AgentRole } from "./role.js";
+import {
+  defaultAgentNicknameCandidates,
+  formatNicknameWithSuffix,
+  type AgentRole,
+} from "./role.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -154,9 +158,7 @@ export class AgentRegistry {
   /** Called by SpawnReservation.release() to roll back the counter. */
   rollbackSpawnReservation(_maxThreads: number | undefined): void {
     void _maxThreads;
-    void this.slotLock.with(() => {
-      this.totalCount = Math.max(0, this.totalCount - 1);
-    });
+    this.totalCount = Math.max(0, this.totalCount - 1);
   }
 
   /**
@@ -246,25 +248,32 @@ export class AgentRegistry {
   }
 
   /**
-   * Allocate a nickname for a freshly spawning child. Cycles through
-   * the role's candidate pool in declaration order, then advances
-   * the ordinal suffix on full exhaustion. The registry is the
-   * single source of truth for live nicknames — role.ts's free
-   * functions delegate here so there is no second set to drift
-   * against.
+   * Allocate a nickname for a freshly spawning child. Matches Codex's
+   * candidate-pool semantics: use the role-specific pool when present,
+   * otherwise use the shared `agent_names.txt` list, choose one currently
+   * unused candidate, and advance the ordinal suffix after full exhaustion.
+   * Nicknames stay reserved until the allocator exhausts a suffix cycle.
    */
   allocateNickname(role: AgentRole): string {
-    const candidates = role.config.nicknameCandidates ?? [role.name];
+    const candidates =
+      role.config.nicknameCandidates ?? defaultAgentNicknameCandidates();
+    const available: string[] = [];
     for (const candidate of candidates) {
       const formatted =
         this.nicknameResetCount === 0
           ? candidate
           : formatNicknameWithSuffix(candidate, this.nicknameResetCount);
       if (!this.usedNicknames.has(formatted)) {
-        this.usedNicknames.add(formatted);
-        return formatted;
+        available.push(formatted);
       }
     }
+    if (available.length > 0) {
+      const nickname =
+        available[Math.floor(Math.random() * available.length)] ?? available[0]!;
+      this.usedNicknames.add(nickname);
+      return nickname;
+    }
+    this.usedNicknames.clear();
     this.nicknameResetCount += 1;
     return this.allocateNickname(role);
   }

@@ -53,7 +53,7 @@ const DELEGATE_INPUT_SCHEMA: Record<string, unknown> = {
     },
     role: {
       type: "string",
-      enum: ["default", "explorer", "awaiter", "worker"],
+      enum: ["default", "explorer", "worker"],
       description:
         "Built-in role for the child. Shapes tool allowlist + reasoning.",
     },
@@ -309,7 +309,7 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
   return {
     name: DELEGATE_TOOL_NAME,
     description:
-      "Spawn a subagent to handle a scoped task. Supports roles (default, explorer, awaiter, worker), optional worktree isolation, and sync vs async execution.",
+      "Spawn a subagent to handle a scoped task. Supports roles (default, explorer, worker), optional worktree isolation, and sync vs async execution.",
     inputSchema: DELEGATE_INPUT_SCHEMA,
     metadata: {
       family: "agents",

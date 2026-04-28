@@ -1,10 +1,18 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../session/session.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
+
+const { delegateMock } = vi.hoisted(() => ({
+  delegateMock: vi.fn(),
+}));
+
+vi.mock("../agents/delegate.js", () => ({
+  delegate: delegateMock,
+}));
 
 function fakeMcpManager() {
   return {
@@ -37,6 +45,21 @@ function fakeMcpManager() {
 function fakeSession(): Session {
   return {
     conversationId: "session-test",
+    config: {
+      cwd: process.cwd(),
+    },
+    sessionConfiguration: {
+      cwd: process.cwd(),
+      collaborationMode: {
+        model: "test-model",
+        reasoningEffort: "medium",
+      },
+    },
+    childInboxes: new Map(),
+    mailbox: {
+      hasPending: () => false,
+      send: () => 1,
+    },
     services: {
       mcpManager: fakeMcpManager(),
       skillsManager: {
@@ -56,10 +79,15 @@ function fakeSession(): Session {
     },
     emit: () => {},
     nextInternalSubId: () => "event-1",
+    eventLog: { emit: (event: unknown) => event },
   } as unknown as Session;
 }
 
 describe("model-facing tools", () => {
+  beforeEach(() => {
+    delegateMock.mockReset();
+  });
+
   it("registers the requested product tools and omits raw system HTTP tools", () => {
     const registry = buildBootstrapToolRegistry({
       workspaceRoot: process.cwd(),
@@ -243,6 +271,94 @@ describe("model-facing tools", () => {
     expect(JSON.parse(forkTurns.content).error).toBe(
       "fork_turns must be `none`, `all`, or a positive integer string",
     );
+  });
+
+  it("launches strict spawn_agent through the delegate runner and stores a joinable thread", async () => {
+    const session = fakeSession();
+    let status:
+      | {
+          status: "running";
+          turnId: string;
+          startedAtMs: number;
+        }
+      | {
+          status: "completed";
+          turnId: string;
+          endedAtMs: number;
+          lastMessage: string;
+        } = {
+      status: "running" as const,
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    const join = vi.fn(async () => ({
+      threadId: "thread-1",
+      durationMs: 7,
+      outcome: "completed",
+      finalMessage: "done",
+    }));
+    const live = {
+      agentId: "thread-1",
+      agentPath: "/root/task_1",
+      nickname: "Euclid",
+      role: { name: "default" },
+      status: {
+        get value() {
+          return status;
+        },
+      },
+    };
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live,
+        join,
+      },
+    });
+
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    });
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+    const spawned = await byName.get("spawn_agent")!.execute({
+      message: "inspect",
+      task_name: "task_1",
+      fork_turns: "none",
+    });
+
+    expect(spawned.isError).not.toBe(true);
+    expect(JSON.parse(spawned.content)).toEqual({
+      task_name: "/root/task_1",
+      nickname: "Euclid",
+    });
+    expect(delegateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parent: session,
+        parentPath: "/root",
+        taskPrompt: "inspect",
+        agentName: "task_1",
+        forkMode: { kind: "new" },
+        runInBackground: true,
+      }),
+    );
+
+    status = {
+      status: "completed" as const,
+      turnId: "turn-1",
+      endedAtMs: 2,
+      lastMessage: "done",
+    };
+    const output = await byName.get("TaskOutput")!.execute({
+      target: "thread-1",
+      timeout_ms: 0,
+    });
+    expect(join).toHaveBeenCalledOnce();
+    expect(JSON.parse(output.content).status["thread-1:result"]).toMatchObject({
+      outcome: "completed",
+      finalMessage: "done",
+    });
   });
 
   it("rejects empty v2 agent messages before dispatch", async () => {

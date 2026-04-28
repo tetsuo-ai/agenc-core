@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AgentRegistry } from "./registry.js";
 import {
+  _resetAgentRolesForTesting,
   allocateNickname,
   applyRoleToConfig,
   buildConfigLayerStack,
+  defaultAgentNicknameCandidates,
   formatRoleList,
   getAgentRole,
   getDefaultAgentRole,
@@ -20,45 +22,17 @@ import {
 
 let registry: AgentRegistry;
 
-function restoreBuiltInRoles(): void {
-  registerAgentRole({
-    name: "explorer",
-    config: {
-      description: "Fast codebase exploration.",
-      configFile: "explorer.toml",
-      nicknameCandidates: ["scout", "ranger", "pathfinder", "seeker"],
-    },
-  });
-  registerAgentRole({
-    name: "worker",
-    config: {
-      description:
-        "Execution/production work — implement features, fix tests/bugs, " +
-        "split large refactors.",
-      nicknameCandidates: ["builder", "smith", "forge", "weaver"],
-    },
-  });
-  registerAgentRole({
-    name: "awaiter",
-    config: {
-      description: "Long-running polling subagent.",
-      configFile: "awaiter.toml",
-      background: true,
-      nicknameCandidates: ["sentinel", "watcher", "guardian", "keeper"],
-    },
-  });
-}
-
 beforeEach(() => {
   registry = new AgentRegistry();
-  restoreBuiltInRoles();
+  _resetAgentRolesForTesting();
 });
 
 describe("role registry", () => {
   it("returns built-in default when name is undefined", () => {
     const role = resolveAgentRole(undefined);
     expect(role.name).toBe("default");
-    expect(role.config.nicknameCandidates).toContain("alpha");
+    expect(role.config.nicknameCandidates).toBeUndefined();
+    expect(defaultAgentNicknameCandidates()).toContain("Euclid");
   });
 
   it("falls back to default for unknown role names", () => {
@@ -70,30 +44,39 @@ describe("role registry", () => {
     expect(names).toContain("default");
     expect(names).toContain("explorer");
     expect(names).toContain("worker");
-    expect(names).toContain("awaiter");
+    expect(names).not.toContain("awaiter");
   });
 
-  it("explorer resolves through AgenC-shaped config-file metadata instead of AgenC-only overlays", () => {
+  it("explorer resolves through Codex-shaped config-file metadata", () => {
     const role = getAgentRole("explorer")!;
     expect(role.config.configFile).toBe("explorer.toml");
     expect(role.config.reasoningEffort).toBeUndefined();
     expect(role.config.allowlist).toBeUndefined();
+    expect(role.config.description).toContain(
+      "Explorers are fast and authoritative",
+    );
   });
 
-  it("worker keeps nickname metadata but no built-in config-layer override", () => {
+  it("worker has the Codex description and no built-in config-layer override", () => {
     const role = resolveAgentRole("worker");
     expect(role.name).toBe("worker");
     expect(role.config.configFile).toBeUndefined();
     expect(role.config.reasoningEffort).toBeUndefined();
-    expect(role.config.nicknameCandidates).toEqual([
-      "builder",
-      "smith",
-      "forge",
-      "weaver",
-    ]);
+    expect(role.config.nicknameCandidates).toBeUndefined();
+    expect(role.config.description).toContain(
+      "Use for execution and production work",
+    );
   });
 
-  it("awaiter derives runtime hints from built-in TOML while keeping background orchestration metadata", () => {
+  it("user-registered awaiter roles can still derive runtime hints from built-in TOML", () => {
+    registerAgentRole({
+      name: "awaiter",
+      config: {
+        description: "Custom awaiter",
+        configFile: "awaiter.toml",
+        background: true,
+      },
+    });
     const role = getAgentRole("awaiter")!;
     expect(role.config.background).toBe(true);
     expect(role.config.reasoningEffort).toBe("low");
@@ -118,9 +101,14 @@ describe("nickname allocation", () => {
   });
 
   it("cycles through candidates and appends ordinal suffix on overflow", () => {
-    const role = getDefaultAgentRole();
+    const role = {
+      name: "tiny",
+      config: {
+        nicknameCandidates: ["one", "two"],
+      },
+    };
     const allocated: string[] = [];
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 3; i += 1) {
       allocated.push(allocateNickname(role, registry));
     }
     expect(
@@ -129,33 +117,42 @@ describe("nickname allocation", () => {
   });
 
   it("releases nickname back into the registry pool", () => {
-    const role = getDefaultAgentRole();
+    const role = {
+      name: "tiny",
+      config: {
+        nicknameCandidates: ["one"],
+      },
+    };
     const nickname = allocateNickname(role, registry);
     expect(registry.hasNickname(nickname)).toBe(true);
     releaseNickname(registry, nickname);
     expect(registry.hasNickname(nickname)).toBe(false);
 
-    const freshRegistry = new AgentRegistry();
-    const recycled = allocateNickname(role, freshRegistry);
-    expect(recycled).toBe(role.config.nicknameCandidates![0]);
+    const recycled = allocateNickname(role, registry);
+    expect(recycled).toBe("one");
   });
 
   it("registry is the single source of truth — no double bookkeeping", () => {
-    const role = getDefaultAgentRole();
+    const role = {
+      name: "tiny",
+      config: {
+        nicknameCandidates: ["one"],
+      },
+    };
     const nickname = allocateNickname(role, registry);
     expect(registry.hasNickname(nickname)).toBe(true);
     releaseNickname(registry, nickname);
     expect(registry.hasNickname(nickname)).toBe(false);
-    expect(allocateNickname(role, registry)).toBe(role.config.nicknameCandidates![0]);
+    expect(allocateNickname(role, registry)).toBe("one");
   });
 
-  it("two sibling spawns from the same role get distinct nicknames", () => {
+  it("two sibling spawns from roles without candidate lists use distinct shared nicknames", () => {
     const role = resolveAgentRole("worker");
     const first = allocateNickname(role, registry);
     const second = allocateNickname(role, registry);
     expect(first).not.toBe(second);
-    expect(role.config.nicknameCandidates).toContain(first);
-    expect(role.config.nicknameCandidates).toContain(second);
+    expect(defaultAgentNicknameCandidates()).toContain(first);
+    expect(defaultAgentNicknameCandidates()).toContain(second);
   });
 });
 

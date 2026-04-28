@@ -432,6 +432,7 @@ export interface Config {
   readonly agencSelfExe?: string;
   readonly agencLinuxSandboxExe?: string;
   readonly agentRoles: ReadonlyArray<{ name: string; description: string }>;
+  readonly agent_max_depth?: number;
   /** Stage 2 (tool-result budgeting) thresholds. Falls back to defaults
    *  in `applyToolResultBudgeting` when absent. */
   readonly toolBudget?: ConfigToolBudget;

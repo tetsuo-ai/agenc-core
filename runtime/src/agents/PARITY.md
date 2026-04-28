@@ -9,6 +9,9 @@ This directory owns the TypeScript port of Codex's agent layer:
 - `control.ts` coordinates tree metadata, spawn, message, close, resume, and status.
 - `registry.ts`, `mailbox.ts`, and `status.ts` mirror the Codex control-plane state.
 - `fork-context.ts` builds forked child history from rollout-backed parent state when available.
+- The visible `spawn_agent` model-facing tool launches through `delegate()`, so spawned
+  agents reserve a live handle, fork context, start the child run loop, and expose a
+  joinable `AgentThread`.
 
 Intentional TypeScript/runtime adaptation:
 
