@@ -6,6 +6,7 @@ closed by unit tests, CI gates, or a single devnet smoke.
 Use this together with:
 
 - `runtime/docs/compiled-job-phase1-launch-readiness.md`
+- `runtime/docs/marketplace-mainnet-v1-readiness.md`
 - `runtime/docs/observability-incident-runbook.md`
 - `docs/DEPLOYMENT_CHECKLIST.md`
 
@@ -44,19 +45,19 @@ program and the currently selected RPC provider.
 Baseline command:
 
 ```bash
-npm run soak:marketplace:devnet -- --mode tui --iterations 3 --child-max-wait-seconds 300
+npm run smoke:marketplace:mainnet-v1:devnet -- \
+  --mode soak \
+  --iterations 3 \
+  --child-max-wait-seconds 300
 ```
 
-Full mixed run when plain marketplace dispute deadlines are expected to exceed
-the local wait budget:
+Full launch-scope run:
 
 ```bash
-npm run soak:marketplace:devnet -- \
-  --mode both \
-  --iterations 2 \
-  --child-max-wait-seconds 300 \
-  --max-pending-wait-seconds 0 \
-  --allow-deferred
+npm run smoke:marketplace:mainnet-v1:devnet -- \
+  --mode all \
+  --iterations 3 \
+  --child-max-wait-seconds 300
 ```
 
 Acceptance:
@@ -68,8 +69,8 @@ Acceptance:
 
 Evidence:
 
-- soak artifact JSON written by `scripts/marketplace-devnet-soak.ts`
-- referenced pending-artifact paths for any deferred resumes
+- readiness artifact JSON written by `scripts/marketplace-mainnet-v1-devnet.ts`
+- referenced child smoke artifact paths for any deferred resumes
 
 ## Sandbox Fleet Concurrency Drill
 
