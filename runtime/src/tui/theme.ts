@@ -56,37 +56,46 @@ export type Theme = {
  * Fallback theme. Active when `runtime/src/watch/` is not reachable from
  * the running process (stripped CI artifact, unusual install layout,
  * etc.) and when primitives loading throws.
+ *
+ * AgenC cyberpunk palette: neon-on-void. Magenta-violet-rose family with
+ * crimson reserved for danger semantics. Surfaces are near-true-black with
+ * a faint purple cast so neon accents glow rather than scream.
  */
 const AGENC_BRAND = Object.freeze({
-  accent: "rgb(206,98,50)",
-  secondary: "rgb(188,105,225)",
-  line: "rgb(87,62,126)",
-  lineStrong: "rgb(177,104,255)",
-  surface: "rgb(37,31,55)",
-  surfaceAlt: "rgb(83,57,111)",
+  fuchsia: "rgb(217,70,239)",
+  periwinkle: "rgb(167,139,250)",
+  frost: "rgb(192,132,252)",
+  ink: "rgb(245,243,255)",
+  slateViolet: "rgb(156,163,175)",
+  deepSlate: "rgb(71,85,105)",
+  void: "rgb(5,2,8)",
+  voidLifted: "rgb(15,8,23)",
+  deepViolet: "rgb(76,29,149)",
+  crimson: "rgb(255,0,60)",
+  rose: "rgb(251,113,133)",
 });
 
 const DEFAULT_THEME: Theme = Object.freeze({
   colors: Object.freeze({
-    primary: "ansi256(117)",
-    secondary: AGENC_BRAND.secondary,
-    accent: AGENC_BRAND.accent,
-    error: "ansi256(203)",
-    warning: "ansi256(221)",
-    success: "ansi256(50)",
-    dim: "ansi256(97)",
-    ink: "ansi256(225)",
-    muted: "ansi256(189)",
-    info: "ansi256(111)",
-    line: AGENC_BRAND.line,
-    lineStrong: AGENC_BRAND.lineStrong,
-    surface: AGENC_BRAND.surface,
-    surfaceAlt: AGENC_BRAND.surfaceAlt,
-    modeDefault: "ansi256(117)",
-    modeAcceptEdits: "ansi256(50)",
-    modePlan: "ansi256(177)",
-    modeBypass: "ansi256(203)",
-    modeAuto: "ansi256(221)",
+    primary: AGENC_BRAND.fuchsia,
+    secondary: AGENC_BRAND.periwinkle,
+    accent: AGENC_BRAND.fuchsia,
+    error: AGENC_BRAND.crimson,
+    warning: AGENC_BRAND.rose,
+    success: AGENC_BRAND.frost,
+    dim: AGENC_BRAND.deepSlate,
+    ink: AGENC_BRAND.ink,
+    muted: AGENC_BRAND.slateViolet,
+    info: AGENC_BRAND.periwinkle,
+    line: AGENC_BRAND.deepViolet,
+    lineStrong: AGENC_BRAND.periwinkle,
+    surface: AGENC_BRAND.void,
+    surfaceAlt: AGENC_BRAND.voidLifted,
+    modeDefault: AGENC_BRAND.periwinkle,
+    modeAcceptEdits: AGENC_BRAND.frost,
+    modePlan: AGENC_BRAND.fuchsia,
+    modeBypass: AGENC_BRAND.crimson,
+    modeAuto: AGENC_BRAND.rose,
   }) as Theme["colors"],
   border: Object.freeze({
     soft: "single",
@@ -234,48 +243,78 @@ function buildTheme(primitives: WatchPrimitivesModule | null): Theme {
   return Object.freeze({
     colors: Object.freeze({
       primary: normalizeColor(
-        color["cyan"],
+        color["agencFuchsia"],
         DEFAULT_THEME.colors.primary,
       ),
       secondary: normalizeColor(
-        color["agencPurple"],
+        color["agencPeriwinkle"],
         DEFAULT_THEME.colors.secondary,
       ),
       accent: normalizeColor(
-        color["agencEmber"],
+        color["agencFuchsia"],
         DEFAULT_THEME.colors.accent,
       ),
-      error: normalizeColor(color["red"], DEFAULT_THEME.colors.error),
-      warning: normalizeColor(color["yellow"], DEFAULT_THEME.colors.warning),
-      success: normalizeColor(color["green"], DEFAULT_THEME.colors.success),
-      dim: normalizeColor(color["fog"], DEFAULT_THEME.colors.dim),
-      ink: normalizeColor(color["ink"], DEFAULT_THEME.colors.ink),
-      muted: normalizeColor(color["softInk"], DEFAULT_THEME.colors.muted),
-      info: normalizeColor(color["teal"], DEFAULT_THEME.colors.info),
-      line: normalizeColor(color["border"], DEFAULT_THEME.colors.line),
+      error: normalizeColor(
+        color["agencCrimson"],
+        DEFAULT_THEME.colors.error,
+      ),
+      warning: normalizeColor(
+        color["agencRose"],
+        DEFAULT_THEME.colors.warning,
+      ),
+      success: normalizeColor(
+        color["agencFrost"],
+        DEFAULT_THEME.colors.success,
+      ),
+      dim: normalizeColor(
+        color["agencDeepSlate"],
+        DEFAULT_THEME.colors.dim,
+      ),
+      ink: normalizeColor(color["agencInk"], DEFAULT_THEME.colors.ink),
+      muted: normalizeColor(
+        color["agencSlateViolet"],
+        DEFAULT_THEME.colors.muted,
+      ),
+      info: normalizeColor(
+        color["agencPeriwinkle"],
+        DEFAULT_THEME.colors.info,
+      ),
+      line: normalizeColor(
+        color["agencDeepViolet"],
+        DEFAULT_THEME.colors.line,
+      ),
       lineStrong: normalizeColor(
-        color["borderStrong"],
+        color["agencPeriwinkle"],
         DEFAULT_THEME.colors.lineStrong,
       ),
       surface: normalizeColor(
-        color["agencSurface"],
+        color["agencVoid"],
         DEFAULT_THEME.colors.surface,
       ),
       surfaceAlt: normalizeColor(
-        color["agencSurfaceHi"],
+        color["agencVoidLifted"],
         DEFAULT_THEME.colors.surfaceAlt,
       ),
-      modeDefault: normalizeColor(color["cyan"], DEFAULT_THEME.colors.modeDefault),
+      modeDefault: normalizeColor(
+        color["agencPeriwinkle"],
+        DEFAULT_THEME.colors.modeDefault,
+      ),
       modeAcceptEdits: normalizeColor(
-        color["green"],
+        color["agencFrost"],
         DEFAULT_THEME.colors.modeAcceptEdits,
       ),
       modePlan: normalizeColor(
-        color["magenta"],
+        color["agencFuchsia"],
         DEFAULT_THEME.colors.modePlan,
       ),
-      modeBypass: normalizeColor(color["red"], DEFAULT_THEME.colors.modeBypass),
-      modeAuto: normalizeColor(color["yellow"], DEFAULT_THEME.colors.modeAuto),
+      modeBypass: normalizeColor(
+        color["agencCrimson"],
+        DEFAULT_THEME.colors.modeBypass,
+      ),
+      modeAuto: normalizeColor(
+        color["agencRose"],
+        DEFAULT_THEME.colors.modeAuto,
+      ),
     }) as Theme["colors"],
     border: DEFAULT_THEME.border,
     spacing: DEFAULT_THEME.spacing,

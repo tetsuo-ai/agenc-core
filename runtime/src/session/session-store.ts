@@ -1598,3 +1598,128 @@ function estimateToolResultTokensFromPayload(payload: unknown): number {
   }
   return Math.max(1, Math.ceil(bytes / 4));
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Resume picker — enumerate rollout files for the current project.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Summary of a single resumable session, surfaced by the TUI session
+ * picker (`tui/screens/ResumeConversation.tsx`).
+ *
+ * Fields are intentionally minimal: the picker only needs a stable
+ * identifier (`sessionId`), a sortable timestamp (`lastModified`), and
+ * an optional human-readable summary so a user can pick the right
+ * session at a glance.
+ */
+export interface ResumableSession {
+  readonly sessionId: string;
+  /** Path to the rollout JSONL file backing this session. */
+  readonly rolloutPath: string;
+  /** Path to the per-session index.json snapshot, if present. */
+  readonly indexPath: string;
+  /** Modification time of the rollout file in epoch ms. */
+  readonly lastModified: number;
+  /** File size of the rollout file in bytes. */
+  readonly fileSize: number;
+  /**
+   * `agencVersion` recorded in the index snapshot (when one is
+   * available). Useful for the picker to flag sessions written by an
+   * older runtime build.
+   */
+  readonly agencVersion?: string;
+  /**
+   * A short human-readable summary to display in the picker. Today this
+   * is just the rollout filename; future revisions may surface a
+   * derived title once the index snapshot starts persisting one.
+   */
+  readonly summary: string;
+  /** Schema version recorded in the snapshot, when present. */
+  readonly schemaVersion?: number;
+}
+
+/**
+ * Enumerate rollout files under `projectDir` and return one
+ * {@link ResumableSession} per session directory. Designed for the
+ * resume picker.
+ *
+ * Layout we walk (mirrors the on-disk layout documented at the top of
+ * this file):
+ *
+ *   <projectDir>/sessions/<sessionId>/rollout-<ts>-<id>.jsonl
+ *
+ * For each session directory we pick the most recently modified
+ * rollout file and synthesize a summary from the index snapshot when
+ * available. Sessions that lack any rollout files are silently skipped.
+ *
+ * Errors reading individual session directories or rollout files are
+ * swallowed — a single corrupt session must not break the picker. The
+ * returned list is sorted with the most recently modified session
+ * first.
+ */
+export function listResumableSessions(projectDir: string): ResumableSession[] {
+  const sessionsDir = join(projectDir, "sessions");
+  if (!existsSync(sessionsDir)) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(sessionsDir);
+  } catch {
+    return [];
+  }
+  const result: ResumableSession[] = [];
+  for (const entry of entries) {
+    const sessionDir = join(sessionsDir, entry);
+    let stats;
+    try {
+      stats = statSync(sessionDir);
+    } catch {
+      continue;
+    }
+    if (!stats.isDirectory()) continue;
+
+    let files: string[];
+    try {
+      files = readdirSync(sessionDir).filter(
+        (f) => f.startsWith("rollout-") && f.endsWith(".jsonl"),
+      );
+    } catch {
+      continue;
+    }
+    if (files.length === 0) continue;
+
+    // Pick the most recently modified rollout in the session dir.
+    let pick: { name: string; mtimeMs: number; size: number } | null = null;
+    for (const f of files) {
+      try {
+        const fStat = statSync(join(sessionDir, f));
+        if (pick === null || fStat.mtimeMs > pick.mtimeMs) {
+          pick = { name: f, mtimeMs: fStat.mtimeMs, size: fStat.size };
+        }
+      } catch {
+        // Skip unreadable files; another rollout in the same session
+        // may still be readable.
+      }
+    }
+    if (pick === null) continue;
+
+    const rolloutPath = join(sessionDir, pick.name);
+    const indexPath = join(sessionDir, "index.json");
+    const snapshot = readIndexSnapshot(indexPath);
+    const summary = pick.name;
+    const session: ResumableSession = {
+      sessionId: entry,
+      rolloutPath,
+      indexPath,
+      lastModified: pick.mtimeMs,
+      fileSize: pick.size,
+      summary,
+      ...(snapshot?.agencVersion ? { agencVersion: snapshot.agencVersion } : {}),
+      ...(snapshot?.schemaVersion !== undefined
+        ? { schemaVersion: snapshot.schemaVersion }
+        : {}),
+    };
+    result.push(session);
+  }
+  result.sort((a, b) => b.lastModified - a.lastModified);
+  return result;
+}

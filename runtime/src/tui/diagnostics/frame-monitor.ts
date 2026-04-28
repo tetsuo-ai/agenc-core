@@ -1,5 +1,82 @@
 import type { FrameEvent } from "../ink/frame.js";
 
+/**
+ * Aggregate FPS metrics derived from per-frame durations. Mirrors the
+ * shape exposed by `FpsMetricsContext.useFpsMetrics()` so React surfaces
+ * can read it directly without a translation layer.
+ */
+export interface FpsMetrics {
+  /** Mean frames per second across the monitor's lifetime. */
+  readonly averageFps: number;
+  /** Low-1% FPS (1 / p99 frame time). Captures stutters. */
+  readonly low1PctFps: number;
+}
+
+/**
+ * Always-on FPS tracker. Independent of the env-gated debug logger so
+ * status surfaces can read live metrics regardless of
+ * `AGENC_TUI_FRAME_DEBUG`. Wire this into the ink instance's onFrame
+ * pipeline via `recordFrame(event.durationMs)` (or `record(durationMs)`)
+ * and read with `getMetrics()`.
+ */
+export interface FpsTracker {
+  /** Record a single frame's render time in ms. */
+  readonly record: (durationMs: number) => void;
+  /** Compute the current aggregate metrics. `undefined` until at least one frame has landed. */
+  readonly getMetrics: () => FpsMetrics | undefined;
+  /** Reset all accumulated frame data. Useful around a TUI re-mount. */
+  readonly reset: () => void;
+}
+
+export function createFpsTracker(options: {
+  readonly now?: () => number;
+} = {}): FpsTracker {
+  const now = options.now ?? (() => performance.now());
+  const frameDurations: number[] = [];
+  let firstRenderTime: number | undefined;
+  let lastRenderTime: number | undefined;
+
+  return {
+    record(durationMs: number) {
+      const t = now();
+      if (firstRenderTime === undefined) {
+        firstRenderTime = t;
+      }
+      lastRenderTime = t;
+      frameDurations.push(durationMs);
+    },
+    getMetrics() {
+      if (
+        frameDurations.length === 0 ||
+        firstRenderTime === undefined ||
+        lastRenderTime === undefined
+      ) {
+        return undefined;
+      }
+      const totalTimeMs = lastRenderTime - firstRenderTime;
+      if (totalTimeMs <= 0) return undefined;
+
+      const totalFrames = frameDurations.length;
+      const averageFps = totalFrames / (totalTimeMs / 1000);
+
+      const sorted = frameDurations.slice().sort((a, b) => b - a);
+      const p99Index = Math.max(0, Math.ceil(sorted.length * 0.01) - 1);
+      const p99FrameTimeMs = sorted[p99Index]!;
+      const low1PctFps = p99FrameTimeMs > 0 ? 1000 / p99FrameTimeMs : 0;
+
+      return {
+        averageFps: Math.round(averageFps * 100) / 100,
+        low1PctFps: Math.round(low1PctFps * 100) / 100,
+      };
+    },
+    reset() {
+      frameDurations.length = 0;
+      firstRenderTime = undefined;
+      lastRenderTime = undefined;
+    },
+  };
+}
+
 export interface FrameMonitorEnv {
   readonly AGENC_TUI_FRAME_DEBUG?: string;
   readonly AGENC_TUI_FRAME_BUDGET_MS?: string;
