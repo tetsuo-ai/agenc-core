@@ -1,7 +1,7 @@
 /**
  * Relevant-memory attachment producer.
  *
- * Hand-port of AgenC `getRelevantMemoryAttachments()`
+ * Hand-port of openclaude `getRelevantMemoryAttachments()`
  * (`src/utils/attachments.ts:2197-2243`), bridged onto AgenC's existing
  * `selectRelevantMemoriesForTurn()` ranker
  * (`runtime/src/prompts/memory/attachments.ts:174`).
@@ -73,7 +73,7 @@ function readMemoryAwareKey(
 }
 
 function buildMemoryHeader(path: string, mtimeMs: number): string {
-  // Mirror AgenC `memoryHeader()` (attachments.ts:2328-2333) shape.
+  // Mirror openclaude `memoryHeader()` (attachments.ts:2328-2333) shape.
   // Exact prose is not load-bearing — the renderer in messages.ts uses
   // the header verbatim when present.
   const mtimeIso = new Date(mtimeMs).toISOString();

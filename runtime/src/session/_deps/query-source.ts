@@ -1,7 +1,7 @@
 /**
  * Per-dir QuerySource stub for `runtime/src/session/**`.
  *
- * Mirrors the AgenC `runtime/src/constants/querySource.ts` stub so
+ * Mirrors the openclaude `runtime/src/constants/querySource.ts` stub so
  * the session path stays resolvable after the umbrella `src/constants/`
  * directory is removed. Session only uses this as a type-only reference,
  * so a permissive `any` alias is sufficient.

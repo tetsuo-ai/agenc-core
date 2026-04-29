@@ -8,7 +8,7 @@
  * The class also exposes an AgenC-compatible surface (`threadName`,
  * `messages`, `memory`, `metadata`, `worktreePath`, `worktreeBranch`,
  * `fork()`, `spawn()`, `join()`)
- * so callers that expect the literal AgenC `AgentTool` shape can
+ * so callers that expect the literal openclaude `AgentTool` shape can
  * interoperate with AgenC's subagent runtime without reaching into the
  * underlying `LiveAgent` / `delegate()` surface directly.
  *
@@ -42,7 +42,7 @@ export interface AgentThreadOpts {
 
 /**
  * Arguments accepted by `AgentThread.fork()` / `AgentThread.spawn()`.
- * Mirrors the AgenC `AgentTool` spawn surface: a task prompt, an
+ * Mirrors the openclaude `AgentTool` spawn surface: a task prompt, an
  * optional role, and optional isolation/worktree info. The only
  * difference between `fork` and `spawn` is the default fork mode —
  * see the method docs.

@@ -1,7 +1,7 @@
 /**
  * Attachment-to-LLMMessage conversion.
  *
- * Hand-port of AgenC `createAttachmentMessage()`
+ * Hand-port of openclaude `createAttachmentMessage()`
  * (`src/utils/attachments.ts:3221`) plus the model-facing attachment
  * normalization in `src/utils/messages.ts::normalizeAttachmentForAPI`.
  *

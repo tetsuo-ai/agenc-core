@@ -16,7 +16,7 @@ import {
   type TurnContextItem,
 } from "./turn-context.js";
 
-// Inlined stub: AgenC `Tool` type is gone post-gut.
+// Inlined stub: openclaude `Tool` type is gone post-gut.
 type Tool = any;
 import type { AgentId } from "./_deps/types-ids.js";
 import type { EffortValue } from "./_deps/effort.js";

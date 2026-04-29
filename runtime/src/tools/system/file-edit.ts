@@ -1,7 +1,7 @@
 /**
  * `Edit` — first-class string-replacement editor.
  *
- * Lifted from AgenC `FileEditTool` (src/tools/FileEditTool/*) and
+ * Lifted from openclaude `FileEditTool` (src/tools/FileEditTool/*) and
  * adapted to the AgenC tool contract. Behavior summary:
  *
  *   - Read-before-write enforcement via {@link hasSessionRead}. The
@@ -73,7 +73,7 @@ Usage:
 - Use \`replace_all\` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`;
 
 // V8/Bun string length cap. 1 GiB stat-size guard prevents OOM on
-// gigabyte files. Lifted from AgenC FileEditTool.ts:84.
+// gigabyte files. Lifted from openclaude FileEditTool.ts:84.
 const MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024;
 
 // ── quote normalization (lifted from AgenC utils.ts) ─────────────
@@ -92,7 +92,7 @@ const UNICODE_SPACE_RE = /[  -   　]/gu;
 
 /**
  * Normalize curly quotes, Unicode dashes, and exotic spaces to their
- * ASCII equivalents. Lifted from AgenC `utils.ts` `normalizeQuotes`,
+ * ASCII equivalents. Lifted from openclaude `utils.ts` `normalizeQuotes`,
  * extended with dash/space passes so a model whose `old_string` is
  * pure ASCII can still match against typographic file content.
  */
@@ -107,7 +107,7 @@ function normalizeQuotes(str: string): string {
 }
 
 /**
- * Verbatim port of AgenC `utils.ts:findActualString`. When
+ * Verbatim port of openclaude `utils.ts:findActualString`. When
  * `searchString` is not literally present in `fileContent`, retry with
  * a quote/dash/space-normalized comparison and return the actual byte
  * range from the file at the matching offset.
@@ -273,7 +273,7 @@ function applyEdit(
 }
 
 /**
- * Format a successful-edit result line. Mirrors AgenC
+ * Format a successful-edit result line. Mirrors openclaude
  * `mapToolResultToToolResultBlockParam` (FileEditTool.ts:578-597),
  * adapted for AgenC's plain-text content envelope.
  */

@@ -1,7 +1,7 @@
 /**
  * Reactive compaction — the second-level PTL recovery step.
  *
- * Hand-port of AgenC's reactive compact caller surface
+ * Hand-port of openclaude's reactive compact caller surface
  * caller surface (the module itself is feature-gated behind
  * `REACTIVE_COMPACT`; T8 ships the caller contract). When collapse-
  * drain can't release enough context (or isn't enabled), reactive-
@@ -52,7 +52,7 @@ import {
  * Lazily import the compact pipeline so tests and bundlers that don't
  * drag in the full `compactConversation` graph (and its heavy
  * transitive dependencies like `utils/sessionStorage` → `axios`) still
- * load `reactive-compact.ts` cleanly. Mirrors AgenC's
+ * load `reactive-compact.ts` cleanly. Mirrors openclaude's
  * feature-flagged `require('./services/compact/reactiveCompact.js')`
  * pattern.
  */

@@ -1,7 +1,7 @@
 /**
  * Critical-system-reminder attachment producer.
  *
- * Hand-port of AgenC `getCriticalSystemReminderAttachment`
+ * Hand-port of openclaude `getCriticalSystemReminderAttachment`
  * (`src/utils/attachments.ts:1588-1596`). One-shot drain of
  * `trackingState.pendingCriticalReminder`: external runtime producers
  * (mode transitions, rate-limit warnings, runtime-issued operator

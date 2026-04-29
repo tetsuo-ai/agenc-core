@@ -12,10 +12,10 @@
  * AgenC's permission model has four user-addressable modes that don't
  * map 1:1 onto codex runtime's two-axis (approval × sandbox) model. Mapping:
  *
- *   AgenC `"plan"`              → approval `unless_trusted` + sandbox `read_only`
- *   AgenC `"default"`           → approval `on_request`     + sandbox `workspace_write`
- *   AgenC `"acceptEdits"`       → approval `on_failure`     + sandbox `workspace_write`
- *   AgenC `"bypassPermissions"` → approval `never`          + sandbox `danger_full_access`
+ *   openclaude `"plan"`              → approval `unless_trusted` + sandbox `read_only`
+ *   openclaude `"default"`           → approval `on_request`     + sandbox `workspace_write`
+ *   openclaude `"acceptEdits"`       → approval `on_failure`     + sandbox `workspace_write`
+ *   openclaude `"bypassPermissions"` → approval `never`          + sandbox `danger_full_access`
  *
  * codex runtime's sandbox-mode `.md` files include a `{{network_access}}` template
  * placeholder that codex runtime resolves to either `enabled` or `restricted` at

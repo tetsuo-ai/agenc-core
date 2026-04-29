@@ -2,7 +2,7 @@
  * Phase 3b — Stop hooks.
  *
  * Port of codex runtime `hooks/src/events/stop.rs` (547 LOC, AgenC subset
- * ~250 LOC) + AgenC `query.ts:1313-1341` stop-hook ladder.
+ * ~250 LOC) + openclaude `query.ts:1313-1341` stop-hook ladder.
  *
  * Stop hooks fire at turn-end and can:
  *   - declare that the stop is legitimate (no-op; turn completes)
@@ -63,7 +63,7 @@ export interface StopRequest {
   readonly stopHookActive: boolean;
   readonly lastAssistantMessage?: string;
   /** Whether the last assistant message was itself an API error —
-   *  AgenC `isApiErrorMessage` flag (query.ts:1297-1299). */
+   *  openclaude `isApiErrorMessage` flag (query.ts:1297-1299). */
   readonly lastIsApiErrorMessage: boolean;
 }
 

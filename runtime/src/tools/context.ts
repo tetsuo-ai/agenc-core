@@ -897,7 +897,7 @@ function execTruncatedOutput(
 /**
  * Port of codex runtime `ToolOutput::to_response_item` dispatch plus the
  * per-impl implementations (context.rs:87, 109-114, 144-149, 208-222,
- * 268-270, 296-305, 325-345). Emits an AgenC `LLMMessage`
+ * 268-270, 296-305, 325-345). Emits an openclaude `LLMMessage`
  * (`role:"tool"`, `toolCallId`, `content`) — provider adapters map
  * that back into the wire-level function_call_output shape.
  */

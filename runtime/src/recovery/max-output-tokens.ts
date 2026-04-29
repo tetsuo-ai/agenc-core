@@ -1,7 +1,7 @@
 /**
  * Max-output-tokens recovery (escalate + continuation).
  *
- * Hand-port of AgenC `query.ts:1221-1291`. When a stream's
+ * Hand-port of openclaude `query.ts:1221-1291`. When a stream's
  * assistant message is withheld because it hit the provider's
  * max_output_tokens limit, two recovery paths apply:
  *

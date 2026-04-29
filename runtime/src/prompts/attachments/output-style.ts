@@ -1,7 +1,7 @@
 /**
  * Output-style attachment producer.
  *
- * Intended hand-port of AgenC `getOutputStyleAttachment`
+ * Intended hand-port of openclaude `getOutputStyleAttachment`
  * (`src/utils/attachments.ts:1598-1613`), which emits an
  * `output_style` system-reminder every turn whenever the active style
  * is non-default.

@@ -1,7 +1,7 @@
 /**
  * runAgent — drive one subagent's run-turn loop.
  *
- * Hand-port of AgenC `tools/AgentTool/runAgent.ts` (987 LOC)
+ * Hand-port of openclaude `tools/AgentTool/runAgent.ts` (987 LOC)
  * subset. Responsibilities:
  *
  *   1. Build a child Session from the parent + fork context.

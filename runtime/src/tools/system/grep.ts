@@ -1,5 +1,5 @@
 /**
- * `Grep` — port of AgenC `GrepTool`.
+ * `Grep` — port of openclaude `GrepTool`.
  *
  * Mature ripgrep wrapper lifted from AgenC
  * (`src/tools/GrepTool/GrepTool.ts` + `prompt.ts`). Description text and
@@ -31,7 +31,7 @@ export const GREP_TOOL_NAME = "Grep";
 const BASH_TOOL_NAME = "Bash";
 const AGENT_TOOL_NAME = "spawn_agent";
 
-/** Verbatim adaptation of AgenC `GrepTool/prompt.ts:7-17`. */
+/** Verbatim adaptation of openclaude `GrepTool/prompt.ts:7-17`. */
 const GREP_DESCRIPTION = `A powerful search tool built on ripgrep
 
   Usage:

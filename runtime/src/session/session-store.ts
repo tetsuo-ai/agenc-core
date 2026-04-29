@@ -1358,7 +1358,7 @@ export class SessionStore {
    * rollout find the session metadata even after many compacts have
    * pushed the original header out of that window.
    *
-   * Port of AgenC `sessionStorage.ts::reAppendSessionMetadata`.
+   * Port of codex `sessionStorage.ts::reAppendSessionMetadata`.
    * Idempotent; safe to call multiple times. No-op if no session_meta
    * has been written yet (shouldn't happen post-open).
    *

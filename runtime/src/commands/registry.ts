@@ -2,7 +2,7 @@
  * Command registry.
  *
  * Holds the set of `SlashCommand` entries the dispatcher can route to.
- * Ports the minimum AgenC `hasCommand` / `getCommand` / `findCommand`
+ * Ports the minimum openclaude `hasCommand` / `getCommand` / `findCommand`
  * lookup behavior (`src/commands.js`) without pulling in plugin marketplace,
  * skill loading, MCP wiring, or hook registration.
  *

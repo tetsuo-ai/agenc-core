@@ -258,7 +258,7 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // `TodoWrite` is the AgenC port; codex runtime `update_plan`
   // is intentionally not shipped — `/plan` itself is AgenC-owned
   // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
-  // tool is AgenC `TodoWrite`.
+  // tool is openclaude `TodoWrite`.
   "TodoWrite",
   "EnterPlanMode",
   "ExitPlanMode",

@@ -7,7 +7,7 @@
  * `state.toolUseBlocks`, and updates `state.messages` with the new
  * assistant turn.
  *
- * Mirrors AgenC `query.ts:561-1082`.
+ * Mirrors openclaude `query.ts:561-1082`.
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog, default-on) — installStreamWatchdog

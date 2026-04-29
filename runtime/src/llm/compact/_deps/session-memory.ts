@@ -1,7 +1,7 @@
 /**
  * Session-memory subsystem the compact path consumes.
  *
- * Ported from upstream AgenC's
+ * Ported from upstream openclaude's
  * `src/services/SessionMemory/sessionMemoryUtils.ts` and
  * `src/services/SessionMemory/prompts.ts`, adapted to the gut runtime:
  *

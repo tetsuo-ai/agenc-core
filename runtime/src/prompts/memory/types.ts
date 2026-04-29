@@ -1,7 +1,7 @@
 /**
  * Memory type taxonomy + frontmatter (de)serialization.
  *
- * Hand-port of AgenC `memdir/memoryTypes.ts` (270 LOC) subset:
+ * Hand-port of openclaude `memdir/memoryTypes.ts` (270 LOC) subset:
  * keeps the four-type taxonomy, drops the long prompt strings (those
  * live in the prompt-section builders in T10-A, not here).
  *

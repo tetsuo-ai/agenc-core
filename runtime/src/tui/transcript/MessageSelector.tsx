@@ -9,7 +9,7 @@
  *     and the `AppState.fileHistory` snapshot store. AgenC's transcript
  *     reducer collapses everything to flat `TranscriptMessage` rows and
  *     does not expose a file-history surface yet, so this port:
- *       * accepts the AgenC `TranscriptMessage[]` array directly
+ *       * accepts the openclaude `TranscriptMessage[]` array directly
  *       * filters to `kind === "user"` rows (the only "rewindable" kind
  *         today)
  *       * drops the file-history "restore code" branch entirely; the only

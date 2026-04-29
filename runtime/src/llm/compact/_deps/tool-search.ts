@@ -17,7 +17,7 @@
  *     opaque `tools[]` payloads on the runtime ToolOutput layer, NOT
  *     Anthropic-style `tool_reference` content blocks inside
  *     `tool_result` blocks. The compact subsystem operates on the
- *     AgenC `Message` shape (Anthropic content-block arrays),
+ *     openclaude `Message` shape (Anthropic content-block arrays),
  *     where `tool_reference` is the canonical discovery marker.
  *
  *   - The gut runtime's LLM providers do NOT understand the Anthropic

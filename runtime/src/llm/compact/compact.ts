@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 
-// AgenC `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
+// openclaude `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
 // has no transcript writer, so this stays null and the optional-chained calls
 // below become no-ops.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

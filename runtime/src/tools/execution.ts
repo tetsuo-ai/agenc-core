@@ -2,7 +2,7 @@
  * Tool execution — the central gate between the model's tool_use
  * blocks and the actual `Tool.execute()` call.
  *
- * 1:1 port of AgenC `services/tools/toolExecution.ts` plus
+ * 1:1 port of openclaude `services/tools/toolExecution.ts` plus
  * `utils/toolErrors.ts:formatError`. AgenC's Tool shape carries a raw
  * JSON Schema (not Zod), so the validator is a richer JSON-schema
  * engine implemented here; the observable tool_result prose matches
@@ -93,7 +93,7 @@ import {
   getSchemaValidationErrorOverride,
 } from "./schema-errors.js";
 import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
-// Inline copies of AgenC `utils/messages.ts` constants. The full
+// Inline copies of openclaude `utils/messages.ts` constants. The full
 // messages.ts is a heavy port that pulls in `bun:bundle`, analytics,
 // and the entire session service graph; importing two constants from
 // it bricks the whole tools/ test surface. The canonical strings are
@@ -123,7 +123,7 @@ export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
 
 /**
  * I-15: default cap on tool result size in bytes. 400 KB matches
- * AgenC `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
+ * openclaude `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
  * Per-tool override via `tool.maxResultBytes`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
@@ -134,7 +134,7 @@ const TRUNCATION_MARKER_TEMPLATE =
 
 /**
  * Hard cap on formatted error prose before middle-truncation. Mirrors
- * AgenC `formatError`'s 10,000-char cutoff.
+ * openclaude `formatError`'s 10,000-char cutoff.
  */
 const FORMAT_ERROR_MAX_BYTES = 10_000;
 
@@ -500,7 +500,7 @@ export async function requestApprovalWithAbortRace(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Error classification — port of AgenC `classifyToolError`.
+// Error classification — port of openclaude `classifyToolError`.
 // ─────────────────────────────────────────────────────────────────────
 
 export type ToolErrorClass =
@@ -591,7 +591,7 @@ function isShellInterruptError(err: unknown): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// AgenC `formatError` parity — produces tool_result content.
+// openclaude `formatError` parity — produces tool_result content.
 // ─────────────────────────────────────────────────────────────────────
 
 export function formatError(error: unknown): string {
@@ -1798,7 +1798,7 @@ export async function runToolUse(
     }
   }
 
-  // AgenC `shouldPreventContinuation` parity — when a PreToolUse
+  // openclaude `shouldPreventContinuation` parity — when a PreToolUse
   // hook set `preventContinuation`, emit the attachment now that the
   // tool has actually run successfully.
   if (prePreventContinuation) {

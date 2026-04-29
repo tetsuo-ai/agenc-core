@@ -231,7 +231,7 @@ export async function forkSubagent(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of AgenC `utils/forkedAgent.ts::buildCacheSafeParams`.
+ * Port of codex `utils/forkedAgent.ts::buildCacheSafeParams`.
  * Ensures the child request shares the parent's prompt-cache prefix
  * when possible by preserving the ordered tuple (systemPrompt,
  * systemContext, toolCatalog hashes). Callers supply the parent's

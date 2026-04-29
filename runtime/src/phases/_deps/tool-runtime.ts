@@ -448,7 +448,7 @@ export class StreamingToolExecutor {
     // Abort-drain: if the abort signal is already tripped, this call
     // never dispatches. Synthesize the terminal error result up front
     // so getRemainingResults() yields it without consulting the
-    // registry. This matches the AgenC `mode_changed` mid-stream
+    // registry. This matches the openclaude `mode_changed` mid-stream
     // cascade contract.
     if (this.abortSignal?.aborted) {
       tracked.drainErrorMessage = PERMISSION_MODE_CHANGED_MESSAGE;

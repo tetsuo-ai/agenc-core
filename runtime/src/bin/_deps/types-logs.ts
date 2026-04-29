@@ -1,7 +1,7 @@
 /**
  * Per-dir transcript-log type shims for `runtime/src/bin/**`.
  *
- * Mirrors the AgenC `runtime/src/types/logs.ts` shapes that
+ * Mirrors the openclaude `runtime/src/types/logs.ts` shapes that
  * bin/bootstrap actually uses (just the two context-collapse entry
  * types). Carved as a local `_deps/` so the bin entry points stay
  * resolvable after the AgenC umbrella `src/types/` directory is

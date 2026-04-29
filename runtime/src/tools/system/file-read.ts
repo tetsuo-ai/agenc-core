@@ -1,13 +1,13 @@
 /**
  * `FileRead` — first-class file reading tool for AgenC.
  *
- * Lifted (and adapted) from AgenC `src/tools/FileReadTool/`. The
+ * Lifted (and adapted) from openclaude `src/tools/FileReadTool/`. The
  * model-facing prompt mirrors AgenC's `FileReadTool/prompt.ts` so
  * a model trained on the AgenC surface behaves identically here.
  *
  * Key behaviors preserved from AgenC:
  *   - Token-aware text-file size cap (defaults to 25k tokens, matching
- *     AgenC `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
+ *     openclaude `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
  *     exceeds the cap, the read is rejected with the exact error
  *     message AgenC emits so model-side recovery copy still works.
  *   - Image multimodal output: PNG/JPG/JPEG/GIF/WEBP read as bytes,
@@ -69,7 +69,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
 
 /**
  * Default upper bound on raw file size for text reads. 256 KB is the
- * AgenC `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
+ * openclaude `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */

@@ -934,7 +934,7 @@ async function tryRunSamplingRequest(
       terminal: prepareTerminal.terminal,
     };
   }
-  // Per-turn attachments orchestrator (AgenC `getAttachments()`
+  // Per-turn attachments orchestrator (openclaude `getAttachments()`
   // parity, ported into AgenC). Runs after `prepareContext` projects
   // the post-compaction history onto `state.messagesForQuery` and
   // before `buildSamplingRequestContract` snapshots it for the model

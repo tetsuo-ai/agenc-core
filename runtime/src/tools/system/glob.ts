@@ -1,5 +1,5 @@
 /**
- * `Glob` — port of AgenC `GlobTool` as a first-class AgenC tool.
+ * `Glob` — port of openclaude `GlobTool` as a first-class AgenC tool.
  *
  * The model-facing description is byte-identical to AgenC's at
  * `src/tools/GlobTool/prompt.ts`. AgenC's implementation
@@ -34,7 +34,7 @@ const MAX_RESULTS = 100;
 export const GLOB_TOOL_NAME = "Glob";
 
 /**
- * Verbatim port of AgenC `DESCRIPTION`
+ * Verbatim port of openclaude `DESCRIPTION`
  * (src/tools/GlobTool/prompt.ts:3-7).
  */
 const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any codebase size

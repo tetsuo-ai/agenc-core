@@ -1,5 +1,5 @@
 /**
- * `Sleep` — port of AgenC `SleepTool`.
+ * `Sleep` — port of openclaude `SleepTool`.
  *
  * The model-facing prompt is byte-identical to AgenC's at
  * `src/tools/SleepTool/prompt.ts`. AgenC's actual implementation
@@ -21,9 +21,9 @@ const SLEEP_MIN_MS = 0;
 const SLEEP_MAX_MS = 60 * 60 * 1000; // 1 hour ceiling — same as AgenC.
 
 /**
- * Verbatim port of AgenC `SLEEP_TOOL_PROMPT`
+ * Verbatim port of openclaude `SLEEP_TOOL_PROMPT`
  * (src/tools/SleepTool/prompt.ts:6-16). The `<tick>` reference matches
- * `TICK_TAG = 'tick'` from AgenC `src/constants/xml.ts:25`.
+ * `TICK_TAG = 'tick'` from openclaude `src/constants/xml.ts:25`.
  */
 const SLEEP_DESCRIPTION = `Wait for a specified duration. The user can interrupt the sleep at any time.
 

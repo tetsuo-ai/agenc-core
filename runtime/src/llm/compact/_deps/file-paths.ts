@@ -10,7 +10,7 @@
  * assembly can still surface AGENC.md / .agenc/instructions.md for the
  * cwd it was given.
  *
- * AgenC adaptation from upstream AgenC (`src/utils/plans.ts`):
+ * AgenC adaptation from upstream openclaude (`src/utils/plans.ts`):
  *
  *   - The storage root is AgenC's config dir (`AGENC_HOME` or
  *     `$HOME/.agenc`).

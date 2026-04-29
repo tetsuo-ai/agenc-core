@@ -414,7 +414,7 @@ export function sessionSourceAgentRole(
 }
 
 /**
- * Stage 2 (tool-result budgeting) knobs. Ports AgenC's
+ * Stage 2 (tool-result budgeting) knobs. Ports openclaude's
  * `toolResultStorage` message-level budget into the prepare-context
  * phase. Thresholds default to AgenC's 2MB/40KB pair; envs
  * `AGENC_TOOL_RESULT_BUDGET_BYTES` / `AGENC_TOOL_RESULT_TRUNCATE_BYTES`

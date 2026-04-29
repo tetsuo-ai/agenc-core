@@ -1,7 +1,7 @@
 /**
  * Per-dir CLI startup-config gate for `runtime/src/bin/**`.
  *
- * The AgenC `utils/config.ts::enableConfigs` runs the legacy
+ * The codex `utils/config.ts::enableConfigs` runs the legacy
  * AgenC-era global config preload + lock-out. The lean-rebuild
  * runtime owns its own config layer in `runtime/src/config/**`, so the
  * gate is reduced to a no-op stub.

@@ -1,7 +1,7 @@
 /**
  * Auto-mode classifier surface.
  *
- * Ports AgenC's `yoloClassifier.ts` + `classifierDecision.ts`
+ * Ports openclaude's `yoloClassifier.ts` + `classifierDecision.ts`
  * decision shape onto AgenC's provider abstraction:
  *
  *   - `isAutoModeAllowlistedTool` — safe-tool allowlist consulted by the

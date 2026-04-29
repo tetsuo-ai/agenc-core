@@ -1,7 +1,7 @@
 /**
  * Forked-subagent runner for compact's cache-sharing path.
  *
- * Hand-port of the upstream AgenC `runForkedAgent` (utils/forkedAgent.ts).
+ * Hand-port of the upstream openclaude `runForkedAgent` (utils/forkedAgent.ts).
  * The fork shares cache-critical params with the parent so the Anthropic
  * prompt cache key matches and the parent's cached prefix is reused.
  *

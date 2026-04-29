@@ -377,7 +377,7 @@ export interface AgenCAppStateValue {
   readonly configStore: ConfigStoreLike;
   readonly isStreaming: boolean;
   /**
-   * Active model slug surfaced to the status bar. Mirrors AgenC's
+   * Active model slug surfaced to the status bar. Mirrors openclaude's
    * `useAppState(s => s.mainLoopModel)` (`hooks/useMainLoopModel.ts:14`).
    * Updated by the `/model` slash command via `setModel` so the status
    * bar refreshes synchronously rather than waiting for the next turn's
@@ -402,7 +402,7 @@ export interface AgenCAppStateValue {
   setStreaming: (next: boolean) => void;
   /**
    * Update the visible model slug (status bar). Slash-command path uses
-   * this for synchronous parity with AgenC `setAppState({...prev,
+   * this for synchronous parity with openclaude `setAppState({...prev,
    * mainLoopModel: model})` at `commands/model/model.tsx:59-63`.
    */
   setModel: (next: string) => void;

@@ -18,7 +18,7 @@ import {
   createGuardianRejectionCircuitBreaker,
 } from "./guardian-rejection-circuit-breaker.js";
 
-describe("GuardianRejectionCircuitBreaker (upstream AgenC behavior)", () => {
+describe("GuardianRejectionCircuitBreaker (upstream openclaude behavior)", () => {
   test("stays closed below the consecutive threshold", () => {
     const breaker = new GuardianRejectionCircuitBreaker();
     expect(breaker.recordDenial("turn-1")).toEqual({ kind: "continue" });

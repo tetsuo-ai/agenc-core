@@ -1,7 +1,7 @@
 /**
  * Cost sidecar — session cost tracking + formatting.
  *
- * Hand-port of AgenC `cost-tracker.ts` (327 LOC) + `costHook.ts`
+ * Hand-port of openclaude `cost-tracker.ts` (327 LOC) + `costHook.ts`
  * (22 LOC) + relevant `utils/tokens.ts` (261 LOC) bits, restructured
  * to live as a SidecarManager-compatible Sidecar rather than the
  * AgenC bootstrap-state global.

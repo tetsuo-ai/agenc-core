@@ -1,7 +1,7 @@
 /**
  * Collapse-drain recovery strategy.
  *
- * Hand-port of AgenC `services/contextCollapse/index.js` +
+ * Hand-port of openclaude `services/contextCollapse/index.js` +
  * `query.ts:1116-1149`. Context-collapse is a feature-gated
  * compaction layer: stage collapses are projected as a read-time
  * view over the full history. When a streaming response returns
@@ -17,7 +17,7 @@
  * T10 are already wired to produce the staged-collapse data; T8
  * just consumes it.
  *
- * Critical subtlety (AgenC `query.ts:1123`): the drain is
+ * Critical subtlety (openclaude `query.ts:1123`): the drain is
  * one-shot per recovery pass — guarded by checking
  * `state.transition?.reason !== 'collapse_drain_retry'` at the
  * entry gate. Violating this spirals.

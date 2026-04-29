@@ -55,7 +55,7 @@ describe("eventsToMessages", () => {
     // `activeAssistantIndex` and the terminal `agent_message` couldn't
     // find the streaming row, so it pushed a brand-new row with the
     // full final text — the user saw the assistant text rendered
-    // twice in a row before the tool cell. Mirrors AgenC's
+    // twice in a row before the tool cell. Mirrors openclaude's
     // atomic streamingText→onMessage transition (utils/messages.ts:2980-2985)
     // which never lets the streaming preview and the final message
     // coexist for the same content.

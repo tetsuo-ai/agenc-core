@@ -1,5 +1,5 @@
 /**
- * `EnterWorktree` / `ExitWorktree` — port of AgenC `EnterWorktreeTool`
+ * `EnterWorktree` / `ExitWorktree` — port of openclaude `EnterWorktreeTool`
  * + `ExitWorktreeTool`. The model-facing prompts (`prompt.ts`) and input
  * schemas are byte-identical to upstream where the AgenC contract permits.
  *
@@ -39,7 +39,7 @@
  *   - The session-level `currentWorktreeSession` is an in-process
  *     module singleton (matches AgenC's `getCurrentWorktreeSession`
  *     at `utils/worktree.js`). For multi-session daemons this is
- *     keyed on the AgenC `__agencSessionId` injected arg so child
+ *     keyed on the openclaude `__agencSessionId` injected arg so child
  *     agents and the main session each get their own slot.
  *
  * @module
@@ -57,7 +57,7 @@ import { safeStringify } from "../types.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-level worktree state — module singleton keyed by AgenC
-// session id. Mirrors AgenC `getCurrentWorktreeSession()` /
+// session id. Mirrors openclaude `getCurrentWorktreeSession()` /
 // `setCurrentWorktreeSession()` from `utils/worktree.js`. The state
 // is intentionally in-memory only: AgenC persists it via
 // `saveWorktreeState(...)` so it survives session reloads, but for
@@ -232,7 +232,7 @@ interface ChangeSummary {
 }
 
 /**
- * Mirrors AgenC `countWorktreeChanges`
+ * Mirrors openclaude `countWorktreeChanges`
  * (`ExitWorktreeTool.ts:79-113`). Returns null when state cannot be
  * reliably determined (lock file, corrupt index, missing baseline);
  * callers MUST treat null as "unknown, fail closed" rather than 0/0.
@@ -337,7 +337,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         );
       }
       // Refuse if this session already has an active worktree —
-      // matches AgenC `EnterWorktreeTool.call:79-81`.
+      // matches openclaude `EnterWorktreeTool.call:79-81`.
       const existing = getCurrentWorktreeSession(sessionId);
       if (existing !== undefined) {
         return errorResult(
@@ -356,7 +356,7 @@ export function createEnterWorktreeTool(config: WorktreeToolConfig): Tool {
         }
         slug = slugRaw;
       } else {
-        // Auto-name: use the AgenC plan slug. Mirrors AgenC
+        // Auto-name: use the AgenC plan slug. Mirrors openclaude
         // `EnterWorktreeTool.call:90` which calls `getPlanSlug()`.
         const planFilePath = getPlanFilePath(defaultPlanCtx(sessionId));
         // getPlanFilePath returns `<plansDir>/<slug>.md`. Extract the slug.

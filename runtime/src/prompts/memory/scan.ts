@@ -1,7 +1,7 @@
 /**
  * Memory-directory scanning primitives.
  *
- * Hand-port of AgenC `memdir/memoryScan.ts` (102 LOC). Differs:
+ * Hand-port of openclaude `memdir/memoryScan.ts` (102 LOC). Differs:
  *   - Returns full MemoryEntry (frontmatter + body + size) instead of
  *     header-only records. T10 consumers (loader, attachments, auto-save
  *     extractor) need the body text; a second read would double syscalls.

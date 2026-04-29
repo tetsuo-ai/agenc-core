@@ -1,7 +1,7 @@
 /**
  * Delegate — the AgentTool spawn dispatcher.
  *
- * Hand-port of AgenC `tools/AgentTool/AgentTool.tsx` (1,232 LOC)
+ * Hand-port of openclaude `tools/AgentTool/AgentTool.tsx` (1,232 LOC)
  * spawn-dispatcher subset. Public entry point for:
  *
  *   - Isolation setup (worktree create + bind CWD, or CWD-only)

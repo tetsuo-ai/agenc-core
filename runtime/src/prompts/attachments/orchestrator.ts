@@ -1,7 +1,7 @@
 /**
  * Per-turn attachments orchestrator.
  *
- * Hand-port of AgenC `src/utils/attachments.ts:744-1004`
+ * Hand-port of openclaude `src/utils/attachments.ts:744-1004`
  * (`getAttachments()`). Runs every registered producer in parallel each
  * turn, collects their outputs, returns a flat `Attachment[]`. Producers
  * are pure functions of `(opts, trackingState)` and are responsible for
@@ -44,7 +44,7 @@ import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
 
 /**
- * Inputs every producer receives. Mirrors AgenC's
+ * Inputs every producer receives. Mirrors openclaude's
  * `getAttachments(input, toolUseContext, ...)` parameter set, adapted to
  * AgenC types.
  */

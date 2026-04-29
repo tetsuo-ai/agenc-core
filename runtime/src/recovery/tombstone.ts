@@ -1,7 +1,7 @@
 /**
  * Tombstone orphan assistant messages.
  *
- * Hand-port of AgenC `query.ts:747-774`. When a streaming
+ * Hand-port of openclaude `query.ts:747-774`. When a streaming
  * response partially succeeds (enough for `assistantMessages` to be
  * populated) but then trips the streaming-fallback path, the partial
  * messages carry invalid signatures (especially thinking blocks)

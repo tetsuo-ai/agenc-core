@@ -1,6 +1,6 @@
 /**
  * Lean message-helper surface compact uses. Mirrors the upstream
- * AgenC `utils/messages.ts` API for the helpers that compact
+ * openclaude `utils/messages.ts` API for the helpers that compact
  * actually reaches for. The Message types in `runtime/src/types/message.ts`
  * are largely `any`-typed stubs in the gut tree; these helpers operate
  * on the duck-typed shape `{ type, content, ... }` exactly as upstream

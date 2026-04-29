@@ -3,7 +3,7 @@ import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
 import { KeyboardShortcutHint } from './KeyboardShortcutHint.js'
 
 type Props = {
-  /** Action name. Either an AgenC `BindingCommand` literal (e.g.
+  /** Action name. Either an openclaude `BindingCommand` literal (e.g.
    *  `'history:search'`) or an upstream-style label whose AgenC equivalent
    *  is unknown — in which case `fallback` is used. */
   action: string

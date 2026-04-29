@@ -13,7 +13,7 @@
  *   5. streamingFallbackOccured → streaming fallback tombstone + recreate
  *   6. FallbackTriggeredError → model fallback swap
  *
- * Hand-port of AgenC `query.ts:1101, 1115, 854, 1335, 928`
+ * Hand-port of openclaude `query.ts:1101, 1115, 854, 1335, 928`
  * order. Codifying the list makes the order testable +
  * refactoring-safe (test asserts the array matches the documented
  * order so future edits can't silently reorder).

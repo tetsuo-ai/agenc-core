@@ -1,7 +1,7 @@
 /**
  * Per-dir branded ID stubs for `runtime/src/llm/compact/**`.
  *
- * Mirrors the AgenC `runtime/src/types/ids.ts` shape so the
+ * Mirrors the openclaude `runtime/src/types/ids.ts` shape so the
  * compact tree keeps its branded `AgentId` / `SessionId` types after
  * the AgenC umbrella `src/types/` directory is removed.
  */

@@ -421,7 +421,7 @@ export interface AgentIdentityManager {
   ensureRegistered(): Promise<void>;
 }
 
-/** codex runtime `Hooks`. T6 wires (uses existing AgenC `runtime/src/llm/hooks/`). */
+/** codex runtime `Hooks`. T6 wires (uses existing openclaude `runtime/src/llm/hooks/`). */
 export interface Hooks {
   startupWarnings(): ReadonlyArray<string>;
   executePreCompact(...args: unknown[]): Promise<unknown>;
@@ -1063,7 +1063,7 @@ export class Session {
     // Per-turn attachment exit-pulse wiring. The plan-mode and auto-mode
     // attachment producers fire a one-shot exit reminder when these flags
     // are set; the registry is the canonical event source for mode
-    // transitions, so flip the flags here. Mirrors AgenC
+    // transitions, so flip the flags here. Mirrors openclaude
     // `bootstrap/state.ts:1349-1363` where `handlePlanModeTransition`
     // raises the equivalent pulse on the same boundary.
     resolvedRegistry.subscribeToModeChange((newMode, oldMode) => {
