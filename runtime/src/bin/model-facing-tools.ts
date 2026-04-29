@@ -328,7 +328,7 @@ The spawned agent will have the same tools as you and the ability to spawn its o
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.`;
-  const cfg = session?.config.multiAgentV2;
+  const cfg = session?.config?.multiAgentV2;
   const concurrency =
     cfg?.maxConcurrentThreadsPerSession !== undefined
       ? `\nThis session is configured with \`max_concurrent_threads_per_session = ${cfg.maxConcurrentThreadsPerSession}\` for concurrently open agent threads.`
@@ -346,7 +346,7 @@ function hideSpawnAgentMetadata(session: Session): boolean {
       session.config as {
         multiAgentV2?: { hideSpawnAgentMetadata?: boolean };
       }
-    ).multiAgentV2?.hideSpawnAgentMetadata === true
+    )?.multiAgentV2?.hideSpawnAgentMetadata === true
   );
 }
 
@@ -547,7 +547,7 @@ function waitTimeoutMs(
   if (supplied !== undefined && supplied <= 0) {
     return json({ error: "timeout_ms must be greater than 0" }, true);
   }
-  const configuredMin = session.config.multiAgentV2?.minWaitTimeoutMs;
+  const configuredMin = session.config?.multiAgentV2?.minWaitTimeoutMs;
   const minTimeoutMs = Math.min(
     MAX_WAIT_TIMEOUT_MS,
     Math.max(1, configuredMin ?? MIN_WAIT_TIMEOUT_MS),

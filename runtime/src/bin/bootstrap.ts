@@ -959,7 +959,7 @@ export async function bootstrapLocalRuntimeSession(
         bootstrapServices.bindSession(s);
         const agentRegistry = new AgentRegistry({
           maxThreads:
-            s.config.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
+            s.config?.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
         });
         const agentControl = new AgentControl({
           session: s,

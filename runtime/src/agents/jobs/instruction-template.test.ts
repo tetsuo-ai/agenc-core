@@ -24,8 +24,12 @@ describe("renderInstructionTemplate", () => {
     expect(out).toBe("{not a placeholder}");
   });
 
-  it("does not recurse into substituted values", () => {
+  it("substitutes in row-key iteration order (matches codex sequential replace)", () => {
+    // Codex render_instruction_template loops Object.entries with .replace,
+    // so a value that itself looks like a placeholder will be re-substituted
+    // if its key has not been visited yet in the iteration. This test
+    // pins that documented behavior.
     const out = renderInstructionTemplate("{a}", { a: "{b}", b: "deep" });
-    expect(out).toBe("{b}");
+    expect(out).toBe("deep");
   });
 });

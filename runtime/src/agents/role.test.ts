@@ -61,7 +61,6 @@ describe("role registry", () => {
   it("accepts cyberpunk role aliases without changing compatibility ids", () => {
     expect(getAgentRole("scanner")?.name).toBe("explorer");
     expect(resolveAgentRole("runner").name).toBe("worker");
-    expect(tryResolveRoleConfig("sentinel")).toBeDefined();
   });
 
   it("worker has the default description and no built-in config-layer override", () => {

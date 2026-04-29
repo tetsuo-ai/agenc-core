@@ -33,7 +33,6 @@ function lastPathSegment(path: string | undefined): string | undefined {
 function statusKind(status: AgentStatus): LiveAgentStatusKind | null {
   switch (status.status) {
     case "pending_init":
-    case "idle":
     case "running":
     case "completed":
     case "errored":

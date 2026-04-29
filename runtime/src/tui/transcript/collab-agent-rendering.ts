@@ -62,8 +62,6 @@ export function formatAgentStatusSummary(status: AgentStatus): string {
   switch (status.status) {
     case "pending_init":
       return "Pending init";
-    case "idle":
-      return "Idle";
     case "running":
       return "Running";
     case "completed": {
