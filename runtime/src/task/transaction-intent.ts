@@ -10,7 +10,18 @@ export type MarketplaceTransactionIntentKind =
   | "claim_task_with_job_spec"
   | "complete_task"
   | "complete_task_private"
-  | "submit_task_result";
+  | "submit_task_result"
+  | "configure_task_validation"
+  | "accept_task_result"
+  | "reject_task_result"
+  | "auto_accept_task_result"
+  | "validate_task_result"
+  | "initiate_dispute"
+  | "vote_dispute"
+  | "resolve_dispute"
+  | "cancel_dispute"
+  | "expire_dispute"
+  | "apply_dispute_slash";
 
 export interface MarketplaceTransactionAccountMeta {
   readonly name: string;
@@ -25,10 +36,19 @@ export interface MarketplaceTransactionIntent {
   readonly signer: string | null;
   readonly taskPda?: string;
   readonly taskId?: string;
+  readonly claimPda?: string;
+  readonly workerPda?: string;
+  readonly disputePda?: string;
+  readonly disputeId?: string;
   readonly jobSpecHash?: string | null;
   readonly rewardLamports?: string;
   readonly rewardMint?: string | null;
   readonly constraintHash?: string | null;
+  readonly validationMode?: string | null;
+  readonly reviewWindowSecs?: string | null;
+  readonly validatorQuorum?: number | null;
+  readonly evidenceHash?: string | null;
+  readonly resolutionType?: string | null;
   readonly accountMetas: readonly MarketplaceTransactionAccountMeta[];
 }
 

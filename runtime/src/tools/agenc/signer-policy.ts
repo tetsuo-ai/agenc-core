@@ -15,6 +15,8 @@ export interface MarketplaceSignerPolicy {
   readonly allowedProgramIds?: readonly string[];
   /** Restrict task-scoped actions to specific task PDAs. */
   readonly allowedTaskPdas?: readonly string[];
+  /** Restrict dispute-scoped actions to specific dispute PDAs. */
+  readonly allowedDisputePdas?: readonly string[];
   /** Restrict task creation to specific approved template IDs. */
   readonly allowedTemplateIds?: readonly string[];
   /** Restrict task creation/claim paths to specific job spec hashes. */
@@ -137,6 +139,21 @@ function evaluateMarketplaceSignerPolicy(params: {
     };
   }
 
+  const allowedDisputePdas = normalizeList(params.policy.allowedDisputePdas);
+  const disputePda = readString(params.args, ["disputePda"]);
+  if (
+    allowedDisputePdas.size > 0 &&
+    disputePda &&
+    !allowedDisputePdas.has(disputePda)
+  ) {
+    return {
+      allowed: false,
+      code: "DISPUTE_NOT_ALLOWED",
+      reason: `Dispute ${disputePda} is not allowed by marketplace signer policy`,
+      metadata: { disputePda },
+    };
+  }
+
   const allowedTemplateIds = normalizeList(params.policy.allowedTemplateIds);
   const templateId = readString(params.args, ["templateId"]);
   if (allowedTemplateIds.size > 0 && templateId && !allowedTemplateIds.has(templateId)) {
@@ -237,6 +254,28 @@ function toolNameForIntent(kind: MarketplaceTransactionIntent["kind"]): string {
     case "complete_task_private":
     case "submit_task_result":
       return "agenc.completeTask";
+    case "configure_task_validation":
+      return "agenc.configureTaskValidation";
+    case "accept_task_result":
+      return "agenc.acceptTaskResult";
+    case "reject_task_result":
+      return "agenc.rejectTaskResult";
+    case "auto_accept_task_result":
+      return "agenc.autoAcceptTaskResult";
+    case "validate_task_result":
+      return "agenc.validateTaskResult";
+    case "initiate_dispute":
+      return "agenc.initiateDispute";
+    case "vote_dispute":
+      return "agenc.voteDispute";
+    case "resolve_dispute":
+      return "agenc.resolveDispute";
+    case "cancel_dispute":
+      return "agenc.cancelDispute";
+    case "expire_dispute":
+      return "agenc.expireDispute";
+    case "apply_dispute_slash":
+      return "agenc.applyDisputeSlash";
   }
 }
 
@@ -255,6 +294,7 @@ export function evaluateMarketplaceSignerPolicyForIntent(
     signer,
     args: {
       ...(intent.taskPda ? { taskPda: intent.taskPda } : {}),
+      ...(intent.disputePda ? { disputePda: intent.disputePda } : {}),
       ...(intent.jobSpecHash ? { jobSpecHash: intent.jobSpecHash } : {}),
       ...(intent.constraintHash ? { constraintHash: intent.constraintHash } : {}),
       ...(intent.rewardLamports ? { reward: intent.rewardLamports } : {}),

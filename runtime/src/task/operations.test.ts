@@ -1360,6 +1360,61 @@ describe("TaskOperations", () => {
       expect(result.taskAttestorConfigPda).toBeInstanceOf(PublicKey);
     });
 
+    it("previews creator-review configuration and settlement mutation intents", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask({
+        constraintHash: new Uint8Array(MANUAL_VALIDATION_SENTINEL),
+      });
+      const workerPda = Keypair.generate().publicKey;
+      const workerAuthority = Keypair.generate().publicKey;
+      mocks.agentRegistrationFetch.mockResolvedValue(
+        createMockRawAgentRegistration(workerAuthority),
+      );
+
+      await expect(
+        ops.previewConfigureTaskValidationIntent(
+          taskPda,
+          task,
+          TaskValidationMode.CreatorReview,
+          900,
+        ),
+      ).resolves.toMatchObject({
+        kind: "configure_task_validation",
+        taskPda: taskPda.toBase58(),
+        validationMode: String(TaskValidationMode.CreatorReview),
+        reviewWindowSecs: "900",
+      });
+
+      await expect(ops.previewSubmitTaskResultIntent(taskPda, task)).resolves.toMatchObject({
+        kind: "submit_task_result",
+        taskPda: taskPda.toBase58(),
+      });
+      await expect(
+        ops.previewAcceptTaskResultIntent(taskPda, task, workerPda),
+      ).resolves.toMatchObject({
+        kind: "accept_task_result",
+        workerPda: workerPda.toBase58(),
+      });
+      await expect(
+        ops.previewRejectTaskResultIntent(taskPda, task, workerPda),
+      ).resolves.toMatchObject({
+        kind: "reject_task_result",
+        workerPda: workerPda.toBase58(),
+      });
+      await expect(
+        ops.previewAutoAcceptTaskResultIntent(taskPda, task, workerPda),
+      ).resolves.toMatchObject({
+        kind: "auto_accept_task_result",
+        workerPda: workerPda.toBase58(),
+      });
+      await expect(
+        ops.previewValidateTaskResultIntent(taskPda, task, workerPda, workerPda),
+      ).resolves.toMatchObject({
+        kind: "validate_task_result",
+        workerPda: workerPda.toBase58(),
+      });
+    });
+
     it("submits a task result for creator review", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();

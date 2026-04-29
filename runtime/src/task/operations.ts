@@ -681,6 +681,14 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
+    await this.previewConfigureTaskValidationIntent(
+      taskPda,
+      task,
+      mode,
+      reviewWindowSecs,
+      validatorQuorum,
+      attestor,
+    );
 
     const methods = this.program.methods as unknown as {
       configureTaskValidation: (
@@ -733,6 +741,55 @@ export class TaskOperations {
     }
   }
 
+  async previewConfigureTaskValidationIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    mode: TaskValidationMode | number,
+    reviewWindowSecs: number | bigint,
+    validatorQuorum = 0,
+    attestor?: PublicKey | null,
+  ): Promise<MarketplaceTransactionIntent> {
+    const creator = this.program.provider.publicKey;
+    if (!creator) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task validation",
+      );
+    }
+
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskAttestorConfigPda = deriveTaskAttestorConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const protocolPda = findProtocolPda(this.program.programId);
+
+    return {
+      kind: "configure_task_validation",
+      programId: this.program.programId.toBase58(),
+      signer: creator.toBase58(),
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      validationMode: String(Number(mode)),
+      reviewWindowSecs: reviewWindowSecs.toString(),
+      validatorQuorum,
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("taskValidationConfig", taskValidationConfigPda, true),
+        namedAccountMeta("taskAttestorConfig", taskAttestorConfigPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("creator", creator, true, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...(attestor ? [namedAccountMeta("attestor", attestor, false)] : []),
+      ],
+    };
+  }
+
   /**
    * Submit a result for Task Validation V2 manual validation.
    *
@@ -776,6 +833,7 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
+    await this.previewSubmitTaskResultIntent(taskPda, task);
 
     const methods = this.program.methods as unknown as {
       submitTaskResult: (
@@ -823,6 +881,57 @@ export class TaskOperations {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  async previewSubmitTaskResultIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+  ): Promise<MarketplaceTransactionIntent> {
+    const authority = this.program.provider.publicKey;
+    if (!authority) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task submission",
+      );
+    }
+
+    const workerPda = this.getAgentPda();
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    ).address;
+    const protocolPda = findProtocolPda(this.program.programId);
+
+    return {
+      kind: "submit_task_result",
+      programId: this.program.programId.toBase58(),
+      signer: authority.toBase58(),
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      claimPda: claimPda.toBase58(),
+      workerPda: workerPda.toBase58(),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("taskValidationConfig", taskValidationConfigPda, true),
+        namedAccountMeta("taskSubmission", taskSubmissionPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("worker", workerPda, false),
+        namedAccountMeta("authority", authority, true, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+      ],
+    };
   }
 
   /**
@@ -877,6 +986,7 @@ export class TaskOperations {
       options,
       workerAuthority,
     );
+    await this.previewAcceptTaskResultIntent(taskPda, task, workerPda, options);
 
     const methods = this.program.methods as unknown as {
       acceptTaskResult: () => {
@@ -928,6 +1038,83 @@ export class TaskOperations {
     }
   }
 
+  async previewAcceptTaskResultIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    workerPda: PublicKey,
+    options?: TaskCompletionOptions,
+  ): Promise<MarketplaceTransactionIntent> {
+    const creator = this.program.provider.publicKey;
+    if (!creator) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task acceptance",
+      );
+    }
+
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const { address: escrowPda } = deriveEscrowPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    ).address;
+    const protocolPda = findProtocolPda(this.program.programId);
+    const treasury = await this.getProtocolTreasury();
+    const workerAuthority = await this.getWorkerAuthority(workerPda);
+    const tokenAccounts = buildCompleteTaskTokenAccounts(
+      task.rewardMint,
+      escrowPda,
+      workerAuthority,
+      treasury,
+    );
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      workerAuthority,
+    );
+
+    return {
+      kind: "accept_task_result",
+      programId: this.program.programId.toBase58(),
+      signer: creator.toBase58(),
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      claimPda: claimPda.toBase58(),
+      workerPda: workerPda.toBase58(),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("taskValidationConfig", taskValidationConfigPda, true),
+        namedAccountMeta("taskSubmission", taskSubmissionPda, true),
+        namedAccountMeta("worker", workerPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("treasury", treasury, true),
+        namedAccountMeta("creator", creator, true, true),
+        namedAccountMeta("workerAuthority", workerAuthority, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
+  }
+
   /**
    * Reject a pending Task Validation V2 submission.
    *
@@ -966,6 +1153,7 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
+    await this.previewRejectTaskResultIntent(taskPda, task, workerPda);
 
     const methods = this.program.methods as unknown as {
       rejectTaskResult: (rejectionHashBytes: number[]) => {
@@ -1008,6 +1196,58 @@ export class TaskOperations {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  async previewRejectTaskResultIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    workerPda: PublicKey,
+  ): Promise<MarketplaceTransactionIntent> {
+    const creator = this.program.provider.publicKey;
+    if (!creator) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task rejection",
+      );
+    }
+
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    ).address;
+    const protocolPda = findProtocolPda(this.program.programId);
+    const workerAuthority = await this.getWorkerAuthority(workerPda);
+
+    return {
+      kind: "reject_task_result",
+      programId: this.program.programId.toBase58(),
+      signer: creator.toBase58(),
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      claimPda: claimPda.toBase58(),
+      workerPda: workerPda.toBase58(),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("taskValidationConfig", taskValidationConfigPda, true),
+        namedAccountMeta("taskSubmission", taskSubmissionPda, true),
+        namedAccountMeta("worker", workerPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("creator", creator, true, true),
+        namedAccountMeta("workerAuthority", workerAuthority, false),
+      ],
+    };
   }
 
   /**
@@ -1062,6 +1302,12 @@ export class TaskOperations {
       options,
       workerAuthority,
     );
+    await this.previewAutoAcceptTaskResultIntent(
+      taskPda,
+      task,
+      workerPda,
+      options,
+    );
 
     const methods = this.program.methods as unknown as {
       autoAcceptTaskResult: () => {
@@ -1112,6 +1358,84 @@ export class TaskOperations {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  async previewAutoAcceptTaskResultIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    workerPda: PublicKey,
+    options?: TaskCompletionOptions,
+  ): Promise<MarketplaceTransactionIntent> {
+    const authority = this.program.provider.publicKey;
+    if (!authority) {
+      throw new ValidationError(
+        "Program provider does not have a public key for auto-acceptance",
+      );
+    }
+
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const { address: escrowPda } = deriveEscrowPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    ).address;
+    const protocolPda = findProtocolPda(this.program.programId);
+    const treasury = await this.getProtocolTreasury();
+    const workerAuthority = await this.getWorkerAuthority(workerPda);
+    const tokenAccounts = buildCompleteTaskTokenAccounts(
+      task.rewardMint,
+      escrowPda,
+      workerAuthority,
+      treasury,
+    );
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      workerAuthority,
+    );
+
+    return {
+      kind: "auto_accept_task_result",
+      programId: this.program.programId.toBase58(),
+      signer: authority.toBase58(),
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      claimPda: claimPda.toBase58(),
+      workerPda: workerPda.toBase58(),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("taskValidationConfig", taskValidationConfigPda, true),
+        namedAccountMeta("taskSubmission", taskSubmissionPda, true),
+        namedAccountMeta("worker", workerPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        namedAccountMeta("treasury", treasury, true),
+        namedAccountMeta("creator", task.creator, true),
+        namedAccountMeta("workerAuthority", workerAuthority, true),
+        namedAccountMeta("authority", authority, true, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
   }
 
   /**
@@ -1179,6 +1503,13 @@ export class TaskOperations {
       options,
       workerAuthority,
     );
+    await this.previewValidateTaskResultIntent(
+      taskPda,
+      task,
+      workerPda,
+      validatorAgentPda,
+      options,
+    );
 
     const methods = this.program.methods as unknown as {
       validateTaskResult: (approved: boolean) => {
@@ -1233,6 +1564,101 @@ export class TaskOperations {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  async previewValidateTaskResultIntent(
+    taskPda: PublicKey,
+    task: OnChainTask,
+    workerPda: PublicKey,
+    validatorAgentPda?: PublicKey | null,
+    options?: TaskCompletionOptions,
+  ): Promise<MarketplaceTransactionIntent> {
+    const reviewer = this.program.provider.publicKey;
+    if (!reviewer) {
+      throw new ValidationError(
+        "Program provider does not have a public key for task validation voting",
+      );
+    }
+
+    const { address: claimPda } = deriveClaimPda(
+      taskPda,
+      workerPda,
+      this.program.programId,
+    );
+    const { address: escrowPda } = deriveEscrowPda(
+      taskPda,
+      this.program.programId,
+    );
+    const taskValidationConfigPda = deriveTaskValidationConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskAttestorConfigPda = deriveTaskAttestorConfigPda(
+      taskPda,
+      this.program.programId,
+    ).address;
+    const taskSubmissionPda = deriveTaskSubmissionPda(
+      claimPda,
+      this.program.programId,
+    ).address;
+    const taskValidationVotePda = deriveTaskValidationVotePda(
+      taskSubmissionPda,
+      reviewer,
+      this.program.programId,
+    ).address;
+    const protocolPda = findProtocolPda(this.program.programId);
+    const treasury = await this.getProtocolTreasury();
+    const workerAuthority = await this.getWorkerAuthority(workerPda);
+    const tokenAccounts = buildCompleteTaskTokenAccounts(
+      task.rewardMint,
+      escrowPda,
+      workerAuthority,
+      treasury,
+    );
+    const remainingAccounts = this.buildTaskCompletionRemainingAccounts(
+      options,
+      workerAuthority,
+    );
+
+    return {
+      kind: "validate_task_result",
+      programId: this.program.programId.toBase58(),
+      signer: reviewer.toBase58(),
+      taskPda: taskPda.toBase58(),
+      taskId: hexBytes(task.taskId),
+      claimPda: claimPda.toBase58(),
+      workerPda: workerPda.toBase58(),
+      rewardLamports: task.rewardAmount.toString(),
+      rewardMint: task.rewardMint?.toBase58() ?? null,
+      constraintHash: hexBytes(task.constraintHash),
+      accountMetas: [
+        namedAccountMeta("task", taskPda, true),
+        namedAccountMeta("claim", claimPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("taskValidationConfig", taskValidationConfigPda, true),
+        ...(validatorAgentPda
+          ? []
+          : [namedAccountMeta("taskAttestorConfig", taskAttestorConfigPda, false)]),
+        namedAccountMeta("taskSubmission", taskSubmissionPda, true),
+        namedAccountMeta("taskValidationVote", taskValidationVotePda, true),
+        namedAccountMeta("worker", workerPda, true),
+        namedAccountMeta("protocolConfig", protocolPda, false),
+        ...(validatorAgentPda
+          ? [namedAccountMeta("validatorAgent", validatorAgentPda, false)]
+          : []),
+        namedAccountMeta("treasury", treasury, true),
+        namedAccountMeta("creator", task.creator, true),
+        namedAccountMeta("workerAuthority", workerAuthority, true),
+        namedAccountMeta("reviewer", reviewer, true, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
   }
 
   /**
@@ -1350,6 +1776,10 @@ export class TaskOperations {
     task: OnChainTask,
     options?: TaskCompletionOptions,
   ): Promise<MarketplaceTransactionIntent> {
+    if (isManualValidationTask(task)) {
+      return this.previewSubmitTaskResultIntent(taskPda, task);
+    }
+
     const workerPda = this.getAgentPda();
     const { address: claimPda } = deriveClaimPda(
       taskPda,
@@ -1373,7 +1803,7 @@ export class TaskOperations {
       this.program.provider.publicKey ?? undefined,
     );
     return {
-      kind: isManualValidationTask(task) ? "submit_task_result" : "complete_task",
+      kind: "complete_task",
       programId: this.program.programId.toBase58(),
       signer: this.program.provider.publicKey?.toBase58() ?? null,
       taskPda: taskPda.toBase58(),

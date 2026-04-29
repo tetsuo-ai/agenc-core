@@ -394,6 +394,94 @@ describe("DisputeOperations", () => {
     });
   });
 
+  describe("transaction intent previews", () => {
+    it("previews dispute mutation account intents", async () => {
+      const taskPda = randomPubkey();
+      const disputePda = randomPubkey();
+      const workerClaimPda = randomPubkey();
+      const workerAgentPda = randomPubkey();
+      const arbiterVotes = [
+        { votePda: randomPubkey(), arbiterAgentPda: randomPubkey() },
+      ];
+      program.account.dispute.fetchNullable.mockResolvedValue(
+        mockRawDispute({ defendant: workerAgentPda }),
+      );
+
+      await expect(
+        ops.previewInitiateDisputeIntent({
+          disputeId: randomBytes(32),
+          taskPda,
+          taskId: randomBytes(32),
+          evidenceHash: randomBytes(32),
+          resolutionType: ResolutionType.Refund,
+          evidence: "buyer-visible evidence",
+          workerAgentPda,
+          workerClaimPda,
+        }),
+      ).resolves.toMatchObject({
+        kind: "initiate_dispute",
+        taskPda: taskPda.toBase58(),
+      });
+
+      await expect(
+        ops.previewVoteDisputeIntent({
+          disputePda,
+          taskPda,
+          approve: true,
+          workerClaimPda,
+        }),
+      ).resolves.toMatchObject({
+        kind: "vote_dispute",
+        disputePda: disputePda.toBase58(),
+      });
+
+      await expect(
+        ops.previewResolveDisputeIntent({
+          disputePda,
+          taskPda,
+          creatorPubkey: randomPubkey(),
+          workerClaimPda,
+          workerAgentPda,
+          workerAuthority: randomPubkey(),
+          arbiterVotes,
+        }),
+      ).resolves.toMatchObject({
+        kind: "resolve_dispute",
+        disputePda: disputePda.toBase58(),
+      });
+
+      await expect(ops.previewCancelDisputeIntent(disputePda, taskPda)).resolves.toMatchObject({
+        kind: "cancel_dispute",
+        disputePda: disputePda.toBase58(),
+      });
+      await expect(
+        ops.previewExpireDisputeIntent({
+          disputePda,
+          taskPda,
+          creatorPubkey: randomPubkey(),
+          workerClaimPda,
+          workerAgentPda,
+          workerAuthority: randomPubkey(),
+          arbiterVotes,
+        }),
+      ).resolves.toMatchObject({
+        kind: "expire_dispute",
+        disputePda: disputePda.toBase58(),
+      });
+      await expect(
+        ops.previewApplySlashIntent({
+          disputePda,
+          taskPda,
+          workerClaimPda,
+          workerAgentPda,
+        }),
+      ).resolves.toMatchObject({
+        kind: "apply_dispute_slash",
+        disputePda: disputePda.toBase58(),
+      });
+    });
+  });
+
   describe("fetchDispute", () => {
     it("returns parsed dispute when found", async () => {
       const disputePda = randomPubkey();

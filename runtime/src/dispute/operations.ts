@@ -43,6 +43,12 @@ import {
 import { fetchTreasury } from "../utils/treasury.js";
 import { deriveClaimPda, deriveEscrowPda, deriveTaskSubmissionPda } from "../task/pda.js";
 import {
+  accountMetaToIntentMeta,
+  hexBytes,
+  namedAccountMeta,
+  type MarketplaceTransactionIntent,
+} from "../task/transaction-intent.js";
+import {
   buildResolveDisputeTokenAccounts,
   buildExpireDisputeTokenAccounts,
   buildApplyDisputeSlashTokenAccounts,
@@ -364,6 +370,141 @@ export class DisputeOperations {
     }
   }
 
+  async previewInitiateDisputeIntent(
+    params: InitiateDisputeParams,
+  ): Promise<MarketplaceTransactionIntent> {
+    const { address: disputePda } = deriveDisputePda(
+      params.disputeId,
+      this.program.programId,
+    );
+    const { address: derivedClaimPda } = deriveClaimPda(
+      params.taskPda,
+      this.agentPda,
+      this.program.programId,
+    );
+    const initiatorClaimPda =
+      params.initiatorClaimPda === undefined
+        ? derivedClaimPda
+        : params.initiatorClaimPda;
+    const taskSubmissionClaimPda =
+      params.workerClaimPda ?? initiatorClaimPda ?? null;
+    const taskSubmissionPda = await this.resolveExistingTaskSubmissionPda(
+      taskSubmissionClaimPda,
+    );
+    return this.buildInitiateDisputeIntent(
+      params,
+      disputePda,
+      initiatorClaimPda,
+      taskSubmissionPda,
+      this.buildRemainingAccounts(undefined, params.defendantWorkers),
+    );
+  }
+
+  async previewVoteDisputeIntent(
+    params: VoteDisputeParams,
+  ): Promise<MarketplaceTransactionIntent> {
+    const dispute = await this.fetchDispute(params.disputePda);
+    const { address: votePda } = deriveVotePda(
+      params.disputePda,
+      this.agentPda,
+      this.program.programId,
+    );
+    const { address: authVotePda } = deriveAuthorityVotePda(
+      params.disputePda,
+      this.program.provider.publicKey!,
+      this.program.programId,
+    );
+    return this.buildVoteDisputeIntent(params, dispute, votePda, authVotePda);
+  }
+
+  async previewResolveDisputeIntent(
+    params: ResolveDisputeParams,
+  ): Promise<MarketplaceTransactionIntent> {
+    const { address: escrowPda } = deriveEscrowPda(
+      params.taskPda,
+      this.program.programId,
+    );
+    const rawTask = (await this.program.account.task.fetch(
+      params.taskPda,
+    )) as { rewardMint: PublicKey | null };
+    const treasury = await this.getTreasury();
+    const tokenAccounts = buildResolveDisputeTokenAccounts(
+      rawTask.rewardMint ?? null,
+      escrowPda,
+      params.creatorPubkey,
+      params.workerAuthority ?? null,
+      treasury,
+    );
+    const remainingAccounts = this.buildRemainingAccounts(
+      params.arbiterVotes,
+      params.extraWorkers,
+      params.acceptedBidSettlement,
+    );
+    return this.buildResolveDisputeIntent(
+      params,
+      escrowPda,
+      treasury,
+      tokenAccounts,
+      remainingAccounts,
+    );
+  }
+
+  async previewCancelDisputeIntent(
+    disputePda: PublicKey,
+    taskPda: PublicKey,
+  ): Promise<MarketplaceTransactionIntent> {
+    const dispute = await this.fetchDispute(disputePda);
+    return this.buildCancelDisputeIntent(disputePda, taskPda, dispute);
+  }
+
+  async previewExpireDisputeIntent(
+    params: ExpireDisputeParams,
+  ): Promise<MarketplaceTransactionIntent> {
+    const { address: escrowPda } = deriveEscrowPda(
+      params.taskPda,
+      this.program.programId,
+    );
+    const rawTask = (await this.program.account.task.fetch(
+      params.taskPda,
+    )) as { rewardMint: PublicKey | null };
+    const tokenAccounts = buildExpireDisputeTokenAccounts(
+      rawTask.rewardMint ?? null,
+      escrowPda,
+      params.creatorPubkey,
+      params.workerAuthority ?? null,
+    );
+    const remainingAccounts = this.buildRemainingAccounts(
+      params.arbiterVotes,
+      params.extraWorkers,
+      params.acceptedBidSettlement,
+    );
+    return this.buildExpireDisputeIntent(
+      params,
+      escrowPda,
+      tokenAccounts,
+      remainingAccounts,
+    );
+  }
+
+  async previewApplySlashIntent(
+    params: ApplySlashParams,
+  ): Promise<MarketplaceTransactionIntent> {
+    const treasury = await this.getTreasury();
+    const { address: escrowPda } = deriveEscrowPda(
+      params.taskPda,
+      this.program.programId,
+    );
+    const rawTask = (await this.program.account.task.fetch(
+      params.taskPda,
+    )) as { rewardMint: PublicKey | null };
+    const tokenAccounts = buildApplyDisputeSlashTokenAccounts(
+      rawTask.rewardMint ?? null,
+      escrowPda,
+      treasury,
+    );
+    return this.buildApplySlashIntent(params, escrowPda, treasury, tokenAccounts);
+  }
+
   // ==========================================================================
   // Transaction Operations
   // ==========================================================================
@@ -422,6 +563,13 @@ export class DisputeOperations {
       const remainingAccounts = this.buildRemainingAccounts(
         undefined,
         params.defendantWorkers,
+      );
+      this.buildInitiateDisputeIntent(
+        params,
+        disputePda,
+        initiatorClaimPda,
+        taskSubmissionPda,
+        remainingAccounts,
       );
       const signature = await this.buildInitiateDisputeBuilder(
         this.program,
@@ -514,6 +662,7 @@ export class DisputeOperations {
     this.logger.info(
       `Voting ${params.approve ? "for" : "against"} dispute ${params.disputePda.toBase58()}`,
     );
+    this.buildVoteDisputeIntent(params, dispute, votePda, authVotePda);
 
     try {
       const signature = await this.program.methods
@@ -592,6 +741,13 @@ export class DisputeOperations {
         params.extraWorkers,
         params.acceptedBidSettlement,
       );
+      this.buildResolveDisputeIntent(
+        params,
+        escrowPda,
+        treasury,
+        tokenAccounts,
+        remainingAccounts,
+      );
 
       const builder = this.program.methods.resolveDispute().accountsPartial({
         dispute: params.disputePda,
@@ -667,6 +823,7 @@ export class DisputeOperations {
           "Dispute not found",
         );
       }
+      this.buildCancelDisputeIntent(disputePda, taskPda, dispute);
 
       const signature = await this.program.methods
         .cancelDispute()
@@ -733,6 +890,12 @@ export class DisputeOperations {
         params.extraWorkers,
         params.acceptedBidSettlement,
       );
+      this.buildExpireDisputeIntent(
+        params,
+        escrowPda,
+        tokenAccounts,
+        remainingAccounts,
+      );
 
       const builder = this.program.methods.expireDispute().accountsPartial({
         dispute: params.disputePda,
@@ -798,6 +961,7 @@ export class DisputeOperations {
         escrowPda,
         treasury,
       );
+      this.buildApplySlashIntent(params, escrowPda, treasury, tokenAccounts);
 
       const signature = await this.program.methods
         .applyDisputeSlash()
@@ -833,6 +997,232 @@ export class DisputeOperations {
   // ==========================================================================
   // Private Helpers
   // ==========================================================================
+
+  private buildInitiateDisputeIntent(
+    params: InitiateDisputeParams,
+    disputePda: PublicKey,
+    initiatorClaimPda: PublicKey | null,
+    taskSubmissionPda: PublicKey | null,
+    remainingAccounts: AccountMeta[],
+  ): MarketplaceTransactionIntent {
+    return {
+      kind: "initiate_dispute",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: params.taskPda.toBase58(),
+      taskId: hexBytes(params.taskId),
+      disputePda: disputePda.toBase58(),
+      disputeId: hexBytes(params.disputeId),
+      claimPda: initiatorClaimPda?.toBase58(),
+      workerPda: params.workerAgentPda?.toBase58(),
+      evidenceHash: hexBytes(params.evidenceHash),
+      resolutionType: String(params.resolutionType),
+      accountMetas: [
+        namedAccountMeta("dispute", disputePda, true),
+        namedAccountMeta("task", params.taskPda, true),
+        namedAccountMeta("agent", this.agentPda, true),
+        namedAccountMeta("authorityRateLimit", this.authorityRateLimitPda, true),
+        namedAccountMeta("protocolConfig", this.protocolPda, false),
+        ...(initiatorClaimPda
+          ? [namedAccountMeta("initiatorClaim", initiatorClaimPda, true)]
+          : []),
+        ...(params.workerAgentPda
+          ? [namedAccountMeta("workerAgent", params.workerAgentPda, true)]
+          : []),
+        ...(params.workerClaimPda
+          ? [namedAccountMeta("workerClaim", params.workerClaimPda, true)]
+          : []),
+        ...(taskSubmissionPda
+          ? [namedAccountMeta("taskSubmission", taskSubmissionPda, true)]
+          : []),
+        ...(this.program.provider.publicKey
+          ? [namedAccountMeta("authority", this.program.provider.publicKey, true, true)]
+          : []),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
+  }
+
+  private buildVoteDisputeIntent(
+    params: VoteDisputeParams,
+    dispute: OnChainDispute | null,
+    votePda: PublicKey,
+    authVotePda: PublicKey,
+  ): MarketplaceTransactionIntent {
+    return {
+      kind: "vote_dispute",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: params.taskPda.toBase58(),
+      disputePda: params.disputePda.toBase58(),
+      workerPda: dispute?.defendant.toBase58(),
+      accountMetas: [
+        namedAccountMeta("dispute", params.disputePda, true),
+        namedAccountMeta("task", params.taskPda, true),
+        ...(params.workerClaimPda
+          ? [namedAccountMeta("workerClaim", params.workerClaimPda, true)]
+          : []),
+        ...(dispute?.defendant
+          ? [namedAccountMeta("defendantAgent", dispute.defendant, false)]
+          : []),
+        namedAccountMeta("vote", votePda, true),
+        namedAccountMeta("authorityVote", authVotePda, true),
+        namedAccountMeta("arbiter", this.agentPda, true),
+        namedAccountMeta("protocolConfig", this.protocolPda, false),
+        ...(this.program.provider.publicKey
+          ? [namedAccountMeta("authority", this.program.provider.publicKey, true, true)]
+          : []),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+      ],
+    };
+  }
+
+  private buildResolveDisputeIntent(
+    params: ResolveDisputeParams,
+    escrowPda: PublicKey,
+    treasury: PublicKey,
+    tokenAccounts: Record<string, PublicKey | null | undefined>,
+    remainingAccounts: AccountMeta[],
+  ): MarketplaceTransactionIntent {
+    return {
+      kind: "resolve_dispute",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: params.taskPda.toBase58(),
+      disputePda: params.disputePda.toBase58(),
+      claimPda: params.workerClaimPda?.toBase58(),
+      workerPda: params.workerAgentPda?.toBase58(),
+      accountMetas: [
+        namedAccountMeta("dispute", params.disputePda, true),
+        namedAccountMeta("task", params.taskPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("protocolConfig", this.protocolPda, false),
+        ...(this.program.provider.publicKey
+          ? [namedAccountMeta("authority", this.program.provider.publicKey, true, true)]
+          : []),
+        namedAccountMeta("creator", params.creatorPubkey, true),
+        ...(params.workerClaimPda
+          ? [namedAccountMeta("workerClaim", params.workerClaimPda, true)]
+          : []),
+        ...(params.workerAgentPda
+          ? [namedAccountMeta("worker", params.workerAgentPda, true)]
+          : []),
+        ...(params.workerAuthority
+          ? [namedAccountMeta("workerWallet", params.workerAuthority, true)]
+          : []),
+        namedAccountMeta("treasury", treasury, true),
+        namedAccountMeta("systemProgram", SystemProgram.programId, false),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
+  }
+
+  private buildCancelDisputeIntent(
+    disputePda: PublicKey,
+    taskPda: PublicKey,
+    dispute: OnChainDispute | null,
+  ): MarketplaceTransactionIntent {
+    return {
+      kind: "cancel_dispute",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: taskPda.toBase58(),
+      disputePda: disputePda.toBase58(),
+      workerPda: dispute?.defendant.toBase58(),
+      accountMetas: [
+        namedAccountMeta("dispute", disputePda, true),
+        namedAccountMeta("task", taskPda, true),
+        ...(this.program.provider.publicKey
+          ? [namedAccountMeta("authority", this.program.provider.publicKey, true, true)]
+          : []),
+        ...(dispute?.defendant
+          ? [namedAccountMeta("defendant", dispute.defendant, true)]
+          : []),
+      ],
+    };
+  }
+
+  private buildExpireDisputeIntent(
+    params: ExpireDisputeParams,
+    escrowPda: PublicKey,
+    tokenAccounts: Record<string, PublicKey | null | undefined>,
+    remainingAccounts: AccountMeta[],
+  ): MarketplaceTransactionIntent {
+    return {
+      kind: "expire_dispute",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: params.taskPda.toBase58(),
+      disputePda: params.disputePda.toBase58(),
+      claimPda: params.workerClaimPda?.toBase58(),
+      workerPda: params.workerAgentPda?.toBase58(),
+      accountMetas: [
+        namedAccountMeta("dispute", params.disputePda, true),
+        namedAccountMeta("task", params.taskPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("protocolConfig", this.protocolPda, false),
+        namedAccountMeta("creator", params.creatorPubkey, true),
+        ...(this.program.provider.publicKey
+          ? [namedAccountMeta("authority", this.program.provider.publicKey, true, true)]
+          : []),
+        ...(params.workerClaimPda
+          ? [namedAccountMeta("workerClaim", params.workerClaimPda, true)]
+          : []),
+        ...(params.workerAgentPda
+          ? [namedAccountMeta("worker", params.workerAgentPda, true)]
+          : []),
+        ...(params.workerAuthority
+          ? [namedAccountMeta("workerWallet", params.workerAuthority, true)]
+          : []),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+        ...remainingAccounts.map((account, index) =>
+          accountMetaToIntentMeta(`remaining.${index}`, account),
+        ),
+      ],
+    };
+  }
+
+  private buildApplySlashIntent(
+    params: ApplySlashParams,
+    escrowPda: PublicKey,
+    treasury: PublicKey,
+    tokenAccounts: Record<string, PublicKey | null | undefined>,
+  ): MarketplaceTransactionIntent {
+    return {
+      kind: "apply_dispute_slash",
+      programId: this.program.programId.toBase58(),
+      signer: this.program.provider.publicKey?.toBase58() ?? null,
+      taskPda: params.taskPda.toBase58(),
+      disputePda: params.disputePda.toBase58(),
+      claimPda: params.workerClaimPda.toBase58(),
+      workerPda: params.workerAgentPda.toBase58(),
+      accountMetas: [
+        namedAccountMeta("dispute", params.disputePda, true),
+        namedAccountMeta("task", params.taskPda, true),
+        namedAccountMeta("escrow", escrowPda, true),
+        namedAccountMeta("workerClaim", params.workerClaimPda, true),
+        namedAccountMeta("workerAgent", params.workerAgentPda, true),
+        namedAccountMeta("protocolConfig", this.protocolPda, false),
+        namedAccountMeta("treasury", treasury, true),
+        ...(this.program.provider.publicKey
+          ? [namedAccountMeta("authority", this.program.provider.publicKey, true, true)]
+          : []),
+        ...Object.entries(tokenAccounts)
+          .filter((entry): entry is [string, PublicKey] => entry[1] instanceof PublicKey)
+          .map(([name, pubkey]) => namedAccountMeta(name, pubkey, true)),
+      ],
+    };
+  }
 
   private recordDisputeMetrics(operation: string, durationMs: number): void {
     if (!this.metrics) return;

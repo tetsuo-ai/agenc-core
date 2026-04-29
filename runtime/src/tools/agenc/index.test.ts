@@ -166,6 +166,37 @@ describe("AgenC protocol tool factory", () => {
     expect(denied.code).toBe("CONSTRAINT_HASH_NOT_ALLOWED");
   });
 
+  it("evaluates dispute transaction intent previews against signer policy", () => {
+    const intent: MarketplaceTransactionIntent = {
+      kind: "resolve_dispute",
+      programId: "Market11111111111111111111111111111111111111",
+      signer: "Signer11111111111111111111111111111111111111",
+      taskPda: "Task111111111111111111111111111111111111111",
+      disputePda: "Dispute111111111111111111111111111111111111",
+      accountMetas: [],
+    };
+
+    expect(
+      evaluateMarketplaceSignerPolicyForIntent(
+        {
+          allowedTools: ["agenc.resolveDispute"],
+          allowedDisputePdas: [intent.disputePda!],
+        },
+        intent,
+      ).allowed,
+    ).toBe(true);
+
+    const denied = evaluateMarketplaceSignerPolicyForIntent(
+      {
+        allowedTools: ["agenc.resolveDispute"],
+        allowedDisputePdas: ["OtherDispute1111111111111111111111111111111"],
+      },
+      intent,
+    );
+    expect(denied.allowed).toBe(false);
+    expect(denied.code).toBe("DISPUTE_NOT_ALLOWED");
+  });
+
   it("rejects intent previews that violate signer policy bounds", () => {
     const intent: MarketplaceTransactionIntent = {
       kind: "complete_task",
