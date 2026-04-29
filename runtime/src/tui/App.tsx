@@ -308,6 +308,7 @@ function TUIRoot({
     pendingRequests,
     permissionQueueOps,
     setStreaming,
+    setExpandedView,
     model: liveModel,
     expandedView,
   } =
@@ -605,6 +606,11 @@ function TUIRoot({
   }, []);
   useKeybinding("app:toggleTranscript", handleToggleTranscript, "global");
 
+  const handleToggleTasks = useCallback((): void => {
+    setExpandedView(expandedView === "tasks" ? "none" : "tasks");
+  }, [expandedView, setExpandedView]);
+  useKeybinding("app:toggleTasks", handleToggleTasks, "global");
+
   const handleTranscriptShowAll = useCallback((): void => {
     setShowAllInTranscript((value) => !value);
   }, []);
@@ -678,7 +684,11 @@ function TUIRoot({
           on demand via setExpandedView('none'). Sits between the
           transcript and any overlay/composer so it stays anchored. */}
       {expandedView === "tasks" ? (
-        <TasksPanel storeOptions={taskStoreOptions} />
+        <TasksPanel
+          storeOptions={taskStoreOptions}
+          session={session}
+          onHidden={() => setExpandedView("none")}
+        />
       ) : null}
 
       <LiveAgentStatusPanel session={session} />

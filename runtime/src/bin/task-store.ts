@@ -16,19 +16,20 @@
  * Auto-mirror: `addBlocks` / `addBlockedBy` fan out via `blockTask`,
  * which writes both endpoint files inside the same critical section, so
  * the graph is always consistent. There are no remove verbs — the way
- * to clear an edge is to mark the blocker `completed` or `deleted`.
+ * to clear an edge is to mark the blocker `completed` or delete it.
  *
  * @module
  */
 
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { lock as acquireLock } from "../utils/lockfile.js";
 import { createSignal } from "../utils/signal.js";
 import { slugifyCwd, findProjectRootSync } from "../session/session-store.js";
 
-export type TaskStatus = "pending" | "in_progress" | "completed" | "deleted";
+export type TaskStatus = "pending" | "in_progress" | "completed";
+export type TaskUpdateStatus = TaskStatus | "deleted";
 
 export interface StoredTask {
   readonly id: string;
@@ -40,8 +41,6 @@ export interface StoredTask {
   readonly blocks: readonly string[];
   readonly blockedBy: readonly string[];
   readonly metadata?: Record<string, unknown>;
-  readonly createdAt: string;
-  readonly updatedAt: string;
 }
 
 export interface TaskStoreOptions {
@@ -65,7 +64,7 @@ export interface UpdateTaskInput {
   readonly subject?: string;
   readonly description?: string;
   readonly activeForm?: string;
-  readonly status?: TaskStatus;
+  readonly status?: TaskUpdateStatus;
   readonly owner?: string | null;
   readonly addBlocks?: readonly string[];
   readonly addBlockedBy?: readonly string[];
@@ -232,6 +231,28 @@ function dedupePreserveOrder(values: readonly string[]): string[] {
   return out;
 }
 
+function isTaskStatus(value: unknown): value is TaskStatus {
+  return value === "pending" || value === "in_progress" || value === "completed";
+}
+
+function isStoredTask(value: unknown): value is StoredTask {
+  if (!isObjectLiteral(value)) return false;
+  return (
+    typeof value.id === "string" &&
+    ID_RE.test(value.id) &&
+    typeof value.subject === "string" &&
+    typeof value.description === "string" &&
+    (value.activeForm === undefined || typeof value.activeForm === "string") &&
+    isTaskStatus(value.status) &&
+    (value.owner === undefined || typeof value.owner === "string") &&
+    Array.isArray(value.blocks) &&
+    value.blocks.every((entry) => typeof entry === "string") &&
+    Array.isArray(value.blockedBy) &&
+    value.blockedBy.every((entry) => typeof entry === "string") &&
+    (value.metadata === undefined || isObjectLiteral(value.metadata))
+  );
+}
+
 async function loadOneNoLock(
   opts: TaskStoreOptions,
   id: string,
@@ -239,7 +260,9 @@ async function loadOneNoLock(
   if (!ID_RE.test(id)) return null;
   try {
     const raw = await readFile(taskFilePath(opts, id), "utf8");
-    return JSON.parse(raw) as StoredTask;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed.status === "deleted") return null;
+    return isStoredTask(parsed) ? parsed : null;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -293,7 +316,6 @@ export async function createNew(
     const highest = await findHighestTaskId(opts);
     const next = highest + 1;
     const id = String(next);
-    const now = new Date().toISOString();
     const created: StoredTask = {
       id,
       subject: input.subject,
@@ -304,8 +326,6 @@ export async function createNew(
       blocks: [],
       blockedBy: [],
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
-      createdAt: now,
-      updatedAt: now,
     };
     await writeTaskNoLock(opts, created);
     await writeHighWaterMark(opts, next);
@@ -318,6 +338,7 @@ export async function createNew(
 
 export interface UpdateOutcome {
   readonly task?: StoredTask;
+  readonly deleted?: boolean;
   readonly error?: {
     readonly message: string;
     readonly missing?: readonly string[];
@@ -339,12 +360,18 @@ async function applyFieldUpdates(
     draft.owner = input.owner;
   }
   if (input.metadata !== undefined) {
-    draft.metadata = {
+    const metadata = {
       ...(isObjectLiteral(existing.metadata) ? existing.metadata : {}),
-      ...input.metadata,
     };
+    for (const [key, value] of Object.entries(input.metadata)) {
+      if (value === null) {
+        delete metadata[key];
+      } else {
+        metadata[key] = value;
+      }
+    }
+    draft.metadata = metadata;
   }
-  draft.updatedAt = new Date().toISOString();
   return draft as unknown as StoredTask;
 }
 
@@ -365,16 +392,14 @@ async function blockTaskNoLock(
     loadOneNoLock(opts, toId),
   ]);
   const missing: string[] = [];
-  if (from === null || from.status === "deleted") missing.push(fromId);
-  if (to === null || to.status === "deleted") missing.push(toId);
+  if (from === null) missing.push(fromId);
+  if (to === null) missing.push(toId);
   if (missing.length > 0 || !from || !to) return { ok: false, missing };
 
-  const now = new Date().toISOString();
   if (!from.blocks.includes(toId)) {
     const updatedFrom: StoredTask = {
       ...from,
       blocks: dedupePreserveOrder([...from.blocks, toId]),
-      updatedAt: now,
     };
     await writeTaskNoLock(opts, updatedFrom);
   }
@@ -382,7 +407,6 @@ async function blockTaskNoLock(
     const updatedTo: StoredTask = {
       ...to,
       blockedBy: dedupePreserveOrder([...to.blockedBy, fromId]),
-      updatedAt: now,
     };
     await writeTaskNoLock(opts, updatedTo);
   }
@@ -398,10 +422,33 @@ export async function updateOne(
     const existing = await loadOneNoLock(opts, id);
     if (!existing) return { error: { message: "Task not found" } };
 
+    if (input.status === "deleted") {
+      const deleted = await deleteTaskNoLock(opts, existing);
+      return deleted
+        ? { deleted: true }
+        : { error: { message: "Failed to delete task" } };
+    }
+
     const addBlocks = input.addBlocks ?? [];
     const addBlockedBy = input.addBlockedBy ?? [];
     if (addBlocks.includes(id) || addBlockedBy.includes(id)) {
       return { error: { message: "Self-reference is not a valid dependency edge" } };
+    }
+
+    const refs = dedupePreserveOrder([...addBlocks, ...addBlockedBy]);
+    const missingRefs: string[] = [];
+    for (const ref of refs) {
+      if (ref === id) continue;
+      const referenced = await loadOneNoLock(opts, ref);
+      if (referenced === null) missingRefs.push(ref);
+    }
+    if (missingRefs.length > 0) {
+      return {
+        error: {
+          message: "Unknown task reference",
+          missing: dedupePreserveOrder(missingRefs),
+        },
+      };
     }
 
     let working = existing;
@@ -443,7 +490,7 @@ export async function updateOne(
     const final = await loadOneNoLock(opts, id);
     return { task: final ?? working };
   });
-  if (result.task) notifyTasksUpdated();
+  if (result.task || result.deleted) notifyTasksUpdated();
   return result;
 }
 
@@ -451,8 +498,52 @@ export async function deleteTask(
   opts: TaskStoreOptions,
   id: string,
 ): Promise<UpdateOutcome> {
-  const result = await updateOne(opts, id, { status: "deleted" });
+  const result = await withListLock(opts, async (): Promise<UpdateOutcome> => {
+    const existing = await loadOneNoLock(opts, id);
+    if (!existing) return { error: { message: "Task not found" } };
+    const deleted = await deleteTaskNoLock(opts, existing);
+    return deleted
+      ? { deleted: true }
+      : { error: { message: "Failed to delete task" } };
+  });
+  if (result.deleted) notifyTasksUpdated();
   return result;
+}
+
+async function deleteTaskNoLock(
+  opts: TaskStoreOptions,
+  task: StoredTask,
+): Promise<boolean> {
+  const numericId = Number.parseInt(task.id, 10);
+  if (!Number.isNaN(numericId)) {
+    const current = await readHighWaterMark(opts);
+    if (numericId > current) await writeHighWaterMark(opts, numericId);
+  }
+
+  try {
+    await unlink(taskFilePath(opts, task.id));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+
+  const all = await loadAll(opts);
+  for (const other of all) {
+    const blocks = other.blocks.filter((entry) => entry !== task.id);
+    const blockedBy = other.blockedBy.filter((entry) => entry !== task.id);
+    if (
+      blocks.length !== other.blocks.length ||
+      blockedBy.length !== other.blockedBy.length
+    ) {
+      await writeTaskNoLock(opts, {
+        ...other,
+        blocks,
+        blockedBy,
+      });
+    }
+  }
+
+  return true;
 }
 
 export function deriveUnresolvedBlockers(
@@ -463,7 +554,6 @@ export function deriveUnresolvedBlockers(
   for (const blockerId of task.blockedBy) {
     const blocker = byId.get(blockerId);
     if (!blocker) continue;
-    if (blocker.status === "deleted") continue;
     if (blocker.status === "completed") continue;
     out.push(blockerId);
   }
@@ -472,7 +562,7 @@ export function deriveUnresolvedBlockers(
 
 export async function listWithUnresolved(
   opts: TaskStoreOptions,
-  filter: { readonly status?: TaskStatus; readonly includeDeleted?: boolean } = {},
+  filter: { readonly status?: TaskStatus } = {},
 ): Promise<ListedTask[]> {
   const all = await loadAll(opts);
   const byId = new Map(all.map((task) => [task.id, task] as const));
@@ -480,8 +570,6 @@ export async function listWithUnresolved(
   for (const task of all) {
     if (filter.status !== undefined) {
       if (task.status !== filter.status) continue;
-    } else if (task.status === "deleted" && !filter.includeDeleted) {
-      continue;
     }
     out.push({
       ...task,

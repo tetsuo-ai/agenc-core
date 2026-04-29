@@ -24,6 +24,7 @@ export type BindingCommand =
   | "app:exit"
   | "app:redraw"
   | "app:toggleTranscript"
+  | "app:toggleTasks"
   | "scroll:pageUp"
   | "scroll:pageDown"
   | "scroll:halfPageUp"
@@ -188,6 +189,7 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
     [normalizeKeySequence("ctrl+d")]: "app:exit",
     [normalizeKeySequence("ctrl+l")]: "app:redraw",
     [normalizeKeySequence("ctrl+o")]: "app:toggleTranscript",
+    [normalizeKeySequence("ctrl+t")]: "app:toggleTasks",
     [normalizeKeySequence("ctrl+r")]: "history:search",
     [normalizeKeySequence("pageup")]: "scroll:pageUp",
     [normalizeKeySequence("pagedown")]: "scroll:pageDown",
@@ -256,6 +258,7 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "app:exit",
   "app:redraw",
   "app:toggleTranscript",
+  "app:toggleTasks",
   "scroll:pageUp",
   "scroll:pageDown",
   "scroll:halfPageUp",

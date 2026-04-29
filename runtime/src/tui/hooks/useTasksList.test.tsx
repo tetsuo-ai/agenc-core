@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -7,6 +7,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   createNew,
+  tasksDir,
   updateOne,
   type ListedTask,
   type TaskStoreOptions,
@@ -64,7 +65,7 @@ describe("useTasksList", () => {
       join(tmpdir(), "agenc-tui-task-workspace-"),
     );
     const opts: TaskStoreOptions = { workspaceRoot: workspace, agencHome: home };
-    const observed: Array<readonly ListedTask[]> = [];
+    const observed: Array<readonly ListedTask[] | undefined> = [];
 
     function Consumer(): null {
       const tasks = useTasksList({ opts });
@@ -74,19 +75,65 @@ describe("useTasksList", () => {
 
     try {
       const { unmount } = await mount(<Consumer />);
-      // Initial render reports empty.
+      // Initial render reports the loading/empty snapshot.
       expect(observed[0]).toEqual([]);
 
       const created = await createNew(opts, { subject: "first" });
       // Allow the signal-driven re-read to flush.
-      await new Promise((r) => setTimeout(r, 30));
+      await new Promise((r) => setTimeout(r, 100));
       const latestAfterCreate = observed[observed.length - 1] ?? [];
       expect(latestAfterCreate.map((t) => t.id)).toEqual([created.id]);
 
       await updateOne(opts, created.id, { status: "completed" });
-      await new Promise((r) => setTimeout(r, 30));
+      await new Promise((r) => setTimeout(r, 100));
       const latestAfterUpdate = observed[observed.length - 1] ?? [];
       expect(latestAfterUpdate[0]?.status).toBe("completed");
+
+      unmount();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("re-reads when the task directory changes outside the process", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-tui-task-home-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-tui-task-workspace-"),
+    );
+    const opts: TaskStoreOptions = { workspaceRoot: workspace, agencHome: home };
+    const observed: Array<readonly ListedTask[] | undefined> = [];
+
+    function Consumer(): null {
+      const tasks = useTasksList({ opts });
+      observed.push(tasks);
+      return null;
+    }
+
+    try {
+      const { unmount } = await mount(<Consumer />);
+      const dir = tasksDir(opts);
+      await mkdir(dir, { recursive: true });
+      await new Promise((r) => setTimeout(r, 50));
+      await writeFile(
+        join(dir, "1.json"),
+        `${JSON.stringify(
+          {
+            id: "1",
+            subject: "external",
+            description: "",
+            status: "pending",
+            blocks: [],
+            blockedBy: [],
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      await new Promise((r) => setTimeout(r, 150));
+      const latest = observed[observed.length - 1] ?? [];
+      expect(latest.map((task) => task.subject)).toContain("external");
 
       unmount();
     } finally {

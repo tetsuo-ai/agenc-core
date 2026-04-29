@@ -110,6 +110,11 @@ function fakeSession(): Session {
   } as unknown as Session;
 }
 
+function codeMode<T>(result: { readonly codeModeResult?: unknown }): T {
+  expect(result.codeModeResult).toBeDefined();
+  return result.codeModeResult as T;
+}
+
 describe("model-facing tools", () => {
   beforeEach(() => {
     delegateMock.mockReset();
@@ -146,6 +151,8 @@ describe("model-facing tools", () => {
         "TaskGet",
         "TaskUpdate",
         "TaskList",
+        "TaskOutput",
+        "TaskStop",
         "CronCreate",
         "CronDelete",
         "CronList",
@@ -158,8 +165,6 @@ describe("model-facing tools", () => {
     );
     expect(allNames.some((name) => name.startsWith("system.http"))).toBe(false);
     expect(allNames).not.toContain("Agent");
-    expect(allNames).not.toContain("TaskOutput");
-    expect(allNames).not.toContain("TaskStop");
     expect(allNames).not.toContain("SendMessage");
     expect(allNames).not.toContain("send_input");
     expect(allNames).not.toContain("resume_agent");
@@ -190,6 +195,41 @@ describe("model-facing tools", () => {
       required: ["message", "task_name"],
       additionalProperties: false,
     });
+    expect(
+      registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
+    ).toMatchObject({
+      required: ["subject", "description"],
+      additionalProperties: false,
+    });
+    expect(
+      registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
+    ).not.toMatchObject({
+      properties: { owner: expect.anything() },
+    });
+    expect(
+      registry.tools.find((tool) => tool.name === "TaskGet")?.inputSchema,
+    ).toMatchObject({
+      required: ["taskId"],
+      additionalProperties: false,
+    });
+    expect(
+      registry.tools.find((tool) => tool.name === "TaskUpdate")?.inputSchema,
+    ).toMatchObject({
+      required: ["taskId"],
+      additionalProperties: false,
+      properties: {
+        status: {
+          enum: ["pending", "in_progress", "completed", "deleted"],
+        },
+        owner: { type: ["string", "null"] },
+      },
+    });
+    expect(
+      registry.tools.find((tool) => tool.name === "TaskList")?.inputSchema,
+    ).toMatchObject({
+      properties: {},
+      additionalProperties: false,
+    });
   });
 
   it("persists TaskCreate/TaskGet/TaskUpdate/TaskList against the per-project task board", async () => {
@@ -205,27 +245,48 @@ describe("model-facing tools", () => {
       const created = await byName.get("TaskCreate")!.execute({
         subject: "Wire tools",
         description: "Add missing model-facing tools",
-        owner: "/root/task_3",
       });
-      const task = JSON.parse(created.content).task as {
-        id: string;
-        owner?: string;
-        status: string;
-      };
+      expect(created.content).toBe("Task #1 created successfully: Wire tools");
+      const task = codeMode<{
+        task: {
+          id: string;
+          owner?: string;
+          status: string;
+        };
+      }>(created).task;
       expect(task.id).toMatch(/^\d+$/);
-      expect(task.owner).toBe("/root/task_3");
+      expect(task.owner).toBeUndefined();
       expect(task.status).toBe("pending");
 
-      const blocker = await byName.get("TaskCreate")!.execute({ subject: "B" });
-      const blockerTask = JSON.parse(blocker.content).task as { id: string };
+      const assigned = await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        owner: "/root/task_3",
+      });
+      expect(assigned.content).toBe(`Updated task #${task.id} owner`);
+      const assignedTask = codeMode<{
+        task: {
+          owner?: string;
+        };
+      }>(assigned).task;
+      expect(assignedTask.owner).toBe("/root/task_3");
+
+      const blocker = await byName.get("TaskCreate")!.execute({
+        subject: "B",
+        description: "Block Wire tools",
+      });
+      const blockerTask = codeMode<{
+        task: { id: string };
+      }>(blocker).task;
 
       const linked = await byName.get("TaskUpdate")!.execute({
         taskId: task.id,
         addBlockedBy: [blockerTask.id, blockerTask.id],
       });
-      const linkedTask = JSON.parse(linked.content).task as {
-        blockedBy: readonly string[];
-      };
+      const linkedTask = codeMode<{
+        task: {
+          blockedBy: readonly string[];
+        };
+      }>(linked).task;
       expect(linkedTask.blockedBy).toEqual([blockerTask.id]);
 
       // Auto-mirror under the list lock: blocker.blocks should now
@@ -233,14 +294,18 @@ describe("model-facing tools", () => {
       const blockerAfter = await byName.get("TaskGet")!.execute({
         taskId: blockerTask.id,
       });
-      expect(JSON.parse(blockerAfter.content).task.blocks).toEqual([task.id]);
+      expect(blockerAfter.content).toContain(`Task #${blockerTask.id}: B`);
+      expect(
+        codeMode<{ task: { blocks: readonly string[] } }>(blockerAfter).task
+          .blocks,
+      ).toEqual([task.id]);
 
-      const listed = JSON.parse(
-        (await byName.get("TaskList")!.execute({})).content,
-      ).tasks as readonly {
-        id: string;
-        unresolvedBlockers: readonly string[];
-      }[];
+      const listed = codeMode<{
+        tasks: readonly {
+          id: string;
+          unresolvedBlockers: readonly string[];
+        }[];
+      }>(await byName.get("TaskList")!.execute({})).tasks;
       const tEntry = listed.find((t) => t.id === task.id);
       expect(tEntry?.unresolvedBlockers).toEqual([blockerTask.id]);
 
@@ -248,43 +313,78 @@ describe("model-facing tools", () => {
         taskId: blockerTask.id,
         status: "completed",
       });
-      expect(JSON.parse(completed.content).task.status).toBe("completed");
+      expect(completed.content).toBe(`Updated task #${blockerTask.id} status`);
+      expect(
+        codeMode<{
+          task: { status: string };
+          statusChange: { from: string; to: string };
+        }>(completed).task.status,
+      ).toBe("completed");
 
-      const refreshed = JSON.parse(
-        (await byName.get("TaskList")!.execute({})).content,
-      ).tasks as readonly {
-        id: string;
-        unresolvedBlockers: readonly string[];
-      }[];
+      const refreshed = codeMode<{
+        tasks: readonly {
+          id: string;
+          unresolvedBlockers: readonly string[];
+        }[];
+      }>(await byName.get("TaskList")!.execute({})).tasks;
       expect(
         refreshed.find((t) => t.id === task.id)?.unresolvedBlockers,
       ).toEqual([]);
 
-      const tombstoned = await byName.get("TaskUpdate")!.execute({
+      const metadataUpdated = await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        metadata: { kept: 1, removeMe: "x" },
+      });
+      expect(
+        codeMode<{ task: { metadata?: Record<string, unknown> } }>(
+          metadataUpdated,
+        ).task.metadata,
+      ).toEqual({ kept: 1, removeMe: "x" });
+      const metadataDeleted = await byName.get("TaskUpdate")!.execute({
+        taskId: task.id,
+        metadata: { removeMe: null },
+      });
+      expect(
+        codeMode<{ task: { metadata?: Record<string, unknown> } }>(
+          metadataDeleted,
+        ).task.metadata,
+      ).toEqual({ kept: 1 });
+
+      const deleted = await byName.get("TaskUpdate")!.execute({
         taskId: task.id,
         status: "deleted",
       });
-      expect(JSON.parse(tombstoned.content).task.status).toBe("deleted");
+      expect(deleted.content).toBe(`Deleted task #${task.id}`);
+      expect(
+        codeMode<{
+          updatedFields: readonly string[];
+          statusChange: { from: string; to: string };
+        }>(deleted).updatedFields,
+      ).toEqual(["deleted"]);
 
-      const visibleAfterDelete = JSON.parse(
-        (await byName.get("TaskList")!.execute({})).content,
-      ).tasks as readonly { id: string }[];
+      const visibleAfterDelete = codeMode<{
+        tasks: readonly { id: string }[];
+      }>(await byName.get("TaskList")!.execute({})).tasks;
       expect(visibleAfterDelete.map((t) => t.id)).not.toContain(task.id);
 
       const got = await byName.get("TaskGet")!.execute({ taskId: task.id });
-      expect(got.isError).toBeUndefined();
-      expect(JSON.parse(got.content).task.subject).toBe("Wire tools");
+      expect(got.isError).toBe(true);
+      expect(got.content).toBe("Task not found");
 
       const missing = await byName.get("TaskGet")!.execute({ taskId: "9999" });
       expect(missing.isError).toBe(true);
-      expect(JSON.parse(missing.content).error).toBe("Task not found");
+      expect(missing.content).toBe("Task not found");
+      expect(codeMode<{ error: string }>(missing).error).toBe("Task not found");
 
       const badRef = await byName.get("TaskUpdate")!.execute({
         taskId: blockerTask.id,
         addBlocks: ["9999"],
       });
       expect(badRef.isError).toBe(true);
-      expect(JSON.parse(badRef.content).missing).toEqual(["9999"]);
+      expect(badRef.content).toBe("Unknown task reference");
+      expect(codeMode<{ missing: readonly string[] }>(badRef).missing).toEqual([
+        "9999",
+      ]);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -306,15 +406,19 @@ describe("model-facing tools", () => {
       });
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
-      await byName.get("TaskCreate")!.execute({ subject: "auto-expand" });
+      await byName.get("TaskCreate")!.execute({
+        subject: "auto-expand",
+        description: "Check panel expansion",
+      });
       expect(expansions).toEqual(["tasks"]);
 
       // TaskUpdate must NOT auto-expand (only create does).
-      const task = JSON.parse(
-        (
-          await byName.get("TaskCreate")!.execute({ subject: "second" })
-        ).content,
-      ).task as { id: string };
+      const task = codeMode<{ task: { id: string } }>(
+        await byName.get("TaskCreate")!.execute({
+          subject: "second",
+          description: "Second task",
+        }),
+      ).task;
       expansions.length = 0;
       await byName.get("TaskUpdate")!.execute({
         taskId: task.id,
@@ -337,7 +441,7 @@ describe("model-facing tools", () => {
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
       const result = await byName
         .get("TaskCreate")!
-        .execute({ subject: "no-tui" });
+        .execute({ subject: "no-tui", description: "No TUI mounted" });
       expect(result.isError).toBeUndefined();
     } finally {
       await rm(home, { recursive: true, force: true });
@@ -632,8 +736,8 @@ describe("model-facing tools", () => {
       ["role", "default"],
     ]);
 
-    expect(byName.has("TaskOutput")).toBe(false);
-    expect(join).not.toHaveBeenCalled();
+    expect(byName.has("TaskOutput")).toBe(true);
+    expect(join).toHaveBeenCalledTimes(1);
   });
 
   it("hides spawn_agent nickname metadata when configured", async () => {

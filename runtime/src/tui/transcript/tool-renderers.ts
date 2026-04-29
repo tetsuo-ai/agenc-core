@@ -156,6 +156,8 @@ function queryTarget(ctx: ToolRenderContext): string {
       "message",
       "task",
       "description",
+      "subject",
+      "title",
     ]) ?? "",
     120,
   );
@@ -269,28 +271,50 @@ function planApprovalDetail(ctx: ToolRenderContext): string | undefined {
   return undefined;
 }
 
-function formatTaskList(ctx: ToolRenderContext): string | undefined {
+function formatTaskRecord(task: Record<string, unknown>, index: number): string {
+  const id = readStringField(task, ["id", "taskId", "task_id"]);
+  const subject = readStringField(task, ["subject", "title", "name", "content"]);
+  const status = readStringField(task, ["status"]);
+  const owner = readStringField(task, ["owner"]);
+  const unresolvedBlockers = readArrayField(task, [
+    "unresolvedBlockers",
+    "blockedBy",
+  ]).filter((value): value is string => typeof value === "string");
+  const blocked =
+    unresolvedBlockers.length > 0
+      ? ` [blocked by ${unresolvedBlockers.map((idValue) => `#${idValue}`).join(", ")}]`
+      : "";
+  const ownerSuffix = owner ? ` (@${owner})` : "";
+  return [
+    id ? `#${id}` : `${index + 1}.`,
+    subject ?? "task",
+    status ? `(${status})` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .concat(ownerSuffix, blocked);
+}
+
+function formatTaskResult(ctx: ToolRenderContext): string | undefined {
   const parsed = parsedResult(ctx);
   const tasks = Array.isArray(parsed)
     ? parsed
     : readArrayField(parsed, ["tasks", "items", "results"]);
-  if (tasks.length === 0) return commonResultDetail(ctx);
-  return tasks
-    .slice(0, 8)
-    .map((task, index) => {
-      if (!isRecord(task)) return `${index + 1}. ${String(task)}`;
-      const id = readStringField(task, ["id", "taskId", "task_id"]);
-      const subject = readStringField(task, ["subject", "title", "name", "content"]);
-      const status = readStringField(task, ["status"]);
-      return [
-        id ? `#${id}` : `${index + 1}.`,
-        subject ?? "task",
-        status ? `(${status})` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-    })
-    .join("\n");
+  if (tasks.length > 0) {
+    return tasks
+      .slice(0, 8)
+      .map((task, index) =>
+        isRecord(task) ? formatTaskRecord(task, index) : `${index + 1}. ${String(task)}`,
+      )
+      .join("\n");
+  }
+  const task = isRecord(parsed) && isRecord(parsed.task) ? parsed.task : parsed;
+  if (isRecord(task) && readStringField(task, ["id", "taskId", "task_id"])) {
+    return formatTaskRecord(task, 0);
+  }
+  const detail = commonResultDetail(ctx);
+  if (detail !== undefined) return detail;
+  return isRecord(parsed) || Array.isArray(parsed) ? "" : undefined;
 }
 
 function agentStatusText(agent: Record<string, unknown>): string {
@@ -348,7 +372,10 @@ function taskRenderer(base: string, target: (ctx: ToolRenderContext) => string):
       title: titleFor(base, ctx, `${base} Running`),
       target: target(ctx),
     }),
-    renderToolResultMessage: (ctx) => ({ detail: formatTaskList(ctx) }),
+    renderToolResultMessage: (ctx) => ({
+      detail: formatTaskResult(ctx),
+      preserveResultLines: true,
+    }),
     renderToolUseErrorMessage: (ctx) => ({ detail: commonResultDetail(ctx) }),
   };
 }

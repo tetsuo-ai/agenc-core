@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -47,7 +47,8 @@ describe("task-store", () => {
       expect(created.metadata).toEqual({ ticket: "ABC-7" });
       expect(created.blocks).toEqual([]);
       expect(created.blockedBy).toEqual([]);
-      expect(created.createdAt).toEqual(created.updatedAt);
+      expect(created).not.toHaveProperty("createdAt");
+      expect(created).not.toHaveProperty("updatedAt");
 
       const loaded = await loadOne(opts, created.id);
       expect(loaded).toEqual(created);
@@ -89,15 +90,9 @@ describe("task-store", () => {
       const b = await createNew(opts, { subject: "B" });
       expect(a.id).toBe("1");
       expect(b.id).toBe("2");
-      // deleteTask uses status=deleted (tombstone). The next allocator
-      // must skip past the high-water mark, not reuse "2".
-      await deleteTask(opts, b.id);
-      // Tombstone keeps the file present, so this exercises the
-      // file-discovery path. Now physically remove the tombstone to
-      // exercise the high-water-mark path: the allocator must still
-      // not reuse "2".
-      const { unlink } = await import("node:fs/promises");
-      await unlink(join(tasksDir(opts), `${b.id}.json`));
+      const deleted = await deleteTask(opts, b.id);
+      expect(deleted.deleted).toBe(true);
+      expect(await loadOne(opts, b.id)).toBeNull();
       const c = await createNew(opts, { subject: "C" });
       expect(c.id).toBe("3");
     });
@@ -114,7 +109,6 @@ describe("task-store", () => {
     await withTempStore(async (opts) => {
       await createNew(opts, { subject: "real" });
       const dir = tasksDir(opts);
-      const { writeFile } = await import("node:fs/promises");
       await writeFile(join(dir, "garbage.json"), "{}", "utf8");
       await writeFile(join(dir, "task-bogus.json"), '{"id":"task-bogus"}', "utf8");
       const all = await loadAll(opts);
@@ -134,10 +128,14 @@ describe("task-store", () => {
   it("rejects unknown task references when adding dependencies", async () => {
     await withTempStore(async (opts) => {
       const a = await createNew(opts, { subject: "A" });
-      const outcome = await updateOne(opts, a.id, { addBlocks: ["9999"] });
+      const outcome = await updateOne(opts, a.id, {
+        subject: "should not persist",
+        addBlocks: ["9999"],
+      });
       expect(outcome.task).toBeUndefined();
       expect(outcome.error?.message).toBe("Unknown task reference");
       expect(outcome.error?.missing).toEqual(["9999"]);
+      expect((await loadOne(opts, a.id))?.subject).toBe("A");
     });
   });
 
@@ -149,7 +147,7 @@ describe("task-store", () => {
     });
   });
 
-  it("rejects edges to deleted tasks", async () => {
+  it("rejects edges to physically deleted tasks", async () => {
     await withTempStore(async (opts) => {
       const a = await createNew(opts, { subject: "A" });
       const b = await createNew(opts, { subject: "B" });
@@ -203,7 +201,7 @@ describe("task-store", () => {
     });
   });
 
-  it("merges metadata partially and clears owner with null", async () => {
+  it("merges metadata partially, deletes null metadata keys, and clears owner", async () => {
     await withTempStore(async (opts) => {
       const t = await createNew(opts, {
         subject: "A",
@@ -212,36 +210,63 @@ describe("task-store", () => {
       });
       const result = await updateOne(opts, t.id, {
         owner: null,
-        metadata: { replaced: 2, added: 3 },
+        metadata: { kept: null, replaced: 2, added: 3 },
       });
       expect(result.task?.owner).toBeUndefined();
-      expect(result.task?.metadata).toEqual({ kept: 1, replaced: 2, added: 3 });
+      expect(result.task?.metadata).toEqual({ replaced: 2, added: 3 });
     });
   });
 
-  it("tombstones deleted tasks (loadOne still returns them)", async () => {
+  it("physically deletes tasks through the deleted status action", async () => {
     await withTempStore(async (opts) => {
       const t = await createNew(opts, { subject: "A" });
-      await updateOne(opts, t.id, { status: "deleted" });
+      const outcome = await updateOne(opts, t.id, { status: "deleted" });
+      expect(outcome.deleted).toBe(true);
       const reloaded = await loadOne(opts, t.id);
-      expect(reloaded?.status).toBe("deleted");
+      expect(reloaded).toBeNull();
     });
   });
 
-  it("listWithUnresolved hides deleted by default", async () => {
+  it("ignores legacy deleted tombstones when loading and listing", async () => {
     await withTempStore(async (opts) => {
       const a = await createNew(opts, { subject: "A" });
       const b = await createNew(opts, { subject: "B" });
-      await updateOne(opts, b.id, { status: "deleted" });
+      const tombstone = {
+        ...b,
+        status: "deleted",
+      };
+      await writeFile(
+        join(tasksDir(opts), `${b.id}.json`),
+        `${JSON.stringify(tombstone, null, 2)}\n`,
+        "utf8",
+      );
+
+      expect(await loadOne(opts, b.id)).toBeNull();
+      expect((await loadAll(opts)).map((t) => t.id)).toEqual([a.id]);
 
       const visible = await listWithUnresolved(opts);
       expect(visible.map((t) => t.id)).toEqual([a.id]);
 
-      const withDeleted = await listWithUnresolved(opts, { includeDeleted: true });
-      expect(withDeleted.map((t) => t.id).sort()).toEqual([a.id, b.id].sort());
+      const c = await createNew(opts, { subject: "C" });
+      expect(c.id).toBe("3");
+    });
+  });
 
-      const onlyDeleted = await listWithUnresolved(opts, { status: "deleted" });
-      expect(onlyDeleted.map((t) => t.id)).toEqual([b.id]);
+  it("cascades dependency references when deleting a task", async () => {
+    await withTempStore(async (opts) => {
+      const blocker = await createNew(opts, { subject: "Blocker" });
+      const target = await createNew(opts, { subject: "Target" });
+      const downstream = await createNew(opts, { subject: "Downstream" });
+
+      await updateOne(opts, blocker.id, { addBlocks: [target.id, downstream.id] });
+      await updateOne(opts, target.id, { addBlocks: [downstream.id] });
+
+      await updateOne(opts, target.id, { status: "deleted" });
+
+      expect((await loadOne(opts, blocker.id))?.blocks).toEqual([downstream.id]);
+      expect((await loadOne(opts, downstream.id))?.blockedBy).toEqual([
+        blocker.id,
+      ]);
     });
   });
 
@@ -263,7 +288,6 @@ describe("task-store", () => {
         ...parsed,
         blockedBy: [...parsed.blockedBy, "9999"],
       };
-      const { writeFile } = await import("node:fs/promises");
       await writeFile(path, JSON.stringify(tampered), "utf8");
 
       await updateOne(opts, b.id, { status: "completed" });
@@ -285,8 +309,6 @@ describe("task-store", () => {
       status: "pending",
       blocks: [],
       blockedBy: ["2", "3", "4"],
-      createdAt: "0",
-      updatedAt: "0",
     };
     const byId = new Map<string, StoredTask>([
       [
@@ -298,8 +320,6 @@ describe("task-store", () => {
           status: "completed",
           blocks: [],
           blockedBy: [],
-          createdAt: "0",
-          updatedAt: "0",
         },
       ],
       [
@@ -311,21 +331,6 @@ describe("task-store", () => {
           status: "in_progress",
           blocks: [],
           blockedBy: [],
-          createdAt: "0",
-          updatedAt: "0",
-        },
-      ],
-      [
-        "4",
-        {
-          id: "4",
-          subject: "D",
-          description: "",
-          status: "deleted",
-          blocks: [],
-          blockedBy: [],
-          createdAt: "0",
-          updatedAt: "0",
         },
       ],
     ]);

@@ -109,6 +109,12 @@ describe("DEFAULT_BINDINGS", () => {
     );
   });
 
+  test("binds the advertised task panel toggle", () => {
+    expect(DEFAULT_BINDINGS.global[normalizeKeySequence("ctrl+t")]).toBe(
+      "app:toggleTasks",
+    );
+  });
+
   test("binds transcript copy-mode pager keys before global process controls", () => {
     expect(DEFAULT_BINDINGS.transcript[normalizeKeySequence("ctrl+d")]).toBe(
       "scroll:halfPageDown",
