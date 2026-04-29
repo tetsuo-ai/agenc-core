@@ -166,9 +166,25 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
   const [questionIndex, setQuestionIndex] = useState(0);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [selections, setSelections] = useState<Record<string, OptionSelection>>({});
+  const selectionsRef = useRef<Record<string, OptionSelection>>({});
   const [otherInputActive, setOtherInputActive] = useState(false);
   const resolvedRef = useRef(false);
   const setActiveContext = useSetKeybindingContext();
+
+  const updateSelections = useCallback(
+    (
+      updater: (
+        current: Record<string, OptionSelection>,
+      ) => Record<string, OptionSelection>,
+    ): void => {
+      setSelections((current) => {
+        const next = updater(current);
+        selectionsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
 
   const resolveOnce = useCallback(
     (decision: AskUserQuestionDecision) => {
@@ -210,10 +226,10 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
       resolveOnce({ behavior: "deny" });
       return;
     }
-    const answered = buildAnsweredInput(parsed.input, selections);
+    const answered = buildAnsweredInput(parsed.input, selectionsRef.current);
     recordAskUserQuestionResponse(requestId, answered);
     resolveOnce({ behavior: "allow" });
-  }, [parsed, requestId, resolveOnce, selections]);
+  }, [parsed, requestId, resolveOnce]);
 
   const resolvePlanInterviewAction = useCallback(
     (action: "chat_about_this" | "skip_plan_interview") => {
@@ -240,7 +256,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
     const lastOptionIndex = options.length - 1;
 
     const updateSelection = (value: string): void => {
-      setSelections((current) => {
+      updateSelections((current) => {
         const previous = current[currentQuestion.question] ?? { selected: [] };
         const selected = currentQuestion.multiSelect === true
           ? toggleValue(previous.selected, value)
@@ -283,7 +299,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
           return;
         }
         if (key.backspace || key.delete) {
-          setSelections((current) => {
+          updateSelections((current) => {
             const previous = current[currentQuestion.question] ?? { selected: [OTHER_VALUE] };
             return {
               ...current,
@@ -304,7 +320,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
           !key.meta &&
           !key.tab
         ) {
-          setSelections((current) => {
+          updateSelections((current) => {
             const previous = current[currentQuestion.question] ?? { selected: [OTHER_VALUE] };
             return {
               ...current,
@@ -353,7 +369,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
         const value = options[focusedIndex] ?? options[0]!;
         if (value === OTHER_VALUE) {
           setOtherInputActive(true);
-          setSelections((current) => ({
+          updateSelections((current) => ({
             ...current,
             [currentQuestion.question]: {
               ...(current[currentQuestion.question] ?? { selected: [] }),
@@ -396,6 +412,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
     resolvePlanInterviewAction,
     stdin,
     submit,
+    updateSelections,
   ]);
 
   if (!parsed.ok) {

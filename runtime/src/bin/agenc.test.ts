@@ -1383,6 +1383,24 @@ describe("prepareTurnRuntimeInputs", () => {
       { name: "alpha", instructions: "MCP-TWO" },
     ]);
 
+    await writeFile(
+      join(repoRoot, "AGENC.md"),
+      "PROJECT-THREE\n@include ../missing-secret.md",
+      "utf8",
+    );
+    await prepareTurnRuntimeInputs({
+      session,
+      configStore: store,
+      workspaceRoot: nested,
+      memoryDir,
+      memoryMdPath,
+      registry: { tools: [{ name: "bash" }] },
+    });
+    expect(
+      (session as unknown as { projectMemoryWarnings?: readonly string[] })
+        .projectMemoryWarnings?.[0],
+    ).toContain("AGENC.md include dropped");
+
     await rm(repoRoot, { recursive: true, force: true });
   });
 });

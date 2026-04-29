@@ -36,6 +36,11 @@ import {
 import { getDisplayForCommand } from "../keybindings/shortcutFormat.js";
 import type { PendingPermissionRequest } from "../../permissions/context.js";
 import { MarkdownBlock } from "../transcript/MarkdownBlock.js";
+import {
+  permissionComponentForTool,
+  permissionSurfaceForTool,
+  type PermissionRequestProps,
+} from "./PermissionRequest.js";
 
 export type ApprovalBehavior = "allow" | "allow-session" | "deny" | "abort";
 type FocusZone = "decision" | "details";
@@ -60,6 +65,12 @@ export interface ApprovalOverlayProps {
   readonly request: ApprovalOverlayRequest;
   readonly onResolve: (decision: ApprovalDecision) => void;
   readonly abortSignal: AbortSignal;
+}
+
+export function approvalBodyComponentForTool(
+  toolName: string,
+): React.ComponentType<PermissionRequestProps> | null {
+  return permissionComponentForTool(toolName);
 }
 
 const MAX_PREVIEW_LINES = 8;
@@ -479,15 +490,22 @@ export const PlanApprovalRequest: React.FC<{ args: unknown }> = ({ args }) => {
 };
 
 function renderToolBody(tool: string, args: unknown): React.ReactElement {
+  const surface = permissionSurfaceForTool(tool);
   const lowerTool = tool.toLowerCase();
-  if (isPlanApprovalTool(tool)) {
+  if (isPlanApprovalTool(tool) || surface === "exit-plan") {
     return <PlanApprovalRequest args={args} />;
   }
   if (tool === "NotebookEdit") return <NotebookRequest args={args} />;
-  if (tool === "WebFetch" || tool === "WebSearch") {
+  if (surface === "web") {
     return <WebRequest args={args} />;
   }
-  if (tool === "Skill") return <SkillRequest args={args} />;
+  if (surface === "skill") return <SkillRequest args={args} />;
+  if (surface === "shell") return <BashRequest args={args} />;
+  if (surface === "file") {
+    return lowerTool.includes("edit")
+      ? <EditFileRequest args={args} />
+      : <WriteFileRequest args={args} />;
+  }
   if (
     tool === "ListMcpResourcesTool" ||
     tool === "ReadMcpResourceTool" ||
@@ -508,10 +526,6 @@ function renderToolBody(tool: string, args: unknown): React.ReactElement {
   if (tool === "LSP") return <LspRequest args={args} />;
   if (lowerTool.includes("sandbox")) return <SandboxRequest args={args} />;
   switch (tool) {
-    case "Bash":
-    case "system.bash":
-    case "PowerShell":
-      return <BashRequest args={args} />;
     case "write_file":
     case "Write":
       return <WriteFileRequest args={args} />;

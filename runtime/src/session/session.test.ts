@@ -165,6 +165,8 @@ function buildSession(
   overrides: {
     services?: Partial<SessionServices>;
     eventQueue?: AsyncQueue<Event> | null;
+    sessionConfiguration?: SessionConfiguration;
+    config?: Config;
   } = {},
 ): Session {
   const services = {
@@ -188,13 +190,14 @@ function buildSession(
   const opts: SessionOpts = {
     conversationId: "conv-test",
     initialState: {
-      sessionConfiguration: mkSessionConfiguration(),
+      sessionConfiguration:
+        overrides.sessionConfiguration ?? mkSessionConfiguration(),
       history: [],
     },
     features: mkFeatures(),
     services,
     jsRepl: { id: "repl-test" },
-    config: mkConfig(),
+    config: overrides.config ?? mkConfig(),
     modelInfo: mkModelInfo(),
     ...(overrides.eventQueue === null
       ? {}
@@ -289,6 +292,23 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
     expect(session.services.permissionModeRegistry.current().mode).toBe(
       "acceptEdits",
     );
+  });
+
+  it("hydrates active agent definitions from the session role catalog", () => {
+    const session = buildSession({
+      config: {
+        ...mkConfig(),
+        agentRoles: [
+          { name: "worker", description: "Implementation work" },
+          { name: "explorer", description: "" },
+        ],
+      },
+    });
+
+    expect(session.agentDefinitions.activeAgents).toEqual([
+      { agentType: "worker", whenToUse: "Implementation work" },
+      { agentType: "explorer" },
+    ]);
   });
 });
 

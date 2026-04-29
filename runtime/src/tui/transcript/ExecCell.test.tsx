@@ -148,6 +148,22 @@ describe("ExecCell status badge", () => {
     unmount();
   });
 
+  test("truncated output metadata renders a notice", async () => {
+    const { unmount, stdout } = await mount(
+      <ExecCell
+        command="yes"
+        stdout="line\n"
+        stderr=""
+        exitCode={0}
+        truncated
+      />,
+    );
+    const frame = await captureFrame(stdout);
+    expect(frame).toContain("Output");
+    expect(frame).toContain("truncated");
+    unmount();
+  });
+
   test("sanitizes terminal control sequences before rendering", async () => {
     const { unmount, stdout } = await mount(
       <ExecCell

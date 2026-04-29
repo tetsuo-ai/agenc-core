@@ -54,6 +54,44 @@ function readTuiLayoutConfig(config: unknown): TuiLayoutConfig | undefined {
   return value as TuiLayoutConfig;
 }
 
+function readStringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter(
+    (item): item is string => typeof item === "string" && item.trim().length > 0,
+  );
+  return items.length > 0 ? items : undefined;
+}
+
+function readConfigWarnings(config: unknown): readonly string[] | undefined {
+  if (!config || typeof config !== "object") return undefined;
+  const record = config as {
+    readonly configWarnings?: unknown;
+    readonly warnings?: unknown;
+    readonly _warnings?: unknown;
+  };
+  return (
+    readStringArray(record.configWarnings) ??
+    readStringArray(record.warnings) ??
+    readStringArray(record._warnings)
+  );
+}
+
+function readConfigStoreWarnings(
+  configStore: ConfigStoreLike,
+): readonly string[] | undefined {
+  const warnings = (
+    configStore as {
+      readonly warnings?: () => readonly string[];
+    }
+  ).warnings;
+  if (typeof warnings !== "function") return undefined;
+  try {
+    return readStringArray(warnings.call(configStore));
+  } catch {
+    return undefined;
+  }
+}
+
 export interface TuiConfigView {
   readonly statusLineItems?: readonly string[];
   readonly composerAttachmentsConfig?: ComposerAttachmentsConfig;
@@ -61,6 +99,7 @@ export interface TuiConfigView {
   readonly voiceInput?: VoiceInputConfig;
   readonly tuiLayout?: TuiLayoutConfig;
   readonly autoUpdates?: boolean;
+  readonly configWarnings?: readonly string[];
 }
 
 export function readTuiConfigView(config: unknown): TuiConfigView {
@@ -69,6 +108,7 @@ export function readTuiConfigView(config: unknown): TuiConfigView {
   const editorMode = readEditorMode(config);
   const voiceInput = readVoiceInputConfig(config);
   const tuiLayout = readTuiLayoutConfig(config);
+  const configWarnings = readConfigWarnings(config);
   const autoUpdates =
     !!config &&
     typeof config === "object" &&
@@ -81,6 +121,7 @@ export function readTuiConfigView(config: unknown): TuiConfigView {
     ...(editorMode !== undefined ? { editorMode } : {}),
     ...(voiceInput !== undefined ? { voiceInput } : {}),
     ...(tuiLayout !== undefined ? { tuiLayout } : {}),
+    ...(configWarnings !== undefined ? { configWarnings } : {}),
     autoUpdates,
   };
 }
@@ -88,6 +129,7 @@ export function readTuiConfigView(config: unknown): TuiConfigView {
 export function readTuiConfigViewFromStore(
   configStore: ConfigStoreLike,
 ): TuiConfigView {
+  const configWarnings = readConfigStoreWarnings(configStore);
   const current = (
     configStore as {
       readonly current?: () => unknown;
@@ -96,14 +138,20 @@ export function readTuiConfigViewFromStore(
   ).current;
   if (typeof current === "function") {
     try {
-      return readTuiConfigView(current.call(configStore));
+      return {
+        ...readTuiConfigView(current.call(configStore)),
+        ...(configWarnings !== undefined ? { configWarnings } : {}),
+      };
     } catch {
-      return {};
+      return configWarnings !== undefined ? { configWarnings } : {};
     }
   }
-  return readTuiConfigView(
-    (configStore as { readonly snapshot?: unknown }).snapshot,
-  );
+  return {
+    ...readTuiConfigView(
+      (configStore as { readonly snapshot?: unknown }).snapshot,
+    ),
+    ...(configWarnings !== undefined ? { configWarnings } : {}),
+  };
 }
 
 export function useTuiConfigView(
@@ -128,7 +176,11 @@ export function useTuiConfigView(
     }
 
     return subscribe.call(configStore, (nextConfig: unknown) => {
-      setView(readTuiConfigView(nextConfig));
+      const configWarnings = readConfigStoreWarnings(configStore);
+      setView({
+        ...readTuiConfigView(nextConfig),
+        ...(configWarnings !== undefined ? { configWarnings } : {}),
+      });
     });
   }, [configStore]);
 

@@ -77,7 +77,10 @@ import {
   DEFAULT_STATUS_LINE_ITEMS,
   StatusLineConfig,
 } from "./cockpit/StatusLineConfig.js";
-import { StatusNotices } from "./cockpit/StatusNotices.js";
+import {
+  readRuntimeStatusNoticeWarnings,
+  StatusNotices,
+} from "./cockpit/StatusNotices.js";
 import { MessageList } from "./transcript/MessageList.js";
 import {
   Composer,
@@ -493,6 +496,7 @@ function TUIRoot({
     () => buildStatusLineSession(session, mode, effectiveModel),
     [mode, effectiveModel, session, events.length],
   );
+  const statusNoticeWarnings = readRuntimeStatusNoticeWarnings(session);
   const handleCycleMode = useCallback((): void => {
     const registry = session.services.permissionModeRegistry;
     if (!hasPermissionModeRegistryUpdate(registry)) {
@@ -672,6 +676,21 @@ function TUIRoot({
             session={statusLineSession}
             messages={messages}
             pendingApprovalCount={pendingRequests.length}
+            {...(tuiConfigView.configWarnings !== undefined
+              ? { configWarnings: tuiConfigView.configWarnings }
+              : {})}
+            {...(statusNoticeWarnings.projectMemoryWarnings !== undefined
+              ? {
+                  projectMemoryWarnings:
+                    statusNoticeWarnings.projectMemoryWarnings,
+                }
+              : {})}
+            {...(statusNoticeWarnings.agentDefinitionWarnings !== undefined
+              ? {
+                  agentDefinitionWarnings:
+                    statusNoticeWarnings.agentDefinitionWarnings,
+                }
+              : {})}
           />
           <MessageList
             messages={messages}

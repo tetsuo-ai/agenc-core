@@ -1,5 +1,9 @@
 import type { TranscriptMessage } from "./MessageList.js";
-import { readStringField, toolRendererTone } from "./tool-renderers.js";
+import {
+  readSearchListToneForShellCommand,
+  readStringField,
+  toolRendererTone,
+} from "./tool-renderers.js";
 import {
   compactRecoverableToolFailureMessage,
   isHiddenRecoverableToolFailure,
@@ -32,11 +36,88 @@ function toolTarget(message: TranscriptMessage): string {
   );
 }
 
-function isReadSearchTool(message: TranscriptMessage): boolean {
-  if (message.kind !== "tool_call") return false;
-  if (message.isError === true) return false;
+function readSearchTone(
+  message: TranscriptMessage,
+): "read" | "search" | "list" | null {
+  if (message.kind !== "tool_call") return null;
+  if (message.isError === true) return null;
   const tone = toolRendererTone(message.toolName);
-  return tone === "read" || tone === "search" || tone === "list";
+  if (tone === "read" || tone === "search" || tone === "list") return tone;
+  if (tone !== "exec") return null;
+  return readSearchListToneForShellCommand(
+    message.execCommand ??
+      readStringField(message.toolArgs, ["command", "cmd", "script"]),
+  );
+}
+
+function isReadSearchTool(message: TranscriptMessage): boolean {
+  return readSearchTone(message) !== null;
+}
+
+function toolGroupCategory(
+  message: TranscriptMessage,
+): "read-search" | "exec" | null {
+  if (message.kind !== "tool_call") return null;
+  if (isReadSearchTool(message)) return "read-search";
+  return toolRendererTone(message.toolName) === "exec" ? "exec" : null;
+}
+
+function groupedToolEntry(
+  entry: TranscriptMessage,
+): NonNullable<TranscriptMessage["groupedTools"]>[number] {
+  const collapseTone = readSearchTone(entry);
+  return {
+    id: entry.id,
+    toolName: entry.toolName ?? "Tool",
+    target: toolTarget(entry) || entry.execCommand || "",
+    ...(collapseTone !== null ? { collapseTone } : {}),
+    content: entry.content,
+    ...(entry.toolArgs !== undefined ? { toolArgs: entry.toolArgs } : {}),
+    ...(entry.isError === true ? { isError: true } : {}),
+    ...(entry.isComplete !== undefined ? { isComplete: entry.isComplete } : {}),
+    ...(entry.toolProgressContent !== undefined
+      ? { toolProgressContent: entry.toolProgressContent }
+      : {}),
+    ...(entry.toolResultContent !== undefined
+      ? { toolResultContent: entry.toolResultContent }
+      : {}),
+    ...(entry.toolResultMetadata !== undefined
+      ? { toolResultMetadata: entry.toolResultMetadata }
+      : {}),
+    ...(entry.execCommand !== undefined ? { execCommand: entry.execCommand } : {}),
+    ...(entry.execStdout !== undefined ? { execStdout: entry.execStdout } : {}),
+    ...(entry.execStderr !== undefined ? { execStderr: entry.execStderr } : {}),
+    ...(entry.execExitCode !== undefined
+      ? { execExitCode: entry.execExitCode }
+      : {}),
+    ...(entry.execDurationMs !== undefined
+      ? { execDurationMs: entry.execDurationMs }
+      : {}),
+    ...(entry.execTimedOut !== undefined
+      ? { execTimedOut: entry.execTimedOut }
+      : {}),
+    ...(entry.execTruncated !== undefined
+      ? { execTruncated: entry.execTruncated }
+      : {}),
+    ...(entry.execCwdWasReset !== undefined
+      ? { execCwdWasReset: entry.execCwdWasReset }
+      : {}),
+    ...(entry.execBackgroundTaskHint !== undefined
+      ? { execBackgroundTaskHint: entry.execBackgroundTaskHint }
+      : {}),
+    ...(entry.execImagePaths !== undefined
+      ? { execImagePaths: entry.execImagePaths }
+      : {}),
+    ...(entry.execNoOutputExpected !== undefined
+      ? { execNoOutputExpected: entry.execNoOutputExpected }
+      : {}),
+    ...(entry.execReturnCodeInterpretation !== undefined
+      ? { execReturnCodeInterpretation: entry.execReturnCodeInterpretation }
+      : {}),
+    ...(entry.execBackgroundTaskId !== undefined
+      ? { execBackgroundTaskId: entry.execBackgroundTaskId }
+      : {}),
+  };
 }
 
 function isEditFailure(message: TranscriptMessage): boolean {
@@ -79,7 +160,7 @@ function readSearchLabel(group: readonly TranscriptMessage[]): string {
   let searches = 0;
   let lists = 0;
   for (const message of group) {
-    const tone = toolRendererTone(message.toolName);
+    const tone = readSearchTone(message);
     if (tone === "read") reads += 1;
     if (tone === "search") searches += 1;
     if (tone === "list") lists += 1;
@@ -95,43 +176,79 @@ function readSearchLabel(group: readonly TranscriptMessage[]): string {
   return parts.join(", ");
 }
 
-function collapseReadSearchGroups(
+function toolGroupLabel(group: readonly TranscriptMessage[]): string {
+  const labels = new Map<string, { singular: string; plural: string }>([
+    ["read", { singular: "read", plural: "reads" }],
+    ["search", { singular: "search", plural: "searches" }],
+    ["list", { singular: "list", plural: "lists" }],
+    ["exec", { singular: "command", plural: "commands" }],
+    ["write", { singular: "write", plural: "writes" }],
+    ["edit", { singular: "edit", plural: "edits" }],
+    ["agent", { singular: "agent action", plural: "agent actions" }],
+    ["plan", { singular: "plan action", plural: "plan actions" }],
+  ]);
+  const counts = new Map<string, number>();
+  let errorCount = 0;
+  for (const message of group) {
+    const tone = toolRendererTone(message.toolName);
+    counts.set(tone, (counts.get(tone) ?? 0) + 1);
+    if (message.isError === true) errorCount += 1;
+  }
+  const parts = Array.from(counts.entries()).map(([tone, count]) => {
+    const label = labels.get(tone) ?? {
+      singular: "tool",
+      plural: "tools",
+    };
+    return `${count} ${count === 1 ? label.singular : label.plural}`;
+  });
+  if (errorCount > 0) {
+    parts.push(`${errorCount} error${errorCount === 1 ? "" : "s"}`);
+  }
+  return parts.join(", ");
+}
+
+function collapseToolBurstGroups(
   messages: readonly TranscriptMessage[],
 ): TranscriptMessage[] {
   const out: TranscriptMessage[] = [];
   let index = 0;
   while (index < messages.length) {
     const message = messages[index]!;
-    if (!isReadSearchTool(message)) {
+    const category = toolGroupCategory(message);
+    if (category === null) {
       out.push(message);
       index += 1;
       continue;
     }
 
     const group: TranscriptMessage[] = [];
-    while (index < messages.length && isReadSearchTool(messages[index]!)) {
+    while (
+      index < messages.length &&
+      toolGroupCategory(messages[index]!) === category &&
+      messages[index]!.turnId === message.turnId
+    ) {
       group.push(messages[index]!);
       index += 1;
     }
 
-    if (group.length < 2) {
+    if (category !== "read-search" && group.length < 2) {
       out.push(...group);
       continue;
     }
 
     const first = group[0]!;
     out.push({
-      id: `group:read-search:${group.map((entry) => entry.id).join(":")}`,
+      id: `group:${category}:${group.map((entry) => entry.id).join(":")}`,
       turnId: first.turnId,
       kind: "tool_group",
-      content: readSearchLabel(group),
+      label: category,
+      content: isReadSearchTool(first) && group.every(isReadSearchTool)
+        ? readSearchLabel(group)
+        : toolGroupLabel(group),
       timestamp: first.timestamp,
       isComplete: group.every((entry) => entry.isComplete !== false),
       groupedTools: group.map((entry) => ({
-        id: entry.id,
-        toolName: entry.toolName ?? "Tool",
-        target: toolTarget(entry),
-        isError: entry.isError === true,
+        ...groupedToolEntry(entry),
       })),
     });
   }
@@ -331,7 +448,7 @@ export function normalizeTranscriptMessages(
   return collapseTeammateShutdowns(
     collapseBackgroundShellNotifications(
       collapseHookSummaries(
-        collapseReadSearchGroups(collapseRepeatedEditFailures(visible)),
+        collapseToolBurstGroups(collapseRepeatedEditFailures(visible)),
       ),
     ),
   );

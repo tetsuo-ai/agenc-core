@@ -464,10 +464,12 @@ export const Composer: React.FC<ComposerProps> = ({
   // Hold the latest `state.value` in a ref so imperative callbacks
   // (paste-complete → appendHistory) can read the freshest buffer
   // without being recreated on every render.
+  const stateRef = useRef(state);
   const valueRef = useRef(state.value);
   useEffect(() => {
+    stateRef.current = state;
     valueRef.current = state.value;
-  }, [state.value]);
+  }, [state]);
 
   const pendingPlainCharRef = useRef<{
     readonly text: string;
@@ -480,14 +482,18 @@ export const Composer: React.FC<ComposerProps> = ({
     if (pending === null) return "";
     clearTimeout(pending.timer);
     pendingPlainCharRef.current = null;
-    const cursor = Math.max(0, Math.min(state.cursor, state.value.length));
+    const latestState = stateRef.current;
+    const cursor = Math.max(
+      0,
+      Math.min(latestState.cursor, latestState.value.length),
+    );
     valueRef.current =
-      state.value.slice(0, cursor) +
+      latestState.value.slice(0, cursor) +
       pending.text +
-      state.value.slice(cursor);
+      latestState.value.slice(cursor);
     dispatch({ type: "INSERT", text: pending.text });
     return pending.text;
-  }, [dispatch, state.cursor, state.value]);
+  }, [dispatch]);
 
   const valueAfterFlushingPendingPlainChar = useCallback((): string => {
     flushPendingPlainChar();
@@ -680,6 +686,15 @@ export const Composer: React.FC<ComposerProps> = ({
         const timer = setTimeout(() => {
           if (pendingPlainCharRef.current?.timer !== timer) return;
           pendingPlainCharRef.current = null;
+          const latestState = stateRef.current;
+          const cursor = Math.max(
+            0,
+            Math.min(latestState.cursor, latestState.value.length),
+          );
+          valueRef.current =
+            latestState.value.slice(0, cursor) +
+            event.input +
+            latestState.value.slice(cursor);
           dispatch({ type: "INSERT", text: event.input });
         }, PASTE_BURST_CHAR_INTERVAL_MS + 1);
         pendingPlainCharRef.current = {

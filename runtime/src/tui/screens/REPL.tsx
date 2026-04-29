@@ -1,20 +1,17 @@
 /**
  * REPL — main interactive AgenC TUI screen.
  *
- * **Skeleton port.** Upstream `REPL.tsx` is a 5000+ LOC composition that
- * pulls in voice, IDE @-mention, swarm coordinator, marketplace, buddy,
- * frustration detection, AutoUpdater, plugin hint menus, and dozens of
- * other product surfaces that AgenC does not ship today. Porting all of
- * those literally would either require porting the entire upstream
- * runtime or stubbing every dependency to no-op — both worse than this
- * skeleton.
+ * OpenClaude-parity composition for the AgenC runtime surfaces that exist
+ * locally. Upstream `REPL.tsx` also pulls in product-specific surfaces that
+ * AgenC does not ship today; this screen keeps the live AgenC paths aligned
+ * with OpenClaude behavior where an equivalent signal/component exists.
  *
  * What this file does:
  *
  *   1. Mounts the tranche-4 transcript stack
  *      (`MessageList` + `MessageSelector` + `VirtualMessageList`) inside
  *      a flex column.
- *   2. Mounts the existing AgenC composer (`Composer` + `PromptInput`).
+ *   2. Mounts the live AgenC composer (`Composer`).
  *   3. Wires the existing AgenC permission overlays
  *      (`ApprovalOverlay`, `AskUserQuestionOverlay`, `InteractiveHandler`,
  *      `PermissionRequest`).
@@ -102,7 +99,10 @@ import {
   DEFAULT_STATUS_LINE_ITEMS,
   StatusLineConfig,
 } from "../cockpit/StatusLineConfig.js";
-import { StatusNotices } from "../cockpit/StatusNotices.js";
+import {
+  readRuntimeStatusNoticeWarnings,
+  StatusNotices,
+} from "../cockpit/StatusNotices.js";
 
 import { useQuery } from "../hooks/useQuery.js";
 import { eventsToMessages } from "../state/events-to-messages.js";
@@ -343,6 +343,7 @@ export function REPL({
     () => buildStatusLineSession(session, mode, effectiveModel),
     [mode, effectiveModel, session, events.length],
   );
+  const statusNoticeWarnings = readRuntimeStatusNoticeWarnings(session);
 
   // Overlay adapter for InteractiveHandler.
   const overlayAdapter = useMemo<OverlayContextLike>(
@@ -479,6 +480,21 @@ export function REPL({
           session={statusLineSession}
           messages={messages}
           pendingApprovalCount={pendingRequests.length}
+          {...(tuiConfigView.configWarnings !== undefined
+            ? { configWarnings: tuiConfigView.configWarnings }
+            : {})}
+          {...(statusNoticeWarnings.projectMemoryWarnings !== undefined
+            ? {
+                projectMemoryWarnings:
+                  statusNoticeWarnings.projectMemoryWarnings,
+              }
+            : {})}
+          {...(statusNoticeWarnings.agentDefinitionWarnings !== undefined
+            ? {
+                agentDefinitionWarnings:
+                  statusNoticeWarnings.agentDefinitionWarnings,
+              }
+            : {})}
         />
         <MessageList
           messages={messages}

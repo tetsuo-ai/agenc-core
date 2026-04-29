@@ -1,6 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
+import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
+import React from "react";
 import { describe, expect, test } from "vitest";
 
+import instances from "../ink/instances.js";
+import { createRoot } from "../ink/root.js";
+import { charInCellAt } from "../ink/screen.js";
+import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
+import { MessageList } from "../transcript/MessageList.js";
 import { normalizeTranscriptMessages } from "../transcript/normalize.js";
 import {
   eventsToMessages,
@@ -9,7 +17,7 @@ import {
 
 const GOLDEN_ROLLOUT_PATH =
   process.env.AGENC_TUI_PARITY_ROLLOUT ??
-  "/home/tetsuo/.agenc/projects/home-tetsuo-git-stream-test-agenc-shell-843ca075/sessions/conv-mojpvw10/rollout-2026-04-29T07-12-01-769Z-conv-mojpvw10.jsonl";
+  fileURLToPath(new URL("fixtures/conv-mojpvw10-rollout.jsonl", import.meta.url));
 
 const TRANSCRIPT_EVENT_TYPES = new Set([
   "session_configured",
@@ -45,6 +53,60 @@ const TRANSCRIPT_EVENT_TYPES = new Set([
   "plan_exited",
 ]);
 
+type TestStdin = PassThrough & {
+  isTTY: boolean;
+  setRawMode: (mode: boolean) => void;
+  ref: () => void;
+  unref: () => void;
+};
+
+function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as TestStdin;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => undefined;
+  stdin.ref = () => undefined;
+  stdin.unref = () => undefined;
+  (stdout as unknown as { columns: number }).columns = 120;
+  (stdout as unknown as { rows: number }).rows = 48;
+  (stdout as unknown as { isTTY: boolean }).isTTY = true;
+  return { stdout, stdin };
+}
+
+function latestFrameText(stdout: PassThrough): string {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen, x, y) ?? " ";
+    }
+    rows.push(row.trimEnd());
+  }
+  return rows.join("\n");
+}
+
+async function renderToFrame(element: React.ReactElement): Promise<string> {
+  const { stdout, stdin } = createStreams();
+  const root = await createRoot({
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    patchConsole: false,
+  });
+  root.render(element);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const frame = latestFrameText(stdout);
+  root.unmount();
+  instances.delete(stdout as unknown as NodeJS.WriteStream);
+  stdin.end();
+  stdout.end();
+  return frame;
+}
+
 function readGoldenRolloutEvents(): TranscriptSourceEvent[] {
   if (!existsSync(GOLDEN_ROLLOUT_PATH)) {
     throw new Error(
@@ -75,8 +137,12 @@ function readGoldenRolloutEvents(): TranscriptSourceEvent[] {
   return events;
 }
 
+function stripSourceIdentifierTokens(text: string): string {
+  return text.replace(/\b[A-Za-z0-9_-]+\.[A-Za-z0-9][A-Za-z0-9._-]*\b/gu, "");
+}
+
 describe("OpenClaude real-log replay parity gate", () => {
-  test("collapses conv-mojpvw10 into a clean, ordered transcript", () => {
+  test("collapses conv-mojpvw10 into a clean, ordered transcript", async () => {
     const messages = normalizeTranscriptMessages(
       eventsToMessages(readGoldenRolloutEvents()),
     );
@@ -89,6 +155,14 @@ describe("OpenClaude real-log replay parity gate", () => {
       .map((message) => message.content)
       .join("\n");
     const rendered = JSON.stringify(messages).toLowerCase();
+    const rawReadToolRows = messages.filter(
+      (message) =>
+        message.kind === "tool_call" &&
+        message.isError !== true &&
+        /^(?:fileread|read|readfile|read_file|grep|glob|ls|listdir|list_dir|system\.grep|system\.glob|system\.listdir)$/iu.test(
+          message.toolName ?? "",
+        ),
+    );
     const lastAssistantIndex = messages.findLastIndex(
       (message) => message.kind === "assistant",
     );
@@ -105,10 +179,22 @@ describe("OpenClaude real-log replay parity gate", () => {
     expect(kindCounts.assistant ?? 0).toBeLessThanOrEqual(5);
     expect(kindCounts.tool_call ?? 0).toBeLessThanOrEqual(12);
     expect(kindCounts.tool_group ?? 0).toBeGreaterThanOrEqual(1);
+    expect(rawReadToolRows).toHaveLength(0);
     expect(trailingToolRows).toHaveLength(0);
     expect(rendered).not.toContain("llm_request_metadata");
-    expect(assistantText).not.toMatch(
+    expect(stripSourceIdentifierTokens(assistantText)).not.toMatch(
       /\b(?:let me|still failing|wait|i need to|i will run|i'll run)\b/iu,
     );
+
+    const frame = await renderToFrame(
+      React.createElement(
+        KeybindingProvider,
+        null,
+        React.createElement(MessageList, { messages }),
+      ),
+    );
+    expect(frame).not.toContain("#ifndef AGENC_INPUT_H");
+    expect(frame).not.toContain("Lexer *lexer_create");
+    expect(frame).not.toContain("cmake_minimum_required");
   });
 });

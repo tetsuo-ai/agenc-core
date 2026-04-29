@@ -151,6 +151,62 @@ function commandTarget(ctx: ToolRenderContext): string {
   );
 }
 
+export function readSearchListToneForShellCommand(
+  command: string | undefined,
+): "read" | "search" | "list" | null {
+  if (!command) return null;
+  const stripped = command
+    .replace(/\\\r?\n/gu, " ")
+    .split(/\r?\n/gu)
+    .map((line) => line.replace(/^\s*(?:#.*)?$/u, "").trim())
+    .filter((line) => line.length > 0)
+    .join(" && ");
+  if (stripped.length === 0) return null;
+
+  const segments = stripped.split(/\s*(?:&&|\|\||;|\|)\s*/u);
+  let hasRead = false;
+  let hasSearch = false;
+  let hasList = false;
+  let hasNonNeutral = false;
+  for (const segment of segments) {
+    const normalized = segment.trim();
+    if (normalized.length === 0) continue;
+    const withoutWrappers = normalized
+      .replace(
+        /^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S+)\s+)*)/u,
+        "",
+      )
+      .replace(/^(?:sudo|command|builtin)\s+/u, "")
+      .replace(/^timeout\s+(?:-\S+\s+)*\S+\s+/u, "");
+    const baseCommand = withoutWrappers.trim().split(/\s+/u)[0];
+    if (!baseCommand) continue;
+    if (/^(?:cd|echo|printf|true|false|:)$/u.test(baseCommand)) continue;
+    hasNonNeutral = true;
+    if (/^(?:ls|tree|du)$/u.test(baseCommand)) {
+      hasList = true;
+      continue;
+    }
+    if (/^(?:find|grep|rg|ag|ack|locate|which|whereis)$/u.test(baseCommand)) {
+      hasSearch = true;
+      continue;
+    }
+    if (
+      /^(?:cat|head|tail|less|more|wc|stat|file|strings|jq|awk|cut|sort|uniq|tr)$/u.test(
+        baseCommand,
+      )
+    ) {
+      hasRead = true;
+      continue;
+    }
+    return null;
+  }
+  if (!hasNonNeutral) return null;
+  if (hasList) return "list";
+  if (hasSearch) return "search";
+  if (hasRead) return "read";
+  return null;
+}
+
 function queryTarget(ctx: ToolRenderContext): string {
   return compact(
     readStringField(ctx.toolArgs, [
@@ -695,7 +751,14 @@ const REGISTERED_RENDERERS: readonly RegisteredToolRenderer[] = [
     renderer: READ_RENDERER,
   },
   {
-    names: ["ListDir", "ls", "list_dir", "system.listdir", "system.list_dir"],
+    names: [
+      "ListDir",
+      "List",
+      "ls",
+      "list_dir",
+      "system.listdir",
+      "system.list_dir",
+    ],
     renderer: LIST_RENDERER,
   },
   {

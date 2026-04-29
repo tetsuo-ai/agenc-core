@@ -257,6 +257,15 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.initialState.sessionConfiguration.sessionSource).toBe(
         "cli_main",
       );
+      expect(boot.config.agentRoles.length).toBeGreaterThan(0);
+      expect(boot.session.agentDefinitions.activeAgents).toEqual(
+        boot.config.agentRoles.map((role) => ({
+          agentType: role.name,
+          ...(role.description.length > 0
+            ? { whenToUse: role.description }
+            : {}),
+        })),
+      );
       expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
         signal: boot.session.services.mcpStartupCancellationToken.signal,
       });

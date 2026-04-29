@@ -1,11 +1,23 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import React from "react";
 import { describe, expect, test } from "vitest";
 
 import instances from "./ink/instances.js";
 import { createRoot } from "./ink/root.js";
+import { KeybindingProvider } from "./keybindings/KeybindingContext.js";
+import { charInCellAt } from "./ink/screen.js";
+import {
+  eventsToMessages,
+  type TranscriptSourceEvent,
+} from "./state/events-to-messages.js";
 import { ExecCell } from "./transcript/ExecCell.js";
+import {
+  MessageList,
+  transcriptMutationKey,
+  type TranscriptMessage,
+} from "./transcript/MessageList.js";
+import { normalizeTranscriptMessages } from "./transcript/normalize.js";
 
 type TestStdin = PassThrough & {
   isTTY: boolean;
@@ -55,6 +67,48 @@ async function renderToFrame(element: React.ReactElement): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+async function mountForFrames(element: React.ReactElement): Promise<{
+  rerender: (next: React.ReactElement) => void;
+  frame: () => string;
+  unmount: () => void;
+}> {
+  const { stdout, stdin } = createStreams();
+  const root = await createRoot({
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    patchConsole: false,
+  });
+  root.render(element);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  return {
+    rerender: (next) => root.render(next),
+    frame: () => latestFrameText(stdout),
+    unmount: () => {
+      root.unmount();
+      instances.delete(stdout as unknown as NodeJS.WriteStream);
+      stdin.end();
+      stdout.end();
+    },
+  };
+}
+
+function latestFrameText(stdout: PassThrough): string {
+  const instance = instances.get(stdout as unknown as NodeJS.WriteStream) as
+    | { frontFrame?: { screen?: { width: number; height: number } } }
+    | undefined;
+  const screen = instance?.frontFrame?.screen;
+  if (!screen) return "";
+  const rows: string[] = [];
+  for (let y = 0; y < screen.height; y += 1) {
+    let row = "";
+    for (let x = 0; x < screen.width; x += 1) {
+      row += charInCellAt(screen, x, y) ?? " ";
+    }
+    rows.push(row.trimEnd());
+  }
+  return rows.join("\n");
+}
+
 function renderedText(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(renderedText).join("\n");
@@ -85,11 +139,138 @@ describe("OpenClaude shell parity setup gates", () => {
 
   test("MessageList uses the canonical OpenClaude-style message dispatcher", () => {
     const messageList = source("transcript/MessageList.tsx");
+    const message = source("transcript/Message.tsx");
 
     expect(messageList).toMatch(
       /import\s+\{\s*MessageRow\s*\}\s+from\s+["']\.\/MessageRow\.js["']/u,
     );
     expect(messageList).not.toMatch(/function\s+MessageRow\s*\(/u);
+    expect(message).toMatch(/from\s+["']\.\/messages\/UserTextMessage\.js["']/u);
+    expect(message).toMatch(
+      /from\s+["']\.\/messages\/CollapsedReadSearchContent\.js["']/u,
+    );
+    expect(message).toMatch(
+      /from\s+["']\.\/messages\/GroupedToolUseContent\.js["']/u,
+    );
+    expect(sourceIfExists("transcript/messages/AssistantToolUseMessage.tsx")).toBe(
+      null,
+    );
+  });
+
+  test("retained OpenClaude message ports are live or product-owned", () => {
+    const retainedMessagePorts = readdirSync(
+      new URL("transcript/messages", import.meta.url),
+      { withFileTypes: true },
+    )
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+
+    expect(retainedMessagePorts).toEqual([
+      "AssistantTextMessage.tsx",
+      "CollapsedReadSearchContent.tsx",
+      "CoordinatorAgentStatus.tsx",
+      "GroupedToolUseContent.tsx",
+      "HighlightedThinkingText.tsx",
+      "UserBashInputMessage.tsx",
+      "UserBashOutputMessage.tsx",
+      "UserCommandMessage.tsx",
+      "UserLocalCommandOutputMessage.tsx",
+      "UserMemoryInputMessage.tsx",
+      "UserPlanMessage.tsx",
+      "UserPromptMessage.tsx",
+      "UserResourceUpdateMessage.tsx",
+      "UserTextMessage.tsx",
+      "_helpers.tsx",
+    ]);
+
+    const message = source("transcript/Message.tsx");
+    const userText = source("transcript/messages/UserTextMessage.tsx");
+    const userPrompt = source("transcript/messages/UserPromptMessage.tsx");
+    const liveAgentPanel = source("components/LiveAgentStatusPanel.tsx");
+
+    expect(message).toMatch(/AssistantTextMessage/u);
+    expect(message).toMatch(/CollapsedReadSearchContent/u);
+    expect(message).toMatch(/GroupedToolUseContent/u);
+    expect(message).toMatch(/UserTextMessage/u);
+    expect(userText).toMatch(/UserBashInputMessage/u);
+    expect(userText).toMatch(/UserBashOutputMessage/u);
+    expect(userText).toMatch(/UserCommandMessage/u);
+    expect(userText).toMatch(/UserLocalCommandOutputMessage/u);
+    expect(userText).toMatch(/UserMemoryInputMessage/u);
+    expect(userText).toMatch(/UserPlanMessage/u);
+    expect(userText).toMatch(/UserPromptMessage/u);
+    expect(userText).toMatch(/UserResourceUpdateMessage/u);
+    expect(userPrompt).toMatch(/HighlightedThinkingText/u);
+    expect(liveAgentPanel).toMatch(/CoordinatorAgentStatus/u);
+
+    for (const retired of [
+      "AssistantToolUseMessage.tsx",
+      "SystemTextMessage.tsx",
+      "UserToolResultMessage/UserToolResultMessage.tsx",
+      "teamMemCollapsed.tsx",
+    ]) {
+      expect(sourceIfExists(`transcript/messages/${retired}`)).toBe(null);
+    }
+  });
+
+  test("normal transcript collapses singleton read/search/list and read-like Bash output", async () => {
+    const mkRead = (): TranscriptMessage[] =>
+      normalizeTranscriptMessages([
+        {
+          id: "read-1",
+          turnId: "turn-read",
+          kind: "tool_call",
+          toolName: "FileRead",
+          toolArgs: { path: "include/agenc/input.h" },
+          content: "FileRead",
+          toolResultContent: "#ifndef AGENC_INPUT_H\n#define AGENC_INPUT_H\n",
+          timestamp: 1,
+          isComplete: true,
+        },
+      ]);
+    const mkCat = (): TranscriptMessage[] =>
+      normalizeTranscriptMessages([
+        {
+          id: "cat-1",
+          turnId: "turn-read",
+          kind: "tool_call",
+          toolName: "exec_command",
+          toolArgs: {
+            command: "cd /repo && cat include/agenc/input.h",
+          },
+          content: "#ifndef AGENC_INPUT_H\n#define AGENC_INPUT_H\n",
+          toolResultContent:
+            "Wall time: 0.1 seconds\nOutput:\n#ifndef AGENC_INPUT_H\n",
+          execCommand: "cd /repo && cat include/agenc/input.h",
+          execStdout: "#ifndef AGENC_INPUT_H\n#define AGENC_INPUT_H\n",
+          execStderr: "",
+          execExitCode: 0,
+          execDurationMs: 100,
+          timestamp: 2,
+          isComplete: true,
+        },
+      ]);
+
+    for (const normalized of [mkRead(), mkCat()]) {
+      expect(normalized).toHaveLength(1);
+      expect(normalized[0]).toMatchObject({
+        kind: "tool_group",
+        label: "read-search",
+      });
+      expect(JSON.stringify(normalized)).toContain("AGENC_INPUT_H");
+
+      const frame = await renderToFrame(
+        React.createElement(
+          KeybindingProvider,
+          null,
+          React.createElement(MessageList, { messages: normalized }),
+        ),
+      );
+      expect(frame).toContain("Read");
+      expect(frame).not.toContain("AGENC_INPUT_H");
+      expect(frame).not.toContain("#ifndef");
+    }
   });
 
   test("Bash exec rendering shows OpenClaude no-output and done affordances", async () => {
@@ -128,6 +309,255 @@ describe("OpenClaude shell parity setup gates", () => {
     expect(text).toMatch(/background|monitor/i);
     expect(text).toMatch(/image|chart\.png/i);
     expect(text).not.toContain("<sandbox>");
+  });
+
+  test("Bash result affordances survive event reduction and canonical rendering", async () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-shell-live-path" } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "exec-live",
+          toolName: "system.bash",
+          args: '{"command":"true"}',
+        },
+      },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-live",
+          processId: 42,
+          command: "true",
+          cwd: "/repo",
+        },
+      },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-live",
+          processId: 42,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          durationMs: 15,
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "exec-live",
+          result: "",
+          isError: false,
+          metadata: {
+            command: "true",
+            stdout: "",
+            stderr: "<sandbox>internal tag</sandbox>",
+            exitCode: 0,
+            durationMs: 15,
+            cwdWasReset: true,
+            backgroundTaskHint: "Use the monitor command for more output.",
+            imagePaths: ["/tmp/chart.png"],
+            noOutputExpected: true,
+            returnCodeInterpretation: "Done",
+            backgroundTaskId: "bg-42",
+            truncated: true,
+          },
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages[0]).toMatchObject({
+      execCwdWasReset: true,
+      execBackgroundTaskHint: "Use the monitor command for more output.",
+      execImagePaths: ["/tmp/chart.png"],
+      execNoOutputExpected: true,
+      execReturnCodeInterpretation: "Done",
+      execBackgroundTaskId: "bg-42",
+      execTruncated: true,
+    });
+
+    const frame = await renderToFrame(
+      React.createElement(
+        KeybindingProvider,
+        null,
+        React.createElement(MessageList, { messages }),
+      ),
+    );
+
+    expect(frame).toContain("Bash");
+    expect(frame).toContain("Shell");
+    expect(frame).toContain("cwd");
+    expect(frame).toContain("reset");
+    expect(frame).toMatch(/background|monitor/i);
+    expect(frame).toMatch(/image|chart\.png/i);
+    expect(frame).toContain("Output");
+    expect(frame).toContain("truncated");
+    expect(frame).not.toContain("<sandbox>");
+  });
+
+  test("grouped Bash affordances survive reducer, grouping, mutation tracking, and rendering", async () => {
+    const makeEvents = (secondStdout: string): TranscriptSourceEvent[] => [
+      { type: "turn_started", payload: { turnId: "turn-shell-group" } },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-one",
+          processId: 10,
+          command: "printf one",
+          cwd: "/repo",
+        },
+      },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-one",
+          processId: 10,
+          exitCode: 0,
+          stdout: "one\n",
+          stderr: "",
+          durationMs: 11,
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "exec-one",
+          result: "one\n",
+          isError: false,
+          metadata: {
+            command: "printf one",
+            stdout: "one\n",
+            stderr: "",
+            exitCode: 0,
+            durationMs: 11,
+            cwdWasReset: true,
+            backgroundTaskHint: "Use the monitor command for more output.",
+            imagePaths: ["/tmp/one.png"],
+            noOutputExpected: false,
+            returnCodeInterpretation: "Done",
+            backgroundTaskId: "bg-one",
+            timedOut: false,
+            truncated: true,
+          },
+        },
+      },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-two",
+          processId: 11,
+          command: "printf two",
+          cwd: "/repo",
+        },
+      },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-two",
+          processId: 11,
+          exitCode: 0,
+          stdout: secondStdout,
+          stderr: "",
+          durationMs: 12,
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "exec-two",
+          result: secondStdout,
+          isError: false,
+          metadata: {
+            command: "printf two",
+            stdout: secondStdout,
+            stderr: "",
+            exitCode: 0,
+            durationMs: 12,
+            cwdWasReset: true,
+            backgroundTaskHint: "Use the monitor command for more output.",
+            imagePaths: ["/tmp/two.png"],
+            noOutputExpected: false,
+            returnCodeInterpretation: "Done",
+            backgroundTaskId: "bg-two",
+            timedOut: false,
+            truncated: true,
+          },
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(makeEvents("two\n"));
+    const normalized = normalizeTranscriptMessages(messages);
+    expect(normalized).toHaveLength(1);
+    expect(normalized[0]).toMatchObject({
+      kind: "tool_group",
+      groupedTools: [
+        {
+          execCommand: "printf one",
+          execCwdWasReset: true,
+          execBackgroundTaskHint: "Use the monitor command for more output.",
+          execImagePaths: ["/tmp/one.png"],
+          execBackgroundTaskId: "bg-one",
+          execTruncated: true,
+        },
+        {
+          execCommand: "printf two",
+          execCwdWasReset: true,
+          execBackgroundTaskHint: "Use the monitor command for more output.",
+          execImagePaths: ["/tmp/two.png"],
+          execBackgroundTaskId: "bg-two",
+          execTruncated: true,
+        },
+      ],
+    });
+    const mutated = normalizeTranscriptMessages(
+      eventsToMessages(makeEvents("TWO\n")),
+    );
+    expect(transcriptMutationKey(normalized)).not.toBe(
+      transcriptMutationKey(mutated),
+    );
+
+    const frame = await renderToFrame(
+      React.createElement(
+        KeybindingProvider,
+        null,
+        React.createElement(MessageList, { messages }),
+      ),
+    );
+
+    expect(frame).toContain("printf");
+    expect(frame).toContain("one");
+    expect(frame).toContain("two");
+    expect(frame).toContain("Shell");
+    expect(frame).toContain("reset");
+    expect(frame).toMatch(/background|monitor/i);
+    expect(frame).toMatch(/one\.png|two\.png/i);
+    expect(frame).toContain("Output");
+    expect(frame).toContain("truncated");
+
+    const mounted = await mountForFrames(
+      React.createElement(
+        KeybindingProvider,
+        null,
+        React.createElement(MessageList, { messages }),
+      ),
+    );
+    try {
+      mounted.rerender(
+        React.createElement(
+          KeybindingProvider,
+          null,
+          React.createElement(MessageList, {
+            messages: eventsToMessages(makeEvents("TWO\n")),
+          }),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(mounted.frame()).toContain("TWO");
+    } finally {
+      mounted.unmount();
+    }
   });
 
   test("ApprovalOverlay resolves preview bodies through the per-tool permission registry", async () => {
@@ -204,20 +634,30 @@ describe("OpenClaude shell parity setup gates", () => {
   test("status notices expose an OpenClaude-style active notice resolver", async () => {
     const statusModule = await import("./cockpit/StatusNotices.js") as unknown as {
       getActiveNotices?: (input: Record<string, unknown>) => readonly { id?: string; text?: string }[];
+      readRuntimeStatusNoticeWarnings?: (
+        input: Record<string, unknown>,
+      ) => Record<string, unknown>;
     };
     expect(statusModule.getActiveNotices).toBeTypeOf("function");
+    expect(statusModule.readRuntimeStatusNoticeWarnings).toBeTypeOf("function");
+
+    const runtimeWarnings = statusModule.readRuntimeStatusNoticeWarnings?.({
+      projectMemoryWarnings: ["AGENC.md include dropped: missing.md (not_found)"],
+      agentDefinitions: {
+        activeAgents: [{ notAgentType: true }],
+      },
+    });
 
     const notices = statusModule.getActiveNotices?.({
       session: {},
       messages: [],
       configWarnings: ["Invalid config key"],
-      projectMemoryWarnings: ["AGENC.md is unreadable"],
-      agentDefinitionWarnings: ["Agent definition failed to load"],
+      ...runtimeWarnings,
     });
     const noticeText = renderedText(notices);
 
     expect(noticeText).toMatch(/config/i);
     expect(noticeText).toMatch(/AGENC\.md|project memory/i);
-    expect(noticeText).toMatch(/agent definition/i);
+    expect(noticeText).toMatch(/agent definition.*malformed/i);
   });
 });

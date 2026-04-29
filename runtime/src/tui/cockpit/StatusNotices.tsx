@@ -18,13 +18,22 @@ export interface StatusNoticesProps {
   readonly session: StatusLineSessionLike;
   readonly messages: readonly TranscriptMessage[];
   readonly pendingApprovalCount?: number;
+  readonly configWarnings?: readonly string[];
+  readonly projectMemoryWarnings?: readonly string[];
+  readonly agentDefinitionWarnings?: readonly string[];
 }
 
-interface Notice {
+export interface Notice {
   readonly id: string;
   readonly tone: "warning" | "info" | "error";
   readonly text: string;
   readonly priority: number;
+}
+
+export interface ActiveNoticeInput extends Partial<StatusNoticesProps> {
+  readonly configWarnings?: readonly string[];
+  readonly projectMemoryWarnings?: readonly string[];
+  readonly agentDefinitionWarnings?: readonly string[];
 }
 
 function formatUsd(value: number): string {
@@ -143,10 +152,136 @@ export function buildStatusNotices(
     .sort((a, b) => a.priority - b.priority);
 }
 
+function noticesFromWarnings(
+  idPrefix: string,
+  tone: Notice["tone"],
+  priority: number,
+  warnings: readonly string[] | undefined,
+): readonly Notice[] {
+  return (warnings ?? [])
+    .filter((warning) => typeof warning === "string" && warning.trim().length > 0)
+    .map((warning, index) => ({
+      id: `${idPrefix}:${index}`,
+      tone,
+      text: warning,
+      priority,
+    }));
+}
+
+export function getActiveNotices(input: ActiveNoticeInput): readonly Notice[] {
+  const session = input.session ?? {};
+  const messages = input.messages ?? [];
+  return [
+    ...buildStatusNotices({
+      session,
+      messages,
+      pendingApprovalCount: input.pendingApprovalCount,
+    }),
+    ...noticesFromWarnings("config", "warning", 25, input.configWarnings),
+    ...noticesFromWarnings(
+      "project-memory",
+      "warning",
+      26,
+      input.projectMemoryWarnings,
+    ),
+    ...noticesFromWarnings(
+      "agent-definition",
+      "warning",
+      27,
+      input.agentDefinitionWarnings,
+    ),
+  ].sort((a, b) => a.priority - b.priority);
+}
+
+function readWarningArray(
+  source: unknown,
+  keys: readonly string[],
+): readonly string[] | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  const record = source as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (!Array.isArray(value)) continue;
+    const warnings = value.filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0,
+    );
+    if (warnings.length > 0) return warnings;
+  }
+  return undefined;
+}
+
+function isAgentDefinitionLike(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.agentType === "string" && record.agentType.length > 0;
+}
+
+function readAgentDefinitionWarnings(
+  source: unknown,
+): readonly string[] | undefined {
+  if (!source || typeof source !== "object") return undefined;
+  const record = source as {
+    readonly agentDefinitions?: { readonly activeAgents?: unknown };
+  };
+  if (record.agentDefinitions === undefined) return undefined;
+  const activeAgents = record.agentDefinitions.activeAgents;
+  if (activeAgents === undefined) return undefined;
+  if (!Array.isArray(activeAgents)) {
+    return ["Agent definition catalog is not readable"];
+  }
+  const malformedCount = activeAgents.filter(
+    (entry) => !isAgentDefinitionLike(entry),
+  ).length;
+  if (malformedCount === 0) return undefined;
+  return [
+    malformedCount === 1
+      ? "1 agent definition was ignored because it is malformed"
+      : `${malformedCount} agent definitions were ignored because they are malformed`,
+  ];
+}
+
+export function readRuntimeStatusNoticeWarnings(
+  source: unknown,
+): Pick<
+  ActiveNoticeInput,
+  "projectMemoryWarnings" | "agentDefinitionWarnings"
+> {
+  const projectMemoryWarnings = readWarningArray(source, [
+    "projectMemoryWarnings",
+    "projectMemoryWarningMessages",
+    "memoryWarnings",
+    "memoryWarningMessages",
+  ]);
+  const agentDefinitionWarnings =
+    readAgentDefinitionWarnings(source) ??
+    readWarningArray(source, [
+      "agentDefinitionWarnings",
+      "agentDefinitionWarningMessages",
+      "agentWarnings",
+      "agentWarningMessages",
+    ]);
+  return {
+    ...(projectMemoryWarnings !== undefined ? { projectMemoryWarnings } : {}),
+    ...(agentDefinitionWarnings !== undefined
+      ? { agentDefinitionWarnings }
+      : {}),
+  };
+}
+
 export const StatusNotices: React.FC<StatusNoticesProps> = (props) => {
   const notices = useMemo(
-    () => buildStatusNotices(props),
-    [props.messages, props.pendingApprovalCount, props.session],
+    () => getActiveNotices(props),
+    [
+      props.agentDefinitionWarnings,
+      props.configWarnings,
+      props.messages,
+      props.pendingApprovalCount,
+      props.projectMemoryWarnings,
+      props.session,
+    ],
   );
   if (notices.length === 0) return null;
   return (

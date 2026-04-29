@@ -495,6 +495,110 @@ function sanitizeAssistantTranscriptContent(content: string): string {
   return stripTrailingTodoWriteJsonFence(content);
 }
 
+function readMetadataString(
+  metadata: unknown,
+  key: string,
+): string | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const value = metadata[key];
+  return typeof value === "string" ? truncateTranscriptText(value) : undefined;
+}
+
+function readMetadataNumber(
+  metadata: unknown,
+  key: string,
+): number | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const value = metadata[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function readMetadataBoolean(
+  metadata: unknown,
+  key: string,
+): boolean | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const value = metadata[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function readMetadataStringArray(
+  metadata: unknown,
+  key: string,
+): readonly string[] | undefined {
+  if (!isRecord(metadata)) return undefined;
+  const value = metadata[key];
+  if (!Array.isArray(value)) return undefined;
+  const strings = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => truncateTranscriptText(item));
+  return strings.length > 0 ? strings : undefined;
+}
+
+function execMetadataPatch(
+  metadata: unknown,
+): Partial<Pick<
+  TranscriptMessage,
+  | "execCommand"
+  | "execStdout"
+  | "execStderr"
+  | "execExitCode"
+  | "execDurationMs"
+  | "execTimedOut"
+  | "execTruncated"
+  | "execCwdWasReset"
+  | "execBackgroundTaskHint"
+  | "execImagePaths"
+  | "execNoOutputExpected"
+  | "execReturnCodeInterpretation"
+  | "execBackgroundTaskId"
+  | "toolResultMetadata"
+>> {
+  if (!isRecord(metadata)) return {};
+  const command = readMetadataString(metadata, "command");
+  const stdout = readMetadataString(metadata, "stdout");
+  const stderr = readMetadataString(metadata, "stderr");
+  const exitCode = readMetadataNumber(metadata, "exitCode");
+  const durationMs = readMetadataNumber(metadata, "durationMs");
+  const timedOut = readMetadataBoolean(metadata, "timedOut");
+  const truncated = readMetadataBoolean(metadata, "truncated");
+  const cwdWasReset = readMetadataBoolean(metadata, "cwdWasReset");
+  const backgroundTaskHint = readMetadataString(metadata, "backgroundTaskHint");
+  const imagePaths = readMetadataStringArray(metadata, "imagePaths");
+  const noOutputExpected = readMetadataBoolean(metadata, "noOutputExpected");
+  const returnCodeInterpretation = readMetadataString(
+    metadata,
+    "returnCodeInterpretation",
+  );
+  const backgroundTaskId = readMetadataString(metadata, "backgroundTaskId");
+  return {
+    toolResultMetadata: metadata,
+    ...(command !== undefined ? { execCommand: command } : {}),
+    ...(stdout !== undefined ? { execStdout: stdout } : {}),
+    ...(stderr !== undefined ? { execStderr: stderr } : {}),
+    ...(exitCode !== undefined ? { execExitCode: exitCode } : {}),
+    ...(durationMs !== undefined ? { execDurationMs: durationMs } : {}),
+    ...(timedOut !== undefined ? { execTimedOut: timedOut } : {}),
+    ...(truncated !== undefined ? { execTruncated: truncated } : {}),
+    ...(cwdWasReset !== undefined ? { execCwdWasReset: cwdWasReset } : {}),
+    ...(backgroundTaskHint !== undefined
+      ? { execBackgroundTaskHint: backgroundTaskHint }
+      : {}),
+    ...(imagePaths !== undefined ? { execImagePaths: imagePaths } : {}),
+    ...(noOutputExpected !== undefined
+      ? { execNoOutputExpected: noOutputExpected }
+      : {}),
+    ...(returnCodeInterpretation !== undefined
+      ? { execReturnCodeInterpretation: returnCodeInterpretation }
+      : {}),
+    ...(backgroundTaskId !== undefined
+      ? { execBackgroundTaskId: backgroundTaskId }
+      : {}),
+  };
+}
+
 function isLegacyPlanSignal(content: string): boolean {
   return LEGACY_PLAN_SIGNAL_RE.test(content);
 }
@@ -515,6 +619,7 @@ export function eventsToMessages(
   const toolArgsByCallId = new Map<string, unknown>();
   const typedPlanSeenTurnIds = new Set<string>();
   const typedPlanActiveTurnIds = new Set<string>();
+  const toolActivitySeenTurnIds = new Set<string>();
 
   const fallbackTurnCounter = { value: 0 };
   let currentTurnId = `${FALLBACK_TURN_PREFIX}${fallbackTurnCounter.value}`;
@@ -660,6 +765,37 @@ export function eventsToMessages(
     messages.splice(insertionIndex, 0, assistant);
     reindexMessageIndexes();
     return insertionIndex;
+  };
+
+  const replaceToolTurnAssistantWithFinal = (
+    turnId: string,
+    content: string,
+    id: string,
+    timestamp: number,
+  ): void => {
+    if (content.trim().length === 0) return;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.kind === "assistant" && message.turnId === turnId) {
+        messages.splice(index, 1);
+      }
+    }
+    pendingAssistantLifecycleText = null;
+    activeAssistantIndex = null;
+    reindexMessageIndexes();
+    messages.push({
+      id,
+      turnId,
+      kind: "assistant",
+      content,
+      timestamp,
+      isComplete: true,
+    });
+    const finalIndex = moveAssistantAfterTurnToolRows(
+      messages.length - 1,
+      turnId,
+    );
+    lastAssistantIndexByTurn.set(turnId, finalIndex);
   };
 
   const appendAssistantDelta = (
@@ -833,6 +969,19 @@ export function eventsToMessages(
     return insertionIndex;
   };
 
+  const toolMessageForCallId = (
+    callId: string,
+  ): TranscriptMessage | undefined => {
+    const existingIndex = toolMessageIndexByCallId.get(callId);
+    return existingIndex !== undefined ? messages[existingIndex] : undefined;
+  };
+
+  const turnIdForToolCall = (
+    callId: string,
+    fallbackTurnId: string | null | undefined = currentTurnId,
+  ): string =>
+    toolMessageForCallId(callId)?.turnId ?? ensureTurnId(fallbackTurnId);
+
   const removeToolMessage = (callId: string): void => {
     const index = toolMessageIndexByCallId.get(callId);
     if (index === undefined) return;
@@ -929,6 +1078,7 @@ export function eventsToMessages(
             suppressedToolCallIds.add(event.toolCall.id);
             break;
           }
+          toolActivitySeenTurnIds.add(ensureTurnId(currentTurnId));
           ensureToolMessage(event.toolCall.id, {
             turnId: ensureTurnId(currentTurnId),
             kind: "tool_call",
@@ -952,6 +1102,7 @@ export function eventsToMessages(
             break;
           }
           const callIndex = toolMessageIndexByCallId.get(event.toolCall.id);
+          toolActivitySeenTurnIds.add(ensureTurnId(currentTurnId));
           if (callIndex !== undefined) {
             messages[callIndex] = {
               ...messages[callIndex]!,
@@ -1062,6 +1213,18 @@ export function eventsToMessages(
           pendingAssistantLifecycleText = null;
           break;
         }
+        if (
+          options.includeHidden !== true &&
+          toolActivitySeenTurnIds.has(turnId)
+        ) {
+          replaceToolTurnAssistantWithFinal(
+            turnId,
+            sanitizeAssistantTranscriptContent(event.payload.message),
+            event.id ?? `assistant-${turnId}-${timestamp}`,
+            timestamp,
+          );
+          break;
+        }
         pendingAssistantLifecycleText = null;
         // Resolve the row to coalesce into. Prefer `activeAssistantIndex`
         // if still pinned to this turn; otherwise fall back to the
@@ -1138,6 +1301,8 @@ export function eventsToMessages(
           suppressedToolCallIds.add(event.payload.callId);
           break;
         }
+        const toolTurnId = ensureTurnId(currentTurnId);
+        toolActivitySeenTurnIds.add(toolTurnId);
         if (event.payload.toolName === "write_stdin") {
           const args = parsedArgs;
           const processId =
@@ -1154,7 +1319,7 @@ export function eventsToMessages(
           }
         }
         ensureToolMessage(event.payload.callId, {
-          turnId: ensureTurnId(currentTurnId),
+          turnId: toolTurnId,
           kind: "tool_call",
           content: event.payload.toolName,
           toolName: event.payload.toolName,
@@ -1179,6 +1344,8 @@ export function eventsToMessages(
             ? toolCallIdByProcessId.get(event.payload.processId) ??
               event.payload.callId
             : event.payload.callId;
+        const targetTurnId = turnIdForToolCall(targetCallId);
+        toolActivitySeenTurnIds.add(targetTurnId);
         if (
           (stream === "stdout" || stream === "stderr") &&
           toolMessageIndexByCallId.has(targetCallId)
@@ -1232,7 +1399,7 @@ export function eventsToMessages(
         }
         upsertActivity(
           `activity:${event.payload.callId}`,
-          ensureTurnId(currentTurnId),
+          targetTurnId,
           event.payload.toolName,
           chunk,
           timestamp,
@@ -1241,6 +1408,9 @@ export function eventsToMessages(
         break;
       }
       case "exec_command_begin": {
+        const existing = toolMessageForCallId(event.payload.callId);
+        const execTurnId = existing?.turnId ?? ensureTurnId(currentTurnId);
+        toolActivitySeenTurnIds.add(execTurnId);
         toolNameByCallId.set(event.payload.callId, "exec_command");
         toolArgsByCallId.set(event.payload.callId, {
           cmd: event.payload.command,
@@ -1250,10 +1420,8 @@ export function eventsToMessages(
           toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
         }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
-        const existing =
-          messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1];
         ensureToolMessage(event.payload.callId, {
-          turnId: ensureTurnId(currentTurnId),
+          turnId: execTurnId,
           kind: "tool_call",
           content: event.payload.command,
           toolName: "exec_command",
@@ -1267,13 +1435,14 @@ export function eventsToMessages(
         break;
       }
       case "exec_command_end": {
+        const existing = toolMessageForCallId(event.payload.callId);
+        const execTurnId = existing?.turnId ?? ensureTurnId(currentTurnId);
+        toolActivitySeenTurnIds.add(execTurnId);
         toolNameByCallId.set(event.payload.callId, "exec_command");
         if (event.payload.processId !== undefined) {
           toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
         }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
-        const existing =
-          messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1];
         const stdout =
           event.payload.stdout !== undefined
             ? truncateTranscriptText(event.payload.stdout)
@@ -1285,7 +1454,7 @@ export function eventsToMessages(
         ensureToolMessage(
           event.payload.callId,
           {
-            turnId: ensureTurnId(currentTurnId),
+            turnId: execTurnId,
             kind: "tool_call",
             content: stdout ?? "",
             toolName: "exec_command",
@@ -1317,6 +1486,7 @@ export function eventsToMessages(
         const toolIndex = toolMessageIndexByCallId.get(event.payload.callId);
         const toolMessage =
           toolIndex !== undefined ? messages[toolIndex] : undefined;
+        toolActivitySeenTurnIds.add(toolMessage?.turnId ?? ensureTurnId(currentTurnId));
         if (toolMessage) {
           messages[toolIndex!] = {
             ...toolMessage,
@@ -1324,7 +1494,40 @@ export function eventsToMessages(
             timestamp,
           };
         }
-        if (toolMessage?.execCommand) {
+        const execPatch = execMetadataPatch(event.payload.metadata);
+        if (
+          toolMessage?.execCommand ||
+          typeof execPatch.execCommand === "string"
+        ) {
+          const resultContent = truncateTranscriptText(event.payload.result);
+          if (toolMessage) {
+            messages[toolIndex!] = {
+              ...toolMessage,
+              ...execPatch,
+              toolResultContent: resultContent,
+              isError: event.payload.isError,
+              isComplete: true,
+              timestamp,
+            };
+          } else {
+            const toolName = toolNameByCallId.get(event.payload.callId);
+            ensureToolMessage(
+              event.payload.callId,
+              {
+                turnId: ensureTurnId(currentTurnId),
+                kind: "tool_call",
+                content: resultContent,
+                toolName: toolName ?? "exec_command",
+                callId: event.payload.callId,
+                ...execPatch,
+                toolResultContent: resultContent,
+                isError: event.payload.isError,
+                timestamp,
+                isComplete: true,
+              },
+              { placeBeforeFinalAssistant: true },
+            );
+          }
           break;
         }
         if (toolMessage) {

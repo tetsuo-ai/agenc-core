@@ -179,6 +179,52 @@ describe("eventsToMessages", () => {
     });
   });
 
+  test("keeps completed exec output on the original turn when the next turn starts first", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-a" } },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-1",
+          processId: 33,
+          command: "sleep 1 && echo done",
+          cwd: "/repo",
+        },
+      },
+      { type: "turn_started", payload: { turnId: "turn-b" } },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-1",
+          processId: 33,
+          exitCode: 0,
+          stdout: "done\n",
+          durationMs: 1000,
+        },
+      },
+      { type: "agent_message", payload: { message: "Second turn complete." } },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages.map((message) => message.kind)).toEqual([
+      "tool_call",
+      "assistant",
+    ]);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      turnId: "turn-a",
+      execCommand: "sleep 1 && echo done",
+      execStdout: "done\n",
+      execExitCode: 0,
+      isComplete: true,
+    });
+    expect(messages[1]).toMatchObject({
+      kind: "assistant",
+      turnId: "turn-b",
+      content: "Second turn complete.",
+    });
+  });
+
   test("carries tool result metadata onto the coalesced tool row", () => {
     const metadata = {
       ui: {
@@ -547,6 +593,78 @@ describe("eventsToMessages", () => {
       execCommand: "bash -i",
       execStdout: expect.stringContaining("ok"),
     });
+  });
+
+  test("preserves exec completion metadata for timeout and truncated result affordances", () => {
+    const metadata = {
+      command: "sleep 99",
+      cwd: "/repo",
+      tty: false,
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      timedOut: true,
+      truncated: true,
+      cwdWasReset: true,
+      backgroundTaskHint: "Use the monitor command for more output.",
+      imagePaths: ["/tmp/plot.png"],
+      noOutputExpected: true,
+      returnCodeInterpretation: "Command timed out.",
+      backgroundTaskId: "bg-123",
+      durationMs: 30000,
+    };
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-timeout" } },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-timeout",
+          processId: 99,
+          command: "sleep 99",
+          cwd: "/repo",
+        },
+      },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-timeout",
+          processId: 99,
+          exitCode: null,
+          stdout: "",
+          stderr: "",
+          durationMs: 30000,
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "exec-timeout",
+          result: "Command timed out after 30000ms",
+          isError: false,
+          metadata,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "exec_command",
+      execCommand: "sleep 99",
+      execTimedOut: true,
+      execTruncated: true,
+      execCwdWasReset: true,
+      execBackgroundTaskHint: "Use the monitor command for more output.",
+      execImagePaths: ["/tmp/plot.png"],
+      execNoOutputExpected: true,
+      execReturnCodeInterpretation: "Command timed out.",
+      execBackgroundTaskId: "bg-123",
+      execDurationMs: 30000,
+      toolResultMetadata: metadata,
+      isComplete: true,
+    });
+    expect(messages[0]?.execExitCode).toBeUndefined();
   });
 
   test("renders compact boundaries and slash breadcrumbs as dedicated rows", () => {

@@ -493,7 +493,7 @@ export class OpenAIProvider implements LLMProvider {
     api: "chat_completions",
     metadata: ChatCompletionsRequestMetadata,
   ): void {
-    this.config.emitWarning?.({
+    this.config.emitDiagnostic?.({
       cause: "llm_request_metadata",
       message: JSON.stringify({
         provider: this.name,

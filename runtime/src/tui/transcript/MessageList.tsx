@@ -28,19 +28,13 @@ import Text from "../ink/components/Text.js";
 import ScrollBox, {
   type ScrollBoxHandle,
 } from "../ink/components/ScrollBox.js";
-import type { Color } from "../ink/styles.js";
 import { useVirtualScroll } from "../hooks/useVirtualScroll.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
-import { theme } from "../theme.js";
 
-import { StreamingMessage } from "./StreamingMessage.js";
-import { ExecCell, collapseOutput } from "./ExecCell.js";
+import { MessageRow } from "./MessageRow.js";
 import { OffscreenFreeze } from "./OffscreenFreeze.js";
-import { PlanProgress, type PlanEvent } from "./PlanProgress.js";
-import { SlashResultRenderer } from "./SlashResultRenderer.js";
-import { ToolCell } from "./ToolCell.js";
+import type { PlanEvent } from "./PlanProgress.js";
 import { normalizeTranscriptMessages } from "./normalize.js";
-import { toolRendererTone } from "./tool-renderers.js";
 import type { SlashCommandResult } from "../_deps/commands.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -89,7 +83,27 @@ export interface TranscriptMessage {
     readonly id: string;
     readonly toolName: string;
     readonly target: string;
+    readonly collapseTone?: "read" | "search" | "list";
+    readonly content?: string;
+    readonly toolArgs?: unknown;
     readonly isError?: boolean;
+    readonly isComplete?: boolean;
+    readonly toolProgressContent?: string;
+    readonly toolResultContent?: string;
+    readonly toolResultMetadata?: Readonly<Record<string, unknown>>;
+    readonly execCommand?: string;
+    readonly execStdout?: string;
+    readonly execStderr?: string;
+    readonly execExitCode?: number;
+    readonly execDurationMs?: number;
+    readonly execTimedOut?: boolean;
+    readonly execTruncated?: boolean;
+    readonly execCwdWasReset?: boolean;
+    readonly execBackgroundTaskHint?: string;
+    readonly execImagePaths?: readonly string[];
+    readonly execNoOutputExpected?: boolean;
+    readonly execReturnCodeInterpretation?: string;
+    readonly execBackgroundTaskId?: string;
   }[];
 
   /**
@@ -104,6 +118,13 @@ export interface TranscriptMessage {
   readonly execExitCode?: number;
   readonly execDurationMs?: number;
   readonly execTimedOut?: boolean;
+  readonly execTruncated?: boolean;
+  readonly execCwdWasReset?: boolean;
+  readonly execBackgroundTaskHint?: string;
+  readonly execImagePaths?: readonly string[];
+  readonly execNoOutputExpected?: boolean;
+  readonly execReturnCodeInterpretation?: string;
+  readonly execBackgroundTaskId?: string;
 }
 
 export interface MessageListProps {
@@ -121,7 +142,6 @@ export interface MessageListProps {
 const TOOL_ARGS_MAX = 80;
 const USER_MESSAGE_DISPLAY_MAX = 10_000;
 const USER_MESSAGE_DISPLAY_EDGE = 4_500;
-const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
 
 function lengthOf(value: string | readonly unknown[] | undefined): number {
   if (typeof value === "string") return value.length;
@@ -129,13 +149,66 @@ function lengthOf(value: string | readonly unknown[] | undefined): number {
   return 0;
 }
 
-function metadataLengthOf(value: Readonly<Record<string, unknown>> | undefined): number {
-  if (value === undefined) return 0;
-  try {
-    return JSON.stringify(value).length;
-  } catch {
-    return 1;
+function hashString(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
+  return (hash >>> 0).toString(36);
+}
+
+function fingerprintOf(
+  value: string | readonly unknown[] | undefined,
+): string {
+  if (value === undefined) return "";
+  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+  return `${serialized.length}:${hashString(serialized)}`;
+}
+
+function metadataFingerprintOf(
+  value: Readonly<Record<string, unknown>> | undefined,
+): string {
+  if (value === undefined) return "";
+  try {
+    const serialized = JSON.stringify(value);
+    return `${serialized.length}:${hashString(serialized)}`;
+  } catch {
+    return "unserializable";
+  }
+}
+
+function groupedToolsMutationKey(
+  groupedTools: TranscriptMessage["groupedTools"],
+): string {
+  if (!groupedTools || groupedTools.length === 0) return "";
+  return groupedTools
+    .map((tool) =>
+      [
+        tool.id,
+        tool.toolName,
+        tool.isComplete === false ? "streaming" : "final",
+        tool.isError === true ? "error" : "",
+        fingerprintOf(tool.content),
+        fingerprintOf(tool.toolProgressContent),
+        fingerprintOf(tool.toolResultContent),
+        metadataFingerprintOf(tool.toolResultMetadata),
+        fingerprintOf(tool.execCommand),
+        fingerprintOf(tool.execStdout),
+        fingerprintOf(tool.execStderr),
+        tool.execExitCode ?? "",
+        tool.execDurationMs ?? "",
+        tool.execTimedOut === true ? "timeout" : "",
+        tool.execTruncated === true ? "truncated" : "",
+        tool.execCwdWasReset === true ? "cwd-reset" : "",
+        fingerprintOf(tool.execBackgroundTaskHint),
+        fingerprintOf(tool.execImagePaths),
+        tool.execNoOutputExpected === true ? "no-output-expected" : "",
+        fingerprintOf(tool.execReturnCodeInterpretation),
+        fingerprintOf(tool.execBackgroundTaskId),
+      ].join("|"),
+    )
+    .join(";");
 }
 
 export function transcriptMutationKey(
@@ -150,15 +223,23 @@ export function transcriptMutationKey(
     tail.kind,
     tail.timestamp,
     tail.isComplete === false ? "streaming" : "final",
-    lengthOf(tail.content),
-    lengthOf(tail.execStdout),
-    lengthOf(tail.execStderr),
+    fingerprintOf(tail.content),
+    fingerprintOf(tail.execStdout),
+    fingerprintOf(tail.execStderr),
     tail.execExitCode ?? "",
     tail.execDurationMs ?? "",
     tail.execTimedOut === true ? "timeout" : "",
-    lengthOf(tail.toolProgressContent),
-    lengthOf(tail.toolResultContent),
-    metadataLengthOf(tail.toolResultMetadata),
+    tail.execTruncated === true ? "truncated" : "",
+    tail.execCwdWasReset === true ? "cwd-reset" : "",
+    fingerprintOf(tail.execBackgroundTaskHint),
+    fingerprintOf(tail.execImagePaths),
+    tail.execNoOutputExpected === true ? "no-output-expected" : "",
+    fingerprintOf(tail.execReturnCodeInterpretation),
+    fingerprintOf(tail.execBackgroundTaskId),
+    groupedToolsMutationKey(tail.groupedTools),
+    fingerprintOf(tail.toolProgressContent),
+    fingerprintOf(tail.toolResultContent),
+    metadataFingerprintOf(tail.toolResultMetadata),
     lengthOf(tail.planEvents),
     tail.progressStream ?? "",
     tail.label ?? "",
@@ -190,280 +271,6 @@ export function truncateUserMessageForDisplay(input: string): string {
     `\n… ${omitted} chars omitted from displayed prompt …\n`,
     input.slice(-USER_MESSAGE_DISPLAY_EDGE),
   ].join("");
-}
-
-function groupedToolCounts(
-  groupedTools: NonNullable<TranscriptMessage["groupedTools"]>,
-): {
-  readonly reads: number;
-  readonly searches: number;
-  readonly lists: number;
-} {
-  let reads = 0;
-  let searches = 0;
-  let lists = 0;
-  for (const tool of groupedTools) {
-    const tone = toolRendererTone(tool.toolName);
-    if (tone === "read") reads += 1;
-    if (tone === "search") searches += 1;
-    if (tone === "list") lists += 1;
-  }
-  return { reads, searches, lists };
-}
-
-function groupedToolHint(
-  groupedTools: NonNullable<TranscriptMessage["groupedTools"]>,
-): string | null {
-  for (let index = groupedTools.length - 1; index >= 0; index -= 1) {
-    const target = groupedTools[index]?.target.trim();
-    if (target) return truncate(target, 300);
-  }
-  return null;
-}
-
-function groupedToolSummaryParts(
-  groupedTools: NonNullable<TranscriptMessage["groupedTools"]>,
-  isActive: boolean,
-): React.ReactNode[] {
-  const counts = groupedToolCounts(groupedTools);
-  const parts: React.ReactNode[] = [];
-  const pushPart = (
-    key: string,
-    verb: string,
-    count: number,
-    singular: string,
-    plural: string,
-  ): void => {
-    if (count <= 0) return;
-    if (parts.length > 0) {
-      parts.push(<Text key={`comma-${key}`}>, </Text>);
-    }
-    parts.push(
-      <Text key={key}>
-        {verb} <Text bold>{count}</Text> {count === 1 ? singular : plural}
-      </Text>,
-    );
-  };
-
-  pushPart(
-    "search",
-    isActive ? "Searching for" : "Searched for",
-    counts.searches,
-    "pattern",
-    "patterns",
-  );
-  pushPart(
-    "read",
-    isActive ? "Reading" : "Read",
-    counts.reads,
-    "file",
-    "files",
-  );
-  pushPart(
-    "list",
-    isActive ? "Listing" : "Listed",
-    counts.lists,
-    "directory",
-    "directories",
-  );
-
-  if (parts.length === 0) {
-    parts.push(
-      <Text key="tools">
-        {isActive ? "Using" : "Used"} <Text bold>{groupedTools.length}</Text>{" "}
-        {groupedTools.length === 1 ? "tool" : "tools"}
-      </Text>,
-    );
-  }
-  return parts;
-}
-
-/* ────────────────────────────────────────────────────────────────────── */
-/* Row dispatcher                                                          */
-/* ────────────────────────────────────────────────────────────────────── */
-
-interface MessageRowProps {
-  readonly message: TranscriptMessage;
-  readonly verbose: boolean;
-}
-
-function MessageRow({
-  message,
-  verbose,
-}: MessageRowProps): React.ReactElement | null {
-  switch (message.kind) {
-    case "user":
-      return (
-        <Box
-          flexDirection="column"
-          marginTop={1}
-          paddingX={1}
-          paddingY={0}
-          backgroundColor={theme.colors.surface as Color}
-        >
-          <Text>{truncateUserMessageForDisplay(message.content)}</Text>
-        </Box>
-      );
-
-    case "assistant":
-      return (
-        <Box flexDirection="row" marginTop={1} width="100%">
-          <Text color={theme.colors.ink}>{BLACK_CIRCLE}</Text>
-          <Text> </Text>
-          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-            <StreamingMessage
-              content={message.content}
-              isComplete={message.isComplete !== false}
-            />
-          </Box>
-        </Box>
-      );
-
-    case "plan_progress":
-      return <PlanProgress events={message.planEvents ?? []} />;
-
-    case "tool_call": {
-      // Shell execution calls get a dedicated history-cell style renderer.
-      if (typeof message.execCommand === "string") {
-        return (
-          <ExecCell
-            command={message.execCommand}
-            stdout={message.execStdout ?? ""}
-            stderr={message.execStderr ?? ""}
-            {...(message.execExitCode !== undefined
-              ? { exitCode: message.execExitCode }
-              : {})}
-            {...(message.execDurationMs !== undefined
-              ? { durationMs: message.execDurationMs }
-              : {})}
-            {...(message.execTimedOut !== undefined
-              ? { timedOut: message.execTimedOut }
-              : {})}
-            verbose={verbose}
-          />
-        );
-      }
-      return (
-        <ToolCell
-          toolName={message.toolName}
-          toolArgs={message.toolArgs}
-          isComplete={message.isComplete !== false}
-          isError={message.isError === true}
-          result={message.toolResultContent}
-          metadata={message.toolResultMetadata}
-          progress={message.toolProgressContent ?? message.label}
-        />
-      );
-    }
-
-    case "tool_group": {
-      const groupedTools = message.groupedTools ?? [];
-      const isActive = message.isComplete === false;
-      const hint = isActive ? groupedToolHint(groupedTools) : null;
-      return (
-        <Box flexDirection="column" marginTop={1}>
-          <Box flexDirection="row">
-            <Text color={isActive ? theme.colors.dim : theme.colors.success}>
-              {BLACK_CIRCLE}
-            </Text>
-            <Text> </Text>
-            <Text dim={!isActive}>
-              {groupedToolSummaryParts(groupedTools, isActive)}
-              {isActive ? "…" : ""}
-            </Text>
-          </Box>
-          {hint ? (
-            <Box flexDirection="row">
-              <Text dim>{"  ⎿  "}</Text>
-              <Text dim>{hint}</Text>
-            </Box>
-          ) : null}
-        </Box>
-      );
-    }
-
-    case "activity": {
-      const color =
-        message.progressStream === "stderr"
-          ? theme.colors.warning
-          : theme.colors.dim;
-      return (
-        <Box flexDirection="column">
-          <Box flexDirection="row">
-            <Text color={theme.colors.dim}>{"\u00B7 "}</Text>
-            <Text color={color}>
-              {message.label ? `${message.label}: ` : ""}
-              {collapseOutput(message.content, 4, 2)}
-            </Text>
-          </Box>
-        </Box>
-      );
-    }
-
-    case "meta":
-      {
-        const color =
-          message.label === "deprecated"
-            ? theme.colors.warning
-            : theme.colors.dim;
-        return (
-          <Box flexDirection="row">
-            <Text color={color}>{"\u2022 "}</Text>
-            <Text color={color} dim={message.label !== "deprecated"}>
-              {message.content}
-            </Text>
-          </Box>
-        );
-      }
-
-    case "tool_result":
-      return (
-        <ToolCell
-          toolName={message.toolName}
-          toolArgs={message.toolArgs}
-          isComplete
-          isError={message.isError === true}
-          result={message.toolResultContent ?? message.content}
-          metadata={message.toolResultMetadata}
-        />
-      );
-
-    case "warning":
-      return (
-        <Box flexDirection="row">
-          <Text color={theme.colors.warning}>
-            {"\u26A0 "}
-            {message.content}
-          </Text>
-        </Box>
-      );
-
-    case "error":
-      return (
-        <Box flexDirection="row">
-          <Text color={theme.colors.error}>
-            {"\u2717 "}
-            {message.content}
-          </Text>
-        </Box>
-      );
-
-    case "slash_result":
-      if (message.slashInput && message.slashResult) {
-        return (
-          <SlashResultRenderer
-            input={message.slashInput}
-            result={message.slashResult}
-          />
-        );
-      }
-      return <Text color={theme.colors.dim}>{message.content}</Text>;
-
-    default:
-      // Exhaustive check — if a new kind is added and falls through here
-      // we'd rather show nothing than throw in the render loop.
-      return null;
-  }
 }
 
 /* ────────────────────────────────────────────────────────────────────── */

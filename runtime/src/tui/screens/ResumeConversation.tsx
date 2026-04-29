@@ -122,6 +122,24 @@ export function filterResumableSessions(
   });
 }
 
+export function getVisibleResumeSessions<T>(
+  sessions: readonly T[],
+  selectedIndex: number,
+  maxRows: number,
+): readonly T[] {
+  if (sessions.length === 0) return [];
+  const visibleCount = Math.max(1, Math.floor(maxRows));
+  if (sessions.length <= visibleCount) return sessions;
+  const boundedIndex = Math.min(
+    sessions.length - 1,
+    Math.max(0, Math.floor(selectedIndex)),
+  );
+  const halfWindow = Math.floor(visibleCount / 2);
+  const maxStart = Math.max(0, sessions.length - visibleCount);
+  const start = Math.min(maxStart, Math.max(0, boundedIndex - halfWindow));
+  return sessions.slice(start, start + visibleCount);
+}
+
 function NoConversationsMessage(): React.ReactElement {
   return (
     <Pane color="dim">
@@ -212,6 +230,10 @@ export function ResumeConversation({
   const filteredSessions = useMemo(
     () => filterResumableSessions(sessions, query),
     [sessions, query],
+  );
+  const visibleSessions = useMemo(
+    () => getVisibleResumeSessions(filteredSessions, selectedIndex, 12),
+    [filteredSessions, selectedIndex],
   );
 
   useEffect(() => {
@@ -348,11 +370,11 @@ export function ResumeConversation({
           } · ↑/↓ to move · Enter to resume · Esc to cancel`}
         </Text>
         <Box flexDirection="column" marginTop={1}>
-          {filteredSessions.map((session, idx) => (
+          {visibleSessions.map((session) => (
             <SessionRow
               key={session.sessionId}
               session={session}
-              selected={idx === selectedIndex}
+              selected={session === filteredSessions[selectedIndex]}
             />
           ))}
         </Box>

@@ -9,7 +9,6 @@ import { useMemo } from 'react'
 import { Box } from '../../ink-public.js'
 
 import { HighlightedThinkingText } from './HighlightedThinkingText.js'
-import { countCharInString } from './_helpers.js'
 
 export interface UserPromptParam {
   readonly text: string
@@ -31,8 +30,7 @@ export interface UserPromptMessageProps {
 // Head+tail because `{ cat file; echo prompt; } | agenc` puts the
 // user's actual question at the end.
 const MAX_DISPLAY_CHARS = 10_000
-const TRUNCATE_HEAD_CHARS = 2_500
-const TRUNCATE_TAIL_CHARS = 2_500
+const TRUNCATE_EDGE_CHARS = 4_500
 
 export function UserPromptMessage({
   addMargin,
@@ -47,12 +45,10 @@ export function UserPromptMessage({
 }: UserPromptMessageProps): React.ReactNode {
   const displayText = useMemo(() => {
     if (text.length <= MAX_DISPLAY_CHARS) return text
-    const head = text.slice(0, TRUNCATE_HEAD_CHARS)
-    const tail = text.slice(-TRUNCATE_TAIL_CHARS)
-    const hiddenLines =
-      countCharInString(text, '\n', TRUNCATE_HEAD_CHARS) -
-      countCharInString(tail, '\n')
-    return `${head}\n… +${hiddenLines} lines …\n${tail}`
+    const omitted = text.length - TRUNCATE_EDGE_CHARS * 2
+    const head = text.slice(0, TRUNCATE_EDGE_CHARS)
+    const tail = text.slice(-TRUNCATE_EDGE_CHARS)
+    return `${head}\n… ${omitted} chars omitted from displayed prompt …\n${tail}`
   }, [text])
 
   if (!text) return null

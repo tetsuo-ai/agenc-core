@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 
-import { buildStatusNotices } from "./StatusNotices.js";
+import {
+  buildStatusNotices,
+  getActiveNotices,
+  readRuntimeStatusNoticeWarnings,
+} from "./StatusNotices.js";
 
 describe("buildStatusNotices", () => {
   test("reports context, budget, output, warning, and approval notices", () => {
@@ -30,6 +34,37 @@ describe("buildStatusNotices", () => {
       "context",
       "budget",
       "output",
+    ]);
+  });
+
+  test("derives project-memory and agent-definition notices from runtime session state", () => {
+    const warnings = readRuntimeStatusNoticeWarnings({
+      projectMemoryWarnings: ["AGENC.md include dropped: missing.md (not_found)"],
+      agentDefinitions: {
+        activeAgents: [
+          { agentType: "worker", whenToUse: "implementation" },
+          { name: "malformed" },
+        ],
+      },
+    });
+
+    expect(warnings.projectMemoryWarnings).toEqual([
+      "AGENC.md include dropped: missing.md (not_found)",
+    ]);
+    expect(warnings.agentDefinitionWarnings?.[0]).toMatch(
+      /agent definition.*malformed/i,
+    );
+
+    const notices = getActiveNotices({
+      session: {},
+      messages: [],
+      configWarnings: ["Invalid config key"],
+      ...warnings,
+    });
+    expect(notices.map((notice) => notice.id)).toEqual([
+      "config:0",
+      "project-memory:0",
+      "agent-definition:0",
     ]);
   });
 });

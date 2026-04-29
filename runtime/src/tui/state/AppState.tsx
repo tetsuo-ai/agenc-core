@@ -118,6 +118,12 @@ export interface SessionLike {
   enqueueIdleInput?(input: import("../../llm/types.js").LLMMessage): number;
   /** Whether mailbox/teammate/slash-command input is queued for the next turn. */
   hasPendingInput?(): boolean;
+  /** Runtime memory-loader warnings surfaced in the footer notice area. */
+  readonly projectMemoryWarnings?: readonly string[];
+  /** Agent definition catalog surfaced to runtime attachments/status notices. */
+  readonly agentDefinitions?: {
+    readonly activeAgents?: readonly unknown[];
+  };
   /** Turn-local interrupt hook used by Ctrl+C / Esc while a turn is active. */
   abortTurnIfActive?(
     turnId: string,
@@ -135,6 +141,8 @@ export interface SessionLike {
 export interface ConfigStoreLike {
   readonly snapshot?: unknown;
   current?(): AgenCConfig;
+  subscribe?(listener: (config: unknown) => void): (() => void) | void;
+  warnings?(): readonly string[];
 }
 
 type InteractiveResolverPayload =

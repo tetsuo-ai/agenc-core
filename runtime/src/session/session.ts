@@ -774,6 +774,15 @@ function normalizeHistoryMessages(
   return normalized;
 }
 
+function activeAgentDefinitionsFromRoles(
+  roles: readonly { readonly name: string; readonly description: string }[],
+): unknown[] {
+  return roles.map((role) => ({
+    agentType: role.name,
+    ...(role.description.length > 0 ? { whenToUse: role.description } : {}),
+  }));
+}
+
 /**
  * Initialized model agent context.
  *
@@ -926,6 +935,14 @@ export class Session {
   /** Seeded transcript event stream used by the TUI resume path. */
   private initialTranscriptEvents: readonly unknown[] = [];
 
+  /** TUI startup/status notices derived from AGENC.md loader diagnostics. */
+  projectMemoryWarnings: readonly string[] = [];
+
+  /** TUI agent-definition status surface. Populated by agent catalog wiring. */
+  readonly agentDefinitions: { activeAgents: unknown[] } = {
+    activeAgents: [],
+  };
+
   /** Turn ids that have already emitted task-lifecycle abort events. */
   private readonly emittedTaskAbortTurnIds = new Set<string>();
 
@@ -1030,6 +1047,9 @@ export class Session {
       deriveMinimalModelInfo(
         opts.initialState.sessionConfiguration.collaborationMode?.model ?? "",
       );
+    this.agentDefinitions.activeAgents = activeAgentDefinitionsFromRoles(
+      this.config.agentRoles,
+    );
     this.nextInternalSubIdValue = 0;
     this.agentTaskRegistrationLock = new AsyncLock<void>(undefined);
     this.budgetTracker = opts.budgetTracker ?? null;
@@ -1090,6 +1110,10 @@ export class Session {
       ...this.config,
       cwd: nextCwd,
     };
+  }
+
+  setProjectMemoryWarnings(warnings: readonly string[]): void {
+    this.projectMemoryWarnings = [...warnings];
   }
 
   /**

@@ -772,7 +772,8 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("Bash(ls)");
+    expect(text).toContain("Listing 1 directory");
+    expect(text).toContain("ls");
     expect(text).toContain("Working (");
     expect(text).toContain("esc to interrupt");
     expect(text).not.toContain("/ using tool");
