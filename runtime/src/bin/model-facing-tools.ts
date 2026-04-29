@@ -944,7 +944,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       if (strict) return strict;
     } else if (optsForSend.aliasName === "followup_task") {
       const strict = strictArgs(args, {
-        allowed: new Set(["target", "message", "interrupt"]),
+        allowed: new Set(["target", "message"]),
         required: ["target", "message"],
       });
       if (strict) return strict;
@@ -974,9 +974,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "Tasks can't be assigned to the root agent" }, true);
     }
     const callId = callIdFromArgs(args, "message");
-    if (optsForSend.triggerTurn && boolValue(args.interrupt) === true) {
-      control.interrupt(agentId, "followup_task_interrupt");
-    }
     const live = control.getLive(agentId);
     const metadata = control.getAgentMetadata(agentId);
     const receiverAgentPath = metadata?.agentPath ?? live?.agentPath;
@@ -1269,7 +1266,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "followup_task",
       description:
-        "Send a string message to an existing non-root agent and trigger a turn in the target. Use interrupt=true to redirect work immediately. If interrupt=false and the target's turn has not completed, the message is queued and starts the target's next turn after the current turn completes.",
+        "Send a message to an existing non-root target agent and trigger a turn in that target. If the target is currently mid-turn, the message is queued and will be used to start the target's next turn, after the current turn completes.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "followup", "task"],
@@ -1279,7 +1276,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         properties: {
           target: { type: "string" },
           message: { type: "string" },
-          interrupt: { type: "boolean" },
         },
         required: ["target", "message"],
         additionalProperties: false,
@@ -1290,7 +1286,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "send_message",
       description:
-        "Send a string message to an existing agent without triggering a new turn.",
+        "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "message", "mailbox"],
@@ -1301,6 +1297,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           target: { type: "string" },
           message: { type: "string" },
         },
+        required: ["target", "message"],
         additionalProperties: false,
       },
       execute: (args) =>
