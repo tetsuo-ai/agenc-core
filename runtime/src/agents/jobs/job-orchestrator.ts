@@ -39,11 +39,17 @@ export type JobItemStatus = "pending" | "completed" | "failed" | "cancelled";
 export interface JobItemRecord {
   readonly jobId: JobId;
   readonly itemId: ItemId;
+  readonly rowIndex: number;
+  readonly sourceId?: string;
   readonly row: CsvRow;
   readonly instruction: string;
   status: JobItemStatus;
+  attemptCount: number;
+  assignedThreadId?: string;
   result?: Record<string, unknown>;
   error?: string;
+  reportedAt?: Date;
+  completedAt?: Date;
 }
 
 export interface JobConfig {
@@ -61,8 +67,12 @@ export interface AgentJobSpawnContext {
   readonly row: CsvRow;
 }
 
+export interface AgentJobSpawnOutcome {
+  readonly threadId?: string;
+}
+
 export interface AgentJobSpawn {
-  spawn(ctx: AgentJobSpawnContext): Promise<void>;
+  spawn(ctx: AgentJobSpawnContext): Promise<AgentJobSpawnOutcome | void>;
   cancelOutstanding(jobId: JobId): Promise<void>;
 }
 
@@ -137,17 +147,22 @@ export async function runAgentsOnCsv(
         ? (row[opts.idColumn] ?? `item_${index}`)
         : `item_${index}`;
     const rendered = renderInstructionTemplate(opts.instruction, row);
+    const sourceId =
+      opts.idColumn !== undefined ? row[opts.idColumn] : undefined;
     items.set(itemId, {
       jobId,
       itemId,
+      rowIndex: index,
+      ...(sourceId !== undefined ? { sourceId } : {}),
       row,
       instruction: rendered,
       status: "pending",
+      attemptCount: 0,
     });
     itemSeed.push({
       itemId,
       rowIndex: index,
-      ...(opts.idColumn !== undefined ? { sourceId: row[opts.idColumn] } : {}),
+      ...(sourceId !== undefined ? { sourceId } : {}),
       row,
     });
   });
@@ -238,6 +253,7 @@ async function processItems(
     if (state.stopRequested) {
       const item = state.items.get(itemId)!;
       item.status = "cancelled";
+      item.completedAt = new Date();
       return;
     }
     const item = state.items.get(itemId)!;
@@ -257,14 +273,30 @@ async function processItems(
         runtimeBudgetMs,
       ),
     );
+    item.attemptCount += 1;
+    // Mirror codex `mark_agent_job_item_running_with_thread` ordering:
+    // status flips to running before the worker has any chance to report.
+    // The thread_id is attached separately after the spawn returns, so a
+    // synchronous report from the worker can never clobber the running
+    // transition (codex doesn't hit this race because its worker runs
+    // asynchronously after the spawn boundary).
     state.repository?.markItemRunning(state.config.jobId, itemId);
     try {
-      await spawn.spawn(ctx);
+      const outcome = await spawn.spawn(ctx);
+      if (outcome?.threadId !== undefined) {
+        item.assignedThreadId = outcome.threadId;
+        state.repository?.setItemThread(
+          state.config.jobId,
+          itemId,
+          outcome.threadId,
+        );
+      }
       await Promise.race([completion, timeout]);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       item.status = "failed";
       item.error = reason;
+      item.completedAt = new Date();
       state.repository?.markItemFailed(state.config.jobId, itemId, reason);
     } finally {
       state.pending.delete(itemId);
@@ -322,38 +354,52 @@ function buildWorkerPrompt(
   ].join("\n");
 }
 
+/**
+ * Render the output CSV with codex's exact column shape
+ * (codex `agent_jobs.rs:1143-1217`):
+ *   {input_headers...} + job_id, item_id, row_index, source_id, status,
+ *   attempt_count, last_error, result_json, reported_at, completed_at.
+ * All items are written regardless of status.
+ */
 async function writeOutputCsv(
   path: string,
   inputHeaders: ReadonlyArray<string>,
   items: ReadonlyMap<ItemId, JobItemRecord>,
 ): Promise<void> {
-  const resultKeys = new Set<string>();
-  for (const item of items.values()) {
-    if (item.result) {
-      for (const key of Object.keys(item.result)) resultKeys.add(key);
-    }
-  }
   const headers: string[] = [
     ...inputHeaders,
-    "_status",
-    "_error",
-    ...Array.from(resultKeys),
+    "job_id",
+    "item_id",
+    "row_index",
+    "source_id",
+    "status",
+    "attempt_count",
+    "last_error",
+    "result_json",
+    "reported_at",
+    "completed_at",
   ];
-  const rows: CsvRow[] = Array.from(items.values()).map((item) => {
-    const row: { [column: string]: string } = { ...item.row };
-    row._status = item.status;
-    row._error = item.error ?? "";
-    for (const key of resultKeys) {
-      const value = item.result?.[key];
-      row[key] =
-        value === undefined
-          ? ""
-          : typeof value === "string"
-            ? value
-            : JSON.stringify(value);
-    }
-    return row;
-  });
+  const rows: CsvRow[] = Array.from(items.values())
+    .sort((a, b) => a.rowIndex - b.rowIndex)
+    .map((item) => {
+      const row: { [column: string]: string } = {};
+      for (const header of inputHeaders) {
+        const value = item.row[header];
+        row[header] = value === undefined ? "" : value;
+      }
+      row.job_id = item.jobId;
+      row.item_id = item.itemId;
+      row.row_index = String(item.rowIndex);
+      row.source_id = item.sourceId ?? "";
+      row.status = item.status;
+      row.attempt_count = String(item.attemptCount);
+      row.last_error = item.error ?? "";
+      row.result_json =
+        item.result !== undefined ? JSON.stringify(item.result) : "";
+      row.reported_at = item.reportedAt?.toISOString() ?? "";
+      row.completed_at = item.completedAt?.toISOString() ?? "";
+      return row;
+    });
   await writeFile(path, writeCsv({ headers, rows }), "utf8");
 }
 
@@ -383,8 +429,11 @@ export function recordAgentJobResult(
   if (violation !== null) {
     return { kind: "schema_violation", reason: violation };
   }
+  const now = new Date();
   item.result = args.result;
   item.status = "completed";
+  item.reportedAt = now;
+  item.completedAt = now;
   state.repository?.markItemCompleted(args.jobId, args.itemId, args.result);
   if (args.stop === true) {
     state.stopRequested = true;

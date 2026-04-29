@@ -43,14 +43,23 @@ export function parseCsv(text: string): CsvDocument {
     return { headers: [], rows: [] };
   }
   const [headerRecord, ...dataRecords] = records;
-  const headers: ReadonlyArray<string> = headerRecord!;
-  const rows: CsvRow[] = dataRecords.map((record) => {
+  const headers: string[] = [...headerRecord!];
+  // Strip UTF-8 BOM from the first header cell (matches codex
+  // agent_jobs.rs:1128-1130).
+  if (headers.length > 0) {
+    headers[0] = headers[0]!.replace(/^﻿/, "");
+  }
+  const rows: CsvRow[] = [];
+  for (const record of dataRecords) {
+    // Skip rows where every field is empty (matches codex
+    // agent_jobs.rs:1135-1138).
+    if (record.every((cell) => cell.length === 0)) continue;
     const row: { [column: string]: string } = {};
     for (let i = 0; i < headers.length; i += 1) {
       row[headers[i]!] = record[i] ?? "";
     }
-    return row;
-  });
+    rows.push(row);
+  }
   return { headers, rows };
 }
 

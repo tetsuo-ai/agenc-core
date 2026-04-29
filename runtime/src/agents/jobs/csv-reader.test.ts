@@ -34,6 +34,19 @@ describe("parseCsv", () => {
   it("throws on an unterminated quoted field", () => {
     expect(() => parseCsv('a\n"no close')).toThrow(CsvParseError);
   });
+
+  it("strips a UTF-8 BOM from the first header cell", () => {
+    const doc = parseCsv("﻿id,value\n1,a\n");
+    expect(doc.headers).toEqual(["id", "value"]);
+  });
+
+  it("skips rows where every field is empty (matches codex)", () => {
+    const doc = parseCsv("a,b\n1,2\n,\n3,4\n");
+    expect(doc.rows).toEqual([
+      { a: "1", b: "2" },
+      { a: "3", b: "4" },
+    ]);
+  });
 });
 
 describe("writeCsv", () => {

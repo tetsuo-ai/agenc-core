@@ -77,8 +77,24 @@ describe("runAgentsOnCsv", () => {
       spawn: fakeSpawnReporter(),
     });
     const written = await readFile(outPath, "utf8");
-    expect(written).toContain("id,value,_status,_error,echoed");
-    expect(written).toContain("row1,hi,completed,,hi");
+    // Header matches codex render_job_csv: input headers + fixed suffix
+    expect(written).toContain(
+      "id,value,job_id,item_id,row_index,source_id,status,attempt_count,last_error,result_json,reported_at,completed_at",
+    );
+    const lines = written.split("\n").filter((l) => l.length > 0);
+    expect(lines).toHaveLength(2);
+    const data = lines[1]!.split(",");
+    // Input columns echo the row values
+    expect(data[0]).toBe("row1"); // id column value
+    expect(data[1]).toBe("hi"); // value column value
+    // Codex-shape suffix begins at index 2
+    expect(data[3]).toBe("row1"); // item_id (idColumn=id resolved to "row1")
+    expect(data[4]).toBe("0"); // row_index
+    expect(data[5]).toBe("row1"); // source_id (echoes idColumn value)
+    expect(data[6]).toBe("completed"); // status
+    expect(data[7]).toBe("1"); // attempt_count
+    // result_json column — quoted because of internal quotes
+    expect(written).toContain('"{""echoed"":""hi""}"');
   });
 
   it("short-circuits the remaining items when a worker requests stop", async () => {

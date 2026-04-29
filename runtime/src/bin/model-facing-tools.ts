@@ -1109,6 +1109,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
             `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
           );
         }
+        return { threadId: outcome.thread.threadId };
       },
       async cancelOutstanding() {
         // In-memory orchestrator: workers self-terminate when they
