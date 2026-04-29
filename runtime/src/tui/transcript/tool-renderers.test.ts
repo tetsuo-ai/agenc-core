@@ -35,6 +35,29 @@ describe("tool renderers", () => {
 
     expect(
       renderToolPresentation({
+        toolName: "TaskCreate",
+        toolArgs: { subject: "Create renderer" },
+        result: JSON.stringify({
+          task: {
+            id: "2",
+            subject: "Create renderer",
+            status: "pending",
+            owner: "review-agent",
+          },
+        }),
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "task",
+      title: "Task Create",
+      target: "Create renderer",
+      detail: "#2 Create renderer (pending) (@review-agent)",
+      preserveResultLines: true,
+    });
+
+    expect(
+      renderToolPresentation({
         toolName: "list_agents",
         toolArgs: { path_prefix: "/root" },
         result: JSON.stringify({

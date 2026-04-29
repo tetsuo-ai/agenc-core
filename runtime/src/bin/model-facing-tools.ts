@@ -40,6 +40,12 @@ import {
   toRelativeWorkspacePath,
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
+import {
+  backgroundTaskLifecycle,
+  registerAgentThreadTask,
+  BackgroundTaskError,
+  isTerminalTaskStatus,
+} from "../tasks/index.js";
 import { ensureAgentControl } from "./delegate-tool.js";
 import { sharedServer } from "../tools/concurrency.js";
 import {
@@ -50,6 +56,7 @@ import {
   type StoredTask,
   type TaskStatus,
   type TaskStoreOptions,
+  type TaskUpdateStatus,
   type UpdateTaskInput,
 } from "./task-store.js";
 import { createStructuredOutputTool } from "./structured-output-tool.js";
@@ -659,6 +666,19 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     }
     if (thread === undefined) {
       return json({ error: "spawn_agent did not return an agent thread" }, true);
+    }
+    try {
+      registerAgentThreadTask(backgroundTaskLifecycle, thread, {
+        toolUseId: callId,
+        description: prompt,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof BackgroundTaskError) ||
+        error.code !== "already_exists"
+      ) {
+        throw error;
+      }
     }
     const live = thread.live;
     emit(session, {
@@ -1702,7 +1722,7 @@ function createPlanAndMessageTools(opts: ModelFacingToolOptions): readonly Tool[
 // path or thread id), and support dependency edges for subagent
 // coordination.
 const TASK_BOARD_GUIDANCE =
-  "Use TodoWrite for per-session checklists. Use these Task tools when work spans multiple turns, multiple agents, or needs explicit dependency tracking. The owner field is an AgenC agent path (e.g. /root/task_3) or thread id. Dependency edges are not auto-mirrored — set both sides explicitly.";
+  "Use TodoWrite for per-session checklists. Use these Task tools when work spans multiple turns, multiple AgenC agents, or needs explicit dependency tracking. The owner field is an AgenC agent path (e.g. /root/task_3) or thread id. Dependency edges are auto-mirrored.";
 
 const TASK_CONCURRENCY = sharedServer("agenc-tasks");
 
@@ -1712,31 +1732,165 @@ function taskStoreOpts(opts: ModelFacingToolOptions): TaskStoreOptions {
     : { workspaceRoot: opts.workspaceRoot };
 }
 
-function metadataObject(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
-}
-
 const VALID_TASK_STATUS: ReadonlySet<TaskStatus> = new Set([
   "pending",
   "in_progress",
   "completed",
+]);
+const VALID_TASK_UPDATE_STATUS: ReadonlySet<TaskUpdateStatus> = new Set([
+  ...VALID_TASK_STATUS,
   "deleted",
 ]);
 
-function normalizeTaskStatus(value: unknown): TaskStatus | undefined {
-  if (typeof value === "string" && VALID_TASK_STATUS.has(value as TaskStatus)) {
-    return value as TaskStatus;
+function normalizeTaskUpdateStatus(value: unknown): TaskUpdateStatus | undefined {
+  if (
+    typeof value === "string" &&
+    VALID_TASK_UPDATE_STATUS.has(value as TaskUpdateStatus)
+  ) {
+    return value as TaskUpdateStatus;
   }
   return undefined;
 }
 
 function publicTask(task: StoredTask): Record<string, unknown> {
-  // Identity passthrough today; reserved as a seam if internal fields
-  // are ever added that the model should not see.
   return task as unknown as Record<string, unknown>;
+}
+
+function taskTextResult(
+  content: string,
+  codeModeResult?: unknown,
+  isError?: boolean,
+): ToolResult {
+  return {
+    content,
+    ...(isError ? { isError: true } : {}),
+    ...(codeModeResult !== undefined ? { codeModeResult } : {}),
+  };
+}
+
+function taskStrictArgs(
+  args: Record<string, unknown>,
+  opts: {
+    readonly allowed: ReadonlySet<string>;
+    readonly required?: ReadonlyArray<string>;
+  },
+): ToolResult | null {
+  const allowed = new Set<string>([
+    ...opts.allowed,
+    "__callId",
+    SESSION_ID_ARG,
+  ]);
+  for (const key of Object.keys(args)) {
+    if (!allowed.has(key)) {
+      return taskTextResult(`unknown field \`${key}\``, { error: `unknown field \`${key}\`` }, true);
+    }
+  }
+  for (const key of opts.required ?? []) {
+    if (typeof args[key] !== "string" || args[key].trim().length === 0) {
+      return taskTextResult(`${key} is required`, { error: `${key} is required` }, true);
+    }
+  }
+  return null;
+}
+
+function parseTaskMetadata(value: unknown): {
+  readonly metadata?: Record<string, unknown>;
+  readonly error?: ToolResult;
+} {
+  if (value === undefined) return {};
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return { metadata: value as Record<string, unknown> };
+  }
+  return {
+    error: taskTextResult(
+      "metadata must be an object",
+      { error: "metadata must be an object" },
+      true,
+    ),
+  };
+}
+
+function taskStringArray(
+  value: unknown,
+  field: string,
+): ToolResult | readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+    return taskTextResult(
+      `${field} must be an array of task id strings`,
+      { error: `${field} must be an array of task id strings` },
+      true,
+    );
+  }
+  return value;
+}
+
+function formatTask(task: StoredTask): string {
+  const lines = [
+    `Task #${task.id}: ${task.subject}`,
+    `Status: ${task.status}`,
+    `Description: ${task.description}`,
+  ];
+  if (task.owner) lines.push(`Owner: ${task.owner}`);
+  if (task.activeForm) lines.push(`Active form: ${task.activeForm}`);
+  if (task.blockedBy.length > 0) {
+    lines.push(`Blocked by: ${task.blockedBy.map((id) => `#${id}`).join(", ")}`);
+  }
+  if (task.blocks.length > 0) {
+    lines.push(`Blocks: ${task.blocks.map((id) => `#${id}`).join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function formatTaskList(tasks: readonly StoredTask[]): string {
+  if (tasks.length === 0) return "No tasks found";
+  return tasks
+    .map((task) => {
+      const owner = task.owner ? ` (${task.owner})` : "";
+      const blockedBy = "unresolvedBlockers" in task
+        ? (task as { readonly unresolvedBlockers?: readonly string[] }).unresolvedBlockers ?? []
+        : task.blockedBy;
+      const blocked =
+        blockedBy.length > 0
+          ? ` [blocked by ${blockedBy.map((id) => `#${id}`).join(", ")}]`
+          : "";
+      return `#${task.id} [${task.status}] ${task.subject}${owner}${blocked}`;
+    })
+    .join("\n");
+}
+
+function taskUpdateFields(
+  existing: StoredTask,
+  args: Record<string, unknown>,
+  status: TaskUpdateStatus | undefined,
+  addBlocks: readonly string[],
+  addBlockedBy: readonly string[],
+): string[] {
+  const fields: string[] = [];
+  const subject = stringValue(args.subject);
+  if (subject !== undefined && subject !== existing.subject) fields.push("subject");
+  const description = stringValue(args.description);
+  if (description !== undefined && description !== existing.description) {
+    fields.push("description");
+  }
+  const activeForm = stringValue(args.activeForm);
+  if (activeForm !== undefined && activeForm !== existing.activeForm) {
+    fields.push("activeForm");
+  }
+  if (args.owner === null) {
+    if (existing.owner !== undefined) fields.push("owner");
+  } else {
+    const owner = stringValue(args.owner);
+    if (owner !== undefined && owner !== existing.owner) fields.push("owner");
+  }
+  if (args.metadata !== undefined) fields.push("metadata");
+  if (status === "deleted") return ["deleted"];
+  if (status !== undefined && status !== existing.status) fields.push("status");
+  if (addBlocks.some((id) => !existing.blocks.includes(id))) fields.push("blocks");
+  if (addBlockedBy.some((id) => !existing.blockedBy.includes(id))) {
+    fields.push("blockedBy");
+  }
+  return fields;
 }
 
 function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
@@ -1745,7 +1899,7 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
   return [
     {
       name: "TaskCreate",
-      description: `Create a durable AgenC task on the project task board. ${TASK_BOARD_GUIDANCE}`,
+      description: `Create a durable AgenC task on the project task board. New tasks start pending and unowned; assign AgenC agents with TaskUpdate owner. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
         deferred: true,
@@ -1758,28 +1912,42 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
           subject: { type: "string" },
           description: { type: "string" },
           activeForm: { type: "string" },
-          owner: { type: "string" },
           metadata: { type: "object" },
         },
-        required: ["subject"],
+        required: ["subject", "description"],
         additionalProperties: false,
       },
       execute: async (args) => {
+        const strict = taskStrictArgs(args, {
+          allowed: new Set(["subject", "description", "activeForm", "metadata"]),
+          required: ["subject", "description"],
+        });
+        if (strict) return strict;
         const subject = stringValue(args.subject);
         if (!subject) return json({ error: "subject is required" }, true);
         const description = stringValue(args.description);
+        if (!description) {
+          return taskTextResult(
+            "description is required",
+            { error: "description is required" },
+            true,
+          );
+        }
         const activeForm = stringValue(args.activeForm);
-        const owner = stringValue(args.owner);
-        const metadata = metadataObject(args.metadata);
+        const parsedMetadata = parseTaskMetadata(args.metadata);
+        if (parsedMetadata.error) return parsedMetadata.error;
+        const metadata = parsedMetadata.metadata;
         const task = await taskCreateNew(storeOpts, {
           subject,
-          ...(description !== undefined ? { description } : {}),
+          description,
           ...(activeForm !== undefined ? { activeForm } : {}),
-          ...(owner !== undefined ? { owner } : {}),
           ...(metadata !== undefined ? { metadata } : {}),
         });
         tryAutoExpandTaskPanel(opts);
-        return json({ task: publicTask(task) });
+        return taskTextResult(
+          `Task #${task.id} created successfully: ${task.subject}`,
+          { task: publicTask(task) },
+        );
       },
     },
     {
@@ -1794,23 +1962,34 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
         type: "object",
         properties: {
           taskId: { type: "string" },
-          task_id: { type: "string" },
         },
+        required: ["taskId"],
         additionalProperties: false,
       },
       execute: async (args) => {
-        const taskId = stringValue(args.taskId) ?? stringValue(args.task_id);
-        if (!taskId) return json({ error: "taskId is required" }, true);
+        const strict = taskStrictArgs(args, {
+          allowed: new Set(["taskId"]),
+          required: ["taskId"],
+        });
+        if (strict) return strict;
+        const taskId = stringValue(args.taskId);
+        if (!taskId) {
+          return taskTextResult("taskId is required", { error: "taskId is required" }, true);
+        }
         const task = await taskLoadOne(storeOpts, taskId);
         if (task === null) {
-          return json({ error: "Task not found", task_id: taskId }, true);
+          return taskTextResult(
+            "Task not found",
+            { error: "Task not found", taskId },
+            true,
+          );
         }
-        return json({ task: publicTask(task) });
+        return taskTextResult(formatTask(task), { task: publicTask(task) });
       },
     },
     {
       name: "TaskUpdate",
-      description: `Update a durable AgenC task: status, fields, owner, metadata, and dependency edges. Edges are append-only (addBlocks / addBlockedBy) and auto-mirrored on both endpoints under the list lock. To clear a dependency, mark the blocker completed or deleted. Rejects unknown task references and self-references. ${TASK_BOARD_GUIDANCE}`,
+      description: `Update a durable AgenC task: status, fields, AgenC-agent owner, metadata, and dependency edges. Set status to deleted to permanently remove the task and scrub dependency references. Metadata keys set to null are deleted. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         mutating: true,
         deferred: true,
@@ -1821,7 +2000,6 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
         type: "object",
         properties: {
           taskId: { type: "string" },
-          task_id: { type: "string" },
           subject: { type: "string" },
           description: { type: "string" },
           activeForm: { type: "string" },
@@ -1834,11 +2012,37 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
           addBlockedBy: { type: "array", items: { type: "string" } },
           metadata: { type: "object" },
         },
+        required: ["taskId"],
         additionalProperties: false,
       },
       execute: async (args) => {
-        const taskId = stringValue(args.taskId) ?? stringValue(args.task_id);
-        if (!taskId) return json({ error: "taskId is required" }, true);
+        const strict = taskStrictArgs(args, {
+          allowed: new Set([
+            "taskId",
+            "subject",
+            "description",
+            "activeForm",
+            "status",
+            "owner",
+            "addBlocks",
+            "addBlockedBy",
+            "metadata",
+          ]),
+          required: ["taskId"],
+        });
+        if (strict) return strict;
+        const taskId = stringValue(args.taskId);
+        if (!taskId) {
+          return taskTextResult("taskId is required", { error: "taskId is required" }, true);
+        }
+        const existing = await taskLoadOne(storeOpts, taskId);
+        if (existing === null) {
+          return taskTextResult(
+            "Task not found",
+            { error: "Task not found", taskId },
+            true,
+          );
+        }
         const update: UpdateTaskInput = {};
         const subject = stringValue(args.subject);
         if (subject !== undefined) (update as { subject?: string }).subject = subject;
@@ -1850,9 +2054,16 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
         if (activeForm !== undefined) {
           (update as { activeForm?: string }).activeForm = activeForm;
         }
-        const status = normalizeTaskStatus(args.status);
+        const status = normalizeTaskUpdateStatus(args.status);
+        if (args.status !== undefined && status === undefined) {
+          return taskTextResult(
+            "status must be pending, in_progress, completed, or deleted",
+            { error: "invalid status" },
+            true,
+          );
+        }
         if (status !== undefined) {
-          (update as { status?: TaskStatus }).status = status;
+          (update as { status?: TaskUpdateStatus }).status = status;
         }
         if (args.owner === null) {
           (update as { owner?: string | null }).owner = null;
@@ -1862,34 +2073,77 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
             (update as { owner?: string | null }).owner = owner;
           }
         }
-        const addBlocks = stringArray(args.addBlocks);
+        const parsedAddBlocks = taskStringArray(args.addBlocks, "addBlocks");
+        if (parsedAddBlocks !== undefined && "content" in parsedAddBlocks) {
+          return parsedAddBlocks;
+        }
+        const addBlocks = parsedAddBlocks ?? [];
         if (addBlocks.length > 0) {
           (update as { addBlocks?: readonly string[] }).addBlocks = addBlocks;
         }
-        const addBlockedBy = stringArray(args.addBlockedBy);
+        const parsedAddBlockedBy = taskStringArray(args.addBlockedBy, "addBlockedBy");
+        if (parsedAddBlockedBy !== undefined && "content" in parsedAddBlockedBy) {
+          return parsedAddBlockedBy;
+        }
+        const addBlockedBy = parsedAddBlockedBy ?? [];
         if (addBlockedBy.length > 0) {
           (update as { addBlockedBy?: readonly string[] }).addBlockedBy = addBlockedBy;
         }
-        const metadata = metadataObject(args.metadata);
+        const parsedMetadata = parseTaskMetadata(args.metadata);
+        if (parsedMetadata.error) return parsedMetadata.error;
+        const metadata = parsedMetadata.metadata;
         if (metadata !== undefined) {
           (update as { metadata?: Record<string, unknown> }).metadata = metadata;
         }
 
+        const updatedFields = taskUpdateFields(
+          existing,
+          args,
+          status,
+          addBlocks,
+          addBlockedBy,
+        );
         const outcome = await taskUpdateOne(storeOpts, taskId, update);
         if (outcome.error) {
           const payload: Record<string, unknown> = {
             error: outcome.error.message,
-            task_id: taskId,
+            taskId,
           };
           if (outcome.error.missing) payload.missing = outcome.error.missing;
-          return json(payload, true);
+          return taskTextResult(outcome.error.message, payload, true);
         }
-        return json({ task: publicTask(outcome.task!) });
+        if (outcome.deleted) {
+          return taskTextResult(
+            `Deleted task #${taskId}`,
+            {
+              success: true,
+              taskId,
+              updatedFields: ["deleted"],
+              statusChange: { from: existing.status, to: "deleted" },
+            },
+          );
+        }
+        const finalTask = outcome.task!;
+        const codeModeResult = {
+          success: true,
+          taskId,
+          updatedFields,
+          ...(status !== undefined && status !== "deleted" && status !== existing.status
+            ? { statusChange: { from: existing.status, to: status } }
+            : {}),
+          task: publicTask(finalTask),
+        };
+        return taskTextResult(
+          updatedFields.length > 0
+            ? `Updated task #${taskId} ${updatedFields.join(", ")}`
+            : `No changes made to task #${taskId}`,
+          codeModeResult,
+        );
       },
     },
     {
       name: "TaskList",
-      description: `List durable AgenC tasks (excludes deleted by default). Includes owner and unresolvedBlockers per task. ${TASK_BOARD_GUIDANCE}`,
+      description: `List durable AgenC tasks. Includes AgenC-agent owner and unresolvedBlockers per task. ${TASK_BOARD_GUIDANCE}`,
       metadata: toolMetadata("task", {
         deferred: true,
         keywords: ["task", "list", "coordination", "subagent"],
@@ -1897,23 +2151,168 @@ function createTaskTools(opts: ModelFacingToolOptions): readonly Tool[] {
       isReadOnly: true,
       inputSchema: {
         type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const strict = taskStrictArgs(args, { allowed: new Set() });
+        if (strict) return strict;
+        const tasks = await taskListWithUnresolved(storeOpts);
+        return taskTextResult(formatTaskList(tasks), { tasks });
+      },
+    },
+  ];
+}
+
+async function waitForBackgroundTask(
+  taskId: string,
+  timeoutMs: number,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const task = backgroundTaskLifecycle.get(taskId);
+    if (!task || isTerminalTaskStatus(task.status)) return;
+    await new Promise<void>((resolvePromise) => {
+      setTimeout(resolvePromise, 100);
+    });
+  }
+}
+
+function createBackgroundTaskTools(): readonly Tool[] {
+  return [
+    {
+      name: "TaskOutput",
+      description:
+        "Read output from a running or completed AgenC background task such as a spawned AgenC agent.",
+      metadata: toolMetadata("task", {
+        deferred: true,
+        keywords: ["task", "output", "agent", "background"],
+      }),
+      isReadOnly: true,
+      inputSchema: {
+        type: "object",
         properties: {
-          status: {
-            type: "string",
-            enum: ["pending", "in_progress", "completed", "deleted"],
+          task_id: { type: "string" },
+          block: { type: "boolean" },
+          timeout: { type: "number" },
+        },
+        required: ["task_id"],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        const strict = taskStrictArgs(args, {
+          allowed: new Set(["task_id", "block", "timeout"]),
+          required: ["task_id"],
+        });
+        if (strict) return strict;
+        const taskId = stringValue(args.task_id);
+        if (!taskId) {
+          return taskTextResult(
+            "task_id is required",
+            { error: "task_id is required" },
+            true,
+          );
+        }
+        if (args.block !== undefined && typeof args.block !== "boolean") {
+          return taskTextResult(
+            "block must be a boolean",
+            { error: "block must be a boolean" },
+            true,
+          );
+        }
+        const timeout = numberValue(args.timeout);
+        if (args.timeout !== undefined && timeout === undefined) {
+          return taskTextResult(
+            "timeout must be a number",
+            { error: "timeout must be a number" },
+            true,
+          );
+        }
+        if (args.block !== false) {
+          await waitForBackgroundTask(taskId, Math.min(timeout ?? 30_000, 600_000));
+        }
+        const task = backgroundTaskLifecycle.get(taskId);
+        if (!task) {
+          return taskTextResult(
+            `No task found with ID: ${taskId}`,
+            { retrieval_status: "not_ready", task: null },
+            true,
+          );
+        }
+        const output = backgroundTaskLifecycle.readOutput(taskId);
+        const retrievalStatus = isTerminalTaskStatus(task.status)
+          ? "success"
+          : args.block === false
+            ? "not_ready"
+            : "timeout";
+        const payload = {
+          retrieval_status: retrievalStatus,
+          task: {
+            task_id: task.id,
+            task_type: task.type,
+            status: task.status,
+            description: task.description,
+            output,
+            ...(task.error !== undefined ? { error: task.error } : {}),
           },
-          includeDeleted: { type: "boolean" },
+        };
+        return taskTextResult(
+          output.length > 0
+            ? output
+            : `Task ${task.id} is ${task.status}; no output is available yet.`,
+          payload,
+        );
+      },
+    },
+    {
+      name: "TaskStop",
+      description: "Stop a running AgenC background task by ID.",
+      metadata: toolMetadata("task", {
+        mutating: true,
+        deferred: true,
+        keywords: ["task", "stop", "agent", "background"],
+      }),
+      concurrencyClass: TASK_CONCURRENCY,
+      inputSchema: {
+        type: "object",
+        properties: {
+          task_id: { type: "string" },
+          shell_id: { type: "string" },
         },
         additionalProperties: false,
       },
       execute: async (args) => {
-        const status = normalizeTaskStatus(args.status);
-        const includeDeleted = boolValue(args.includeDeleted) ?? false;
-        const filter: { status?: TaskStatus; includeDeleted?: boolean } = {};
-        if (status !== undefined) filter.status = status;
-        if (includeDeleted) filter.includeDeleted = true;
-        const tasks = await taskListWithUnresolved(storeOpts, filter);
-        return json({ tasks });
+        const strict = taskStrictArgs(args, {
+          allowed: new Set(["task_id", "shell_id"]),
+        });
+        if (strict) return strict;
+        const taskId = stringValue(args.task_id) ?? stringValue(args.shell_id);
+        if (!taskId) {
+          return taskTextResult(
+            "Missing required parameter: task_id",
+            { error: "Missing required parameter: task_id" },
+            true,
+          );
+        }
+        try {
+          const stopped = await backgroundTaskLifecycle.stop(
+            taskId,
+            "stopped by TaskStop",
+          );
+          return taskTextResult(
+            `Successfully stopped task: ${stopped.id} (${stopped.description})`,
+            {
+              message: `Successfully stopped task: ${stopped.id} (${stopped.description})`,
+              task_id: stopped.id,
+              task_type: stopped.type,
+              command: stopped.description,
+            },
+          );
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          return taskTextResult(message, { error: message }, true);
+        }
       },
     },
   ];
@@ -2161,6 +2560,7 @@ export function createModelFacingTools(
     createLspTool(opts),
     ...createPlanAndMessageTools(opts),
     ...createTaskTools(opts),
+    ...createBackgroundTaskTools(),
     ...createCronAndWorkflowTools(opts),
     createRemoteTriggerTool(opts),
     ...createPowerShellTool(opts),

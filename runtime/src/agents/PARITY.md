@@ -27,6 +27,10 @@ control semantics:
 - The visible `spawn_agent` model-facing tool launches through `delegate()`, so
   spawned agents reserve a live handle, fork context, start the child run loop,
   and expose a joinable `AgentThread`.
+- `runtime/src/tasks` now owns the OpenClaude-style background task lifecycle
+  foundation: task ids, running/terminal status, output deltas, notifications,
+  stop semantics, and an `AgentThread` adapter backed by the live agent
+  abort/status/join path.
 
 Tool contract:
 
@@ -36,6 +40,13 @@ Tool contract:
 - Legacy Codex aliases are intentionally not registered as model-facing tools.
   Removed names include `Agent`, `send_input`, `TaskOutput`, `TaskStop`,
   `SendMessage`, `resume_agent`, `TeamCreate`, and `TeamDelete`.
+- `TaskOutput` and `TaskStop` are still not registered in the model-facing
+  tool registry in this slice. The backing lifecycle exists in
+  `runtime/src/tasks`; exposing the tools requires the model-facing owner to
+  route `spawn_agent` async launch through `registerAgentThreadTask(...)`, add
+  a `TaskOutput` tool that reads `BackgroundTaskLifecycle.readOutput(...)` or
+  `takeOutputDelta(...)`, and add a `TaskStop` tool that calls
+  `BackgroundTaskLifecycle.stop(taskId, reason)`.
 - Live agents return current control-plane status. Closed rollout-backed agents
   may be rehydrated internally through `AgentControl.resumeAgentFromRollout(...)`,
   which rehydrates
@@ -56,6 +67,12 @@ Intentional TypeScript/runtime adaptations:
   edge metadata. Any deeper Rust-only config inheritance remains a known
   language/runtime difference, not a model-facing shortcut.
 - Historical legacy aliases are not preserved in the model-facing registry.
+- OpenClaude background task behavior is adapted to AgenC branding and Codex
+  agent ownership. `AgentThread` is the real local-agent process owner here;
+  unified-exec terminal tasks remain blocked on a per-process stop API because
+  the current `UnifiedExecProcessManagerLike` exposes `closeAll(...)` but no
+  single-session `closeProcess(session_id)` or retained per-task
+  AbortController lookup.
 
 Parity tests should cover every upstream behavior category from:
 
@@ -86,6 +103,7 @@ Status values:
 | Status FSM: pending, running, completed, errored, interrupted, shutdown, sticky final states | `codex-rs/core/src/agent/status.rs`; status assertions in `agent/control_tests.rs` | `runtime/src/agents/status.ts` | `runtime/src/agents/status.test.ts`; `runtime/src/agents/control.test.ts` | covered |
 | Mailbox directionality, sequencing, backpressure, close sentinel, closed-send errors | `codex-rs/core/src/agent/mailbox.rs`; agent mailbox usage in `agent/control.rs` | `runtime/src/agents/mailbox.ts` | `runtime/src/agents/mailbox.test.ts` | covered |
 | `spawn_agent` model-facing dispatcher, strict v2 shape, task-name/path handling, sync vs async launch | `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`; `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` | `runtime/src/agents/delegate.ts`; `runtime/src/agents/thread.ts` | `runtime/src/agents/delegate.test.ts`; `runtime/src/agents/thread.test.ts` | adapted |
+| OpenClaude background task lifecycle: task registration, output deltas, terminal notifications, and stop path | `/home/tetsuo/git/openclaude/src/Task.ts`; `/home/tetsuo/git/openclaude/src/tasks.ts`; `/home/tetsuo/git/openclaude/src/utils/task/*`; `/home/tetsuo/git/openclaude/src/tasks/stopTask.ts` | `runtime/src/tasks/lifecycle.ts`; `runtime/src/tasks/agent-thread.ts` | `runtime/src/tasks/lifecycle.test.ts` | adapted |
 | Child run loop: parent history handoff, child session metadata, worktree root, rollout store mount, down-inbox follow-up turns, completion/error/interruption status | Codex visible contract in `multi_agents_v2/spawn.rs` / `wait.rs`; execution adapted through AgenC session loop | `runtime/src/agents/run-agent.ts` | `runtime/src/agents/run-agent.test.ts` | adapted |
 | Fork context: `new`, `full_history`, `last_n_turns`, `explicit`, cache-safe tool filtering, rollout-backed history filtering | `codex-rs/core/src/agent/control.rs` fork tests; upstream plan source `forkSubagent.ts` / `utils/forkedAgent.ts` | `runtime/src/agents/fork-context.ts`; `runtime/src/agents/thread-rollout-truncation.ts` | `runtime/src/agents/fork-context.test.ts`; `runtime/src/agents/thread-rollout-truncation.test.ts` | covered |
 | Rollout-backed internal restore: active no-op, missing/invalid errors, restore open descendants | `codex-rs/core/src/agent/control.rs`; `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` | `runtime/src/agents/resume.ts`; `runtime/src/agents/control.ts` | `runtime/src/agents/resume.test.ts`; `runtime/src/agents/control.test.ts` | covered |
