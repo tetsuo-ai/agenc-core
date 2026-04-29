@@ -108,7 +108,7 @@ export class ThreadNotManagedError extends Error {
   }
 }
 
-export class CodexThread implements ManagedThread {
+export class AgenCThread implements ManagedThread {
   readonly threadId: ThreadId;
   readonly agentPath?: AgentPath;
   readonly parentThreadId?: ThreadId;
@@ -280,7 +280,7 @@ export class ThreadManager {
   }
 
   registerRootSession(session: Session): ManagedThread {
-    const thread = new CodexThread({
+    const thread = new AgenCThread({
       threadId: session.conversationId,
       agentPath: ROOT_THREAD_AGENT_PATH,
       kind: "root",
@@ -384,7 +384,7 @@ export class ThreadManager {
     live: LiveAgent,
     opts: { readonly parentThreadId?: ThreadId } = {},
   ): ManagedThread {
-    const thread = new CodexThread({
+    const thread = new AgenCThread({
       threadId: live.agentId,
       agentPath: live.agentPath,
       kind: "agent",
@@ -479,14 +479,14 @@ export class ThreadManager {
     void rolloutStore;
 
     const anyThread = this.state.threads.get(rootThreadId);
-    const rootSession = anyThread instanceof CodexThread
+    const rootSession = anyThread instanceof AgenCThread
       ? undefined
       : undefined;
     void rootSession;
 
     const session = Array.from(this.state.threads.values())
       .map((thread) =>
-        thread instanceof CodexThread ? thread.sourceSession() : undefined,
+        thread instanceof AgenCThread ? thread.sourceSession() : undefined,
       )
       .find((candidate): candidate is Session => candidate !== undefined);
     const rollout = session?.rolloutStore;

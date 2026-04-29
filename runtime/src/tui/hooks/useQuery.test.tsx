@@ -326,7 +326,7 @@ describe("useQuery", () => {
     unmount();
   });
 
-  test("passes Codex collab-agent events through from eventLog", async () => {
+  test("passes AgenC collab-agent events through from eventLog", async () => {
     const session = createFakeSession({
       withEventLog: true,
       withSubscribe: false,

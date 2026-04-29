@@ -462,7 +462,7 @@ describe("App", () => {
     unmount();
   });
 
-  test("renders live Codex agent statuses above the composer", async () => {
+  test("renders live AgenC agent statuses above the composer", async () => {
     const base = createFakeSession("default");
     const thread = {
       threadId: "agent-thread-1",
