@@ -100,10 +100,17 @@
 
 import {
   appendFileSync,
+  closeSync,
+  copyFileSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -121,6 +128,8 @@ import {
 import {
   DEFAULT_SESSION_ROOT_MARKERS,
   getProjectDir,
+  listResumableSessions,
+  readAndValidateSchemaVersion,
 } from "./session-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -144,9 +153,12 @@ export type ThreadMemoryMode = "enabled" | "disabled";
  */
 export type ThreadEventPersistenceMode = "limited" | "extended";
 
-/** Runtime source for the thread. Free-form string; upstream uses an
- *  enum (`SessionSource`) but gut has no runtime consumer yet. */
-export type ThreadSource = string;
+/**
+ * Runtime source for the thread. Upstream uses a serde enum
+ * (`SessionSource`); the TS runtime currently accepts both legacy
+ * string labels and JSON-shaped structured sources used by subagents.
+ */
+export type ThreadSource = string | Readonly<Record<string, unknown>>;
 
 /** Mirror of upstream `CreateThreadParams` (`types.rs:31`). */
 export interface CreateThreadParams {
@@ -403,6 +415,7 @@ export interface FileThreadStoreOpts {
  */
 export class FileThreadStore implements ThreadStore {
   private readonly registryPath: string;
+  private readonly registryLockPath: string;
   private readonly projectDir: string;
   private readonly archivedSessionsDir: string;
   private readonly liveRecorders = new Map<ThreadId, RolloutStore>();
@@ -413,6 +426,7 @@ export class FileThreadStore implements ThreadStore {
     const projectDir = getProjectDir(cwd, markers);
     this.projectDir = projectDir;
     this.registryPath = join(projectDir, REGISTRY_FILENAME);
+    this.registryLockPath = `${this.registryPath}.lock`;
     this.archivedSessionsDir = join(projectDir, "archived_sessions");
   }
 
@@ -432,42 +446,39 @@ export class FileThreadStore implements ThreadStore {
     }
     this.liveRecorders.set(threadId, params.rolloutStore);
 
-    const registry = this.readRegistry();
-    const now = new Date().toISOString();
-    const existing = registry.get(threadId);
-    const entry: RegistryEntry = {
-      threadId,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      ...(existing?.name !== undefined ? { name: existing.name } : {}),
-      ...(existing?.memoryMode !== undefined
-        ? { memoryMode: existing.memoryMode }
-        : {}),
-      ...(existing?.archivedAt !== undefined
-        ? { archivedAt: existing.archivedAt }
-        : {}),
-      ...(params.cwd !== undefined
-        ? { cwd: params.cwd }
-        : existing?.cwd !== undefined
-          ? { cwd: existing.cwd }
+    this.updateRegistry((registry) => {
+      const now = new Date().toISOString();
+      const existing = registry.get(threadId);
+      const entry: RegistryEntry = {
+        threadId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        ...(existing?.name !== undefined ? { name: existing.name } : {}),
+        ...(existing?.memoryMode !== undefined
+          ? { memoryMode: existing.memoryMode }
           : {}),
-      ...(params.source !== undefined
-        ? { source: params.source }
-        : existing?.source !== undefined
-          ? { source: existing.source }
+        ...(params.cwd !== undefined
+          ? { cwd: params.cwd }
+          : existing?.cwd !== undefined
+            ? { cwd: existing.cwd }
+            : {}),
+        ...(params.source !== undefined
+          ? { source: params.source }
+          : existing?.source !== undefined
+            ? { source: existing.source }
+            : {}),
+        ...(params.forkedFromId !== undefined
+          ? { forkedFromId: params.forkedFromId }
+          : existing?.forkedFromId !== undefined
+            ? { forkedFromId: existing.forkedFromId }
+            : {}),
+        ...(existing?.archivedRolloutPath !== undefined
+          ? { archivedRolloutPath: existing.archivedRolloutPath }
           : {}),
-      ...(params.forkedFromId !== undefined
-        ? { forkedFromId: params.forkedFromId }
-        : existing?.forkedFromId !== undefined
-          ? { forkedFromId: existing.forkedFromId }
-          : {}),
-      ...(existing?.archivedRolloutPath !== undefined
-        ? { archivedRolloutPath: existing.archivedRolloutPath }
-        : {}),
-      rolloutPath: params.rolloutStore.rolloutPath,
-    };
-    registry.set(threadId, entry);
-    this.writeRegistry(registry);
+        rolloutPath: params.rolloutStore.rolloutPath,
+      };
+      registry.set(threadId, entry);
+    });
   }
 
   resumeThread(params: ResumeThreadParams): void {
@@ -477,46 +488,46 @@ export class FileThreadStore implements ThreadStore {
         `thread ${threadId} already has a live local writer`,
       );
     }
-    const registry = this.readRegistry();
-    const existing = registry.get(threadId);
-    if (
-      existing?.archivedAt !== undefined &&
-      params.includeArchived !== true
-    ) {
-      throw new ThreadStoreInvalidRequestError(
-        `thread ${threadId} is archived; pass includeArchived=true to resume`,
-      );
-    }
+    this.updateRegistry((registry) => {
+      const existing = registry.get(threadId);
+      if (
+        existing?.archivedAt !== undefined &&
+        params.includeArchived !== true
+      ) {
+        throw new ThreadStoreInvalidRequestError(
+          `thread ${threadId} is archived; pass includeArchived=true to resume`,
+        );
+      }
 
-    this.liveRecorders.set(threadId, params.rolloutStore);
+      this.liveRecorders.set(threadId, params.rolloutStore);
 
-    const now = new Date().toISOString();
-    const entry: RegistryEntry = {
-      threadId,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      ...(existing?.name !== undefined ? { name: existing.name } : {}),
-      ...(existing?.memoryMode !== undefined
-        ? { memoryMode: existing.memoryMode }
-        : {}),
-      ...(existing?.archivedAt !== undefined
-        ? { archivedAt: existing.archivedAt }
-        : {}),
-      ...(existing?.cwd !== undefined ? { cwd: existing.cwd } : {}),
-      ...(existing?.source !== undefined ? { source: existing.source } : {}),
-      ...(existing?.forkedFromId !== undefined
-        ? { forkedFromId: existing.forkedFromId }
-        : {}),
-      ...(existing?.archivedRolloutPath !== undefined
-        ? { archivedRolloutPath: existing.archivedRolloutPath }
-        : {}),
-      rolloutPath:
-        params.rolloutPath ??
-        existing?.rolloutPath ??
-        params.rolloutStore.rolloutPath,
-    };
-    registry.set(threadId, entry);
-    this.writeRegistry(registry);
+      const now = new Date().toISOString();
+      const entry: RegistryEntry = {
+        threadId,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        ...(existing?.name !== undefined ? { name: existing.name } : {}),
+        ...(existing?.memoryMode !== undefined
+          ? { memoryMode: existing.memoryMode }
+          : {}),
+        ...(existing?.archivedAt !== undefined
+          ? { archivedAt: existing.archivedAt }
+          : {}),
+        ...(existing?.cwd !== undefined ? { cwd: existing.cwd } : {}),
+        ...(existing?.source !== undefined ? { source: existing.source } : {}),
+        ...(existing?.forkedFromId !== undefined
+          ? { forkedFromId: existing.forkedFromId }
+          : {}),
+        ...(existing?.archivedRolloutPath !== undefined
+          ? { archivedRolloutPath: existing.archivedRolloutPath }
+          : {}),
+        rolloutPath:
+          params.rolloutPath ??
+          existing?.rolloutPath ??
+          params.rolloutStore.rolloutPath,
+      };
+      registry.set(threadId, entry);
+    });
   }
 
   appendItems(params: AppendThreadItemsParams): void {
@@ -540,6 +551,23 @@ export class FileThreadStore implements ThreadStore {
     const recorder = this.liveRecorderOrThrow(threadId);
     recorder.flushDurable();
     this.liveRecorders.delete(threadId);
+    this.updateRegistry((registry) => {
+      const existing = registry.get(threadId);
+      if (
+        existing === undefined ||
+        existing.archivedAt === undefined ||
+        existing.archivedRolloutPath !== undefined
+      ) {
+        return;
+      }
+      const archivedRolloutPath = this.archiveRolloutFile(existing);
+      if (archivedRolloutPath === undefined) return;
+      registry.set(threadId, {
+        ...existing,
+        archivedRolloutPath,
+        updatedAt: new Date().toISOString(),
+      });
+    });
   }
 
   discardThread(threadId: ThreadId): void {
@@ -642,86 +670,93 @@ export class FileThreadStore implements ThreadStore {
         "FileThreadStore applies one metadata field per patch",
       );
     }
-    const registry = this.readRegistry();
-    const existing = registry.get(params.threadId);
-    if (existing === undefined) {
-      throw new ThreadNotFoundError(params.threadId);
-    }
-    if (existing.archivedAt !== undefined && !params.includeArchived) {
-      throw new ThreadNotFoundError(params.threadId);
-    }
-    const now = new Date().toISOString();
-    const updated: RegistryEntry = {
-      ...existing,
-      updatedAt: now,
-      ...(params.patch.name !== undefined ? { name: params.patch.name } : {}),
-      ...(params.patch.memoryMode !== undefined
-        ? { memoryMode: params.patch.memoryMode }
-        : {}),
-    };
-    if (params.patch.memoryMode !== undefined) {
-      this.appendMemoryModeSessionMeta(updated, params.patch.memoryMode);
-    }
-    registry.set(params.threadId, updated);
-    this.writeRegistry(registry);
-    return toStoredThread(updated);
+    let result: StoredThread | undefined;
+    this.updateRegistry((registry) => {
+      const existing = registry.get(params.threadId);
+      if (existing === undefined) {
+        throw new ThreadNotFoundError(params.threadId);
+      }
+      if (existing.archivedAt !== undefined && !params.includeArchived) {
+        throw new ThreadNotFoundError(params.threadId);
+      }
+      const now = new Date().toISOString();
+      const updated: RegistryEntry = {
+        ...existing,
+        updatedAt: now,
+        ...(params.patch.name !== undefined ? { name: params.patch.name } : {}),
+        ...(params.patch.memoryMode !== undefined
+          ? { memoryMode: params.patch.memoryMode }
+          : {}),
+      };
+      if (params.patch.memoryMode !== undefined) {
+        this.appendMemoryModeSessionMeta(updated, params.patch.memoryMode);
+      }
+      registry.set(params.threadId, updated);
+      result = toStoredThread(updated);
+    });
+    return result!;
   }
 
   archiveThread(params: ArchiveThreadParams): void {
-    const registry = this.readRegistry();
-    const existing = registry.get(params.threadId);
-    if (existing === undefined) {
-      throw new ThreadNotFoundError(params.threadId);
-    }
-    if (existing.archivedAt !== undefined) {
-      return; // already archived
-    }
-    const now = new Date().toISOString();
-    const archivedRolloutPath = this.liveRecorders.has(params.threadId)
-      ? existing.archivedRolloutPath
-      : this.archiveRolloutFile(existing);
-    registry.set(params.threadId, {
-      ...existing,
-      updatedAt: now,
-      archivedAt: now,
-      ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
+    this.updateRegistry((registry) => {
+      const existing = registry.get(params.threadId);
+      if (existing === undefined) {
+        throw new ThreadNotFoundError(params.threadId);
+      }
+      if (existing.archivedAt !== undefined) {
+        return; // already archived
+      }
+      const now = new Date().toISOString();
+      const archivedRolloutPath = this.liveRecorders.has(params.threadId)
+        ? existing.archivedRolloutPath
+        : this.archiveRolloutFile(existing);
+      registry.set(params.threadId, {
+        ...existing,
+        updatedAt: now,
+        archivedAt: now,
+        ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
+      });
     });
-    this.writeRegistry(registry);
   }
 
   unarchiveThread(params: ArchiveThreadParams): StoredThread {
-    const registry = this.readRegistry();
-    const existing = registry.get(params.threadId);
-    if (existing === undefined) {
-      throw new ThreadNotFoundError(params.threadId);
-    }
-    const now = new Date().toISOString();
-    const restoredRolloutPath = this.liveRecorders.has(params.threadId)
-      ? existing.rolloutPath
-      : this.unarchiveRolloutFile(existing);
-    const {
-      archivedAt: _drop,
-      archivedRolloutPath: _archivedRolloutPath,
-      ...rest
-    } = existing;
-    void _drop;
-    void _archivedRolloutPath;
-    const updated: RegistryEntry = {
-      ...rest,
-      updatedAt: now,
-      ...(restoredRolloutPath !== undefined
-        ? { rolloutPath: restoredRolloutPath }
-        : {}),
-    };
-    registry.set(params.threadId, updated);
-    this.writeRegistry(registry);
-    return toStoredThread(updated);
+    let result: StoredThread | undefined;
+    this.updateRegistry((registry) => {
+      const existing = registry.get(params.threadId);
+      if (existing === undefined) {
+        throw new ThreadNotFoundError(params.threadId);
+      }
+      const now = new Date().toISOString();
+      const restoredRolloutPath = this.liveRecorders.has(params.threadId)
+        ? existing.rolloutPath
+        : this.unarchiveRolloutFile(existing);
+      const {
+        archivedAt: _drop,
+        archivedRolloutPath: _archivedRolloutPath,
+        ...rest
+      } = existing;
+      void _drop;
+      void _archivedRolloutPath;
+      const updated: RegistryEntry = {
+        ...rest,
+        updatedAt: now,
+        ...(restoredRolloutPath !== undefined
+          ? { rolloutPath: restoredRolloutPath }
+          : {}),
+      };
+      registry.set(params.threadId, updated);
+      result = toStoredThread(updated);
+    });
+    return result!;
   }
 
   // ── internal helpers ────────────────────────────────────────────────
 
   private readableRolloutPath(entry: RegistryEntry): string | undefined {
-    return entry.archivedRolloutPath ?? entry.rolloutPath;
+    if (entry.archivedAt !== undefined) {
+      return entry.archivedRolloutPath ?? entry.rolloutPath;
+    }
+    return entry.rolloutPath ?? entry.archivedRolloutPath;
   }
 
   private readRolloutItems(rolloutPath: string): RolloutItem[] {
@@ -821,41 +856,136 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private readRegistry(): Map<ThreadId, RegistryEntry> {
+    return this.withRegistryLock(() => this.readRegistryUnlocked(true));
+  }
+
+  private updateRegistry(
+    mutator: (registry: Map<ThreadId, RegistryEntry>) => void,
+  ): void {
+    this.withRegistryLock(() => {
+      const registry = this.readRegistryUnlocked(false);
+      mutator(registry);
+      this.writeRegistryUnlocked(registry);
+    });
+  }
+
+  private readRegistryUnlocked(
+    includeLegacy: boolean,
+  ): Map<ThreadId, RegistryEntry> {
     if (!existsSync(this.registryPath)) {
-      return new Map();
+      return includeLegacy ? this.importLegacyRegistry() : new Map();
     }
-    const raw = readFileSync(this.registryPath, "utf8");
-    if (raw.trim().length === 0) return new Map();
-    const parsed = JSON.parse(raw) as RegistrySnapshot;
-    if (
-      parsed.version !== REGISTRY_VERSION ||
-      !Array.isArray(parsed.threads)
-    ) {
-      throw new Error(
-        `invalid thread-store registry at ${this.registryPath}`,
-      );
+    let parsed: RegistrySnapshot;
+    try {
+      const raw = readFileSync(this.registryPath, "utf8");
+      if (raw.trim().length === 0) {
+        return includeLegacy ? this.importLegacyRegistry() : new Map();
+      }
+      parsed = JSON.parse(raw) as RegistrySnapshot;
+      if (
+        parsed.version !== REGISTRY_VERSION ||
+        !Array.isArray(parsed.threads)
+      ) {
+        throw new Error("invalid registry shape");
+      }
+    } catch {
+      this.backupCorruptRegistry();
+      return includeLegacy ? this.importLegacyRegistry() : new Map();
     }
     const result = new Map<ThreadId, RegistryEntry>();
     for (const entry of parsed.threads) {
-      if (typeof entry.threadId !== "string") {
-        continue;
+      const normalized = normalizeRegistryEntry(entry);
+      if (normalized !== undefined) result.set(normalized.threadId, normalized);
+    }
+    if (includeLegacy) {
+      for (const [threadId, entry] of this.importLegacyRegistry()) {
+        const existing = result.get(threadId);
+        if (existing === undefined) {
+          result.set(threadId, entry);
+        }
       }
-      result.set(entry.threadId, entry);
     }
     return result;
   }
 
-  private writeRegistry(registry: Map<ThreadId, RegistryEntry>): void {
+  private writeRegistryUnlocked(registry: Map<ThreadId, RegistryEntry>): void {
     mkdirSync(dirname(this.registryPath), { recursive: true });
     const snapshot: RegistrySnapshot = {
       version: REGISTRY_VERSION,
       threads: Array.from(registry.values()),
     };
-    writeFileSync(
-      this.registryPath,
-      `${JSON.stringify(snapshot, null, 2)}\n`,
-      "utf8",
-    );
+    const tmpPath = `${this.registryPath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmpPath, `${JSON.stringify(snapshot, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    fsyncPath(tmpPath);
+    renameSync(tmpPath, this.registryPath);
+    fsyncPath(dirname(this.registryPath));
+  }
+
+  private withRegistryLock<T>(fn: () => T): T {
+    mkdirSync(dirname(this.registryPath), { recursive: true });
+    const deadline = Date.now() + 2_000;
+    while (true) {
+      try {
+        mkdirSync(this.registryLockPath);
+        break;
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code !== "EEXIST" || Date.now() >= deadline) {
+          throw new ThreadStoreConflictError(
+            `failed to acquire registry lock ${this.registryLockPath}`,
+          );
+        }
+        sleepSync(25);
+      }
+    }
+
+    try {
+      return fn();
+    } finally {
+      rmSync(this.registryLockPath, { recursive: true, force: true });
+    }
+  }
+
+  private backupCorruptRegistry(): void {
+    if (!existsSync(this.registryPath)) return;
+    const backupPath = `${this.registryPath}.corrupt-${Date.now()}-${process.pid}`;
+    copyFileSync(this.registryPath, backupPath);
+    rmSync(this.registryPath, { force: true });
+  }
+
+  private importLegacyRegistry(): Map<ThreadId, RegistryEntry> {
+    const result = new Map<ThreadId, RegistryEntry>();
+    for (const session of listResumableSessions(this.projectDir)) {
+      result.set(session.sessionId, {
+        threadId: session.sessionId,
+        createdAt: new Date(session.lastModified).toISOString(),
+        updatedAt: new Date(session.lastModified).toISOString(),
+        rolloutPath: session.rolloutPath,
+      });
+    }
+
+    for (const rolloutPath of listRolloutFilesRecursive(this.archivedSessionsDir)) {
+      const imported = entryFromRolloutPath(rolloutPath, true);
+      if (imported === undefined) continue;
+      result.set(
+        imported.threadId,
+        mergeLegacyEntry(result.get(imported.threadId), imported),
+      );
+    }
+
+    for (const [threadId, entry] of result) {
+      const enriched = entryFromRolloutPath(
+        entry.rolloutPath ?? entry.archivedRolloutPath ?? "",
+        entry.archivedAt !== undefined,
+      );
+      if (enriched !== undefined) {
+        result.set(threadId, mergeLegacyEntry(entry, enriched));
+      }
+    }
+    return result;
   }
 }
 
@@ -863,15 +993,15 @@ function toStoredThread(
   entry: RegistryEntry,
   history?: StoredThreadHistory,
 ): StoredThread {
+  const rolloutPath =
+    entry.archivedAt !== undefined
+      ? entry.archivedRolloutPath ?? entry.rolloutPath
+      : entry.rolloutPath ?? entry.archivedRolloutPath;
   return {
     threadId: entry.threadId,
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt,
-    ...(entry.archivedRolloutPath !== undefined
-      ? { rolloutPath: entry.archivedRolloutPath }
-      : entry.rolloutPath !== undefined
-        ? { rolloutPath: entry.rolloutPath }
-        : {}),
+    ...(rolloutPath !== undefined ? { rolloutPath } : {}),
     ...(entry.forkedFromId !== undefined
       ? { forkedFromId: entry.forkedFromId }
       : {}),
@@ -897,13 +1027,185 @@ function latestSessionMeta(
 }
 
 function buildFallbackSessionMeta(entry: RegistryEntry): SessionMetaLine {
+  const serializedSource = serializeThreadSource(entry.source);
   return {
     sessionId: entry.threadId,
     timestamp: entry.updatedAt,
     cwd: entry.cwd ?? process.cwd(),
-    originator: entry.source ?? "thread-store",
+    originator: serializedSource ?? "thread-store",
     agencVersion: "unknown",
     rolloutSchemaVersion: ROLLOUT_SCHEMA_VERSION,
-    ...(entry.source !== undefined ? { source: entry.source } : {}),
+    ...(serializedSource !== undefined ? { source: serializedSource } : {}),
   };
+}
+
+function normalizeRegistryEntry(value: unknown): RegistryEntry | undefined {
+  if (!isRecord(value) || typeof value.threadId !== "string") {
+    return undefined;
+  }
+  const source = normalizeThreadSource(value.source);
+  return {
+    threadId: value.threadId,
+    createdAt:
+      typeof value.createdAt === "string"
+        ? value.createdAt
+        : new Date().toISOString(),
+    updatedAt:
+      typeof value.updatedAt === "string"
+        ? value.updatedAt
+        : new Date().toISOString(),
+    ...(typeof value.name === "string" ? { name: value.name } : {}),
+    ...(value.memoryMode === "enabled" || value.memoryMode === "disabled"
+      ? { memoryMode: value.memoryMode }
+      : {}),
+    ...(typeof value.archivedAt === "string"
+      ? { archivedAt: value.archivedAt }
+      : {}),
+    ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+    ...(source !== undefined ? { source } : {}),
+    ...(typeof value.forkedFromId === "string"
+      ? { forkedFromId: value.forkedFromId }
+      : {}),
+    ...(typeof value.rolloutPath === "string"
+      ? { rolloutPath: value.rolloutPath }
+      : {}),
+    ...(typeof value.archivedRolloutPath === "string"
+      ? { archivedRolloutPath: value.archivedRolloutPath }
+      : {}),
+  };
+}
+
+function normalizeThreadSource(value: unknown): ThreadSource | undefined {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) return undefined;
+  try {
+    return JSON.parse(JSON.stringify(value)) as ThreadSource;
+  } catch {
+    return undefined;
+  }
+}
+
+function serializeThreadSource(source: ThreadSource | undefined): string | undefined {
+  if (source === undefined) return undefined;
+  if (typeof source === "string") return source;
+  try {
+    return JSON.stringify(source);
+  } catch {
+    return undefined;
+  }
+}
+
+function mergeLegacyEntry(
+  existing: RegistryEntry | undefined,
+  legacy: RegistryEntry,
+): RegistryEntry {
+  if (existing === undefined) return legacy;
+  const existingActivePath =
+    existing.archivedAt === undefined ? existing.rolloutPath : undefined;
+  const legacyActivePath =
+    legacy.archivedAt === undefined ? legacy.rolloutPath : undefined;
+  const archivedRolloutPath =
+    existing.archivedRolloutPath ??
+    legacy.archivedRolloutPath ??
+    (legacy.archivedAt !== undefined ? legacy.rolloutPath : undefined) ??
+    (existing.archivedAt !== undefined ? existing.rolloutPath : undefined);
+  const merged: RegistryEntry = {
+    ...legacy,
+    ...existing,
+    ...(existingActivePath ?? legacyActivePath
+      ? { rolloutPath: existingActivePath ?? legacyActivePath }
+      : {}),
+    ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
+  };
+  if (existingActivePath ?? legacyActivePath) {
+    const { archivedAt: _drop, ...active } = merged;
+    void _drop;
+    return active;
+  }
+  if (existing.archivedAt !== undefined) {
+    return { ...merged, archivedAt: existing.archivedAt };
+  }
+  if (legacy.archivedAt !== undefined) {
+    return { ...merged, archivedAt: legacy.archivedAt };
+  }
+  return merged;
+}
+
+function entryFromRolloutPath(
+  rolloutPath: string,
+  archived: boolean,
+): RegistryEntry | undefined {
+  if (!rolloutPath || !existsSync(rolloutPath)) return undefined;
+  const meta = readAndValidateSchemaVersion(rolloutPath);
+  const stats = statSync(rolloutPath);
+  const updatedAt = new Date(stats.mtimeMs).toISOString();
+  const createdAt = meta?.timestamp ?? updatedAt;
+  const threadId = meta?.sessionId ?? threadIdFromRolloutPath(rolloutPath);
+  if (threadId === undefined) return undefined;
+  const source = normalizeThreadSource(meta?.source);
+  return {
+    threadId,
+    createdAt,
+    updatedAt,
+    ...(archived ? { archivedAt: updatedAt, archivedRolloutPath: rolloutPath } : { rolloutPath }),
+    ...(meta?.cwd !== undefined ? { cwd: meta.cwd } : {}),
+    ...(source !== undefined ? { source } : {}),
+  };
+}
+
+function threadIdFromRolloutPath(rolloutPath: string): ThreadId | undefined {
+  const fileName = basename(rolloutPath);
+  const stem = fileName.endsWith(".jsonl")
+    ? fileName.slice(0, -".jsonl".length)
+    : fileName;
+  const dash = stem.lastIndexOf("-");
+  if (dash === -1 || dash === stem.length - 1) return undefined;
+  return stem.slice(dash + 1);
+}
+
+function listRolloutFilesRecursive(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const result: string[] = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: string[];
+    try {
+      entries = readdirSync(current);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = join(current, entry);
+      let stats;
+      try {
+        stats = statSync(path);
+      } catch {
+        continue;
+      }
+      if (stats.isDirectory()) {
+        stack.push(path);
+      } else if (entry.startsWith("rollout-") && entry.endsWith(".jsonl")) {
+        result.push(path);
+      }
+    }
+  }
+  return result;
+}
+
+function fsyncPath(path: string): void {
+  const fd = openSync(path, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
