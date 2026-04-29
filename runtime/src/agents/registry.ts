@@ -322,12 +322,6 @@ export class AgentRegistry {
 export function joinAgentPath(parent: AgentPath, segment: string): AgentPath {
   assertValidAgentPath(parent);
   assertValidAgentName(segment);
-  if (parent === MEMORY_AGENT_PATH) {
-    throw new InvalidAgentPathError(
-      parent,
-      "memory consolidation agent path cannot have children",
-    );
-  }
   return `${parent}/${segment}`;
 }
 
@@ -357,12 +351,6 @@ export function resolveAgentPath(
   if (reference.startsWith("/")) {
     assertValidAgentPath(reference);
     return reference;
-  }
-  if (current === MEMORY_AGENT_PATH) {
-    throw new InvalidAgentPathError(
-      reference,
-      "relative references cannot resolve below the memory consolidation agent",
-    );
   }
   for (const segment of reference.split("/")) {
     assertValidAgentName(segment);
