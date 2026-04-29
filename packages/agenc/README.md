@@ -112,6 +112,18 @@ Connector health and pending-restart state are exposed through both:
 - `agenc connector status telegram`
 - `agenc ui` on the dashboard status view
 
+Connector status also reports the public host ABI pair from
+`@tetsuo-ai/plugin-kit`:
+
+- `plugin_api_version`
+- `host_api_version`
+
+Telegram is built in for V1, but it follows the same connector lifecycle and ABI
+contract as hosted channel plugins. Secrets are written only to the canonical
+operator config (`~/.agenc/config.json`) via the same daemon config path used by
+the CLI and dashboard. Re-run `connector add telegram` with a new token to
+rotate, and use `connector remove telegram` to remove the configured secret.
+
 ## Wrapper-local runtime management
 
 ```bash

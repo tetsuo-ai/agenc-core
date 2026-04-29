@@ -93,6 +93,10 @@ describe('AgentStatusView', () => {
               active: false,
               health: 'unknown',
               mode: 'polling',
+              abi: {
+                plugin_api_version: '1.0.0',
+                host_api_version: '1.0.0',
+              },
               pendingRestart: true,
               summary: 'Config changed on disk; restart the daemon to apply connector changes.',
             },
@@ -107,5 +111,6 @@ describe('AgentStatusView', () => {
     expect(
       screen.getByText('Config changed on disk; restart the daemon to apply connector changes.'),
     ).toBeTruthy();
+    expect(screen.getByText('ABI plugin 1.0.0 / host 1.0.0')).toBeTruthy();
   });
 });

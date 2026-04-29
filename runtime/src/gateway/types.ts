@@ -722,6 +722,11 @@ export type GatewayState = "stopped" | "starting" | "running" | "stopping";
 export type GatewayChannelHealth = "healthy" | "unhealthy" | "unknown";
 export type GatewayChannelMode = "polling" | "webhook";
 
+export interface GatewayConnectorAbiStatus {
+  readonly plugin_api_version: string;
+  readonly host_api_version: string;
+}
+
 export interface GatewayChannelStatus {
   readonly name: string;
   readonly configured: boolean;
@@ -729,6 +734,7 @@ export interface GatewayChannelStatus {
   readonly active: boolean;
   readonly health: GatewayChannelHealth;
   readonly mode?: GatewayChannelMode;
+  readonly abi?: GatewayConnectorAbiStatus;
   readonly pendingRestart: boolean;
   readonly summary?: string;
 }

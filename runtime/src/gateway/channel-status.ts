@@ -1,4 +1,5 @@
 import type { GatewayChannelConfig, GatewayChannelStatus } from "./types.js";
+import { buildGatewayConnectorAbiStatus } from "./connector-abi.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -18,6 +19,13 @@ function inferGatewayChannelMode(
   return isRecord(config.webhook) ? "webhook" : "polling";
 }
 
+function isConnectorStatusCandidate(
+  name: string,
+  config: GatewayChannelConfig | undefined,
+): boolean {
+  return name === "telegram" || (isRecord(config) && config.type === "plugin");
+}
+
 export function buildGatewayChannelStatus(
   name: string,
   params: {
@@ -33,6 +41,15 @@ export function buildGatewayChannelStatus(
   const configured = targetConfig !== undefined;
   const enabled = configured && targetConfig.enabled !== false;
   const mode = inferGatewayChannelMode(name, targetConfig);
+  // Hosted plugin connectors that have been removed from disk but are still
+  // running in the live daemon (pending restart) only show up via `liveConfig`
+  // — fall back to it so the ABI stays attached for the channel-status surface
+  // until the operator actually restarts.
+  const abi =
+    isConnectorStatusCandidate(name, targetConfig) ||
+    isConnectorStatusCandidate(name, params.liveConfig)
+      ? buildGatewayConnectorAbiStatus()
+      : undefined;
 
   let summary: string | undefined;
   if (params.pendingRestart && params.active && !configured) {
@@ -67,6 +84,7 @@ export function buildGatewayChannelStatus(
     health: params.health,
     pendingRestart: params.pendingRestart,
     ...(mode ? { mode } : {}),
+    ...(abi ? { abi } : {}),
     ...(summary ? { summary } : {}),
   };
 }

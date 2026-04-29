@@ -95,6 +95,13 @@ Primary responsibilities:
 
 The web dashboard is a daemon client, not a separate runtime.
 
+`web/` is the dashboard product surface. `agenc ui` opens the dashboard that the
+daemon serves at `/ui/`; `agenc ui --no-open` prints the same URL without
+launching a browser. Browser state and actions must flow through the daemon
+control plane. Same-origin loopback is the default access path, and configs with
+`auth.secret` must set `auth.localBypass=true` before `agenc ui` will open the
+dashboard.
+
 ## Public install surface
 
 The public user-facing install identity is the scoped npm package
@@ -181,6 +188,15 @@ Connectors and plugins must share one public host contract:
 
 - `plugin_api_version`
 - `host_api_version`
+
+The current V1 host ABI pair is:
+
+- `plugin_api_version`: `1.0.0`
+- `host_api_version`: `1.0.0`
+
+Connector status payloads expose this pair under `abi`, and the web dashboard
+renders it beside connector health/restart state so CLI, TUI, and web are
+reading the same daemon-reported lifecycle contract.
 
 First-party connectors may ship built-in first, but they cannot create a second
 incompatible lifecycle model.
