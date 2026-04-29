@@ -1,0 +1,95 @@
+{
+  "compare": {
+    "schemaValue": "replay.compare.output.v1",
+    "commandValue": "replay.compare",
+    "requiredTopLevel": [
+      "status",
+      "command",
+      "schema",
+      "localTracePath",
+      "strictness",
+      "strictMode",
+      "storeType",
+      "result"
+    ],
+    "optionalTopLevel": [
+      "taskPda",
+      "disputePda"
+    ],
+    "resultRequired": [
+      "status",
+      "strictness",
+      "localEventCount",
+      "projectedEventCount",
+      "mismatchCount",
+      "matchRate",
+      "anomalyIds",
+      "topAnomalies",
+      "hashes",
+      "localSummary",
+      "projectedSummary"
+    ]
+  },
+  "incident": {
+    "schemaValue": "replay.incident.output.v1",
+    "commandValue": "replay.incident",
+    "requiredTopLevel": [
+      "status",
+      "command",
+      "schema",
+      "commandParams",
+      "summary",
+      "validation",
+      "narrative"
+    ],
+    "optionalTopLevel": [
+      "evidencePack"
+    ],
+    "summaryRequired": [
+      "totalEvents",
+      "taskPdaFilters",
+      "disputePdaFilters",
+      "uniqueTaskIds",
+      "uniqueDisputeIds",
+      "sourceEventTypeCounts",
+      "sourceEventNameCounts",
+      "traceIdCounts",
+      "events",
+      "deterministicHash",
+      "eventType"
+    ],
+    "validationRequired": [
+      "strictMode",
+      "eventValidation",
+      "anomalyIds"
+    ],
+    "narrativeRequired": [
+      "lines",
+      "anomalyIds"
+    ]
+  },
+  "backfill": {
+    "schemaValue": "replay.backfill.output.v1",
+    "commandValue": "replay.backfill",
+    "requiredTopLevel": [
+      "status",
+      "command",
+      "schema",
+      "mode",
+      "strictMode",
+      "toSlot",
+      "storeType",
+      "idempotencyWindow",
+      "result"
+    ],
+    "optionalTopLevel": [
+      "pageSize",
+      "traceId"
+    ],
+    "resultRequired": [
+      "processed",
+      "duplicates",
+      "cursor"
+    ]
+  }
+}

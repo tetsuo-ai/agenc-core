@@ -65,7 +65,7 @@ For whole-repo navigation, start with [../CODEBASE_MAP.md](../CODEBASE_MAP.md) a
 An MCP server at `docs-mcp/` serves this documentation to AI agents:
 
 ```bash
-agenc mcp add agenc-docs -- node docs-mcp/dist/index.js
+claude mcp add agenc-docs -- node docs-mcp/dist/index.js
 ```
 
 Current tools: `docs_search`, `docs_get_module_template`, `docs_get_module_info`, `docs_get_conventions`

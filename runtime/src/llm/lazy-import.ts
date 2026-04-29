@@ -7,7 +7,7 @@
  * @module
  */
 
-import { ensureLazyModule } from "./_deps/lazy-import.js";
+import { ensureLazyModule } from "../utils/lazy-import.js";
 import { LLMProviderError } from "./errors.js";
 
 /**

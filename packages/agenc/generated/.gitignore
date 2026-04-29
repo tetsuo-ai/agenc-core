@@ -1,0 +1,6 @@
+*
+!.gitkeep
+!agenc-runtime-manifest.json
+!agenc-runtime-manifest.json.sig
+!agenc-runtime-public-key.pem
+!agenc-runtime-trust-policy.json

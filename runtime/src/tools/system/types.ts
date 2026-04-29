@@ -38,35 +38,6 @@ export interface BashToolConfig {
   readonly unrestricted?: boolean;
   /** Enable shell mode when args is omitted (default: true). Set false to require command+args only. */
   readonly shellMode?: boolean;
-  /**
-   * T6 gap #119: optional observer that the bash tool calls before/after
-   * spawn so the session layer can emit `exec_command_begin` /
-   * `exec_command_end` EventMsg without the bash factory needing a
-   * Session handle.
-   */
-  readonly execObserver?: BashExecObserver;
-}
-
-/** T6 gap #119 — begin/end lifecycle observer for bash spawns. */
-export interface BashExecObserver {
-  readonly onBegin?: (begin: {
-    readonly callId: string;
-    readonly command: string;
-    readonly cwd: string;
-    readonly processId?: number;
-    readonly sessionId?: number;
-    readonly tty?: boolean;
-  }) => void;
-  readonly onEnd?: (end: {
-    readonly callId: string;
-    readonly exitCode: number | null;
-    readonly stdout?: string;
-    readonly stderr?: string;
-    readonly durationMs: number;
-    readonly processId?: number;
-    readonly sessionId?: number;
-    readonly tty?: boolean;
-  }) => void;
 }
 
 /**
@@ -417,10 +388,10 @@ export interface BashExecutionResult {
 /**
  * Default deny list of commands that grant capabilities BEYOND what the
  * daemon-running user already has. The agent already has full read/write
- * access to the user's files via `Write` and `FileRead`,
+ * access to the user's files via `system.writeFile` and `system.readFile`,
  * so denying ordinary developer tools (rm, chmod, python, node, curl,
  * tee, awk, etc.) is security theater: the agent could trash files just
- * as easily by writing garbage with `Write`. The only useful
+ * as easily by writing garbage with `system.writeFile`. The only useful
  * denials are commands that escalate privilege or damage the system in
  * ways file I/O cannot.
  *

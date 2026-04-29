@@ -1,93 +1,257 @@
-/**
- * T6 gap #119 — MCP tool-bridge `mcp_tool_call_begin` / `_end` smoke.
- *
- * Verifies that the bridge factory threads an `MCPCallObserver` into
- * each per-tool `execute()` wrapper so the session layer can emit
- * the canonical EventMsg variants without the bridge itself needing
- * a Session reference.
- */
+import { describe, it, expect, vi } from "vitest";
+import { createToolBridge } from "./tool-bridge.js";
+import { computeMCPToolCatalogSha256 } from "../policy/mcp-governance.js";
 
-import { describe, expect, test } from "vitest";
-import { createToolBridge, type MCPCallObserver } from "./tool-bridge.js";
+function makeMockClient(tools: { name: string; description?: string; inputSchema?: object }[] = []) {
+  return {
+    listTools: vi.fn().mockResolvedValue({ tools }),
+    callTool: vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+    }),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+}
 
-describe("createToolBridge — T6 gap #119 observer wiring", () => {
-  test("observer.onBegin + onEnd fire around a successful call", async () => {
-    const begins: Array<{ server: string; toolName: string; args: string }> = [];
-    const ends: Array<{ server: string; toolName: string; isError: boolean }> = [];
-    const observer: MCPCallObserver = {
-      onBegin: (b) => {
-        begins.push({ server: b.server, toolName: b.toolName, args: b.args });
-      },
-      onEnd: (e) => {
-        ends.push({ server: e.server, toolName: e.toolName, isError: e.isError });
-      },
-    };
+describe("createToolBridge", () => {
+  // --------------------------------------------------------------------------
+  // Tool discovery
+  // --------------------------------------------------------------------------
 
-    const fakeClient = {
-      listTools: async () => ({
-        tools: [
-          {
-            name: "echo",
-            description: "echoes input",
-            inputSchema: { type: "object", properties: {} },
-          },
-        ],
-      }),
-      callTool: async () => ({
-        content: [{ type: "text", text: "hello" }],
-        isError: false,
-      }),
-      close: async () => {},
-    };
+  it("converts MCP tools to runtime Tool[] with namespaced names", async () => {
+    const client = makeMockClient([
+      { name: "takeScreenshot", description: "Capture the screen" },
+      { name: "click", description: "Click an element" },
+    ]);
 
-    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
-      callObserver: observer,
-    });
-    const tool = bridge.tools[0]!;
-    const result = await tool.execute({ msg: "hi" });
+    const bridge = await createToolBridge(client, "peekaboo");
 
-    expect(result.isError).toBeFalsy();
-    expect(begins).toHaveLength(1);
-    expect(begins[0]!.server).toBe("srv");
-    expect(begins[0]!.toolName).toBe("echo");
-    expect(JSON.parse(begins[0]!.args)).toEqual({ msg: "hi" });
-
-    expect(ends).toHaveLength(1);
-    expect(ends[0]!.server).toBe("srv");
-    expect(ends[0]!.toolName).toBe("echo");
-    expect(ends[0]!.isError).toBe(false);
+    expect(bridge.serverName).toBe("peekaboo");
+    expect(bridge.tools).toHaveLength(2);
+    expect(bridge.tools[0].name).toBe("mcp.peekaboo.takeScreenshot");
+    expect(bridge.tools[0].description).toBe("Capture the screen");
+    expect(bridge.tools[1].name).toBe("mcp.peekaboo.click");
   });
 
-  test("observer.onEnd still fires with isError when client throws", async () => {
-    const ends: Array<{ isError: boolean }> = [];
-    const observer: MCPCallObserver = {
-      onEnd: (e) => {
-        ends.push({ isError: e.isError });
-      },
-    };
+  it("handles empty tool list", async () => {
+    const client = makeMockClient([]);
+    const bridge = await createToolBridge(client, "empty");
 
-    const fakeClient = {
-      listTools: async () => ({
-        tools: [
-          {
-            name: "boom",
-            description: "throws",
-            inputSchema: { type: "object", properties: {} },
-          },
-        ],
-      }),
-      callTool: async () => {
-        throw new Error("server exploded");
-      },
-      close: async () => {},
-    };
+    expect(bridge.tools).toHaveLength(0);
+  });
 
-    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
-      callObserver: observer,
+  it("uses default description when MCP tool has none", async () => {
+    const client = makeMockClient([{ name: "doStuff" }]);
+    const bridge = await createToolBridge(client, "srv");
+
+    expect(bridge.tools[0].description).toBe("MCP tool: doStuff");
+  });
+
+  it("uses default inputSchema when MCP tool has none", async () => {
+    const client = makeMockClient([{ name: "noSchema" }]);
+    const bridge = await createToolBridge(client, "srv");
+
+    expect(bridge.tools[0].inputSchema).toEqual({ type: "object", properties: {} });
+  });
+
+  it("preserves inputSchema from MCP tool", async () => {
+    const schema = { type: "object", properties: { quality: { type: "string" } } };
+    const client = makeMockClient([{ name: "tool1", inputSchema: schema }]);
+    const bridge = await createToolBridge(client, "srv");
+
+    expect(bridge.tools[0].inputSchema).toEqual(schema);
+  });
+
+  it("handles server returning no tools key", async () => {
+    const client = {
+      listTools: vi.fn().mockResolvedValue({}),
+      callTool: vi.fn(),
+      close: vi.fn(),
+    };
+    const bridge = await createToolBridge(client, "srv");
+
+    expect(bridge.tools).toHaveLength(0);
+  });
+
+  it("filters discovered tools using per-server allow and deny lists", async () => {
+    const client = makeMockClient([
+      { name: "allowedRead" },
+      { name: "allowedDangerous" },
+      { name: "otherTool" },
+    ]);
+
+    const bridge = await createToolBridge(client, "srv", undefined, {
+      serverConfig: {
+        name: "srv",
+        command: "npx",
+        args: ["-y", "@pkg/server@1.2.3"],
+        riskControls: {
+          toolAllowList: ["allowed*"],
+          toolDenyList: ["allowedDangerous"],
+        },
+      },
     });
-    const result = await bridge.tools[0]!.execute({});
+
+    expect(bridge.tools.map((tool) => tool.name)).toEqual([
+      "mcp.srv.allowedRead",
+    ]);
+  });
+
+  it("rejects tool catalogs whose digest does not match the configured expectation", async () => {
+    const client = makeMockClient([{ name: "tool1" }]);
+
+    await expect(
+      createToolBridge(client, "srv", undefined, {
+        serverConfig: {
+          name: "srv",
+          command: "npx",
+          args: ["-y", "@pkg/server@1.2.3"],
+          supplyChain: {
+            catalogSha256: "f".repeat(64),
+          },
+        },
+      }),
+    ).rejects.toThrow(/tool catalog digest mismatch/i);
+  });
+
+  it("accepts matching tool catalog digests", async () => {
+    const tools = [{ name: "tool1", description: "desc" }];
+    const client = makeMockClient(tools);
+
+    const bridge = await createToolBridge(client, "srv", undefined, {
+      serverConfig: {
+        name: "srv",
+        command: "npx",
+        args: ["-y", "@pkg/server@1.2.3"],
+        supplyChain: {
+          catalogSha256: computeMCPToolCatalogSha256(tools),
+        },
+      },
+    });
+
+    expect(bridge.tools).toHaveLength(1);
+  });
+
+  // --------------------------------------------------------------------------
+  // Tool execution
+  // --------------------------------------------------------------------------
+
+  it("execute calls client.callTool with original tool name", async () => {
+    const client = makeMockClient([{ name: "takeScreenshot" }]);
+    const bridge = await createToolBridge(client, "peekaboo");
+
+    await bridge.tools[0].execute({ quality: "low" });
+
+    expect(client.callTool).toHaveBeenCalledWith({
+      name: "takeScreenshot",
+      arguments: { quality: "low" },
+    });
+  });
+
+  it("execute extracts text content from MCP content array", async () => {
+    const client = makeMockClient([{ name: "tool1" }]);
+    client.callTool.mockResolvedValue({
+      content: [
+        { type: "text", text: "line 1" },
+        { type: "text", text: "line 2" },
+      ],
+      isError: false,
+    });
+
+    const bridge = await createToolBridge(client, "srv");
+    const result = await bridge.tools[0].execute({});
+
+    expect(result.content).toBe("line 1\nline 2");
+    expect(result.isError).toBe(false);
+  });
+
+  it("execute JSON-stringifies non-text content items", async () => {
+    const client = makeMockClient([{ name: "tool1" }]);
+    client.callTool.mockResolvedValue({
+      content: [{ type: "image", data: "base64..." }],
+      isError: false,
+    });
+
+    const bridge = await createToolBridge(client, "srv");
+    const result = await bridge.tools[0].execute({});
+
+    expect(result.content).toContain('"type":"image"');
+  });
+
+  it("execute handles string content from MCP", async () => {
+    const client = makeMockClient([{ name: "tool1" }]);
+    client.callTool.mockResolvedValue({
+      content: "plain string result",
+      isError: false,
+    });
+
+    const bridge = await createToolBridge(client, "srv");
+    const result = await bridge.tools[0].execute({});
+
+    expect(result.content).toBe("plain string result");
+  });
+
+  it("execute propagates isError flag", async () => {
+    const client = makeMockClient([{ name: "tool1" }]);
+    client.callTool.mockResolvedValue({
+      content: [{ type: "text", text: "bad" }],
+      isError: true,
+    });
+
+    const bridge = await createToolBridge(client, "srv");
+    const result = await bridge.tools[0].execute({});
+
     expect(result.isError).toBe(true);
-    expect(ends).toHaveLength(1);
-    expect(ends[0]!.isError).toBe(true);
+  });
+
+  it("execute catches callTool errors and returns isError result", async () => {
+    const client = makeMockClient([{ name: "failTool" }]);
+    client.callTool.mockRejectedValue(new Error("connection lost"));
+
+    const bridge = await createToolBridge(client, "srv");
+    const result = await bridge.tools[0].execute({});
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("failTool");
+    expect(result.content).toContain("connection lost");
+  });
+
+  // --------------------------------------------------------------------------
+  // Disposed guard
+  // --------------------------------------------------------------------------
+
+  it("execute returns error after dispose", async () => {
+    const client = makeMockClient([{ name: "tool1" }]);
+    const bridge = await createToolBridge(client, "srv");
+
+    await bridge.dispose();
+    const result = await bridge.tools[0].execute({});
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("disconnected");
+    expect(client.callTool).not.toHaveBeenCalled();
+  });
+
+  // --------------------------------------------------------------------------
+  // Dispose
+  // --------------------------------------------------------------------------
+
+  it("dispose calls client.close", async () => {
+    const client = makeMockClient([]);
+    const bridge = await createToolBridge(client, "srv");
+
+    await bridge.dispose();
+
+    expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it("dispose swallows close errors", async () => {
+    const client = makeMockClient([]);
+    client.close.mockRejectedValue(new Error("already closed"));
+
+    const bridge = await createToolBridge(client, "srv");
+
+    // Should not throw
+    await bridge.dispose();
   });
 });

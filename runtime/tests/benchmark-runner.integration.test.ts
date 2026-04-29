@@ -1,55 +1,91 @@
-import { describe, expect, it } from "vitest";
-
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { TrajectoryRecorder } from '../src/eval/recorder.js';
+import { BenchmarkRunner, serializeBenchmarkArtifact } from '../src/eval/benchmark-runner.js';
+import { BENCHMARK_MANIFEST_SCHEMA_VERSION } from '../src/eval/benchmark-manifest.js';
+import type { BenchmarkManifest } from '../src/eval/benchmark-manifest.js';
 import {
-  assertMeasurementWithinBaseline,
-  loadBenchmarkManifest,
-  readBaselineArtifact,
-  resolveArtifactPath,
-  runFixtureMeasurement,
-  validateBenchmarkManifest,
-  writeBaselineArtifact,
-} from "../benchmarks/v1/runtime-replacement/runner.js";
+  createRuntimeTestContext,
+  initializeProtocol,
+} from './litesvm-setup.js';
+import { BENCHMARK_ARTIFACT_GOLDEN_SHA256_V1 } from './fixtures/benchmark-artifact-golden.v1.js';
 
-const manifest = loadBenchmarkManifest();
-const captureEnabled = process.env.AGENC_RUNTIME_BENCHMARK_CAPTURE === "1";
-const verifyEnabled = process.env.AGENC_RUNTIME_BENCHMARK_VERIFY === "1";
+describe('benchmark runner integration', () => {
+  it('runs deterministic scenarios with LiteSVM fixture context', async () => {
+    const ctx = createRuntimeTestContext();
+    await initializeProtocol(ctx);
 
-describe.sequential("runtime benchmark runner", () => {
-  it("keeps the runtime-replacement benchmark manifest valid", () => {
-    if (captureEnabled && verifyEnabled) {
-      throw new Error(
-        "AGENC_RUNTIME_BENCHMARK_CAPTURE=1 and AGENC_RUNTIME_BENCHMARK_VERIFY=1 cannot be combined",
-      );
-    }
-    validateBenchmarkManifest(manifest);
-    expect(manifest.fixtures).toHaveLength(4);
+    const manifest: BenchmarkManifest = {
+      schemaVersion: BENCHMARK_MANIFEST_SCHEMA_VERSION,
+      corpusVersion: 'v-lite',
+      baselineScenarioId: 'litesvm_protocol_smoke',
+      scenarios: [
+        {
+          id: 'litesvm_protocol_smoke',
+          title: 'LiteSVM protocol initialized smoke benchmark',
+          taskClass: 'protocol',
+          riskTier: 'medium',
+          expectedConstraints: ['litesvm_fixture'],
+          seeds: [1, 2],
+          verifierGated: true,
+          rewardLamports: '1000000',
+          costUnits: 1.0,
+        },
+      ],
+    };
+
+    const nowRef = { value: 1_700_000_000_000 };
+    const artifact = await new BenchmarkRunner({
+      now: () => nowRef.value++,
+      runId: 'litesvm-run',
+    }).run(manifest, {
+      scenarioRunners: {
+        litesvm_protocol_smoke: async ({ scenario, seed }) => {
+          const slot = Number(ctx.svm.getClock().slot);
+          let ts = 1000;
+          const recorder = new TrajectoryRecorder({
+            traceId: `${scenario.id}:${seed}:${slot}`,
+            seed,
+            now: () => ts++,
+          });
+
+          const taskPda = `task-${slot}-${seed}`;
+          recorder.record({ type: 'discovered', taskPda });
+          recorder.record({ type: 'claimed', taskPda, payload: { claimTx: `claim-${seed}` } });
+          recorder.record({ type: 'executed', taskPda, payload: { outputLength: 1 } });
+          recorder.record({
+            type: 'completed',
+            taskPda,
+            payload: {
+              completionTx: `complete-${seed}`,
+              durationMs: 20 + seed,
+            },
+          });
+
+          return {
+            trace: recorder.createTrace(),
+          };
+        },
+      },
+    });
+
+    expect(artifact.scenarios).toHaveLength(1);
+    expect(artifact.scenarios[0]!.runs).toHaveLength(2);
+    expect(artifact.aggregate.scorecard.aggregate.passRate).toBe(1);
   });
 
-  for (const fixture of manifest.fixtures) {
-    it(`measures ${fixture.id}`, async () => {
-      const measurement = await runFixtureMeasurement(manifest, fixture);
+  it('matches golden artifact hash for benchmark corpus v1', async () => {
+    const manifestPath = fileURLToPath(new URL('../benchmarks/v1/manifest.json', import.meta.url));
+    const nowRef = { value: 1_700_000_100_000 };
 
-      expect(measurement.sampleCount).toBe(fixture.capture.measurementIterations);
-      expect(measurement.stats.minMs).toBeGreaterThanOrEqual(0);
-      expect(measurement.stats.maxMs).toBeGreaterThanOrEqual(
-        measurement.stats.minMs,
-      );
+    const artifact = await new BenchmarkRunner({
+      now: () => nowRef.value++,
+      runId: 'golden-v1',
+    }).runFromFile(manifestPath);
 
-      if (captureEnabled) {
-        const artifact = writeBaselineArtifact(manifest, fixture, measurement);
-        expect(resolveArtifactPath(manifest, fixture)).toContain(
-          `runtime-replacement/${fixture.id}.baseline.json`,
-        );
-        expect(artifact.measurement.sampleCount).toBe(
-          fixture.capture.measurementIterations,
-        );
-        return;
-      }
-
-      if (verifyEnabled) {
-        const baseline = readBaselineArtifact(manifest, fixture);
-        assertMeasurementWithinBaseline(fixture, measurement, baseline);
-      }
-    });
-  }
+    const serialized = serializeBenchmarkArtifact(artifact);
+    const hash = createHash('sha256').update(serialized).digest('hex');
+    expect(hash).toBe(BENCHMARK_ARTIFACT_GOLDEN_SHA256_V1);
+  });
 });

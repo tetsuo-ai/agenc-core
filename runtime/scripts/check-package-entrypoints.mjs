@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
 const packageDir = path.dirname(packageJsonPath);
-const runtimeInternalEntrypoints = [];
+const runtimeInternalEntrypoints = ["dist/bin/daemon.js"];
 
 function collectPackageEntryPaths(packageManifest) {
   const paths = new Set();

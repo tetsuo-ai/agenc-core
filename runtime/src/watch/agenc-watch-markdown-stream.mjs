@@ -164,6 +164,30 @@ function buildStreamingMarkdownState(value, options = {}) {
     };
   }
 
+  const lastContentLineIndex = (() => {
+    for (let index = rawLines.length - 1; index >= 0; index -= 1) {
+      if (String(rawLines[index] ?? "").trim().length > 0) {
+        return index;
+      }
+    }
+    return -1;
+  })();
+  if (
+    lastContentLineIndex >= 0 &&
+    looksLikeTableLine(rawLines[lastContentLineIndex]) &&
+    !rawLines.slice(0, lastContentLineIndex).some((line) => String(line ?? "").trim().length > 0)
+  ) {
+    return {
+      completeLines: [],
+      previewLines: [
+        createDisplayLine(
+          normalizeStreamingTailText(rawLines[lastContentLineIndex]),
+          "stream-tail",
+        ),
+      ],
+    };
+  }
+
   if (source.endsWith("\n")) {
     return {
       completeLines: buildMarkdownDisplayLines(source, options),

@@ -7,16 +7,8 @@ import type {
   LLMXaiCapabilitySurface,
   LLMWebSearchConfig,
 } from "./types.js";
-import type { GatewayLLMConfig as ContextGatewayLLMConfig } from "./_deps/context-window.js";
-import { normalizeGrokModel } from "./_deps/context-window.js";
-
-// Lean-rebuild alias: provider-native-search was written against the
-// full gateway/types.ts GatewayLLMConfig. The rebuilt gateway stub
-// only exposes the minimal shape via context-window.ts. They're
-// interchangeable for the fields this module reads.
-type GatewayLLMConfig = ContextGatewayLLMConfig & {
-  searchMode?: string;
-};
+import type { GatewayLLMConfig } from "../gateway/types.js";
+import { normalizeGrokModel } from "../gateway/context-window.js";
 
 export const PROVIDER_NATIVE_WEB_SEARCH_TOOL = "web_search";
 export const PROVIDER_NATIVE_X_SEARCH_TOOL = "x_search";
@@ -78,8 +70,7 @@ function resolveProviderNativeSearchMode(
   if (!llmConfig || llmConfig.provider !== "grok") return "off";
   if (llmConfig.webSearch !== true) return "off";
   if (!supportsGrokServerSideTools(llmConfig.model)) return "off";
-  const mode = llmConfig.searchMode ?? "auto";
-  return mode === "on" || mode === "auto" || mode === "off" ? mode : "auto";
+  return llmConfig.searchMode ?? "auto";
 }
 
 export function supportsProviderNativeWebSearch(
