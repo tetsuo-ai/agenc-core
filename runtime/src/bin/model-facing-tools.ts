@@ -1077,6 +1077,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
     const agentMaxThreads =
+      session.config?.agent_max_threads ??
       session.config?.multiAgentV2?.maxConcurrentThreadsPerSession;
     if (agentMaxThreads === 0) {
       // Mirrors codex `spawn_agents_on_csv` early reject at

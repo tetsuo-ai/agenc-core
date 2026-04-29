@@ -60,6 +60,8 @@ describe("schema: defaultConfig", () => {
     expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
     expect(cfg.max_turns).toBeGreaterThan(0);
+    expect(cfg.agent_max_threads).toBe(4);
+    expect(cfg.agent_max_depth).toBe(1);
     expect(cfg.editorMode).toBe("default");
     expect(cfg.voiceInput?.enabled).toBe(false);
     expect(cfg.tuiLayout?.mode).toBe("single");
@@ -167,10 +169,14 @@ describe("schema: normalizeRawConfig", () => {
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
       editorMode: "vim",
+      agent_max_threads: 12,
+      agent_max_depth: 2,
       voiceInput: { enabled: true, command: "agenc-voice" },
       tuiLayout: { mode: "multi-pane", sidePane: "context", minColumns: 100 },
     });
     expect(out.editorMode).toBe("vim");
+    expect(out.agent_max_threads).toBe(12);
+    expect(out.agent_max_depth).toBe(2);
     expect(out.voiceInput).toEqual({
       enabled: true,
       command: "agenc-voice",
@@ -230,6 +236,23 @@ describe("schema: normalizeAgenCKeyAliases", () => {
     });
     expect(out.agent_max_depth).toBe(3);
     expect(out.agents).toBeUndefined();
+  });
+
+  test("agents.max_threads → agent_max_threads", () => {
+    const out = normalizeAgenCKeyAliases({
+      agents: { max_threads: 10000 },
+    });
+    expect(out.agent_max_threads).toBe(10000);
+    expect(out.agents).toBeUndefined();
+  });
+
+  test("preserves unknown agents keys after known aliases are lifted", () => {
+    const out = normalizeAgenCKeyAliases({
+      agents: { max_threads: 30, max_depth: 2, future_mode: "burst" },
+    });
+    expect(out.agent_max_threads).toBe(30);
+    expect(out.agent_max_depth).toBe(2);
+    expect(out.agents).toEqual({ future_mode: "burst" });
   });
 
   test("canonical key wins when both alias and canonical present", () => {

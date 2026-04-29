@@ -467,6 +467,12 @@ function buildDeferredConfig(
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
       : {}),
+    ...(config.agent_max_threads !== undefined
+      ? { agent_max_threads: config.agent_max_threads }
+      : {}),
+    ...(config.agent_max_depth !== undefined
+      ? { agent_max_depth: config.agent_max_depth }
+      : {}),
     cwd,
     /**
      * T10: real feature-flag source. Today both flags are hard-false so the
@@ -479,7 +485,7 @@ function buildDeferredConfig(
     },
     /** T9: `multiAgentV2` hints (subagent usage hints + metadata visibility). */
     multiAgentV2: {
-      maxConcurrentThreadsPerSession: 4,
+      maxConcurrentThreadsPerSession: config.agent_max_threads ?? 4,
       minWaitTimeoutMs: 10_000,
       usageHintEnabled: false,
       usageHintText: "",
@@ -959,7 +965,9 @@ export async function bootstrapLocalRuntimeSession(
         bootstrapServices.bindSession(s);
         const agentRegistry = new AgentRegistry({
           maxThreads:
-            s.config?.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
+            s.config?.agent_max_threads ??
+            s.config?.multiAgentV2?.maxConcurrentThreadsPerSession ??
+            4,
         });
         const agentControl = new AgentControl({
           session: s,
