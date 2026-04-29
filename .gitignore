@@ -45,6 +45,7 @@ obj/
 !parity/*.json
 !runtime/benchmarks/v1/incidents/*.json
 !runtime/benchmarks/mutation-gating-policy.ci.json
+!runtime/parity/*.json
 !runtime/tests/fixtures/*.json
 !runtime/tests/fixtures/replay-cli/*.json
 !runtime/tests/fixtures/golden/*.json

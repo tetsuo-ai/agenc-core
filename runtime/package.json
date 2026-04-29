@@ -28,6 +28,9 @@
     "check:runtime-ownership": "node scripts/check-runtime-ownership.mjs",
     "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
     "check:codex-control-parity": "node ../scripts/check-codex-control-parity.mjs",
+    "check:tui-openclaude-core-parity": "node scripts/check-openclaude-tui-core-parity.mjs",
+    "test:tui-openclaude-core-parity": "vitest run src/tui/transcript/VirtualMessageList.openclaude-parity.test.tsx src/tui/transcript/MessageList.openclaude-parity.test.tsx src/tui/transcript/Message.openclaude-parity.test.tsx src/tui/state/events-to-messages.openclaude-parity.test.ts src/tui/design-system/StructuredDiff.openclaude-parity.test.tsx src/tui/transcript/MarkdownBlock.openclaude-parity.test.tsx src/tui/ink/openclaude-incremental-renderer-parity.test.tsx",
+    "validate:tui-openclaude-core-parity": "npm run check:tui-openclaude-core-parity && npm run test:tui-openclaude-core-parity",
     "test": "vitest run",
     "validate:required": "npm run typecheck && npm run test && npm run check:codex-control-parity",
     "prepublishOnly": "npm run build"
@@ -78,6 +81,7 @@
     "js-yaml": "^4.1.0",
     "lodash-es": "^4.17.21",
     "markdown-it": "^14.1.1",
+    "marked": "^13.0.3",
     "proper-lockfile": "^4.1.2",
     "react": "^19.0.0",
     "react-compiler-runtime": "^1.0.0",

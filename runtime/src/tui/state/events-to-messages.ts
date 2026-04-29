@@ -27,6 +27,10 @@ import type { EventMsg } from "../../session/event-log.js";
 import type { TranscriptMessage } from "../transcript/MessageList.js";
 import type { PlanEvent } from "../transcript/PlanProgress.js";
 import {
+  assistantBlocksFromUnknown,
+  userBlocksFromEventPayload,
+} from "../transcript/content-blocks.js";
+import {
   formatAgentStatusSummary,
   formatCollabAgentLabel,
   formatPromptPreview,
@@ -788,6 +792,7 @@ export function eventsToMessages(
       turnId,
       kind: "assistant",
       content,
+      assistantContent: assistantBlocksFromUnknown(content),
       timestamp,
       isComplete: true,
     });
@@ -814,6 +819,7 @@ export function eventsToMessages(
         turnId,
         kind: "assistant",
         content: delta,
+        assistantContent: assistantBlocksFromUnknown(delta),
         timestamp,
         isComplete: false,
       });
@@ -825,6 +831,7 @@ export function eventsToMessages(
     messages[activeAssistantIndex] = {
       ...prev,
       content: `${prev.content}${delta}`,
+      assistantContent: assistantBlocksFromUnknown(`${prev.content}${delta}`),
       timestamp,
       isComplete: false,
     };
@@ -859,6 +866,9 @@ export function eventsToMessages(
     messages[activeAssistantIndex] = {
       ...prev,
       content: sanitizeAssistantTranscriptContent(prev.content),
+      assistantContent: assistantBlocksFromUnknown(
+        sanitizeAssistantTranscriptContent(prev.content),
+      ),
       isComplete: true,
     };
     activeAssistantIndex = null;
@@ -1177,11 +1187,26 @@ export function eventsToMessages(
       }
       case "user_message": {
         markAssistantComplete();
+        const userContent = userBlocksFromEventPayload(
+          event.payload.message,
+          event.payload.images ?? [],
+        );
         messages.push({
           id: event.id ?? `user-${timestamp}`,
           turnId: ensureTurnId(currentTurnId),
           kind: "user",
-          content: event.payload.message,
+          content: userContent
+            .map((block) =>
+              block.type === "text"
+                ? block.text
+                : block.type === "image"
+                  ? `[Image ${block.imageId ?? ""}]`
+                  : block.type === "tool_result"
+                    ? block.content
+                    : block.label,
+            )
+            .join("\n"),
+          userContent,
           timestamp,
         });
         break;
@@ -1260,6 +1285,11 @@ export function eventsToMessages(
               event.payload.message.length > 0
                 ? sanitizeAssistantTranscriptContent(event.payload.message)
                 : prev.content,
+            assistantContent: assistantBlocksFromUnknown(
+              event.payload.message.length > 0
+                ? sanitizeAssistantTranscriptContent(event.payload.message)
+                : prev.content,
+            ),
             timestamp,
             isComplete: true,
           };
@@ -1275,6 +1305,9 @@ export function eventsToMessages(
             turnId,
             kind: "assistant",
             content: sanitizeAssistantTranscriptContent(event.payload.message),
+            assistantContent: assistantBlocksFromUnknown(
+              sanitizeAssistantTranscriptContent(event.payload.message),
+            ),
             timestamp,
             isComplete: true,
           });

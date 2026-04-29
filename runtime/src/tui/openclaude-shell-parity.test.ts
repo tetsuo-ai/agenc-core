@@ -152,8 +152,8 @@ describe("OpenClaude shell parity setup gates", () => {
     expect(message).toMatch(
       /from\s+["']\.\/messages\/GroupedToolUseContent\.js["']/u,
     );
-    expect(sourceIfExists("transcript/messages/AssistantToolUseMessage.tsx")).toBe(
-      null,
+    expect(message).toMatch(
+      /from\s+["']\.\/messages\/AssistantToolUseMessage\.js["']/u,
     );
   });
 
@@ -167,20 +167,27 @@ describe("OpenClaude shell parity setup gates", () => {
       .sort();
 
     expect(retainedMessagePorts).toEqual([
+      "AssistantRedactedThinkingMessage.tsx",
       "AssistantTextMessage.tsx",
+      "AssistantThinkingMessage.tsx",
+      "AssistantToolUseMessage.tsx",
+      "AttachmentMessage.tsx",
       "CollapsedReadSearchContent.tsx",
       "CoordinatorAgentStatus.tsx",
       "GroupedToolUseContent.tsx",
       "HighlightedThinkingText.tsx",
+      "SystemTextMessage.tsx",
       "UserBashInputMessage.tsx",
       "UserBashOutputMessage.tsx",
       "UserCommandMessage.tsx",
+      "UserImageMessage.tsx",
       "UserLocalCommandOutputMessage.tsx",
       "UserMemoryInputMessage.tsx",
       "UserPlanMessage.tsx",
       "UserPromptMessage.tsx",
       "UserResourceUpdateMessage.tsx",
       "UserTextMessage.tsx",
+      "UserToolResultMessage.tsx",
       "_helpers.tsx",
     ]);
 
@@ -190,9 +197,16 @@ describe("OpenClaude shell parity setup gates", () => {
     const liveAgentPanel = source("components/LiveAgentStatusPanel.tsx");
 
     expect(message).toMatch(/AssistantTextMessage/u);
+    expect(message).toMatch(/AssistantThinkingMessage/u);
+    expect(message).toMatch(/AssistantRedactedThinkingMessage/u);
+    expect(message).toMatch(/AssistantToolUseMessage/u);
+    expect(message).toMatch(/AttachmentMessage/u);
     expect(message).toMatch(/CollapsedReadSearchContent/u);
     expect(message).toMatch(/GroupedToolUseContent/u);
+    expect(message).toMatch(/SystemTextMessage/u);
     expect(message).toMatch(/UserTextMessage/u);
+    expect(message).toMatch(/UserImageMessage/u);
+    expect(message).toMatch(/UserToolResultMessage/u);
     expect(userText).toMatch(/UserBashInputMessage/u);
     expect(userText).toMatch(/UserBashOutputMessage/u);
     expect(userText).toMatch(/UserCommandMessage/u);
@@ -205,8 +219,6 @@ describe("OpenClaude shell parity setup gates", () => {
     expect(liveAgentPanel).toMatch(/CoordinatorAgentStatus/u);
 
     for (const retired of [
-      "AssistantToolUseMessage.tsx",
-      "SystemTextMessage.tsx",
       "UserToolResultMessage/UserToolResultMessage.tsx",
       "teamMemCollapsed.tsx",
     ]) {

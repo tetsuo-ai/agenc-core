@@ -29,6 +29,10 @@ import { SlashResultRenderer } from "./SlashResultRenderer.js";
 import { ToolCell } from "./ToolCell.js";
 import type { TranscriptMessage } from "./MessageList.js";
 import { AssistantTextMessage } from "./messages/AssistantTextMessage.js";
+import { AssistantThinkingMessage } from "./messages/AssistantThinkingMessage.js";
+import { AssistantRedactedThinkingMessage } from "./messages/AssistantRedactedThinkingMessage.js";
+import { AssistantToolUseMessage } from "./messages/AssistantToolUseMessage.js";
+import { AttachmentMessage } from "./messages/AttachmentMessage.js";
 import {
   CollapsedReadSearchContent,
   type CollapsedReadSearchEntry,
@@ -39,6 +43,9 @@ import {
   type GroupedToolUseEntry,
 } from "./messages/GroupedToolUseContent.js";
 import { UserTextMessage } from "./messages/UserTextMessage.js";
+import { UserImageMessage } from "./messages/UserImageMessage.js";
+import { UserToolResultMessage } from "./messages/UserToolResultMessage.js";
+import { SystemTextMessage } from "./messages/SystemTextMessage.js";
 import {
   readSearchListToneForShellCommand,
   readStringField,
@@ -193,7 +200,95 @@ export function Message({
   void isTranscriptMode;
 
   switch (message.kind) {
-    case "user":
+    case "attachment":
+      return (
+        <Box flexDirection="column">
+          {(message.attachments ?? []).map((attachment, index) => (
+            <AttachmentMessage
+              key={index}
+              attachment={attachment}
+              addMargin={addMargin || index > 0}
+              verbose={verbose}
+              isTranscriptMode={isTranscriptMode}
+            />
+          ))}
+        </Box>
+      );
+
+    case "system":
+      return <SystemTextMessage message={message} addMargin={addMargin} />;
+
+    case "user": {
+      if (message.isCompactSummary) {
+        return (
+          <SystemTextMessage
+            message={{
+              ...message,
+              kind: "system",
+              systemSubtype: "compact_boundary",
+            }}
+            addMargin={addMargin}
+          />
+        );
+      }
+      if (message.userContent && message.userContent.length > 0) {
+        return (
+          <Box flexDirection="column">
+            {message.userContent.map((block, index) => {
+              const blockMargin = addMargin || index > 0;
+              switch (block.type) {
+                case "text":
+                  return (
+                    <UserTextMessage
+                      key={index}
+                      addMargin={blockMargin}
+                      param={{ text: block.text, type: "text" }}
+                      verbose={verbose}
+                      isTranscriptMode={isTranscriptMode}
+                    />
+                  );
+                case "image":
+                  return (
+                    <UserImageMessage
+                      key={index}
+                      addMargin={blockMargin}
+                      imageId={block.imageId}
+                      imagePath={block.imagePath}
+                      url={block.url}
+                      alt={block.alt}
+                    />
+                  );
+                case "tool_result":
+                  return (
+                    <UserToolResultMessage
+                      key={index}
+                      content={block.content}
+                      toolUseId={block.toolUseId}
+                      isError={block.isError}
+                    />
+                  );
+                case "attachment":
+                  return (
+                    <AttachmentMessage
+                      key={index}
+                      addMargin={blockMargin}
+                      verbose={verbose}
+                      isTranscriptMode={isTranscriptMode}
+                      attachment={{
+                        type: "unknown",
+                        label: block.label,
+                        ...(block.content !== undefined
+                          ? { content: block.content }
+                          : {}),
+                        ...(block.path !== undefined ? { path: block.path } : {}),
+                      }}
+                    />
+                  );
+              }
+            })}
+          </Box>
+        );
+      }
       return (
         <UserTextMessage
           addMargin={addMargin}
@@ -202,8 +297,56 @@ export function Message({
           isTranscriptMode={isTranscriptMode}
         />
       );
+    }
 
     case "assistant":
+      if (message.assistantContent && message.assistantContent.length > 0) {
+        return (
+          <Box flexDirection="column">
+            {message.assistantContent.map((block, index) => {
+              const blockMargin = addMargin || index > 0;
+              switch (block.type) {
+                case "text":
+                  return (
+                    <AssistantTextMessage
+                      key={index}
+                      text={block.text}
+                      addMargin={blockMargin}
+                      shouldShowDot
+                      isComplete={message.isComplete !== false}
+                    />
+                  );
+                case "thinking":
+                  return (
+                    <AssistantThinkingMessage
+                      key={index}
+                      text={block.text}
+                      addMargin={blockMargin}
+                    />
+                  );
+                case "redacted_thinking":
+                  return (
+                    <AssistantRedactedThinkingMessage
+                      key={index}
+                      text={block.text}
+                      addMargin={blockMargin}
+                    />
+                  );
+                case "tool_use":
+                  return (
+                    <AssistantToolUseMessage
+                      key={index}
+                      id={block.id}
+                      name={block.name}
+                      input={block.input}
+                      isComplete={block.isComplete}
+                    />
+                  );
+              }
+            })}
+          </Box>
+        );
+      }
       return (
         <AssistantTextMessage
           text={message.content}
@@ -375,8 +518,6 @@ export function Message({
       return <Text color={theme.colors.dim}>{message.content}</Text>;
 
     default: {
-      // Unknown kind — render a dim placeholder so the row is visible and
-      // we don't drop user-facing content silently.
       const preview =
         typeof message.content === "string" && message.content.length > 0
           ? message.content.length > 80
