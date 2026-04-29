@@ -8,15 +8,13 @@
  * token totals / environment context), completion watcher, fork-mode
  * spawn helpers, and subtree genealogy bookkeeping.
  *
- * Remaining deferred subsystem:
- *   - Rollout-driven rehydrate restores live handles + descendant
- *     tree shape from the rollout-store-owned spawn-edge snapshot.
- *     Full AgenC behavior still needs the broader T6/T10 rollout/state
- *     rehydrate surface for pending turn/tool state.
- *   - Spawn-edge tracking is delegated to `RolloutStore`, which owns
- *     the durable edge snapshot in this slice. AgentControl only
- *     writes/reads through that API; it does not keep a second
- *     persistence owner in memory.
+ * Architecture notes:
+ *   - Rollout-driven rehydrate (`resumeAgentFromRollout`) restores
+ *     live handles + descendant tree shape from the rollout-store-
+ *     owned spawn-edge snapshot.
+ *   - Spawn-edge tracking is owned by `RolloutStore` (durable edge
+ *     snapshot). AgentControl writes/reads through that API and does
+ *     not keep a second persistence owner in memory.
  *
  * Invariants wired:
  *   I-1  (MAX_AGENT_DEPTH=1) — spawn rejects `childDepth > cap`.
@@ -189,7 +187,7 @@ export interface SpawnAgentOptions {
   readonly preferredNickname?: string;
   /** Caller-supplied metadata fields to merge into the allocated
    *  record (e.g. inherited `agentRole` from a resume payload). */
-  readonly metadata?: Partial<AgentMetadata>;
+  readonly metadata?: { readonly [K in keyof AgentMetadata]?: AgentMetadata[K] };
   readonly forkParentSpawnCallId?: string;
   readonly forkMode?: SpawnAgentForkMode;
 }

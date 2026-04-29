@@ -42,6 +42,7 @@ obj/
 !runtime/src/replay/alert-schema-lockfile.json
 !runtime/benchmarks/v1/delegation-manifest.json
 !runtime/benchmarks/v1/*.json
+!parity/*.json
 !runtime/benchmarks/v1/incidents/*.json
 !runtime/benchmarks/mutation-gating-policy.ci.json
 !runtime/tests/fixtures/*.json
