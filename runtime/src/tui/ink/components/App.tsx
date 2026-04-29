@@ -85,9 +85,6 @@ type Props = {
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void;
-  // Optional instrumentation hook. Called after a stdin chunk produced at
-  // least one parsed key without attaching extra stream listeners.
-  readonly onInputActivity?: () => void;
 };
 
 // Multi-click detection thresholds. 500ms is the macOS default; a small
@@ -418,7 +415,6 @@ export default class App extends PureComponent<Props, State> {
     // This batches all state updates from handleInput and all useInput
     // listeners together within one high-priority update context.
     if (keys.length > 0) {
-      this.props.onInputActivity?.();
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined);
     }
 
