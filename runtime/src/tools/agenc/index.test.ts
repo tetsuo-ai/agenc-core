@@ -1,5 +1,5 @@
-import { Connection, Keypair } from "@solana/web3.js";
-import { describe, expect, it } from "vitest";
+import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createAgencMutationTools,
@@ -7,7 +7,10 @@ import {
   createAgencTools,
   type MarketplaceSignerPolicy,
 } from "./index.js";
-import { evaluateMarketplaceSignerPolicyForIntent } from "./signer-policy.js";
+import {
+  evaluateMarketplaceSignerPolicyForIntent,
+  wrapMarketplaceSignerPolicy,
+} from "./signer-policy.js";
 import type { MarketplaceTransactionIntent } from "../../task/transaction-intent.js";
 import { keypairToWallet } from "../../types/wallet.js";
 import { silentLogger } from "../../utils/logger.js";
@@ -71,6 +74,29 @@ describe("AgenC protocol tool factory", () => {
     expect(toolNames).not.toContain("agenc.completeTask");
     expect(toolNames).not.toContain("agenc.initiateDispute");
     expect(createAgencMutationTools(makeContext())).toEqual([]);
+  });
+
+  it("denies direct signer-policy wrapper execution when policy is missing", async () => {
+    const execute = vi.fn(async () => ({ content: "executed" }));
+    const wrapped = wrapMarketplaceSignerPolicy(
+      {
+        name: "agenc.completeTask",
+        description: "Complete task",
+        inputSchema: {},
+        execute,
+      },
+      {
+        programId: PublicKey.unique(),
+        signer: PublicKey.unique(),
+        logger: silentLogger,
+      },
+    );
+
+    const result = await wrapped.execute({ taskPda: PublicKey.unique().toBase58() });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("POLICY_REQUIRED");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("can explicitly opt into marketplace mutation tools with a signer policy", () => {

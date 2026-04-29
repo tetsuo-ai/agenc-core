@@ -158,6 +158,11 @@ describe("agenc task template tools", () => {
       `https://marketplace-devnet.agenc.tech/api/job-specs/${payload.jobSpecHash}`,
     );
     expect(setTaskJobSpecAccountsPartial).toHaveBeenCalledOnce();
+    expect(setTaskJobSpecAccountsPartial).toHaveBeenCalledWith(
+      expect.objectContaining({
+        protocolConfig: expect.any(PublicKey),
+      }),
+    );
     expect(createTaskAccountsPartial).toHaveBeenCalledWith(
       expect.objectContaining({
         creatorAgent: creatorAgentPda,

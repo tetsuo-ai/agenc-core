@@ -366,6 +366,39 @@ const MARKETPLACE_ACCOUNT_LAYOUT_OVERRIDES = {
       address: "11111111111111111111111111111111",
     },
   ],
+  cancel_dispute: [
+    {
+      name: "protocol_config",
+      pda: {
+        seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+      },
+    },
+    {
+      name: "dispute",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [100, 105, 115, 112, 117, 116, 101] },
+          { kind: "account", path: "dispute.dispute_id", account: "Dispute" },
+        ],
+      },
+    },
+    {
+      name: "task",
+      writable: true,
+      pda: {
+        seeds: [
+          { kind: "const", value: [116, 97, 115, 107] },
+          { kind: "account", path: "task.creator", account: "Task" },
+          { kind: "account", path: "task.task_id", account: "Task" },
+        ],
+      },
+    },
+    {
+      name: "authority",
+      signer: true,
+    },
+  ],
 } as const;
 
 const LEGACY_CREATE_TASK_ACCOUNT_LAYOUT = [
@@ -1045,8 +1078,13 @@ const TASK_JOB_SPEC_INSTRUCTIONS = [
     discriminator: [134, 102, 102, 86, 31, 164, 202, 193],
     accounts: [
       {
+        name: "protocol_config",
+        pda: {
+          seeds: [{ kind: "const", value: [112, 114, 111, 116, 111, 99, 111, 108] }],
+        },
+      },
+      {
         name: "task",
-        writable: true,
         pda: {
           seeds: [
             { kind: "const", value: [116, 97, 115, 107] },

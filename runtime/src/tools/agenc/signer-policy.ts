@@ -366,7 +366,18 @@ export function wrapMarketplaceSignerPolicy(
   },
 ): Tool {
   if (!params.policy) {
-    return tool;
+    return {
+      ...tool,
+      async execute(_args: Record<string, unknown>): Promise<ToolResult> {
+        params.logger.warn?.(
+          `Marketplace signer policy denied ${tool.name}: signer policy is required`,
+        );
+        return errorResult("Marketplace signer policy is required for mutation tools", {
+          toolName: tool.name,
+          denialCode: "POLICY_REQUIRED",
+        });
+      },
+    };
   }
   return {
     ...tool,
