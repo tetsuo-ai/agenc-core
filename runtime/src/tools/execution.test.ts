@@ -107,6 +107,14 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     expect(resolveTimeoutMs({} as Tool, {})).toBe(DEFAULT_TOOL_TIMEOUT_MS);
   });
 
+  test("tool-owned timeout disables the generic deadline", () => {
+    const tool = {
+      timeoutBehavior: "tool",
+      timeoutMs: 15_000,
+    } as unknown as Tool;
+    expect(resolveTimeoutMs(tool, { timeoutMs: 5_000 })).toBeNull();
+  });
+
   test("timer fires → ToolTimeoutError thrown", async () => {
     await expect(
       withTimeoutAndAbort(() => new Promise(() => {}), {
@@ -120,6 +128,17 @@ describe("I-9 resolveTimeoutMs + withTimeoutAndAbort", () => {
     const ctl = new AbortController();
     const p = withTimeoutAndAbort(() => new Promise(() => {}), {
       timeoutMs: 5_000,
+      toolName: "stub",
+      signal: ctl.signal,
+    });
+    setTimeout(() => ctl.abort("user"), 20);
+    await expect(p).rejects.toThrow(/user|aborted/);
+  });
+
+  test("null timeout preserves abort race without a deadline timer", async () => {
+    const ctl = new AbortController();
+    const p = withTimeoutAndAbort(() => new Promise(() => {}), {
+      timeoutMs: null,
       toolName: "stub",
       signal: ctl.signal,
     });
@@ -408,6 +427,27 @@ describe("runToolUse end-to-end", () => {
     expect(out.isError).toBe(true);
     // per-tool timeoutMs:50 → message mentions 50ms (not the 30s default)
     expect(out.content).toContain("50ms");
+  });
+
+  test("tool-owned timeout lets the handler return after executor timeout would fire", async () => {
+    const tool: Tool = {
+      name: "tool-owned-timeout",
+      description: "",
+      inputSchema: {},
+      timeoutBehavior: "tool",
+      timeoutMs: 20,
+      execute: async () =>
+        await new Promise((resolve) =>
+          setTimeout(() => resolve({ content: "handler result" }), 60),
+        ),
+    };
+    const out = await runToolUse("{}", {
+      currentTurnId: "t1",
+      tool,
+      invocation: makeInvocation("c1", "tool-owned-timeout"),
+    });
+    expect(out.isError).toBe(false);
+    expect(out.content).toBe("handler result");
   });
 
   test("injects __abortSignal so tools can observe runtime cancellation", async () => {
