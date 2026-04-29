@@ -406,25 +406,29 @@ describe("MessageList", () => {
     unmount();
   });
 
-  test("renders compact boundaries as meta rows", async () => {
-    const { unmount, stdout } = await mount(
-      <MessageList
-        messages={[
-          mkMsg({
-            id: "meta-1",
-            kind: "meta",
-            label: "compact",
-            content: "Context compacted: summary (900 -> 300 tokens)",
-          }),
-        ]}
-      />,
+  test("hides compact boundaries in normal mode and shows them in verbose transcript mode", async () => {
+    const compactBoundary = mkMsg({
+      id: "meta-1",
+      kind: "meta",
+      label: "compact",
+      content: "Context compacted: summary (900 -> 300 tokens)",
+    });
+
+    const normal = await mount(<MessageList messages={[compactBoundary]} />);
+    const normalFrame = await captureFrame(normal.stdout);
+    expect(normalFrame).not.toContain("Context");
+    expect(normalFrame).not.toContain("compacted");
+    normal.unmount();
+
+    const verbose = await mount(
+      <MessageList messages={[compactBoundary]} verbose />,
     );
-    const frame = await captureFrame(stdout);
-    expect(frame).toContain("Context");
-    expect(frame).toContain("compacted");
-    expect(frame).toContain("900");
-    expect(frame).toContain("300");
-    unmount();
+    const verboseFrame = await captureFrame(verbose.stdout);
+    expect(verboseFrame).toContain("Context");
+    expect(verboseFrame).toContain("compacted");
+    expect(verboseFrame).toContain("900");
+    expect(verboseFrame).toContain("300");
+    verbose.unmount();
   });
 
   test("renders plan progress rows through the dedicated renderer", async () => {

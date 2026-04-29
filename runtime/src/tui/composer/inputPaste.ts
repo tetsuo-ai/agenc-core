@@ -1,3 +1,8 @@
+import {
+  normalizeUserImageInput,
+  type NormalizedUserImageInput,
+} from "../../prompts/attachments/user-image-input.js";
+
 /**
  * Paste-truncation helpers.
  *
@@ -21,6 +26,8 @@ export type PastedContent = {
   readonly filename?: string;
   readonly sourcePath?: string;
 };
+
+export type NormalizedPastedImageSource = NormalizedUserImageInput;
 
 const TRUNCATION_THRESHOLD = 10000;
 const PREVIEW_LENGTH = 1000;
@@ -49,6 +56,37 @@ export function formatPastedTextRef(id: number, numLines: number): string {
 
 export function formatImageRef(id: number): string {
   return `[Image #${id}]`;
+}
+
+/**
+ * Resolve a pasted single-token image reference into concrete attachment
+ * metadata. Supports local paths, file:// URLs, remote image URLs, and data
+ * image URLs. Multi-line text returns null so regular paste handling can
+ * preserve the text.
+ */
+export function normalizePastedImageSource(
+  input: string,
+  cwd: string,
+  home?: string,
+): NormalizedPastedImageSource | null {
+  return normalizeUserImageInput(input, cwd, home);
+}
+
+export function nextPastedContentId(
+  pastedContents: Record<number, PastedContent>,
+): number {
+  const existingIds = Object.keys(pastedContents).map(Number);
+  return existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
+}
+
+export function imageReferenceIds(input: string): Set<number> {
+  const ids = new Set<number>();
+  const regex = /\[Image #(\d+)\]/gu;
+  for (const match of input.matchAll(regex)) {
+    const id = Number(match[1]);
+    if (Number.isFinite(id)) ids.add(id);
+  }
+  return ids;
 }
 
 /**
@@ -100,9 +138,7 @@ export function maybeTruncateInput(
   input: string,
   pastedContents: Record<number, PastedContent>,
 ): { newInput: string; newPastedContents: Record<number, PastedContent> } {
-  const existingIds = Object.keys(pastedContents).map(Number);
-  const nextPasteId =
-    existingIds.length > 0 ? Math.max(...existingIds) + 1 : 1;
+  const nextPasteId = nextPastedContentId(pastedContents);
 
   const { truncatedText, placeholderContent } = maybeTruncateMessageForInput(
     input,

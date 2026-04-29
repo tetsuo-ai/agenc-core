@@ -46,6 +46,29 @@ export function extractFlagValue(
   return null;
 }
 
+export function extractFlagValues(
+  argv: readonly string[],
+  flag: string,
+): string[] {
+  const out: string[] = [];
+  const prefix = `${flag}=`;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === flag) {
+      const next = argv[i + 1];
+      if (typeof next === "string" && !next.startsWith("-")) {
+        out.push(next);
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith(prefix)) {
+      out.push(arg.slice(prefix.length));
+    }
+  }
+  return out;
+}
+
 export const ROUTING_BOOLEAN_FLAGS = Object.freeze(["--no-tui"] as const);
 
 export const STARTUP_BOOLEAN_FLAGS = Object.freeze([
@@ -113,6 +136,7 @@ export function stripRoutingFlags(argv: readonly string[]): string[] {
 export interface BootTUIArgs {
   /** Pre-populated composer text; forwarded to the TUI bootstrap. */
   readonly initialPrompt?: string;
+  readonly startupImages?: readonly string[];
 }
 
 export interface ResumeTUIArgs {
@@ -155,6 +179,7 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
   const resumeId =
     extractFlagValue(userArgv, "--resume") ?? extractFlagValue(userArgv, "-r");
   const prompt = stripRoutingFlags(userArgv).join(" ").trim();
+  const startupImages = extractFlagValues(userArgv, "--image");
 
   // 1. `--resume <id>` / `-r <id>` always boots through the TUI resume path. Errors
   //    inside `resumeTUI` (missing session, corrupt rollout, etc.) are
@@ -187,7 +212,11 @@ export async function routeCLI(opts: RouteCLIOptions): Promise<number> {
   //    `initialPrompt` so the composer can pre-populate it (actual
   //    wiring through the composer reducer is a follow-up).
   if (opts.isStdoutTTY) {
-    return opts.bootTUI(prompt.length > 0 ? { initialPrompt: prompt } : {});
+    const args: BootTUIArgs = {
+      ...(prompt.length > 0 ? { initialPrompt: prompt } : {}),
+      ...(startupImages.length > 0 ? { startupImages } : {}),
+    };
+    return opts.bootTUI(args);
   }
 
   // 6. Fallback — stdout is not a TTY (captured pipe, CI runner, etc.)

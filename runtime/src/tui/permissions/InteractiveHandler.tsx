@@ -35,6 +35,10 @@ import {
   ApprovalOverlay,
   type ApprovalDecision,
 } from "./ApprovalOverlay.js";
+import {
+  PermissionRequest,
+  permissionComponentForTool,
+} from "./PermissionRequest.js";
 import { PlanApprovalOverlay } from "./PlanApprovalOverlay.js";
 import { useOptionalAgenCAppState } from "../state/AppState.js";
 import {
@@ -130,6 +134,7 @@ export interface InteractiveHandlerProps {
 
 const DEFAULT_GRACE_MS = 200;
 const STALE_WATCH_INTERVAL_MS = 50;
+type SettlementPhase = "user" | "classifier" | "stale";
 
 export type InteractiveRequestClassifier = (
   request: InteractivePermissionRequest,
@@ -144,6 +149,12 @@ function getActiveTurnId(session: SessionLike): string | null {
 
 function isExitPlanTool(toolName: string): boolean {
   return toolName === "ExitPlanMode";
+}
+
+function asToolInputRecord(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? (input as Record<string, unknown>)
+    : {};
 }
 
 function getStaleState(
@@ -317,7 +328,7 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
 
     const settleIfFresh = (
       payload: ResolverPayload,
-      phase: "user" | "classifier" | "stale",
+      phase: SettlementPhase,
     ): boolean => {
       const stale = getStaleState(request, session);
       if (stale.stale) {
@@ -371,7 +382,7 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
       return true;
     };
 
-    const dropIfStale = (phase: "user" | "classifier" | "stale"): boolean => {
+    const dropIfStale = (phase: SettlementPhase): boolean => {
       const stale = getStaleState(request, session);
       if (!stale.stale) return false;
       if (request.resolveOnce.claim({
@@ -414,6 +425,8 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
       const abortSignal =
         session.abortController?.signal ?? new AbortController().signal;
       const workspacePath = session.cwd ?? "";
+      const hasSpecializedPermissionBody =
+        permissionComponentForTool(request.toolName) !== null;
 
       const handleResolve = (decision: ApprovalDecision): void => {
         settleIfFresh({
@@ -459,20 +472,37 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
         return;
       }
 
-      disposeRef.current = overlayContext.push(
-        <ApprovalOverlay
-          request={{
-            requestId: request.requestId,
-            tool: request.toolName,
-            args: (request.toolInput ?? {}) as Record<string, unknown>,
-            workspacePath,
-            reason: request.reason ?? request.message,
-            turnId: request.turnId,
-          }}
-          onResolve={handleResolve}
-          abortSignal={abortSignal}
-        />,
-      );
+      if (hasSpecializedPermissionBody) {
+        disposeRef.current = overlayContext.push(
+          <PermissionRequest
+            subject={{
+              toolName: request.toolName,
+              toolInput: asToolInputRecord(request.toolInput),
+              workspacePath,
+              description: request.message,
+              reason: request.reason,
+            }}
+            onResolve={handleResolve}
+            onCancel={() => undefined}
+            abortSignal={abortSignal}
+          />,
+        );
+      } else {
+        disposeRef.current = overlayContext.push(
+          <ApprovalOverlay
+            request={{
+              requestId: request.requestId,
+              tool: request.toolName,
+              args: asToolInputRecord(request.toolInput),
+              workspacePath,
+              reason: request.reason ?? request.message,
+              turnId: request.turnId,
+            }}
+            onResolve={handleResolve}
+            abortSignal={abortSignal}
+          />,
+        );
+      }
 
       graceTimer = setTimeout(() => {
         graceExpired = true;

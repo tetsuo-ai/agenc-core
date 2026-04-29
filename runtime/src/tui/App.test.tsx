@@ -624,6 +624,38 @@ describe("App", () => {
     unmount();
   });
 
+  test("initialUserMessages enqueue before startup auto-submit", async () => {
+    const submit = vi.fn(async () => undefined);
+    const enqueueIdleInput = vi.fn();
+    const session = {
+      ...createFakeSession("default"),
+      submit,
+      enqueueIdleInput,
+    };
+    const imageMessage = {
+      role: "user" as const,
+      content: [
+        {
+          type: "image_url" as const,
+          image_url: { url: "data:image/png;base64,abc" },
+        },
+      ],
+    };
+
+    const { unmount } = await mount(
+      <App
+        session={session}
+        configStore={FAKE_CONFIG_STORE}
+        initialUserMessages={[imageMessage]}
+      />,
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(enqueueIdleInput).toHaveBeenCalledWith(imageMessage);
+    expect(submit).toHaveBeenCalledWith("");
+    unmount();
+  });
+
   test("renders AgenC-style prompt chrome with configurable status line", async () => {
     const session = {
       ...createFakeSession("plan"),

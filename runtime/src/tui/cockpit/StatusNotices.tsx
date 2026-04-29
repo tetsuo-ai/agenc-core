@@ -7,6 +7,13 @@ import { theme } from "../theme.js";
 import type { TranscriptMessage } from "../transcript/MessageList.js";
 import type { SessionLike as StatusLineSessionLike } from "./StatusLineConfig.js";
 
+/**
+ * Footer notices are intentionally backed only by local AgenC runtime state:
+ * usage sidecars, transcript warnings, budget settings, and pending approval
+ * counts. OpenClaude account-rate-limit, remote/cloud, and IDE plugin notices
+ * are omitted here until AgenC exposes equivalent live signals; rendering
+ * guessed state in the footer is worse than saying nothing.
+ */
 export interface StatusNoticesProps {
   readonly session: StatusLineSessionLike;
   readonly messages: readonly TranscriptMessage[];
@@ -17,6 +24,7 @@ interface Notice {
   readonly id: string;
   readonly tone: "warning" | "info" | "error";
   readonly text: string;
+  readonly priority: number;
 }
 
 function formatUsd(value: number): string {
@@ -32,6 +40,7 @@ function usageNotice(session: StatusLineSessionLike): Notice | null {
       id: "context",
       tone: session.contextPercent >= 95 ? "error" : "warning",
       text: `Context ${Math.round(session.contextPercent)}% full`,
+      priority: session.contextPercent >= 95 ? 15 : 30,
     };
   }
   return null;
@@ -57,6 +66,7 @@ function budgetNotice(session: StatusLineSessionLike): Notice | null {
     text: `Budget ${formatUsd(session.costUsd)}/${formatUsd(
       session.budgetUsd,
     )}; ${formatUsd(remaining)} remaining`,
+    priority: used >= 1 ? 10 : 35,
   };
 }
 
@@ -68,6 +78,7 @@ function outputNotice(session: StatusLineSessionLike): Notice | null {
     id: "output",
     tone: "info",
     text: `${session.outputTokens.toLocaleString()} output tokens this session`,
+    priority: 60,
   };
 }
 
@@ -90,6 +101,7 @@ function warningNotice(messages: readonly TranscriptMessage[]): Notice | null {
     id: `warning:${warning.id}`,
     tone: warning.kind === "error" ? "error" : "warning",
     text: warning.content,
+    priority: warning.kind === "error" ? 5 : 20,
   };
 }
 
@@ -102,6 +114,7 @@ function approvalNotice(count: number | undefined): Notice | null {
       count === 1
         ? "1 approval waiting"
         : `${count} approvals waiting`,
+    priority: 12,
   };
 }
 
@@ -125,7 +138,9 @@ export function buildStatusNotices(
     outputNotice(props.session),
     warningNotice(props.messages),
     approvalNotice(props.pendingApprovalCount),
-  ].filter((notice): notice is Notice => notice !== null);
+  ]
+    .filter((notice): notice is Notice => notice !== null)
+    .sort((a, b) => a.priority - b.priority);
 }
 
 export const StatusNotices: React.FC<StatusNoticesProps> = (props) => {

@@ -690,6 +690,47 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(types).toContain("turn_complete");
   });
 
+  test("pending image input is preserved as multimodal user content", async () => {
+    const ctx = mkCtx();
+    let seenMessages: LLMMessage[] = [];
+    const { session } = mkSession({
+      provider: {
+        ...mkProvider({ content: "image reply" }),
+        chatStream: async (messages) => {
+          seenMessages = messages.map((message) => ({ ...message }));
+          return {
+            content: "image reply",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      },
+      registry: mkRegistry(),
+    });
+    session.enqueueIdleInput({
+      role: "user",
+      content: [
+        {
+          type: "image_url",
+          image_url: { url: "data:image/png;base64,abc" },
+        },
+      ],
+    });
+
+    await drain(session.runTurn("Describe it", { ctx }));
+
+    const user = seenMessages.find((message) => message.role === "user");
+    expect(user?.content).toEqual([
+      { type: "text", text: "Describe it" },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,abc" },
+      },
+    ]);
+  });
+
   test("prepare-context blocking_limit terminates before the provider call", async () => {
     const originalDisableAutoCompact = process.env.DISABLE_AUTO_COMPACT;
     const originalBlockingLimitOverride =

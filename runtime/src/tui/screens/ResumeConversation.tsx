@@ -5,10 +5,12 @@
  * `runtime/src/session/session-store.ts::listResumableSessions(projectDir)`,
  * presents them in a simple selectable list, and invokes the caller's
  * `onResume(sessionId)` callback when the user picks one. The picker
- * supports keyboard navigation (Up/Down/Enter) and a cancel path
- * (Esc / Ctrl+C) so this surface can stand in for the upstream
- * LogSelector without pulling in upstream-only worktree, agentic
- * search, cross-project, or coordinator-mode integrations.
+ * supports keyboard navigation (Up/Down/Enter), local type-to-filter
+ * search over the `ResumableSession` fields AgenC already persists, and
+ * a cancel path (Esc / Ctrl+C) so this surface can stand in for the
+ * upstream LogSelector without pulling in upstream-only worktree,
+ * agentic search, cross-project, remote/cloud, IDE, or coordinator-mode
+ * integrations.
  *
  * Adaptations from upstream:
  *   - Drops upstream worktree/cross-project resume gating; AgenC has no
@@ -16,8 +18,9 @@
  *   - Drops upstream `feature('COORDINATOR_MODE')` and
  *     `feature('CONTEXT_COLLAPSE')` branches.
  *   - Drops the `LogSelector` dependency and the agentic-search hook.
- *     A future tranche can layer in fuzzy filtering by replacing the
- *     simple list with `<FuzzyPicker>`.
+ *     The local search here is intentionally metadata-only: no remote
+ *     search, no cloud resume, no IDE/worktree filters, and no fake rows
+ *     for state AgenC does not track.
  *   - Drops slack/IDE/voice/buddy notification side effects.
  *
  * The actual session restore (rollout replay → AppState rehydration) is
@@ -25,13 +28,18 @@
  * picker is purely a UI surface.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import { basename } from "node:path";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { Box, Text } from "../ink-public.js";
+import { Box, Text, useInput } from "../ink-public.js";
 import { Pane } from "../design-system/Pane.js";
 import { Spinner } from "../design-system/Spinner.js";
 import { glyphs } from "../design-system/glyphs.js";
-import { useKeybinding } from "../keybindings/KeybindingContext.js";
+import {
+  useActiveKeybindingContext,
+  useKeybinding,
+  useSetKeybindingContext,
+} from "../keybindings/KeybindingContext.js";
 import {
   listResumableSessions,
   type ResumableSession,
@@ -54,6 +62,8 @@ export interface ResumeConversationProps {
    * itself on mount.
    */
   readonly initialSessions?: ReadonlyArray<ResumableSession>;
+  /** Optional initial metadata search query, matching OpenClaude's picker entry. */
+  readonly initialSearchQuery?: string;
 }
 
 function formatRelativeAge(ms: number): string {
@@ -79,6 +89,39 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function normalizeSearchText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function buildResumeSearchText(session: ResumableSession): string {
+  return normalizeSearchText(
+    [
+      session.sessionId,
+      session.summary,
+      basename(session.rolloutPath),
+      session.agencVersion,
+      session.schemaVersion !== undefined
+        ? `schema ${session.schemaVersion}`
+        : undefined,
+      new Date(session.lastModified).toISOString(),
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .join(" "),
+  );
+}
+
+export function filterResumableSessions(
+  sessions: ReadonlyArray<ResumableSession>,
+  query: string,
+): ReadonlyArray<ResumableSession> {
+  const terms = normalizeSearchText(query).split(" ").filter(Boolean);
+  if (terms.length === 0) return sessions;
+  return sessions.filter((session) => {
+    const haystack = buildResumeSearchText(session);
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
 function NoConversationsMessage(): React.ReactElement {
   return (
     <Pane color="dim">
@@ -98,13 +141,18 @@ const SessionRow: React.FC<{
 }> = ({ session, selected }) => {
   const pointer = selected ? glyphs.pointer : " ";
   const labelColor: "accent" | "primary" = selected ? "accent" : "primary";
+  const rolloutName = basename(session.rolloutPath);
+  const summary =
+    session.summary && session.summary !== rolloutName
+      ? session.summary
+      : session.sessionId;
   return (
     <Box flexDirection="row">
       <Text color={labelColor}>{`${pointer} `}</Text>
       <Box flexDirection="column" flexGrow={1}>
-        <Text color={labelColor}>{session.sessionId}</Text>
+        <Text color={labelColor}>{summary}</Text>
         <Text color="dim">
-          {`  └ ${formatRelativeAge(session.lastModified)} · ${formatBytes(session.fileSize)}${
+          {`  └ ${session.sessionId} · ${formatRelativeAge(session.lastModified)} · ${formatBytes(session.fileSize)}${
             session.agencVersion ? ` · ${session.agencVersion}` : ""
           }`}
         </Text>
@@ -118,6 +166,7 @@ export function ResumeConversation({
   onResume,
   onCancel,
   initialSessions,
+  initialSearchQuery,
 }: ResumeConversationProps): React.ReactElement {
   const [sessions, setSessions] = useState<ReadonlyArray<ResumableSession>>(
     initialSessions ?? [],
@@ -125,6 +174,17 @@ export function ResumeConversation({
   const [loading, setLoading] = useState<boolean>(initialSessions === undefined);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [query, setQuery] = useState(initialSearchQuery ?? "");
+  const setKeybindingContext = useSetKeybindingContext();
+  const activeKeybindingContext = useActiveKeybindingContext();
+  const initialKeybindingContext = useRef(activeKeybindingContext);
+
+  useEffect(() => {
+    setKeybindingContext("modal");
+    return () => {
+      setKeybindingContext(initialKeybindingContext.current);
+    };
+  }, [setKeybindingContext]);
 
   useEffect(() => {
     if (initialSessions !== undefined) return;
@@ -149,33 +209,93 @@ export function ResumeConversation({
     };
   }, [projectDir, initialSessions]);
 
+  const filteredSessions = useMemo(
+    () => filterResumableSessions(sessions, query),
+    [sessions, query],
+  );
+
+  useEffect(() => {
+    setSelectedIndex((prev) => {
+      if (filteredSessions.length === 0) return 0;
+      return Math.min(prev, filteredSessions.length - 1);
+    });
+  }, [filteredSessions.length]);
+
   const moveSelection = useCallback(
     (delta: number) => {
       setSelectedIndex((prev) => {
-        if (sessions.length === 0) return 0;
-        const next = (prev + delta + sessions.length) % sessions.length;
+        if (filteredSessions.length === 0) return 0;
+        const next =
+          (prev + delta + filteredSessions.length) % filteredSessions.length;
         return next;
       });
     },
-    [sessions.length],
+    [filteredSessions.length],
   );
 
   const confirmSelection = useCallback(() => {
-    if (sessions.length === 0) return;
-    const picked = sessions[selectedIndex] ?? sessions[0];
+    if (filteredSessions.length === 0) return;
+    const picked = filteredSessions[selectedIndex] ?? filteredSessions[0];
     if (!picked) return;
     onResume(picked.sessionId, picked);
-  }, [onResume, sessions, selectedIndex]);
+  }, [onResume, filteredSessions, selectedIndex]);
 
   const cancelPicker = useCallback(() => {
     onCancel?.();
   }, [onCancel]);
 
+  const cancelSearchOrPicker = useCallback(() => {
+    if (query.length > 0) {
+      setQuery("");
+      setSelectedIndex(0);
+      return;
+    }
+    onCancel?.();
+  }, [onCancel, query.length]);
+
   useKeybinding("scroll:lineUp", () => moveSelection(-1), "modal");
   useKeybinding("scroll:lineDown", () => moveSelection(1), "modal");
   useKeybinding("modal:confirm", confirmSelection, "modal");
-  useKeybinding("modal:cancel", cancelPicker, "modal");
-  useKeybinding("app:interrupt", cancelPicker, "modal");
+  useKeybinding("modal:cancel", cancelSearchOrPicker, "modal");
+  useKeybinding("app:interrupt", cancelPicker, "global");
+
+  useInput((input, key, event) => {
+    if (loading) return;
+    if (key.escape && query.length > 0) {
+      event.stopImmediatePropagation();
+      setQuery("");
+      setSelectedIndex(0);
+      return;
+    }
+    if (key.backspace || key.delete) {
+      event.stopImmediatePropagation();
+      setQuery((prev) => prev.slice(0, -1));
+      setSelectedIndex(0);
+      return;
+    }
+    if (
+      key.ctrl ||
+      key.meta ||
+      key.super ||
+      key.return ||
+      key.tab ||
+      key.upArrow ||
+      key.downArrow ||
+      key.leftArrow ||
+      key.rightArrow ||
+      key.pageUp ||
+      key.pageDown ||
+      key.home ||
+      key.end
+    ) {
+      return;
+    }
+    const printable = input.replace(/[\r\n\t]/g, "");
+    if (printable.length === 0) return;
+    event.stopImmediatePropagation();
+    setQuery((prev) => prev + printable);
+    setSelectedIndex(0);
+  });
 
   if (loading) {
     return (
@@ -203,15 +323,32 @@ export function ResumeConversation({
     return <NoConversationsMessage />;
   }
 
+  if (filteredSessions.length === 0) {
+    return (
+      <Pane color="dim">
+        <Box flexDirection="column">
+          <Text bold>Resume a conversation</Text>
+          <Text dimColor>{`Search: ${query}`}</Text>
+          <Text>No matching conversations found.</Text>
+          <Text color="dim">
+            Press Esc to clear search, or Ctrl+C to exit.
+          </Text>
+        </Box>
+      </Pane>
+    );
+  }
+
   return (
     <Pane color="accent">
       <Box flexDirection="column">
         <Text bold>Resume a conversation</Text>
         <Text dimColor>
-          {`${sessions.length} session${sessions.length === 1 ? "" : "s"} · ↑/↓ to move · Enter to resume · Esc to cancel`}
+          {`${filteredSessions.length} of ${sessions.length} session${sessions.length === 1 ? "" : "s"} · ${
+            query ? `search: ${query}` : "type to search"
+          } · ↑/↓ to move · Enter to resume · Esc to cancel`}
         </Text>
         <Box flexDirection="column" marginTop={1}>
-          {sessions.map((session, idx) => (
+          {filteredSessions.map((session, idx) => (
             <SessionRow
               key={session.sessionId}
               session={session}

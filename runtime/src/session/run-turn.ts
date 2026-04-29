@@ -48,7 +48,12 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../llm/errors.js";
-import type { LLMMessage, LLMTool, LLMUsage } from "../llm/types.js";
+import type {
+  LLMContentPart,
+  LLMMessage,
+  LLMTool,
+  LLMUsage,
+} from "../llm/types.js";
 import { safeStringify } from "../tools/types.js";
 import {
   CODE_MODE_EXEC_TOOL_NAME,
@@ -155,13 +160,13 @@ const TRUTHY_ENV = new Set(["1", "true", "yes", "on"]);
 
 function buildSeedMessages(
   opts: RunTurnOptions,
-  userMessage: string,
+  userContent: string | LLMContentPart[],
 ): { system?: LLMMessage; prior: LLMMessage[]; user: LLMMessage } {
   const system: LLMMessage | undefined = opts.systemPrompt
     ? { role: "system", content: opts.systemPrompt }
     : undefined;
   const prior: LLMMessage[] = [...(opts.history ?? [])];
-  const user: LLMMessage = { role: "user", content: userMessage };
+  const user: LLMMessage = { role: "user", content: userContent };
   return { system, prior, user };
 }
 
@@ -172,16 +177,72 @@ function messageText(message: LLMMessage): string {
   return safeStringify(message.content);
 }
 
-function mergePendingInputIntoUserMessage(
+function userContentHasInput(content: string | LLMContentPart[]): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  return content.some((part) => {
+    if (part.type === "text") return part.text.trim().length > 0;
+    return part.image_url.url.trim().length > 0;
+  });
+}
+
+function userContentDisplayText(content: string | LLMContentPart[]): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => {
+      if (part.type === "text") return part.text;
+      return "[image]";
+    })
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
+}
+
+function appendTextPart(parts: LLMContentPart[], text: string): void {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return;
+  const last = parts[parts.length - 1];
+  if (last?.type === "text") {
+    parts[parts.length - 1] = {
+      type: "text",
+      text: `${last.text}\n\n${trimmed}`,
+    };
+    return;
+  }
+  parts.push({ type: "text", text: trimmed });
+}
+
+function mergePendingInputIntoUserContent(
   userMessage: string,
   pending: readonly LLMMessage[],
-): string {
+): string | LLMContentPart[] {
   if (pending.length === 0) return userMessage;
-  const parts = [
-    userMessage.trim().length > 0 ? userMessage : "",
-    ...pending.map(messageText).filter((part) => part.trim().length > 0),
-  ].filter((part) => part.length > 0);
-  return parts.join("\n\n");
+  const hasMultimodalContent = pending.some(
+    (message) => Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url"),
+  );
+  if (!hasMultimodalContent) {
+    const parts = [
+      userMessage.trim().length > 0 ? userMessage : "",
+      ...pending.map(messageText).filter((part) => part.trim().length > 0),
+    ].filter((part) => part.length > 0);
+    return parts.join("\n\n");
+  }
+
+  const contentParts: LLMContentPart[] = [];
+  appendTextPart(contentParts, userMessage);
+  for (const message of pending) {
+    if (typeof message.content === "string") {
+      appendTextPart(contentParts, message.content);
+      continue;
+    }
+    for (const part of message.content) {
+      if (part.type === "text") {
+        appendTextPart(contentParts, part.text);
+      } else if (part.image_url.url.trim().length > 0) {
+        contentParts.push(part);
+      }
+    }
+  }
+  return contentParts;
 }
 
 function mergeSignals(
@@ -1391,7 +1452,7 @@ export async function* runTurnKernel(
     typeof session.drainPendingInputMessages === "function"
       ? session.drainPendingInputMessages()
       : [];
-  userMessage = mergePendingInputIntoUserMessage(
+  const userContent = mergePendingInputIntoUserContent(
     userMessage,
     pendingInputMessages,
   );
@@ -1400,7 +1461,7 @@ export async function* runTurnKernel(
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
   // turn. Callers that want to force work must enqueue pending input or
   // pass a non-empty user message.
-  if (userMessage.trim().length === 0 && !session.hasPendingInput()) {
+  if (!userContentHasInput(userContent) && !session.hasPendingInput()) {
     return { reason: "completed" };
   }
 
@@ -1497,7 +1558,7 @@ export async function* runTurnKernel(
     return yield* runTurnKernelInner(
       session,
       ctx,
-      userMessage,
+      userContent,
       opts,
       runningTask,
       {
@@ -1539,7 +1600,7 @@ interface RunTurnKernelCommons {
 async function* runTurnKernelInner(
   session: Session,
   ctx: TurnContext,
-  userMessage: string,
+  userContent: string | LLMContentPart[],
   opts: RunTurnOptions,
   runningTask: RunningTask,
   commons: RunTurnKernelCommons,
@@ -1567,7 +1628,7 @@ async function* runTurnKernelInner(
     opts.systemPrompt !== undefined || ctxBaseInstructions === undefined
       ? opts
       : { ...opts, systemPrompt: ctxBaseInstructions },
-    userMessage,
+    userContent,
   );
   const priorFull = system ? [system, ...prior] : prior;
   const durableHistoryStartIndex = system ? 1 : 0;
@@ -1656,7 +1717,9 @@ async function* runTurnKernelInner(
       id: session.nextInternalSubId(),
       msg: {
         type: "user_message",
-        payload: { message: opts.displayUserMessage ?? userMessage },
+        payload: {
+          message: opts.displayUserMessage ?? userContentDisplayText(userContent),
+        },
       },
     });
   }

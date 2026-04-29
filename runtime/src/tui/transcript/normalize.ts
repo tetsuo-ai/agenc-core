@@ -145,6 +145,11 @@ function isHookSummary(message: TranscriptMessage): boolean {
   return label.includes("hook") || /\bhook[_ -]/u.test(content);
 }
 
+function isCompactBoundaryRow(message: TranscriptMessage): boolean {
+  if (message.kind !== "meta") return false;
+  return message.label?.toLowerCase() === "compact";
+}
+
 function collapseHookSummaries(
   messages: readonly TranscriptMessage[],
 ): TranscriptMessage[] {
@@ -319,7 +324,9 @@ export function normalizeTranscriptMessages(
     });
   }
   const visible = messages.filter(
-    (message) => !isHiddenRecoverableToolFailure(message.toolResultMetadata),
+    (message) =>
+      !isHiddenRecoverableToolFailure(message.toolResultMetadata) &&
+      !isCompactBoundaryRow(message),
   );
   return collapseTeammateShutdowns(
     collapseBackgroundShellNotifications(

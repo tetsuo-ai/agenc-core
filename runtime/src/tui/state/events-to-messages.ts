@@ -547,7 +547,7 @@ export function eventsToMessages(
     if (chunk.length === 0) return;
     const existingIndex = activityIndexById.get(id);
     if (existingIndex === undefined) {
-      messages.push({
+      const message: TranscriptMessage = {
         id,
         turnId,
         kind: "activity",
@@ -556,8 +556,15 @@ export function eventsToMessages(
         timestamp,
         isComplete: false,
         ...(stream ? { progressStream: stream } : {}),
-      });
-      activityIndexById.set(id, messages.length - 1);
+      };
+      const insertionIndex = finalAssistantInsertionIndex(turnId);
+      if (insertionIndex === messages.length) {
+        messages.push(message);
+        activityIndexById.set(id, messages.length - 1);
+      } else {
+        messages.splice(insertionIndex, 0, message);
+        reindexMessageIndexes();
+      }
       return;
     }
     const prev = messages[existingIndex]!;
@@ -567,6 +574,92 @@ export function eventsToMessages(
       timestamp,
       ...(stream ? { progressStream: stream } : {}),
     };
+  };
+
+  const reindexMessageIndexes = (): void => {
+    toolMessageIndexByCallId.clear();
+    activityIndexById.clear();
+    planIndexByTurnId.clear();
+    lastAssistantIndexByTurn.clear();
+    activeAssistantIndex = null;
+
+    for (const [messageIndex, message] of messages.entries()) {
+      if (
+        (message.kind === "tool_call" || message.kind === "tool_result") &&
+        typeof message.callId === "string" &&
+        message.callId.length > 0
+      ) {
+        toolMessageIndexByCallId.set(message.callId, messageIndex);
+      }
+      if (message.kind === "activity") {
+        activityIndexById.set(message.id, messageIndex);
+      }
+      if (message.kind === "plan_progress") {
+        planIndexByTurnId.set(message.turnId, messageIndex);
+      }
+      if (message.kind === "assistant") {
+        lastAssistantIndexByTurn.set(message.turnId, messageIndex);
+        if (message.isComplete === false) {
+          activeAssistantIndex = messageIndex;
+        }
+      }
+    }
+  };
+
+  const finalAssistantInsertionIndex = (turnId: string): number => {
+    const indexed = lastAssistantIndexByTurn.get(turnId);
+    if (indexed !== undefined) {
+      const candidate = messages[indexed];
+      if (
+        candidate?.kind === "assistant" &&
+        candidate.turnId === turnId &&
+        candidate.isComplete !== false
+      ) {
+        return indexed;
+      }
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const candidate = messages[index];
+      if (
+        candidate?.kind === "assistant" &&
+        candidate.turnId === turnId &&
+        candidate.isComplete !== false
+      ) {
+        return index;
+      }
+    }
+    return messages.length;
+  };
+
+  const isToolOutputRow = (message: TranscriptMessage): boolean =>
+    message.kind === "tool_call" ||
+    message.kind === "tool_result" ||
+    message.kind === "activity";
+
+  const moveAssistantAfterTurnToolRows = (
+    assistantIndex: number,
+    turnId: string,
+  ): number => {
+    let lastToolIndex = -1;
+    for (const [index, message] of messages.entries()) {
+      if (
+        index !== assistantIndex &&
+        message.turnId === turnId &&
+        isToolOutputRow(message)
+      ) {
+        lastToolIndex = index;
+      }
+    }
+    if (lastToolIndex <= assistantIndex) return assistantIndex;
+
+    const [assistant] = messages.splice(assistantIndex, 1);
+    if (!assistant) return assistantIndex;
+    const adjustedToolIndex = lastToolIndex - 1;
+    const insertionIndex = adjustedToolIndex + 1;
+    messages.splice(insertionIndex, 0, assistant);
+    reindexMessageIndexes();
+    return insertionIndex;
   };
 
   const appendAssistantDelta = (
@@ -706,22 +799,38 @@ export function eventsToMessages(
     patch: Omit<TranscriptMessage, "id" | "timestamp"> & {
       readonly timestamp: number;
     },
+    ordering: { readonly placeBeforeFinalAssistant?: boolean } = {},
   ): number => {
     const existingIndex = toolMessageIndexByCallId.get(callId);
     if (existingIndex !== undefined) {
+      const prev = messages[existingIndex]!;
       messages[existingIndex] = {
-        ...messages[existingIndex]!,
+        ...prev,
         ...patch,
+        isComplete:
+          prev.isComplete === true && patch.isComplete === false
+            ? true
+            : patch.isComplete ?? prev.isComplete,
       };
       return existingIndex;
     }
-    messages.push({
+    const message: TranscriptMessage = {
       id: callId,
       ...patch,
-    });
-    const index = messages.length - 1;
-    toolMessageIndexByCallId.set(callId, index);
-    return index;
+    };
+    const insertionIndex =
+      ordering.placeBeforeFinalAssistant === true
+        ? finalAssistantInsertionIndex(patch.turnId)
+        : messages.length;
+    if (insertionIndex === messages.length) {
+      messages.push(message);
+      const index = messages.length - 1;
+      toolMessageIndexByCallId.set(callId, index);
+      return index;
+    }
+    messages.splice(insertionIndex, 0, message);
+    reindexMessageIndexes();
+    return insertionIndex;
   };
 
   const removeToolMessage = (callId: string): void => {
@@ -729,11 +838,7 @@ export function eventsToMessages(
     if (index === undefined) return;
     messages.splice(index, 1);
     toolMessageIndexByCallId.delete(callId);
-    for (const [id, existingIndex] of toolMessageIndexByCallId) {
-      if (existingIndex > index) {
-        toolMessageIndexByCallId.set(id, existingIndex - 1);
-      }
-    }
+    reindexMessageIndexes();
   };
 
   const suppressToolMessage = (callId: string): void => {
@@ -860,20 +965,25 @@ export function eventsToMessages(
             };
           } else {
             const resultContent = truncateTranscriptText(event.result.content);
-            messages.push({
-              id: `tool-result-${event.toolCall.id}-${timestamp}`,
-              turnId: ensureTurnId(currentTurnId),
-              kind: "tool_result",
-              content: resultContent,
-              toolName: event.toolCall.name,
-              toolArgs: safeJsonParse(event.toolCall.arguments),
-              toolResultContent: resultContent,
-              ...(event.result.metadata !== undefined
-                ? { toolResultMetadata: event.result.metadata }
-                : {}),
-              isError: event.result.isError === true,
-              timestamp,
-            });
+            ensureToolMessage(
+              event.toolCall.id,
+              {
+                turnId: ensureTurnId(currentTurnId),
+                kind: "tool_result",
+                content: resultContent,
+                toolName: event.toolCall.name,
+                toolArgs: safeJsonParse(event.toolCall.arguments),
+                callId: event.toolCall.id,
+                toolResultContent: resultContent,
+                ...(event.result.metadata !== undefined
+                  ? { toolResultMetadata: event.result.metadata }
+                  : {}),
+                isError: event.result.isError === true,
+                timestamp,
+                isComplete: true,
+              },
+              { placeBeforeFinalAssistant: true },
+            );
           }
           break;
         }
@@ -990,8 +1100,12 @@ export function eventsToMessages(
             timestamp,
             isComplete: true,
           };
+          const finalIndex = moveAssistantAfterTurnToolRows(
+            candidateIndex,
+            turnId,
+          );
           activeAssistantIndex = null;
-          lastAssistantIndexByTurn.set(turnId, candidateIndex);
+          lastAssistantIndexByTurn.set(turnId, finalIndex);
         } else {
           messages.push({
             id: event.id ?? `assistant-${turnId}-${timestamp}`,
@@ -1001,7 +1115,11 @@ export function eventsToMessages(
             timestamp,
             isComplete: true,
           });
-          lastAssistantIndexByTurn.set(turnId, messages.length - 1);
+          const finalIndex = moveAssistantAfterTurnToolRows(
+            messages.length - 1,
+            turnId,
+          );
+          lastAssistantIndexByTurn.set(turnId, finalIndex);
         }
         break;
       }
@@ -1132,6 +1250,8 @@ export function eventsToMessages(
           toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
         }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
+        const existing =
+          messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1];
         ensureToolMessage(event.payload.callId, {
           turnId: ensureTurnId(currentTurnId),
           kind: "tool_call",
@@ -1139,18 +1259,21 @@ export function eventsToMessages(
           toolName: "exec_command",
           callId: event.payload.callId,
           execCommand: event.payload.command,
-          execStdout: buffered?.stdout ?? "",
-          execStderr: buffered?.stderr ?? "",
+          execStdout: existing?.execStdout ?? buffered?.stdout ?? "",
+          execStderr: existing?.execStderr ?? buffered?.stderr ?? "",
           timestamp,
-          isComplete: false,
+          isComplete: existing?.isComplete ?? false,
         });
         break;
       }
       case "exec_command_end": {
+        toolNameByCallId.set(event.payload.callId, "exec_command");
         if (event.payload.processId !== undefined) {
           toolCallIdByProcessId.set(event.payload.processId, event.payload.callId);
         }
         const buffered = pendingExecOutputByCallId.get(event.payload.callId);
+        const existing =
+          messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1];
         const stdout =
           event.payload.stdout !== undefined
             ? truncateTranscriptText(event.payload.stdout)
@@ -1159,34 +1282,26 @@ export function eventsToMessages(
           event.payload.stderr !== undefined
             ? truncateTranscriptText(event.payload.stderr)
             : undefined;
-        ensureToolMessage(event.payload.callId, {
-          turnId: ensureTurnId(currentTurnId),
-          kind: "tool_call",
-          content: stdout ?? "",
-          toolName: "exec_command",
-          callId: event.payload.callId,
-          execCommand:
-            messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
-              ?.execCommand ?? "",
-          execStdout:
-            stdout ??
-            buffered?.stdout ??
-            messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
-              ?.execStdout ??
-            "",
-          execStderr:
-            stderr ??
-            buffered?.stderr ??
-            messages[toolMessageIndexByCallId.get(event.payload.callId) ?? -1]
-              ?.execStderr ??
-            "",
-          ...(event.payload.exitCode !== null
-            ? { execExitCode: event.payload.exitCode }
-            : {}),
-          execDurationMs: event.payload.durationMs,
-          timestamp,
-          isComplete: true,
-        });
+        ensureToolMessage(
+          event.payload.callId,
+          {
+            turnId: ensureTurnId(currentTurnId),
+            kind: "tool_call",
+            content: stdout ?? "",
+            toolName: "exec_command",
+            callId: event.payload.callId,
+            execCommand: existing?.execCommand ?? "",
+            execStdout: stdout ?? buffered?.stdout ?? existing?.execStdout ?? "",
+            execStderr: stderr ?? buffered?.stderr ?? existing?.execStderr ?? "",
+            ...(event.payload.exitCode !== null
+              ? { execExitCode: event.payload.exitCode }
+              : {}),
+            execDurationMs: event.payload.durationMs,
+            timestamp,
+            isComplete: true,
+          },
+          { placeBeforeFinalAssistant: true },
+        );
         pendingExecOutputByCallId.delete(event.payload.callId);
         break;
       }
@@ -1226,23 +1341,27 @@ export function eventsToMessages(
         } else {
           const toolName = toolNameByCallId.get(event.payload.callId);
           const resultContent = truncateTranscriptText(event.payload.result);
-          messages.push({
-            id: event.id ?? `tool-result-${event.payload.callId}-${timestamp}`,
-            turnId: ensureTurnId(currentTurnId),
-            kind: "tool_result",
-            content: resultContent,
-            callId: event.payload.callId,
-            ...(toolName !== undefined ? { toolName } : {}),
-            ...(toolArgsByCallId.has(event.payload.callId)
-              ? { toolArgs: toolArgsByCallId.get(event.payload.callId) }
-              : {}),
-            toolResultContent: resultContent,
-            ...(event.payload.metadata !== undefined
-              ? { toolResultMetadata: event.payload.metadata }
-              : {}),
-            isError: event.payload.isError,
-            timestamp,
-          });
+          ensureToolMessage(
+            event.payload.callId,
+            {
+              turnId: ensureTurnId(currentTurnId),
+              kind: "tool_result",
+              content: resultContent,
+              callId: event.payload.callId,
+              ...(toolName !== undefined ? { toolName } : {}),
+              ...(toolArgsByCallId.has(event.payload.callId)
+                ? { toolArgs: toolArgsByCallId.get(event.payload.callId) }
+                : {}),
+              toolResultContent: resultContent,
+              ...(event.payload.metadata !== undefined
+                ? { toolResultMetadata: event.payload.metadata }
+                : {}),
+              isError: event.payload.isError,
+              timestamp,
+              isComplete: true,
+            },
+            { placeBeforeFinalAssistant: true },
+          );
         }
         break;
       }

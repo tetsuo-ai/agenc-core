@@ -31,7 +31,10 @@ export interface PendingPaste {
 export interface ComposerImageAttachment {
   readonly placeholder: string;
   readonly source: string;
+  readonly content: string;
   readonly kind: "local" | "remote";
+  readonly mediaType?: string;
+  readonly sourcePath?: string;
 }
 
 export interface ComposerHistorySearchState {
@@ -69,7 +72,14 @@ export interface ComposerState {
 export type ComposerAction =
   | { type: "INSERT"; text: string }
   | { type: "INSERT_PASTE"; text: string }
-  | { type: "ATTACH_IMAGE"; kind: "local" | "remote"; source: string }
+  | {
+      type: "ATTACH_IMAGE";
+      kind: "local" | "remote";
+      source: string;
+      content?: string;
+      mediaType?: string;
+      sourcePath?: string;
+    }
   | { type: "MOVE_REMOTE_IMAGE_SELECTION"; delta: number }
   | { type: "DELETE_SELECTED_REMOTE_IMAGE" }
   | { type: "CLEAR_REMOTE_IMAGE_SELECTION" }
@@ -404,9 +414,14 @@ function attachImage(
   state: ComposerState,
   kind: "local" | "remote",
   source: string,
+  content?: string,
+  mediaType?: string,
+  sourcePath?: string,
 ): ComposerState {
   const trimmedSource = source.trim();
   if (trimmedSource.length === 0) return state;
+  const imageContent =
+    typeof content === "string" && content.length > 0 ? content : trimmedSource;
 
   if (kind === "remote") {
     const remoteImages = [
@@ -414,6 +429,9 @@ function attachImage(
       {
         kind,
         source: trimmedSource,
+        content: imageContent,
+        ...(mediaType !== undefined ? { mediaType } : {}),
+        ...(sourcePath !== undefined ? { sourcePath } : {}),
         placeholder: imagePlaceholder(state.remoteImages.length + 1),
       },
     ];
@@ -448,7 +466,14 @@ function attachImage(
     cursor: cursor + placeholder.length,
     localImages: [
       ...state.localImages,
-      { kind, source: trimmedSource, placeholder },
+      {
+        kind,
+        source: trimmedSource,
+        content: imageContent,
+        ...(mediaType !== undefined ? { mediaType } : {}),
+        ...(sourcePath !== undefined ? { sourcePath } : {}),
+        placeholder,
+      },
     ],
     selectedRemoteImageIndex: null,
   };
@@ -540,7 +565,14 @@ export function composerReducer(
       };
     }
     case "ATTACH_IMAGE": {
-      return attachImage(state, action.kind, action.source);
+      return attachImage(
+        state,
+        action.kind,
+        action.source,
+        action.content,
+        action.mediaType,
+        action.sourcePath,
+      );
     }
     case "MOVE_REMOTE_IMAGE_SELECTION": {
       return moveRemoteSelection(state, action.delta);

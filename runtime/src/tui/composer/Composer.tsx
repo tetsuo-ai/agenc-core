@@ -26,8 +26,6 @@
  * composer rendering for wrapped/multiline drafts.
  */
 
-import { existsSync, statSync } from "node:fs";
-import path from "node:path";
 import React, {
   useContext,
   useCallback,
@@ -82,6 +80,7 @@ import {
   readHistory,
   type HistoryEntry,
 } from "./history.js";
+import { normalizePastedImageSource } from "./inputPaste.js";
 import {
   expandPendingPastes,
   useComposerState,
@@ -98,6 +97,7 @@ import {
 import { buildHistorySearchStatusLine } from "./status-line.js";
 import { isVimModeEnabled } from "./promptInput-utils.js";
 import type { EditorMode } from "../../config/schema.js";
+import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public types
@@ -120,6 +120,8 @@ export interface ComposerSession {
   readonly appsManager?: AppMentionServiceLike;
   /** Optional upstream-style one-shot voice input provider. */
   readonly voiceInput?: () => Promise<string | null | undefined>;
+  /** Optional runtime mailbox used to attach multimodal content to a submit. */
+  enqueueIdleInput?(input: LLMMessage): number;
 }
 
 export interface ComposerAttachmentsConfig {
@@ -157,57 +159,6 @@ const PASTE_BURST_CHAR_INTERVAL_MS =
 // arrive in small multi-char chunks, so only treat very large unbracketed
 // chunks as paste when the parser did not mark them as bracketed paste.
 const PASTE_THRESHOLD = 800;
-const IMAGE_FILE_RE = /\.(?:png|jpe?g|gif|webp|bmp|svg)$/iu;
-const REMOTE_IMAGE_RE =
-  /^(?:https?:\/\/\S+\.(?:png|jpe?g|gif|webp|bmp|svg)(?:[?#]\S*)?|data:image\/[a-z0-9.+-]+;base64,\S+)$/iu;
-
-function stripPasteQuotes(value: string): string {
-  const trimmed = value.trim();
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
-
-function normalizePastedImageSource(
-  input: string,
-  cwd: string,
-  home?: string,
-): { readonly kind: "local" | "remote"; readonly source: string } | null {
-  const normalized = stripPasteQuotes(
-    input.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n"),
-  );
-  if (normalized.length === 0 || /\n/u.test(normalized)) return null;
-  if (REMOTE_IMAGE_RE.test(normalized)) {
-    return { kind: "remote", source: normalized };
-  }
-
-  let candidate = normalized;
-  if (normalized.startsWith("file://")) {
-    try {
-      candidate = new URL(normalized).pathname;
-    } catch {
-      return null;
-    }
-  }
-  if (candidate.startsWith("~/") && home) {
-    candidate = path.join(home, candidate.slice(2));
-  }
-  const absolute = path.isAbsolute(candidate)
-    ? candidate
-    : path.resolve(cwd, candidate);
-  if (!IMAGE_FILE_RE.test(absolute)) return null;
-  try {
-    if (!existsSync(absolute) || !statSync(absolute).isFile()) return null;
-  } catch {
-    return null;
-  }
-  return { kind: "local", source: absolute };
-}
-
 function buildSubmittedText(
   value: string,
   state: {
@@ -229,6 +180,20 @@ function buildSubmittedText(
   return attachmentLines.length === 0
     ? expanded
     : `${attachmentLines.join("\n")}\n\n${expanded}`;
+}
+
+function imageAttachmentsToContentParts(state: {
+  readonly remoteImages: readonly {
+    readonly content?: string;
+  }[];
+  readonly localImages: readonly {
+    readonly content?: string;
+  }[];
+}): LLMContentPart[] {
+  return [...state.remoteImages, ...state.localImages]
+    .map((image) => image.content)
+    .filter((content): content is string => typeof content === "string" && content.length > 0)
+    .map((url) => ({ type: "image_url", image_url: { url } }));
 }
 
 function formatElapsedDuration(ms: number): string {
@@ -578,8 +543,11 @@ export const Composer: React.FC<ComposerProps> = ({
           if (image) {
             dispatch({
               type: "ATTACH_IMAGE",
-              kind: image.kind,
+              kind: image.kind === "local" ? "local" : "remote",
               source: image.source,
+              content: image.content,
+              mediaType: image.mediaType,
+              sourcePath: image.sourcePath,
             });
           } else {
             dispatch({ type: "INSERT_PASTE", text: buffered });
@@ -819,6 +787,13 @@ export const Composer: React.FC<ComposerProps> = ({
       kind: "file" as const,
       ...(m.validation.ok ? { resolved: m.validation.resolved } : {}),
     }));
+    const imageParts = imageAttachmentsToContentParts(state);
+    if (imageParts.length > 0) {
+      session.enqueueIdleInput?.({
+        role: "user",
+        content: imageParts,
+      });
+    }
     onSubmitRef.current(snapshot);
     dispatch({
       type: "SUBMIT",

@@ -16,11 +16,13 @@
 
 import React, { useCallback, useEffect } from 'react'
 
-import { useKeybinding } from '../keybindings/KeybindingContext.js'
+import {
+  useKeybinding,
+  useSetKeybindingContext,
+} from '../keybindings/KeybindingContext.js'
 
 import { PermissionRequestBash } from './PermissionRequestBash.js'
 import { PermissionRequestFile } from './PermissionRequestFile.js'
-import { PermissionRequestMonitor } from './PermissionRequestMonitor.js'
 import { PermissionRequestSkill } from './PermissionRequestSkill.js'
 import { PermissionRequestWebFetch } from './PermissionRequestWebFetch.js'
 
@@ -42,51 +44,61 @@ export interface PermissionRequestProps {
   readonly subject: PermissionRequestSubject
   readonly onResolve: (decision: PermissionDecision) => void
   readonly onCancel?: () => void
+  readonly abortSignal?: AbortSignal
   readonly verbose?: boolean
 }
 
-function lower(name: string): string {
-  return typeof name === 'string' ? name.toLowerCase() : ''
+export type PermissionSurface =
+  | 'shell'
+  | 'file'
+  | 'web'
+  | 'skill'
+  | 'ask-user-question'
+  | 'exit-plan'
+
+const TOOL_PERMISSION_SURFACES: ReadonlyMap<string, PermissionSurface> =
+  new Map<string, PermissionSurface>([
+    ['Bash', 'shell'],
+    ['system.bash', 'shell'],
+    ['PowerShell', 'shell'],
+    ['exec_command', 'shell'],
+    ['local_shell', 'shell'],
+    ['Edit', 'file'],
+    ['edit_file', 'file'],
+    ['Write', 'file'],
+    ['write_file', 'file'],
+    ['WebFetch', 'web'],
+    ['WebSearch', 'web'],
+    ['Skill', 'skill'],
+    ['AskUserQuestion', 'ask-user-question'],
+    ['ExitPlanMode', 'exit-plan'],
+  ])
+
+export function permissionSurfaceForTool(
+  toolName: string,
+): PermissionSurface | null {
+  return TOOL_PERMISSION_SURFACES.get(toolName) ?? null
+}
+
+export function isSupportedPermissionSurface(toolName: string): boolean {
+  return permissionSurfaceForTool(toolName) !== null
 }
 
 function bodyForTool(
   toolName: string,
 ): React.ComponentType<PermissionRequestProps> | null {
-  const lc = lower(toolName)
-  switch (toolName) {
-    case 'Bash':
-    case 'system.bash':
-    case 'PowerShell':
+  switch (permissionSurfaceForTool(toolName)) {
+    case 'shell':
       return PermissionRequestBash
-    case 'Edit':
-    case 'edit_file':
-    case 'Write':
-    case 'write_file':
-    case 'NotebookEdit':
+    case 'file':
       return PermissionRequestFile
-    case 'WebFetch':
-    case 'WebSearch':
+    case 'web':
       return PermissionRequestWebFetch
-    case 'Skill':
+    case 'skill':
       return PermissionRequestSkill
-    case 'Monitor':
-      return PermissionRequestMonitor
+    case 'ask-user-question':
+    case 'exit-plan':
     default:
-      if (lc.includes('bash') || lc.includes('shell')) {
-        return PermissionRequestBash
-      }
-      if (lc.includes('edit') || lc.includes('write') || lc.includes('file')) {
-        return PermissionRequestFile
-      }
-      if (lc.includes('web') || lc.includes('fetch') || lc.includes('search')) {
-        return PermissionRequestWebFetch
-      }
-      if (lc.includes('skill')) {
-        return PermissionRequestSkill
-      }
-      if (lc.includes('monitor')) {
-        return PermissionRequestMonitor
-      }
       return null
   }
 }
@@ -104,7 +116,8 @@ export function permissionComponentForTool(
 }
 
 export const PermissionRequest: React.FC<PermissionRequestProps> = (props) => {
-  const { subject, onResolve, onCancel } = props
+  const { subject, onResolve, onCancel, abortSignal } = props
+  const setActiveContext = useSetKeybindingContext()
   const handleAbort = useCallback(() => {
     onResolve({ behavior: 'abort' })
     onCancel?.()
@@ -113,10 +126,29 @@ export const PermissionRequest: React.FC<PermissionRequestProps> = (props) => {
   // app:interrupt aborts the request — matches AgenC's `modal:cancel` /
   // approval-overlay convention so the dialog cannot orphan a queued
   // permission request when the operator hits Ctrl-C.
-  useKeybinding('app:interrupt', handleAbort, 'modal')
+  useKeybinding('app:interrupt', handleAbort, 'global')
 
-  // Defensive cleanup if the host unmounts the dialog without resolving.
-  useEffect(() => () => undefined, [])
+  useEffect(() => {
+    setActiveContext('modal')
+    return () => {
+      setActiveContext('chat')
+    }
+  }, [setActiveContext])
+
+  useEffect(() => {
+    if (!abortSignal) return
+    if (abortSignal.aborted) {
+      queueMicrotask(() => onResolve({ behavior: 'abort' }))
+      return
+    }
+    const handler = (): void => {
+      onResolve({ behavior: 'abort' })
+    }
+    abortSignal.addEventListener('abort', handler)
+    return () => {
+      abortSignal.removeEventListener('abort', handler)
+    }
+  }, [abortSignal, onResolve])
 
   const Body = bodyForTool(subject.toolName)
   if (!Body) {

@@ -114,6 +114,8 @@ export interface SessionLike {
   subscribeToEvents?(cb: (event: PhaseEvent) => void): () => void;
   /** Optional submit hook driven from the Composer. */
   submit?(message: string): Promise<void>;
+  /** Optional mailbox hook used to attach multimodal startup/composer input. */
+  enqueueIdleInput?(input: import("../../llm/types.js").LLMMessage): number;
   /** Whether mailbox/teammate/slash-command input is queued for the next turn. */
   hasPendingInput?(): boolean;
   /** Turn-local interrupt hook used by Ctrl+C / Esc while a turn is active. */

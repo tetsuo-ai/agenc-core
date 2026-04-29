@@ -102,6 +102,7 @@ import {
   buildStatusLineSession,
 } from "./status-derivation.js";
 import { createVoiceInputService } from "./voice-input.js";
+import type { LLMMessage } from "../llm/types.js";
 import type { PendingPermissionRequest } from "../permissions/context.js";
 import {
   getNextPermissionMode,
@@ -147,6 +148,8 @@ export interface AppProps {
   readonly model?: string;
   /** Optional boot-time prompt forwarded from the CLI TTY router. */
   readonly initialPrompt?: string;
+  /** Optional startup multimodal messages forwarded from CLI image flags. */
+  readonly initialUserMessages?: readonly LLMMessage[];
   /** Optional boot-time draft captured before Ink mounted. */
   readonly initialComposerText?: string;
 }
@@ -295,10 +298,12 @@ async function interruptActiveTurn(
 function TUIRoot({
   model,
   initialPrompt,
+  initialUserMessages,
   initialComposerText,
 }: {
   readonly model?: string;
   readonly initialPrompt?: string;
+  readonly initialUserMessages?: readonly LLMMessage[];
   readonly initialComposerText?: string;
 }): React.ReactElement {
   const {
@@ -632,14 +637,20 @@ function TUIRoot({
 
   useEffect(() => {
     if (initialPromptSubmittedRef.current) return;
-    if (typeof initialPrompt !== "string" || initialPrompt.length === 0) {
+    const hasInitialPrompt =
+      typeof initialPrompt === "string" && initialPrompt.length > 0;
+    const startupMessages = initialUserMessages ?? [];
+    if (!hasInitialPrompt && startupMessages.length === 0) {
       return;
     }
     initialPromptSubmittedRef.current = true;
-    void submit(initialPrompt).catch(() => {
+    for (const message of startupMessages) {
+      session.enqueueIdleInput?.(message);
+    }
+    void submit(hasInitialPrompt ? initialPrompt : "").catch(() => {
       // Submit failures already surface through session-side logging.
     });
-  }, [initialPrompt, submit]);
+  }, [initialPrompt, initialUserMessages, session, submit]);
 
   return (
     <Box
@@ -863,6 +874,7 @@ export const App: React.FC<AppProps> = ({
   bindings,
   model,
   initialPrompt,
+  initialUserMessages,
   initialComposerText,
 }) => {
   return (
@@ -873,6 +885,7 @@ export const App: React.FC<AppProps> = ({
             <TUIRoot
               model={model}
               initialPrompt={initialPrompt}
+              initialUserMessages={initialUserMessages}
               initialComposerText={initialComposerText}
             />
           </OverlayProvider>

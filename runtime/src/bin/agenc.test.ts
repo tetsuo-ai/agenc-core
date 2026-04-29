@@ -27,6 +27,7 @@ import {
   __setActiveInkUnmountForTest,
   buildExtractMemoriesViaSubagent,
   bootTUIEntry,
+  detectStartupShortCircuit,
   formatCliHelpText,
   initializeCliRuntime,
   installInitSignalHandlers,
@@ -1942,35 +1943,10 @@ describe("main() full-IIFE smoke", () => {
     }
   });
 
-  it("main() fails fast on startup --image instead of drifting into normal routing", async () => {
-    const prevArgv = [...process.argv];
-    const stdoutSpy = vi
-      .spyOn(process.stdout, "write")
-      .mockImplementation(() => true);
-    const stderrSpy = vi
-      .spyOn(process.stderr, "write")
-      .mockImplementation(() => true);
-
-    process.argv = [
-      "/usr/bin/node",
-      "/opt/agenc/bin/agenc.js",
-      "--image",
-      "/tmp/example.png",
-      "describe this",
-    ];
-
-    try {
-      const code = await main();
-      expect(code).toBe(1);
-      expect(stdoutSpy).not.toHaveBeenCalled();
-      expect(
-        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain("startup --image attachments are not wired");
-    } finally {
-      process.argv = prevArgv;
-      stdoutSpy.mockRestore();
-      stderrSpy.mockRestore();
-    }
+  it("startup --image no longer short-circuits before routing", () => {
+    expect(
+      detectStartupShortCircuit(["--image", "/tmp/example.png", "describe"]),
+    ).toBeNull();
   });
 
   it("oneShotCLI rejects malformed slash input through the canonical dispatcher path", async () => {
@@ -2128,6 +2104,83 @@ describe("main() full-IIFE smoke", () => {
       expect(typeof capturedSession!.flushEventLog).toBe("function");
       expect(waitUntilExit).toHaveBeenCalledTimes(1);
       expect(getCurrentRuntimeSession()).toBeNull();
+    } finally {
+      createProviderSpy.mockRestore();
+      startMcpSpy.mockRestore();
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("bootTUIEntry forwards startup image flags as initial multimodal messages", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-image-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-image-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.XAI_API_KEY = "stub-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+            }),
+            chatStream: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+              model: "grok-4-fast",
+              finishReason: "stop",
+            }),
+          }) as never,
+      );
+    const startMcpSpy = vi
+      .spyOn((await import("../session/session.js")).Session.prototype, "startMcpManager")
+      .mockResolvedValue(undefined);
+
+    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    const unmount = vi.fn();
+    const bootTUISpy = vi.fn(async () => ({ unmount, waitUntilExit }));
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: bootTUISpy,
+    }));
+
+    try {
+      const code = await bootTUIEntry({
+        initialPrompt: "describe this",
+        startupImages: ["https://example.com/cat.png"],
+      });
+      expect(code).toBe(0);
+      expect(bootTUISpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          initialPrompt: "describe this",
+          initialUserMessages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: { url: "https://example.com/cat.png" },
+                },
+              ],
+            },
+          ],
+        }),
+      );
     } finally {
       createProviderSpy.mockRestore();
       startMcpSpy.mockRestore();

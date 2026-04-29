@@ -24,6 +24,7 @@ import { createRoot } from "../ink/root.js";
 import instances from "../ink/instances.js";
 import { EventEmitter } from "../ink/events/emitter.js";
 import { InputEvent } from "../ink/events/input-event.js";
+import StdinContext from "../ink/components/StdinContext.js";
 import { KeybindingProvider } from "../keybindings/KeybindingContext.js";
 import {
   AgenCAppStateProvider,
@@ -40,6 +41,10 @@ import {
   type ResolverPayload,
   type SessionLike,
 } from "./InteractiveHandler.js";
+import { ApprovalOverlay } from "./ApprovalOverlay.js";
+import { AskUserQuestionOverlay } from "./AskUserQuestionOverlay.js";
+import { PermissionRequest } from "./PermissionRequest.js";
+import { PlanApprovalOverlay } from "./PlanApprovalOverlay.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Resolver double — matches InteractiveResolver's narrow contract.
@@ -146,6 +151,11 @@ function createOverlayContext(): FakeOverlayContext {
   return ctx;
 }
 
+function pushedNodeType(overlay: FakeOverlayContext): unknown {
+  const node = overlay.lastNode();
+  return React.isValidElement(node) ? node.type : null;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Request builder
 // ─────────────────────────────────────────────────────────────────────
@@ -186,6 +196,42 @@ function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
   (stdout as unknown as { rows: number }).rows = 40;
   (stdout as unknown as { isTTY: boolean }).isTTY = true;
   return { stdout, stdin };
+}
+
+function createStdinContext(emitter: EventEmitter) {
+  return {
+    stdin: process.stdin,
+    setRawMode: () => undefined,
+    isRawModeSupported: true,
+    internal_exitOnCtrlC: true,
+    internal_eventEmitter: emitter,
+    internal_querier: null,
+  } as React.ContextType<typeof StdinContext>;
+}
+
+function withInputProviders(
+  element: React.ReactElement,
+  emitter: EventEmitter,
+): React.ReactElement {
+  return (
+    <StdinContext.Provider value={createStdinContext(emitter)}>
+      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+        {element}
+      </KeybindingProvider>
+    </StdinContext.Provider>
+  );
+}
+
+function MountedOverlayHost({
+  onPush,
+}: {
+  readonly onPush: (setter: (node: ReactNode) => void) => void;
+}): React.ReactElement {
+  const [node, setNode] = React.useState<ReactNode>(null);
+  React.useEffect(() => {
+    onPush(setNode);
+  }, [onPush]);
+  return <>{node}</>;
 }
 
 async function mount(element: React.ReactElement): Promise<{
@@ -292,6 +338,87 @@ describe("InteractiveHandler", () => {
     expect(isClaimed()).toBe(false);
   });
 
+  test.each([
+    ["exec_command", { cmd: "npm test" }, PermissionRequest],
+    ["PowerShell", { command: "Get-ChildItem" }, PermissionRequest],
+    [
+      "Write",
+      { file_path: "/tmp/example.ts", content: "hello" },
+      PermissionRequest,
+    ],
+    ["WebFetch", { url: "https://example.com" }, PermissionRequest],
+    ["Skill", { skill: "repo-docs", prompt: "Use it" }, PermissionRequest],
+    [
+      "AskUserQuestion",
+      { questions: [{ question: "Continue?", options: [{ label: "Yes" }] }] },
+      AskUserQuestionOverlay,
+    ],
+    [
+      "ExitPlanMode",
+      { plan: "# Plan\n\n- Test", planFilePath: "/tmp/agenc-plan.md" },
+      PlanApprovalOverlay,
+    ],
+  ] as const)(
+    "routes supported %s permission requests to the owning overlay",
+    async (toolName, toolInput, expectedType) => {
+      const { resolver, payloads } = createResolver();
+      const session = createSession({ currentTurnId: "turn-1" });
+      const overlay = createOverlayContext();
+      const emitter = new EventEmitter();
+      const request = makeRequest(resolver, {
+        toolName,
+        toolInput,
+      });
+
+      const { unmount } = await mount(
+        <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+          <InteractiveHandler
+            request={request}
+            session={session}
+            overlayContext={overlay}
+            classifier={async () => null}
+          />
+        </KeybindingProvider>,
+      );
+
+      await new Promise((r) => setTimeout(r, 40));
+
+      expect(payloads).toHaveLength(0);
+      expect(overlay.pushed).toHaveLength(1);
+      expect(pushedNodeType(overlay)).toBe(expectedType);
+      unmount();
+    },
+  );
+
+  test.each(["NotebookEdit", "Workflow", "ReviewArtifact"])(
+    "routes non-specialized %s permission requests through the generic approval overlay",
+    async (toolName) => {
+      const { resolver, payloads } = createResolver();
+      const session = createSession({ currentTurnId: "turn-1" });
+      const overlay = createOverlayContext();
+      const emitter = new EventEmitter();
+      const request = makeRequest(resolver, { toolName });
+
+      const { unmount } = await mount(
+        <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
+          <InteractiveHandler
+            request={request}
+            session={session}
+            overlayContext={overlay}
+            classifier={async () => null}
+          />
+        </KeybindingProvider>,
+      );
+
+      await new Promise((r) => setTimeout(r, 40));
+
+      expect(payloads).toHaveLength(0);
+      expect(overlay.pushed).toHaveLength(1);
+      expect(pushedNodeType(overlay)).toBe(ApprovalOverlay);
+      unmount();
+    },
+  );
+
   test("modal resolution via 'allow' claims ReviewDecision payload", async () => {
     const { resolver, payloads } = createResolver();
     const session = createSession({ currentTurnId: "turn-1" });
@@ -326,19 +453,22 @@ describe("InteractiveHandler", () => {
     const request = makeRequest(resolver, { turnId: "turn-1" });
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
-        <OverlayHost
-          onPush={(setter) => {
-            pushCb = setter;
-          }}
-        />
-        <InteractiveHandler
-          request={request}
-          session={session}
-          overlayContext={overlay}
-          classifier={async () => null}
-        />
-      </KeybindingProvider>,
+      withInputProviders(
+        <>
+          <OverlayHost
+            onPush={(setter) => {
+              pushCb = setter;
+            }}
+          />
+          <InteractiveHandler
+            request={request}
+            session={session}
+            overlayContext={overlay}
+            classifier={async () => null}
+          />
+        </>,
+        emitter,
+      ),
     );
 
     // Wait for the grace race to resolve + the modal to mount.
@@ -351,6 +481,55 @@ describe("InteractiveHandler", () => {
     expect(payloads).toHaveLength(1);
     expect(payloads[0]).toMatchObject({
       behavior: "allow",
+    });
+    unmount();
+  });
+
+  test("Ctrl+C aborts specialized permission dialogs from the global binding", async () => {
+    const { resolver, payloads } = createResolver();
+    const session = createSession({ currentTurnId: "turn-1" });
+    const emitter = new EventEmitter();
+    const request = makeRequest(resolver, {
+      turnId: "turn-1",
+      toolName: "exec_command",
+      toolInput: { cmd: "npm test" },
+    });
+    let pushCb: ((node: ReactNode) => void) | null = null;
+    const overlay: OverlayContextLike = {
+      push(node) {
+        if (pushCb) pushCb(node);
+        return () => {
+          if (pushCb) pushCb(null);
+        };
+      },
+    };
+
+    const { unmount } = await mount(
+      withInputProviders(
+        <>
+          <MountedOverlayHost
+            onPush={(setter) => {
+              pushCb = setter;
+            }}
+          />
+          <InteractiveHandler
+            request={request}
+            session={session}
+            overlayContext={overlay}
+            classifier={async () => null}
+          />
+        </>,
+        emitter,
+      ),
+    );
+
+    await new Promise((r) => setTimeout(r, 40));
+    emitter.emit("input", makeKeyEvent({ name: "c", sequence: "c", ctrl: true }));
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]).toMatchObject({
+      behavior: "abort",
     });
     unmount();
   });
@@ -512,20 +691,23 @@ describe("InteractiveHandler", () => {
     const request = makeRequest(resolver, { turnId: "turn-1", toolName: "Edit" });
 
     const { unmount } = await mount(
-      <KeybindingProvider stdinContext={{ internal_eventEmitter: emitter }}>
-        <OverlayHost
-          onPush={(setter) => {
-            pushCb = setter;
-          }}
-        />
-        <InteractiveHandler
-          request={request}
-          session={session}
-          overlayContext={overlay}
-          graceMs={20}
-          classifier={classifier}
-        />
-      </KeybindingProvider>,
+      withInputProviders(
+        <>
+          <OverlayHost
+            onPush={(setter) => {
+              pushCb = setter;
+            }}
+          />
+          <InteractiveHandler
+            request={request}
+            session={session}
+            overlayContext={overlay}
+            graceMs={20}
+            classifier={classifier}
+          />
+        </>,
+        emitter,
+      ),
     );
 
     await new Promise((r) => setTimeout(r, 40));

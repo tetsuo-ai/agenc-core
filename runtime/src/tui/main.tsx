@@ -79,6 +79,7 @@ export interface BootTUIOptions {
    * the same first-turn behavior.
    */
   readonly initialPrompt?: string;
+  readonly initialUserMessages?: AppProps["initialUserMessages"];
   /** Optional startup draft captured before Ink mounted; not auto-submitted. */
   readonly initialComposerText?: string;
 }
@@ -324,6 +325,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         model={options.model}
         bindings={options.bindings}
         initialPrompt={options.initialPrompt}
+        initialUserMessages={options.initialUserMessages}
         initialComposerText={options.initialComposerText}
       />,
       {

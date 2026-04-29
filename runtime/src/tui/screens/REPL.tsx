@@ -114,11 +114,14 @@ import {
   allStartupGatesCleared,
   anyStartupGateBlocked,
   createInitialStartupGates,
-  nextPendingStartupGate,
+  deriveStartupGatesFromRuntime,
+  nextActiveStartupGate,
   setStartupGate,
   shouldRunStartupChecks,
   type StartupGateName,
+  type StartupGateState,
   type StartupGatesSnapshot,
+  visibleStartupGateNames,
 } from "./repl-startup-gates.js";
 
 import type { PendingPermissionRequest } from "../../permissions/context.js";
@@ -180,7 +183,7 @@ function StartupGatesPanel({
   readonly gates: StartupGatesSnapshot;
   readonly active: StartupGateName | null;
 }): React.ReactElement {
-  const order: StartupGateName[] = ["trust", "apiKey", "policy"];
+  const order = visibleStartupGateNames(gates);
   return (
     <Pane color="accent">
       <Box flexDirection="column">
@@ -205,7 +208,7 @@ function StartupGatesPanel({
             <Box key={name} flexDirection="row">
               <Text>{"└ "}</Text>
               <Text color={color}>
-                {`${label} ${name}`}
+                {`${label} ${startupGateLabel(name)}`}
               </Text>
               {state === "pending" && name === active ? (
                 <Text color="dim">{` · running`}</Text>
@@ -216,6 +219,17 @@ function StartupGatesPanel({
       </Box>
     </Pane>
   );
+}
+
+function startupGateLabel(name: StartupGateName): string {
+  switch (name) {
+    case "trust":
+      return "workspace trust";
+    case "apiKey":
+      return "API key";
+    case "policy":
+      return "runtime policy";
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -256,15 +270,15 @@ export function REPL({
   const [hasStarted, setHasStarted] = useState(false);
   const [showMessageSelector, setShowMessageSelector] = useState(false);
 
-  // Startup-gate state machine. The state values are driven by the
-  // runtime side as it clears each gate; this skeleton starts every
-  // gate in `pending` until a future tranche wires the runtime
-  // collectors.
+  // Startup-gate state machine. The bridge below derives concrete gate
+  // states from the live AgenC session/config surfaces. Unsupported
+  // OpenClaude-only gates are omitted, so they do not render as fake
+  // pending startup work.
   const [gates, setGates] = useState<StartupGatesSnapshot>(() =>
     createInitialStartupGates(),
   );
   const setGate = useCallback(
-    (name: StartupGateName, state: "pending" | "cleared" | "blocked") => {
+    (name: StartupGateName, state: StartupGateState) => {
       setGates((prev) => setStartupGate(prev, name, state));
     },
     [],
@@ -441,8 +455,9 @@ export function REPL({
   }, []);
   useKeybinding("transcript:exit", handleExitTranscript, "transcript");
 
-  const activeStartupGate = nextPendingStartupGate(gates);
+  const activeStartupGate = nextActiveStartupGate(gates);
   const showStartupGatesPanel =
+    startupChecksAllowed &&
     !promptTypingSuppressionActive &&
     !hasStarted &&
     activeStartupGate !== null;
@@ -519,12 +534,10 @@ export function REPL({
                   : undefined
               }
               onSubmit={(value) => {
-                // Drive the typing-suppression signal from each successful
-                // submit. The Composer doesn't currently expose a per-keystroke
-                // change hook; until it does, treat submission as the
-                // canonical "user has interacted" signal so startup gates
-                // don't surface mid-flow.
-                setComposerActive(true);
+                // Submission ends the vulnerable pre-interaction window.
+                // Keep the suppression signal clear here so startup gates can
+                // run immediately after the first submitted prompt.
+                setComposerActive(false);
                 setComposerValue("");
                 handleSubmit(value);
               }}
@@ -545,28 +558,54 @@ export function REPL({
 
       {permissionHandlers}
 
-      {/* Hidden setter so the runtime side can drive the gate machine
-          via React fast-refresh during development. The function is a
-          no-op in production until a tranche wires real collectors. */}
-      <REPLGateBridge setGate={setGate} />
+      <REPLGateBridge
+        setGate={setGate}
+        session={session}
+        configStore={configStore}
+        configVersion={tuiConfigView}
+      />
     </Box>
   );
 }
 
 function REPLGateBridge({
-  setGate: _setGate,
+  setGate,
+  session,
+  configStore,
+  configVersion: _configVersion,
 }: {
-  readonly setGate: (
-    name: StartupGateName,
-    state: "pending" | "cleared" | "blocked",
-  ) => void;
+  readonly setGate: (name: StartupGateName, state: StartupGateState) => void;
+  readonly session: unknown;
+  readonly configStore: unknown;
+  readonly configVersion: unknown;
 }): React.ReactElement | null {
-  // TODO(tranche-7-followup): wire concrete gate collectors:
-  //   - trust   → permissions/approval-policy.ts::ProjectTrust
-  //   - apiKey  → config.resolveApiKey() presence check
-  //   - policy  → loadConfig() success / no validation errors
-  // The bridge component exists today only to give those collectors a
-  // stable mount point; once they land they'll drive `_setGate(...)`.
+  useEffect(() => {
+    let config: unknown;
+    let configError: unknown;
+    const current = (
+      configStore as { readonly current?: () => unknown } | null
+    )?.current;
+    if (typeof current === "function") {
+      try {
+        config = current.call(configStore);
+      } catch (err) {
+        configError = err;
+      }
+    } else {
+      config = (configStore as { readonly snapshot?: unknown } | null)
+        ?.snapshot;
+    }
+
+    const next = deriveStartupGatesFromRuntime({
+      session,
+      config,
+      ...(configError !== undefined ? { configError } : {}),
+    });
+    for (const gate of ["trust", "apiKey", "policy"] as const) {
+      setGate(gate, next[gate]);
+    }
+  }, [setGate, session, configStore, _configVersion]);
+
   return null;
 }
 

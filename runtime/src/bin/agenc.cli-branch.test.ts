@@ -122,6 +122,33 @@ describe("routeCLI (T12 Wave 5-B)", () => {
     expect(resumeTUI).not.toHaveBeenCalled();
   });
 
+  it("startup image flags are stripped from the prompt and forwarded to the TUI", async () => {
+    const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
+    const exit = await routeCLI({
+      argv: [
+        NODE,
+        SCRIPT,
+        "--image",
+        "/tmp/cat.png",
+        "--image=https://example.com/dog.png",
+        "describe",
+        "them",
+      ],
+      isTTY: true,
+      isStdoutTTY: true,
+      bootTUI,
+      oneShotCLI,
+      resumeTUI,
+      continueTUI,
+    });
+    expect(exit).toBe(0);
+    expect(bootTUI).toHaveBeenCalledWith({
+      initialPrompt: "describe them",
+      startupImages: ["/tmp/cat.png", "https://example.com/dog.png"],
+    });
+    expect(oneShotCLI).not.toHaveBeenCalled();
+  });
+
   it("--no-tui flag forces oneShotCLI even in an interactive TTY", async () => {
     const { bootTUI, oneShotCLI, resumeTUI, continueTUI } = makeHandles();
     const exit = await routeCLI({

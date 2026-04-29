@@ -29,13 +29,18 @@ import { mkdirSync } from "node:fs";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
 import {
+  extractFlagValues,
   routeCLI,
   stripRoutingFlags,
   type BootTUIArgs,
   type ContinueTUIArgs,
   type ResumeTUIArgs,
 } from "./route.js";
-import type { LLMToolCall } from "../llm/types.js";
+import type { LLMMessage, LLMToolCall } from "../llm/types.js";
+import {
+  normalizeUserImageInput,
+  userImageInputsToContentParts,
+} from "../prompts/attachments/user-image-input.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { Session } from "../session/session.js";
 import {
@@ -107,10 +112,6 @@ function hasArgFlag(argv: readonly string[], flag: string): boolean {
   return argv.includes(flag);
 }
 
-function hasArgValueFlag(argv: readonly string[], flag: string): boolean {
-  return argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
-}
-
 export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
@@ -129,7 +130,7 @@ export function formatCliHelpText(): string {
     "  --dangerously-bypass-approvals-and-sandbox",
     "  --yolo",
     "  --allow-dangerously-skip-permissions     Skip approval prompts",
-    "  --image <file>                           Reserved for startup image attachments",
+    "  --image <file|url|data-url>              Attach a startup image",
   ].join("\n");
 }
 
@@ -146,13 +147,6 @@ export function detectStartupShortCircuit(
   }
   if (hasArgFlag(argv, "--version")) {
     return { kind: "version", text: `agenc ${VERSION}` };
-  }
-  if (hasArgValueFlag(argv, "--image")) {
-    return {
-      kind: "error",
-      message:
-        "startup --image attachments are not wired in this runtime yet; use the TUI picker flow once image preload support lands",
-    };
   }
   return null;
 }
@@ -178,14 +172,49 @@ async function resolveUserMessage(signal: AbortSignal): Promise<string> {
   // Strip routing-level flags (--no-tui, --resume) before treating the
   // residue as the prompt; T12 routing peels these off upstream but
   // legacy entry paths still call `resolveUserMessage` directly.
-  const argv = stripRoutingFlags(process.argv.slice(2));
+  const userArgv = process.argv.slice(2);
+  const argv = stripRoutingFlags(userArgv);
   if (argv.length > 0) {
     return argv.join(" ").trim();
   }
   const piped = await readStdin(signal);
   if (piped) return piped;
+  if (extractFlagValues(userArgv, "--image").length > 0) return "";
   throw new Error(
     "no prompt provided — pass as argv (`agenc ...`) or pipe via stdin",
+  );
+}
+
+function startupImageMessagesFromInputs(
+  imageInputs: readonly string[],
+  cwd: string,
+  home?: string,
+): LLMMessage[] {
+  if (imageInputs.length === 0) return [];
+  const images = imageInputs.map((input) => {
+    const image = normalizeUserImageInput(input, cwd, home);
+    if (image === null) {
+      throw new Error(`unable to read startup image: ${input}`);
+    }
+    return image;
+  });
+  return [
+    {
+      role: "user",
+      content: userImageInputsToContentParts(images),
+    },
+  ];
+}
+
+function startupImageMessagesFromArgv(
+  argv: readonly string[],
+  cwd: string,
+  home?: string,
+): LLMMessage[] {
+  return startupImageMessagesFromInputs(
+    extractFlagValues(argv, "--image"),
+    cwd,
+    home,
   );
 }
 
@@ -1057,6 +1086,14 @@ export async function oneShotCLI(
     // T9: give the delegate tool its real Session reference.
     delegateSessionHolder.current = session;
 
+    for (const message of startupImageMessagesFromArgv(
+      process.argv.slice(2),
+      workspaceRoot,
+      process.env.HOME,
+    )) {
+      session.enqueueIdleInput(message);
+    }
+
     let sessionRef: Session | null = session;
     installSignalHandlers(() => sessionRef, configReloadLatch);
 
@@ -1238,6 +1275,7 @@ async function loadBootTUI(): Promise<
     model?: string;
     initialPrompt?: string;
     initialComposerText?: string;
+    initialUserMessages?: readonly LLMMessage[];
   }) => Promise<{ unmount: () => void; waitUntilExit: () => Promise<void> }>
 > {
   // The path is relative to the *compiled* output layout (both
@@ -1257,6 +1295,7 @@ async function loadBootTUI(): Promise<
       model?: string;
       initialPrompt?: string;
       initialComposerText?: string;
+      initialUserMessages?: readonly LLMMessage[];
     }) => Promise<{
       unmount: () => void;
       waitUntilExit: () => Promise<void>;
@@ -1351,6 +1390,18 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         const capturedEarlyInput = consumeEarlyInput();
         const initialComposerText =
           args.initialPrompt === undefined ? capturedEarlyInput : "";
+        const initialUserMessages =
+          args.startupImages !== undefined
+            ? startupImageMessagesFromInputs(
+                args.startupImages,
+                workspaceRoot,
+                process.env.HOME,
+              )
+            : startupImageMessagesFromArgv(
+                process.argv.slice(2),
+                workspaceRoot,
+                process.env.HOME,
+              );
         const handle = await boot({
           session,
           configStore,
@@ -1360,6 +1411,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
             : {}),
           ...(initialComposerText.length > 0
             ? { initialComposerText }
+            : {}),
+          ...(initialUserMessages.length > 0
+            ? { initialUserMessages }
             : {}),
         });
         activeInkUnmount = handle.unmount;

@@ -403,6 +403,46 @@ describe("Composer", () => {
     unmount();
   });
 
+  test("submitting with pasted images enqueues real multimodal content", async () => {
+    const emitter = new EventEmitter();
+    const store = new PasteStore();
+    const onSubmit = vi.fn();
+    const enqueueIdleInput = vi.fn();
+    const { unmount } = await mount(
+      withInputProviders(
+        emitter,
+        <Box width="100%">
+          <Composer
+            session={{ cwd: tmpHome, home: tmpHome, enqueueIdleInput }}
+            onSubmit={onSubmit}
+            pasteStore={store}
+          />
+        </Box>,
+      ),
+      { columns: 84 },
+    );
+
+    store.pushChunk("https://example.com/cat.png");
+    await sleep(550);
+    await typeText(emitter, "describe it");
+    emitter.emit("input", makeKeyEvent({ name: "return" }));
+    await sleep(25);
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      "[Image #1]: https://example.com/cat.png\n\ndescribe it",
+    );
+    expect(enqueueIdleInput).toHaveBeenCalledWith({
+      role: "user",
+      content: [
+        {
+          type: "image_url",
+          image_url: { url: "https://example.com/cat.png" },
+        },
+      ],
+    });
+    unmount();
+  });
+
   test("active empty composer shows upstream-style working footer", async () => {
     const emitter = new EventEmitter();
     const appStateSession = {

@@ -25,11 +25,11 @@ describe("buildStatusNotices", () => {
     });
 
     expect(notices.map((notice) => notice.id)).toEqual([
+      "approvals",
+      "warning:w1",
       "context",
       "budget",
       "output",
-      "warning:w1",
-      "approvals",
     ]);
   });
 });

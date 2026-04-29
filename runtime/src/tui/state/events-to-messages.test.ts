@@ -90,6 +90,95 @@ describe("eventsToMessages", () => {
     expect(messages.filter((m) => m.kind === "tool_call")).toHaveLength(1);
   });
 
+  test("keeps out-of-order tool completion before final assistant text", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-late-tool" } },
+      { type: "agent_message_delta", payload: { delta: "Checking the file." } },
+      {
+        type: "tool_call_started",
+        payload: {
+          callId: "call-read",
+          toolName: "FileRead",
+          args: '{"path":"README.md"}',
+        },
+      },
+      {
+        type: "agent_message",
+        payload: { message: "The README already has the note." },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call-read",
+          result: "1→# AgenC",
+          isError: false,
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages.map((message) => message.kind)).toEqual([
+      "tool_call",
+      "assistant",
+    ]);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "FileRead",
+      toolResultContent: "1→# AgenC",
+      isComplete: true,
+    });
+    expect(messages[1]).toMatchObject({
+      kind: "assistant",
+      content: "The README already has the note.",
+      isComplete: true,
+    });
+  });
+
+  test("keeps exec_command_end before begin as one completed row before final assistant text", () => {
+    const events: TranscriptSourceEvent[] = [
+      { type: "turn_started", payload: { turnId: "turn-late-exec" } },
+      { type: "agent_message", payload: { message: "Tests passed." } },
+      {
+        type: "exec_command_end",
+        payload: {
+          callId: "exec-1",
+          processId: 10,
+          exitCode: 0,
+          stdout: "ok\n",
+          durationMs: 25,
+        },
+      },
+      {
+        type: "exec_command_begin",
+        payload: {
+          callId: "exec-1",
+          processId: 10,
+          command: "npm test",
+          cwd: "/repo",
+        },
+      },
+    ];
+
+    const messages = eventsToMessages(events);
+    expect(messages.map((message) => message.kind)).toEqual([
+      "tool_call",
+      "assistant",
+    ]);
+    expect(messages[0]).toMatchObject({
+      kind: "tool_call",
+      toolName: "exec_command",
+      execCommand: "npm test",
+      execStdout: "ok\n",
+      execExitCode: 0,
+      execDurationMs: 25,
+      isComplete: true,
+    });
+    expect(messages[1]).toMatchObject({
+      kind: "assistant",
+      content: "Tests passed.",
+    });
+  });
+
   test("carries tool result metadata onto the coalesced tool row", () => {
     const metadata = {
       ui: {
