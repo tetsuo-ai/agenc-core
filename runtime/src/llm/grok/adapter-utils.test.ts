@@ -3,6 +3,7 @@ import type { LLMMessage, LLMTool } from "../types.js";
 import {
   computeReconciliationChain,
   extractTraceToolNames,
+  slimTools,
   toSlimTool,
 } from "./adapter-utils.js";
 
@@ -51,6 +52,33 @@ describe("grok adapter utils", () => {
     expect(computeReconciliationChain(first, 8)).toEqual(
       computeReconciliationChain(second, 8),
     );
+  });
+
+  it("orders AgenC-primary AgenC tools before compatibility system tools", () => {
+    const makeTool = (name: string): LLMTool => ({
+      type: "function",
+      function: {
+        name,
+        description: name,
+        parameters: { type: "object" },
+      },
+    });
+
+    const { tools } = slimTools([
+      makeTool("FileRead"),
+      makeTool("system.bash"),
+      makeTool("exec_command"),
+      makeTool("write_stdin"),
+      makeTool("system.searchTools"),
+    ]);
+
+    expect(tools.map((tool) => tool.function.name)).toEqual([
+      "exec_command",
+      "FileRead",
+      "system.searchTools",
+      "write_stdin",
+      "system.bash",
+    ]);
   });
 
   it("ignores dynamic system injections when hashing reconciliation state", () => {

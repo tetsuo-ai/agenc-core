@@ -1,0 +1,426 @@
+import { feature } from 'bun:bundle'
+import type { QuerySource } from './_deps/query-source.js'
+import type { Message } from './_deps/types-message.js'
+import { getGlobalConfig } from './_deps/config.js';
+import { getContextWindowForModel } from './_deps/model-info.js';
+import { logForDebugging } from './_deps/utils.js';
+import { isEnvTruthy } from './_deps/utils.js';
+import { hasExactErrorMessage } from './_deps/utils.js';
+import type { CacheSafeParams } from './_deps/fork-agent.js';
+import { logError } from './_deps/utils.js';
+import { tokenCountWithEstimation } from './_deps/token-counts.js';
+import { getFeatureValue_CACHED_MAY_BE_STALE } from './_deps/no-op.js';
+import { getMaxOutputTokensForModel } from './_deps/model-info.js';
+import { notifyCompaction } from './_deps/no-op.js';
+import { setLastSummarizedMessageId } from './_deps/session-memory.js';
+import {
+  type CompactionResult,
+  createReferenceContextMessages,
+  compactConversation,
+  ERROR_MESSAGE_USER_ABORT,
+  type InitialContextInjection,
+  type RecompactionInfo,
+} from './compact.js'
+import type { CompactRuntimeContext } from '../../session/compact-runtime-context.js'
+import { runPostCompactCleanup } from './post-compact-cleanup.js'
+import { trySessionMemoryCompaction } from './session-memory-compact.js'
+
+// Reserve this many tokens for output during compaction
+// Based on p99.99 of compact summary output being 17,387 tokens.
+const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
+
+export type ContextBudgetOverrides = {
+  readonly contextWindowTokens?: number
+  readonly maxOutputTokens?: number
+}
+
+function positiveInteger(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  const normalized = Math.floor(value)
+  return normalized > 0 ? normalized : undefined
+}
+
+function getContextWindowForBudget(
+  model: string,
+  overrides?: ContextBudgetOverrides,
+): number {
+  return positiveInteger(overrides?.contextWindowTokens) ??
+    getContextWindowForModel(model, undefined)
+}
+
+// Returns the context window size minus the max output tokens for the model
+export function getEffectiveContextWindowSize(
+  model: string,
+  overrides?: ContextBudgetOverrides,
+): number {
+  const reservedTokensForSummary = Math.min(
+    positiveInteger(overrides?.maxOutputTokens) ??
+      getMaxOutputTokensForModel(model),
+    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  )
+  let contextWindow = getContextWindowForBudget(model, overrides)
+
+  const autoCompactWindow = process.env.AGENC_AUTO_COMPACT_WINDOW
+  if (autoCompactWindow) {
+    const parsed = parseInt(autoCompactWindow, 10)
+    if (!isNaN(parsed) && parsed > 0) {
+      contextWindow = Math.min(contextWindow, parsed)
+    }
+  }
+
+  // Floor: effective context must be at least the summary reservation plus a
+  // usable buffer. If it goes lower, the auto-compact threshold becomes
+  // negative and fires on every message (issue #635).
+  const autocompactBuffer = 13_000 // must match AUTOCOMPACT_BUFFER_TOKENS
+  const effectiveContext = contextWindow - reservedTokensForSummary
+  return Math.max(effectiveContext, reservedTokensForSummary + autocompactBuffer)
+}
+
+export type AutoCompactTrackingState = {
+  compacted: boolean
+  turnCounter: number
+  // Unique ID per turn
+  turnId: string
+  // Consecutive autocompact failures. Reset on success.
+  // Used as a circuit breaker to stop retrying when the context is
+  // irrecoverably over the limit (e.g., prompt_too_long).
+  consecutiveFailures?: number
+}
+
+export const AUTOCOMPACT_BUFFER_TOKENS = 13_000
+export const WARNING_THRESHOLD_BUFFER_TOKENS = 20_000
+export const ERROR_THRESHOLD_BUFFER_TOKENS = 20_000
+export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
+
+// Stop trying autocompact after this many consecutive failures.
+// BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
+// in a single session, wasting ~250K API calls/day globally.
+const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+
+export function getAutoCompactThreshold(
+  model: string,
+  overrides?: ContextBudgetOverrides,
+): number {
+  const effectiveContextWindow = getEffectiveContextWindowSize(model, overrides)
+
+  const autocompactThreshold =
+    effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
+
+  // Override for easier testing of autocompact
+  const envPercent = process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE
+  if (envPercent) {
+    const parsed = parseFloat(envPercent)
+    if (!isNaN(parsed) && parsed > 0 && parsed <= 100) {
+      const percentageThreshold = Math.floor(
+        effectiveContextWindow * (parsed / 100),
+      )
+      return Math.min(percentageThreshold, autocompactThreshold)
+    }
+  }
+
+  return autocompactThreshold
+}
+
+export function calculateTokenWarningState(
+  tokenUsage: number,
+  model: string,
+  overrides?: ContextBudgetOverrides,
+): {
+  percentLeft: number
+  isAboveWarningThreshold: boolean
+  isAboveErrorThreshold: boolean
+  isAboveAutoCompactThreshold: boolean
+  isAtBlockingLimit: boolean
+} {
+  const autoCompactThreshold = getAutoCompactThreshold(model, overrides)
+  const threshold = isAutoCompactEnabled()
+    ? autoCompactThreshold
+    : getEffectiveContextWindowSize(model, overrides)
+
+  // Use the raw context window (without output reservation) for the percentage
+  // display, so users see remaining context relative to the model's full capacity.
+  // The threshold (which subtracts buffer) should only affect when we warn/compact,
+  // not what percentage we display.
+  const rawContextWindow = getContextWindowForBudget(model, overrides)
+  const percentLeft = Math.max(
+    0,
+    Math.round(((rawContextWindow - tokenUsage) / rawContextWindow) * 100),
+  )
+
+  const warningThreshold = threshold - WARNING_THRESHOLD_BUFFER_TOKENS
+  const errorThreshold = threshold - ERROR_THRESHOLD_BUFFER_TOKENS
+
+  const isAboveWarningThreshold = tokenUsage >= warningThreshold
+  const isAboveErrorThreshold = tokenUsage >= errorThreshold
+
+  const isAboveAutoCompactThreshold =
+    isAutoCompactEnabled() && tokenUsage >= autoCompactThreshold
+
+  const actualContextWindow = getEffectiveContextWindowSize(model, overrides)
+  const defaultBlockingLimit =
+    actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
+
+  // Allow override for testing
+  const blockingLimitOverride = process.env.AGENC_BLOCKING_LIMIT_OVERRIDE
+  const parsedOverride = blockingLimitOverride
+    ? parseInt(blockingLimitOverride, 10)
+    : NaN
+  const blockingLimit =
+    !isNaN(parsedOverride) && parsedOverride > 0
+      ? parsedOverride
+      : defaultBlockingLimit
+
+  const isAtBlockingLimit = tokenUsage >= blockingLimit
+
+  return {
+    percentLeft,
+    isAboveWarningThreshold,
+    isAboveErrorThreshold,
+    isAboveAutoCompactThreshold,
+    isAtBlockingLimit,
+  }
+}
+
+export function isAutoCompactEnabled(): boolean {
+  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
+    return false
+  }
+  // Allow disabling just auto-compact (keeps manual /compact working)
+  if (isEnvTruthy(process.env.DISABLE_AUTO_COMPACT)) {
+    return false
+  }
+  // Check if user has disabled auto-compact in their settings
+  const userConfig = getGlobalConfig()
+  return userConfig.autoCompactEnabled
+}
+
+export async function shouldAutoCompact(
+  messages: Message[],
+  model: string,
+  querySource?: QuerySource,
+  // Snip removes messages but the surviving assistant's usage still reflects
+  // pre-snip context, so tokenCountWithEstimation can't see the savings.
+  // Subtract the rough-delta that snip already computed.
+  snipTokensFreed = 0,
+  overrides?: ContextBudgetOverrides,
+): Promise<boolean> {
+  // Recursion guards. session_memory and compact are forked agents that
+  // would deadlock.
+  if (querySource === 'session_memory' || querySource === 'compact') {
+    return false
+  }
+  // marble_origami is the ctx-agent — if ITS context blows up and
+  // autocompact fires, runPostCompactCleanup calls resetContextCollapse()
+  // which destroys the MAIN thread's committed log (module-level state
+  // shared across forks). Inside feature() so the string DCEs from
+  // external builds (it's in excluded-strings.txt).
+  if (feature('CONTEXT_COLLAPSE')) {
+    if (querySource === 'marble_origami') {
+      return false
+    }
+  }
+
+  if (!isAutoCompactEnabled()) {
+    return false
+  }
+
+  // Reactive-only mode: suppress proactive autocompact, let reactive compact
+  // catch the API's prompt-too-long. feature() wrapper keeps the flag string
+  // out of external builds (REACTIVE_COMPACT is internal-only).
+  // Note: returning false here also means autoCompactIfNeeded never reaches
+  // trySessionMemoryCompaction in the query loop — the /compact call site
+  // still tries session memory first. Revisit if reactive-only graduates.
+  if (feature('REACTIVE_COMPACT')) {
+    if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
+      return false
+    }
+  }
+
+  // Context-collapse mode: same suppression. Collapse IS the context
+  // management system when it's on — the 90% commit / 95% blocking-spawn
+  // flow owns the headroom problem. Autocompact firing at effective-13k
+  // (~93% of effective) sits right between collapse's commit-start (90%)
+  // and blocking (95%), so it would race collapse and usually win, nuking
+  // granular context that collapse was about to save. Gating here rather
+  // than in isAutoCompactEnabled() keeps reactiveCompact alive as the 413
+  // fallback (it consults isAutoCompactEnabled directly) and leaves
+  // sessionMemory + manual /compact working.
+  //
+  // Consult isContextCollapseEnabled (not the raw gate) so the
+  // AGENC_CONTEXT_COLLAPSE env override is honored here too. require()
+  // inside the block breaks the init-time cycle (this file exports
+  // getEffectiveContextWindowSize which collapse's index imports).
+  if (feature('CONTEXT_COLLAPSE')) {
+    // AgenC context-collapse subsystem deleted in gut-cleanup. Lean runtime
+    // does not provide an alternative, so collapse is always disabled here.
+    const isContextCollapseEnabled = (): boolean => false
+    if (isContextCollapseEnabled()) {
+      return false
+    }
+  }
+
+  const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
+  const threshold = getAutoCompactThreshold(model, overrides)
+  const effectiveWindow = getEffectiveContextWindowSize(model, overrides)
+
+  logForDebugging(
+    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+  )
+
+  const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
+    tokenCount,
+    model,
+    overrides,
+  )
+
+  return isAboveAutoCompactThreshold
+}
+
+export async function autoCompactIfNeeded(
+  messages: Message[],
+  toolUseContext: CompactRuntimeContext,
+  cacheSafeParams: CacheSafeParams,
+  querySource?: QuerySource,
+  tracking?: AutoCompactTrackingState,
+  snipTokensFreed?: number,
+  initialContextInjection: InitialContextInjection = 'do_not_inject',
+): Promise<{
+  wasCompacted: boolean
+  compactionResult?: CompactionResult
+  consecutiveFailures?: number
+  warning?: { cause: string; message: string }
+}> {
+  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
+    return { wasCompacted: false }
+  }
+
+  // Circuit breaker: stop retrying after N consecutive failures.
+  // Without this, sessions where context is irrecoverably over the limit
+  // hammer the API with doomed compaction attempts on every turn.
+  if (
+    tracking?.consecutiveFailures !== undefined &&
+    tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
+  ) {
+    return { wasCompacted: false }
+  }
+
+  const model = toolUseContext.options.mainLoopModel
+  const budgetOverrides: ContextBudgetOverrides = {
+    ...(toolUseContext.options.contextWindowTokens !== undefined
+      ? { contextWindowTokens: toolUseContext.options.contextWindowTokens }
+      : {}),
+    ...(toolUseContext.options.maxOutputTokens !== undefined
+      ? { maxOutputTokens: toolUseContext.options.maxOutputTokens }
+      : {}),
+  }
+  const shouldCompact = await shouldAutoCompact(
+    messages,
+    model,
+    querySource,
+    snipTokensFreed,
+    budgetOverrides,
+  )
+
+  if (!shouldCompact) {
+    return { wasCompacted: false }
+  }
+
+  const recompactionInfo: RecompactionInfo = {
+    isRecompactionInChain: tracking?.compacted === true,
+    turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
+    previousCompactTurnId: tracking?.turnId,
+    autoCompactThreshold: getAutoCompactThreshold(model, budgetOverrides),
+    querySource,
+  }
+
+  // EXPERIMENT: Try session memory compaction first
+  const sessionMemoryResult = await trySessionMemoryCompaction(
+    messages,
+    toolUseContext.agentId,
+    recompactionInfo.autoCompactThreshold,
+  )
+  if (sessionMemoryResult) {
+    // Reset lastSummarizedMessageId since session memory compaction prunes messages
+    // and the old message UUID will no longer exist after the REPL replaces messages
+    setLastSummarizedMessageId(undefined)
+    runPostCompactCleanup(querySource, toolUseContext)
+    // Reset cache read baseline so the post-compact drop isn't flagged as a
+    // break. compactConversation does this internally; SM-compact doesn't.
+    // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
+    // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
+    if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+      notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
+    }
+    // T5: legacy `markPostCompaction()` resolved to a no-op stub proxy
+    // from bootstrap/state.ts (catch-all Proxy). The equivalent post-
+    // compaction state in T5 (I-2 `previous_response_id` clear plus
+    // runtime-owner cleanup) is handled synchronously above by
+    // runPostCompactCleanup — see invariants.md I-2.
+    return {
+      wasCompacted: true,
+      compactionResult: {
+        ...sessionMemoryResult,
+        ...(initialContextInjection === 'before_last_user_message'
+          ? {
+              referenceContextMessages: createReferenceContextMessages(
+                toolUseContext.referenceContextItem,
+              ),
+            }
+          : {}),
+      },
+    }
+  }
+
+  try {
+    const compactionResult = await compactConversation(
+      messages,
+      toolUseContext,
+      cacheSafeParams,
+      true, // Suppress user questions for autocompact
+      undefined, // No custom instructions for autocompact
+      true, // isAutoCompact
+      recompactionInfo,
+      initialContextInjection,
+    )
+
+    // Reset lastSummarizedMessageId since legacy compaction replaces all messages
+    // and the old message UUID will no longer exist in the new messages array
+    setLastSummarizedMessageId(undefined)
+    runPostCompactCleanup(querySource, toolUseContext)
+
+    return {
+      wasCompacted: true,
+      compactionResult,
+      // Reset failure count on success
+      consecutiveFailures: 0,
+    }
+  } catch (error) {
+    if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
+      logError(error)
+    }
+    const warningMessage = `auto compact failed (${querySource ?? 'unknown'}): ${
+      error instanceof Error ? error.message : String(error)
+    }`
+    const warning = {
+      cause: 'auto_compact_failed',
+      message: warningMessage,
+    } as const
+    toolUseContext.emitWarning?.(warning)
+    // Increment consecutive failure count for circuit breaker.
+    // The caller threads this through autoCompactTracking so the
+    // next query loop iteration can skip futile retry attempts.
+    const prevFailures = tracking?.consecutiveFailures ?? 0
+    const nextFailures = prevFailures + 1
+    if (nextFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES) {
+      logForDebugging(
+        `autocompact: circuit breaker tripped after ${nextFailures} consecutive failures — skipping future attempts this session`,
+        { level: 'warn' },
+      )
+    }
+    return {
+      wasCompacted: false,
+      consecutiveFailures: nextFailures,
+      warning,
+    }
+  }
+}

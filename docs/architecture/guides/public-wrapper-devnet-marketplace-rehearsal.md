@@ -121,13 +121,9 @@ SOLANA_KEYPAIR_PATH="$WORKER_KEYPAIR" agenc agent register --rpc "$AGENC_RUNTIME
 SOLANA_KEYPAIR_PATH="$WORKER_KEYPAIR" agenc market tasks claim <taskPda> --rpc "$AGENC_RUNTIME_RPC_URL"
 SOLANA_KEYPAIR_PATH="$WORKER_KEYPAIR" agenc market tasks complete \
   <taskPda> \
-  --artifact-file ./delivery.md \
+  --result-data "completed via public wrapper" \
   --rpc "$AGENC_RUNTIME_RPC_URL"
 ```
-
-`--result-data` remains the fixed 64-byte protocol note/proof-reference field.
-Use `--artifact-file` or `--artifact-uri ... --artifact-sha256 <hex>` whenever
-the buyer must review a real deliverable.
 
 Use a second signer when the rehearsal specifically needs to prove:
 

@@ -81,7 +81,7 @@ Current coding runtime surface:
 
 - native coding tools under `system.*` for grep/glob/file search/repo inventory
 - structured git and worktree tools under `system.git*`
-- bounded file reads via `system.readFileRange`
+- bounded file reads via `FileRead`
 - native patch application via `system.applyPatch`
 - native code-intel via `system.symbolSearch`, `system.symbolDefinition`, and `system.symbolReferences`
 - tool discovery via `system.searchTools`

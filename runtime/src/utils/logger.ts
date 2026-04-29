@@ -1,37 +1,58 @@
 /**
- * Logger utility for @tetsuo-ai/runtime
+ * Logger utility for @tetsuo-ai/runtime.
  *
- * Re-exports the shared logger implementation from @tetsuo-ai/sdk with a
- * runtime-specific default prefix.
+ * Minimal replacement for the SDK logger that used to be imported from
+ * `@tetsuo-ai/sdk`. The lean runtime has no SDK dependency.
  */
 
-import {
-  createLogger as sdkCreateLogger,
-  type LogLevel,
-  type Logger,
-} from "@tetsuo-ai/sdk";
+export type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
 
-// Re-export types and silentLogger directly — identical to SDK
-export { silentLogger } from "@tetsuo-ai/sdk";
-export type { LogLevel, Logger } from "@tetsuo-ai/sdk";
+export interface Logger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
 
-/**
- * Create a logger instance with the specified minimum level
- *
- * @param minLevel - Minimum log level to output (default: 'info')
- * @param prefix - Prefix for log messages (default: '[AgenC Runtime]')
- * @returns Logger instance
- *
- * @example
- * ```typescript
- * const logger = createLogger('debug', '[MyAgent]');
- * logger.info('Agent started'); // 2026-01-21T12:00:00.000Z INFO  [MyAgent] Agent started
- * logger.debug('Debug info');   // 2026-01-21T12:00:00.001Z DEBUG [MyAgent] Debug info
- * ```
- */
+const LEVEL_RANK: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+  silent: 4,
+};
+
+export const silentLogger: Logger = {
+  debug() {},
+  info() {},
+  warn() {},
+  error() {},
+};
+
 export function createLogger(
   minLevel: LogLevel = "info",
-  prefix = "[AgenC Runtime]",
+  prefix = "[AgenC]",
 ): Logger {
-  return sdkCreateLogger(minLevel, prefix);
+  const threshold = LEVEL_RANK[minLevel] ?? LEVEL_RANK.info;
+  const stamp = () => new Date().toISOString();
+  const emit = (
+    level: LogLevel,
+    tag: string,
+    message: string,
+    args: unknown[],
+  ) => {
+    if (LEVEL_RANK[level] < threshold) return;
+    const line = `${stamp()} ${tag.padEnd(5)} ${prefix} ${message}`;
+    if (level === "error" || level === "warn") {
+      console.error(line, ...args);
+    } else {
+      console.log(line, ...args);
+    }
+  };
+  return {
+    debug: (message, ...args) => emit("debug", "DEBUG", message, args),
+    info: (message, ...args) => emit("info", "INFO", message, args),
+    warn: (message, ...args) => emit("warn", "WARN", message, args),
+    error: (message, ...args) => emit("error", "ERROR", message, args),
+  };
 }

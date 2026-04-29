@@ -1,0 +1,477 @@
+/**
+ * Planning tool surface — verbatim port of AgenC `TodoWriteTool`
+ * (`src/tools/TodoWriteTool/TodoWriteTool.ts`) plus the AgenC
+ * `EnterPlanMode` / `ExitPlanMode` workflow tools.
+ *
+ * Upstream contract (do not deviate):
+ *
+ *   - Tool name:       `TodoWrite`            (AgenC `TODO_WRITE_TOOL_NAME`)
+ *   - Schema:          `{ todos: TodoItem[] }` where each item is
+ *                      `{ content, status, activeForm }` — all required.
+ *   - Tool result:     literal sentence
+ *                      `"Todos have been modified successfully. Ensure that
+ *                       you continue to use the todo list to track your
+ *                       progress. Please proceed with the current tasks if
+ *                       applicable"` (AgenC `mapToolResultToToolResultBlockParam`).
+ *   - Plan mode:       `TodoWrite` is metadata-only and IS permitted in
+ *                      plan mode (AgenC classifier
+ *                      `SAFE_YOLO_ALLOWLISTED_TOOLS`).
+ *   - Transcript:      tool-call/tool-result cells are suppressed
+ *                      (AgenC `renderToolUseMessage()` returns null,
+ *                      `renderToolResultMessage` is omitted). The plan
+ *                      panel (`PlanProgress.tsx`) is the sole user-visible
+ *                      surface, which in AgenC is wired via the
+ *                      `plan_started` / `plan_item_completed` event pair
+ *                      emitted by the workflow controller.
+ *
+ * AgenC runtime `update_plan` is intentionally NOT shipped here — `/plan` itself
+ * is an AgenC port (see `runtime/src/commands/plan.ts:4`) so the
+ * matching checklist tool is AgenC `TodoWrite`. Mixing AgenC runtime and
+ * AgenC planning surfaces causes the duplicate-render and
+ * raw-JSON-result bugs that surfaced in scrollback.
+ */
+import type { PermissionModeRegistry } from "../../permissions/mode.js";
+import { transitionPermissionMode } from "../../permissions/mode.js";
+import type {
+  PermissionMode,
+  PermissionUpdate,
+  ToolPermissionContext,
+} from "../../permissions/types.js";
+import { applyPermissionUpdates } from "../../permissions/rules.js";
+import {
+  buildPlanPromptPermissionUpdates,
+  consumeExitPlanModeApproval,
+  parseExitPlanAllowedPrompts,
+  targetPermissionModeForPlanApproval,
+} from "../../planning/exit-plan-approval.js";
+import type { PlanFileContext } from "../../planning/plan-files.js";
+import type { Tool, ToolResult } from "../types.js";
+
+type TodoStatus = "pending" | "in_progress" | "completed";
+
+export interface TodoItem {
+  readonly content: string;
+  readonly status: TodoStatus;
+  readonly activeForm: string;
+}
+
+export interface PlanState {
+  readonly todos: readonly TodoItem[];
+  readonly updatedAt: string;
+}
+
+export interface WorkflowToolController {
+  readonly getPermissionModeRegistry?: () => PermissionModeRegistry | null;
+  readonly getPlanFileContext?: () => PlanFileContext | null;
+  readonly getPlanFilePath?: () => string;
+  readonly readPlan?: () => string | null;
+  readonly writePlan?: (content: string) => Promise<void>;
+  readonly syncPermissionContext?: (
+    nextCtx: Pick<
+      ToolPermissionContext,
+      "mode" | "isAutoModeAvailable" | "autoModeActive" | "bypassPermissionsAcceptedIn"
+    >,
+  ) => Promise<void>;
+  readonly emitWarning?: (cause: string, message: string) => void;
+  readonly emitPlanExited?: () => void;
+  readonly emitPlanUpdated?: (state: PlanState) => void;
+  readonly requestContextClearAfterPlanApproval?: (
+    approvedPlan: string | null,
+  ) => void | Promise<void>;
+}
+
+export interface PlanningToolOptions {
+  readonly workflowController?: WorkflowToolController;
+}
+
+/**
+ * Verbatim AgenC `TodoWriteTool.mapToolResultToToolResultBlockParam`
+ * base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
+ */
+const TODO_WRITE_RESULT_MESSAGE =
+  "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable";
+
+function textResult(content: string, metadata?: Record<string, unknown>): ToolResult {
+  return {
+    content,
+    ...(metadata !== undefined ? { metadata } : {}),
+  };
+}
+
+function errorResult(message: string): ToolResult {
+  return { content: message, isError: true };
+}
+
+function metadata(
+  name: string,
+  opts: { readonly deferred?: boolean; readonly mutating?: boolean } = {},
+): Tool["metadata"] {
+  return {
+    family: "planning",
+    source: "builtin",
+    preferredProfiles: ["coding", "general", "operator"],
+    mutating: opts.mutating ?? true,
+    hiddenByDefault: false,
+    deferred: opts.deferred ?? false,
+    keywords: [
+      ...name.split(/[._]/).filter((part) => part.length > 0),
+      "plan",
+      "todo",
+      "workflow",
+    ],
+  };
+}
+
+function toOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
+}
+
+function normalizeStatus(value: unknown): TodoStatus | undefined {
+  if (value === "pending" || value === "in_progress" || value === "completed") {
+    return value;
+  }
+  return undefined;
+}
+
+/**
+ * Mirrors AgenC `TodoListSchema` / `TodoItemSchema` validation
+ * (`src/utils/todo/types.ts:8-17`):
+ *   - `content`     non-empty string (required)
+ *   - `status`      enum `pending|in_progress|completed` (required)
+ *   - `activeForm`  non-empty string (required)
+ */
+function parseTodoList(value: unknown): readonly TodoItem[] | { readonly error: string } {
+  if (!Array.isArray(value)) {
+    return { error: "todos must be an array of { content, status, activeForm } entries" };
+  }
+  const todos: TodoItem[] = [];
+  for (const [index, raw] of value.entries()) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return { error: `todos[${index}] must be an object` };
+    }
+    const record = raw as Record<string, unknown>;
+    const content = toOptionalString(record.content);
+    if (!content) {
+      return { error: `todos[${index}].content cannot be empty` };
+    }
+    const status = normalizeStatus(record.status);
+    if (!status) {
+      return {
+        error: `todos[${index}].status must be one of pending, in_progress, completed`,
+      };
+    }
+    const activeForm = toOptionalString(record.activeForm);
+    if (!activeForm) {
+      return { error: `todos[${index}].activeForm cannot be empty` };
+    }
+    todos.push({ content, status, activeForm });
+  }
+  return todos;
+}
+
+function inputPlan(args: Record<string, unknown>): string | undefined {
+  const plan = args.plan;
+  return typeof plan === "string" ? plan : undefined;
+}
+
+async function updatePermissionMode(params: {
+  readonly controller: WorkflowToolController | undefined;
+  readonly target: "plan" | "default" | PermissionMode;
+  readonly permissionUpdates?: readonly PermissionUpdate[];
+}): Promise<
+  | {
+      readonly fromMode: ToolPermissionContext["mode"];
+      readonly toMode: ToolPermissionContext["mode"];
+      readonly changed: boolean;
+    }
+  | { readonly error: string }
+> {
+  const registry = params.controller?.getPermissionModeRegistry?.() ?? null;
+  if (!registry) {
+    return { error: "permission mode registry is not available for workflow tools" };
+  }
+  const current = registry.current();
+  if (params.target === "plan") {
+    if (current.mode === "plan") {
+      return { fromMode: "plan", toMode: "plan", changed: false };
+    }
+    const nextCtx = {
+      ...transitionPermissionMode(current.mode, "plan", current),
+      mode: "plan" as const,
+    };
+    await registry.update(nextCtx);
+    await params.controller?.syncPermissionContext?.(nextCtx);
+    params.controller?.emitWarning?.(
+      "mode_changed_to_plan",
+      `entered plan mode (stashed prev mode as ${current.mode})`,
+    );
+    return { fromMode: current.mode, toMode: "plan", changed: true };
+  }
+
+  if (current.mode !== "plan") {
+    return { fromMode: current.mode, toMode: current.mode, changed: false };
+  }
+  const requestedTarget = params.target === "default"
+    ? current.prePlanMode && current.prePlanMode !== "plan"
+      ? current.prePlanMode
+      : "default"
+    : params.target;
+  let nextCtx: ToolPermissionContext;
+  try {
+    nextCtx = {
+      ...transitionPermissionMode("plan", requestedTarget, current),
+      mode: requestedTarget,
+    };
+  } catch {
+    nextCtx = {
+      ...transitionPermissionMode("plan", "default", current),
+      mode: "default",
+    };
+  }
+  if (params.permissionUpdates && params.permissionUpdates.length > 0) {
+    nextCtx = applyPermissionUpdates(nextCtx, params.permissionUpdates);
+  }
+  await registry.update(nextCtx);
+  await params.controller?.syncPermissionContext?.(nextCtx);
+  params.controller?.emitWarning?.(
+    "mode_exited_plan",
+    `exited plan mode (restored ${nextCtx.mode})`,
+  );
+  params.controller?.emitPlanExited?.();
+  return { fromMode: "plan", toMode: nextCtx.mode, changed: true };
+}
+
+export function createPlanningTools(options: PlanningToolOptions = {}): readonly Tool[] {
+  let state: PlanState = {
+    todos: [],
+    updatedAt: new Date(0).toISOString(),
+  };
+
+  /**
+   * Verbatim AgenC `TodoWriteTool` (`TodoWriteTool.ts:31-115`).
+   *
+   * Description string is AgenC `DESCRIPTION` (`prompt.ts:184`).
+   *
+   * Tool result content is AgenC
+   * `mapToolResultToToolResultBlockParam`'s `base` sentence
+   * (`TodoWriteTool.ts:105`). When the OpenClaude verification-agent
+   * contract is enabled, the close-out nudge below mirrors upstream:
+   * finishing 3+ tasks without a verification item reminds the model
+   * to spawn the verification agent before final response.
+   */
+  const todoWriteTool: Tool = {
+    name: "TodoWrite",
+    description:
+      "Update the todo list for the current session. To be used proactively and often to track progress and pending tasks. Make sure that at least one task is in_progress at all times. Always provide both content (imperative) and activeForm (present continuous) for each task.",
+    metadata: metadata("TodoWrite"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        todos: {
+          type: "array",
+          description: "The updated todo list",
+          items: {
+            type: "object",
+            properties: {
+              content: { type: "string" },
+              status: {
+                type: "string",
+                enum: ["pending", "in_progress", "completed"],
+              },
+              activeForm: { type: "string" },
+            },
+            required: ["content", "status", "activeForm"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["todos"],
+      additionalProperties: false,
+    },
+    async execute(args) {
+      const todos = parseTodoList(args.todos);
+      if ("error" in todos) return errorResult(todos.error);
+      state = {
+        todos,
+        updatedAt: new Date().toISOString(),
+      };
+      options.workflowController?.emitPlanUpdated?.(state);
+      const allDone = todos.length > 0 &&
+        todos.every((todo) => todo.status === "completed");
+      const verificationNudgeNeeded = allDone &&
+        todos.length >= 3 &&
+        !todos.some((todo) => /verif/i.test(todo.content));
+      const nudge = verificationNudgeNeeded
+        ? '\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Before writing your final summary, spawn the verification agent (subagent_type="verification"). You cannot self-assign PARTIAL by listing caveats in your summary; only the verifier issues a verdict.'
+        : "";
+      return textResult(`${TODO_WRITE_RESULT_MESSAGE}${nudge}`, {
+        verificationNudgeNeeded,
+      });
+    },
+  };
+
+  const enterPlanTool: Tool = {
+    name: "EnterPlanMode",
+    description:
+      "Requests permission to enter plan mode for complex AgenC implementation tasks requiring exploration and design.",
+    metadata: metadata("EnterPlanMode", { mutating: true }),
+    isReadOnly: true,
+    requiresApproval: true,
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+    async execute() {
+      const result = await updatePermissionMode({
+        controller: options.workflowController,
+        target: "plan",
+      });
+      if ("error" in result) return errorResult(result.error);
+      return textResult(
+        `${result.changed ? "Entered plan mode." : "Already in plan mode."}
+
+In plan mode, you should:
+1. Thoroughly explore the codebase to understand existing patterns
+2. Identify similar features and architectural approaches
+3. Consider multiple approaches and trade-offs
+4. Write the plan to the AgenC plan file
+5. When ready, use ExitPlanMode to present the plan for approval
+
+Remember: DO NOT write or edit any files except the plan file.`,
+        { ...result },
+      );
+    },
+  };
+
+  const exitPlanTool: Tool = {
+    name: "ExitPlanMode",
+    description:
+      "Present the current AgenC plan for approval and exit plan mode when accepted.",
+    metadata: metadata("ExitPlanMode", { mutating: true }),
+    requiresApproval: true,
+    inputSchema: {
+      type: "object",
+      properties: {
+        allowedPrompts: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              tool: { type: "string", enum: ["Bash"] },
+              prompt: { type: "string" },
+            },
+            required: ["tool", "prompt"],
+            additionalProperties: false,
+          },
+        },
+        plan: {
+          type: "string",
+          description:
+            "Optional edited plan content supplied by an approval UI. Normally read from the AgenC plan file.",
+        },
+        planFilePath: {
+          type: "string",
+          description:
+            "Optional plan path supplied by an approval UI. The runtime still uses the active AgenC plan file.",
+        },
+      },
+      additionalProperties: true,
+    },
+    async execute(args) {
+      const registry = options.workflowController?.getPermissionModeRegistry?.() ?? null;
+      if (registry && registry.current().mode !== "plan") {
+        return errorResult(
+          "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
+        );
+      }
+      const approval = consumeExitPlanModeApproval(args);
+      const editedPlan = approval?.plan ?? inputPlan(args);
+      if (editedPlan !== undefined) {
+        await options.workflowController?.writePlan?.(editedPlan);
+      }
+      const plan = editedPlan ?? options.workflowController?.readPlan?.() ?? null;
+      const filePath = options.workflowController?.getPlanFilePath?.();
+      if (approval?.action === "revise") {
+        const feedback = approval.feedback?.trim();
+        return textResult(
+          feedback && feedback.length > 0
+            ? `User wants changes before approving the plan:\n\n${feedback}\n\nRemain in plan mode, revise the plan file, then call ExitPlanMode again.`
+            : "User wants you to keep planning. Remain in plan mode, revise the plan file, then call ExitPlanMode again.",
+          {
+            planRejected: true,
+            ...(feedback && feedback.length > 0 ? { feedback } : {}),
+            ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
+          },
+        );
+      }
+      const allowedPrompts = approval?.allowedPrompts ??
+        parseExitPlanAllowedPrompts(args.allowedPrompts);
+      const permissionUpdates = approval?.action === "approve" &&
+        approval.applyAllowedPrompts === true
+        ? buildPlanPromptPermissionUpdates(allowedPrompts)
+        : [];
+      const targetMode = registry
+        ? targetPermissionModeForPlanApproval(
+            approval?.action === "approve" ? approval.mode : undefined,
+            registry.current().prePlanMode,
+          )
+        : "default";
+      const result = await updatePermissionMode({
+        controller: options.workflowController,
+        target: targetMode,
+        permissionUpdates,
+      });
+      if ("error" in result) return errorResult(result.error);
+      if (approval?.action === "approve" && approval.clearContext === true) {
+        await options.workflowController?.requestContextClearAfterPlanApproval?.(
+          plan,
+        );
+      }
+      if (!plan || plan.trim().length === 0) {
+        return textResult("User has approved exiting plan mode. You can now proceed.", {
+          plan: null,
+          isAgent: false,
+          ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
+          ...(permissionUpdates.length > 0
+            ? { appliedPlanPermissionUpdates: permissionUpdates.length }
+            : {}),
+          ...(approval?.action === "approve" && approval.clearContext === true
+            ? { clearContextRequested: true }
+            : {}),
+          ...result,
+        });
+      }
+      const approvedPlanHeading =
+        editedPlan !== undefined
+          ? "Approved Plan (edited by user)"
+          : "Approved Plan";
+      return textResult(
+        `User has approved your plan. You can now start coding. Start with updating your todo list if applicable
+
+Your plan has been saved to: ${filePath ?? "(unknown)"}
+You can refer back to it if needed during implementation.
+
+## ${approvedPlanHeading}:
+${plan}`,
+        {
+          plan,
+          isAgent: false,
+          ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
+          ...(editedPlan !== undefined ? { planWasEdited: true } : {}),
+          ...(permissionUpdates.length > 0
+            ? { appliedPlanPermissionUpdates: permissionUpdates.length }
+            : {}),
+          ...(approval?.action === "approve" && approval.clearContext === true
+            ? { clearContextRequested: true }
+            : {}),
+          ...result,
+        },
+      );
+    },
+  };
+
+  return [todoWriteTool, enterPlanTool, exitPlanTool];
+}

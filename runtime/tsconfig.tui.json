@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist/tui",
+    "lib": ["ES2023"],
+    "jsx": "react-jsx",
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noImplicitReturns": false,
+    "noImplicitAny": false,
+    "strictNullChecks": true,
+    "types": []
+  },
+  "include": ["src/tui/**/*"],
+  "exclude": ["src/tui/**/*.test.ts", "src/tui/**/*.test.tsx"]
+}

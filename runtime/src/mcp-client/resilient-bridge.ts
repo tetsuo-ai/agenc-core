@@ -7,10 +7,10 @@
  * @module
  */
 
-import type { Tool, ToolResult } from "../tools/types.js";
+import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { MCPServerConfig, MCPToolBridge } from "./types.js";
-import type { Logger } from "../utils/logger.js";
-import { silentLogger } from "../utils/logger.js";
+import type { Logger } from "./_deps/logger.js";
+import { silentLogger } from "./_deps/logger.js";
 
 /** Patterns that indicate the underlying MCP connection is dead. */
 const CONNECTION_ERROR_PATTERNS = [
