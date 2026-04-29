@@ -532,8 +532,10 @@ describe("AgentControl", () => {
     const drained = parent.downInbox.drain();
     expect(drained.length).toBeGreaterThanOrEqual(1);
     const msg = drained[0]! as { content: string; metadata?: { kind?: string } };
-    expect(msg.content).toContain("completed");
-    expect(msg.metadata?.kind).toBe("subagent_completion");
+    expect(msg.content).toBe(
+      `<subagent_notification>\n{"agent_path":"${child.agentPath}","status":{"completed":"done"}}\n</subagent_notification>`,
+    );
+    expect(msg.metadata?.kind).toBe("subagent_notification");
   });
 
   it("resumeAgentFromRollout() reopens open descendants after shutdown", async () => {

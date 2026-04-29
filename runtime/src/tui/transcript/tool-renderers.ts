@@ -381,7 +381,17 @@ function formatTaskResult(ctx: ToolRenderContext): string | undefined {
 }
 
 function agentStatusText(agent: Record<string, unknown>): string {
-  const rawStatus = agent.agentStatus ?? agent.status;
+  const rawStatus = agent.agentStatus ?? agent.agent_status ?? agent.status;
+  if (typeof rawStatus === "string") return rawStatus;
+  if (isRecord(rawStatus) && typeof rawStatus.completed === "string") {
+    return `completed: ${compact(rawStatus.completed, 120)}`;
+  }
+  if (isRecord(rawStatus) && rawStatus.completed === null) {
+    return "completed";
+  }
+  if (isRecord(rawStatus) && typeof rawStatus.errored === "string") {
+    return `errored: ${compact(rawStatus.errored, 120)}`;
+  }
   if (!isRecord(rawStatus)) return "unknown";
   const status = readStringField(rawStatus, ["status"]) ?? "unknown";
   const lastMessage = readStringField(rawStatus, ["lastMessage", "error", "reason"]);
@@ -710,7 +720,7 @@ const REGISTERED_RENDERERS: readonly RegisteredToolRenderer[] = [
   { names: ["wait_agent"], renderer: WAIT_AGENT_RENDERER },
   { names: ["close_agent"], renderer: CLOSE_AGENT_RENDERER },
   {
-    names: ["send_message", "followup_task", "send_input"],
+    names: ["send_message", "followup_task"],
     renderer: SEND_AGENT_INPUT_RENDERER,
   },
   { names: ["TaskCreate"], renderer: taskRenderer("Task Create", queryTarget) },

@@ -62,7 +62,12 @@ import {
   type RoleShapedConfig,
 } from "./role.js";
 import { canonicalAgentRoleName } from "./role-presentation.js";
-import { AgentStatusTracker, isFinal, type AgentStatus } from "./status.js";
+import {
+  AgentStatusTracker,
+  formatSubagentNotification,
+  isFinal,
+  type AgentStatus,
+} from "./status.js";
 import type { ThreadManager } from "./thread-manager.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1230,7 +1235,10 @@ export class AgentControl {
     });
 
     const final = child.status.value;
-    const message = `subagent ${child.agentPath} finished: ${final.status}`;
+    const message = formatSubagentNotification({
+      agentPath: child.agentPath,
+      status: final,
+    });
 
     if (!parent) return;
     try {
@@ -1240,7 +1248,7 @@ export class AgentControl {
         content: message,
         triggerTurn: false,
         direction: "down",
-        metadata: { kind: "subagent_completion", finalStatus: final.status },
+        metadata: { kind: "subagent_notification", finalStatus: final.status },
       });
     } catch (err) {
       if (err instanceof MailboxClosedError) return;

@@ -287,11 +287,19 @@ describe("runAgent", () => {
 
     expect(
       sent.map((msg) => msg.metadata?.kind),
-    ).toEqual(["subagent_status", "subagent_complete"]);
-    expect(sent[1]!.author).toBe(live.agentPath);
-    expect(sent[1]!.recipient).toBe("conv-parent");
-    expect(sent[1]!.direction).toBe("up");
-    expect(sent[1]!.content).toBe("hello world");
+    ).toEqual(["subagent_status"]);
+    const parentMessages = session.mailbox.drain();
+    expect(parentMessages).toHaveLength(1);
+    expect(parentMessages[0]).toMatchObject({
+      author: live.agentPath,
+      recipient: "/root",
+      direction: "up",
+      triggerTurn: false,
+      metadata: { kind: "subagent_notification" },
+    });
+    expect(parentMessages[0]!.content).toBe(
+      `<subagent_notification>\n{"agent_path":"${live.agentPath}","status":{"completed":"hello world"}}\n</subagent_notification>`,
+    );
 
     expect(events.some((e) => e.kind === "run_complete")).toBe(true);
     expect(events.some((e) => e.kind === "status")).toBe(true);
@@ -444,6 +452,46 @@ describe("runAgent", () => {
     expect(parsed[SESSION_ID_ARG]).toBe("child-123");
     expect(parsed[SESSION_ALLOWED_ROOTS_ARG]).toEqual(["/tmp/subagent-wt"]);
     expect(parsed.value).toBe("hello");
+  });
+
+  it("filters disabled V2 agent tools from child tool specs and dispatch", async () => {
+    const registry = buildFilteredRegistry(
+      {
+        tools: [
+          {
+            name: "spawn_agent",
+            description: "spawn",
+            inputSchema: { type: "object" },
+            execute: async () => ({ content: "{}" }),
+          },
+          {
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute: async () => ({ content: "{}" }),
+          },
+        ],
+        toLLMTools: () => [],
+        dispatch: async () => ({ content: "{}" }),
+      },
+      {
+        childConversationId: "child-123",
+        disabledTools: new Set(["spawn_agent"]),
+      },
+    );
+
+    expect(registry.tools.map((tool) => tool.name)).toEqual(["system.echo"]);
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toEqual([
+      "system.echo",
+    ]);
+    await expect(
+      registry.dispatch({ id: "call-1", name: "spawn_agent", arguments: "{}" }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: JSON.stringify({
+        error: "tool not allowed for subagent: spawn_agent",
+      }),
+    });
   });
 
   it("mounts a child rollout store when the parent owns one", async () => {

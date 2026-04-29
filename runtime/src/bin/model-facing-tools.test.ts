@@ -658,6 +658,53 @@ describe("model-facing tools", () => {
     );
   });
 
+  it("rejects over-depth spawn_agent before emitting lifecycle events", async () => {
+    const session = fakeSession();
+    (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
+    const emit = vi.fn();
+    (session as unknown as { emit: typeof emit }).emit = emit;
+    const control = {
+      getLive: vi.fn((threadId: string) =>
+        threadId === "child-1"
+          ? {
+              agentId: "child-1",
+              agentPath: "/root/child_1",
+              depth: 1,
+              nickname: "Deckard",
+              role: { name: "worker" },
+              status: { value: { status: "running", turnId: "t", startedAtMs: 1 } },
+            }
+          : undefined,
+      ),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const spawn = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "spawn_agent")!;
+
+      const result = await spawn.execute({
+        __agencSessionId: "child-1",
+        message: "inspect",
+        task_name: "grandchild",
+        fork_turns: "none",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe(
+        "Agent depth limit reached. Solve the task yourself.",
+      );
+      expect(delegateMock).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("launches strict spawn_agent through the delegate runner and stores a joinable thread", async () => {
     const session = fakeSession();
     const counter = vi.fn();
@@ -722,8 +769,6 @@ describe("model-facing tools", () => {
     expect(JSON.parse(spawned.content)).toEqual({
       task_name: "/root/task_1",
       nickname: "Snowcrash",
-      agent_role: "worker",
-      agent_role_display: "Runner",
     });
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -820,6 +865,66 @@ describe("model-facing tools", () => {
     );
   });
 
+  it("list_agents returns Codex V2 snake_case entries only", async () => {
+    const session = fakeSession();
+    const control = {
+      listAgents: vi.fn(() => [
+        {
+          agentName: "/root",
+          agentStatus: { status: "idle" },
+          lastTaskMessage: "Main thread",
+        },
+        {
+          agentName: "/root/worker",
+          agentStatus: {
+            status: "completed",
+            turnId: "t",
+            endedAtMs: 1,
+            lastMessage: "done",
+          },
+          lastTaskMessage: "inspect",
+        },
+      ]),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const byName = new Map(
+        createModelFacingTools({
+          workspaceRoot: process.cwd(),
+          getSession: () => session,
+        }).map((tool) => [tool.name, tool]),
+      );
+
+      const roleFiltered = await byName.get("list_agents")!.execute({
+        role: "worker",
+      });
+      expect(roleFiltered.isError).toBe(true);
+      expect(JSON.parse(roleFiltered.content).error).toBe("unknown field `role`");
+
+      const result = await byName.get("list_agents")!.execute({});
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({
+        agents: [
+          {
+            agent_name: "/root",
+            agent_status: "pending_init",
+            last_task_message: "Main thread",
+          },
+          {
+            agent_name: "/root/worker",
+            agent_status: { completed: "done" },
+            last_task_message: "inspect",
+          },
+        ],
+      });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("rejects closing the root agent", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
@@ -873,6 +978,7 @@ describe("model-facing tools", () => {
       const result = await close.execute({ target: "/root/live" });
 
       expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({ previous_status: "running" });
       expect(emit.mock.calls.map((call) => call[0].msg.payload)).toEqual([
         expect.objectContaining({
           receiverAgentNickname: "Neuromancer",

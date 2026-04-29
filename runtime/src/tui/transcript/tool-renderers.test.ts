@@ -17,8 +17,6 @@ describe("tool renderers", () => {
         result: JSON.stringify({
           task_name: "/root/task_1",
           nickname: "BridgeRunner",
-          agent_role: "worker",
-          agent_role_display: "Runner",
         }),
         isComplete: true,
         isError: false,
@@ -110,17 +108,14 @@ describe("tool renderers", () => {
         result: JSON.stringify({
           agents: [
             {
-              agentName: "/root",
-              agentStatus: { status: "idle" },
-              lastTaskMessage: "Main thread",
+              agent_name: "/root",
+              agent_status: "pending_init",
+              last_task_message: "Main thread",
             },
             {
-              agentName: "/root/scout",
-              agentStatus: {
-                status: "completed",
-                lastMessage: "renderer path mapped",
-              },
-              lastTaskMessage: "inspect renderer",
+              agent_name: "/root/scout",
+              agent_status: { completed: "renderer path mapped" },
+              last_task_message: "inspect renderer",
             },
           ],
         }),
@@ -132,7 +127,7 @@ describe("tool renderers", () => {
       title: "Agents",
       target: "/root",
       detail:
-        "/root: idle - Main thread\n/root/scout: completed: renderer path mapped - inspect renderer",
+        "/root: pending_init - Main thread\n/root/scout: completed: renderer path mapped - inspect renderer",
       preserveResultLines: true,
     });
   });

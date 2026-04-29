@@ -41,12 +41,14 @@ import {
 import type { LiveAgent } from "./control.js";
 import {
   isAgentExitedSentinel,
+  MailboxClosedError,
   type InterAgentCommunication,
 } from "./mailbox.js";
 import type { AgentRoleConfig } from "./role.js";
 import type { WorktreeHandle } from "./worktree.js";
 import { emitWarning } from "../session/event-log.js";
 import type { ThreadId } from "./registry.js";
+import { formatSubagentNotification, isFinal } from "./status.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Types
@@ -94,6 +96,7 @@ export interface RunAgentResult {
 
 export const MCP_INIT_TIMEOUT_MS = 30_000;
 const MCP_POLL_INTERVAL_MS = 500;
+const DEFAULT_MAX_AGENT_DEPTH = 1;
 
 interface RoleLikeConfig {
   readonly requiredMcpServers?: ReadonlyArray<string>;
@@ -273,6 +276,12 @@ function relayToParentMailbox(params: {
       });
     }
   } catch (err) {
+    if (
+      err instanceof MailboxClosedError &&
+      (params.live.abortController.signal.aborted || isFinal(params.live.status.value))
+    ) {
+      return;
+    }
     emitWarning(
       params.parent.eventLog,
       params.parent.nextInternalSubId(),
@@ -280,6 +289,45 @@ function relayToParentMailbox(params: {
       `subagent ${params.live.agentPath} upInbox closed before delivery: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+}
+
+function sendSubagentNotificationToParent(params: {
+  readonly live: LiveAgent;
+  readonly parent: Session;
+}): void {
+  const content = formatSubagentNotification({
+    agentPath: params.live.agentPath,
+    status: params.live.status.value,
+  });
+  try {
+    params.parent.mailbox.send({
+      author: params.live.agentPath,
+      recipient: parentAgentPathFor(params.live.agentPath),
+      content,
+      triggerTurn: false,
+      direction: "up",
+      metadata: { kind: "subagent_notification" },
+    });
+  } catch (err) {
+    if (
+      err instanceof MailboxClosedError &&
+      (params.live.abortController.signal.aborted || isFinal(params.live.status.value))
+    ) {
+      return;
+    }
+    emitWarning(
+      params.parent.eventLog,
+      params.parent.nextInternalSubId(),
+      "subagent_notification_failed",
+      `subagent ${params.live.agentPath} notification delivery failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function parentAgentPathFor(agentPath: string): string {
+  const index = agentPath.lastIndexOf("/");
+  if (index <= 0) return "/root";
+  return agentPath.slice(0, index) || "/root";
 }
 
 function drainChildMailbox(live: LiveAgent): {
@@ -341,13 +389,17 @@ export function buildFilteredRegistry(
     readonly allowlist?: ReadonlyArray<string>;
     readonly childConversationId: string;
     readonly worktree?: WorktreeHandle;
+    readonly disabledTools?: ReadonlySet<string>;
   },
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
+  const disabled = opts.disabledTools ?? new Set<string>();
   const baseTools = allowed
     ? base.tools.filter((tool) => allowed.has(tool.name))
     : base.tools;
-  const wrappedTools = baseTools.map((tool) => wrapToolForChild(tool, opts));
+  const wrappedTools = baseTools
+    .filter((tool) => !disabled.has(tool.name))
+    .map((tool) => wrapToolForChild(tool, opts));
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
 
   return {
@@ -363,6 +415,14 @@ export function buildFilteredRegistry(
       }));
     },
     async dispatch(toolCall): Promise<ToolDispatchResult> {
+      if (disabled.has(toolCall.name)) {
+        return {
+          content: safeStringify({
+            error: `tool not allowed for subagent: ${toolCall.name}`,
+          }),
+          isError: true,
+        };
+      }
       if (allowed && !allowed.has(toolCall.name)) {
         return {
           content: safeStringify({
@@ -390,6 +450,33 @@ export function buildFilteredRegistry(
       });
     },
   };
+}
+
+const V2_AGENT_TOOL_NAMES = new Set([
+  "spawn_agent",
+  "wait_agent",
+  "close_agent",
+  "followup_task",
+  "send_message",
+  "list_agents",
+]);
+
+function resolveSessionMaxAgentDepth(parent: Session): number {
+  const asDepth = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1
+      ? value
+      : undefined;
+  return (
+    asDepth((parent.config as { agent_max_depth?: unknown }).agent_max_depth) ??
+    asDepth(
+      (
+        parent.sessionConfiguration.originalConfigDoNotUse as
+          | { agent_max_depth?: unknown }
+          | undefined
+      )?.agent_max_depth,
+    ) ??
+    DEFAULT_MAX_AGENT_DEPTH
+  );
 }
 
 function parseToolCallArguments(raw: string | undefined): Record<string, unknown> {
@@ -594,6 +681,9 @@ function buildChildSession(
         params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
       childConversationId: params.live.agentId,
       worktree: params.worktree,
+      ...(params.live.depth >= resolveSessionMaxAgentDepth(params.parent)
+        ? { disabledTools: V2_AGENT_TOOL_NAMES }
+        : {}),
     },
   );
 
@@ -753,6 +843,7 @@ export async function* runAgent(
         "subagent has no provider on parent.services.provider",
       );
       live.status.markErrored(turnId, err.message);
+      sendSubagentNotificationToParent({ live, parent });
       yield { kind: "run_error", error: err.message };
       return {
         threadId: live.agentId,
@@ -902,6 +993,7 @@ export async function* runAgent(
               ? terminalError
               : assistantText || "subagent turn failed";
         live.status.markErrored(turnId, message);
+        sendSubagentNotificationToParent({ live, parent });
         relayToParentMailbox({
           live,
           parent,
@@ -980,6 +1072,7 @@ export async function* runAgent(
     if (roleTimeoutFired) {
       const message = `role_timeout after ${roleTimeoutMs}ms`;
       live.status.markErrored(turnId, message);
+      sendSubagentNotificationToParent({ live, parent });
       relayToParentMailbox({
         live,
         parent,
@@ -1000,21 +1093,8 @@ export async function* runAgent(
       };
     }
 
-    // Forward the assistant text back to the parent via upInbox so
-    // the parent's mailbox sees the completion (I-5: direction=up).
-    relayToParentMailbox({
-      live,
-      parent,
-      content: assistantText,
-      triggerTurn: true,
-      metadata: {
-        kind: "subagent_complete",
-        turnId,
-        toolCallCount,
-      },
-    });
-
     live.status.markCompleted(turnId, assistantText);
+    sendSubagentNotificationToParent({ live, parent });
     yield {
       kind: "run_complete",
       ...(assistantText !== undefined ? { finalMessage: assistantText } : {}),
@@ -1054,6 +1134,7 @@ export async function* runAgent(
     }
     const message = err instanceof Error ? err.message : String(err);
     live.status.markErrored(turnId, message);
+    sendSubagentNotificationToParent({ live, parent });
     relayToParentMailbox({
       live,
       parent,
