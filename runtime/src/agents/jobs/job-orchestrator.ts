@@ -1,9 +1,18 @@
 /**
- * Agent-jobs orchestrator (codex-v2 parity, in-memory).
+ * Agent-jobs orchestrator (codex-v2 parity).
  *
- * Hand-port of codex `core/src/tools/handlers/agent_jobs.rs` minus
- * SQLite persistence. Job state lives in process memory; restarting
- * the daemon drops in-flight jobs.
+ * Hand-port of codex `core/src/tools/handlers/agent_jobs.rs`. When a
+ * `CsvAgentJobsRepository` is supplied, all job + item lifecycle
+ * transitions are mirrored to the codex-shaped SQLite tables in
+ * `state/csv-agent-jobs.ts`; jobs survive a daemon restart in the DB.
+ * When the repository is omitted, the orchestrator runs purely
+ * in-memory (used by tests that don't need persistence).
+ *
+ * Promises that resolve when a worker calls `report_agent_job_result`
+ * are always tracked in process memory because Promises cannot be
+ * persisted; after a daemon restart, in-flight jobs are visible in the
+ * DB but their resolvers are gone (resume across restart is not yet
+ * implemented).
  *
  * Surface:
  *   - `runAgentsOnCsv(opts)` — main entry. Parses the CSV, spawns one
@@ -18,6 +27,7 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import type { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
 import { readCsvFile, writeCsv, type CsvRow } from "./csv-reader.js";
 import { renderInstructionTemplate } from "./instruction-template.js";
 
@@ -65,6 +75,8 @@ export interface RunAgentsOnCsvOpts {
   readonly maxRuntimeSeconds?: number;
   readonly outputSchema?: Record<string, unknown>;
   readonly spawn: AgentJobSpawn;
+  readonly repository?: CsvAgentJobsRepository;
+  readonly jobName?: string;
 }
 
 export interface RunAgentsOnCsvResult {
@@ -84,6 +96,7 @@ interface JobRuntimeState {
     ItemId,
     { resolve: (value: void) => void; reject: (err: Error) => void }
   >;
+  readonly repository?: CsvAgentJobsRepository;
   stopRequested: boolean;
 }
 
@@ -112,6 +125,12 @@ export async function runAgentsOnCsv(
     maxRuntimeSeconds: opts.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS,
   };
   const items = new Map<ItemId, JobItemRecord>();
+  const itemSeed: Array<{
+    itemId: string;
+    rowIndex: number;
+    sourceId?: string;
+    row: CsvRow;
+  }> = [];
   csv.rows.forEach((row, index) => {
     const itemId =
       opts.idColumn !== undefined
@@ -125,12 +144,46 @@ export async function runAgentsOnCsv(
       instruction: rendered,
       status: "pending",
     });
+    itemSeed.push({
+      itemId,
+      rowIndex: index,
+      ...(opts.idColumn !== undefined ? { sourceId: row[opts.idColumn] } : {}),
+      row,
+    });
   });
+
+  if (opts.repository !== undefined) {
+    opts.repository.createJob(
+      {
+        id: jobId,
+        name: opts.jobName ?? jobId,
+        instruction: opts.instruction,
+        autoExport: opts.outputCsvPath !== undefined,
+        ...(opts.maxRuntimeSeconds !== undefined
+          ? { maxRuntimeSeconds: opts.maxRuntimeSeconds }
+          : {}),
+        ...(opts.outputSchema !== undefined
+          ? { outputSchema: opts.outputSchema }
+          : {}),
+        inputHeaders: csv.headers,
+        inputCsvPath: opts.csvPath,
+        outputCsvPath: opts.outputCsvPath ?? "",
+      },
+      itemSeed.map((seed) => ({
+        itemId: seed.itemId,
+        rowIndex: seed.rowIndex,
+        ...(seed.sourceId !== undefined ? { sourceId: seed.sourceId } : {}),
+        row: seed.row,
+      })),
+    );
+    opts.repository.markJobRunning(jobId);
+  }
 
   const state: JobRuntimeState = {
     config,
     items,
     pending: new Map(),
+    ...(opts.repository !== undefined ? { repository: opts.repository } : {}),
     stopRequested: false,
   };
   jobs.set(jobId, state);
@@ -140,12 +193,27 @@ export async function runAgentsOnCsv(
     if (opts.outputCsvPath !== undefined) {
       await writeOutputCsv(opts.outputCsvPath, csv.headers, items);
     }
+    if (opts.repository !== undefined) {
+      if (state.stopRequested) {
+        opts.repository.markJobCancelled(jobId, "worker requested stop");
+      } else {
+        opts.repository.markJobCompleted(jobId);
+      }
+    }
     return {
       jobId,
       items: Array.from(items.values()),
       stoppedEarly: state.stopRequested,
       ...(opts.outputCsvPath !== undefined ? { outputCsvPath: opts.outputCsvPath } : {}),
     };
+  } catch (err) {
+    if (opts.repository !== undefined) {
+      opts.repository.markJobFailed(
+        jobId,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    throw err;
   } finally {
     jobs.delete(jobId);
   }
@@ -189,6 +257,7 @@ async function processItems(
         runtimeBudgetMs,
       ),
     );
+    state.repository?.markItemRunning(state.config.jobId, itemId);
     try {
       await spawn.spawn(ctx);
       await Promise.race([completion, timeout]);
@@ -196,6 +265,7 @@ async function processItems(
       const reason = err instanceof Error ? err.message : String(err);
       item.status = "failed";
       item.error = reason;
+      state.repository?.markItemFailed(state.config.jobId, itemId, reason);
     } finally {
       state.pending.delete(itemId);
     }
@@ -315,6 +385,7 @@ export function recordAgentJobResult(
   }
   item.result = args.result;
   item.status = "completed";
+  state.repository?.markItemCompleted(args.jobId, args.itemId, args.result);
   if (args.stop === true) {
     state.stopRequested = true;
   }

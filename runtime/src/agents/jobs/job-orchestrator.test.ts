@@ -1,7 +1,10 @@
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
+import { openStateDatabases } from "../../state/sqlite-driver.js";
 import {
   recordAgentJobResult,
   runAgentsOnCsv,
@@ -143,5 +146,45 @@ describe("recordAgentJobResult", () => {
         result: {},
       }),
     ).toEqual({ kind: "unknown_job" });
+  });
+});
+
+describe("runAgentsOnCsv with SQLite repository", () => {
+  it("persists job + item lifecycle to csv_agent_jobs tables", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-orchestrator-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-orchestrator-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const originalAgencHome = process.env.AGENC_HOME ?? "";
+    process.env.AGENC_HOME = home;
+    const driver = openStateDatabases({ cwd });
+    const repository = new CsvAgentJobsRepository(driver);
+    try {
+      const csvPath = join(workDir, "input.csv");
+      await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");
+      const result = await runAgentsOnCsv({
+        csvPath,
+        instruction: "process {value}",
+        idColumn: "id",
+        spawn: fakeSpawnReporter(),
+        repository,
+        jobName: "smoke-test",
+      });
+      const persisted = repository.getJob(result.jobId);
+      expect(persisted?.status).toBe("completed");
+      expect(persisted?.name).toBe("smoke-test");
+      expect(persisted?.inputHeaders).toEqual(["id", "value"]);
+      const items = repository.listItems({ jobId: result.jobId });
+      expect(items).toHaveLength(2);
+      expect(items.every((it) => it.status === "completed")).toBe(true);
+      expect(items[0]!.result).toEqual({ echoed: "a" });
+      const progress = repository.getJobProgress(result.jobId);
+      expect(progress.completedItems).toBe(2);
+    } finally {
+      driver.close();
+      if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
+      else delete process.env.AGENC_HOME;
+      await rm(home, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

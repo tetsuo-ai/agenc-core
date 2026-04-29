@@ -54,6 +54,8 @@ import {
   type AgentJobSpawn,
   type AgentJobSpawnContext,
 } from "../agents/jobs/job-orchestrator.js";
+import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
   backgroundTaskLifecycle,
   registerAgentThreadTask,
@@ -338,6 +340,19 @@ The new agent's canonical task name will be provided to it along with the messag
     result = `${result}\n${cfg.usageHintText}`;
   }
   return result;
+}
+
+const csvAgentJobsRepoCache: Map<string, CsvAgentJobsRepository> = new Map();
+
+function getCsvAgentJobsRepository(
+  workspaceRoot: string,
+): CsvAgentJobsRepository {
+  const cached = csvAgentJobsRepoCache.get(workspaceRoot);
+  if (cached) return cached;
+  const driver = openStateDatabases({ cwd: workspaceRoot });
+  const repo = new CsvAgentJobsRepository(driver);
+  csvAgentJobsRepoCache.set(workspaceRoot, repo);
+  return repo;
 }
 
 function hideSpawnAgentMetadata(session: Session): boolean {
@@ -1107,6 +1122,8 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       },
     };
 
+    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+
     try {
       const result = await runAgentsOnCsv({
         csvPath,
@@ -1117,6 +1134,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
         ...(outputSchema !== undefined ? { outputSchema } : {}),
         spawn,
+        repository,
       });
       return json({
         job_id: result.jobId,
