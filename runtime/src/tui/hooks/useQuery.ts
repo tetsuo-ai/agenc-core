@@ -687,6 +687,22 @@ function toTranscriptEvent(event: Event): TranscriptEventEnvelope | null {
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "deprecation_notice":
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_agent_spawn_begin":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_agent_spawn_end":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_agent_interaction_begin":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_agent_interaction_end":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_waiting_begin":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_waiting_end":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_close_begin":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_close_end":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_started":
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_delta":

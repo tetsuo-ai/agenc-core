@@ -326,6 +326,50 @@ describe("useQuery", () => {
     unmount();
   });
 
+  test("passes Codex collab-agent events through from eventLog", async () => {
+    const session = createFakeSession({
+      withEventLog: true,
+      withSubscribe: false,
+    });
+    let latest: ReturnType<typeof useQuery> | null = null;
+    function Consumer(): null {
+      latest = useQuery(session);
+      return null;
+    }
+    const { unmount } = await mount(<Consumer />);
+    session.emitEventLog({
+      id: "evt-collab-1",
+      msg: {
+        type: "collab_agent_spawn_end",
+        payload: {
+          callId: "spawn-1",
+          senderThreadId: "root",
+          newThreadId: "child-1",
+          newAgentNickname: "scout",
+          newAgentRole: "explorer",
+          prompt: "inspect the renderer",
+          model: "gpt-5",
+          status: {
+            status: "running",
+            turnId: "turn-child",
+            startedAtMs: 1,
+          },
+        },
+      },
+      seq: 1,
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latest!.events).toHaveLength(1);
+    expect(latest!.events[0]).toMatchObject({
+      type: "collab_agent_spawn_end",
+      payload: {
+        newAgentNickname: "scout",
+        status: { status: "running" },
+      },
+    });
+    unmount();
+  });
+
   test("coalesces streaming assistant deltas in the TUI event buffer", async () => {
     const session = createFakeSession({
       withEventLog: true,

@@ -166,6 +166,8 @@ function idTarget(ctx: ToolRenderContext): string {
     readStringField(ctx.toolArgs, [
       "id",
       "target",
+      "task_name",
+      "taskName",
       "agent_id",
       "agentId",
       "task_id",
@@ -174,6 +176,8 @@ function idTarget(ctx: ToolRenderContext): string {
       "subId",
       "name",
       "team",
+      "path_prefix",
+      "pathPrefix",
     ]) ?? ""
   );
 }
@@ -289,6 +293,38 @@ function formatTaskList(ctx: ToolRenderContext): string | undefined {
     .join("\n");
 }
 
+function agentStatusText(agent: Record<string, unknown>): string {
+  const rawStatus = agent.agentStatus ?? agent.status;
+  if (!isRecord(rawStatus)) return "unknown";
+  const status = readStringField(rawStatus, ["status"]) ?? "unknown";
+  const lastMessage = readStringField(rawStatus, ["lastMessage", "error", "reason"]);
+  return lastMessage ? `${status}: ${compact(lastMessage, 120)}` : status;
+}
+
+function formatAgentList(ctx: ToolRenderContext): string | undefined {
+  const parsed = parsedResult(ctx);
+  const agents = Array.isArray(parsed)
+    ? parsed
+    : readArrayField(parsed, ["agents", "items", "results"]);
+  if (agents.length === 0) return "No agents";
+  return agents
+    .slice(0, 12)
+    .map((agent, index) => {
+      if (!isRecord(agent)) return `${index + 1}. ${String(agent)}`;
+      const name =
+        readStringField(agent, ["agentName", "agent_name", "name", "threadId"]) ??
+        `agent ${index + 1}`;
+      const message = readStringField(agent, [
+        "lastTaskMessage",
+        "last_task_message",
+        "taskDescription",
+      ]);
+      const suffix = message ? ` - ${compact(message, 120)}` : "";
+      return `${name}: ${agentStatusText(agent)}${suffix}`;
+    })
+    .join("\n");
+}
+
 function formatMcpResources(ctx: ToolRenderContext): string | undefined {
   const parsed = parsedResult(ctx);
   const resources = readArrayField(parsed, ["resources", "items", "results"]);
@@ -342,6 +378,21 @@ function agentRenderer(base: string): ToolSpecificRenderer {
     }),
   };
 }
+
+const LIST_AGENTS_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: (ctx) => ({
+    tone: "agent",
+    title: titleFor("Agents", ctx, "Listing Agents"),
+    target: idTarget(ctx),
+  }),
+  renderToolResultMessage: (ctx) => ({
+    detail: formatAgentList(ctx),
+    preserveResultLines: true,
+  }),
+  renderToolUseErrorMessage: (ctx) => ({
+    detail: commonResultDetail(ctx),
+  }),
+};
 
 function simpleRenderer(
   tone: ToolRenderTone,
@@ -500,10 +551,14 @@ const REGISTERED_RENDERERS: readonly RegisteredToolRenderer[] = [
     renderer: BASH_RENDERER,
   },
   { names: ["PowerShell"], renderer: POWERSHELL_RENDERER },
-  { names: ["Agent"], renderer: agentRenderer("Agent") },
-  { names: ["TaskOutput"], renderer: agentRenderer("Task Output") },
-  { names: ["TaskStop"], renderer: agentRenderer("Task Stop") },
-  { names: ["SendMessage"], renderer: agentRenderer("Send Message") },
+  { names: ["Agent", "spawn_agent"], renderer: agentRenderer("Agent") },
+  { names: ["list_agents"], renderer: LIST_AGENTS_RENDERER },
+  { names: ["TaskOutput", "wait_agent"], renderer: agentRenderer("Task Output") },
+  { names: ["TaskStop", "close_agent"], renderer: agentRenderer("Task Stop") },
+  {
+    names: ["SendMessage", "send_input", "send_message", "followup_task"],
+    renderer: agentRenderer("Send Message"),
+  },
   { names: ["TeamCreate"], renderer: simpleRenderer("team", "Team Create", idTarget, "Creating Team") },
   { names: ["TeamDelete"], renderer: simpleRenderer("team", "Team Delete", idTarget, "Deleting Team") },
   { names: ["TaskCreate"], renderer: taskRenderer("Task Create", queryTarget) },
@@ -592,5 +647,6 @@ export function toolRendererTone(toolName: string | undefined): ToolRenderTone {
   if (renderer === ASK_USER_QUESTION_RENDERER) return "plan";
   if (renderer === EXIT_PLAN_MODE_RENDERER) return "plan";
   if (renderer === WORKFLOW_RENDERER) return "schedule";
+  if (renderer === LIST_AGENTS_RENDERER) return "agent";
   return "generic";
 }

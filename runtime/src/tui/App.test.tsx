@@ -462,6 +462,60 @@ describe("App", () => {
     unmount();
   });
 
+  test("renders live Codex agent statuses above the composer", async () => {
+    const base = createFakeSession("default");
+    const thread = {
+      threadId: "agent-thread-1",
+      agentPath: "/root/scout",
+      kind: "agent",
+      status: () => ({
+        status: "running",
+        turnId: "turn-child",
+        startedAtMs: 1,
+      }),
+      subscribeStatus: () => () => undefined,
+    };
+    const session = {
+      ...base,
+      services: {
+        ...base.services,
+        threadManager: {
+          listThreadIds: () => ["agent-thread-1"],
+          getThread: () => thread,
+          subscribeThreadCreated: () => () => undefined,
+          state: {
+            control: {
+              getLive: () => ({
+                role: { name: "explorer" },
+                nickname: "scout",
+                metadata: {
+                  agentRole: "explorer",
+                  agentNickname: "scout",
+                },
+                tokenUsage: {
+                  totalTokens: 12,
+                },
+                configSnapshot: { model: "gpt-5" },
+              }),
+            },
+          },
+        },
+      },
+    } as unknown as SessionLike;
+    const { stdout, unmount } = await mount(
+      <App session={session} configStore={FAKE_CONFIG_STORE} />,
+      { exitOnCtrlC: false },
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+    const text = collectText(getRoot(stdout));
+    expect(text).toContain("main");
+    expect(text).toContain("scout");
+    expect(text).toContain("gpt-5");
+    expect(text).toContain("12 tok");
+    unmount();
+  });
+
   test("Esc on an empty composer interrupts the active turn", async () => {
     const abortTurnIfActive = vi.fn(async () => true);
     const abortTerminal = vi.fn();

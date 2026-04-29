@@ -32,6 +32,39 @@ describe("tool renderers", () => {
       title: "Task List",
       detail: "#1 Renderer parity (pending)",
     });
+
+    expect(
+      renderToolPresentation({
+        toolName: "list_agents",
+        toolArgs: { path_prefix: "/root" },
+        result: JSON.stringify({
+          agents: [
+            {
+              agentName: "/root",
+              agentStatus: { status: "idle" },
+              lastTaskMessage: "Main thread",
+            },
+            {
+              agentName: "/root/scout",
+              agentStatus: {
+                status: "completed",
+                lastMessage: "renderer path mapped",
+              },
+              lastTaskMessage: "inspect renderer",
+            },
+          ],
+        }),
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "agent",
+      title: "Agents",
+      target: "/root",
+      detail:
+        "/root: idle - Main thread\n/root/scout: completed: renderer path mapped - inspect renderer",
+      preserveResultLines: true,
+    });
   });
 
   test("renders MCP resource results compactly", () => {
