@@ -859,6 +859,46 @@ describe("TaskOperations", () => {
       );
     });
 
+    it("retries required claim-time job spec verification for RPC read-after-write lag", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = createParsedTask();
+      const storeDir = await mkdtemp(join(tmpdir(), "agenc-job-spec-lag-"));
+      const stored = await persistMarketplaceJobSpec(
+        {
+          description: "Verified marketplace task",
+          acceptanceCriteria: ["Do the verified work"],
+          deliverables: ["A short report"],
+        },
+        { rootDir: storeDir },
+      );
+      const jobSpecHashBytes = Uint8Array.from(Buffer.from(stored.hash, "hex"));
+      const opsWithStore = new TaskOperations({
+        program: mockProgram,
+        agentId,
+        logger: silentLogger,
+        jobSpecStoreDir: storeDir,
+        claimJobSpecVerification: "required",
+      });
+
+      mocks.taskJobSpecFetch
+        .mockRejectedValueOnce(new Error("Account does not exist"))
+        .mockResolvedValue({
+          task: taskPda,
+          creator: Keypair.generate().publicKey,
+          jobSpecHash: Array.from(jobSpecHashBytes),
+          jobSpecUri: stored.uri,
+          createdAt: { toNumber: () => 1700000000 },
+          updatedAt: { toNumber: () => 1700000000 },
+          bump: 255,
+        });
+
+      const result = await opsWithStore.claimTask(taskPda, task);
+
+      expect(result.transactionSignature).toBe("claim-with-job-spec-sig");
+      expect(mocks.taskJobSpecFetch).toHaveBeenCalledTimes(2);
+      expect(mocks.claimTaskWithJobSpecRpc).toHaveBeenCalledOnce();
+    });
+
     it("falls back to legacy claimTask when the deployed program lacks claimTaskWithJobSpec", async () => {
       const taskPda = Keypair.generate().publicKey;
       const task = createParsedTask();
@@ -1358,6 +1398,22 @@ describe("TaskOperations", () => {
         }),
       );
       expect(result.taskAttestorConfigPda).toBeInstanceOf(PublicKey);
+    });
+
+    it("configures task validation from post-create task id material", async () => {
+      const taskPda = Keypair.generate().publicKey;
+      const task = { taskId: new Uint8Array(32).fill(9) } as OnChainTask;
+
+      const result = await ops.configureTaskValidation(
+        taskPda,
+        task,
+        TaskValidationMode.CreatorReview,
+        900,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.transactionSignature).toBe("configure-sig");
+      expect(mocks.configureTaskValidationMethod).toHaveBeenCalledTimes(1);
     });
 
     it("previews creator-review configuration and settlement mutation intents", async () => {

@@ -108,6 +108,12 @@ const TRUSTED_RISC0_ROUTER_PROGRAM_ID = new PublicKey(
 const TRUSTED_RISC0_VERIFIER_PROGRAM_ID = new PublicKey(
   "3ZrAHZKjk24AKgXFekpYeG7v3Rz7NucLXTB3zxGGTjsc",
 );
+const CLAIM_JOB_SPEC_VERIFY_ATTEMPTS = 5;
+const CLAIM_JOB_SPEC_VERIFY_RETRY_MS = 1_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // ============================================================================
 // Configuration
@@ -601,39 +607,65 @@ export class TaskOperations {
   ): Promise<OnChainTaskJobSpecPointer | null> {
     if (this.claimJobSpecVerification === "disabled") return null;
 
-    let pointer: Awaited<ReturnType<typeof fetchTaskJobSpecPointer>>;
-    try {
-      pointer = await fetchTaskJobSpecPointer(this.program, taskPda);
-    } catch (err) {
-      throw new TaskNotClaimableError(
-        taskPda,
-        `Unable to verify task job spec metadata before claim: ${formatUnknownError(err)}`,
-      );
-    }
+    const attempts =
+      this.claimJobSpecVerification === "required"
+        ? CLAIM_JOB_SPEC_VERIFY_ATTEMPTS
+        : 1;
+    let lastVerificationError: unknown = null;
 
-    if (!pointer) {
-      if (this.claimJobSpecVerification === "required") {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      let pointer: Awaited<ReturnType<typeof fetchTaskJobSpecPointer>>;
+      try {
+        pointer = await fetchTaskJobSpecPointer(this.program, taskPda);
+      } catch (err) {
+        lastVerificationError = err;
+        if (attempt >= attempts) {
+          throw new TaskNotClaimableError(
+            taskPda,
+            `Unable to verify task job spec metadata before claim: ${formatUnknownError(err)}`,
+          );
+        }
+        await sleep(CLAIM_JOB_SPEC_VERIFY_RETRY_MS);
+        continue;
+      }
+
+      if (!pointer) {
+        if (this.claimJobSpecVerification !== "required") {
+          return null;
+        }
+        if (attempt < attempts) {
+          await sleep(CLAIM_JOB_SPEC_VERIFY_RETRY_MS);
+          continue;
+        }
         throw new TaskNotClaimableError(
           taskPda,
           "No verified task job spec metadata found before claim",
         );
       }
-      return null;
+
+      try {
+        await resolveMarketplaceJobSpecReference(
+          pointer,
+          this.jobSpecStoreOptions,
+        );
+        return pointer;
+      } catch (err) {
+        lastVerificationError = err;
+        if (attempt < attempts) {
+          await sleep(CLAIM_JOB_SPEC_VERIFY_RETRY_MS);
+          continue;
+        }
+        throw new TaskNotClaimableError(
+          taskPda,
+          `Task job spec could not be verified before claim: ${formatUnknownError(err)}`,
+        );
+      }
     }
 
-    try {
-      await resolveMarketplaceJobSpecReference(
-        pointer,
-        this.jobSpecStoreOptions,
-      );
-    } catch (err) {
-      throw new TaskNotClaimableError(
-        taskPda,
-        `Task job spec could not be verified before claim: ${formatUnknownError(err)}`,
-      );
-    }
-
-    return pointer;
+    throw new TaskNotClaimableError(
+      taskPda,
+      `Task job spec could not be verified before claim: ${formatUnknownError(lastVerificationError)}`,
+    );
   }
 
   async resolveCompiledJobForTask(taskPda: PublicKey): Promise<CompiledJob | null> {
@@ -765,6 +797,8 @@ export class TaskOperations {
       this.program.programId,
     ).address;
     const protocolPda = findProtocolPda(this.program.programId);
+    const rewardAmount = task.rewardAmount;
+    const constraintHash = task.constraintHash;
 
     return {
       kind: "configure_task_validation",
@@ -772,9 +806,11 @@ export class TaskOperations {
       signer: creator.toBase58(),
       taskPda: taskPda.toBase58(),
       taskId: hexBytes(task.taskId),
-      rewardLamports: task.rewardAmount.toString(),
+      ...(rewardAmount !== undefined
+        ? { rewardLamports: rewardAmount.toString() }
+        : {}),
       rewardMint: task.rewardMint?.toBase58() ?? null,
-      constraintHash: hexBytes(task.constraintHash),
+      constraintHash: constraintHash ? hexBytes(constraintHash) : null,
       validationMode: String(Number(mode)),
       reviewWindowSecs: reviewWindowSecs.toString(),
       validatorQuorum,
