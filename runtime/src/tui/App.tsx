@@ -78,6 +78,7 @@ import {
 } from "./cockpit/StatusLineConfig.js";
 import { StatusNotices } from "./cockpit/StatusNotices.js";
 import { MessageList } from "./transcript/MessageList.js";
+import { CoordinatorAgentStatus } from "./transcript/messages/CoordinatorAgentStatus.js";
 import {
   Composer,
   type ComposerSession,
@@ -97,6 +98,7 @@ import { readPickerCommandIntent } from "./picker-intents.js";
 import { usePickerController } from "./picker-controller.js";
 import { useTuiConfigView } from "./config-view.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
+import { useLiveAgentStatuses } from "./hooks/useLiveAgentStatuses.js";
 import {
   buildStatusLineSession,
 } from "./status-derivation.js";
@@ -328,6 +330,7 @@ function TUIRoot({
   const [showAllInTranscript, setShowAllInTranscript] = useState(false);
   const [updateNotice, setUpdateNotice] = useState<string | null>(null);
   const { columns } = useTerminalSize();
+  const liveAgentStatuses = useLiveAgentStatuses(session);
 
   // Derive transcript messages from phase events on every render. The
   // adapter is pure and cheap, so useMemo's only job here is to keep
@@ -679,6 +682,11 @@ function TUIRoot({
       {expandedView === "tasks" ? (
         <TasksPanel storeOptions={taskStoreOptions} />
       ) : null}
+
+      <CoordinatorAgentStatus
+        agents={liveAgentStatuses}
+        now={typeof performance !== "undefined" ? performance.now() : Date.now()}
+      />
 
       {/* overlay stack rendered above the composer so modals stay inside
           the visible viewport while the transcript flexes around them. */}

@@ -35,6 +35,7 @@ const BLACK_CIRCLE = process.platform === 'darwin' ? '⏺' : '●'
 
 /** Status FSM for a live subagent (mirrors `AgentStatus` from session.ts). */
 export type LiveAgentStatusKind =
+  | 'pending_init'
   | 'idle'
   | 'running'
   | 'completed'
@@ -79,13 +80,20 @@ export interface CoordinatorAgentStatusProps {
 }
 
 function isTerminalStatus(s: LiveAgentStatusKind): boolean {
-  return s === 'completed' || s === 'errored' || s === 'shutdown'
+  return (
+    s === 'completed' ||
+    s === 'errored' ||
+    s === 'shutdown' ||
+    s === 'interrupted'
+  )
 }
 
 function statusBullet(s: LiveAgentStatusKind): string {
   switch (s) {
     case 'running':
       return BLACK_CIRCLE
+    case 'pending_init':
+      return glyphs.circle
     case 'completed':
       return glyphs.tick
     case 'errored':
@@ -104,6 +112,7 @@ function statusColor(
 ): 'success' | 'error' | 'warning' | 'accent' | undefined {
   switch (s) {
     case 'running':
+    case 'pending_init':
       return 'accent'
     case 'completed':
       return 'success'
