@@ -31,6 +31,7 @@ interface LaneResult {
   durationMs: number;
   notes: string;
   exitCode: number | null;
+  evidence?: Record<string, unknown>;
 }
 
 interface CliOptions {
@@ -39,6 +40,9 @@ interface CliOptions {
   artifactPath: string;
   allowPending: boolean;
   childMaxWaitSeconds: number | null;
+  explorerUrl: string | null;
+  explorerWaitSeconds: number;
+  explorerPollMs: number;
 }
 
 const DEFAULT_ARTIFACT_PATH = path.join(
@@ -86,6 +90,9 @@ Flags:
   --artifact <path>              Evidence JSON output path.
   --allow-pending                Return success even when required lanes are pending.
   --child-max-wait-seconds <n>   Pass-through wait budget for child smokes that support it.
+  --explorer-url <url>           Public explorer base URL for the explorer gate.
+  --explorer-wait-seconds <n>    Explorer indexing wait budget. Defaults to 180.
+  --explorer-poll-ms <n>         Explorer polling interval. Defaults to 5000.
   --help                         Show this help.
 
 Required env for live protocol lanes:
@@ -101,6 +108,7 @@ Required env for live protocol lanes:
 Optional:
   AGENC_RPC_URL
   AGENC_PROGRAM_ID
+  AGENC_EXPLORER_URL
 `);
 }
 
@@ -142,6 +150,9 @@ function parseOptions(): CliOptions {
     childMaxWaitSeconds: getFlagValue("--child-max-wait-seconds")
       ? parsePositiveInteger(getFlagValue("--child-max-wait-seconds"), 300, "--child-max-wait-seconds")
       : null,
+    explorerUrl: getFlagValue("--explorer-url") ?? process.env.AGENC_EXPLORER_URL ?? null,
+    explorerWaitSeconds: parsePositiveInteger(getFlagValue("--explorer-wait-seconds"), 180, "--explorer-wait-seconds"),
+    explorerPollMs: parsePositiveInteger(getFlagValue("--explorer-poll-ms"), 5_000, "--explorer-poll-ms"),
   };
 }
 
@@ -220,6 +231,117 @@ async function runArtifact(): Promise<LaneResult[]> {
   ];
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizeBaseUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/$/u, "");
+}
+
+async function fetchExplorerJson(baseUrl: string, pathname: string): Promise<Record<string, unknown>> {
+  const url = new URL(pathname, `${baseUrl}/`);
+  const response = await fetch(url);
+  const body = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = body ? JSON.parse(body) : null;
+  } catch {
+    throw new Error(`${url.toString()} returned non-JSON response: ${body.slice(0, 160)}`);
+  }
+  if (!response.ok) {
+    const error = asRecord(parsed).error ?? response.statusText;
+    throw new Error(`${url.toString()} failed with ${response.status}: ${String(error)}`);
+  }
+  return asRecord(parsed);
+}
+
+type ExplorerVisibilityEvidence = {
+  baseUrl: string;
+  taskPda: string;
+  expectedProgramId: string;
+  attempts: number;
+  observedAt: string;
+  health: Record<string, unknown>;
+  bootstrapMeta: Record<string, unknown>;
+  task: Record<string, unknown>;
+  listTotal: number;
+};
+
+async function waitForExplorerTaskVisibility(params: {
+  baseUrl: string;
+  taskPda: string;
+  expectedProgramId: string;
+  waitSeconds: number;
+  pollMs: number;
+}): Promise<ExplorerVisibilityEvidence> {
+  const deadline = Date.now() + params.waitSeconds * 1_000;
+  let attempts = 0;
+  let lastError: string | null = null;
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    try {
+      const [health, bootstrap, detail, list] = await Promise.all([
+        fetchExplorerJson(params.baseUrl, "/healthz"),
+        fetchExplorerJson(params.baseUrl, "/api/bootstrap"),
+        fetchExplorerJson(params.baseUrl, `/api/tasks/${encodeURIComponent(params.taskPda)}`),
+        fetchExplorerJson(params.baseUrl, `/api/tasks?q=${encodeURIComponent(params.taskPda)}&pageSize=5`),
+      ]);
+      const bootstrapMeta = asRecord(asRecord(bootstrap.dashboard).meta);
+      const detailTask = asRecord(detail.data);
+      const listData = asRecord(list.data);
+      const listItems = Array.isArray(listData.items) ? listData.items : [];
+      const listHasTask = listItems.some((item) => asRecord(item).pda === params.taskPda);
+      const programId = String(health.programId ?? bootstrapMeta.programId ?? "");
+      const taskStatus = String(detailTask.status ?? "");
+
+      if (programId !== params.expectedProgramId) {
+        throw new Error(`explorer program mismatch: expected ${params.expectedProgramId}, got ${programId}`);
+      }
+      if (detailTask.pda !== params.taskPda) {
+        throw new Error(`explorer task detail mismatch: expected ${params.taskPda}, got ${String(detailTask.pda ?? "")}`);
+      }
+      if (taskStatus.trim().toLowerCase() !== "completed") {
+        throw new Error(`explorer task ${params.taskPda} is visible but status=${taskStatus}`);
+      }
+      if (!listHasTask) {
+        throw new Error(`explorer task ${params.taskPda} detail is visible but list/search does not include it`);
+      }
+
+      return {
+        baseUrl: params.baseUrl,
+        taskPda: params.taskPda,
+        expectedProgramId: params.expectedProgramId,
+        attempts,
+        observedAt: new Date().toISOString(),
+        health,
+        bootstrapMeta,
+        task: detailTask,
+        listTotal: Number(listData.total ?? listItems.length),
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      await sleep(params.pollMs);
+    }
+  }
+
+  throw new Error(
+    `explorer did not index completed task ${params.taskPda} within ${params.waitSeconds}s` +
+      (lastError ? `; last error: ${lastError}` : ""),
+  );
+}
+
 async function runReviewedPublic(): Promise<LaneResult> {
   return runChild(
     "reviewed-public-lifecycle",
@@ -246,8 +368,29 @@ async function runContention(): Promise<LaneResult> {
   );
 }
 
-async function runExplorer(): Promise<LaneResult> {
-  return runChild(
+async function runExplorer(options: CliOptions): Promise<LaneResult> {
+  if (!options.explorerUrl) {
+    return {
+      lane: "explorer-indexing-visibility",
+      status: "fail",
+      required: true,
+      command: null,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      durationMs: 0,
+      notes: "AGENC_EXPLORER_URL or --explorer-url is required for the explorer gate",
+      exitCode: null,
+    };
+  }
+
+  const smokeArtifactPath = path.join(
+    os.tmpdir(),
+    "agenc-marketplace-mainnet-v1-devnet",
+    `explorer-reviewed-public-${Date.now()}-${process.pid}-${randomUUID().slice(0, 8)}.json`,
+  );
+  const started = Date.now();
+  const startedAt = new Date(started).toISOString();
+  const lifecycle = await runChild(
     "explorer-indexing-visibility",
     true,
     "tsx",
@@ -255,8 +398,63 @@ async function runExplorer(): Promise<LaneResult> {
       "scripts/marketplace-devnet-smoke.ts",
       "--flow",
       "reviewed-public-artifact",
+      "--artifact",
+      smokeArtifactPath,
     ],
   );
+  if (lifecycle.status !== "pass") {
+    return lifecycle;
+  }
+
+  try {
+    const smokeArtifact = asRecord(JSON.parse(await readFile(smokeArtifactPath, "utf8")));
+    const taskPda = String(smokeArtifact.taskPda ?? "");
+    const programId = String(smokeArtifact.programId ?? "");
+    if (!taskPda || !programId) {
+      throw new Error(`smoke artifact ${smokeArtifactPath} is missing taskPda or programId`);
+    }
+    const evidence = await waitForExplorerTaskVisibility({
+      baseUrl: normalizeBaseUrl(options.explorerUrl),
+      taskPda,
+      expectedProgramId: programId,
+      waitSeconds: options.explorerWaitSeconds,
+      pollMs: options.explorerPollMs,
+    });
+    const finished = Date.now();
+    return {
+      ...lifecycle,
+      command:
+        `${lifecycle.command} && poll ${evidence.baseUrl}/api/tasks/${taskPda}`,
+      startedAt,
+      finishedAt: new Date(finished).toISOString(),
+      durationMs: lifecycle.durationMs + (finished - started),
+      notes:
+        `explorer indexed completed task ${taskPda} after ${evidence.attempts} attempt(s); ` +
+        `smokeArtifact=${smokeArtifactPath}`,
+      evidence: {
+        explorerUrl: evidence.baseUrl,
+        taskPda: evidence.taskPda,
+        observedAt: evidence.observedAt,
+        attempts: evidence.attempts,
+        programId: String(evidence.health.programId ?? evidence.bootstrapMeta.programId ?? ""),
+        slot: evidence.bootstrapMeta.slot ?? null,
+        taskStatus: evidence.task.status ?? null,
+        taskJobSpecPresent: evidence.task.jobSpec !== null && evidence.task.jobSpec !== undefined,
+        listTotal: evidence.listTotal,
+      },
+    };
+  } catch (error) {
+    const finished = Date.now();
+    return {
+      ...lifecycle,
+      status: "fail",
+      startedAt,
+      finishedAt: new Date(finished).toISOString(),
+      durationMs: lifecycle.durationMs + (finished - started),
+      notes: error instanceof Error ? error.message : String(error),
+      exitCode: 1,
+    };
+  }
 }
 
 async function runSafety(): Promise<LaneResult> {
@@ -331,7 +529,7 @@ async function runAll(options: CliOptions): Promise<LaneResult[]> {
   results.push(await runContention());
   results.push(...(await runArtifact()));
   results.push(await runDispute());
-  results.push(await runExplorer());
+  results.push(await runExplorer(options));
   results.push(await runSafety());
   results.push(...(await runSoak(options)));
   results.push(await runOperator());
@@ -355,7 +553,7 @@ async function runSelected(options: CliOptions): Promise<LaneResult[]> {
     case "dispute":
       return [await runDispute()];
     case "explorer":
-      return [await runExplorer()];
+      return [await runExplorer(options)];
     case "safety":
       return [await runSafety()];
     case "soak":

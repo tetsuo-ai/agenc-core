@@ -93,6 +93,7 @@ export ARBITER_B_WALLET=/path/to/arbiter-b.json
 export ARBITER_C_WALLET=/path/to/arbiter-c.json
 export PROTOCOL_AUTHORITY_WALLET=/path/to/authority.json
 export AGENC_RPC_URL=https://api.devnet.solana.com
+export AGENC_EXPLORER_URL=https://devnet.agenc.tech
 ```
 
 Optional:
@@ -112,8 +113,23 @@ npm run smoke:marketplace:devnet -- --flow reviewed-public-artifact
 That flow creates a creator-review task, claims it, completes it with
 `--artifact-file`, accepts it from the creator side, and asserts that task
 detail reconstructs the buyer-facing artifact digest from on-chain `resultData`.
-It also checks `tasks.list` visibility after create, claim, and accept so the
-explorer/indexing lane is covered without requiring the storefront.
+It also checks `tasks.list` visibility after create, claim, and accept.
+
+The explorer lane is stricter than the CLI visibility check. It now requires a
+real explorer URL and proves the explorer itself can read the completed task from
+its HTTP read model:
+
+```bash
+AGENC_EXPLORER_URL=https://devnet.agenc.tech \
+npm run smoke:marketplace:mainnet-v1:devnet -- --mode explorer
+```
+
+The gate creates a reviewed-public artifact task, waits for the public explorer
+to index it, then checks `/healthz`, `/api/bootstrap`, `/api/tasks/:taskPda`,
+and `/api/tasks?q=<taskPda>`. It fails if the explorer points at a different
+program ID, cannot render the completed task detail, or cannot find the task in
+list/search output inside the polling window. This keeps explorer readiness out
+of the storefront and tied to the same protocol read model operators use.
 
 The exclusive claim contention lane can also be run directly:
 
