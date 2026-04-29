@@ -285,6 +285,7 @@ export interface CollabAgentRef {
   readonly threadId: string;
   readonly agentNickname?: string;
   readonly agentRole?: string;
+  readonly agentRoleDisplayName?: string;
 }
 
 export interface CollabAgentStatusEntry extends CollabAgentRef {

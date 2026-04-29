@@ -1031,6 +1031,17 @@ describe("eventsToMessages", () => {
     const messages = eventsToMessages([
       { type: "turn_started", payload: { turnId: "turn-agent" } },
       {
+        type: "tool_call_started",
+        payload: {
+          callId: "spawn-1",
+          toolName: "spawn_agent",
+          args: JSON.stringify({
+            message: "go inspect the parser",
+            task_name: "parser",
+          }),
+        },
+      },
+      {
         type: "collab_agent_spawn_begin",
         payload: {
           callId: "spawn-1",
@@ -1045,10 +1056,22 @@ describe("eventsToMessages", () => {
           callId: "spawn-1",
           senderThreadId: "root",
           newThreadId: "child-1",
-          newAgentNickname: "scout",
+          newAgentNickname: "BridgeRunner",
+          newAgentRole: "worker",
+          newAgentRoleDisplayName: "Runner",
           prompt: "go inspect the parser",
           model: "model-a",
+          reasoningEffort: "medium",
           status: { status: "running", turnId: "t", startedAtMs: 1 },
+        },
+      },
+      {
+        type: "tool_call_completed",
+        payload: {
+          callId: "spawn-1",
+          result:
+            '{"task_name":"/root/parser","nickname":"BridgeRunner","agent_role":"worker","agent_role_display":"Runner"}',
+          isError: false,
         },
       },
       {
@@ -1056,6 +1079,14 @@ describe("eventsToMessages", () => {
         payload: {
           senderThreadId: "root",
           receiverThreadIds: ["child-1"],
+          receiverAgents: [
+            {
+              threadId: "child-1",
+              agentNickname: "BridgeRunner",
+              agentRole: "worker",
+              agentRoleDisplayName: "Runner",
+            },
+          ],
           callId: "wait-1",
         },
       },
@@ -1064,6 +1095,20 @@ describe("eventsToMessages", () => {
         payload: {
           senderThreadId: "root",
           callId: "wait-1",
+          agentStatuses: [
+            {
+              threadId: "child-1",
+              agentNickname: "BridgeRunner",
+              agentRole: "worker",
+              agentRoleDisplayName: "Runner",
+              status: {
+                status: "completed",
+                turnId: "t",
+                endedAtMs: 2,
+                lastMessage: "done",
+              },
+            },
+          ],
           statuses: {
             "child-1": {
               status: "completed",
@@ -1077,9 +1122,9 @@ describe("eventsToMessages", () => {
     ]);
 
     expect(messages.map((message) => message.content)).toEqual([
-      "scout running",
-      "Waiting on 1 agent",
-      "Agent wait complete",
+      "Spawned BridgeRunner [Runner] (model-a medium)\n  └ go inspect the parser",
+      "Waiting for BridgeRunner [Runner]",
+      "Finished waiting\n  └ BridgeRunner [Runner]: Completed - done",
     ]);
   });
 });
