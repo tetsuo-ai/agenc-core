@@ -74,23 +74,7 @@ export type Options = {
   patchConsole: boolean;
   waitUntilExit?: () => Promise<void>;
   onFrame?: (event: FrameEvent) => void;
-  onInputActivity?: () => void;
 };
-
-type SelectionPointSnapshot = { col: number; row: number } | null;
-type SelectionSpanSnapshot = {
-  lo: { col: number; row: number };
-  hi: { col: number; row: number };
-  kind: 'word' | 'line';
-} | null;
-
-function sameSelectionEndpoints(previous: SelectionPointSnapshot, next: SelectionPointSnapshot): boolean {
-  return previous?.col === next?.col && previous?.row === next?.row && (previous === null) === (next === null);
-}
-
-function sameSelectionSpan(previous: SelectionSpanSnapshot, next: SelectionState['anchorSpan']): boolean {
-  return previous?.kind === next?.kind && previous?.lo.col === next?.lo.col && previous?.lo.row === next?.lo.row && previous?.hi.col === next?.hi.col && previous?.hi.row === next?.hi.row && (previous === null) === (next === null);
-}
 
 export default class Ink {
   private readonly log: LogUpdate;
@@ -176,11 +160,6 @@ export default class Ink {
   // one full-render frame; steady-state frames after clear it and regain
   // the blit + narrow-damage fast path.
   private prevFrameContaminated = false;
-  // External escape hatch for forcing the next render to be a full-screen
-  // repaint instead of an incremental diff. Set by code paths that know
-  // they bypassed the renderer (raw stdout writes, terminal mode toggles,
-  // post-pty resize, focus regain). Cleared after one frame.
-  forceFullRepaintNextFrame = false;
   // Set by handleResize: prepend ERASE_SCREEN to the next onRender's patches
   // INSIDE the BSU/ESU block so clear+paint is atomic. Writing ERASE_SCREEN
   // synchronously in handleResize would leave the screen blank for the ~80ms
@@ -382,16 +361,6 @@ export default class Ink {
       this.options.stdout.write(ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
       this.resetFramesForAltScreen();
       this.needsEraseBeforePaint = true;
-      // Force the next render (and via prevFrameContaminated propagation,
-      // the one after that) to use the full-paint path. Resize triggers
-      // delayed measurement effects in ScrollBox / virtual-scroll that
-      // can re-fire mid-settle and produce a transient empty visible
-      // range — without a forced full repaint, the empty range gets
-      // diff'd against the previous (correct) buffer and clears the
-      // visible transcript. Forcing a full repaint means each post-resize
-      // frame re-asserts the React tree's content from scratch, so a
-      // transient empty render is overwritten by the next non-empty one.
-      this.forceFullRepaintNextFrame = true;
     }
 
     // Re-render the React tree with updated props so the context value changes.
@@ -486,16 +455,8 @@ export default class Ink {
     // an extra React re-render cycle.
     flushInteractionTime();
     const renderStart = performance.now();
-    // I-66: restart render if terminal dims changed mid-pass. Snapshot the
-    // (cols, rows) the renderer is computing against so a re-check just
-    // before flushing the diff can detect a SIGWINCH that landed mid-pass.
-    // If dims drifted, drop the just-computed diff and reschedule a fresh
-    // pass against the new viewport instead of writing a patch sized to a
-    // viewport the terminal no longer has.
-    const i66SnapshotCols = this.options.stdout.columns || 80;
-    const i66SnapshotRows = this.options.stdout.rows || 24;
-    const terminalWidth = i66SnapshotCols;
-    const terminalRows = i66SnapshotRows;
+    const terminalWidth = this.options.stdout.columns || 80;
+    const terminalRows = this.options.stdout.rows || 24;
     const frame = this.renderer({
       frontFrame: this.frontFrame,
       backFrame: this.backFrame,
@@ -643,16 +604,7 @@ export default class Ink {
     //     overlay we just applied.
     //   - didLayoutShift(): a sibling resize/spinner toggle moved cells
     //     around; per-node damage tracking can miss the trailing edge.
-    //   - this.forceFullRepaintNextFrame: external escape hatch set by
-    //     code paths that know they bypassed the renderer (raw stdout
-    //     writes, terminal mode changes, focus regain).
-    const forceFullRepaint =
-      this.prevFrameContaminated ||
-      selActive ||
-      hlActive ||
-      didLayoutShift() ||
-      this.forceFullRepaintNextFrame;
-    if (forceFullRepaint) {
+    if (didLayoutShift() || selActive || hlActive || this.prevFrameContaminated) {
       frame.screen.damage = {
         x: 0,
         y: 0,
@@ -660,13 +612,12 @@ export default class Ink {
         height: frame.screen.height,
       };
     }
-    this.forceFullRepaintNextFrame = false;
     const diff = this.log.render(prevFrame, frame, this.altScreenActive,
     // DECSTBM needs BSU/ESU atomicity — without it the outer terminal
     // renders the scrolled-but-not-yet-repainted intermediate state.
     // tmux is the main case (re-emits DECSTBM with its own timing and
     // doesn't implement DEC 2026, so SYNC_OUTPUT_SUPPORTED is false).
-    SYNC_OUTPUT_SUPPORTED, rewriteMainScreen, forceFullRepaint);
+    SYNC_OUTPUT_SUPPORTED, rewriteMainScreen);
     const diffMs = performance.now() - tDiff;
     // Swap buffers
     this.backFrame = this.frontFrame;
@@ -810,21 +761,6 @@ export default class Ink {
         this.displayCursor = null;
       }
     }
-    // I-66: restart render if terminal dims changed mid-pass.
-    // Re-read the terminal dims now that layout/diff finished; if either
-    // axis shifted while we were computing, drop the patch and trigger a
-    // fresh pass against the new viewport. The next pass starts clean and
-    // the now-stale diff never reaches the terminal.
-    const i66CurrentCols = this.options.stdout.columns || 80;
-    const i66CurrentRows = this.options.stdout.rows || 24;
-    if (i66CurrentCols !== i66SnapshotCols || i66CurrentRows !== i66SnapshotRows) {
-      // Restart on a microtask so the React commit driving this render can
-      // unwind cleanly before we re-enter onRender. scheduleRender is the
-      // throttled entry; calling it directly would coalesce identically into
-      // the same frame on most paths.
-      queueMicrotask(() => this.scheduleRender());
-      return;
-    }
     const tWrite = performance.now();
     const skipSyncMarkers = this.altScreenActive ? !SYNC_OUTPUT_SUPPORTED : rewriteMainScreen || shouldSkipMainScreenSyncMarkers();
     writeDiffToTerminal(this.terminal, optimized, skipSyncMarkers);
@@ -834,21 +770,7 @@ export default class Ink {
     // becomes frontFrame (= next frame's prevScreen). If we applied the
     // selection overlay, that buffer has inverted cells. selActive/hlActive
     // are only ever true in alt-screen; in main-screen this is false→false.
-    //
-    // Also propagate to the NEXT frame whenever this frame had a layout
-    // shift. The first frame after a layout change is at high risk of
-    // producing stale-cell drift (e.g. a removed-and-then-added React
-    // subtree, a popup closing, a streaming insert that flips heights).
-    // Flagging the next frame to also force-repaint gives the renderer a
-    // second chance to reconverge.
-    //
-    // CRITICAL: source the propagation from the layout-shift FACT, not
-    // from `forceFullRepaint` itself — forceFullRepaint reads
-    // prevFrameContaminated, so OR-ing them creates a self-sustaining
-    // loop where a single shift turns every subsequent frame into a full
-    // repaint forever.
-    this.prevFrameContaminated =
-      selActive || hlActive || didLayoutShift();
+    this.prevFrameContaminated = selActive || hlActive;
 
     // A ScrollBox has pendingScrollDelta left to drain — schedule the next
     // frame. MUST NOT call this.scheduleRender() here: we're inside a
@@ -994,10 +916,22 @@ export default class Ink {
    */
   reassertTerminalModes = (includeAltScreen = false): void => {
     if (!this.options.stdout.isTTY) return;
-    // Don't touch the terminal during an editor handoff.
+    // Don't touch the terminal during an editor handoff — re-enabling kitty
+    // keyboard here would undo enterAlternateScreen's disable and nano would
+    // start seeing CSI-u sequences again.
     if (this.isPaused) return;
+    // Extended keys — re-assert if enabled (App.tsx enables these on
+    // allowlisted terminals at raw-mode entry; a terminal reset clears them).
+    // Pop-before-push keeps Kitty stack depth at 1 instead of accumulating
+    // on each call.
+    if (supportsExtendedKeys()) {
+      this.options.stdout.write(DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS);
+    }
     if (!this.altScreenActive) return;
-    this.options.stdout.write(ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
+    // Mouse tracking — idempotent, safe to re-assert on every stdin gap.
+    if (this.altScreenMouseTracking) {
+      this.options.stdout.write(ENABLE_MOUSE_TRACKING);
+    }
     // Alt-screen re-entry — destructive (ERASE_SCREEN). Only for callers that
     // have a strong signal the terminal actually dropped mode 1049.
     if (includeAltScreen) {
@@ -1332,12 +1266,8 @@ export default class Ink {
     this.selectionListeners.add(cb);
     return () => this.selectionListeners.delete(cb);
   }
-  private notifySelectionChange(render: 'immediate' | 'scheduled' = 'immediate'): void {
-    if (render === 'immediate') {
-      this.onRender();
-    } else {
-      this.scheduleRender();
-    }
+  private notifySelectionChange(): void {
+    this.onRender();
     for (const cb of this.selectionListeners) cb();
   }
 
@@ -1439,22 +1369,12 @@ export default class Ink {
   handleSelectionDrag(col: number, row: number): void {
     if (!this.altScreenActive) return;
     const sel = this.selection;
-    const beforeAnchor = sel.anchor ? { ...sel.anchor } : null;
-    const beforeFocus = sel.focus ? { ...sel.focus } : null;
-    const beforeSpan = sel.anchorSpan ? {
-      lo: { ...sel.anchorSpan.lo },
-      hi: { ...sel.anchorSpan.hi },
-      kind: sel.anchorSpan.kind
-    } : null;
     if (sel.anchorSpan) {
       extendSelection(sel, this.frontFrame.screen, col, row);
     } else {
       updateSelection(sel, col, row);
     }
-    if (sameSelectionEndpoints(beforeAnchor, sel.anchor) && sameSelectionEndpoints(beforeFocus, sel.focus) && sameSelectionSpan(beforeSpan, sel.anchorSpan)) {
-      return;
-    }
-    this.notifySelectionChange('scheduled');
+    this.notifySelectionChange();
   }
 
   // Methods to properly suspend stdin for external editor usage
@@ -1555,7 +1475,7 @@ export default class Ink {
   render(node: ReactNode): void {
     logForDebugging('[Ink:render] start');
     this.currentNode = node;
-    const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent} onInputActivity={this.options.onInputActivity}>
+    const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
         <TerminalWriteProvider value={this.writeRaw}>
           {node}
         </TerminalWriteProvider>

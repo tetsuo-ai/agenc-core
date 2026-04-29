@@ -86,12 +86,8 @@ const renderBorder = (
   output: Output,
 ): void => {
   if (node.style.borderStyle) {
-    // Yoga can hand back fractional computed sizes for stretched/flexed nodes.
-    // Rounding down leaves the right/bottom border one cell short on real
-    // terminals, which is the exact off-by-one drift operators were seeing on
-    // the banner/composer shells.
-    const width = Math.round(node.yogaNode!.getComputedWidth())
-    const height = Math.round(node.yogaNode!.getComputedHeight())
+    const width = Math.floor(node.yogaNode!.getComputedWidth())
+    const height = Math.floor(node.yogaNode!.getComputedHeight())
     const box =
       typeof node.style.borderStyle === 'string'
         ? (CUSTOM_BORDER_STYLES[

@@ -337,7 +337,6 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         ...(frameMonitor
           ? {
               onFrame: frameMonitor.onFrame,
-              onInputActivity: frameMonitor.noteInput,
             }
           : {}),
       },
