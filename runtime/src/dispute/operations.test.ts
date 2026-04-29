@@ -1106,6 +1106,14 @@ describe("DisputeOperations", () => {
       expect(result.transactionSignature).toBe("mock-signature");
       expect(result.disputePda.equals(disputePda)).toBe(true);
       expect(program.methods.cancelDispute).toHaveBeenCalled();
+      expect(program._methodBuilder.accountsPartial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          protocolConfig: findProtocolPda(program.programId),
+          dispute: disputePda,
+          task: taskPda,
+          authority: program.provider.publicKey,
+        }),
+      );
       expect(program._methodBuilder.remainingAccounts).toHaveBeenCalledWith([
         { pubkey: defendant, isSigner: false, isWritable: true },
       ]);

@@ -1,6 +1,7 @@
 import { SystemProgram, PublicKey } from "@solana/web3.js";
 import type { Program } from "@coral-xyz/anchor";
 import type { AgencCoordination } from "../types/agenc_coordination.js";
+import { findProtocolPda } from "../agent/pda.js";
 import { bytesToHex, hexToBytes } from "../utils/encoding.js";
 import {
   resolveMarketplaceJobSpecReference,
@@ -84,11 +85,13 @@ export async function setTaskJobSpecPointer(
   jobSpecHash: string | Uint8Array | number[],
   jobSpecUri: string,
 ): Promise<{ taskJobSpecPda: PublicKey; transactionSignature: string }> {
+  const protocolPda = findProtocolPda(program.programId);
   const taskJobSpecPda = findTaskJobSpecPda(taskPda, program.programId);
   const jobSpecHashBytes = normalizeJobSpecHash(jobSpecHash);
   const transactionSignature = await (program.methods as any)
     .setTaskJobSpec(Array.from(jobSpecHashBytes), jobSpecUri)
     .accountsPartial({
+      protocolConfig: protocolPda,
       task: taskPda,
       taskJobSpec: taskJobSpecPda,
       creator,

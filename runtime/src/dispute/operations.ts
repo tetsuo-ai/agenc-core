@@ -825,9 +825,9 @@ export class DisputeOperations {
       }
       this.buildCancelDisputeIntent(disputePda, taskPda, dispute);
 
-      const signature = await this.program.methods
-        .cancelDispute()
+      const signature = await (this.program.methods.cancelDispute() as any)
         .accountsPartial({
+          protocolConfig: this.protocolPda,
           dispute: disputePda,
           task: taskPda,
           authority: this.program.provider.publicKey,
