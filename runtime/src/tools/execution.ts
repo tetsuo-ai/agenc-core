@@ -44,6 +44,8 @@
  *   I-9  (per-tool execution timeout) — `Promise.race([tool, timer])`.
  *        Default `DEFAULT_TOOL_TIMEOUT_MS=30000`; per-tool override
  *        via `tool.timeoutMs`; per-call override via `args.timeoutMs`.
+ *        Tools with `timeoutBehavior:'tool'` own their deadline and
+ *        keep only the abort race.
  *   I-15 (tool result size cap) — result bytes truncated to
  *        `MAX_TOOL_RESULT_BYTES=400_000`; warning marker appended.
  *   I-21 (approval modal abort race) — modal promise wrapped with
@@ -145,6 +147,8 @@ const FORMAT_ERROR_MAX_BYTES = 10_000;
 export interface ToolExecutionOverrides {
   /** I-9 per-tool timeout override. */
   readonly timeoutMs?: number;
+  /** Tool-owned timeout semantics; executor keeps abort handling only. */
+  readonly timeoutBehavior?: "executor" | "tool";
   /** I-15 per-tool size cap override. */
   readonly maxResultBytes?: number;
 }
@@ -233,7 +237,10 @@ export class ToolTimeoutError extends Error {
 export function resolveTimeoutMs(
   tool: Tool & Partial<ToolExecutionOverrides>,
   args: Record<string, unknown>,
-): number {
+): number | null {
+  if (tool.timeoutBehavior === "tool") {
+    return null;
+  }
   const perCall = args["timeoutMs"];
   if (typeof perCall === "number" && Number.isFinite(perCall) && perCall > 0) {
     return Math.floor(perCall);
@@ -251,7 +258,7 @@ export function resolveTimeoutMs(
 export async function withTimeoutAndAbort<T>(
   fn: () => Promise<T>,
   opts: {
-    readonly timeoutMs: number;
+    readonly timeoutMs: number | null;
     readonly toolName: string;
     readonly signal?: AbortSignal;
     readonly abortController?: AbortController;
@@ -273,26 +280,29 @@ export async function withTimeoutAndAbort<T>(
   };
 
   return new Promise<T>((resolve, reject) => {
-    timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      if (
-        opts.abortController &&
-        !opts.abortController.signal.aborted
-      ) {
-        try {
-          opts.abortController.abort(
-            `tool timeout: ${opts.toolName} exceeded ${opts.timeoutMs}ms`,
-          );
-        } catch {
-          // already aborted
+    const timeoutMs = opts.timeoutMs;
+    if (timeoutMs !== null) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (
+          opts.abortController &&
+          !opts.abortController.signal.aborted
+        ) {
+          try {
+            opts.abortController.abort(
+              `tool timeout: ${opts.toolName} exceeded ${timeoutMs}ms`,
+            );
+          } catch {
+            // already aborted
+          }
         }
+        reject(new ToolTimeoutError(opts.toolName, timeoutMs));
+      }, timeoutMs);
+      if (typeof (timer as { unref?: () => void }).unref === "function") {
+        (timer as { unref: () => void }).unref();
       }
-      reject(new ToolTimeoutError(opts.toolName, opts.timeoutMs));
-    }, opts.timeoutMs);
-    if (typeof (timer as { unref?: () => void }).unref === "function") {
-      (timer as { unref: () => void }).unref();
     }
 
     if (opts.signal) {

@@ -192,7 +192,8 @@ describe("model-facing tools", () => {
     const waitAgentTool = registry.tools.find(
       (tool) => tool.name === "wait_agent",
     );
-    expect(waitAgentTool?.timeoutMs).toBe(3_601_000);
+    expect(waitAgentTool?.timeoutBehavior).toBe("tool");
+    expect(waitAgentTool?.timeoutMs).toBeUndefined();
     expect(waitAgentTool?.inputSchema).toMatchObject({
       properties: {
         timeout_ms: {
