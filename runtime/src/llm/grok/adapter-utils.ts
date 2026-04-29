@@ -11,8 +11,21 @@ import type {
   LLMTool,
   LLMToolChoice,
 } from "../types.js";
-import { sanitizeToolCallArgumentsForReplay } from "../chat-executor-tool-utils.js";
-import { safeStringify } from "../../tools/types.js";
+import { safeStringify } from "../_deps/safe-stringify.js";
+
+// The original sanitizer lived in the deleted chat-executor-tool-utils.
+// The Grok adapter only needs bounded trace replay strings, so this keeps
+// the local surface intentionally narrow.
+function sanitizeToolCallArgumentsForReplay(args: unknown): string {
+  try {
+    const serialized = safeStringify(args);
+    return serialized.length > 4_000
+      ? `${serialized.slice(0, 4_000)}… (truncated)`
+      : serialized;
+  } catch {
+    return String(args);
+  }
+}
 
 const MAX_STATEFUL_RECONCILIATION_WINDOW = 256;
 const STATEFUL_HASH_VERSION = "v1";
@@ -27,7 +40,19 @@ const TOOL_METADATA_KEYS = new Set([
   "writeOnly",
 ]);
 const PRIORITY_TOOL_NAMES = new Set([
-  "system.bash",
+  "exec_command",
+  "write_stdin",
+  // AgenC-owned file/search tools (lifted into AgenC).
+  "FileRead",
+  "Edit",
+  "Write",
+  "Glob",
+  "Grep",
+  "TodoWrite",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "system.searchTools",
+  "system.agent.delegate",
   "desktop.bash",
   "desktop.screenshot",
   "desktop.window_list",
@@ -201,12 +226,12 @@ export function buildProviderTraceErrorPayload(
     const headers = (error as { headers?: unknown }).headers;
     if (headers && typeof headers === "object") {
       try {
-        if (typeof (headers as { entries?: unknown }).entries === "function") {
+        if (
+          typeof (headers as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
+            "function"
+        ) {
           payload.headers = Object.fromEntries(
-            Array.from(
-              (headers as Headers).entries(),
-              ([key, value]) => [key, value],
-            ),
+            Array.from(headers as Iterable<readonly [string, string]>),
           );
         } else if (!Array.isArray(headers)) {
           payload.headers = cloneProviderTracePayload(headers);

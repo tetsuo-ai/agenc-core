@@ -1,96 +1,222 @@
 /**
- * Hook dispatcher (Cut 5.2).
+ * Lifecycle hook dispatcher.
  *
- * Walks every hook definition registered for the given event, runs the
- * matching ones in parallel with a per-hook timeout, and folds their
- * outcomes:
+ * Drives the `PreCompact`, `PostCompact`, and `SessionStart` events
+ * through the registered hook callbacks and aggregates results in the
+ * shape the upstream compact pipeline expects (see
+ * AgenC lifecycle hook dispatcher.
  *
- *   - any "deny" → final action is "deny" (first wins for the message)
- *   - any "allow" with `updatedInput` → wins over a no-op
- *   - all "noop" → final action is "noop"
- *
- * Hook execution itself is opaque (shell, callback, http) — the
- * registry stores the target as a string and the executors module
- * dispatches based on `HookKind`.
+ * Behavior preserved from upstream:
+ *  - Hooks run sequentially; abort signal is propagated.
+ *  - Hooks that throw are converted to a failed `HookResult` so a
+ *    broken hook cannot crash the compact loop.
+ *  - PreCompact merges every successful hook's trimmed `output` into
+ *    `newCustomInstructions` (joined with `\n\n`) and builds a per-hook
+ *    `userDisplayMessage` line.
+ *  - PostCompact does the same display-line aggregation but does not
+ *    surface custom instructions.
+ *  - SessionStart returns `HookResultMessage[]` — one entry per hook
+ *    that emitted a `message`, plus one synthesized
+ *    `hook_additional_context` envelope when any hook contributed
+ *    `additionalContexts`.
  *
  * @module
  */
+import type { HookResultMessage } from "../compact/_deps/types-message.js";
+import {
+  getLifecycleHookRegistry,
+  type LifecycleHookRegistry,
+} from "./registry.js";
+import type {
+  HookResult,
+  PostCompactHookInput,
+  PreCompactHookInput,
+  SessionStartHookInput,
+} from "./types.js";
 
-import type { HookContext, HookOutcome, HookEvent } from "./types.js";
-import type { HookRegistry } from "./registry.js";
-import { matchesHookMatcher } from "./matcher.js";
-import type { HookExecutor } from "./executors.js";
+const PRE_COMPACT_LABEL = "PreCompact";
+const POST_COMPACT_LABEL = "PostCompact";
 
-const DEFAULT_HOOK_TIMEOUT_MS = 5_000;
+/** Default hook execution timeout. Mirrors upstream
+ *  `TOOL_HOOK_EXECUTION_TIMEOUT_MS` budget rationale: hooks must not
+ *  stall the compact pipeline indefinitely. The dispatcher honors any
+ *  caller-supplied AbortSignal but does not wire its own timer (the
+ *  caller already passes `context.abortController.signal`). The
+ *  constant is exported for test parity. */
+export const HOOK_EXECUTION_TIMEOUT_MS = 60_000;
 
-export interface DispatchInput {
-  readonly registry: HookRegistry;
-  readonly event: HookEvent;
-  readonly context: HookContext;
-  /** What the matcher should compare against (tool name, file path, etc). */
-  readonly matchKey?: string;
-  /** Per-hook execution callback (registry just holds metadata). */
-  readonly executor: HookExecutor;
-  readonly timeoutMs?: number;
+interface DispatchOpts<H> {
+  readonly hooks: ReadonlyArray<H>;
+  readonly signal?: AbortSignal;
 }
 
-export interface DispatchResult {
-  readonly action: "allow" | "deny" | "noop";
-  readonly message?: string;
-  readonly updatedInput?: Record<string, unknown>;
-  readonly outcomes: readonly HookOutcome[];
-}
-
-export async function dispatchHooks(input: DispatchInput): Promise<DispatchResult> {
-  const definitions = input.registry.forEvent(input.event);
-  const matched = definitions.filter((definition) =>
-    matchesHookMatcher(definition.matcher, input.matchKey ?? ""),
-  );
-  if (matched.length === 0) {
-    return { action: "noop", outcomes: [] };
-  }
-  const timeoutMs = input.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
-  const outcomes = await Promise.all(
-    matched.map((definition) =>
-      runWithTimeout(input.executor(definition, input.context), timeoutMs),
-    ),
-  );
-  return foldOutcomes(outcomes);
-}
-
-function foldOutcomes(outcomes: readonly HookOutcome[]): DispatchResult {
-  let updatedInput: Record<string, unknown> | undefined;
-  for (const outcome of outcomes) {
-    if (outcome.action === "deny") {
-      return {
-        action: "deny",
-        message: outcome.message,
-        outcomes,
-      };
-    }
-    if (outcome.updatedInput) updatedInput = outcome.updatedInput;
-  }
-  if (updatedInput) {
-    return { action: "allow", updatedInput, outcomes };
-  }
-  return { action: "noop", outcomes };
-}
-
-async function runWithTimeout(
-  promise: Promise<HookOutcome>,
-  timeoutMs: number,
-): Promise<HookOutcome> {
-  let timer: NodeJS.Timeout | undefined;
+async function safeRun<I>(
+  hook: (
+    input: I,
+    signal?: AbortSignal,
+  ) => Promise<HookResult | undefined> | HookResult | undefined,
+  input: I,
+  signal: AbortSignal | undefined,
+  failureLabel: string,
+): Promise<HookResult> {
   try {
-    return await Promise.race([
-      promise,
-      new Promise<HookOutcome>((resolve) => {
-        timer = setTimeout(() => {
-          resolve({ action: "noop", message: `hook timed out after ${timeoutMs}ms` });
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    const r = await hook(input, signal);
+    if (r === undefined || r === null) {
+      return { succeeded: true, output: "" };
+    }
+    return r;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      succeeded: false,
+      output: msg,
+      command: failureLabel,
+    };
+  }
+}
+
+export interface PreCompactDispatchResult {
+  readonly newCustomInstructions?: string;
+  readonly userDisplayMessage?: string;
+}
+
+export async function dispatchPreCompact(
+  input: PreCompactHookInput,
+  opts: DispatchOpts<
+    (input: PreCompactHookInput, signal?: AbortSignal) =>
+      | Promise<HookResult | undefined>
+      | HookResult
+      | undefined
+  > = { hooks: getRegistryHooks("PreCompact") },
+): Promise<PreCompactDispatchResult> {
+  const hooks = opts.hooks;
+  if (hooks.length === 0) return {};
+
+  const results: HookResult[] = [];
+  for (const h of hooks) {
+    if (opts.signal?.aborted) break;
+    results.push(await safeRun(h, input, opts.signal, PRE_COMPACT_LABEL));
+  }
+
+  const successfulOutputs = results
+    .filter((r) => r.succeeded && r.output.trim().length > 0)
+    .map((r) => r.output.trim());
+
+  const displayMessages = results.map((r) =>
+    formatDisplayLine(PRE_COMPACT_LABEL, r),
+  );
+
+  const result: PreCompactDispatchResult = {};
+  if (successfulOutputs.length > 0) {
+    return Object.assign(result, {
+      newCustomInstructions: successfulOutputs.join("\n\n"),
+      userDisplayMessage: displayMessages.join("\n"),
+    });
+  }
+  if (displayMessages.length > 0) {
+    return Object.assign(result, {
+      userDisplayMessage: displayMessages.join("\n"),
+    });
+  }
+  return result;
+}
+
+export interface PostCompactDispatchResult {
+  readonly userDisplayMessage?: string;
+}
+
+export async function dispatchPostCompact(
+  input: PostCompactHookInput,
+  opts: DispatchOpts<
+    (input: PostCompactHookInput, signal?: AbortSignal) =>
+      | Promise<HookResult | undefined>
+      | HookResult
+      | undefined
+  > = { hooks: getRegistryHooks("PostCompact") },
+): Promise<PostCompactDispatchResult> {
+  const hooks = opts.hooks;
+  if (hooks.length === 0) return {};
+
+  const results: HookResult[] = [];
+  for (const h of hooks) {
+    if (opts.signal?.aborted) break;
+    results.push(await safeRun(h, input, opts.signal, POST_COMPACT_LABEL));
+  }
+
+  const displayMessages = results.map((r) =>
+    formatDisplayLine(POST_COMPACT_LABEL, r),
+  );
+
+  if (displayMessages.length === 0) return {};
+  return { userDisplayMessage: displayMessages.join("\n") };
+}
+
+export async function dispatchSessionStart(
+  input: SessionStartHookInput,
+  opts: DispatchOpts<
+    (input: SessionStartHookInput, signal?: AbortSignal) =>
+      | Promise<HookResult | undefined>
+      | HookResult
+      | undefined
+  > = { hooks: getRegistryHooks("SessionStart") },
+): Promise<HookResultMessage[]> {
+  const hooks = opts.hooks;
+  if (hooks.length === 0) return [];
+
+  const out: HookResultMessage[] = [];
+  const additionalContexts: string[] = [];
+
+  for (const h of hooks) {
+    if (opts.signal?.aborted) break;
+    const result = await safeRun(h, input, opts.signal, "SessionStart");
+    if (result.message !== undefined) out.push(result.message);
+    if (result.additionalContexts && result.additionalContexts.length > 0) {
+      for (const c of result.additionalContexts) additionalContexts.push(c);
+    }
+  }
+
+  if (additionalContexts.length > 0) {
+    out.push({
+      type: "hook_additional_context",
+      hookEvent: "SessionStart",
+      hookName: "SessionStart",
+      content: additionalContexts,
+    });
+  }
+
+  return out;
+}
+
+function formatDisplayLine(label: string, r: HookResult): string {
+  const cmd = r.command ?? label;
+  const trimmed = r.output.trim();
+  if (r.succeeded) {
+    return trimmed
+      ? `${label} [${cmd}] completed successfully: ${trimmed}`
+      : `${label} [${cmd}] completed successfully`;
+  }
+  return trimmed ? `${label} [${cmd}] failed: ${trimmed}` : `${label} [${cmd}] failed`;
+}
+
+function getRegistryHooks(
+  event: "PreCompact",
+): ReturnType<LifecycleHookRegistry["getPreCompact"]>;
+function getRegistryHooks(
+  event: "PostCompact",
+): ReturnType<LifecycleHookRegistry["getPostCompact"]>;
+function getRegistryHooks(
+  event: "SessionStart",
+): ReturnType<LifecycleHookRegistry["getSessionStart"]>;
+function getRegistryHooks(
+  event: "PreCompact" | "PostCompact" | "SessionStart",
+): ReadonlyArray<unknown> {
+  const r = getLifecycleHookRegistry();
+  switch (event) {
+    case "PreCompact":
+      return r.getPreCompact();
+    case "PostCompact":
+      return r.getPostCompact();
+    case "SessionStart":
+      return r.getSessionStart();
   }
 }

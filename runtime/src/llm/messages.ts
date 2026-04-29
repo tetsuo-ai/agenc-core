@@ -11,7 +11,11 @@
  * Steps in order:
  *   1. Strip "virtual" / boundary system messages whose content starts
  *      with `[snip]`, `[microcompact]`, `[context-collapse]`, `[autocompact]`,
- *      `[reactive-compact]`, or `[boundary]`.
+ *      `[reactive-compact]`, or `[boundary]`, and drop non-leading system
+ *      messages. OpenClaude keeps system prompt blocks out of the conversation
+ *      list; AgenC may carry the single leading prompt as a message before
+ *      provider wiring, but mid-conversation system messages are runtime
+ *      signals and must not reach providers.
  *   2. Drop empty assistant content unless that message is the very
  *      last one in the array.
  *   3. Merge consecutive same-role messages of role `user` so the API
@@ -50,11 +54,18 @@ export function normalizeMessagesForAPI(
   options?: NormalizeMessagesForAPIOptions,
 ): readonly LLMMessage[] {
   const stripped: LLMMessage[] = [];
+  let sawNonSystemMessage = false;
   for (const message of messages) {
     if (message.role === "system" && typeof message.content === "string") {
       if (BOUNDARY_PREFIXES.some((prefix) => message.content.toString().startsWith(prefix))) {
         continue;
       }
+    }
+    if (message.role === "system" && sawNonSystemMessage) {
+      continue;
+    }
+    if (message.role !== "system") {
+      sawNonSystemMessage = true;
     }
     stripped.push(message);
   }

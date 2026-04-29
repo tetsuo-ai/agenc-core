@@ -1,3 +1,10 @@
+## PR #local-2026-04-23: fix(tui): exhaustive codex parity audit
+- **Date:** 2026-04-23
+- **Files changed:** `runtime/src/tui/{App,composer/*,overlay/*,permissions/*,hooks/*,transcript/*,ink/**/*,keybindings/*,cockpit/*}`, `runtime/src/bin/{agenc,slash}.ts`, `runtime/src/commands/{dispatcher,help,permissions,provider,registry}.ts`, matching TUI/bin/command tests, `.claude/notes/{gotchas,techdebt-2026-04-23}.md`
+- **What worked:** Splitting the audit across non-overlapping shell, composer, transcript, Ink, and command/bootstrap slices exposed the remaining parity drift cleanly, and the final full-surface verification (`vitest`, `tsconfig.tui`, runtime build) kept the fixes grounded in runtime behavior instead of local UI patching.
+- **What didn't:** The TUI still concentrates too much orchestration in `App.tsx`, `Composer.tsx`, and `ink.tsx`, so even a disciplined parity pass required coordinated edits across many files to close what were conceptually small drift bugs.
+- **Rule added to CLAUDE.md:** no
+
 ## PR #159: fix(runtime): harden artifact update routing and verification
 - **Date:** 2026-04-05
 - **Files changed:** `runtime/src/llm/*`, `runtime/src/workflow/*`, `runtime/src/gateway/delegation-*`, `runtime/src/utils/delegation-execution-context.ts`

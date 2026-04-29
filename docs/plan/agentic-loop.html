@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AgenC · Full Agentic Loop</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --bg-soft: #12121a;
+      --fg: #e8e8ef;
+      --fg-dim: #9595a8;
+      --accent: #c8b6ff;
+      --border: #1f1f2e;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+      font-size: 14px;
+      height: 100%;
+      overflow: hidden;
+    }
+    header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: var(--bg-soft);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 16px;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+      color: var(--accent);
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+      align-items: center;
+    }
+    button {
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 12px;
+      border-radius: 3px;
+    }
+    button:hover { border-color: var(--accent); color: var(--accent); }
+    .legend {
+      font-size: 11px;
+      color: var(--fg-dim);
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .legend-item {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+      display: inline-block;
+    }
+    .swatch-phase-prep { background: #1d3a3a; border: 1px solid #4a8080; }
+    .swatch-phase-stream { background: #1d2a4a; border: 1px solid #4a70b0; }
+    .swatch-phase-recovery { background: #4a1d1d; border: 1px solid #c04040; }
+    .swatch-phase-nudge { background: #3a1d4a; border: 1px solid #8040c0; }
+    .swatch-phase-exec { background: #3a3a1d; border: 1px solid #b0a040; }
+    .swatch-phase-commit { background: #1d4a2a; border: 1px solid #40a060; }
+    .swatch-subagent { background: #143020; border: 1px solid #40a060; }
+    .swatch-sidecar { background: #2a1d4a; border: 1px solid #8060c0; }
+    .swatch-provider { background: #4a3820; border: 1px solid #d49838; }
+    .swatch-init { background: #2a2a2a; border: 1px solid #808080; }
+    .swatch-invariant { background: #3d2a4a; border: 1px solid #d060f0; }
+
+    #viewport {
+      position: fixed;
+      top: 52px;
+      left: 0;
+      right: 0;
+      bottom: 24px;
+      overflow: hidden;
+      background: var(--bg);
+    }
+    #diagram-container {
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    #diagram-container:active { cursor: grabbing; }
+    #diagram-container svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      max-width: none !important;
+    }
+    footer {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--bg-soft);
+      border-top: 1px solid var(--border);
+      padding: 4px 16px;
+      z-index: 100;
+      font-size: 11px;
+      color: var(--fg-dim);
+      display: flex;
+      justify-content: space-between;
+    }
+    .zoom-info { color: var(--accent); }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    #loader {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: var(--fg-dim);
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgenC · Full Agentic Loop</h1>
+    <div class="legend">
+      <span class="legend-item"><span class="swatch swatch-init"></span>Init</span>
+      <span class="legend-item"><span class="swatch swatch-phase-prep"></span>P1 Prepare</span>
+      <span class="legend-item"><span class="swatch swatch-phase-stream"></span>P2 Stream</span>
+      <span class="legend-item"><span class="swatch swatch-provider"></span>Provider</span>
+      <span class="legend-item"><span class="swatch swatch-phase-recovery"></span>P3 Recovery</span>
+      <span class="legend-item"><span class="swatch swatch-phase-nudge"></span>P4 Nudge</span>
+      <span class="legend-item"><span class="swatch swatch-phase-exec"></span>P5 Execute</span>
+      <span class="legend-item"><span class="swatch swatch-phase-commit"></span>P6 Commit</span>
+      <span class="legend-item"><span class="swatch swatch-subagent"></span>Subagent</span>
+      <span class="legend-item"><span class="swatch swatch-sidecar"></span>Event log</span>
+      <span class="legend-item"><span class="swatch swatch-invariant"></span>Invariant</span>
+    </div>
+    <div class="toolbar">
+      <button id="btn-reset">Reset view</button>
+      <button id="btn-fit">Fit width</button>
+      <button id="btn-zoom-in">+</button>
+      <button id="btn-zoom-out">−</button>
+    </div>
+  </header>
+
+  <div id="viewport">
+    <div id="loader">Rendering mermaid diagram…</div>
+    <div id="diagram-container"></div>
+  </div>
+
+  <footer>
+    <span>Scroll/pinch to zoom · drag to pan · multi-provider (9 adapters, Grok default) · 88 invariants (I-1..I-88) resolved · see docs/plan/invariants.md</span>
+    <span class="zoom-info" id="zoom-info">100%</span>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    const svgPanZoom = window.svgPanZoom;
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#0a0a0f',
+        primaryColor: '#1a1a2e',
+        primaryTextColor: '#e8e8ef',
+        primaryBorderColor: '#2d2d4d',
+        lineColor: '#6a6a8a',
+        secondaryColor: '#12121a',
+        tertiaryColor: '#1f1f2e',
+        fontFamily: 'JetBrains Mono, Menlo, monospace',
+        fontSize: '13px',
+      },
+      flowchart: {
+        htmlLabels: true,
+        curve: 'basis',
+        nodeSpacing: 40,
+        rankSpacing: 60,
+        padding: 10,
+      },
+      maxTextSize: 500000,
+      maxEdges: 2000,
+    });
+
+    const diagram = `
+flowchart TB
+  Start(["👤 User launches agenc"]) --> EntryMode{Entry mode?}
+
+  %% ENTRY MODES
+  EntryMode -->|"agenc &quot;prompt&quot;"| OneShot["One-shot CLI"]
+  EntryMode -->|"stdin pipe"| Pipe["echo ... | agenc"]
+  EntryMode -->|"agenc (no args)"| BootTUI["Ink TUI boot"]
+  EntryMode -->|"agenc --resume ID"| Resume["Rollout reconstruction<br/>reverse-scan + forward-replay"]
+  EntryMode -->|"agenc --fork ID"| Fork["Fork parent rollout"]
+
+  subgraph InitBlock [Session Initialization]
+    direction TB
+    PreInit["I-52: validate HOME + ~/.agenc writable<br/>I-45/I-46: install SIGTERM/SIGHUP handlers<br/>I-47: install SIGUSR1/SIGUSR2 handlers"]
+    PreInit --> LoadConfig
+    LoadConfig["config/loader.ts<br/>TOML + profile + env"]
+    LoadPrompt["prompts/system-prompt.ts<br/>15 sections + dynamic boundary"]
+    LoadAgentsMD["prompts/project-instructions.ts<br/>ancestor walk: AGENC.md<br/>@include + 4-tier precedence<br/><b>I-75: @include paths boundary-validated (extends I-71)<br/>I-80+I-81: line-ending normalize + UTF-8 BOM strip on read</b>"]
+    LoadMemory["prompts/memory/loader.ts<br/>global + per-project MEMORY.md<br/>4 types: user/feedback/project/reference"]
+    LoadMCP["mcp-client/manager.ts<br/>stdio + SSE + HTTP servers<br/>30s wait per server<br/><b>I-73: reject namespace-shadowing tool names<br/>I-74: SHA-256 catalog supply-chain validation<br/>I-76: cap response at 5MB</b>"]
+    MCPStartupBranch{"Server responds?<br/>(I-6 fail-soft by default)"}
+    MCPReady[Server ready — tools registered]
+    MCPSoftFail["Log warning<br/>emit McpStartupFailed<br/>continue without tools<br/>(unless required:true)"]
+    LoadTools["tool-registry.ts<br/>build + tag concurrency class"]
+    LoadPerms["permissions/evaluator.ts<br/>settings precedence:<br/>user → project → local → CLI → policy"]
+    LoadProvider["provider factory<br/>resolve-provider + resolve-model<br/>CLI → env → profile → config → grok/grok-4-fast"]
+    LoadCaps["capabilities.ts<br/>static registry<br/>(provider × model → capability profile)"]
+
+    LoadConfig --> LoadProvider
+    LoadProvider --> LoadCaps
+    LoadCaps --> LoadPrompt --> LoadAgentsMD --> LoadMemory --> LoadMCP
+    LoadMCP --> MCPStartupBranch
+    MCPStartupBranch -->|yes| MCPReady
+    MCPStartupBranch -->|"no + required:true<br/>(I-8 emits error)"| MCPHardFail[Hard-fail boot]
+    MCPStartupBranch -->|"no + required:false<br/>(I-6 fail-soft + I-8 emits warning)"| MCPSoftFail
+    MCPReady --> MCPAggregate
+    MCPSoftFail --> MCPAggregate
+    MCPAggregate{"I-20: 0 servers up<br/>AND any tool requiresMcp:true?"}
+    MCPAggregate -->|yes| MCPHardFail
+    MCPAggregate -->|no| LoadTools
+    LoadTools --> LoadPerms
+  end
+
+  OneShot --> InitBlock
+  Pipe --> InitBlock
+  BootTUI --> InitBlock
+  Resume --> InitBlock
+  Fork --> InitBlock
+
+  InitBlock --> SessionReady["Session struct constructed<br/>conversationId, txEvent,<br/>state, activeTurn, mailbox, services"]
+
+  %% INPUT PROCESSING
+  SessionReady --> WaitInput{Input source}
+  WaitInput -->|TUI| Composer["Composer<br/>multiline + history + IME"]
+  WaitInput -->|argv/stdin| DirectInput[Direct prompt]
+
+  Composer --> Paste{Image paste?}
+  Paste -->|yes| ImgEncode["imagePaste.ts<br/>clipboard → base64"]
+  Paste -->|no| DragDrop{Drag-drop path?}
+  ImgEncode --> DragDrop
+  DragDrop -->|yes| ExtractPaths["dragDropPaths.ts"]
+  DragDrop -->|no| AtMention{"@file mention?"}
+  ExtractPaths --> AtMention
+  AtMention -->|yes| FileAttach[Attach refs]
+  AtMention -->|no| SlashCheck{"Starts with / ?"}
+  FileAttach --> SlashCheck
+  DirectInput --> SlashCheck
+
+  SlashCheck -->|yes| SlashDispatch["commands/dispatcher.ts<br/>inline-args support"]
+  SlashCheck -->|no| BuildTurn[Build TurnState]
+
+  SlashDispatch --> SlashWhich{Which?}
+  SlashWhich -->|/plan| ModeChange["Cycle permission mode<br/>via keybindings"]
+  SlashWhich -->|/model| ModelSwitchCheck{"I-13: active turn?"}
+  ModelSwitchCheck -->|yes| ModelLiveSwitch["session.abortTerminal('provider_switched')<br/>set pending-switch flag<br/>clear lastResponseId (I-2)<br/>I-8 warning"]
+  ModelSwitchCheck -->|no| ModelPicker[Model picker]
+  ModelLiveSwitch --> WaitInput
+  SlashWhich -->|/compact| ManualCompact[Trigger compactConversation]
+  SlashWhich -->|/resume| ResumeCmd[Resume picker]
+  SlashWhich -->|/fork| ForkCmd[Fork this session]
+  SlashWhich -->|/init| InitCmd[Create AGENTS.md]
+  SlashWhich -->|/diff| DiffCmd[Git diff view]
+  SlashWhich -->|/status| StatusCmd[Show status]
+  SlashWhich -->|/mcp| McpCmd[List MCP tools]
+  SlashWhich -->|/exit| Exit
+  ModeChange --> WaitInput
+  ModelPicker --> WaitInput
+  ManualCompact --> WaitInput
+  ResumeCmd --> WaitInput
+  ForkCmd --> WaitInput
+  InitCmd --> WaitInput
+  DiffCmd --> WaitInput
+  StatusCmd --> WaitInput
+  McpCmd --> WaitInput
+
+  %% PHASE MACHINE
+  BuildTurn --> EmitTurnStarted["event-log.emit TurnStarted"]
+  EmitTurnStarted --> Phase1
+
+  subgraph PhaseMachine [The 6-Phase Turn Loop]
+    direction TB
+
+    subgraph P1 [Phase 1 · PREPARE_CONTEXT · phases/prepare-context.ts]
+      direction TB
+      Phase1[Enter prepare-context] --> Snip[snip: boundary trim]
+      Snip --> MicroCompact[microCompact: selective tool-result clear]
+      MicroCompact --> ContextCollapse[context-collapse projection]
+      ContextCollapse --> AutoCompactCheck{Context > threshold?}
+      AutoCompactCheck -->|no| AssembleMsgs[Assemble messagesForQuery]
+      AutoCompactCheck -->|yes| CircuitBreaker{3+ failures?}
+      CircuitBreaker -->|yes| SkipCompact[Skip - circuit open]
+      CircuitBreaker -->|no| TrySM[trySessionMemoryCompaction]
+      TrySM --> SMWorked{Pruned?}
+      SMWorked -->|yes| PostRehydrate
+      SMWorked -->|no| FullCompact["compactConversation<br/>strip images → prompt template → model<br/>PTL retry 3x via groupMessagesByApiRound"]
+      FullCompact --> ShrinkAssert{"I-18: summary.tokens<br/>< original.tokens * 0.7?"}
+      ShrinkAssert -->|"no — verbose summary"| ShrinkFail["Increment circuit-breaker<br/>(MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3)<br/>discard summary + I-8 warning"]
+      ShrinkAssert -->|yes| PostRehydrate["Post-compact rehydration:<br/>files (5/50K), skills (25K),<br/>plan, async-agents, deferred schemas"]
+      ShrinkFail --> AssembleMsgs
+      PostRehydrate --> PostCleanup["runPostCompactCleanup:<br/>clear micro state, file cache,<br/>classifier approvals, section cache,<br/><b>I-2: activeProvider.clearResponseId()</b>"]
+      PostCleanup --> EmitCompacted["I-8: emit ContextCompacted event<br/>(durable — fsync per I-4)"]
+      EmitCompacted --> AssembleMsgs
+      SkipCompact --> AssembleMsgs
+      AssembleMsgs --> AttachMemory["Inject relevant memory<br/>5 files/turn, 4KB ea, 60KB cap"]
+      AttachMemory --> AttachEnv["Inject env context:<br/>cwd, git, platform, model, cutoff"]
+      AttachEnv --> AttachMCP["Inject MCP instructions<br/>busts cache on server change"]
+      AttachMCP --> HooksSessionStart["hooks: SessionStart (first turn only)"]
+    end
+
+    HooksSessionStart --> Phase2
+
+    subgraph P2 [Phase 2 · STREAM_MODEL · phases/stream-model.ts]
+      direction TB
+      Phase2["Enter stream-model<br/>read session.activeProvider + activeModel<br/>(resolved once at init — see Init block)"] --> ShapeReq["llm/shape-request.ts<br/>capability-driven composer:<br/>• prompt_cache_key (if caps)<br/>• previous_response_id (if caps + not-cleared)<br/>• encrypted_reasoning (if caps)<br/>• thinking blocks (if caps)<br/>• reasoning.effort (if caps)<br/>• cache_control blocks (if caps)<br/>• parallel_tool_calls (if caps)"]
+      ShapeReq --> IncrementalOpt["llm/providers/&lt;active&gt;/incremental.ts<br/>cache lastResponseId + items sent<br/>send only delta on next request"]
+      IncrementalOpt --> ProviderCall["llm/provider factory<br/>→ active Provider.chatStream()<br/>(Grok default; OpenAI/Anthropic/Ollama/<br/>LMStudio/OpenRouter/Groq/DeepSeek/Gemini)"]
+      ProviderCall --> RespIdCheck{"Response: 404 / unknown_response_id<br/>(I-14 expiration)?"}
+      RespIdCheck -->|yes| RespIdRetry["Clear lastResponseId<br/>retry once with full history<br/>I-8 warning: previous_response_id_expired"]
+      RespIdCheck -->|no| WatchdogWrap
+      RespIdRetry --> WatchdogWrap
+      ProviderCall --> WatchdogWrap["I-11: Promise.race(nextEvent, idleTimer)<br/>STREAM_IDLE_TIMEOUT_MS=90s default-on (matches AgenC)<br/>(opt-out via AGENC_DISABLE_STREAM_WATCHDOG)"]
+      WatchdogWrap --> StreamLoop{Stream event}
+      StreamLoop -->|output_text.delta| StreamParse["llm/stream-parser.ts<br/>extract thinking/plan blocks<br/>strip proposed_plan markers<br/>capture citations<br/><b>I-77: scan for UI-spoof patterns<br/>([Approval Required], [y/n], etc.)<br/>prefix with [MODEL OUTPUT] marker</b>"]
+      StreamParse --> BudgetCheck{"I-22: every 1000 tokens<br/>budgetTracker.remaining > 0?"}
+      BudgetCheck -->|yes| EmitToken[Yield token to TUI]
+      BudgetCheck -->|"no, budget exceeded"| AbortRecovery
+      StreamLoop -->|output_item.done tool_use| ToolValidate{"I-54: schema validation<br/>{id,name,arguments:string}<br/>I-55: per-provider normalize<br/>I-56: chunk reorder if needed"}
+      ToolValidate -->|valid| AddTool["StreamingToolExecutor.addTool()<br/>classify ConcurrencyClass<br/>start dispatch IF canExecute"]
+      ToolValidate -->|"malformed"| MalformedToolBlock["I-8 stream_error: malformed_tool_call<br/>route to AbortRecovery"]
+      MalformedToolBlock --> AbortRecovery
+      StreamLoop -->|usage| TokenCount[event-log: TokenCount]
+      StreamLoop -->|"abort signal: user/parent/mode/<br/>auth-failed/stdin-lost/<br/>provider_switched (I-7 terminal)"| AbortTerminal["abortInFlight cascade<br/>discard StreamingToolExecutor<br/>synthesize tool_result for orphans<br/>(query.ts:1046-1082 pattern)"]
+      StreamLoop -->|"abort signal: recovery /<br/>stream_idle / token_budget<br/>(I-7 healing destination)"| AbortRecovery["abortInFlight cascade<br/>(same mechanism, different dest)"]
+      StreamLoop -->|"watchdog timeout<br/>(I-11)"| StreamIdle["I-8 stream_error<br/>cause='stream_idle'<br/>route to AbortRecovery"]
+      StreamIdle --> AbortRecovery
+      StreamLoop -->|done| StreamEnd[Stream complete]
+      EmitToken --> WatchdogWrap
+      AddTool --> WatchdogWrap
+      TokenCount --> WatchdogWrap
+      AbortTerminal --> Cleanup
+      AbortRecovery --> Phase3
+      StreamEnd --> ProviderErr{Provider error?}
+      ProviderErr -->|FallbackTriggeredError| ModelFallback["Yield missing tool_results<br/>clear arrays + discard executor<br/>swap fallback model"]
+      ProviderErr -->|"401 bearer provider<br/>(Grok/Anthropic/Groq/DeepSeek/<br/>OpenRouter/LMStudio)"| AuthBearerFail["I-8: emit error event<br/>cli_invalid_bearer_key<br/>hard-fail with env-var hint"]
+      ProviderErr -->|"401 OAuth provider<br/>(OpenAI ChatGPT, future)"| AuthOAuth["llm/oauth/refresh-loop.ts<br/>refresh access token<br/>increment consecutiveAuthFailures"]
+      AuthOAuth --> AuthCap{"≥ MAX_CONSECUTIVE_AUTH_FAILURES<br/>(=10, ccrClient.ts:68)?"}
+      AuthCap -->|yes| AuthExhausted["I-8: emit error event<br/>cli_worker_auth_failures_exhausted<br/>hard-fail: re-authenticate"]
+      AuthCap -->|no| ProviderCall
+      ProviderErr -->|"network / 5xx / 429"| SDKRetry["SDK retry<br/>exponential backoff (monotonic clock per I-82)<br/><b>I-58: honor Retry-After header (port AgenC)<br/>I-84: parse seconds OR HTTP-date<br/>cap at MAX_RETRY_AFTER_MS=300000</b>"]
+    ProviderErr -->|"200 OK + text/html<br/>(captive portal / proxy intercept)"| CaptivePortal["I-85: stream_error<br/>cause='captive_portal_or_proxy_intercept'<br/>non-retryable"]
+    ProviderErr -->|"TLS cert validation failed<br/>(rotation / expiry / CA change)"| TlsError["I-86: LLMCertificateError<br/>distinct from auth failure<br/>retry once with fresh handshake"]
+    CaptivePortal --> Cleanup
+    TlsError --> ProviderCall
+    ProviderErr -->|"local provider ECONNREFUSED"| LocalDead["I-59: local-provider health-check<br/>(Ollama/LMStudio process dead)<br/>I-8 stream_error before I-11 watchdog fires"]
+    LocalDead --> AbortRecovery
+      ProviderErr -->|"provider-specific quirk<br/>(xAI mid-sentence truncation,<br/>Anthropic overload, etc.)"| ProviderQuirk["per-adapter workaround<br/>(e.g. grok/mid-sentence.ts<br/>tool_choice=none retry)"]
+      ProviderErr -->|no| Phase3
+      ModelFallback --> Phase1
+      AuthBearerFail --> Cleanup
+      AuthExhausted --> Cleanup
+      SDKRetry --> ProviderCall
+      ProviderQuirk --> ProviderCall
+    end
+
+    subgraph P3 [Phase 3 · POST_SAMPLE_RECOVERY · phases/post-sample-recovery.ts]
+      direction TB
+      Phase3[Evaluate recovery triggers] --> WithheldGate{Withheld cascading<br/>2-gate check}
+      WithheldGate -->|isWithheld413| Rec413{collapse_drain_retry<br/>already tried?}
+      Rec413 -->|no| CollapseDrain["recovery/collapse-drain.ts<br/>recoverFromOverflow<br/>transition=collapse_drain_retry"]
+      Rec413 -->|yes| ReactiveCheck
+      WithheldGate -->|isWithheldMedia| ReactiveCheck["recovery/reactive-compact.ts<br/>tryReactiveCompact<br/>(skips collapse)"]
+      WithheldGate -->|isWithheldMaxOutputTokens| MaxTokCheck{Override = default?}
+      Phase3 --> RecoveryReentryGate{"I-42: recoveryReentryCount<br/>< MAX_RECOVERY_REENTRIES (=5)?"}
+      RecoveryReentryGate -->|no| RecoveryLoopAbort["I-8 error: recovery_loop<br/>terminate turn"]
+      RecoveryReentryGate -->|yes| RecoveryLockAcq["I-62: acquire recoveryInFlight lock<br/>(serialize concurrent triggers)"]
+      RecoveryLockAcq --> WithheldGate
+      RecoveryLoopAbort --> Cleanup
+      WithheldGate -->|stopHookBlocking| StopHookCounter{"I-17: stopHookBlockingCount<br/>< MAX_STOP_HOOK_BLOCKS (=3)?"}
+      StopHookCounter -->|yes| StopHookInject["Inject blocking errors<br/>increment stopHookBlockingCount<br/><b>PRESERVE hasAttemptedReactiveCompact</b><br/>(reset causes infinite loop)"]
+      StopHookCounter -->|no| StopHookLoopAbort["I-8: emit error<br/>error:'stop_hook_loop'<br/>terminate turn"]
+      StopHookLoopAbort --> Cleanup
+      WithheldGate -->|streamingFallbackOccured| TombstoneOrphans["recovery/tombstone.ts<br/>clear arrays + fresh executor"]
+      WithheldGate -->|no trigger| Phase4
+      MaxTokCheck -->|"yes, 8k default"| Escalate["Override = 64k<br/>transition=max_output_tokens_escalate"]
+      MaxTokCheck -->|"no, 64k exhausted"| MaxTokRecover{recoveryCount &lt; limit?}
+      MaxTokRecover -->|yes| NudgeInject["Inject meta message<br/>'Resume directly - no apology'<br/>transition=max_output_tokens_recovery"]
+      MaxTokRecover -->|no| SurfaceErr1[Surface error + yield]
+      ReactiveCheck --> RCWorked{Compacted?}
+      RCWorked -->|yes| ReactiveClearResp["I-2: activeProvider.clearResponseId()<br/>(P3 compaction triggers same I-2 contract as P1)"]
+      ReactiveClearResp --> ReactiveRetry["transition=reactive_compact_retry<br/>buildPostCompactMessages"]
+      RCWorked -->|no| ApiErrGuard{"lastMessage.isApiErrorMessage?<br/>(AgenC query.ts:1297-1299 guard<br/>— without this, hooks fire on success<br/>and tokens spiral)"}
+      ApiErrGuard -->|no — skip hooks| SurfaceErr2
+      ApiErrGuard -->|yes| ExecStopFailHooks["executeStopFailureHooks"]
+      ExecStopFailHooks --> SurfaceErr2["Return {reason:prompt_too_long<br/>OR image_error}"]
+      CollapseDrain --> CollapseClearResp["I-2: clearResponseId()<br/>(collapse-drain modifies history)"]
+      CollapseClearResp --> Phase1
+      ReactiveRetry --> Phase1
+      Escalate --> Phase1
+      NudgeInject --> Phase1
+      StopHookInject --> Phase1
+      TombstoneOrphans --> Phase1
+      SurfaceErr1 --> Exit
+      SurfaceErr2 --> Exit
+    end
+
+    subgraph P4 [Phase 4 · CONTINUATION_NUDGE · phases/continuation-nudge.ts]
+      direction TB
+      Phase4{needsFollowUp?} -->|"yes, has tool calls"| Phase5
+      Phase4 -->|"no tool calls, has text"| NudgeCheck{"continuationNudgeCount &lt; max<br/>AND turnCount &lt; maxTurns?"}
+      NudgeCheck -->|yes| NudgeMsg["Inject nudge from model text<br/>transition=continuation_nudge"]
+      NudgeCheck -->|no| Phase6
+      NudgeMsg --> Phase1
+    end
+
+    subgraph P5 [Phase 5 · EXECUTE_TOOLS · phases/execute-tools.ts]
+      direction TB
+      Phase5[For each tool_use block] --> ClassifyC["tools/concurrency.ts<br/>classify: Exclusive / SharedRead /<br/>SharedServer(id) / BackgroundTerminal"]
+      ClassifyC --> PermEval["permissions/evaluator.ts<br/>5-step decision tree"]
+
+      PermEval --> Step1{"Deny check<br/>bypass-immune"}
+      Step1 -->|tool denied| Denied1[Return deny]
+      Step1 -->|requiresUserInteraction| ForceAsk[Force ask even in bypass]
+      Step1 -->|"content-specific .git/ .agenc/"| ForceAsk
+      Step1 -->|passes| Step2{Mode check}
+      Step2 -->|"bypass OR plan+bypassAvail"| Allowed1[Auto-allow]
+      Step2 -->|allow-rule match| Allowed1
+      Step2 -->|passthrough| AskConvert[Convert → ask]
+      Step2 -->|"plan mode + write tool"| Denied2["Deny: read-only exploration"]
+      AskConvert --> Step4{Post-transforms}
+      ForceAsk --> Step4
+      Step4 -->|dontAsk| Denied3[Auto-reject]
+      Step4 -->|auto mode| Classifier["2-stage YOLO classifier<br/>fast + thinking"]
+      Classifier --> ClassVerdict{Verdict}
+      ClassVerdict -->|auto-approve| Allowed2[Allow]
+      ClassVerdict -->|uncertain| InteractiveModal
+      ClassVerdict -->|"denial limits 5/15"| InteractiveModal
+      Step4 -->|default| InteractiveModal
+
+      InteractiveModal["InteractiveHandler<br/>TUI ApprovalOverlay<br/><b>I-21: subscribe to abortController.signal<br/>I-44: stamp decisionAtTurnId<br/>I-72: exclusive input focus (composer muted)</b>"] --> ModalRace{First to fire}
+      ModalRace -->|classifier approves| Allowed3[Allow]
+      ModalRace -->|user allows| Allowed4["Allow<br/>persist rule (optional)"]
+      ModalRace -->|user rejects| Denied4[Deny]
+      ModalRace -->|"Ctrl+C / abort signal (I-21)"| Aborted[Abort turn — propagates to executor]
+
+      Allowed1 --> RunHooks
+      Allowed2 --> RunHooks
+      Allowed3 --> RunHooks
+      Allowed4 --> RunHooks
+      RunHooks["hooks: PreToolUse<br/>parallel dispatch + deny-fold"] --> HookResult{Hook result}
+      HookResult -->|deny| Denied5[Skip tool]
+      HookResult -->|allow + updatedInput| RwLockAcq
+      HookResult -->|allow| RwLockAcq
+      RwLockAcq{"Concurrency lock<br/>AsyncRwLock"} -->|SharedRead → read lock| DispatchTool
+      RwLockAcq -->|Exclusive → write lock drains readers| DispatchTool
+      RwLockAcq -->|SharedServer → semaphore per server| DispatchTool
+      RwLockAcq -->|BackgroundTerminal → off-ladder| DispatchTool
+
+      DispatchTool["tool.call(input, abortSignal, timeoutMs)<br/>streaming progress buffer<br/><b>I-9: per-tool timeout (default 30s, monotonic clock per I-82)<br/>I-3: mutation tools call checkModeStillAllowed()<br/>I-78: stdio chunks accumulated as Buffer[], decoded once at flush<br/>I-79: tool args parsed with large-int reviver (BigInt for >2^53)</b>"] --> TimeoutRace{"Promise.race:<br/>tool / timeout / abort"}
+      TimeoutRace -->|timeout| ToolTimeout["I-9: TerminalToolResult{reason:'timeout',is_error:true}<br/>+ I-8 stream_error"]
+      TimeoutRace -->|abort signal| ModeAbort["Abort write<br/>TerminalToolResult{reason:'mode_changed' or 'aborted'}"]
+      TimeoutRace -->|tool returned| SizeCheck{"I-15: result size<br/>< MAX_TOOL_RESULT_BYTES?<br/>(default 400KB — matches AgenC 100k tokens × 4 bytes)"}
+      SizeCheck -->|"too large"| TruncateResult["Truncate + marker<br/>+ I-8 warning"]
+      SizeCheck -->|ok| ModeRaceCheck{"I-3: mode still<br/>allowed for write?"}
+      TruncateResult --> ModeRaceCheck
+      ModeRaceCheck -->|"mode flipped to plan"| ModeAbort
+      ModeRaceCheck -->|yes| SubagentBranch{Tool = AgentTool?}
+      ModeAbort --> CollectResults
+      ToolTimeout --> CollectResults
+      SubagentBranch -->|yes| SpawnSubagent
+      SubagentBranch -->|no| ToolResult{Tool outcome}
+      ToolResult -->|success| PostHooks["hooks: PostToolUse"]
+      ToolResult -->|bash error| SiblingAbort["siblingAbortController.abort<br/>cascade to Bash siblings only"]
+      ToolResult -->|other error| PostFailHooks["hooks: PostToolUseFailure"]
+      ToolResult -->|timeout/abort| TerminalResult["recovery/terminal-tool-result.ts<br/>synthesize {is_error:true,<br/>content:timeout/aborted}"]
+      SiblingAbort --> PostFailHooks
+      PostHooks --> CollectResults
+      PostFailHooks --> CollectResults
+      TerminalResult --> CollectResults
+      Denied1 --> TerminalResult
+      Denied2 --> TerminalResult
+      Denied3 --> TerminalResult
+      Denied4 --> TerminalResult
+      Denied5 --> TerminalResult
+      CollectResults["StreamingToolExecutor.getCompletedResults<br/>in-order yield"] --> MoreTools{More tools?}
+      MoreTools -->|yes| ClassifyC
+      MoreTools -->|no| DrainRemaining["getRemainingResults drain<br/>race executing + progress promises"]
+      DrainRemaining --> Phase6
+      Aborted --> Cleanup
+    end
+
+    subgraph P6 [Phase 6 · COMMIT · phases/commit.ts]
+      direction TB
+      Phase6[Enter commit] --> AppendHistory[Append results to history]
+      AppendHistory --> RecordBoundary{"Compaction occurred<br/>this turn? (record only —<br/>compaction itself ran in P1/P3)"}
+      RecordBoundary -->|yes| MarkBoundary[Mark turn boundary<br/>in rollout]
+      RecordBoundary -->|no| StopGate
+      MarkBoundary --> StopGate["phases/stop-hooks.ts<br/>evaluateTurnEndStopGate +<br/>hooks: Stop / StopFailure<br/>(AgenC runtime stop.rs port)"]
+      StopGate --> StopResult{Gate result}
+      StopResult -->|needs continuation| Phase1
+      StopResult -->|blocking errors| StopHookInject
+      StopResult -->|done| EmitTurnComplete
+      StopResult -->|error| StopFailure
+      EmitTurnComplete["event-log: TurnComplete<br/>(durable — I-4 fsync gate)"] --> FsyncGate["I-4: isDurableEvent → fsync<br/>flush batch + fs.fsync()<br/>before phase machine returns"]
+      FsyncGate --> Done
+      StopFailure["I-8: event-log: Error<br/>(durable — I-4 fsync gate)"] --> FsyncGate2["I-4: fsync"]
+      FsyncGate2 --> Exit
+    end
+  end
+
+  %% SUBAGENT SIDE-BRANCH
+  subgraph SubagentFlow [Subagent Spawn Branch]
+    direction TB
+    SpawnSubagent[AgentTool.call] --> ParentTokenCheck{"I-32: parent.cancellationToken<br/>NOT cancelled?"}
+    ParentTokenCheck -->|cancelled| SpawnUndo["Synthesize parent_interrupt mailbox msg<br/>undo spawn + I-8 warning"]
+    ParentTokenCheck -->|live| DepthCheck{"I-1: depth < MAX_AGENT_DEPTH?<br/>(default 4)"}
+    SpawnUndo --> CollectResults
+    DepthCheck -->|no| DepthReject[Return: MaxDepthExceeded]
+    DepthCheck -->|yes| SlotAcq{"Slot available?<br/>agents/registry.ts<br/>max_threads"}
+    SlotAcq -->|no| SlotReject[Return: too many agents]
+    SlotAcq -->|yes| WorktreeIsol{isolation=worktree?}
+    WorktreeIsol -->|yes| CreateWT["utils/worktree.ts<br/>git worktree add -B worktree-slug<br/>sparse-checkout if enabled"]
+    WorktreeIsol -->|no| InheritCWD[Inherit parent cwd]
+    CreateWT --> ForkMode{Fork mode?}
+    InheritCWD --> ForkMode
+    ForkMode -->|FullHistory| FullHist[Copy full parent history]
+    ForkMode -->|LastNTurns| LastN[Copy last N turns]
+    ForkMode -->|new| NewCtx[Fresh context + role prompt]
+    FullHist --> RegAgent
+    LastN --> RegAgent
+    NewCtx --> RegAgent
+    RegAgent["agents/control.ts: spawn_agent_internal<br/>register agentPath /root/explorer/foo<br/>create mailbox + status BehaviorSubject"] --> RoleLoad
+    RoleLoad["agents/role.ts<br/>default / explorer / awaiter<br/>or custom"] --> NewSession["Child Session<br/>isolated conversationId"]
+    NewSession --> ChildRun{Async?}
+    ChildRun -->|sync| SyncAwait["for await (msg of runAgent)<br/>parent blocks"]
+    ChildRun -->|async| RegAsync["registerAsyncAgent<br/>LocalAgentTask<br/>parent returns immediately"]
+    SyncAwait --> ChildPhase["Child enters its own phase machine<br/>(recursion — same Phase1..Phase6 pipeline,<br/>scoped to child Session + child TurnContext)"]
+    RegAsync --> ChildPhase
+    ChildPhase -.->|"recurses through<br/>full phase machine"| Phase1
+    ChildPhase --> ChildDone[Child turn complete]
+    ChildDone --> Mailbox["I-5: bidirectional mailbox<br/>child → parent: progress / result<br/>parent → child: Interrupt / Resume / Cancel<br/><b>I-16: bounded queue (1000 max)<br/>backpressure 5s, then drop oldest + I-8 warning</b><br/>(CHANGE AgenC runtime unbounded mpsc)"]
+    Mailbox --> ParentDrain[Parent polls mailbox.drain]
+    Mailbox -.->|"parent Interrupt"| ChildPhase
+    ChildDone --> WTChanged{Worktree changes?}
+    WTChanged -->|commits or dirty| KeepChoice["ExitWorktreeTool<br/>user picks keep/remove"]
+    WTChanged -->|clean| ForceRemove["git worktree remove --force<br/>git branch -D worktree-slug<br/><b>I-34: git worktree prune --force after<br/>I-35: verify .git/info/sparse-checkout state</b>"]
+    KeepChoice --> ReleaseSlot
+    ForceRemove --> ReleaseSlot
+    ReleaseSlot["Release slot<br/>shutdownLiveAgent cascade descendants"] --> ChildResult[Return result to parent tool_use]
+    ChildResult --> PostHooks
+    SlotReject --> PostFailHooks
+  end
+
+  %% EVENT STREAM (parallel sidecars)
+  subgraph EventStream [Event Log + Sidecars · parallel async subscribers]
+    direction LR
+    EventLog[("session/event-log.ts<br/>18-variant discriminated union<br/>RolloutItem wrapper")]
+    Reducer["event-log-reducer<br/>pure SessionState projection"]
+    Sidecar1["session-store<br/>JSONL append 100ms batch<br/>UUID dedup + metadata tail<br/><b>I-12+I-38: ENOSPC/EIO/fsync degraded ring buffer<br/>I-23: flock on rollout (concurrent-session reject)<br/>I-24: atomic write-then-rename per batch<br/>I-25: snapshot best-effort, rollout = source of truth<br/>I-26: unknown event variant skipped on replay<br/>I-27: monotonic seq + FIFO order<br/>I-28: file-history LRU eviction<br/>I-43: per-sidecar isolation<br/>I-48: scan for orphaned TurnStarted on init<br/>I-49: schema version stamped</b>"]
+    Sidecar2["file-history<br/>per-message snapshots<br/>max 100, diff-line tracking"]
+    Sidecar3["cost-tracker<br/>tokens + $$"]
+    Sidecar4["TUI cockpit<br/>run/status/phase/tool"]
+    Sidecar5["error-log-sink<br/>JSONL + per-MCP partitioning"]
+    Sidecar6["Memory auto-extract<br/>on token/tool thresholds<br/>forked subagent"]
+    EventLog --> Reducer
+    EventLog --> Sidecar1
+    EventLog --> Sidecar2
+    EventLog --> Sidecar3
+    EventLog --> Sidecar4
+    EventLog --> Sidecar5
+    EventLog --> Sidecar6
+  end
+
+  %% TERMINATION
+  Done --> Output{Output mode}
+  Output -->|one-shot| PrintStdout["Print final text<br/>stderr: tokens + reason"]
+  Output -->|TUI| RenderFinal["Ink render final message"]
+  PrintStdout --> Exit
+  RenderFinal --> WaitInput
+  Cleanup["Abort cleanup<br/>discard executor<br/><b>I-33+I-87: drain async-child mailboxes<br/>under Promise.race(drain, timeout(2000ms))<br/>(orphan count → I-8 warning)</b><br/>emit TurnAborted (I-8 if error reason)"] --> Exit
+  StdinLost["I-19: stdin close/error<br/>(TUI lost terminal / SSH dropped)<br/>session.abortTerminal('stdin_lost')<br/>fsync barrier + exit code 130"]
+  BootTUI -.->|"runtime: stdin closes"| StdinLost
+  StdinLost --> Cleanup
+  Exit(["🏁 Exit 0/1/130"])
+
+  %% Event emissions to EventStream (parallel, dashed)
+  %% Happy-path emissions
+  EmitTurnStarted -.-> EventLog
+  StreamLoop -.-> EventLog
+  AddTool -.-> EventLog
+  CollectResults -.-> EventLog
+  EmitCompacted -.-> EventLog
+  EmitTurnComplete -.-> EventLog
+  TokenCount -.-> EventLog
+  %% I-8: every error site emits
+  AuthBearerFail -.->|I-8| EventLog
+  AuthExhausted -.->|I-8| EventLog
+  SDKRetry -.->|I-8 stream_error| EventLog
+  SurfaceErr1 -.->|I-8| EventLog
+  SurfaceErr2 -.->|I-8| EventLog
+  StopFailure -.->|I-8| EventLog
+  MCPHardFail -.->|I-8| EventLog
+  MCPSoftFail -.->|I-8 warning| EventLog
+  DepthReject -.->|I-8| EventLog
+  SlotReject -.->|I-8 warning| EventLog
+  ModeAbort -.->|I-8 warning| EventLog
+  AbortTerminal -.->|I-8 stream_error| EventLog
+  Aborted -.->|I-8| EventLog
+  ToolTimeout -.->|"I-8 stream_error (I-9)"| EventLog
+  TruncateResult -.->|"I-8 warning (I-15)"| EventLog
+  StreamIdle -.->|"I-8 stream_error (I-11)"| EventLog
+  RespIdRetry -.->|"I-8 warning (I-14)"| EventLog
+  ShrinkFail -.->|"I-8 warning (I-18)"| EventLog
+  StopHookLoopAbort -.->|"I-8 error (I-17)"| EventLog
+  ModelLiveSwitch -.->|"I-8 warning (I-13)"| EventLog
+  MCPAggregate -.->|"I-8 if hard-fail (I-20)"| EventLog
+  StdinLost -.->|"I-8 warning (I-19)"| EventLog
+
+  %% IDA-Pro-inspired distinct block colors per phase for zoom-out silhouette
+  classDef prep       fill:#1d3a3a,stroke:#4a8080,stroke-width:2px,color:#e8f5f5
+  classDef stream     fill:#1d2a4a,stroke:#4a70b0,stroke-width:2px,color:#e8eef8
+  classDef recovery   fill:#4a1d1d,stroke:#c04040,stroke-width:2px,color:#f8e8e8
+  classDef nudge      fill:#3a1d4a,stroke:#8040c0,stroke-width:2px,color:#f0e8f8
+  classDef exec       fill:#3a3a1d,stroke:#b0a040,stroke-width:2px,color:#f8f5e8
+  classDef commit     fill:#1d4a2a,stroke:#40a060,stroke-width:2px,color:#e8f8ee
+  classDef subagent   fill:#143020,stroke:#40a060,stroke-width:2px,color:#e8f8ee
+  classDef sidecar    fill:#2a1d4a,stroke:#8060c0,stroke-width:2px,color:#f0e8f8
+  classDef provider   fill:#4a3820,stroke:#d49838,stroke-width:2px,color:#fff2d8
+  classDef init       fill:#2a2a2a,stroke:#808080,stroke-width:2px,color:#eee
+  classDef terminal   fill:#4a2a1d,stroke:#c06040,stroke-width:3px,color:#ffe8d8
+  classDef invariant  fill:#3d2a4a,stroke:#d060f0,stroke-width:3px,color:#ffe0ff
+
+  %% Phase 1 — PREPARE_CONTEXT (teal)
+  class Phase1,Snip,MicroCompact,ContextCollapse,AutoCompactCheck,CircuitBreaker,SkipCompact,TrySM,SMWorked,FullCompact,PostRehydrate,PostCleanup,AssembleMsgs,AttachMemory,AttachEnv,AttachMCP,HooksSessionStart prep
+
+  %% Phase 1 — extra nodes (incl I-18)
+  class EmitCompacted,ShrinkAssert,ShrinkFail prep
+
+  %% Phase 2 — STREAM_MODEL (blue) + provider-abstraction nodes (amber)
+  %% I-11 watchdog, I-22 budget check, I-14 expiration retry, I-54 schema validate, I-58 retry-after, I-59 local-dead
+  class Phase2,StreamLoop,StreamParse,EmitToken,AddTool,TokenCount,StreamEnd,ProviderErr,SDKRetry,ProviderQuirk,AuthBearerFail,AuthExhausted,AuthCap,WatchdogWrap,BudgetCheck,StreamIdle,ToolValidate,MalformedToolBlock,LocalDead,CaptivePortal,TlsError stream
+  class ShapeReq,ProviderCall,IncrementalOpt,AuthOAuth,RespIdCheck,RespIdRetry provider
+
+  %% Phase 3 — POST_SAMPLE_RECOVERY (red) + I-17 stop-hook cap + I-42 reentry cap + I-62 atomic
+  class Phase3,WithheldGate,Rec413,ReactiveCheck,MaxTokCheck,MaxTokRecover,RCWorked,CollapseDrain,CollapseClearResp,ReactiveRetry,ReactiveClearResp,Escalate,NudgeInject,StopHookInject,StopHookCounter,StopHookLoopAbort,TombstoneOrphans,ModelFallback,ApiErrGuard,ExecStopFailHooks,SurfaceErr1,SurfaceErr2,AbortRecovery,AbortTerminal,RecoveryReentryGate,RecoveryLoopAbort,RecoveryLockAcq recovery
+
+  %% Phase 4 — CONTINUATION_NUDGE (purple)
+  class Phase4,NudgeCheck,NudgeMsg nudge
+
+  %% Phase 5 — EXECUTE_TOOLS (amber) + I-9 timeout, I-15 result cap, I-21 modal race
+  class Phase5,ClassifyC,PermEval,Step1,Step2,Step4,AskConvert,ForceAsk,Classifier,ClassVerdict,InteractiveModal,ModalRace,Allowed1,Allowed2,Allowed3,Allowed4,Denied1,Denied2,Denied3,Denied4,Denied5,Aborted,RunHooks,HookResult,RwLockAcq,DispatchTool,TimeoutRace,ToolTimeout,SizeCheck,TruncateResult,ModeRaceCheck,ModeAbort,SubagentBranch,ToolResult,PostHooks,PostFailHooks,SiblingAbort,TerminalResult,CollectResults,MoreTools,DrainRemaining exec
+
+  %% Phase 6 — COMMIT (green)
+  class Phase6,AppendHistory,RecordBoundary,MarkBoundary,StopGate,StopResult,EmitTurnComplete,StopFailure commit
+  class FsyncGate,FsyncGate2 invariant
+
+  %% Slash commands — I-13 mid-stream switch
+  class ModelSwitchCheck,ModelLiveSwitch invariant
+
+  %% Subagent branch (dark green) + I-1 depth + I-32 spawn race
+  class SpawnSubagent,ParentTokenCheck,SpawnUndo,DepthCheck,DepthReject,SlotAcq,SlotReject,WorktreeIsol,CreateWT,InheritCWD,ForkMode,FullHist,LastN,NewCtx,RegAgent,RoleLoad,NewSession,ChildRun,SyncAwait,RegAsync,ChildPhase,ChildDone,Mailbox,ParentDrain,WTChanged,KeepChoice,ForceRemove,ReleaseSlot,ChildResult subagent
+
+  %% Event log + sidecars (purple)
+  class EventLog,Reducer,Sidecar1,Sidecar2,Sidecar3,Sidecar4,Sidecar5,Sidecar6 sidecar
+
+  %% Init block (gray) + MCP startup branches + I-20 aggregate + I-45/I-46/I-47/I-52 pre-init
+  class PreInit,LoadConfig,LoadPrompt,LoadAgentsMD,LoadMemory,LoadMCP,LoadTools,LoadPerms,LoadProvider,LoadCaps,MCPStartupBranch,MCPReady,MCPSoftFail,MCPHardFail,MCPAggregate init
+
+  %% I-19 stdin loss
+  class StdinLost terminal
+
+  %% Terminal nodes (bright orange — instant visual anchor)
+  class Start,Exit,Done,Cleanup,PrintStdout,RenderFinal terminal
+
+  %% (Invariant-anchor classes already applied inline above:
+  %% PostCleanup carries I-2 inline,
+  %% FsyncGate/FsyncGate2 marked invariant in Phase 6,
+  %% MCPStartupBranch + DepthCheck + ModeRaceCheck + Mailbox carry I-1/I-3/I-5/I-6 inline)
+
+  %% Subgraph panel backgrounds — IDA Pro style tinted borders
+  style P1 fill:#0f1f1f,stroke:#4a8080,stroke-width:3px,color:#c0e5e5
+  style P2 fill:#0f1525,stroke:#4a70b0,stroke-width:3px,color:#c0d0e5
+  style P3 fill:#250f0f,stroke:#c04040,stroke-width:3px,color:#e5c0c0
+  style P4 fill:#1f0f25,stroke:#8040c0,stroke-width:3px,color:#d8c0e5
+  style P5 fill:#1f1f0f,stroke:#b0a040,stroke-width:3px,color:#e5dcc0
+  style P6 fill:#0f2515,stroke:#40a060,stroke-width:3px,color:#c0e5cc
+  style SubagentFlow fill:#0a1a10,stroke:#40a060,stroke-width:3px,color:#c0e5cc
+  style EventStream fill:#150f25,stroke:#8060c0,stroke-width:3px,color:#d8c0e5
+  style InitBlock fill:#151515,stroke:#808080,stroke-width:3px,color:#cccccc
+  style PhaseMachine fill:#050505,stroke:#666,stroke-width:2px,color:#999
+
+  %% Edge colors — IDA convention: green=happy true, red=error false, orange=recovery loopback
+  linkStyle default stroke:#888,stroke-width:1.5px
+`;
+
+    const container = document.getElementById('diagram-container');
+    const loader = document.getElementById('loader');
+    const zoomInfo = document.getElementById('zoom-info');
+
+    try {
+      const { svg } = await mermaid.render('agentic-loop', diagram);
+      container.innerHTML = svg;
+      loader.style.display = 'none';
+
+      const svgEl = container.querySelector('svg');
+      // Preserve natural dimensions for svg-pan-zoom; strip maxWidth set by mermaid
+      svgEl.style.maxWidth = 'none';
+      svgEl.removeAttribute('width');
+      svgEl.removeAttribute('height');
+      svgEl.setAttribute('width', '100%');
+      svgEl.setAttribute('height', '100%');
+      svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
+      // Wait for layout to settle before pan-zoom init
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const panZoom = svgPanZoom(svgEl, {
+        zoomEnabled: true,
+        panEnabled: true,
+        controlIconsEnabled: false,
+        fit: true,
+        center: true,
+        contain: false,
+        minZoom: 0.05,
+        maxZoom: 20,
+        zoomScaleSensitivity: 0.3,
+        dblClickZoomEnabled: true,
+        beforeZoom: () => true,
+        onZoom: (z) => { zoomInfo.textContent = Math.round(z * 100) + '%'; }
+      });
+
+      // Force a proper fit after init
+      panZoom.resize();
+      panZoom.fit();
+      panZoom.center();
+
+      document.getElementById('btn-reset').addEventListener('click', () => {
+        panZoom.resetZoom();
+        panZoom.center();
+        panZoom.fit();
+      });
+      document.getElementById('btn-fit').addEventListener('click', () => {
+        panZoom.fit();
+        panZoom.center();
+      });
+      document.getElementById('btn-zoom-in').addEventListener('click', () => {
+        panZoom.zoomIn();
+      });
+      document.getElementById('btn-zoom-out').addEventListener('click', () => {
+        panZoom.zoomOut();
+      });
+
+      window.addEventListener('resize', () => {
+        panZoom.resize();
+        panZoom.fit();
+        panZoom.center();
+      });
+
+      zoomInfo.textContent = Math.round(panZoom.getZoom() * 100) + '%';
+    } catch (err) {
+      loader.textContent = 'Render error: ' + err.message;
+      console.error(err);
+    }
+  </script>
+</body>
+</html>

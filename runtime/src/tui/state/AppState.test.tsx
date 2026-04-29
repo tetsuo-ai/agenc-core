@@ -1,0 +1,333 @@
+import { PassThrough } from "node:stream";
+import React from "react";
+import { describe, expect, test } from "vitest";
+
+import { createRoot } from "../ink/root.js";
+import instances from "../ink/instances.js";
+import type { PermissionMode } from "../../permissions/types.js";
+import type { Event } from "../../session/event-log.js";
+import {
+  AgenCAppStateProvider,
+  useAgenCAppState,
+  type ConfigStoreLike,
+  type SessionLike,
+} from "./AppState.js";
+import type { PermissionQueueOps } from "../../permissions/context.js";
+import type { ApprovalResolver } from "../../tools/orchestrator.js";
+
+type TestStdin = PassThrough & {
+  isTTY: boolean;
+  setRawMode: (mode: boolean) => void;
+  ref: () => void;
+  unref: () => void;
+};
+
+function createStreams(): { stdout: PassThrough; stdin: TestStdin } {
+  const stdout = new PassThrough();
+  const stdin = new PassThrough() as TestStdin;
+  stdin.isTTY = true;
+  stdin.setRawMode = () => undefined;
+  stdin.ref = () => undefined;
+  stdin.unref = () => undefined;
+  (stdout as unknown as { columns: number }).columns = 80;
+  (stdout as unknown as { rows: number }).rows = 24;
+  (stdout as unknown as { isTTY: boolean }).isTTY = true;
+  return { stdout, stdin };
+}
+
+async function mount(
+  element: React.ReactElement,
+): Promise<{ unmount: () => void }> {
+  const { stdout, stdin } = createStreams();
+  const root = await createRoot({
+    stdout: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream,
+    patchConsole: false,
+  });
+  root.render(element);
+  await new Promise((r) => setTimeout(r, 20));
+  return {
+    unmount: () => {
+      root.unmount();
+      instances.delete(stdout as unknown as NodeJS.WriteStream);
+      stdin.end();
+      stdout.end();
+    },
+  };
+}
+
+function createFakeSession(
+  initialMode: PermissionMode = "default",
+): SessionLike {
+  const listeners = new Set<
+    (next: PermissionMode, previous: PermissionMode) => void
+  >();
+  let mode = initialMode;
+  return {
+    services: {
+      permissionModeRegistry: {
+        current: () => ({ mode }),
+        subscribeToModeChange: (cb) => {
+          listeners.add(cb);
+          return () => listeners.delete(cb);
+        },
+      },
+    },
+  };
+}
+
+const FAKE_CONFIG_STORE: ConfigStoreLike = { snapshot: {} };
+
+describe("AgenCAppStateProvider", () => {
+  test("keeps the full queue while surfacing only the active request", async () => {
+    const rawSnapshots: number[] = [];
+    const activeSnapshots: number[] = [];
+    const activeIds: Array<string | null> = [];
+
+    function Consumer(): null {
+      const {
+        permissionQueue,
+        pendingRequests,
+        activePermissionRequestId,
+        permissionQueueOps,
+      } = useAgenCAppState();
+      rawSnapshots.push(permissionQueue.length);
+      activeSnapshots.push(pendingRequests.length);
+      activeIds.push(activePermissionRequestId);
+      React.useEffect(() => {
+        permissionQueueOps.push({
+          requestId: "req-1",
+          toolName: "Bash",
+          toolInput: { command: "git status" },
+          turnId: "turn-1",
+          message: "first",
+          submittedAt: Date.now(),
+        });
+        permissionQueueOps.push({
+          requestId: "req-2",
+          toolName: "Write",
+          toolInput: { path: "/tmp/out.txt", content: "hello" },
+          turnId: "turn-1",
+          message: "second",
+          submittedAt: Date.now(),
+        });
+      }, [permissionQueueOps]);
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider
+        session={createFakeSession()}
+        configStore={FAKE_CONFIG_STORE}
+      >
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rawSnapshots).toContain(2);
+    expect(activeSnapshots).toContain(1);
+    expect(activeIds).toContain("req-1");
+    unmount();
+  });
+
+  test("publishes the live React-backed permissionQueueOps onto the session", async () => {
+    const session = createFakeSession() as SessionLike & {
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    const snapshots: number[] = [];
+
+    function Consumer(): null {
+      const { permissionQueue } = useAgenCAppState();
+      snapshots.push(permissionQueue.length);
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    expect(session.permissionQueueOps).toBeDefined();
+    session.permissionQueueOps?.push({
+      requestId: "req-bridge",
+      toolName: "Bash",
+      toolInput: { command: "pwd" },
+      turnId: "turn-1",
+      message: "bridge",
+      submittedAt: Date.now(),
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(snapshots).toContain(1);
+    unmount();
+  });
+
+  test("installs a live approval resolver that queues requests and resolves user decisions", async () => {
+    const session = createFakeSession() as SessionLike & {
+      services: SessionLike["services"] & {
+        approvalResolver?: ApprovalResolver;
+      };
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    let latestQueue: readonly Record<string, unknown>[] = [];
+
+    function Consumer(): null {
+      const { permissionQueue } = useAgenCAppState();
+      latestQueue = permissionQueue as readonly Record<string, unknown>[];
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    expect(session.services.approvalResolver).toBeDefined();
+    const pendingDecision = session.services.approvalResolver?.request({
+      invocation: {
+        payload: {
+          kind: "function",
+          arguments: '{"path":".","recursive":true}',
+        },
+      } as never,
+      callId: "call-approval-1",
+      toolName: "system.listDir",
+      turnId: "turn-1",
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latestQueue).toHaveLength(1);
+    expect(latestQueue[0]?.toolInput).toEqual({
+      path: ".",
+      recursive: true,
+    });
+    const resolver = latestQueue[0]?.resolveOnce as
+      | { claim(payload: { behavior: "allow-session" }): boolean }
+      | undefined;
+    expect(
+      resolver?.claim({
+        behavior: "allow-session",
+      }),
+    ).toBe(true);
+    await expect(pendingDecision).resolves.toEqual({
+      kind: "approved_for_session",
+    });
+    unmount();
+  });
+
+  test("emits plan approval telemetry for ExitPlanMode requests", async () => {
+    const events: Event[] = [];
+    let eventId = 0;
+    const session = {
+      ...createFakeSession("plan"),
+      nextInternalSubId: () => `telemetry-${++eventId}`,
+      emit: (event: Event) => {
+        events.push(event);
+      },
+    } as SessionLike & {
+      services: SessionLike["services"] & {
+        approvalResolver?: ApprovalResolver;
+      };
+      permissionQueueOps?: PermissionQueueOps;
+    };
+    let latestQueue: readonly Record<string, unknown>[] = [];
+
+    function Consumer(): null {
+      const { permissionQueue } = useAgenCAppState();
+      latestQueue = permissionQueue as readonly Record<string, unknown>[];
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    const pendingDecision = session.services.approvalResolver?.request({
+      invocation: {
+        payload: {
+          kind: "function",
+          arguments: JSON.stringify({
+            plan: "# AgenC Plan\n\n- Ship richer plan mode",
+            planFilePath: "/tmp/agenc/plans/session.md",
+            allowedPrompts: [{ tool: "Bash", prompt: "run tests" }],
+          }),
+        },
+      } as never,
+      callId: "plan-approval-1",
+      toolName: "ExitPlanMode",
+      turnId: "turn-plan",
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(latestQueue).toHaveLength(1);
+    expect(events.map((event) => event.msg.type)).toContain(
+      "plan_approval_requested",
+    );
+    const requested = events.find(
+      (event) => event.msg.type === "plan_approval_requested",
+    );
+    expect(requested?.msg.payload).toMatchObject({
+      requestId: "plan-approval-1",
+      turnId: "turn-plan",
+      planFilePath: "/tmp/agenc/plans/session.md",
+      allowedPromptCount: 1,
+    });
+
+    const resolver = latestQueue[0]?.resolveOnce as
+      | { claim(payload: { behavior: "allow" }): boolean }
+      | undefined;
+    expect(resolver?.claim({ behavior: "allow" })).toBe(true);
+
+    await expect(pendingDecision).resolves.toEqual({ kind: "approved" });
+    const completed = events.find(
+      (event) => event.msg.type === "plan_approval_completed",
+    );
+    expect(completed?.msg.payload).toMatchObject({
+      requestId: "plan-approval-1",
+      turnId: "turn-plan",
+      planFilePath: "/tmp/agenc/plans/session.md",
+      allowedPromptCount: 1,
+      outcome: "approved",
+    });
+    unmount();
+  });
+
+  test("exposes expandedView default and bridges setExpandedView onto the session", async () => {
+    const session = createFakeSession() as SessionLike & {
+      appStateBridge?: {
+        setModel?: (next: string) => void;
+        setExpandedView?: (next: "none" | "tasks") => void;
+      };
+    };
+    const snapshots: Array<"none" | "tasks"> = [];
+
+    function Consumer(): null {
+      const { expandedView } = useAgenCAppState();
+      snapshots.push(expandedView);
+      return null;
+    }
+
+    const { unmount } = await mount(
+      <AgenCAppStateProvider session={session} configStore={FAKE_CONFIG_STORE}>
+        <Consumer />
+      </AgenCAppStateProvider>,
+    );
+
+    expect(snapshots[0]).toBe("none");
+    expect(session.appStateBridge?.setExpandedView).toBeDefined();
+
+    session.appStateBridge?.setExpandedView?.("tasks");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(snapshots).toContain("tasks");
+
+    session.appStateBridge?.setExpandedView?.("none");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(snapshots[snapshots.length - 1]).toBe("none");
+    unmount();
+  });
+});

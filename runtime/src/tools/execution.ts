@@ -1,0 +1,1913 @@
+/**
+ * Tool execution — the central gate between the model's tool_use
+ * blocks and the actual `Tool.execute()` call.
+ *
+ * 1:1 port of AgenC `services/tools/toolExecution.ts` plus
+ * `utils/toolErrors.ts:formatError`. AgenC's Tool shape carries a raw
+ * JSON Schema (not Zod), so the validator is a richer JSON-schema
+ * engine implemented here; the observable tool_result prose matches
+ * AgenC's `formatZodValidationError` + `CANCEL_MESSAGE` /
+ * `INTERRUPT_MESSAGE_FOR_TOOL_USE` / `createToolResultStopMessage`.
+ *
+ * Control flow (AgenC behavior):
+ *   1. Parse args (I-79 large-int reviver).
+ *   2. Run schema validation (+ `getSchemaValidationErrorOverride` +
+ *      `buildSchemaNotSentHint`).
+ *   3. Run PreToolUse hooks BEFORE the permission gate (AgenC
+ *      `toolExecution.ts:832-894`). Hooks can rewrite args, synthesize
+ *      a `hookPermissionResult`, inject `additionalContext`, deny,
+ *      skip with a synthesized result, or stop the turn.
+ *   4. Permission gate: `mergeHookPermissionDecision` merges the hook
+ *      decision with rule-based checks. inc-4788: hook `allow` does
+ *      NOT bypass rule `deny` / `ask`.
+ *   5. Legacy approval-modal fallback (only when the evaluator path is
+ *      unavailable).
+ *   6. Execute under timeout + abort race (I-9 / I-21).
+ *   7. PostToolUse hooks; emit the six hook-attachment kinds on the
+ *      live path (`hook_cancelled`, `hook_blocking_error`,
+ *      `hook_additional_context`, `hook_stopped_continuation`,
+ *      `hook_error_during_execution`, `hook_permission_decision`).
+ *   8. Cap result size (I-15).
+ *   9. Return a `ToolOutput`.
+ *
+ * Errors thread through `formatError` + `CANCEL_MESSAGE` /
+ * `INTERRUPT_MESSAGE_FOR_TOOL_USE` so the live path's tool_result
+ * text matches AgenC's observable output. The args-retry
+ * `runWithAutoFixRetry` was removed (see
+ * `docs/plan/feature-matrix.md`) — AgenC's auto-fix is a
+ * lint/test runner injected as PostToolUse additional context, not
+ * an args retry.
+ *
+ * Invariants enforced here:
+ *   I-8  (every error site emits a typed event) — errors funnel
+ *        through the caller's event log via `eventLog` option.
+ *   I-9  (per-tool execution timeout) — `Promise.race([tool, timer])`.
+ *        Default `DEFAULT_TOOL_TIMEOUT_MS=30000`; per-tool override
+ *        via `tool.timeoutMs`; per-call override via `args.timeoutMs`.
+ *   I-15 (tool result size cap) — result bytes truncated to
+ *        `MAX_TOOL_RESULT_BYTES=400_000`; warning marker appended.
+ *   I-21 (approval modal abort race) — modal promise wrapped with
+ *        `Promise.race([modal, abortSignal])`; signal → `{behavior:'abort'}`.
+ *   I-44 (stale modal decision rejected) — modal decisions carry
+ *        `decisionAtTurnId`; execution rejects mismatches.
+ *   I-79 (large-int JSON reviver) — pre-parse regex wraps >=16-digit
+ *        literals as strings, then a reviver converts them to BigInt
+ *        for tools whose schema declares `bigint` fields.
+ *
+ * @module
+ */
+
+import {
+  type EventLog,
+  emitError as emitErrorEvent,
+  emitWarning as emitWarningEvent,
+} from "../session/event-log.js";
+import type { ToolDispatchResult } from "../tool-registry.js";
+import type {
+  ToolInvocation,
+  ToolName,
+  ToolOutput,
+  ToolPayload,
+} from "./context.js";
+import {
+  codeModeResult,
+  functionToolOutput,
+  toolNameDisplay,
+} from "./context.js";
+import type { Tool } from "./types.js";
+import {
+  mergeHookPermissionDecision,
+  runPostToolUseFailureHooks,
+  runPostToolUseHooks,
+  runPreToolUseHooks,
+  type HookAttachmentKind,
+  type HookPermissionResult,
+  type HookTimingRecord,
+  type PostToolUseFailureHook,
+  type PostToolUseHook,
+  type PreToolUseHook,
+} from "./hooks.js";
+import {
+  buildSchemaNotSentHint,
+  formatSchemaValidationError,
+  getSchemaValidationErrorOverride,
+} from "./schema-errors.js";
+import { buildRecoverableToolFailureMetadata } from "./result-metadata.js";
+// Inline copies of AgenC `utils/messages.ts` constants. The full
+// messages.ts is a heavy port that pulls in `bun:bundle`, analytics,
+// and the entire session service graph; importing two constants from
+// it bricks the whole tools/ test surface. The canonical strings are
+// authored once here and mirrored by the UI surface (T7 wires the
+// real messages.ts import when the runtime graph lands).
+const INTERRUPT_MESSAGE_FOR_TOOL_USE =
+  "[Request interrupted by user for tool use]";
+const CANCEL_MESSAGE =
+  "The user doesn't want to take this action right now. STOP what you are doing and wait for the user to tell you how to proceed.";
+import { buildShellApprovalKey } from "../permissions/approval-cache.js";
+import type {
+  CanUseToolFn,
+  ToolEvaluatorContext,
+} from "../permissions/evaluator.js";
+import type { PermissionMode } from "../permissions/types.js";
+import type { PermissionModeRegistry } from "../permissions/mode.js";
+import {
+  reviewDecisionIsAllow,
+  type ReviewDecision,
+} from "../permissions/review-decision.js";
+
+// ─────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────
+
+export const DEFAULT_TOOL_TIMEOUT_MS = 30_000;
+
+/**
+ * I-15: default cap on tool result size in bytes. 400 KB matches
+ * AgenC `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
+ * Per-tool override via `tool.maxResultBytes`.
+ */
+export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
+
+/** Appended marker when a result is truncated. */
+const TRUNCATION_MARKER_TEMPLATE =
+  "\n\n[truncated: original was {ORIG} bytes, returning first {KEPT}]\n";
+
+/**
+ * Hard cap on formatted error prose before middle-truncation. Mirrors
+ * AgenC `formatError`'s 10,000-char cutoff.
+ */
+const FORMAT_ERROR_MAX_BYTES = 10_000;
+
+// ─────────────────────────────────────────────────────────────────────
+// Per-tool metadata hooks (extending the base Tool shape)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ToolExecutionOverrides {
+  /** I-9 per-tool timeout override. */
+  readonly timeoutMs?: number;
+  /** I-15 per-tool size cap override. */
+  readonly maxResultBytes?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-79: large-int JSON reviver
+// ─────────────────────────────────────────────────────────────────────
+
+const LARGE_INT_LITERAL_RE = /(:|,|\[|\{|\s)\s*(-?\d{16,})(\s*)(?=,|\}|\])/g;
+
+function wrapLargeInts(raw: string): string {
+  return raw.replace(
+    LARGE_INT_LITERAL_RE,
+    (_m, pre: string, digits: string, post: string) =>
+      `${pre}"__bigint__${digits}"${post}`,
+  );
+}
+
+const BIGINT_PREFIX = "__bigint__";
+
+function bigIntReviver(_key: string, value: unknown): unknown {
+  if (typeof value === "string" && value.startsWith(BIGINT_PREFIX)) {
+    const digits = value.slice(BIGINT_PREFIX.length);
+    try {
+      return BigInt(digits);
+    } catch {
+      return digits;
+    }
+  }
+  return value;
+}
+
+export function parseToolArgsWithBigInt(
+  raw: string,
+): Record<string, unknown> | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return {};
+  try {
+    const wrapped = wrapLargeInts(trimmed);
+    const parsed = JSON.parse(wrapped, bigIntReviver);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-15: result size cap
+// ─────────────────────────────────────────────────────────────────────
+
+export function capToolResult(
+  content: string,
+  maxBytes: number,
+): { readonly capped: string; readonly truncated: boolean; readonly originalBytes: number } {
+  const originalBytes = Buffer.byteLength(content, "utf8");
+  if (originalBytes <= maxBytes) {
+    return { capped: content, truncated: false, originalBytes };
+  }
+  const marker = TRUNCATION_MARKER_TEMPLATE
+    .replace("{ORIG}", String(originalBytes))
+    .replace("{KEPT}", String(maxBytes));
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  const keepBytes = Math.max(0, maxBytes - markerBytes);
+  const buf = Buffer.from(content, "utf8");
+  const kept = buf.subarray(0, keepBytes).toString("utf8");
+  return { capped: `${kept}${marker}`, truncated: true, originalBytes };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-9: per-tool timeout wrapper
+// ─────────────────────────────────────────────────────────────────────
+
+export class ToolTimeoutError extends Error {
+  readonly reason = "timeout" as const;
+  constructor(
+    readonly toolName: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`tool ${toolName} exceeded ${timeoutMs}ms timeout`);
+    this.name = "ToolTimeoutError";
+  }
+}
+
+export function resolveTimeoutMs(
+  tool: Tool & Partial<ToolExecutionOverrides>,
+  args: Record<string, unknown>,
+): number {
+  const perCall = args["timeoutMs"];
+  if (typeof perCall === "number" && Number.isFinite(perCall) && perCall > 0) {
+    return Math.floor(perCall);
+  }
+  if (
+    typeof tool.timeoutMs === "number" &&
+    Number.isFinite(tool.timeoutMs) &&
+    tool.timeoutMs > 0
+  ) {
+    return Math.floor(tool.timeoutMs);
+  }
+  return DEFAULT_TOOL_TIMEOUT_MS;
+}
+
+export async function withTimeoutAndAbort<T>(
+  fn: () => Promise<T>,
+  opts: {
+    readonly timeoutMs: number;
+    readonly toolName: string;
+    readonly signal?: AbortSignal;
+    readonly abortController?: AbortController;
+  },
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let onAbort: (() => void) | null = null;
+  let settled = false;
+
+  const cleanup = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (opts.signal && onAbort) {
+      opts.signal.removeEventListener("abort", onAbort);
+      onAbort = null;
+    }
+  };
+
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (
+        opts.abortController &&
+        !opts.abortController.signal.aborted
+      ) {
+        try {
+          opts.abortController.abort(
+            `tool timeout: ${opts.toolName} exceeded ${opts.timeoutMs}ms`,
+          );
+        } catch {
+          // already aborted
+        }
+      }
+      reject(new ToolTimeoutError(opts.toolName, opts.timeoutMs));
+    }, opts.timeoutMs);
+    if (typeof (timer as { unref?: () => void }).unref === "function") {
+      (timer as { unref: () => void }).unref();
+    }
+
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        settled = true;
+        cleanup();
+        reject(new Error(String(opts.signal.reason ?? "aborted")));
+        return;
+      }
+      onAbort = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(String(opts.signal?.reason ?? "aborted")));
+      };
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    fn().then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      },
+    );
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// I-21 + I-44: approval modal integration
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ModalDecision {
+  readonly behavior: "allow" | "deny" | "abort";
+  readonly decisionAtTurnId: string;
+  readonly message?: string;
+  readonly reviewDecision?: ReviewDecision;
+}
+
+export interface ApprovalRequestFn {
+  (opts: {
+    readonly tool: Tool;
+    readonly args: Record<string, unknown>;
+    readonly currentTurnId: string;
+    readonly signal: AbortSignal;
+  }): Promise<ModalDecision>;
+}
+
+interface ApprovalCacheAdapter {
+  withCachedApproval(opts: {
+    readonly keys: readonly unknown[];
+    readonly fetchDecision: () => Promise<ReviewDecision>;
+  }): Promise<ReviewDecision>;
+}
+
+class ModalApprovalError extends Error {
+  constructor(readonly cause: string) {
+    super(cause);
+    this.name = "ModalApprovalError";
+  }
+}
+
+function activeTurnStillMatches(
+  currentTurnId: string,
+  getActiveTurnId?: (() => string | null) | undefined,
+): boolean {
+  if (typeof getActiveTurnId !== "function") return true;
+  return getActiveTurnId() === currentTurnId;
+}
+
+export async function requestApprovalWithAbortRace(
+  request: ApprovalRequestFn,
+  opts: {
+    readonly tool: Tool;
+    readonly args: Record<string, unknown>;
+    readonly currentTurnId: string;
+    readonly signal: AbortSignal;
+    readonly eventLog?: EventLog;
+    readonly subId?: string;
+    readonly callId?: string;
+    readonly approvalReason?: string;
+    readonly approvalCache?: {
+      readonly keys: readonly unknown[];
+      readonly cache: ApprovalCacheAdapter;
+    };
+    readonly getActiveTurnId?: () => string | null;
+  },
+): Promise<
+  | { readonly allow: true; readonly reviewDecision: ReviewDecision }
+  | { readonly allow: false; readonly cause: string }
+> {
+  if (opts.signal.aborted) {
+    return { allow: false, cause: "aborted_before_approval" };
+  }
+  if (!activeTurnStillMatches(opts.currentTurnId, opts.getActiveTurnId)) {
+    return { allow: false, cause: "stale_modal_decision" };
+  }
+
+  if (opts.eventLog) {
+    const subId = opts.subId ?? opts.callId ?? "approval";
+    const callId = opts.callId ?? opts.subId ?? "approval";
+    const commandPreview = extractCommandPreview(opts.tool, opts.args);
+    opts.eventLog.emit({
+      id: subId,
+      msg: {
+        type: "exec_approval_request",
+        payload: {
+          callId,
+          command: commandPreview,
+          ...(opts.approvalReason !== undefined
+            ? { reason: opts.approvalReason }
+            : {}),
+        },
+      },
+    });
+    opts.eventLog.emit({
+      id: subId,
+      msg: {
+        type: "request_permissions",
+        payload: {
+          callId,
+          toolName: opts.tool.name,
+          permissions: deriveToolPermissions(opts.tool),
+        },
+      },
+    });
+  }
+
+  const fetchModalDecision = async (): Promise<ModalDecision> =>
+    await new Promise<ModalDecision>((resolve) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        resolve({
+          behavior: "abort",
+          decisionAtTurnId: opts.currentTurnId,
+        });
+      };
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+      request(opts).then(
+        (d) => {
+          if (settled) return;
+          settled = true;
+          opts.signal.removeEventListener("abort", onAbort);
+          resolve(d);
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          opts.signal.removeEventListener("abort", onAbort);
+          resolve({
+            behavior: "abort",
+            decisionAtTurnId: opts.currentTurnId,
+          });
+        },
+      );
+    });
+
+  const resolveModalReviewDecision = async (): Promise<ReviewDecision> => {
+    const decision = await fetchModalDecision();
+    if (!activeTurnStillMatches(opts.currentTurnId, opts.getActiveTurnId)) {
+      throw new ModalApprovalError("stale_modal_decision");
+    }
+    if (decision.decisionAtTurnId !== opts.currentTurnId) {
+      throw new ModalApprovalError("stale_modal_decision");
+    }
+    if (decision.reviewDecision) {
+      if (!reviewDecisionIsAllow(decision.reviewDecision)) {
+        throw new ModalApprovalError(
+          decision.behavior === "deny" ? "denied" : "aborted",
+        );
+      }
+      return decision.reviewDecision;
+    }
+    if (decision.behavior === "allow") return { kind: "approved" };
+    if (decision.behavior === "deny") {
+      throw new ModalApprovalError("denied");
+    }
+    throw new ModalApprovalError("aborted");
+  };
+
+  try {
+    const reviewDecision =
+      opts.approvalCache && opts.approvalCache.keys.length > 0
+        ? await opts.approvalCache.cache.withCachedApproval({
+            keys: opts.approvalCache.keys,
+            fetchDecision: resolveModalReviewDecision,
+          })
+        : await resolveModalReviewDecision();
+    return { allow: true, reviewDecision };
+  } catch (error) {
+    if (error instanceof ModalApprovalError) {
+      return { allow: false, cause: error.cause };
+    }
+    throw error;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Error classification — port of AgenC `classifyToolError`.
+// ─────────────────────────────────────────────────────────────────────
+
+export type ToolErrorClass =
+  | "timeout"
+  | "aborted"
+  | "permission_denied"
+  | "invalid_args"
+  | "not_found"
+  | "stale_modal_decision"
+  | "tool_threw"
+  | "shell_interrupted"
+  | "mcp_auth"
+  | "mcp_tool_call"
+  | "unknown";
+
+export function classifyToolError(err: unknown): ToolErrorClass {
+  if (err instanceof ToolTimeoutError) return "timeout";
+  if (isMcpAuthError(err)) return "mcp_auth";
+  if (isMcpToolCallError(err)) return "mcp_tool_call";
+  if (isShellInterruptError(err)) return "shell_interrupted";
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    if (isAbortLikeError(err) || msg.includes("aborted")) return "aborted";
+    if (msg.includes("permission") || msg.includes("eacces")) {
+      return "permission_denied";
+    }
+    if (msg.includes("invalid_args") || msg.includes("validation")) {
+      return "invalid_args";
+    }
+    if (msg.includes("enoent") || msg.includes("not found")) {
+      return "not_found";
+    }
+    return "tool_threw";
+  }
+  return "unknown";
+}
+
+function isAbortLikeError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  if (name === "AbortError") return true;
+  const code = (err as { code?: string }).code;
+  if (code === "ABORT_ERR") return true;
+  if (err instanceof Error && err.message.toLowerCase().includes("aborted")) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * MCP auth error detection (duck-typed: looks for
+ * `name === "McpAuthError"` + `serverName: string`). Avoids a hard
+ * import of `runtime/src/services/mcp/client.ts`, which is a stub in
+ * the T6 tree — real MCP clients in the wild set `err.name` directly.
+ */
+function isMcpAuthError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  if (name !== "McpAuthError") return false;
+  return typeof (err as { serverName?: unknown }).serverName === "string";
+}
+
+function getMcpServerName(err: unknown): string | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  const s = (err as { serverName?: unknown }).serverName;
+  return typeof s === "string" ? s : undefined;
+}
+
+function isMcpToolCallError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  return (
+    name === "McpToolCallError" ||
+    name === "McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS"
+  );
+}
+
+function getMcpMeta(err: unknown): unknown {
+  if (!err || typeof err !== "object") return undefined;
+  return (err as { mcpMeta?: unknown }).mcpMeta;
+}
+
+function isShellInterruptError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const name = (err as { name?: string }).name;
+  if (name !== "ShellError") return false;
+  return (err as { interrupted?: unknown }).interrupted === true;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// AgenC `formatError` parity — produces tool_result content.
+// ─────────────────────────────────────────────────────────────────────
+
+export function formatError(error: unknown): string {
+  if (isAbortLikeError(error)) {
+    const msg = error instanceof Error ? error.message : "";
+    return msg || INTERRUPT_MESSAGE_FOR_TOOL_USE;
+  }
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const parts = getErrorParts(error);
+  const fullMessage =
+    parts.filter(Boolean).join("\n").trim() || "Command failed with no output";
+  if (fullMessage.length <= FORMAT_ERROR_MAX_BYTES) {
+    return fullMessage;
+  }
+  const halfLength = FORMAT_ERROR_MAX_BYTES / 2;
+  const start = fullMessage.slice(0, halfLength);
+  const end = fullMessage.slice(-halfLength);
+  return `${start}\n\n... [${fullMessage.length - FORMAT_ERROR_MAX_BYTES} characters truncated] ...\n\n${end}`;
+}
+
+function getErrorParts(error: Error): string[] {
+  const name = error.name;
+  if (name === "ShellError") {
+    const shell = error as Error & {
+      code?: number;
+      interrupted?: boolean;
+      stderr?: unknown;
+      stdout?: unknown;
+    };
+    return [
+      shell.code !== undefined ? `Exit code ${shell.code}` : "",
+      shell.interrupted ? INTERRUPT_MESSAGE_FOR_TOOL_USE : "",
+      typeof shell.stderr === "string" ? shell.stderr : "",
+      typeof shell.stdout === "string" ? shell.stdout : "",
+    ];
+  }
+  const parts = [error.message];
+  const withStreams = error as Error & {
+    stderr?: unknown;
+    stdout?: unknown;
+  };
+  if (typeof withStreams.stderr === "string") parts.push(withStreams.stderr);
+  if (typeof withStreams.stdout === "string") parts.push(withStreams.stdout);
+  return parts;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// JSON Schema validation (richer than the old hand-rolled subset —
+// handles anyOf, oneOf, allOf, const, format, and $ref chasing so
+// AgenC's Zod-backed parity is observable).
+// ─────────────────────────────────────────────────────────────────────
+
+export interface SchemaValidationError {
+  readonly path: string;
+  readonly message: string;
+  /**
+   * Category driving the AgenC-style prose: missing required,
+   * unexpected key, type mismatch, or `other` for everything else.
+   */
+  readonly category: "missing" | "unexpected_key" | "type" | "other";
+  readonly expected?: string;
+  readonly received?: string;
+}
+
+export interface SchemaValidationResult {
+  readonly valid: boolean;
+  readonly errors: ReadonlyArray<SchemaValidationError>;
+}
+
+function schemaTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  switch (typeof value) {
+    case "string":
+      return "string";
+    case "boolean":
+      return "boolean";
+    case "number":
+      return Number.isInteger(value) ? "integer" : "number";
+    case "bigint":
+      return "integer";
+    case "object":
+      return "object";
+    default:
+      return typeof value;
+  }
+}
+
+function typeMatches(expected: string, actualType: string): boolean {
+  if (expected === actualType) return true;
+  if (expected === "number" && actualType === "integer") return true;
+  return false;
+}
+
+type SchemaObj = Record<string, unknown>;
+
+function isSchemaObj(value: unknown): value is SchemaObj {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveRef(schema: SchemaObj, rootSchema: SchemaObj): SchemaObj {
+  const ref = schema["$ref"];
+  if (typeof ref !== "string" || !ref.startsWith("#/")) return schema;
+  const segments = ref.slice(2).split("/");
+  let node: unknown = rootSchema;
+  for (const seg of segments) {
+    if (!isSchemaObj(node)) return schema;
+    node = node[seg];
+  }
+  return isSchemaObj(node) ? node : schema;
+}
+
+function joinPath(prefix: string, key: string | number): string {
+  if (prefix === "") return String(key);
+  return `${prefix}.${key}`;
+}
+
+/**
+ * Richer JSON Schema validator that covers the keywords AgenC's
+ * Zod schemas emit: `type`, `required`, `properties`,
+ * `additionalProperties`, `items`, `enum`, `const`, `anyOf`, `oneOf`,
+ * `allOf`, `$ref`, `format`, plus coarse string length / number
+ * range bounds. Unknown keywords are ignored (consistent with the
+ * "catch glaring contract violations" intent).
+ */
+export function validateToolArgs(
+  schema: Record<string, unknown> | undefined,
+  args: Record<string, unknown>,
+): SchemaValidationResult {
+  const errors: SchemaValidationError[] = [];
+  if (!schema || typeof schema !== "object") {
+    return { valid: true, errors: [] };
+  }
+  validateNode(schema, args, "", errors, schema);
+  return { valid: errors.length === 0, errors };
+}
+
+function validateNode(
+  schema: SchemaObj,
+  value: unknown,
+  path: string,
+  errors: SchemaValidationError[],
+  rootSchema: SchemaObj,
+): void {
+  const resolved = resolveRef(schema, rootSchema);
+
+  const anyOf = resolved["anyOf"];
+  if (Array.isArray(anyOf) && anyOf.length > 0) {
+    let anyValid = false;
+    for (const sub of anyOf) {
+      if (!isSchemaObj(sub)) continue;
+      const subErrors: SchemaValidationError[] = [];
+      validateNode(sub, value, path, subErrors, rootSchema);
+      if (subErrors.length === 0) {
+        anyValid = true;
+        break;
+      }
+    }
+    if (!anyValid) {
+      errors.push({
+        path: path || "(root)",
+        message: "value does not match any of the expected schemas",
+        category: "other",
+      });
+      return;
+    }
+  }
+
+  const oneOf = resolved["oneOf"];
+  if (Array.isArray(oneOf) && oneOf.length > 0) {
+    let matched = 0;
+    for (const sub of oneOf) {
+      if (!isSchemaObj(sub)) continue;
+      const subErrors: SchemaValidationError[] = [];
+      validateNode(sub, value, path, subErrors, rootSchema);
+      if (subErrors.length === 0) matched += 1;
+    }
+    if (matched !== 1) {
+      errors.push({
+        path: path || "(root)",
+        message:
+          matched === 0
+            ? "value does not match any oneOf branch"
+            : "value matches more than one oneOf branch",
+        category: "other",
+      });
+      return;
+    }
+  }
+
+  const allOf = resolved["allOf"];
+  if (Array.isArray(allOf) && allOf.length > 0) {
+    for (const sub of allOf) {
+      if (!isSchemaObj(sub)) continue;
+      validateNode(sub, value, path, errors, rootSchema);
+    }
+  }
+
+  if ("const" in resolved) {
+    const constVal = resolved["const"];
+    if (!deepEq(value, constVal)) {
+      errors.push({
+        path: path || "(root)",
+        message: `value must equal ${JSON.stringify(constVal)}`,
+        category: "other",
+      });
+      return;
+    }
+  }
+
+  const declaredType = resolved["type"];
+  if (declaredType !== undefined) {
+    const actual = schemaTypeOf(value);
+    if (typeof declaredType === "string") {
+      if (!typeMatches(declaredType, actual)) {
+        errors.push({
+          path: path || "(root)",
+          message: `expected ${declaredType}, got ${actual}`,
+          category: "type",
+          expected: declaredType,
+          received: actual,
+        });
+        return;
+      }
+    } else if (Array.isArray(declaredType)) {
+      if (
+        !declaredType.some(
+          (t) => typeof t === "string" && typeMatches(t, actual),
+        )
+      ) {
+        const expected = declaredType
+          .filter((t) => typeof t === "string")
+          .join(" | ");
+        errors.push({
+          path: path || "(root)",
+          message: `expected one of ${expected}, got ${actual}`,
+          category: "type",
+          expected,
+          received: actual,
+        });
+        return;
+      }
+    }
+  }
+
+  const enumVals = resolved["enum"];
+  if (Array.isArray(enumVals) && enumVals.length > 0) {
+    if (!enumVals.some((v) => deepEq(v, value))) {
+      errors.push({
+        path: path || "(root)",
+        message: "value not in enum",
+        category: "other",
+      });
+      return;
+    }
+  }
+
+  const format = resolved["format"];
+  if (typeof format === "string") {
+    if (typeof value !== "string") {
+      errors.push({
+        path: path || "(root)",
+        message: `expected ${format}-formatted string, got ${schemaTypeOf(value)}`,
+        category: "type",
+        expected: "string",
+        received: schemaTypeOf(value),
+      });
+      return;
+    }
+  }
+
+  if (Array.isArray(value)) {
+    validateArray(resolved, value, path, errors, rootSchema);
+    return;
+  }
+  if (isSchemaObj(value as unknown)) {
+    validateObject(resolved, value as SchemaObj, path, errors, rootSchema);
+    return;
+  }
+  if (typeof value === "string") {
+    const minLen = resolved["minLength"];
+    const maxLen = resolved["maxLength"];
+    if (typeof minLen === "number" && value.length < minLen) {
+      errors.push({
+        path: path || "(root)",
+        message: `string too short (min ${minLen})`,
+        category: "other",
+      });
+    }
+    if (typeof maxLen === "number" && value.length > maxLen) {
+      errors.push({
+        path: path || "(root)",
+        message: `string too long (max ${maxLen})`,
+        category: "other",
+      });
+    }
+    return;
+  }
+  if (typeof value === "number" || typeof value === "bigint") {
+    const min = resolved["minimum"];
+    const max = resolved["maximum"];
+    const num = typeof value === "bigint" ? Number(value) : value;
+    if (typeof min === "number" && num < min) {
+      errors.push({
+        path: path || "(root)",
+        message: `value below minimum (${min})`,
+        category: "other",
+      });
+    }
+    if (typeof max === "number" && num > max) {
+      errors.push({
+        path: path || "(root)",
+        message: `value above maximum (${max})`,
+        category: "other",
+      });
+    }
+  }
+}
+
+function validateArray(
+  schema: SchemaObj,
+  value: ReadonlyArray<unknown>,
+  path: string,
+  errors: SchemaValidationError[],
+  rootSchema: SchemaObj,
+): void {
+  const items = schema["items"];
+  if (isSchemaObj(items)) {
+    for (let i = 0; i < value.length; i += 1) {
+      validateNode(items, value[i], joinPath(path, i), errors, rootSchema);
+    }
+  }
+  const minItems = schema["minItems"];
+  if (typeof minItems === "number" && value.length < minItems) {
+    errors.push({
+      path: path || "(root)",
+      message: `array has fewer than ${minItems} items`,
+      category: "other",
+    });
+  }
+  const maxItems = schema["maxItems"];
+  if (typeof maxItems === "number" && value.length > maxItems) {
+    errors.push({
+      path: path || "(root)",
+      message: `array has more than ${maxItems} items`,
+      category: "other",
+    });
+  }
+}
+
+function validateObject(
+  schema: SchemaObj,
+  obj: SchemaObj,
+  path: string,
+  errors: SchemaValidationError[],
+  rootSchema: SchemaObj,
+): void {
+  const declaredType = schema["type"];
+  if (typeof declaredType === "string" && declaredType !== "object") return;
+
+  const required = schema["required"];
+  if (Array.isArray(required)) {
+    for (const key of required) {
+      if (typeof key !== "string") continue;
+      if (!(key in obj)) {
+        errors.push({
+          path: joinPath(path, key),
+          message: "missing required field",
+          category: "missing",
+        });
+      }
+    }
+  }
+  const properties = schema["properties"];
+  const declaredProps = new Set<string>();
+  if (properties && typeof properties === "object") {
+    const propMap = properties as Record<string, unknown>;
+    for (const [key, sub] of Object.entries(propMap)) {
+      declaredProps.add(key);
+      if (!(key in obj)) continue;
+      if (!isSchemaObj(sub)) continue;
+      validateNode(sub, obj[key], joinPath(path, key), errors, rootSchema);
+    }
+  }
+  const additional = schema["additionalProperties"];
+  if (additional === false) {
+    for (const key of Object.keys(obj)) {
+      if (!declaredProps.has(key)) {
+        errors.push({
+          path: joinPath(path, key),
+          message: "unexpected field",
+          category: "unexpected_key",
+        });
+      }
+    }
+  } else if (isSchemaObj(additional)) {
+    for (const [key, val] of Object.entries(obj)) {
+      if (declaredProps.has(key)) continue;
+      validateNode(additional, val, joinPath(path, key), errors, rootSchema);
+    }
+  }
+}
+
+function deepEq(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (!deepEq(a[i], b[i])) return false;
+    return true;
+  }
+  if (isSchemaObj(a) && isSchemaObj(b)) {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (const k of ka) if (!deepEq(a[k], b[k])) return false;
+    return true;
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Progress events (A-side channel for long-running tools)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface ToolProgressEvent {
+  readonly chunk: string;
+  readonly stream?: "stdout" | "stderr" | "status";
+  readonly processId?: number;
+}
+
+export type ToolProgressCallback = (event: ToolProgressEvent) => void;
+
+// ─────────────────────────────────────────────────────────────────────
+// runToolUse — the single entry point
+// ─────────────────────────────────────────────────────────────────────
+
+export interface RunToolUseOptions {
+  readonly signal?: AbortSignal;
+  readonly currentTurnId: string;
+  readonly getActiveTurnId?: () => string | null;
+  readonly requestApproval?: ApprovalRequestFn;
+  readonly eventLog?: EventLog;
+  readonly subId?: string;
+  readonly tool: Tool & Partial<ToolExecutionOverrides>;
+  readonly invocation: ToolInvocation;
+  readonly preHooks?: ReadonlyArray<PreToolUseHook>;
+  readonly postHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly failureHooks?: ReadonlyArray<PostToolUseFailureHook>;
+  readonly onHookTiming?: (record: HookTimingRecord) => void;
+  readonly onHookError?: (
+    phase: "pre" | "post" | "failure",
+    err: unknown,
+    idx: number,
+  ) => void;
+  readonly onProgress?: ToolProgressCallback;
+  readonly skipArgValidation?: boolean;
+  readonly canUseTool?: CanUseToolFn;
+  readonly permissionContext?: ToolEvaluatorContext;
+  readonly modeChangeRegistry?: PermissionModeRegistry;
+  readonly checkModeStillAllowed?: (
+    tool: Tool,
+    args: Record<string, unknown>,
+    newMode: PermissionMode,
+  ) => boolean;
+  readonly abortController?: AbortController;
+  readonly throwOnExecutionError?: boolean;
+  /**
+   * Optional set of tool names whose schemas were actually sent to the
+   * provider. Used by `buildSchemaNotSentHint` to catch deferred-tool
+   * calls made without loading the schema first.
+   */
+  readonly discoveredToolNames?: ReadonlySet<string>;
+  /**
+   * Optional MCP side-effect hook. Called when the tool throws an
+   * `McpAuthError` — allows the caller (session services) to flip the
+   * corresponding client to `needs-auth` state. Duck-typed on
+   * `err.serverName` so we don't need a hard dep on the MCP package.
+   */
+  readonly onMcpAuthError?: (serverName: string) => void;
+  /**
+   * Optional MCP pass-through for `err.mcpMeta`. When supplied and
+   * the tool throws an `McpToolCallError`, the error's `mcpMeta` is
+   * forwarded so the executor's user-message includes it.
+   */
+  readonly onMcpToolCallError?: (mcpMeta: unknown) => void;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// T11 W3-B — permission gate helpers
+// ─────────────────────────────────────────────────────────────────────
+
+const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "exec_command",
+  "write_stdin",
+  "system.bash",
+  "Write",
+  "Edit",
+  "system.delete",
+  "Bash",
+  "write_file",
+  "edit_file",
+]);
+
+export function defaultCheckModeStillAllowed(
+  tool: Tool,
+  _args: Record<string, unknown>,
+  newMode: PermissionMode,
+): boolean {
+  if (newMode !== "plan") return true;
+  if (WRITE_CAPABLE_TOOL_NAMES.has(tool.name)) return false;
+  if (tool.isReadOnly === true) return true;
+  return true;
+}
+
+function resolveApprovalCache(
+  invocation: ToolInvocation,
+): ApprovalCacheAdapter | null {
+  const store = (
+    invocation.session.services as {
+      toolApprovals?: ApprovalCacheAdapter | null;
+    }
+  ).toolApprovals;
+  return store && typeof store.withCachedApproval === "function" ? store : null;
+}
+
+function buildApprovalCacheKeys(
+  tool: Tool,
+  invocation: ToolInvocation,
+  args: Record<string, unknown>,
+): readonly unknown[] {
+  const cwd =
+    typeof args.cwd === "string" && args.cwd.length > 0
+      ? args.cwd
+      : typeof args.workdir === "string" && args.workdir.length > 0
+        ? args.workdir
+      : invocation.turn.cwd;
+  if (
+    tool.name === "exec_command" ||
+    tool.name === "system.bash" ||
+    tool.name === "Bash" ||
+    invocation.payload.kind === "local_shell"
+  ) {
+    const command = Array.isArray(args.args)
+      ? [
+          typeof args.command === "string" ? args.command : "",
+          ...args.args.filter((part): part is string => typeof part === "string"),
+        ].filter((part) => part.length > 0)
+      : invocation.payload.kind === "local_shell"
+        ? invocation.payload.params.command
+          : typeof args.command === "string"
+            ? [args.command]
+            : typeof args.cmd === "string"
+              ? [args.cmd]
+              : [];
+    if (command.length > 0) {
+      const sandboxPermissions: string[] = [invocation.turn.sandboxPolicy.value];
+      if (args.sandbox_permissions !== undefined) {
+        sandboxPermissions.push(JSON.stringify(args.sandbox_permissions));
+      }
+      const additionalPermissions: string[] = [invocation.turn.approvalPolicy.value];
+      if (args.additional_permissions !== undefined) {
+        additionalPermissions.push(JSON.stringify(args.additional_permissions));
+      }
+      return [
+        buildShellApprovalKey({
+          command,
+          cwd,
+          ...(typeof args.tty === "boolean" ? { tty: args.tty } : {}),
+          sandbox_permissions: sandboxPermissions,
+          additional_permissions: additionalPermissions,
+        }),
+      ];
+    }
+  }
+  return [
+    {
+      toolName: tool.name,
+      cwd,
+      sandboxMode: invocation.turn.sandboxPolicy.value,
+      approvalPolicy: invocation.turn.approvalPolicy.value,
+      args,
+    },
+  ];
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Hook-attachment emission
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Emit one of the six AgenC hook-attachment kinds as a warning on
+ * the event log. AgenC's event stream doesn't have a dedicated
+ * `attachment` message type, so we carry the kind + human-readable
+ * message through the warning channel — consumers filter on
+ * `cause: hook_*` to reproduce AgenC's attachment view.
+ */
+function emitHookAttachment(
+  log: EventLog | undefined,
+  subId: string,
+  kind: HookAttachmentKind,
+  detail: string,
+): void {
+  if (!log) return;
+  emitWarningEvent(log, subId, kind, detail);
+}
+
+/**
+ * Execute one tool invocation end-to-end. See module comment for the
+ * full AgenC-compatible ordering.
+ */
+export async function runToolUse(
+  rawArgs: string,
+  opts: RunToolUseOptions,
+): Promise<ToolOutput> {
+  const effectiveSignal = opts.signal ?? opts.abortController?.signal;
+  const { tool, invocation, currentTurnId } = opts;
+  const subId = opts.subId ?? invocation.callId;
+  const startedAt = performance.now();
+
+  // Step 1: I-79 arg parse.
+  const parsedArgs = parseToolArgsWithBigInt(rawArgs);
+  if (parsedArgs === null) {
+    const message = `invalid JSON arguments for tool ${toolNameDisplay(invocation.toolName)}`;
+    if (opts.eventLog) {
+      emitErrorEvent(opts.eventLog, subId, {
+        cause: "invalid_args",
+        message,
+      });
+    }
+    return errorOutput({
+      invocation,
+      content: message,
+      elapsedMs: performance.now() - startedAt,
+    });
+  }
+
+  // Step 2: JSON Schema validation (+ humanized prose override + hint).
+  if (!opts.skipArgValidation) {
+    const validation = validateToolArgs(
+      tool.inputSchema as Record<string, unknown> | undefined,
+      parsedArgs,
+    );
+    if (!validation.valid) {
+      const override = getSchemaValidationErrorOverride(tool, parsedArgs);
+      const prose =
+        override ??
+        formatSchemaValidationError(
+          toolNameDisplay(invocation.toolName),
+          validation.errors,
+        );
+      const hint = buildSchemaNotSentHint(tool, opts.discoveredToolNames);
+      const body = hint ? `${prose}${hint}` : prose;
+      const message = `InputValidationError: ${body}`;
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "schema_validation_failed",
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: `<tool_use_error>${message}</tool_use_error>`,
+        elapsedMs: performance.now() - startedAt,
+        metadata: buildRecoverableToolFailureMetadata("input_validation"),
+      });
+    }
+  }
+
+  // Step 3: PreToolUse hooks — BEFORE the permission gate.
+  let args: Record<string, unknown> = parsedArgs;
+  let hookPermissionResult: HookPermissionResult | undefined;
+  let prePreventContinuation: { readonly stopReason?: string } | undefined;
+  const preHooks = opts.preHooks ?? [];
+  if (preHooks.length > 0) {
+    const preDecision = await runPreToolUseHooks(
+      preHooks,
+      { invocation, tool, args },
+      (err, idx) => {
+        opts.onHookError?.("pre", err, idx);
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_error_during_execution",
+          `PreToolUse:${tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      },
+      opts.onHookTiming,
+    );
+    args = preDecision.args ?? args;
+    if (preDecision.hookPermissionResult) {
+      hookPermissionResult = preDecision.hookPermissionResult;
+    }
+    for (const c of preDecision.additionalContexts) {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_additional_context",
+        `PreToolUse:${tool.name} context: ${c}`,
+      );
+    }
+    if (preDecision.preventContinuation) {
+      prePreventContinuation = preDecision.preventContinuation;
+    }
+
+    if (preDecision.kind === "deny") {
+      const message = `pre-hook denied ${toolNameDisplay(invocation.toolName)}: ${preDecision.reason ?? ""}`;
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "pre_hook_denied",
+          message,
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: `<tool_use_error>${preDecision.reason ?? "denied"}</tool_use_error>`,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+    if (preDecision.kind === "skip" && preDecision.synthResult) {
+      return functionToolOutput({
+        callId: invocation.callId,
+        toolName: invocation.toolName,
+        payload: invocation.payload,
+        content: preDecision.synthResult.content,
+        isError: preDecision.synthResult.isError === true,
+        durationMs: performance.now() - startedAt,
+      });
+    }
+    if (preDecision.kind === "stop") {
+      // AgenC PreToolUse `stop` — return CANCEL_MESSAGE so the
+      // turn halts and the model stops generating.
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_stopped_continuation",
+        `PreToolUse:${tool.name} stopped execution${preDecision.stopReason ? `: ${preDecision.stopReason}` : ""}`,
+      );
+      return errorOutput({
+        invocation,
+        content: CANCEL_MESSAGE,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+  }
+
+  // Step 4: permission gate. Merge hook result with rule/evaluator.
+  let inputForTool: Record<string, unknown> = args;
+  // When the evaluator (canUseTool) decides "ask" and a legacy
+  // requestApproval prompt is wired, we still need to invoke that prompt
+  // to let the resolver record the modal decision. Track that here so
+  // step 4b can opt back into the legacy fallback even though the
+  // evaluator path was wired.
+  let evaluatorRequestedAsk = false;
+  if (opts.canUseTool && opts.permissionContext) {
+    const merged = await mergeHookPermissionDecision({
+      hookPermissionResult,
+      args,
+    });
+    if (merged && merged.behavior === "deny") {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_permission_decision",
+        `${tool.name} deny via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
+      );
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "permission_denied:hook",
+          message: merged.message ?? "denied by hook",
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: merged.message ?? "Permission denied",
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+    if (merged && merged.behavior === "ask" && !opts.requestApproval) {
+      if (opts.eventLog) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "permission_denied:hook_ask_without_prompt",
+          message: merged.message ?? "hook requested ask with no prompt wired",
+        });
+      }
+      return errorOutput({
+        invocation,
+        content: merged.message ?? "Permission required",
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+    if (merged && merged.behavior === "allow") {
+      // Hook allow — skip the evaluator's interactive ask, but rule
+      // deny/ask merging already ran via mergeHookPermissionDecision.
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_permission_decision",
+        `${tool.name} allow via ${merged.decisionReason?.type ?? "hook"}${merged.decisionReason?.hookName ? ` (${merged.decisionReason.hookName})` : ""}`,
+      );
+      inputForTool = merged.args;
+    } else {
+      // No hook decision (or hook ask with prompt available) — run the
+      // evaluator.
+      try {
+        const permResult = await opts.canUseTool(
+          tool,
+          args,
+          opts.permissionContext,
+        );
+        if (permResult.behavior === "deny") {
+          const reasonMsg = permResult.message;
+          const denialReasonType =
+            permResult.decisionReason?.type ?? "unknown";
+          if (opts.eventLog) {
+            emitErrorEvent(opts.eventLog, subId, {
+              cause: `permission_denied:${denialReasonType}`,
+              message: `${toolNameDisplay(invocation.toolName)} denied: ${reasonMsg}`,
+            });
+          }
+          return errorOutput({
+            invocation,
+            content: reasonMsg,
+            elapsedMs: performance.now() - startedAt,
+          });
+        }
+        if (permResult.behavior === "ask") {
+          if (!opts.requestApproval) {
+            const message = permResult.message;
+            if (opts.eventLog) {
+              emitErrorEvent(opts.eventLog, subId, {
+                cause: "permission_denied:ask_without_prompt",
+                message: `${toolNameDisplay(invocation.toolName)} requires approval but no prompt is wired: ${message}`,
+              });
+            }
+            return errorOutput({
+              invocation,
+              content: message,
+              elapsedMs: performance.now() - startedAt,
+            });
+          }
+          // Evaluator returned ask with a prompt wired — fall through to
+          // the legacy approval-modal fallback so the resolver gets the
+          // call and records a decision.
+          evaluatorRequestedAsk = true;
+        } else if (permResult.behavior === "allow") {
+          if (permResult.updatedInput !== undefined) {
+            inputForTool = permResult.updatedInput as Record<string, unknown>;
+          }
+        }
+      } catch (err) {
+        if (isAbortLikeError(err)) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (opts.eventLog) {
+            emitErrorEvent(opts.eventLog, subId, {
+              cause: "aborted",
+              message,
+            });
+          }
+          return errorOutput({
+            invocation,
+            content: INTERRUPT_MESSAGE_FOR_TOOL_USE,
+            elapsedMs: performance.now() - startedAt,
+          });
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        if (opts.eventLog) {
+          emitErrorEvent(opts.eventLog, subId, {
+            cause: "permission_evaluator_threw",
+            message,
+          });
+        }
+        return errorOutput({
+          invocation,
+          content: `Permission evaluation failed for ${toolNameDisplay(invocation.toolName)}: ${message}`,
+          elapsedMs: performance.now() - startedAt,
+        });
+      }
+    }
+  }
+
+  // Step 4b: legacy approval-modal fallback.
+  //
+  // If the evaluator path is wired, it already decided allow/deny/ask.
+  // Falling through to the legacy modal after an evaluator-side allow
+  // defeats bypassPermissions / acceptEdits semantics by prompting a
+  // second time on an already-approved call.
+  const shouldUseLegacyApprovalFallback =
+    opts.requestApproval &&
+    (!opts.canUseTool || !opts.permissionContext || evaluatorRequestedAsk);
+  if (shouldUseLegacyApprovalFallback) {
+    const approvalCache = resolveApprovalCache(invocation);
+    const decision = await requestApprovalWithAbortRace(opts.requestApproval, {
+      tool,
+      args: inputForTool,
+      currentTurnId,
+      getActiveTurnId: opts.getActiveTurnId,
+      signal: effectiveSignal ?? new AbortController().signal,
+      ...(opts.eventLog !== undefined ? { eventLog: opts.eventLog } : {}),
+      subId,
+      callId: invocation.callId,
+      ...(approvalCache !== null
+        ? {
+            approvalCache: {
+              cache: approvalCache,
+              keys: buildApprovalCacheKeys(tool, invocation, inputForTool),
+            },
+          }
+        : {}),
+    });
+    if (!decision.allow) {
+      const cause = decision.cause;
+      const message = `approval ${cause} for tool ${toolNameDisplay(invocation.toolName)}`;
+      if (opts.eventLog) {
+        if (cause === "stale_modal_decision") {
+          emitWarningEvent(opts.eventLog, subId, cause, message);
+        } else {
+          emitErrorEvent(opts.eventLog, subId, { cause, message });
+        }
+      }
+      return errorOutput({
+        invocation,
+        content: message,
+        elapsedMs: performance.now() - startedAt,
+      });
+    }
+  }
+
+  // Progress channel wiring.
+  const progressCallback: ToolProgressCallback | undefined =
+    opts.onProgress || opts.eventLog
+      ? (event) => {
+          opts.onProgress?.(event);
+          if (opts.eventLog) {
+            opts.eventLog.emit({
+              id: subId,
+              msg: {
+                type: "tool_progress",
+                payload: {
+                  callId: invocation.callId,
+                  toolName: toolNameDisplay(invocation.toolName),
+                  chunk: event.chunk,
+                  ...(event.stream !== undefined
+                    ? { stream: event.stream }
+                    : {}),
+                  ...(event.processId !== undefined
+                    ? { processId: event.processId }
+                    : {}),
+                  at: Date.now(),
+                },
+              },
+            });
+          }
+        }
+      : undefined;
+
+  let argsForTool: Record<string, unknown> = inputForTool;
+  if (progressCallback || effectiveSignal || invocation.callId.length > 0) {
+    argsForTool = { ...inputForTool };
+    if (progressCallback) {
+      Object.defineProperty(argsForTool, "__onProgress", {
+        value: progressCallback,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
+    if (effectiveSignal) {
+      Object.defineProperty(argsForTool, "__abortSignal", {
+        value: effectiveSignal,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
+    Object.defineProperty(argsForTool, "__callId", {
+      value: invocation.callId,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+    const sessionId = (invocation.session as unknown as {
+      readonly conversationId?: unknown;
+    }).conversationId;
+    if (typeof sessionId === "string" && sessionId.length > 0) {
+      Object.defineProperty(argsForTool, "__agencSessionId", {
+        value: sessionId,
+        enumerable: false,
+        writable: false,
+        configurable: true,
+      });
+    }
+  }
+
+  // Step 5: I-9 timeout + abort race.
+  const timeoutMs = resolveTimeoutMs(tool, inputForTool);
+
+  let unsubscribeMode: (() => void) | null = null;
+  if (opts.modeChangeRegistry && opts.abortController) {
+    const guard =
+      opts.checkModeStillAllowed ?? defaultCheckModeStillAllowed;
+    const abortCtl = opts.abortController;
+    unsubscribeMode = opts.modeChangeRegistry.subscribeToModeChange(
+      (newMode) => {
+        if (abortCtl.signal.aborted) return;
+        const stillAllowed = guard(tool, inputForTool, newMode);
+        if (!stillAllowed) {
+          if (opts.eventLog) {
+            emitWarningEvent(
+              opts.eventLog,
+              subId,
+              "mode_change_aborted_tool",
+              `mode transitioned to ${newMode}; aborting in-flight ${toolNameDisplay(invocation.toolName)}`,
+            );
+          }
+          try {
+            abortCtl.abort(
+              `aborted: permission mode changed to ${newMode}`,
+            );
+          } catch {
+            // Already aborted; swallow.
+          }
+        }
+      },
+    );
+  }
+
+  const cleanupModeSub = (): void => {
+    if (!unsubscribeMode) return;
+    try {
+      unsubscribeMode();
+    } catch {
+      // best-effort
+    }
+    unsubscribeMode = null;
+  };
+
+  let dispatch: ToolDispatchResult;
+  try {
+    dispatch = await withTimeoutAndAbort(
+      async () => {
+        const result = await tool.execute(argsForTool);
+        return {
+          content: result.content,
+          isError: result.isError,
+          metadata: result.metadata,
+        } satisfies ToolDispatchResult;
+      },
+      {
+        timeoutMs,
+        toolName: tool.name,
+        ...(effectiveSignal !== undefined ? { signal: effectiveSignal } : {}),
+        ...(opts.abortController !== undefined
+          ? { abortController: opts.abortController }
+          : {}),
+      },
+    );
+  } catch (err) {
+    const cls = classifyToolError(err);
+    const message = err instanceof Error ? err.message : String(err);
+
+    // MCP-class side effects (AgenC toolExecution :1633-1661 +
+    // :1759-1764). Both are optional hooks on RunToolUseOptions so the
+    // runtime can wire real MCP state while tests run without it.
+    if (cls === "mcp_auth" && opts.onMcpAuthError) {
+      const serverName = getMcpServerName(err);
+      if (serverName) {
+        try {
+          opts.onMcpAuthError(serverName);
+        } catch {
+          // best-effort
+        }
+      }
+    }
+    if (cls === "mcp_tool_call" && opts.onMcpToolCallError) {
+      try {
+        opts.onMcpToolCallError(getMcpMeta(err));
+      } catch {
+        // best-effort
+      }
+    }
+
+    if (opts.eventLog) {
+      if (
+        cls === "timeout" ||
+        cls === "aborted" ||
+        cls === "shell_interrupted"
+      ) {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: cls === "timeout" ? "tool_timeout" : "aborted",
+          message,
+          streamError: cls === "timeout",
+        });
+      } else if (cls === "mcp_auth") {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "mcp_auth_required",
+          message,
+        });
+      } else if (cls === "mcp_tool_call") {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: "mcp_tool_call_failed",
+          message,
+        });
+      } else {
+        emitErrorEvent(opts.eventLog, subId, {
+          cause: `tool_threw:${cls}`,
+          message,
+        });
+      }
+    }
+    const failureHooks = opts.failureHooks ?? [];
+    if (failureHooks.length > 0) {
+      await runPostToolUseFailureHooks(
+        failureHooks,
+        {
+          invocation,
+          tool,
+          args: inputForTool,
+          error: err,
+          isInterrupt: cls === "aborted" || cls === "shell_interrupted",
+        },
+        (hookErr, idx) => {
+          opts.onHookError?.("failure", hookErr, idx);
+          emitHookAttachment(
+            opts.eventLog,
+            subId,
+            "hook_error_during_execution",
+            `PostToolUseFailure:${tool.name} threw: ${hookErr instanceof Error ? hookErr.message : String(hookErr)}`,
+          );
+        },
+        opts.onHookTiming,
+      );
+    }
+    cleanupModeSub();
+    if (opts.throwOnExecutionError) {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    // Terminal content per AgenC:
+    //   aborted → INTERRUPT_MESSAGE_FOR_TOOL_USE
+    //   otherwise → formatError (covers timeout, mcp, shell, tool_threw)
+    const terminalContent =
+      cls === "aborted"
+        ? INTERRUPT_MESSAGE_FOR_TOOL_USE
+        : formatError(err);
+    return errorOutput({
+      invocation,
+      content: terminalContent,
+      elapsedMs: performance.now() - startedAt,
+    });
+  }
+
+  // Step 6: PostToolUse hooks.
+  const postHooks = opts.postHooks ?? [];
+  let finalDispatch = dispatch;
+  if (postHooks.length > 0) {
+    const postDecision = await runPostToolUseHooks(
+      postHooks,
+      { invocation, tool, args: inputForTool, result: finalDispatch },
+      (err, idx) => {
+        opts.onHookError?.("post", err, idx);
+        emitHookAttachment(
+          opts.eventLog,
+          subId,
+          "hook_error_during_execution",
+          `PostToolUse:${tool.name} threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      },
+      opts.onHookTiming,
+    );
+    finalDispatch = postDecision.result;
+    for (const c of postDecision.additionalContexts) {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_additional_context",
+        `PostToolUse:${tool.name} context: ${c}`,
+      );
+    }
+    for (const be of postDecision.blockingErrors) {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_blocking_error",
+        `PostToolUse:${tool.name} blocking error: ${be}`,
+      );
+    }
+    if (postDecision.kind === "stop") {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_stopped_continuation",
+        `PostToolUse:${tool.name} stopped execution${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
+      );
+    } else if (postDecision.kind === "preventContinuation") {
+      emitHookAttachment(
+        opts.eventLog,
+        subId,
+        "hook_stopped_continuation",
+        `PostToolUse:${tool.name} prevented continuation${postDecision.stopReason ? `: ${postDecision.stopReason}` : ""}`,
+      );
+    }
+  }
+
+  // AgenC `shouldPreventContinuation` parity — when a PreToolUse
+  // hook set `preventContinuation`, emit the attachment now that the
+  // tool has actually run successfully.
+  if (prePreventContinuation) {
+    emitHookAttachment(
+      opts.eventLog,
+      subId,
+      "hook_stopped_continuation",
+      `PreToolUse:${tool.name} prevented continuation${prePreventContinuation.stopReason ? `: ${prePreventContinuation.stopReason}` : ""}`,
+    );
+  }
+
+  // Step 7: I-15 result-size cap.
+  const maxResultBytes =
+    tool.maxResultBytes !== undefined && tool.maxResultBytes > 0
+      ? tool.maxResultBytes
+      : DEFAULT_MAX_TOOL_RESULT_BYTES;
+  const capped = capToolResult(finalDispatch.content, maxResultBytes);
+  if (capped.truncated && opts.eventLog) {
+    emitWarningEvent(
+      opts.eventLog,
+      subId,
+      "tool_result_truncated",
+      `tool ${toolNameDisplay(invocation.toolName)} output ${capped.originalBytes}B truncated to ${maxResultBytes}B (I-15)`,
+    );
+  }
+
+  cleanupModeSub();
+  return functionToolOutput({
+    callId: invocation.callId,
+    toolName: invocation.toolName,
+    payload: invocation.payload,
+    content: capped.capped,
+    isError: finalDispatch.isError === true,
+    durationMs: performance.now() - startedAt,
+    ...(finalDispatch.metadata !== undefined
+      ? { metadata: finalDispatch.metadata }
+      : {}),
+  });
+}
+
+export interface ExecuteToolDispatchOptions extends RunToolUseOptions {
+  readonly rawArgs: string;
+}
+
+/**
+ * Execute a single tool invocation and return just the
+ * `ToolDispatchResult`. T6 removes the args-retry auto-fix loop per
+ * `docs/plan/feature-matrix.md` — AgenC's auto-fix injects
+ * lint/test output as PostToolUse `hook_additional_context`, it does
+ * NOT re-dispatch with rewritten args.
+ */
+export async function executeToolDispatch(
+  opts: ExecuteToolDispatchOptions,
+): Promise<ToolDispatchResult> {
+  const output = await runToolUse(opts.rawArgs, {
+    ...opts,
+    throwOnExecutionError: true,
+  });
+  return {
+    content: output.content,
+    isError: output.isError,
+    codeModeResult: codeModeResult(output),
+    metadata: output.metadata ? { ...output.metadata } : undefined,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────
+
+function errorOutput(opts: {
+  readonly invocation: ToolInvocation;
+  readonly content: string;
+  readonly elapsedMs: number;
+  readonly metadata?: Record<string, unknown>;
+}): ToolOutput {
+  return functionToolOutput({
+    callId: opts.invocation.callId,
+    toolName: opts.invocation.toolName,
+    payload: opts.invocation.payload,
+    content: opts.content,
+    isError: true,
+    durationMs: opts.elapsedMs,
+    ...(opts.metadata !== undefined ? { metadata: opts.metadata } : {}),
+  });
+}
+
+function extractCommandPreview(
+  tool: Tool,
+  args: Record<string, unknown>,
+): string {
+  const candidates = ["command", "cmd", "path", "url"];
+  for (const key of candidates) {
+    const value = args[key];
+    if (typeof value === "string" && value.length > 0) {
+      return value.slice(0, 256);
+    }
+  }
+  return tool.name;
+}
+
+function deriveToolPermissions(tool: Tool): ReadonlyArray<string> {
+  const declared = (tool as unknown as { readonly permissions?: unknown })
+    .permissions;
+  if (Array.isArray(declared) && declared.every((p) => typeof p === "string")) {
+    return declared as ReadonlyArray<string>;
+  }
+  return ["execute"];
+}
+
+export { toolNameDisplay };
+export type { ToolName, ToolOutput, ToolPayload };

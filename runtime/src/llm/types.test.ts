@@ -1,168 +1,140 @@
-import { describe, expect, it } from "vitest";
-import {
-  isAnchorPreserved,
-  partitionByAnchorPreserve,
-  validateToolCall,
-  validateToolCallDetailed,
-  type LLMMessage,
-} from "./types.js";
+import { describe, expect, test } from "vitest";
 
-describe("validateToolCall", () => {
-  it("accepts a valid tool call payload", () => {
-    const result = validateToolCall({
-      id: "call_1",
-      name: "lookup",
-      arguments: '{"q":"hello"}',
-    });
+import { validateToolCallDetailed } from "./types.js";
 
-    expect(result).toEqual({
-      id: "call_1",
-      name: "lookup",
-      arguments: '{"q":"hello"}',
-    });
-  });
-
-  it("rejects missing ids", () => {
-    expect(
-      validateToolCall({
-        name: "lookup",
-        arguments: "{}",
-      }),
-    ).toBeNull();
-  });
-
-  it("rejects empty names", () => {
-    expect(
-      validateToolCall({
-        id: "call_1",
-        name: "",
-        arguments: "{}",
-      }),
-    ).toBeNull();
-  });
-
-  it("rejects non-JSON argument strings", () => {
-    expect(
-      validateToolCall({
-        id: "call_1",
-        name: "lookup",
-        arguments: "{bad-json",
-      }),
-    ).toBeNull();
-  });
-
-  it("preserves valid JSON structure before decoding HTML entities in string values", () => {
-    const result = validateToolCall({
-      id: "call_1",
-      name: "system.writeFile",
-      arguments:
-        '{"path":"src/parser.c","content":"strcmp(token, \\"&quot;&gt;&quot;\\") == 0 && strcmp(token, \\"&amp;\\") == 0;"}',
-    });
-
-    expect(result).toEqual({
-      id: "call_1",
-      name: "system.writeFile",
-      arguments:
-        '{"path":"src/parser.c","content":"strcmp(token, \\"\\">\\"\\") == 0 && strcmp(token, \\"&\\") == 0;"}',
-    });
-  });
-
-  it("falls back to decoding the raw JSON text only when the original JSON is invalid", () => {
-    const result = validateToolCall({
-      id: "call_1",
-      name: "lookup",
-      arguments: '{&quot;q&quot;:&quot;hello&quot;}',
-    });
-
-    expect(result).toEqual({
-      id: "call_1",
-      name: "lookup",
-      arguments: '{"q":"hello"}',
-    });
-  });
-
-  it("returns a structured failure reason for rejected tool calls", () => {
+describe("validateToolCallDetailed", () => {
+  test("normalizes plain-string file arguments for readFile", () => {
     const result = validateToolCallDetailed({
-      id: "call_1",
-      name: "lookup",
-      arguments: '["bad"]',
+      id: "call-1",
+      name: "FileRead",
+      arguments: "PLAN.MD",
     });
 
-    expect(result.toolCall).toBeNull();
-    expect(result.failure).toEqual({
-      code: "non_object_arguments",
-      message: "Tool call arguments must decode to a JSON object.",
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-1",
+      name: "FileRead",
+      arguments: JSON.stringify({ file_path: "PLAN.MD" }),
     });
   });
-});
 
-describe("isAnchorPreserved", () => {
-  it("returns true only when runtimeOnly.anchorPreserve === true", () => {
-    const yes: LLMMessage = {
-      role: "user",
-      content: "x",
-      runtimeOnly: { anchorPreserve: true },
-    };
-    const noUndefined: LLMMessage = { role: "user", content: "x" };
-    const noExplicitFalse: LLMMessage = {
-      role: "user",
-      content: "x",
-      runtimeOnly: { anchorPreserve: false },
-    };
-    const noOtherRuntimeOnly: LLMMessage = {
-      role: "user",
-      content: "x",
-      runtimeOnly: { mergeBoundary: "user_context" },
-    };
-    expect(isAnchorPreserved(yes)).toBe(true);
-    expect(isAnchorPreserved(noUndefined)).toBe(false);
-    expect(isAnchorPreserved(noExplicitFalse)).toBe(false);
-    expect(isAnchorPreserved(noOtherRuntimeOnly)).toBe(false);
-  });
-});
+  test("normalizes JSON string bash arguments into the command field", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2",
+      name: "system.bash",
+      arguments: JSON.stringify("pwd"),
+    });
 
-describe("partitionByAnchorPreserve", () => {
-  const mk = (
-    id: string,
-    preserve: boolean,
-  ): LLMMessage => ({
-    role: "user",
-    content: id,
-    ...(preserve
-      ? { runtimeOnly: { anchorPreserve: true } }
-      : {}),
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2",
+      name: "system.bash",
+      arguments: JSON.stringify({ command: "pwd" }),
+    });
   });
 
-  it("splits into anchor-preserved and rest, preserving within-subset order", () => {
-    const history = [
-      mk("a", false),
-      mk("b", true),
-      mk("c", false),
-      mk("d", true),
-      mk("e", false),
-    ];
-    const { anchorPreserved, rest } = partitionByAnchorPreserve(history);
-    expect(anchorPreserved.map((m) => m.content)).toEqual(["b", "d"]);
-    expect(rest.map((m) => m.content)).toEqual(["a", "c", "e"]);
+  test("normalizes JSON string exec_command arguments into the cmd field", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2b",
+      name: "exec_command",
+      arguments: JSON.stringify("pwd"),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2b",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
   });
 
-  it("returns two empty arrays for empty input", () => {
-    const { anchorPreserved, rest } = partitionByAnchorPreserve([]);
-    expect(anchorPreserved).toEqual([]);
-    expect(rest).toEqual([]);
+  test("normalizes plain string exec_command arguments into the cmd field", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2c",
+      name: "exec_command",
+      arguments: "pwd",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2c",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
   });
 
-  it("returns all-rest when no message is anchor-preserved", () => {
-    const history = [mk("a", false), mk("b", false)];
-    const { anchorPreserved, rest } = partitionByAnchorPreserve(history);
-    expect(anchorPreserved).toEqual([]);
-    expect(rest.map((m) => m.content)).toEqual(["a", "b"]);
+  test("preserves valid structured exec_command arguments unchanged", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2d",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2d",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "pwd" }),
+    });
   });
 
-  it("returns all-anchor-preserved when every message is marked", () => {
-    const history = [mk("a", true), mk("b", true)];
-    const { anchorPreserved, rest } = partitionByAnchorPreserve(history);
-    expect(anchorPreserved.map((m) => m.content)).toEqual(["a", "b"]);
-    expect(rest).toEqual([]);
+  test("keeps malformed object-like exec_command arguments as empty structured input", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2e",
+      name: "exec_command",
+      arguments: '{cd: "/tmp"}',
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2e",
+      name: "exec_command",
+      arguments: JSON.stringify({}),
+    });
+  });
+
+  test("does not repair object-shaped bad exec_command args into shell commands", () => {
+    const result = validateToolCallDetailed({
+      id: "call-2f",
+      name: "exec_command",
+      arguments: JSON.stringify({ cd: "/tmp" }),
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-2f",
+      name: "exec_command",
+      arguments: JSON.stringify({ cd: "/tmp" }),
+    });
+  });
+
+  test("keeps malformed structured file arguments from being rewrapped as a fake path", () => {
+    const result = validateToolCallDetailed({
+      id: "call-3",
+      name: "FileRead",
+      arguments: "{}\nPLAN.MD",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-3",
+      name: "FileRead",
+      arguments: JSON.stringify({}),
+    });
+  });
+
+  test("preserves bracket-leading exec_command strings as shell commands", () => {
+    const result = validateToolCallDetailed({
+      id: "call-4",
+      name: "exec_command",
+      arguments: "[ -f package.json ] && pwd",
+    });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.toolCall).toEqual({
+      id: "call-4",
+      name: "exec_command",
+      arguments: JSON.stringify({ cmd: "[ -f package.json ] && pwd" }),
+    });
   });
 });

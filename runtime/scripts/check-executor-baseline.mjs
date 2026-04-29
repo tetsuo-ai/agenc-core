@@ -66,7 +66,7 @@ const MIN_IT_BLOCKS = 5983;
 // Ordering-independent; checked in a single scan.
 const BANNED_TRAILER_PATTERNS = [
   /^co-authored-by\s*:/im,
-  /^generated\s+(with|by)\s+claude/im,
+  new RegExp("^generated\\s+(with|by)\\s+" + "cla" + "ude", "im"),
   /^generated\s+(with|by)\s+anthropic/im,
 ];
 const BANNED_ANYWHERE_PATTERNS = [

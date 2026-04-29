@@ -90,8 +90,8 @@ for the supported boundary and manual prerequisites.
 
 ## Solana Security Sweep
 
-For Codex-assisted Solana work, especially non-ZK marketplace changes, use the
-repo-local checklist in `docs/security/CODEX_SOLANA_SECURITY_CHECKLIST.md`.
+For AgenC runtime-assisted Solana work, especially non-ZK marketplace changes, use the
+repo-local checklist in `docs/security/AGENC_SOLANA_SECURITY_CHECKLIST.md`.
 
 The minimum security stack is:
 

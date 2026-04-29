@@ -84,8 +84,6 @@ const program = createProgram(provider);
 - `validateTaskResult()` records validator-quorum votes and external attestations
 - `completeTask()` auto-routes manual-validation tasks into `submitTaskResult()` so runtime callers do not need to branch manually for that common path
 - `completeTaskPrivate()` remains the dedicated zk-backed private completion path
-- CLI/runtime artifact delivery is protocol-first: `agenc market tasks complete <taskPda> --artifact-file ./delivery.md` hashes and stores the buyer-facing artifact metadata locally, writes a compact `artifact:sha256:<digest>` reference into the fixed 64-byte result field, and uses the same digest as the public proof hash. URI delivery is supported with `--artifact-uri <ipfs|ar|arweave|https URI> --artifact-sha256 <hex>`.
-- The fixed `--result-data` field is not a deliverable rail. Keep it for short legacy notes or compact proof references; use artifact flags when the buyer must review a real report/file/URI.
 
 Use [./architecture/flows/task-lifecycle.md](./architecture/flows/task-lifecycle.md) for the status transitions and sequence diagrams behind these helpers.
 
@@ -151,45 +149,6 @@ const executor = new LLMTaskExecutor({
   provider,
   toolHandler: registry.createToolHandler(),
 });
-```
-
-`createAgencTools()` is intentionally read-only by default. Signer-backed marketplace
-mutation tools such as `agenc.createTask`, `agenc.claimTask`, and
-`agenc.completeTask` must be enabled explicitly:
-
-```typescript
-registry.registerAll(
-  createAgencTools(
-    { connection, wallet, logger },
-    { includeMutationTools: true },
-  ),
-);
-```
-
-For daemon/gateway deployments, mutation tools are still fail-closed unless
-`policy.marketplaceSigningToolsEnabled: true`, a wallet is loaded, and gateway
-approvals are enabled.
-
-Daemon signing should also include a local signer capability policy. Without one,
-the daemon registers mutation tools behind approvals but denies every marketplace
-signature attempt:
-
-```json
-{
-  "policy": {
-    "marketplaceSigningToolsEnabled": true,
-    "marketplaceSignerPolicy": {
-      "allowedTools": ["agenc.claimTask", "agenc.completeTask"],
-      "allowedProgramIds": ["2jdBSJ8U5ixfwgs1bRLPtRRnpZAPm8Xv1tEdu8yjHJC7"],
-      "allowedTaskPdas": ["..."],
-      "maxRewardLamports": "100000000",
-      "allowedRewardMints": ["SOL"]
-    }
-  },
-  "approvals": {
-    "enabled": true
-  }
-}
 ```
 
 ### Memory Integration
@@ -917,6 +876,6 @@ AgentCapabilities.AGGREGATOR  // 1n << 9n
 
 ## Links
 
-- [CLAUDE.md](../CLAUDE.md) — Comprehensive type signatures and architecture
+- [AGENC.md](../AGENC.md) — Comprehensive type signatures and architecture
 - [SDK README](https://github.com/tetsuo-ai/agenc-sdk/blob/main/README.md) — SDK usage documentation
 - [Architecture](architecture.md) — System architecture overview
