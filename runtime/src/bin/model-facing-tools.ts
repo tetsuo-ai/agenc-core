@@ -1128,7 +1128,18 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
             `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
           );
         }
-        return { threadId: outcome.thread.threadId };
+        const thread = outcome.thread;
+        // Codex `agent_jobs.rs:704` subscribes to thread status to detect
+        // a worker that terminates without calling `report_agent_job_result`
+        // (handled by `finalize_finished_item`). AgenC mirrors this by
+        // resolving `threadFinished` when `thread.join()` completes; the
+        // orchestrator's finalize guard then converts a still-pending item
+        // into a failed one with codex's exact error message.
+        const threadFinished = thread
+          .join()
+          .then(() => undefined)
+          .catch(() => undefined);
+        return { threadId: thread.threadId, threadFinished };
       },
       async cancelOutstanding() {
         // In-memory orchestrator: workers self-terminate when they

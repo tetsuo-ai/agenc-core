@@ -122,7 +122,11 @@ describe("runAgentsOnCsv", () => {
     });
     expect(result.stoppedEarly).toBe(true);
     expect(result.items[0]!.status).toBe("completed");
-    expect(result.items.slice(1).every((it) => it.status === "cancelled")).toBe(
+    // Codex's run_agent_job_loop stops dispatching new workers when
+    // cancellation is requested but does not auto-cancel pending items;
+    // they remain in `pending` status. AgenC matches that behavior:
+    // row2 and row3 never dispatch and stay pending.
+    expect(result.items.slice(1).every((it) => it.status === "pending")).toBe(
       true,
     );
   });

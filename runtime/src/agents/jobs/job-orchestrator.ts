@@ -69,11 +69,39 @@ export interface AgentJobSpawnContext {
 
 export interface AgentJobSpawnOutcome {
   readonly threadId?: string;
+  /**
+   * Resolves when the spawned worker thread reaches a terminal status
+   * (`completed | errored | shutdown | not_found`). The orchestrator
+   * uses this to detect workers that finish without calling
+   * `report_agent_job_result` and apply codex's `finalize_finished_item`
+   * guard at `agent_jobs.rs:992-1004` ("worker finished without calling
+   * report_agent_job_result"). Adapters that cannot observe terminal
+   * status may omit this field; the orchestrator falls back to the
+   * `max_runtime_seconds` timeout in that case.
+   */
+  readonly threadFinished?: Promise<void>;
 }
 
 export interface AgentJobSpawn {
   spawn(ctx: AgentJobSpawnContext): Promise<AgentJobSpawnOutcome | void>;
   cancelOutstanding(jobId: JobId): Promise<void>;
+}
+
+/**
+ * Optional thread-control surface used by `recoverRunningItems`. Mirrors
+ * the slice of codex's `AgentControl` that the recovery path touches:
+ *   - `agent_control.get_status(thread_id)` (agent_jobs.rs:877)
+ *   - `agent_control.shutdown_live_agent(thread_id)` (agent_jobs.rs:850)
+ *
+ * Adapters that cannot observe live thread state may omit this field;
+ * recovery degrades to "stale → fail; no thread id → fail; otherwise
+ * leave alone".
+ */
+export interface AgentJobThreadOps {
+  getStatus(
+    threadId: string,
+  ): Promise<{ kind: "running" | "pending_init" | "interrupted" } | { kind: "completed"; lastMessage?: string } | { kind: "errored"; reason: string } | { kind: "shutdown" } | { kind: "not_found" }>;
+  shutdownThread(threadId: string): Promise<void>;
 }
 
 /**
@@ -102,6 +130,7 @@ export interface RunAgentsOnCsvOpts {
   readonly spawn: AgentJobSpawn;
   readonly repository?: CsvAgentJobsRepository;
   readonly jobName?: string;
+  readonly threadOps?: AgentJobThreadOps;
   /**
    * Session-level cap on concurrent agent threads. Mirrors codex
    * `turn.config.agent_max_threads`. When set, the effective
@@ -129,6 +158,7 @@ interface JobRuntimeState {
     { resolve: (value: void) => void; reject: (err: Error) => void }
   >;
   readonly repository?: CsvAgentJobsRepository;
+  readonly threadOps?: AgentJobThreadOps;
   stopRequested: boolean;
 }
 
@@ -221,18 +251,32 @@ export async function runAgentsOnCsv(
     items,
     pending: new Map(),
     ...(opts.repository !== undefined ? { repository: opts.repository } : {}),
+    ...(opts.threadOps !== undefined ? { threadOps: opts.threadOps } : {}),
     stopRequested: false,
   };
   jobs.set(jobId, state);
 
   try {
+    // Codex `run_agent_job_loop` calls `recover_running_items`
+    // (agent_jobs.rs:588) before dispatching new items. For freshly-
+    // created jobs this is a no-op; the helper is defensive against
+    // re-entry where an item was left in `running` status.
+    await recoverRunningItems(state);
     await processItems(state, opts.spawn);
     if (opts.outputCsvPath !== undefined) {
       await writeOutputCsv(opts.outputCsvPath, csv.headers, items);
     }
     if (opts.repository !== undefined) {
       if (state.stopRequested) {
-        opts.repository.markJobCancelled(jobId, "worker requested stop");
+        // recordAgentJobResult may have already flipped the job to
+        // `cancelled` (with reason "cancelled by worker request" per
+        // codex agent_jobs.rs:500-505). Avoid clobbering that exact
+        // reason with a different one — only mark cancelled here if
+        // the job hasn't already transitioned.
+        const current = opts.repository.getJob(jobId);
+        if (current?.status !== "cancelled") {
+          opts.repository.markJobCancelled(jobId, "cancelled by worker request");
+        }
       } else {
         opts.repository.markJobCompleted(jobId);
       }
@@ -274,6 +318,116 @@ function clampConcurrency(
   return effective;
 }
 
+/**
+ * Codex `recover_running_items` (agent_jobs.rs:825-903): defensive
+ * within-run reconciliation. Called at the start of every job run to
+ * resolve items left in `running` status (e.g. from a re-entered job
+ * or from a half-finished prior dispatch).
+ *
+ * Branches mirror codex's exact policy:
+ *   - Stale (age >= maxRuntimeSeconds): markItemFailed + shutdown thread
+ *     (agent_jobs.rs:840-852)
+ *   - Missing assigned_thread_id: markItemFailed (agent_jobs.rs:855-862)
+ *   - Thread in final state: finalize from DB (agent_jobs.rs:877-885)
+ *   - Otherwise: leave alone — caller's loop will observe the worker
+ *     via subscribeStatus (codex agent_jobs.rs:887-902); AgenC's
+ *     orchestrator does not currently re-attach Promise resolvers in
+ *     this branch since the original `report_agent_job_result` waiter
+ *     is gone, so we mark the item failed defensively.
+ */
+async function recoverRunningItems(state: JobRuntimeState): Promise<void> {
+  const repository = state.repository;
+  if (repository === undefined) return;
+  const running = repository.listItems({
+    jobId: state.config.jobId,
+    status: "running",
+  });
+  if (running.length === 0) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const runtimeTimeoutSec = state.config.maxRuntimeSeconds;
+  for (const dbItem of running) {
+    const inMemoryItem = state.items.get(dbItem.itemId);
+    const ageSec = nowSec - dbItem.updatedAt;
+    if (ageSec >= runtimeTimeoutSec) {
+      const message = `worker exceeded max runtime of ${runtimeTimeoutSec}s`;
+      repository.markItemFailed(state.config.jobId, dbItem.itemId, message);
+      if (inMemoryItem !== undefined) {
+        inMemoryItem.status = "failed";
+        inMemoryItem.error = message;
+        inMemoryItem.completedAt = new Date();
+      }
+      if (
+        dbItem.assignedThreadId !== undefined &&
+        state.threadOps !== undefined
+      ) {
+        await state.threadOps
+          .shutdownThread(dbItem.assignedThreadId)
+          .catch(() => {});
+      }
+      continue;
+    }
+    if (dbItem.assignedThreadId === undefined) {
+      const message = "running item is missing assigned_thread_id";
+      repository.markItemFailed(state.config.jobId, dbItem.itemId, message);
+      if (inMemoryItem !== undefined) {
+        inMemoryItem.status = "failed";
+        inMemoryItem.error = message;
+        inMemoryItem.completedAt = new Date();
+      }
+      continue;
+    }
+    if (state.threadOps !== undefined) {
+      const status = await state.threadOps.getStatus(dbItem.assignedThreadId);
+      if (
+        status.kind === "completed" ||
+        status.kind === "errored" ||
+        status.kind === "shutdown" ||
+        status.kind === "not_found"
+      ) {
+        // Codex finalize_finished_item path (agent_jobs.rs:877-885).
+        if (status.kind === "completed" && dbItem.result !== undefined) {
+          repository.markItemCompleted(
+            state.config.jobId,
+            dbItem.itemId,
+            dbItem.result,
+          );
+          if (inMemoryItem !== undefined) {
+            inMemoryItem.status = "completed";
+            inMemoryItem.result = dbItem.result;
+            inMemoryItem.completedAt = new Date();
+            inMemoryItem.reportedAt = new Date();
+          }
+        } else {
+          const message =
+            status.kind === "errored"
+              ? status.reason
+              : status.kind === "shutdown" ||
+                  status.kind === "not_found" ||
+                  status.kind === "completed"
+                ? "worker finished without calling report_agent_job_result"
+                : "worker terminated";
+          repository.markItemFailed(
+            state.config.jobId,
+            dbItem.itemId,
+            message,
+          );
+          if (inMemoryItem !== undefined) {
+            inMemoryItem.status = "failed";
+            inMemoryItem.error = message;
+            inMemoryItem.completedAt = new Date();
+          }
+        }
+      }
+      // Otherwise (thread still alive, not stale): codex re-attaches
+      // to the active set via subscribe_status. AgenC has no way to
+      // recreate the original `report_agent_job_result` Promise here,
+      // so this branch is unreachable from a fresh runAgentsOnCsv
+      // call (no items in `running` status at start). Leaving the
+      // item alone — `processItems` will skip it via the status guard.
+    }
+  }
+}
+
 async function processItems(
   state: JobRuntimeState,
   spawn: AgentJobSpawn,
@@ -282,8 +436,11 @@ async function processItems(
   // Preserve original row order while still allowing capacity-rejected
   // items to be re-queued at the front. `unshift` inside the catch path
   // matches codex's `mark_agent_job_item_pending` + `break` behavior at
-  // agent_jobs.rs:658-665.
-  const queue: ItemId[] = Array.from(state.items.keys());
+  // agent_jobs.rs:658-665. Items that aren't pending in memory (e.g.
+  // moved to `failed` by recoverRunningItems) are filtered out.
+  const queue: ItemId[] = Array.from(state.items.entries())
+    .filter(([, item]) => item.status === "pending")
+    .map(([id]) => id);
   const inflight: Set<Promise<{ retryItemId?: ItemId }>> = new Set();
 
   const runOne = async (
@@ -327,7 +484,27 @@ async function processItems(
           outcome.threadId,
         );
       }
-      await Promise.race([completion, timeout]);
+      const racers: Array<Promise<void>> = [completion, timeout];
+      if (outcome?.threadFinished !== undefined) {
+        racers.push(outcome.threadFinished);
+      }
+      await Promise.race(racers);
+      // Codex finalize_finished_item guard (agent_jobs.rs:992-1004):
+      // if the item is still pending after the worker thread terminated
+      // (or after the wait resolved without `recordAgentJobResult`),
+      // mark failed with codex's exact message.
+      if (item.status === "pending") {
+        const message =
+          "worker finished without calling report_agent_job_result";
+        item.status = "failed";
+        item.error = message;
+        item.completedAt = new Date();
+        state.repository?.markItemFailed(
+          state.config.jobId,
+          itemId,
+          message,
+        );
+      }
       return {};
     } catch (err) {
       if (err instanceof AgentJobCapacityError) {
@@ -349,7 +526,17 @@ async function processItems(
   };
 
   while (queue.length > 0 || inflight.size > 0) {
-    while (inflight.size < max && queue.length > 0) {
+    // Codex `run_agent_job_loop` polls `is_agent_job_cancelled` at the
+    // top of each loop iteration (agent_jobs.rs:611) so external
+    // cancellation flips the job's flag in the DB and the next
+    // dispatch round notices. AgenC mirrors via the repository.
+    if (!state.stopRequested && state.repository !== undefined) {
+      const dbJob = state.repository.getJob(state.config.jobId);
+      if (dbJob?.status === "cancelled") {
+        state.stopRequested = true;
+      }
+    }
+    while (!state.stopRequested && inflight.size < max && queue.length > 0) {
       const id = queue.shift()!;
       const promise = runOne(id);
       inflight.add(promise);
@@ -483,6 +670,11 @@ export function recordAgentJobResult(
   state.repository?.markItemCompleted(args.jobId, args.itemId, args.result);
   if (args.stop === true) {
     state.stopRequested = true;
+    // Codex agent_jobs.rs:500-505: when a worker reports stop=true, the
+    // job's status is flipped to cancelled in the DB so subsequent
+    // `is_agent_job_cancelled` checks (and other observers) see the
+    // cancellation. The reason text mirrors codex byte-for-byte.
+    state.repository?.markJobCancelled(args.jobId, "cancelled by worker request");
   }
   state.pending.get(args.itemId)?.resolve();
   state.pending.delete(args.itemId);
