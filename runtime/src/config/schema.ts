@@ -305,6 +305,7 @@ export interface AgenCConfig {
   readonly model_verbosity?: ModelVerbosity;
   readonly service_tier?: ServiceTier;
   readonly personality?: Personality;
+  readonly agent_max_threads?: number;
   readonly agent_max_depth?: number;
   readonly profiles?: Readonly<Record<string, ProfileOverride>>;
   readonly providers?: Readonly<Record<string, ProviderConfig>>;
@@ -432,6 +433,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "model_verbosity",
   "service_tier",
   "personality",
+  "agent_max_threads",
   "agent_max_depth",
   "profiles",
   "providers",
@@ -476,6 +478,7 @@ export function defaultConfig(): AgenCConfig {
     reasoning_effort: "medium" as ReasoningEffort,
     approvals_reviewer: "user" as ApprovalsReviewer,
     personality: "default" as Personality,
+    agent_max_threads: 4,
     agent_max_depth: 1,
     project_root_markers: Object.freeze([
       ".git",
@@ -586,6 +589,7 @@ const AGENC_TOP_LEVEL_ALIASES: Readonly<Record<string, string>> = Object.freeze(
  * - Top-level aliases from `AGENC_TOP_LEVEL_ALIASES` are renamed; if the
  *   canonical key is also present, the canonical key wins and the alias is
  *   dropped (forward-compat for mixed configs).
+ * - `agents.max_threads` → `agent_max_threads`.
  * - `agents.max_depth` → `agent_max_depth`.
  *
  * The returned object is a shallow copy; nested values are passed through
@@ -603,6 +607,7 @@ export function normalizeAgenCKeyAliases(
       delete out[alias];
     }
   }
+  // agents.max_threads → agent_max_threads
   // agents.max_depth → agent_max_depth
   const agents = out.agents;
   if (
@@ -611,12 +616,17 @@ export function normalizeAgenCKeyAliases(
     !Array.isArray(agents)
   ) {
     const agentsObj = agents as Record<string, unknown>;
+    if ("max_threads" in agentsObj && !("agent_max_threads" in out)) {
+      out.agent_max_threads = agentsObj.max_threads;
+    }
     if ("max_depth" in agentsObj && !("agent_max_depth" in out)) {
       out.agent_max_depth = agentsObj.max_depth;
     }
-    // Drop the `agents` table if max_depth was the only thing we care about;
+    // Drop the `agents` table if thread/depth aliases were the only things
+    // we care about;
     // otherwise leave it for _unknown preservation.
     const remaining = { ...agentsObj };
+    delete remaining.max_threads;
     delete remaining.max_depth;
     if (Object.keys(remaining).length === 0) {
       delete out.agents;
