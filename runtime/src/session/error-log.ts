@@ -42,11 +42,75 @@ export interface ErrorLogEntry {
   readonly provider?: string;
   readonly server?: string;
   readonly stack?: string;
-  readonly raw?: Event;
+}
+
+export interface ErrorLogClassification {
+  readonly persist: boolean;
+  readonly reason?: string;
 }
 
 function dateToFilename(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+const INTERNAL_WARNING_CAUSES = new Set([
+  "model_ui_spoof_pattern",
+  "orphaned_turn_recovered",
+  "provider_switched",
+  "snapshot_behind_rollout",
+  "stream_chunk_reordered",
+  "system_resumed_from",
+  "tool_routing_classified",
+  "compact_prompt_build_slow",
+  "compact_tool_result_dropped",
+  "llm_request_metadata",
+  "mode_changed",
+  "mode_changed_to_plan",
+  "mode_exited_plan",
+  "memory_extract_failed",
+  "memory_extract_parse_failed",
+  "memory_extract_timeout",
+]);
+
+function payloadRecord(event: Event): Record<string, unknown> {
+  const payload = (event.msg as { readonly payload?: unknown }).payload;
+  return typeof payload === "object" && payload !== null && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+}
+
+export function classifyErrorLogEvent(event: Event): ErrorLogClassification {
+  const msg = event.msg;
+  if (
+    msg.type !== "error" &&
+    msg.type !== "warning" &&
+    msg.type !== "stream_error"
+  ) {
+    return { persist: false, reason: "non_error" };
+  }
+
+  const payload = payloadRecord(event);
+  const visibility = payload.visibility;
+  const surface = payload.surface;
+  if (
+    visibility === "internal" ||
+    visibility === "debug" ||
+    surface === "internal" ||
+    surface === "debug" ||
+    surface === "diagnostic"
+  ) {
+    return { persist: false, reason: "internal" };
+  }
+
+  if (
+    msg.type === "warning" &&
+    typeof payload.cause === "string" &&
+    INTERNAL_WARNING_CAUSES.has(payload.cause)
+  ) {
+    return { persist: false, reason: "internal" };
+  }
+
+  return { persist: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -189,15 +253,12 @@ export class ErrorLogSidecar implements Sidecar {
   }
 
   onEvent(event: Event): void {
-    const msg = event.msg;
-    if (
-      msg.type !== "error" &&
-      msg.type !== "warning" &&
-      msg.type !== "stream_error"
-    ) {
+    const classification = classifyErrorLogEvent(event);
+    if (!classification.persist) {
       return;
     }
-    const payload = msg.payload as {
+    const msg = event.msg;
+    const payload = payloadRecord(event) as {
       cause?: string;
       message?: string;
       provider?: string;
@@ -205,9 +266,15 @@ export class ErrorLogSidecar implements Sidecar {
       turnId?: string;
       server?: string;
     };
+    const level =
+      msg.type === "stream_error"
+        ? "stream_error"
+        : msg.type === "warning"
+          ? "warning"
+          : "error";
     const entry: ErrorLogEntry = {
       timestamp: new Date().toISOString(),
-      level: msg.type,
+      level,
       cause: payload.cause ?? "unknown",
       message: payload.message ?? "",
       sessionId: this.sessionId,
@@ -215,7 +282,6 @@ export class ErrorLogSidecar implements Sidecar {
       ...(payload.provider ? { provider: payload.provider } : {}),
       ...(payload.server ? { server: payload.server } : {}),
       ...(payload.stack ? { stack: payload.stack } : {}),
-      raw: event,
     };
 
     if (this.degraded.isDegraded) {

@@ -273,7 +273,7 @@ describe("MessageList", () => {
             id: "exec-json",
             kind: "tool_call",
             toolName: "exec_command",
-            toolArgs: { cmd: "cat PLAN.md | head -n 1" },
+            toolArgs: { cmd: "printf 'AgenC Shell Implementation Plan\\n'" },
             toolResultContent:
               '{"stdout":"# AgenC Shell Implementation Plan\\n","stderr":"","exitCode":0,"durationMs":39,"original_token_count":7}',
             isComplete: true,
@@ -283,7 +283,7 @@ describe("MessageList", () => {
     );
     const frame = latestFrameText(stdout);
     expect(frame).toContain("● Write(include/agenc/exec.h)");
-    expect(frame).toContain("● Bash(cat PLAN.md | head -n 1)");
+    expect(frame).toContain("● Bash(printf 'AgenC Shell Implementation Plan\\n')");
     expect(frame).toContain("# AgenC Shell Implementation Plan");
     expect(frame).not.toContain("bytesWritten");
     expect(frame).not.toContain("original_token_count");
@@ -473,6 +473,7 @@ describe("MessageList", () => {
   test("renders read/write/edit/MCP tools as semantic cells", async () => {
     const { unmount, stdout } = await mount(
       <MessageList
+        verbose
         messages={[
           mkMsg({
             id: "read",
@@ -807,7 +808,7 @@ describe("MessageList", () => {
     expect(frame).toContain("● Write(src/main.ts)");
     expect(frame).toContain("● Edit(src/main.ts)");
     expect(frame).toContain("2 replacements");
-    expect(frame).toContain("● Search(TODO)");
+    expect(frame).toContain("● Searched for 1 pattern");
     expect(frame).not.toContain("bytesWritten");
     unmount();
   });

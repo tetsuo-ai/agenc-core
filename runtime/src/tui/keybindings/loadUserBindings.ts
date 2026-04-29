@@ -10,11 +10,19 @@ import {
   type BindingContext,
   type BindingMap,
 } from "./defaultBindings.js";
+import { parseChord } from "./parser.js";
+import {
+  getReservedShortcuts,
+  normalizeKeyForComparison,
+} from "./reservedShortcuts.js";
+import type { Chord } from "./types.js";
+import { validateKeybindings } from "./validate.js";
 
 export type KeybindingWarningType =
   | "parse_error"
   | "invalid_context"
   | "invalid_action"
+  | "duplicate"
   | "reserved";
 
 export interface KeybindingWarning {
@@ -63,7 +71,12 @@ const LEGACY_ACTION_ALIASES: Record<string, BindingCommand> = {
   imagepaste: "chat:imagePaste",
 };
 
-const RESERVED_GLOBAL_KEYS = new Set(["ctrl+c", "ctrl+d"]);
+const RESERVED_PROCESS_KEYS = new Set(["ctrl+c", "ctrl+d"]);
+const RESERVED_GLOBAL_KEYS = new Set(
+  getReservedShortcuts()
+    .map((shortcut) => normalizeKeyForComparison(shortcut.key))
+    .filter((key) => RESERVED_PROCESS_KEYS.has(key)),
+);
 
 function cloneDefaultBindings(): Record<BindingContext, BindingMap> {
   return {
@@ -102,6 +115,28 @@ function normalizeAction(value: unknown): BindingCommand | null {
   return LEGACY_ACTION_ALIASES[compact] ?? null;
 }
 
+function parsedChordToLiveKeySequence(chord: Chord): string {
+  return chord
+    .map((keystroke) => {
+      const parts: string[] = [];
+      if (keystroke.alt || keystroke.meta) parts.push("alt");
+      if (keystroke.ctrl) parts.push("ctrl");
+      if (keystroke.super) parts.push("meta");
+      if (keystroke.shift) parts.push("shift");
+      parts.push(keystroke.key === " " ? "space" : keystroke.key);
+      return parts.join("+");
+    })
+    .join(" ");
+}
+
+function normalizeUserKey(rawKey: string): string {
+  try {
+    return normalizeKeySequence(parsedChordToLiveKeySequence(parseChord(rawKey)));
+  } catch {
+    return normalizeKeySequence(rawKey);
+  }
+}
+
 function pushWarning(
   warnings: KeybindingWarning[],
   warning: KeybindingWarning,
@@ -116,7 +151,7 @@ function applyBinding(
   rawKey: string,
   rawAction: unknown,
 ): void {
-  const key = normalizeKeySequence(rawKey);
+  const key = normalizeUserKey(rawKey);
   if (key.length === 0) {
     pushWarning(warnings, {
       type: "parse_error",
@@ -128,7 +163,10 @@ function applyBinding(
     return;
   }
 
-  if (context === "global" && RESERVED_GLOBAL_KEYS.has(key)) {
+  if (
+    context === "global" &&
+    RESERVED_GLOBAL_KEYS.has(normalizeKeyForComparison(key))
+  ) {
     pushWarning(warnings, {
       type: "reserved",
       severity: "warning",
@@ -190,6 +228,66 @@ function normalizeBlocks(parsed: unknown): RawKeybindingBlock[] | null {
   return null;
 }
 
+function validationContextFor(context: BindingContext): string {
+  switch (context) {
+    case "global":
+      return "Global";
+    case "chat":
+      return "Chat";
+    case "modal":
+      return "Modal";
+    case "transcript":
+      return "Transcript";
+  }
+}
+
+function normalizeBlocksForValidation(
+  blocks: readonly RawKeybindingBlock[],
+): unknown[] {
+  return blocks.map((block) => {
+    const context = normalizeContext(block.context);
+    const bindings: Record<string, unknown> = {};
+
+    if (typeof block.bindings === "object" && block.bindings !== null) {
+      for (const [key, action] of Object.entries(
+        block.bindings as Record<string, unknown>,
+      )) {
+        bindings[key] =
+          action === null
+            ? null
+            : typeof action === "string"
+              ? normalizeAction(action) ?? action
+              : action;
+      }
+    }
+
+    return {
+      context:
+        context !== null ? validationContextFor(context) : block.context,
+      bindings,
+    };
+  });
+}
+
+function addOpenClaudeValidationWarnings(
+  warnings: KeybindingWarning[],
+  blocks: readonly RawKeybindingBlock[],
+): void {
+  for (const warning of validateKeybindings(
+    normalizeBlocksForValidation(blocks),
+  )) {
+    if (warning.type !== "duplicate") continue;
+    pushWarning(warnings, {
+      type: "duplicate",
+      severity: warning.severity,
+      message: warning.message,
+      ...(warning.key !== undefined ? { key: warning.key } : {}),
+      ...(warning.context !== undefined ? { context: warning.context } : {}),
+      ...(warning.action !== undefined ? { action: warning.action } : {}),
+    });
+  }
+}
+
 export function loadUserBindingsSync(
   agencHome?: string,
 ): KeybindingsLoadResult {
@@ -232,6 +330,8 @@ export function loadUserBindingsSync(
       ],
     };
   }
+
+  addOpenClaudeValidationWarnings(warnings, blocks);
 
   for (const block of blocks) {
     const context = normalizeContext(block.context);

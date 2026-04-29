@@ -22,6 +22,7 @@
 import React from "react";
 
 import { Box, Text } from "../../ink-public.js";
+import { ExecCell } from "../ExecCell.js";
 import { ToolCell } from "../ToolCell.js";
 
 export interface GroupedToolUseEntry {
@@ -34,6 +35,19 @@ export interface GroupedToolUseEntry {
   readonly metadata?: Readonly<Record<string, unknown>>;
   readonly isError?: boolean;
   readonly isComplete?: boolean;
+  readonly execCommand?: string;
+  readonly execStdout?: string;
+  readonly execStderr?: string;
+  readonly execExitCode?: number;
+  readonly execDurationMs?: number;
+  readonly execTimedOut?: boolean;
+  readonly execTruncated?: boolean;
+  readonly execCwdWasReset?: boolean;
+  readonly execBackgroundTaskHint?: string;
+  readonly execImagePaths?: readonly string[];
+  readonly execNoOutputExpected?: boolean;
+  readonly execReturnCodeInterpretation?: string;
+  readonly execBackgroundTaskId?: string;
 }
 
 export interface GroupedToolUseContentProps {
@@ -41,11 +55,13 @@ export interface GroupedToolUseContentProps {
   readonly toolName: string;
   /** Individual tool-use entries to stack vertically. */
   readonly entries: readonly GroupedToolUseEntry[];
+  readonly verbose?: boolean;
 }
 
 export function GroupedToolUseContent({
   toolName,
   entries,
+  verbose = false,
 }: GroupedToolUseContentProps): React.ReactElement | null {
   if (entries.length === 0) return null;
   return (
@@ -56,15 +72,55 @@ export function GroupedToolUseContent({
       </Box>
       <Box flexDirection="column" marginLeft={2}>
         {entries.map((entry) => (
-          <ToolCell
-            key={entry.id}
-            toolName={entry.toolName}
-            toolArgs={entry.toolArgs}
-            isComplete={entry.isComplete !== false}
-            isError={entry.isError === true}
-            result={entry.result}
-            metadata={entry.metadata}
-          />
+          typeof entry.execCommand === "string" ? (
+            <ExecCell
+              key={entry.id}
+              command={entry.execCommand}
+              stdout={entry.execStdout ?? entry.result ?? ""}
+              stderr={entry.execStderr ?? ""}
+              {...(entry.execExitCode !== undefined
+                ? { exitCode: entry.execExitCode }
+                : {})}
+              {...(entry.execDurationMs !== undefined
+                ? { durationMs: entry.execDurationMs }
+                : {})}
+              {...(entry.execTimedOut !== undefined
+                ? { timedOut: entry.execTimedOut }
+                : {})}
+              {...(entry.execTruncated !== undefined
+                ? { truncated: entry.execTruncated }
+                : {})}
+              {...(entry.execCwdWasReset !== undefined
+                ? { cwdWasReset: entry.execCwdWasReset }
+                : {})}
+              {...(entry.execBackgroundTaskHint !== undefined
+                ? { backgroundTaskHint: entry.execBackgroundTaskHint }
+                : {})}
+              {...(entry.execImagePaths !== undefined
+                ? { imagePaths: entry.execImagePaths }
+                : {})}
+              {...(entry.execNoOutputExpected !== undefined
+                ? { noOutputExpected: entry.execNoOutputExpected }
+                : {})}
+              {...(entry.execReturnCodeInterpretation !== undefined
+                ? { returnCodeInterpretation: entry.execReturnCodeInterpretation }
+                : {})}
+              {...(entry.execBackgroundTaskId !== undefined
+                ? { backgroundTaskId: entry.execBackgroundTaskId }
+                : {})}
+              verbose={verbose}
+            />
+          ) : (
+            <ToolCell
+              key={entry.id}
+              toolName={entry.toolName}
+              toolArgs={entry.toolArgs}
+              isComplete={entry.isComplete !== false}
+              isError={entry.isError === true}
+              result={entry.result}
+              metadata={entry.metadata}
+            />
+          )
         ))}
       </Box>
     </Box>

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   assembleTieredInstructions,
+  formatTieredInstructionWarnings,
   isPathWithin,
   loadTieredInstructions,
   resolveIncludes,
@@ -147,6 +148,31 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     expect(text).toContain("--- project (/r/AGENC.md) ---");
     expect(text).toContain("only me");
     expect(text).not.toContain("--- managed");
+  });
+
+  test("formatTieredInstructionWarnings reports dropped includes from loaded tiers", () => {
+    const warnings = formatTieredInstructionWarnings({
+      managed: null,
+      user: null,
+      project: {
+        tier: "project",
+        path: "/repo/AGENC.md",
+        content: "",
+        rawContent: "",
+        dropped: [
+          {
+            requestedPath: "../secret.md",
+            reason: "path_escape",
+            includingFile: "/repo/AGENC.md",
+          },
+        ],
+      },
+      local: null,
+    });
+
+    expect(warnings).toEqual([
+      "AGENC.md include dropped: ../secret.md (path_escape from /repo/AGENC.md)",
+    ]);
   });
 
   // ---- @include directive ----

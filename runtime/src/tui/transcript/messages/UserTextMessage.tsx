@@ -8,10 +8,9 @@
  * AgenC scope notes:
  *   - Slack channel inputs (`<channel source="...">`) are out of
  *     scope and stripped from the dispatch table.
- *   - Teammate / agent-swarm renderers (`UserTeammateMessage`,
- *     `UserAgentNotificationMessage`) are tranche-5+ work; for now
- *     the dispatcher does not special-case them and falls through to
- *     `UserPromptMessage`.
+ *   - Teammate / agent-swarm user-message renderers are not part of
+ *     the live AgenC prompt transcript; those runtime events surface
+ *     through the agent status panel instead.
  *   - GitHub-webhook, fork-boilerplate, and cross-session message
  *     branches were upstream-internal feature flags and are dropped
  *     here.
@@ -126,9 +125,6 @@ export function UserTextMessage({
     return <UserResourceUpdateMessage addMargin={addMargin} param={param} />
   }
 
-  // TODO(tranche-5): teammate / agent-notification routing once those
-  // renderers and the agent-swarm bridge land in AgenC. For now the
-  // generic prompt renderer is used as a reasonable fallback.
   return (
     <UserPromptMessage
       addMargin={addMargin}

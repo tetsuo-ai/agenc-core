@@ -109,6 +109,7 @@ type ProviderRuntimeExtra = Partial<
   readonly numCtx?: number;
   readonly numGpu?: number;
   readonly emitWarning?: LLMProviderConfig["emitWarning"];
+  readonly emitDiagnostic?: LLMProviderConfig["emitDiagnostic"];
   readonly onCapabilityDrift?: LLMProviderConfig["onCapabilityDrift"];
 };
 
@@ -146,6 +147,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "numCtx",
   "numGpu",
   "emitWarning",
+  "emitDiagnostic",
   "onCapabilityDrift",
 ] as const satisfies readonly (keyof ProviderRuntimeExtra)[];
 
@@ -477,6 +479,12 @@ function readRuntimeExtra(
     ...(typeof extra?.emitWarning === "function"
       ? { emitWarning: extra.emitWarning as LLMProviderConfig["emitWarning"] }
       : {}),
+    ...(typeof extra?.emitDiagnostic === "function"
+      ? {
+        emitDiagnostic:
+          extra.emitDiagnostic as LLMProviderConfig["emitDiagnostic"],
+      }
+      : {}),
     ...(typeof extra?.onCapabilityDrift === "function"
       ? {
         onCapabilityDrift:
@@ -509,6 +517,9 @@ function buildCommonConfig(
       : {}),
     ...(extra.emitWarning !== undefined
       ? { emitWarning: extra.emitWarning }
+      : {}),
+    ...(extra.emitDiagnostic !== undefined
+      ? { emitDiagnostic: extra.emitDiagnostic }
       : {}),
     ...(extra.onCapabilityDrift !== undefined
       ? { onCapabilityDrift: extra.onCapabilityDrift }

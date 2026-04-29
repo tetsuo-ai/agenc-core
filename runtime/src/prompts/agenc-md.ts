@@ -613,6 +613,38 @@ export function assembleTieredInstructions(tiers: TieredInstructions): string {
   return parts.join("\n\n");
 }
 
+function formatDroppedInclude(drop: DroppedInclude): string {
+  return [
+    "AGENC.md include dropped:",
+    drop.requestedPath,
+    `(${drop.reason}`,
+    `from ${drop.includingFile})`,
+  ].join(" ");
+}
+
+/**
+ * Convert rejected `@include` records into user-facing startup/status notices.
+ *
+ * The loader already preserves rejected include metadata per tier so callers
+ * do not need to scrape the assembled prompt's HTML comments. The TUI uses
+ * these notices to mirror OpenClaude's memory/config status surface while
+ * keeping AgenC's AGENC.md terminology.
+ */
+export function formatTieredInstructionWarnings(
+  tiers: TieredInstructions,
+): readonly string[] {
+  const order: InstructionTier[] = ["managed", "user", "project", "local"];
+  const warnings: string[] = [];
+  for (const tier of order) {
+    const entry = tiers[tier];
+    if (!entry) continue;
+    for (const drop of entry.dropped) {
+      warnings.push(formatDroppedInclude(drop));
+    }
+  }
+  return warnings;
+}
+
 // Re-exports for convenience — keeps downstream imports single-file.
 export { loadProjectInstructions } from "./project-instructions.js";
 export type { ProjectInstructions } from "./project-instructions.js";

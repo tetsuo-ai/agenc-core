@@ -27,7 +27,6 @@ import Text from "../ink/components/Text.js";
 import { theme } from "../theme.js";
 import type { TranscriptMessage } from "./MessageList.js";
 import { Message } from "./Message.js";
-import { OffscreenFreeze } from "./OffscreenFreeze.js";
 
 export interface MessageRowProps {
   readonly message: TranscriptMessage;
@@ -59,22 +58,6 @@ function formatTimestamp(timestamp: number | undefined): string | null {
   }
 }
 
-function rowCacheKey(message: TranscriptMessage): string {
-  const tail = [
-    message.id,
-    message.kind,
-    message.timestamp,
-    message.isComplete === false ? "streaming" : "final",
-    message.content?.length ?? 0,
-    message.toolResultContent?.length ?? 0,
-    message.execStdout?.length ?? 0,
-    message.execStderr?.length ?? 0,
-    message.execExitCode ?? "",
-    message.label ?? "",
-  ];
-  return tail.join(":");
-}
-
 export function MessageRow({
   message,
   isTranscriptMode = false,
@@ -96,29 +79,19 @@ export function MessageRow({
 
   if (!showMetadata || stamp === null) {
     return (
-      <OffscreenFreeze
-        cacheKey={rowCacheKey(message)}
-        freeze={message.isComplete !== false}
-      >
-        <Box flexDirection="column" width={width}>
-          {body}
-        </Box>
-      </OffscreenFreeze>
+      <Box flexDirection="column" width={width}>
+        {body}
+      </Box>
     );
   }
 
   return (
-    <OffscreenFreeze
-      cacheKey={rowCacheKey(message)}
-      freeze={message.isComplete !== false}
-    >
-      <Box flexDirection="column" width={width}>
-        <Box flexDirection="row" justifyContent="flex-end" marginTop={1}>
-          <Text color={theme.colors.dim}>{stamp}</Text>
-        </Box>
-        {body}
+    <Box flexDirection="column" width={width}>
+      <Box flexDirection="row" justifyContent="flex-end" marginTop={1}>
+        <Text color={theme.colors.dim}>{stamp}</Text>
       </Box>
-    </OffscreenFreeze>
+      {body}
+    </Box>
   );
 }
 

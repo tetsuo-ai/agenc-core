@@ -75,6 +75,7 @@ import {
 import {
   loadTieredInstructions,
   assembleTieredInstructions,
+  formatTieredInstructionWarnings,
 } from "../prompts/agenc-md.js";
 import {
   loadMemoryPrompt,
@@ -671,6 +672,17 @@ export async function prepareTurnRuntimeInputs(params: {
   const assembledProjectInstructions = assembleTieredInstructions(
     projectInstructionsResult,
   );
+  const projectMemoryWarnings =
+    formatTieredInstructionWarnings(projectInstructionsResult);
+  const warningSink = params.session as unknown as {
+    setProjectMemoryWarnings?: (warnings: readonly string[]) => void;
+    projectMemoryWarnings?: string[];
+  };
+  if (typeof warningSink.setProjectMemoryWarnings === "function") {
+    warningSink.setProjectMemoryWarnings(projectMemoryWarnings);
+  } else {
+    warningSink.projectMemoryWarnings = [...projectMemoryWarnings];
+  }
 
   const loadedMemory = await loadMemoryPrompt({
     memoryDir: params.memoryDir,

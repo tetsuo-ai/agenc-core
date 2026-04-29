@@ -68,6 +68,7 @@ import type {
 import { AgentControl } from "../agents/control.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
+import { listAgentRoles } from "../agents/role.js";
 import {
   type BuildToolRegistryOptions,
   type ToolRegistry,
@@ -500,7 +501,10 @@ function buildDeferredConfig(
     /** T-future: ghost-snapshot state machine (AgenC runtime workspace restore). */
     ghostSnapshot: { enabled: false },
     /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
-    agentRoles: [],
+    agentRoles: listAgentRoles().map((role) => ({
+      name: role.name,
+      description: role.config.description ?? "",
+    })),
   };
 }
 
@@ -711,6 +715,12 @@ export async function bootstrapLocalRuntimeSession(
       },
     });
   };
+  const emitProviderDiagnostic = (_diagnostic: {
+    cause: string;
+    message: string;
+  }): void => {
+    // Keep provider request-shape diagnostics out of warning/error streams.
+  };
   const handleCapabilityDrift = (warning: {
     message: string;
     status?: number;
@@ -750,6 +760,7 @@ export async function bootstrapLocalRuntimeSession(
       tools: registry.toLLMTools(),
       extra: {
         emitWarning: emitProviderWarning,
+        emitDiagnostic: emitProviderDiagnostic,
         onCapabilityDrift: handleCapabilityDrift,
         ...(providerSettings?.contextWindowTokens !== undefined
           ? { contextWindowTokens: providerSettings.contextWindowTokens }
@@ -921,6 +932,8 @@ export async function bootstrapLocalRuntimeSession(
       features: config.features,
       services: bootstrapServices.services,
       jsRepl: { id: `repl-${conversationId}` },
+      config,
+      modelInfo,
       initialTranscriptEvents,
       // Lazy payload — `rolloutPath`, `initialMessages`, and
       // `historyEntryCount` are populated inside the before-hook when

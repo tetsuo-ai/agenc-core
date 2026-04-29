@@ -24,8 +24,22 @@ function sseResponse(frames: string[]): Response {
   });
 }
 
+function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): void {
+  expect(
+    emitWarning.mock.calls.some(([warning]) => {
+      return (
+        typeof warning === "object" &&
+        warning !== null &&
+        "cause" in warning &&
+        warning.cause === "llm_request_metadata"
+      );
+    }),
+  ).toBe(false);
+}
+
 describe("OpenAIProvider", () => {
   test("honors request-scoped model overrides on chat calls", async () => {
+    const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -53,6 +67,7 @@ describe("OpenAIProvider", () => {
       apiKey: "sk-test",
       model: "gpt-5",
       fetchImpl,
+      emitWarning,
     });
 
     const response = await provider.chat(
@@ -65,10 +80,12 @@ describe("OpenAIProvider", () => {
     ) as Record<string, unknown>;
     expect(request.model).toBe("gpt-5-reviewer");
     expect(response.model).toBe("gpt-5-reviewer");
+    expectNoRequestMetadataWarning(emitWarning);
   });
 
   test("uses local chat-completions request shape for OpenAI-compatible local endpoints", async () => {
     const emitWarning = vi.fn();
+    const emitDiagnostic = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -102,6 +119,7 @@ describe("OpenAIProvider", () => {
       useResponsesApi: false,
       fetchImpl,
       emitWarning,
+      emitDiagnostic,
     });
 
     await provider.chat(
@@ -122,7 +140,8 @@ describe("OpenAIProvider", () => {
       { role: "system", content: "base instructions" },
       { role: "user", content: "hello" },
     ]);
-    expect(emitWarning).toHaveBeenCalledWith(
+    expectNoRequestMetadataWarning(emitWarning);
+    expect(emitDiagnostic).toHaveBeenCalledWith(
       expect.objectContaining({
         cause: "llm_request_metadata",
         message: expect.stringContaining('"model":"qwen3.6-35b-a3b-fp8"'),
@@ -131,6 +150,7 @@ describe("OpenAIProvider", () => {
   });
 
   test("uses max_completion_tokens for non-local OpenAI chat completions", async () => {
+    const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -157,6 +177,7 @@ describe("OpenAIProvider", () => {
       model: "gpt-5",
       useResponsesApi: false,
       fetchImpl,
+      emitWarning,
     });
 
     await provider.chat([{ role: "user", content: "hello" }], {
@@ -168,6 +189,7 @@ describe("OpenAIProvider", () => {
     ) as Record<string, unknown>;
     expect(request.max_completion_tokens).toBe(2048);
     expect("max_tokens" in request).toBe(false);
+    expectNoRequestMetadataWarning(emitWarning);
   });
 
   test("fails before chat-completions network calls when the request exceeds the context window", async () => {
@@ -466,6 +488,7 @@ describe("OpenAIProvider", () => {
   });
 
   test("streams chat-completions deltas instead of buffering the full reply", async () => {
+    const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
         'data: {"id":"chatcmpl_1","model":"gpt-5","choices":[{"index":0,"delta":{"content":"Hi "}}]}\n\n',
@@ -480,6 +503,7 @@ describe("OpenAIProvider", () => {
       model: "gpt-5",
       useResponsesApi: false,
       fetchImpl,
+      emitWarning,
     });
     const chunks: Array<{
       content: string;
@@ -516,6 +540,7 @@ describe("OpenAIProvider", () => {
     const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
     expect(request.stream).toBe(true);
     expect(request.stream_options).toEqual({ include_usage: true });
+    expectNoRequestMetadataWarning(emitWarning);
   });
 
   test("does not surface truncated chat-completions tool calls as executable calls", async () => {

@@ -711,6 +711,8 @@ export interface LLMProviderConfig {
   retryDelayMs?: number;
   /** Best-effort warning sink for provider/transport contract events. */
   emitWarning?: (warning: { cause: string; message: string }) => void;
+  /** Internal diagnostic sink for debug/replay metadata that must not surface as a warning. */
+  emitDiagnostic?: (diagnostic: { cause: string; message: string }) => void;
   /** Capability-drift hook fired when the provider rejects a claimed feature. */
   onCapabilityDrift?: (warning: { message: string; status?: number }) => void;
 }

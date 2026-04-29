@@ -1,7 +1,6 @@
 /**
  * CoordinatorAgentStatus — coordinator-side status block listing live
- * subagents, shown beneath the main transcript / above the prompt
- * input.
+ * subagents, shown beneath the main transcript / above the prompt input.
  *
  * Adapted from the upstream coordinator-task-panel component.
  *

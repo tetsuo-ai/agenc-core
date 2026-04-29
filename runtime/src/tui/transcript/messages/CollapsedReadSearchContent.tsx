@@ -30,7 +30,7 @@ import React from "react";
 
 import { Box, Text } from "../../ink-public.js";
 import { Spinner } from "../../design-system/Spinner.js";
-import { getShortcutDisplay } from "../../keybindings/shortcutFormat.js";
+import { theme } from "../../theme.js";
 import { ToolCell } from "../ToolCell.js";
 
 /** One verbose-mode entry to expand inside the collapsed group. */
@@ -61,6 +61,7 @@ export interface CollapsedReadSearchContentProps {
   readonly summary: CollapsedReadSearchSummary;
   /** True while the group is still in flight (last group, still loading). */
   readonly isActiveGroup?: boolean;
+  readonly addMargin?: boolean;
   /** Verbose mode — show every entry with its own ToolCell. */
   readonly verbose?: boolean;
   /** Verbose-mode entries. Ignored when `verbose` is false. */
@@ -125,6 +126,7 @@ function summaryParts(
 export function CollapsedReadSearchContent({
   summary,
   isActiveGroup = false,
+  addMargin = false,
   verbose = false,
   entries = [],
 }: CollapsedReadSearchContentProps): React.ReactElement | null {
@@ -150,25 +152,23 @@ export function CollapsedReadSearchContent({
   const parts = summaryParts(summary, isActiveGroup);
   if (parts.length === 0) return null;
 
-  const expandShortcut = getShortcutDisplay(
-    "app:toggleTranscript",
-    "Global",
-    "Ctrl+O",
-  );
+  const blackCircle = process.platform === "darwin" ? "⏺" : "●";
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={addMargin ? 1 : 0}>
       <Box flexDirection="row">
         {isActiveGroup ? (
           <Box marginRight={1}>
             <Spinner />
           </Box>
         ) : (
-          <Box minWidth={2} />
+          <Box minWidth={2}>
+            <Text color={theme.colors.success}>{blackCircle}</Text>
+          </Box>
         )}
-        <Text color="dim">
+        <Text dimColor={!isActiveGroup}>
           {parts.map((part, idx) => {
-            const verb = idx === 0 ? part.verb : part.verb.toLowerCase();
+            const verb = part.verb;
             const noun =
               part.count === 1 ? part.noun.singular : part.noun.plural;
             return (
@@ -180,8 +180,7 @@ export function CollapsedReadSearchContent({
               </React.Fragment>
             );
           })}
-          {isActiveGroup ? <Text>…</Text> : null}{" "}
-          <Text dimColor>({expandShortcut} to expand)</Text>
+          {isActiveGroup ? <Text>…</Text> : null}
         </Text>
       </Box>
       {isActiveGroup &&

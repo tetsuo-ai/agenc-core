@@ -36,6 +36,7 @@ export class ConfigStore {
   private snapshot: AgenCConfig;
   private readonly listeners = new Set<ConfigStoreListener>();
   private readonly opts: ConfigStoreOptions;
+  private warningMessages: string[] = [];
 
   constructor(opts: ConfigStoreOptions = {}) {
     this.opts = opts;
@@ -47,6 +48,11 @@ export class ConfigStore {
   /** Current frozen snapshot. Never mutates. */
   current(): AgenCConfig {
     return this.snapshot;
+  }
+
+  /** Warnings emitted during the most recent reload. */
+  warnings(): readonly string[] {
+    return [...this.warningMessages];
   }
 
   /**
@@ -67,29 +73,33 @@ export class ConfigStore {
    */
   async reload(): Promise<AgenCConfig> {
     const base = this.opts.base ?? defaultConfig();
+    this.warningMessages = [];
+    const onWarn = (message: string): void => {
+      this.warningMessages.push(message);
+      (this.opts.onWarn ?? ((msg: string) => console.warn(msg)))(message);
+    };
     let loaded: AgenCConfig;
     if (this.opts.loader) {
       loaded = await this.opts.loader({
         home: this.opts.home,
         base,
-        onWarn: this.opts.onWarn,
+        onWarn,
       });
     } else {
       const result = await loadConfig({
         home: this.opts.home,
         base,
-        onWarn: this.opts.onWarn,
+        onWarn,
       });
       loaded = result.config;
     }
-    const next = applyEnvOverrides(loaded, this.opts.env, this.opts.onWarn);
+    const next = applyEnvOverrides(loaded, this.opts.env, onWarn);
     this.snapshot = next;
     for (const listener of this.listeners) {
       try {
         listener(next);
       } catch (err) {
-        const warn = this.opts.onWarn ?? ((m: string) => console.warn(m));
-        warn(`[agenc:config] subscriber threw during reload: ${String(err)}`);
+        onWarn(`[agenc:config] subscriber threw during reload: ${String(err)}`);
       }
     }
     return next;

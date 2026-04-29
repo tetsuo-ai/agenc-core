@@ -92,4 +92,30 @@ describe("loadUserBindingsSync", () => {
     expect(result.bindings.chat["ctrl+k"]).toBe("chat:cancel");
     expect(result.bindings.chat["shift+tab"]).toBe("chat:cycleMode");
   });
+
+  test("surfaces OpenClaude duplicate-key validation through the live loader", () => {
+    writeKeybindings({
+      bindings: [
+        {
+          context: "Chat",
+          bindings: {
+            "ctrl+k": "chat:cancel",
+          },
+        },
+        {
+          context: "Chat",
+          bindings: {
+            "Ctrl+K": "chat:killToEnd",
+          },
+        },
+      ],
+    });
+
+    const result = loadUserBindingsSync(agencHome);
+
+    expect(result.bindings.chat["ctrl+k"]).toBe("chat:killToEnd");
+    expect(result.warnings.some((warning) => warning.type === "duplicate")).toBe(
+      true,
+    );
+  });
 });
