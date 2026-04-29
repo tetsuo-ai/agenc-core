@@ -189,6 +189,19 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("NotebookEdit");
     expect(visibleNames).not.toContain("TaskCreate");
+    const waitAgentTool = registry.tools.find(
+      (tool) => tool.name === "wait_agent",
+    );
+    expect(waitAgentTool?.timeoutMs).toBe(3_601_000);
+    expect(waitAgentTool?.inputSchema).toMatchObject({
+      properties: {
+        timeout_ms: {
+          description: expect.stringContaining(
+            "Defaults to 30000, min 10000, max 3600000",
+          ),
+        },
+      },
+    });
     expect(
       registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
     ).toMatchObject({

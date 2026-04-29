@@ -1299,10 +1299,14 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         "Wait for new messages from any agent. Returns when a message is ready or timeout elapses.",
       metadata: toolMetadata("agent", { keywords: ["agent", "wait", "status"] }),
       isReadOnly: true,
+      timeoutMs: MAX_WAIT_TIMEOUT_MS + 1_000,
       inputSchema: {
         type: "object",
         properties: {
-          timeout_ms: { type: "number" },
+          timeout_ms: {
+            type: "number",
+            description: `Optional timeout in milliseconds. Defaults to ${DEFAULT_WAIT_TIMEOUT_MS}, min ${MIN_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}. Prefer longer waits (minutes) to avoid busy polling.`,
+          },
         },
         additionalProperties: false,
       },
