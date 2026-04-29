@@ -203,6 +203,18 @@ function env(name: string): string {
   return value;
 }
 
+function readMarketplaceSignerPolicyFromEnv(): Record<string, unknown> | undefined {
+  const raw = process.env.AGENC_MARKETPLACE_SIGNER_POLICY?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("AGENC_MARKETPLACE_SIGNER_POLICY must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function hasFlag(flag: string): boolean {
   return process.argv.includes(flag);
 }
@@ -562,6 +574,7 @@ async function registerOrLoadAgent(
       wallet: keypairToWallet(signer.keypair),
       programId,
       logger: silentLogger,
+      marketplaceSignerPolicy: readMarketplaceSignerPolicyFromEnv(),
     },
     { includeMutationTools: true },
   ).find((tool) => tool.name === "agenc.registerAgent");
@@ -1676,6 +1689,15 @@ async function initial(): Promise<void> {
         reward: rewardLamports.toString(),
         requiredCapabilities: AgentCapabilities.COMPUTE.toString(),
         creatorAgentPda: creator.agentPda.toBase58(),
+        fullDescription:
+          "Live devnet smoke for marketplace dispute lifecycle with verified job spec metadata.",
+        acceptanceCriteria: [
+          "Worker claims the task after verified job spec resolution.",
+          "Creator opens a dispute with evidence.",
+          "Three arbiters vote and protocol authority resolves the dispute.",
+        ],
+        deliverables: ["Dispute lifecycle evidence artifact"],
+        constraints: ["SOL-only smoke; no Private ZK and no storefront dependencies."],
       },
       creator.agentPda.toBase58(),
     );
