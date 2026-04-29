@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle'
 import type { UUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 
-// AgenC `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
+// openclaude `sessionTranscript` subsystem deleted in gut-cleanup. Lean runtime
 // has no transcript writer, so this stays null and the optional-chained calls
 // below become no-ops.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -385,7 +385,7 @@ export type RecompactionInfo = {
  * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults.
  * Mid-turn compaction can additionally inject a serialized reference-
  * context message immediately before the last real user message
- * (or, if none survives, before the summary), matching AgenC runtime's
+ * (or, if none survives, before the summary), matching codex runtime's
  * `BeforeLastUserMessage` behavior.
  */
 export function buildPostCompactMessages(result: CompactionResult): Message[] {

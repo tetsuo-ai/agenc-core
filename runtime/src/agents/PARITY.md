@@ -59,7 +59,7 @@ Intentional TypeScript/runtime adaptations:
   child-session runner. The manager owns the live thread handle and all
   model-facing routing goes through that managed handle, but the lower-level
   provider loop remains the AgenC TypeScript session loop.
-- Persisted thread-spawn edges are stored by AgenC `RolloutStore` as a
+- Persisted thread-spawn edges are stored by openclaude `RolloutStore` as a
   Codex-shaped graph snapshot. This is a backend detail; callers use the
   manager/control APIs rather than reading the snapshot directly.
 - The full Rust `SessionSource`, shell snapshot, and exec-policy inheritance

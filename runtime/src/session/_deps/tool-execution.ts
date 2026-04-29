@@ -10,7 +10,7 @@
 
 /**
  * I-15: default cap on tool result size in bytes. 400 KB matches
- * AgenC `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
+ * openclaude `MAX_TOOL_RESULT_TOKENS=100_000 × BYTES_PER_TOKEN=4`.
  */
 export const DEFAULT_MAX_TOOL_RESULT_BYTES = 400_000;
 

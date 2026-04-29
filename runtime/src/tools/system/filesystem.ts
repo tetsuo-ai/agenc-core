@@ -135,7 +135,7 @@ interface SessionReadSnapshot {
    * (`runtime/src/prompts/attachments/changed-files.ts`) to detect
    * mid-session edits and emit `edited_text_file` snippets.
    *
-   * Hand-port of AgenC `FileState.content` semantics — AgenC's
+   * Hand-port of openclaude `FileState.content` semantics — AgenC's
    * `FileStateCache` always stores raw bytes (`fileStateCache.ts:4-15`).
    * AgenC's `content` field carries the formatted display content; this
    * additional field carries the pre-format raw bytes.

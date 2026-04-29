@@ -1,8 +1,8 @@
 /**
  * ApprovalStore + canonical shell approval keys.
  *
- * Hand-port of AgenC runtime `core/src/tools/sandboxing.rs:40-116`
- * (`ApprovalStore`, `with_cached_approval`) and a subset of AgenC runtime
+ * Hand-port of codex runtime `core/src/tools/sandboxing.rs:40-116`
+ * (`ApprovalStore`, `with_cached_approval`) and a subset of codex runtime
  * `core/src/command_canonicalization.rs` (T11 Wave 1, Agent C).
  *
  * Purpose
@@ -17,9 +17,9 @@
  *
  * Scope of this file:
  *   - `ApprovalStore<K>` — serializable-key → `ReviewDecision` map,
- *     with a `withCachedApproval` wrapper that encodes the AgenC runtime
+ *     with a `withCachedApproval` wrapper that encodes the codex runtime
  *     multi-key semantics.
- *   - `canonicalizeCommandForApproval` — subset of AgenC runtime's
+ *   - `canonicalizeCommandForApproval` — subset of codex runtime's
  *     canonicalizer: collapses `bash -lc` / `bash -c` / `/bin/bash`
  *     wrappers to a stable argv and trims whitespace around the
  *     script text.
@@ -59,7 +59,7 @@ function stableReplacer(_key: string, value: unknown): unknown {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ApprovalStore — AgenC runtime `tools/sandboxing.rs:40-62`
+// ApprovalStore — codex runtime `tools/sandboxing.rs:40-62`
 // ─────────────────────────────────────────────────────────────────────
 
 export interface WithCachedApprovalOpts<K> {
@@ -109,11 +109,11 @@ export class ApprovalStore<K> {
   }
 
   /**
-   * Port of AgenC runtime `with_cached_approval` (tools/sandboxing.rs:70-116).
+   * Port of codex runtime `with_cached_approval` (tools/sandboxing.rs:70-116).
    *
    * Behaviour:
    *   - Empty `keys` → skip the cache entirely; call `fetchDecision`.
-   *     (Matches AgenC runtime `if keys.is_empty()` branch.)
+   *     (Matches codex runtime `if keys.is_empty()` branch.)
    *   - All keys already `approved_for_session` → return
    *     `approved_for_session` without fetching.
    *   - Otherwise fetch; if the fresh decision is
@@ -145,7 +145,7 @@ export class ApprovalStore<K> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// canonicalizeCommandForApproval — subset of AgenC runtime
+// canonicalizeCommandForApproval — subset of codex runtime
 // `command_canonicalization.rs`.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -156,7 +156,7 @@ const BASH_WRAPPER_NAMES: ReadonlySet<string> = new Set([
 ]);
 const BASH_WRAPPER_FLAGS: ReadonlySet<string> = new Set(["-lc", "-c"]);
 
-/** Canonical marker AgenC runtime uses to tag shell scripts that cannot be
+/** Canonical marker codex runtime uses to tag shell scripts that cannot be
  *  cleanly tokenized (heredocs, pipes, etc.). */
 const CANONICAL_BASH_SCRIPT_PREFIX = "__agenc_shell_script__";
 
@@ -164,7 +164,7 @@ const CANONICAL_BASH_SCRIPT_PREFIX = "__agenc_shell_script__";
  * Collapse argv-invariant differences between equivalent shell
  * wrappers so the approval cache can hit across them.
  *
- * AgenC runtime does full bash tokenization to split `bash -lc "cargo test"`
+ * codex runtime does full bash tokenization to split `bash -lc "cargo test"`
  * into `["cargo", "test"]`. AgenC Wave 1 handles the common cases:
  *
  *   1. `bash -lc "X"`, `bash -c "X"`, `/bin/bash -lc "X"`,
@@ -233,7 +233,7 @@ function basenameNoExt(p: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ShellApprovalKey — AgenC runtime `tools/runtimes/shell.rs:131-213`
+// ShellApprovalKey — codex runtime `tools/runtimes/shell.rs:131-213`
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -263,7 +263,7 @@ export interface BuildShellApprovalKeyOptions {
 /**
  * Build a `ShellApprovalKey` with the argv already canonicalized and
  * the permission lists sorted (so `["net","fs"]` and `["fs","net"]`
- * collide in the cache). AgenC runtime uses `Hash` + `Eq` derives + a sorted
+ * collide in the cache). codex runtime uses `Hash` + `Eq` derives + a sorted
  * permissions struct to guarantee this — we replicate the sort
  * explicitly since JS doesn't normalize array order.
  */

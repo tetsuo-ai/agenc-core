@@ -1,7 +1,7 @@
 /**
  * Phase 1 — Prepare Context.
  *
- * Mirrors AgenC `query.ts:311-652` — the staged pre-model-call
+ * Mirrors openclaude `query.ts:311-652` — the staged pre-model-call
  * chain:
  *
  *   1. **Compact-boundary projection** — rebuild `messagesForQuery`
@@ -335,7 +335,7 @@ export async function prepareContext(
   // label.
 
   // Stage 2 — I-88-driven tool-result budgeting (ports
-  // AgenC `query.ts:~369` + `toolResultStorage.ts`).
+  // openclaude `query.ts:~369` + `toolResultStorage.ts`).
   // Byte-index source: `session.rolloutStore` (`RolloutStore` owns the
   // I-88 per-turn tally at `rollout-store.ts:76/82`). Falls back to
   // measuring tool-role messages in-place when the rollout store is
@@ -488,7 +488,7 @@ export async function prepareContext(
   // `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3`.
   //
   // Double-compact gate: `run-turn.ts::runPreSamplingCompact` is the
-  // canonical pre-turn compact dispatcher per AgenC runtime (turn.rs:712-735)
+  // canonical pre-turn compact dispatcher per codex runtime (turn.rs:712-735)
   // and runs BEFORE the phase loop. If it already compacted this turn,
   // it stamps `state.autoCompactTracking` with compacted=true and
   // turnCounter=0 (see run-turn.ts:334-339). commit.ts bumps

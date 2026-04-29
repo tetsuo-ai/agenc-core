@@ -1,7 +1,7 @@
 /**
  * TurnState — mutable working set carried across phase-machine iterations.
  *
- * Hand-port of AgenC `src/query.ts`'s `State` type (query.ts:203) plus
+ * Hand-port of openclaude `src/query.ts`'s `State` type (query.ts:203) plus
  * the 22 loop-local variables the body destructures/re-assigns each iteration
  * (query.ts:315-339). Every field below cites its exact AgenC source
  * line per `docs/plan/translation-conventions.md` "full-port with citations"
@@ -28,7 +28,7 @@ import { provisionContentReplacementState } from "./_deps/tool-result-storage.js
  * AgenC query.ts continue site. Used on `TurnState.transition`
  * so the phase machine can route correctly on the next iteration
  * and so tests can assert which recovery path fired without peeking
- * at message contents. Mirrors AgenC `Continue` from
+ * at message contents. Mirrors openclaude `Continue` from
  * `src/query/transitions.ts` (source exists in upstream head; cited
  * as per transition literal sites in query.ts).
  *
@@ -41,7 +41,7 @@ import { provisionContentReplacementState } from "./_deps/tool-result-storage.js
  *   1338 → stop_hook_blocking
  *   1375 → token_budget_continuation
  *   1457 → continuation_nudge
- * Plus AgenC runtime model-fallback site → model_fallback.
+ * Plus codex runtime model-fallback site → model_fallback.
  *
  * T8 disambiguation:
  *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
@@ -68,7 +68,7 @@ export interface Continue {
 }
 
 /**
- * Terminal — why the run-turn generator returned. Mirrors AgenC
+ * Terminal — why the run-turn generator returned. Mirrors openclaude
  * query.ts terminal reasons: 'completed', 'blocking_limit',
  * 'prompt_too_long', 'image_error', 'model_error', 'aborted_streaming',
  * 'stop_hook_prevented', 'aborted_tools', 'hook_stopped', 'max_turns'.
@@ -98,10 +98,10 @@ export interface Terminal {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * AgenC `AutoCompactTrackingState` from the compaction pipeline.
+ * openclaude `AutoCompactTrackingState` from the compaction pipeline.
  * Real import lands when `src/llm/compact/**` is lifted from tsconfig
  * exclude (T5b/T6). Structural shape documented here; runtime matches
- * AgenC runtime/AgenC schema.
+ * codex runtime/AgenC schema.
  */
 export interface AutoCompactTrackingState {
   readonly compacted: boolean;
@@ -111,7 +111,7 @@ export interface AutoCompactTrackingState {
 }
 
 /**
- * AgenC `ToolUseSummaryMessage` (services/tools/StreamingToolExecutor).
+ * openclaude `ToolUseSummaryMessage` (services/tools/StreamingToolExecutor).
  * T7 wires real type. Used as a pending promise whose resolution is
  * awaited before the next phase iteration.
  */
@@ -122,7 +122,7 @@ export type ToolUseSummaryMessage = {
 };
 
 /**
- * AgenC `StreamingToolExecutor` instance. T7 wires real class.
+ * openclaude `StreamingToolExecutor` instance. T7 wires real class.
  * Held loop-local so the next iteration can await pending executor
  * completion before re-entering streamModel.
  */
@@ -237,7 +237,7 @@ export type TokenBudgetDecision =
  * mutated-or-replaced TurnState. See `docs/plan/architecture.md` §Phase
  * Machine for the pure-phase-function invariant (I-89, proposed).
  *
- * Field-name mapping to AgenC `query.ts:315` destructure:
+ * Field-name mapping to openclaude `query.ts:315` destructure:
  *   toolUseContext    → handled via TurnContext + streamingToolExecutor
  *   tracking          → autoCompactTracking (renamed for clarity)
  *   (all other 20 names map 1:1 — see AgenC-inventory.md §1)
@@ -385,14 +385,14 @@ export interface TurnState {
 // (see session/turn-context.ts). Phases read the frozen config from
 // `ctx.configSnapshot`, never from `session.state` directly. TurnState
 // does not duplicate the snapshot — there is exactly one immutable
-// snapshot per turn, on the TurnContext, mirroring AgenC runtime's pattern.
+// snapshot per turn, on the TurnContext, mirroring codex runtime's pattern.
 
 // ─────────────────────────────────────────────────────────────────────
 // Builder
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Initial-state builder. Mirrors AgenC query.ts:268-283 (the
+ * Initial-state builder. Mirrors openclaude query.ts:268-283 (the
  * `let state: State = {...}` block). Taking the TurnContext + seed
  * user message (serialized into a single LLMMessage) is sufficient
  * because all counters start at 0 and all tracking/override fields

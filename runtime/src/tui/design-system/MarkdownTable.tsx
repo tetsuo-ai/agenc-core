@@ -30,7 +30,7 @@ export type CellAlign = 'left' | 'center' | 'right' | null
 
 /**
  * Structural shape compatible with `marked.Tokens.Table`. Rather than
- * importing `marked` (not an AgenC runtime dep), callers build this shape
+ * importing `marked` (not an codex runtime dep), callers build this shape
  * directly. Cells carry pre-rendered ANSI text via `text`.
  */
 export type MarkdownTableToken = {

@@ -1,7 +1,7 @@
 /**
  * Agent-listing delta attachment producer.
  *
- * Hand-port of AgenC `getAgentListingDeltaAttachment`
+ * Hand-port of openclaude `getAgentListingDeltaAttachment`
  * (`src/utils/attachments.ts:1491-1557`). Fires when the set of available
  * agent types has changed since the last announcement, OR on first
  * emission (with `isInitial: true`).

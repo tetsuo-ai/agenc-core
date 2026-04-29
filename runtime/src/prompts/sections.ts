@@ -1,7 +1,7 @@
 /**
  * System prompt section registry — cache-separation pattern.
  *
- * Port of AgenC `constants/systemPromptSections.ts` (69 LOC).
+ * Port of openclaude `constants/systemPromptSections.ts` (69 LOC).
  *
  * Two section factories:
  *

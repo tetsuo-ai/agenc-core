@@ -16,7 +16,7 @@
  *     or provider object because the child-session config source is
  *     not wired yet. The layering here preserves `base → role → user`
  *     precedence and profile selection, but it does not recreate
- *     AgenC runtime's full `ConfigLayerStack` / provider-preservation reload.
+ *     codex runtime's full `ConfigLayerStack` / provider-preservation reload.
  *
  * Built-in roles:
  *   - `netrunner` — unrestricted default agent; inherits parent config
@@ -68,7 +68,7 @@ export interface AgentRoleConfig {
   /** Runtime hint derived from the loaded role layer when possible. */
   readonly reasoningEffort?: AgentReasoningEffort;
   /** Optional explicit tool allowlist. This is runtime metadata, not a
-   *  AgenC runtime role-layer config field. */
+   *  codex runtime role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
   /** Optional system prompt prepended to child-agent history. */
   readonly systemPrompt?: string;
@@ -88,9 +88,16 @@ const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
   "explorer.toml": "",
   // Codex keeps awaiter temporarily removed from the built-in role set, but
   // still exposes the embedded role file for user-defined roles that reference
-  // `awaiter.toml`.
+  // `awaiter.toml`. The body matches codex's
+  // `core/src/agent/builtins/awaiter.toml` byte-for-byte.
+  // Body content matches codex's `core/src/agent/builtins/awaiter.toml`.
+  // Codex uses TOML's `"""..."""` multiline string for
+  // `developer_instructions`; AgenC's TOML parser does not yet support
+  // that production, so the body is encoded with `\n` escapes. The
+  // string value is identical post-parse.
   "awaiter.toml": `background_terminal_max_timeout = 3600000
-model_reasoning_effort = "low"`,
+model_reasoning_effort = "low"
+developer_instructions = "You are an awaiter.\\nYour role is to await the completion of a specific command or task and report its status only when it is finished.\\n\\nBehavior rules:\\n\\n1. When given a command or task identifier, you must:\\n   - Execute or await it using the appropriate tool\\n   - Continue awaiting until the task reaches a terminal state.\\n\\n2. You must NOT:\\n   - Modify the task.\\n   - Interpret or optimize the task.\\n   - Perform unrelated actions.\\n   - Stop awaiting unless explicitly instructed.\\n\\n3. Awaiting behavior:\\n   - If the task is still running, continue polling using tool calls.\\n   - Use repeated tool calls if necessary.\\n   - Do not hallucinate completion.\\n   - Use long timeouts when awaiting for something. If you need multiple awaits, increase the timeouts/yield times exponentially.\\n\\n4. If asked for status:\\n   - Return the current known status.\\n   - Immediately resume awaiting afterward.\\n\\n5. Termination:\\n   - Only exit awaiting when:\\n     - The task completes successfully, OR\\n     - The task fails, OR\\n     - You receive an explicit stop instruction.\\n\\nYou must behave deterministically and conservatively.\\n"`,
 } as const);
 
 const ROLE_DECLARATION_METADATA_KEYS = Object.freeze([
@@ -227,28 +234,6 @@ Rules:
 
 Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
 
-const VERIFICATION_DESCRIPTION = `Use this agent to verify that implementation work is correct before reporting completion. Invoke after non-trivial tasks (3+ file edits, backend/API changes, infrastructure changes). Pass the original user task, files changed, approach taken, and plan path when relevant. The agent runs builds, tests, linters, and adversarial probes, then reports VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL with command evidence.`;
-
-const VERIFICATION_SYSTEM_PROMPT = `You are a verification specialist. Your job is not to confirm the implementation works; it is to try to break it.
-
-You are strictly prohibited from creating, modifying, or deleting files in the project directory, installing dependencies, or running git write operations. You may write ephemeral scripts under /tmp or $TMPDIR and clean them up.
-
-For every check, run a real command. Reading code is not verification. Run the build when applicable, run tests, run linters/type-checkers if configured, and exercise the changed behavior directly. Include at least one adversarial probe such as boundary input, idempotency, missing resources, or concurrency when relevant.
-
-Every check in your report must include:
-
-### Check: [what you verified]
-**Command run:**
-  [exact command]
-**Output observed:**
-  [actual output, truncated only when necessary]
-**Result: PASS** or **Result: FAIL**
-
-End with exactly one line:
-VERDICT: PASS
-VERDICT: FAIL
-VERDICT: PARTIAL`;
-
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
 // ─────────────────────────────────────────────────────────────────────
@@ -275,36 +260,10 @@ const WORKER_ROLE: AgentRole = freezeRole({
   },
 });
 
-const VERIFICATION_ROLE: AgentRole = freezeRole({
-  name: "verification",
-  config: {
-    description: VERIFICATION_DESCRIPTION,
-    background: true,
-    systemPrompt: VERIFICATION_SYSTEM_PROMPT,
-    allowlist: Object.freeze([
-      "exec_command",
-      "write_stdin",
-      "FileRead",
-      "system.searchTools",
-      "system.grep",
-      "system.glob",
-      "system.listDir",
-      "system.stat",
-      "system.gitStatus",
-      "system.gitDiff",
-      "system.gitShow",
-      "WebFetch",
-      "WebSearch",
-      "wait_agent",
-    ]),
-  },
-});
-
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
   EXPLORER_ROLE,
   WORKER_ROLE,
-  VERIFICATION_ROLE,
 ]);
 
 // ─────────────────────────────────────────────────────────────────────
@@ -345,7 +304,7 @@ export function resolveAgentRole(name: string | undefined): AgentRole {
 }
 
 /**
- * Strict role-config lookup. Mirrors AgenC runtime `resolve_role_config`
+ * Strict role-config lookup. Mirrors codex runtime `resolve_role_config`
  * (`role.rs:121`). Returns the `AgentRoleConfig` for a named role or
  * `undefined` when the role is unknown — the caller is expected to
  * surface the error. Contrast with `resolveAgentRole`, which falls
@@ -371,7 +330,7 @@ export function tryResolveRoleConfig(
 /**
  * Allocate a nickname for a fresh subagent. On collision, cycles
  * through the candidate list + appends an ordinal suffix
- * ("scout the 2nd"). Mirrors AgenC runtime `registry.rs::format_agent_nickname`
+ * ("scout the 2nd"). Mirrors codex runtime `registry.rs::format_agent_nickname`
  * except for nickname ordering (see module-level divergence note).
  */
 export function allocateNickname(
@@ -428,9 +387,9 @@ export function formatNicknameWithSuffix(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Config-layer stack (Wave 3 port of AgenC runtime role.rs:40-270)
+// Config-layer stack (Wave 3 port of codex runtime role.rs:40-270)
 //
-// AgenC runtime layers TOML documents: `base → role-layer → user-layer` with
+// codex runtime layers TOML documents: `base → role-layer → user-layer` with
 // config/profile resolution (`role.rs:155-270`). AgenC now loads role
 // TOML through the same config-parser aliases, strips role-only
 // metadata, and merges the resulting config keys onto a plain object
@@ -440,7 +399,7 @@ export function formatNicknameWithSuffix(
 
 /**
  * Role-shaped subset of the effective config blob. Pure-ported from
- * AgenC runtime `role.rs`: the live child config will eventually be a full
+ * codex runtime `role.rs`: the live child config will eventually be a full
  * session-config snapshot, but today this seam accepts the config keys
  * the role layer can legitimately rewrite plus arbitrary pass-through
  * siblings.
@@ -463,7 +422,7 @@ export interface RoleShapedConfig {
 
 /**
  * Apply the role's loaded TOML layer onto a base config blob. Mirrors
- * AgenC runtime `apply_role_to_config` (`role.rs:40`) at the config-loading
+ * codex runtime `apply_role_to_config` (`role.rs:40`) at the config-loading
  * seam: role metadata is ignored, config aliases are normalized, and
  * top-level `profile = "..."` selectors are resolved against the
  * merged config snapshot.
@@ -496,7 +455,7 @@ function applyRoleToConfigInner<Base extends RoleShapedConfig>(
 }
 
 /**
- * Load the role's TOML layer. Mirrors AgenC runtime `load_role_layer_toml`
+ * Load the role's TOML layer. Mirrors codex runtime `load_role_layer_toml`
  * (`role.rs:87-119`) at the module boundary:
  *   - built-ins resolve `configFile` against embedded TOML content
  *   - user-defined role files are read from disk
@@ -513,7 +472,7 @@ export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
 }
 
 /**
- * Build the layered effective config. Mirrors AgenC runtime
+ * Build the layered effective config. Mirrors codex runtime
  * `build_config_layer_stack` + `build_next_config` +
  * `deserialize_effective_config` (`role.rs:155-270`) collapsed into a
  * single pure function.
@@ -533,12 +492,12 @@ export function buildConfigLayerStack<Base extends RoleShapedConfig>(opts: {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Role-list prompt formatter (Wave 3 port of AgenC runtime role.rs:280-309)
+// Role-list prompt formatter (Wave 3 port of codex runtime role.rs:280-309)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Format a known-roles list for injection into the spawn-agent tool
- * description. Mirrors AgenC runtime `spawn_tool_spec::build` +
+ * description. Mirrors codex runtime `spawn_tool_spec::build` +
  * `build_from_configs` + `format_role` (`role.rs:280-309`).
  *
  * Roles missing a `description` are rendered as `name: no description`

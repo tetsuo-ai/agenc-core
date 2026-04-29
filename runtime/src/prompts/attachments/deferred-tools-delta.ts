@@ -1,7 +1,7 @@
 /**
  * Deferred-tools delta attachment producer.
  *
- * Hand-port of AgenC `getDeferredToolsDeltaAttachment`
+ * Hand-port of openclaude `getDeferredToolsDeltaAttachment`
  * (`src/utils/attachments.ts:1456-1476`) and the underlying diff in
  * `getDeferredToolsDelta` (`src/utils/toolSearch.ts:646-706`).
  *

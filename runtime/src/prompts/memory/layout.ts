@@ -1,7 +1,7 @@
 /**
  * AgenC durable memory v2 layout.
  *
- * The layout intentionally follows AgenC runtime's progressive-disclosure shape
+ * The layout intentionally follows codex runtime's progressive-disclosure shape
  * while keeping the current AgenC memory directory compatible:
  *
  *   memory_summary.md       small routing summary

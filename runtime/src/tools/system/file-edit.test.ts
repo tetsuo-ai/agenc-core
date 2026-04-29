@@ -1,5 +1,5 @@
 /**
- * Tests for the lifted AgenC `Edit` tool.
+ * Tests for the lifted openclaude `Edit` tool.
  *
  * Coverage:
  *   - successful edit on a previously-read file

@@ -2,7 +2,7 @@
  * Per-turn memory attachments — surfaces the most-relevant memories
  * from the directory into the system prompt for a single turn.
  *
- * Hand-port of AgenC `utils/attachments.ts` relevant-memory
+ * Hand-port of openclaude `utils/attachments.ts` relevant-memory
  * subset. Differs:
  *   - Caps from TODO.MD §T10-C: ≤5 files/turn, ≤4KB each, ≤60KB per
  *     session cumulative.

@@ -7,19 +7,19 @@ import {
 /**
  * Stream parser — extract/strip hidden tags from assistant text.
  *
- * Hand-port of the core subset of AgenC runtime
- * `AgenC runtime-rs/utils/stream-parser/src/`:
+ * Hand-port of the core subset of codex runtime
+ * `codex-rs/utils/stream-parser/src/`:
  *
  *   - `citation.rs` / `strip_citations`         — <oai-mem-citation>…</oai-mem-citation>
  *   - `proposed_plan.rs` / `strip_proposed_plan_blocks` — line-delimited
  *        <proposed_plan>…</proposed_plan> blocks
  *   - `inline_hidden_tag.rs`                    — generic literal-tag stripper
  *
- * The AgenC runtime parser handles streaming (partial chunks that split a tag
+ * The codex runtime parser handles streaming (partial chunks that split a tag
  * across a `push_str` boundary). Here we ship a full-string stripper
  * for each tag family, a streaming `InlineHiddenTagParser` for inline
  * hidden tags, and a dedicated `ProposedPlanStreamParser` that
- * preserves AgenC runtime's line-based proposed-plan contract.
+ * preserves codex runtime's line-based proposed-plan contract.
  *
  * Invariants covered here:
  *   I-54 (tool-call schema validation)      — T7 wires the Zod
@@ -29,7 +29,7 @@ import {
  *        before any TUI rendering.
  *
  * T7 tightens the remaining streaming semantics for generic inline
- * tags. For T5 the proposed-plan parser matches AgenC runtime's finished-text
+ * tags. For T5 the proposed-plan parser matches codex runtime's finished-text
  * behaviour and streaming tag-recognition contract.
  *
  * @module
@@ -66,7 +66,7 @@ export interface StripResult<TagName extends string = string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Full-string strip — matches AgenC runtime `strip_citations` / `strip_proposed_plan_blocks`
+// Full-string strip — matches codex runtime `strip_citations` / `strip_proposed_plan_blocks`
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -75,7 +75,7 @@ export interface StripResult<TagName extends string = string> {
  * the outer tag's content, and its closing tag terminates the outer
  * block. Unterminated tags auto-close at EOF.
  *
- * Matches AgenC runtime `InlineHiddenTagParser` semantics on a finished
+ * Matches codex runtime `InlineHiddenTagParser` semantics on a finished
  * input.
  */
 export function stripInlineHiddenTags<TagName extends string>(
@@ -111,7 +111,7 @@ export function stripInlineHiddenTags<TagName extends string>(
 
 /**
  * Strip `<oai-mem-citation>…</oai-mem-citation>` tags from a complete
- * string. Returns `(visibleText, citations)`. Mirrors AgenC runtime
+ * string. Returns `(visibleText, citations)`. Mirrors codex runtime
  * `strip_citations`.
  */
 export function stripCitations(text: string): {
@@ -314,7 +314,7 @@ function mapProposedPlanSegments(
 
 /**
  * Strip `<proposed_plan>…</proposed_plan>` blocks from a complete
- * string. Mirrors AgenC runtime `strip_proposed_plan_blocks`.
+ * string. Mirrors codex runtime `strip_proposed_plan_blocks`.
  */
 export function stripProposedPlanBlocks(text: string): string {
   const parser = new ProposedPlanStreamParser();
@@ -325,7 +325,7 @@ export function stripProposedPlanBlocks(text: string): string {
 
 /**
  * Extract proposed-plan text content from a complete string.
- * Mirrors AgenC runtime `extract_proposed_plan_text`.
+ * Mirrors codex runtime `extract_proposed_plan_text`.
  */
 export function extractProposedPlanText(text: string): string | undefined {
   const parser = new ProposedPlanStreamParser();
@@ -364,7 +364,7 @@ export interface StreamTextChunk<Extracted> {
  * returns only the newly-resolved visible text + extracted tags. A
  * partial open-tag prefix at the end of a chunk is buffered until
  * the next chunk (or emitted verbatim at `finish()` if it never
- * resolves — matches AgenC runtime `preserves_partial_open_tag_at_eof`).
+ * resolves — matches codex runtime `preserves_partial_open_tag_at_eof`).
  *
  * Used by phase 5 (stream-model) once T7 wires the streaming
  * `chatStream()` path.
@@ -515,7 +515,7 @@ export class ProposedPlanStreamParser {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Canonical chunk kinds in the order consumers expect them. AgenC runtime
+ * Canonical chunk kinds in the order consumers expect them. codex runtime
  * + AgenC history format is: reasoning → tool_use → text. Some
  * providers emit in arbitrary order — buffer during streaming and
  * re-emit in canonical order on end().
@@ -544,7 +544,7 @@ const CHUNK_KIND_ORDER: Readonly<Record<StreamChunkKind, number>> =
  *
  * The reorder is stable within each kind — relative order of two
  * reasoning chunks is preserved, same for tool_use, same for text.
- * This matches AgenC runtime's stream-parser behaviour (stable sort).
+ * This matches codex runtime's stream-parser behaviour (stable sort).
  */
 export class StreamChunkReorderBuffer<T = unknown> {
   private buffered: StreamChunkReorderEntry<T>[] = [];

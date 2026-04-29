@@ -1,7 +1,7 @@
 /**
  * MCP-instructions delta attachment producer.
  *
- * Hand-port of AgenC `getMcpInstructionsDeltaAttachment`
+ * Hand-port of openclaude `getMcpInstructionsDeltaAttachment`
  * (`src/utils/attachments.ts:1560-1586`) and the underlying diff in
  * `getMcpInstructionsDelta` (`src/utils/mcpInstructionsDelta.ts:55`).
  *

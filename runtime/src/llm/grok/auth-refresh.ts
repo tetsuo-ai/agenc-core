@@ -2,7 +2,7 @@
  * Auth-refresh retry wrapper for the Grok / OpenAI-compatible
  * Responses API adapter.
  *
- * Hand-port of AgenC runtime `core/src/client.rs::stream_responses` retry loop
+ * Hand-port of codex runtime `core/src/client.rs::stream_responses` retry loop
  * (lines 1154-1211). On an HTTP 401 from the provider, the adapter
  * must ask its `AuthManager` for a refreshed token, rebuild the
  * request with the new bearer, and retry — exactly once per
@@ -13,7 +13,7 @@
  *        orthogonal to auth refresh; handled by `incremental.ts`.
  *        This module handles ONLY 401 auth recovery.
  *
- * The retry loop has three exit paths (matching AgenC runtime 1191-1208):
+ * The retry loop has three exit paths (matching codex runtime 1191-1208):
  *   - Ok(stream)                      → return to caller
  *   - Err(401 with recovery available) → refresh + continue
  *   - Err(other)                       → map + throw
@@ -27,10 +27,10 @@
  */
 
 /**
- * Default max refresh attempts. Matches AgenC runtime's implicit cap: AgenC runtime
+ * Default max refresh attempts. Matches codex runtime's implicit cap: codex runtime
  * loops only while the AuthManager returns a `RecoveryDecision`, and
  * the manager's own state machine limits to ~2 refresh attempts
- * before surfacing the failure (see AgenC runtime `AuthManager::unauthorized_recovery`).
+ * before surfacing the failure (see codex runtime `AuthManager::unauthorized_recovery`).
  */
 export const DEFAULT_MAX_AUTH_REFRESHES = 2;
 
@@ -100,7 +100,7 @@ export interface RetryWithAuthRefreshOptions {
  * );
  * ```
  *
- * Mirrors AgenC runtime's `loop { client_setup = current_client_setup(); ...
+ * Mirrors codex runtime's `loop { client_setup = current_client_setup(); ...
  * if 401 { handle_unauthorized; continue; } else { ... } }`.
  */
 export async function retryWithAuthRefresh<T>(

@@ -1,7 +1,7 @@
 /**
  * Cascading withhold check (two-gate PTL → collapse-drain routing).
  *
- * Hand-port of AgenC `query.ts:834-857`. Two independent gates
+ * Hand-port of openclaude `query.ts:834-857`. Two independent gates
  * determine whether a "withheld 413" message escalates to reactive-
  * compact or continues through collapse-drain first.
  *

@@ -34,12 +34,6 @@ const ROLE_PRESENTATION: Readonly<Record<string, AgentRolePresentation>> = {
     label: "Runner",
     aliases: ["worker", "coding", "implement", "implementation", "runner"],
   },
-  verification: {
-    canonicalName: "verification",
-    publicName: "sentinel",
-    label: "Sentinel",
-    aliases: ["verification", "verify", "verifier", "review", "reviewer", "sentinel"],
-  },
   docs: {
     canonicalName: "docs",
     publicName: "scribe",

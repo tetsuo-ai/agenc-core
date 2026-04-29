@@ -57,18 +57,8 @@ const DELEGATE_INPUT_SCHEMA: Record<string, unknown> = {
     },
     role: {
       type: "string",
-      enum: [
-        "netrunner",
-        "scanner",
-        "runner",
-        "sentinel",
-        "default",
-        "explorer",
-        "worker",
-        "verification",
-      ],
       description:
-        "Built-in role for the child. Prefer cyberpunk names: netrunner, scanner, runner, sentinel. Legacy aliases are still accepted.",
+        "Built-in or user-defined role name. Defaults to `default`.",
     },
     isolation: {
       type: "string",
@@ -146,7 +136,10 @@ export function ensureAgentControl(session: Session): {
       return pair;
     }
   }
-  const registry = new AgentRegistry();
+  const registry = new AgentRegistry({
+    maxThreads:
+      session.config?.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
+  });
   const existingThreadManager =
     services.threadManager instanceof ThreadManager
       ? services.threadManager
@@ -326,7 +319,7 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
   return {
     name: DELEGATE_TOOL_NAME,
     description:
-      "Spawn a subagent to handle a scoped task. Supports cyberpunk roles (netrunner, scanner, runner, sentinel), legacy role aliases, optional worktree isolation, and sync vs async execution.",
+      "Spawn a subagent to handle a scoped task. Accepts any built-in or user-defined role name, optional worktree isolation, and sync vs async execution.",
     inputSchema: DELEGATE_INPUT_SCHEMA,
     metadata: {
       family: "agents",

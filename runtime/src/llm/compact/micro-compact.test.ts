@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-// `Message` type and the message-helper module from upstream AgenC
+// `Message` type and the message-helper module from upstream openclaude
 // (`src/types/message.ts` + `src/utils/messages.ts`) were removed in the
 // gut runtime. Inline minimal duck-typed shapes here so this test can
 // exercise the public `micro-compact.ts` surface without those imports.

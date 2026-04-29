@@ -7,7 +7,7 @@
  * `state.toolUseBlocks`, and updates `state.messages` with the new
  * assistant turn.
  *
- * Mirrors AgenC `query.ts:561-1082`.
+ * Mirrors openclaude `query.ts:561-1082`.
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog, default-on) — installStreamWatchdog
@@ -531,7 +531,7 @@ export async function streamModel(
       completionTokens: response.usage.completionTokens,
       totalTokens: response.usage.totalTokens,
     };
-    // Cross-turn token accumulator — AgenC runtime
+    // Cross-turn token accumulator — codex runtime
     // `Session::update_token_info_from_usage` (session/mod.rs:2739-2749)
     // plus `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
     // Runs under the session state lock so the mid-turn compact gate in

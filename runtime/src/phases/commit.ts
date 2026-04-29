@@ -1,7 +1,7 @@
 /**
  * Phase 6 — Commit.
  *
- * Mirrors AgenC `query.ts:1192-1465` (iteration tail) + 1643-1836
+ * Mirrors openclaude `query.ts:1192-1465` (iteration tail) + 1643-1836
  * (terminal commit). Responsibilities per TODO.MD T5-B line 974:
  *
  *   1. **Append history** — ensure all iteration outputs (assistant
@@ -114,7 +114,7 @@ export async function commit(
     // T6 I-24b: re-append session metadata so --resume readers that
     // scan the last 16KB of the rollout still find the session
     // header even after many compacts have pushed it out of range.
-    // Port of AgenC sessionStorage.ts::reAppendSessionMetadata.
+    // Port of openclaude sessionStorage.ts::reAppendSessionMetadata.
     session.rolloutStore?.store.reAppendSessionMetadata();
     // Mark the boundary as consumed so subsequent iterations don't
     // re-emit until the next successful compact mutates the turnId.

@@ -1,7 +1,7 @@
 /**
  * T11 Wave 2-A — permission evaluator (5-step decision tree).
  *
- * Ports AgenC's `hasPermissionsToUseTool` +
+ * Ports openclaude's `hasPermissionsToUseTool` +
  * `hasPermissionsToUseToolInner` + `checkRuleBasedPermissions` from
  * `src/utils/permissions/permissions.ts`. Every step is numbered in
  * comments to make it easy to cross-reference the source.
@@ -235,7 +235,7 @@ function readClassifierTranscriptMessages(
 // ---------------------------------------------------------------------------
 
 /**
- * Ports AgenC's `checkRuleBasedPermissions` — runs steps 1a–1g and
+ * Ports openclaude's `checkRuleBasedPermissions` — runs steps 1a–1g and
  * returns the first bypass-immune rule-based decision that fires, or
  * `null` when nothing in steps 1a–1g blocks the mode gate from running.
  * Does NOT run the mode gate or the classifier. Generic tool asks from

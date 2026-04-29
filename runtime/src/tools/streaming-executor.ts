@@ -1,7 +1,7 @@
 /**
  * StreamingToolExecutor — full AgenC port.
  *
- * Hand-port of AgenC `services/tools/StreamingToolExecutor.ts`.
+ * Hand-port of openclaude `services/tools/StreamingToolExecutor.ts`.
  * Dispatches tools as they stream in from the model, with four-class
  * concurrency control (via the T7 `classify` analyzer) + sibling-
  * abort cascade on Bash errors + order-preserving yield of completed
@@ -11,21 +11,21 @@
  *
  * T6 closure parity pointers (direct code references):
  *   - `discard()` flips a boolean only, no synthesis:
- *     AgenC `StreamingToolExecutor.ts:69-71`.
+ *     openclaude `StreamingToolExecutor.ts:69-71`.
  *   - Yield paths early-return on `discarded`:
- *     AgenC `StreamingToolExecutor.ts:412-415, :454-456`.
+ *     openclaude `StreamingToolExecutor.ts:412-415, :454-456`.
  *   - Unknown-tool pre-synthesis:
- *     AgenC `StreamingToolExecutor.ts:77-102`.
+ *     openclaude `StreamingToolExecutor.ts:77-102`.
  *   - `createChildAbortController` + bubble-up on non-`sibling_error`:
- *     AgenC `StreamingToolExecutor.ts:301-318`.
+ *     openclaude `StreamingToolExecutor.ts:301-318`.
  *   - Head-of-line stop (non-safe executing tool blocks downstream):
- *     AgenC `StreamingToolExecutor.ts:436-438`.
+ *     openclaude `StreamingToolExecutor.ts:436-438`.
  *   - `Promise.race` wake-up (executingPromises + progressPromise):
- *     AgenC `StreamingToolExecutor.ts:453-490`.
+ *     openclaude `StreamingToolExecutor.ts:453-490`.
  *   - Progress interleaved into result stream:
- *     AgenC `StreamingToolExecutor.ts:366-378, :419-422`.
+ *     openclaude `StreamingToolExecutor.ts:366-378, :419-422`.
  *   - `interruptBehavior()` per-tool interrupt gating:
- *     AgenC `StreamingToolExecutor.ts:219-241, :254-260`.
+ *     openclaude `StreamingToolExecutor.ts:219-241, :254-260`.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — synthetic error
@@ -310,7 +310,7 @@ export class StreamingToolExecutor {
     // from the tool's `isConcurrencySafe(args)` hook. We keep the T7
     // classification model but also cache the boolean so the
     // head-of-line-break logic in `getCompletedResults` matches
-    // AgenC `:436-438` semantics exactly.
+    // openclaude `:436-438` semantics exactly.
     const tool = this.registry.tools.find((t) => t.name === toolCall.name);
     let concurrencySafe = false;
     if (tool?.isConcurrencySafe) {
@@ -410,7 +410,7 @@ export class StreamingToolExecutor {
 
   /**
    * Unified update iterator: yields progress events AND completed
-   * results interleaved in submission order. Mirrors AgenC's
+   * results interleaved in submission order. Mirrors openclaude's
    * `MessageUpdate` yield shape from `getCompletedResults` (AgenC
    * :412-440). The plain `getCompletedResults` generator remains the
    * compat surface for callers that only want terminal results.
@@ -694,7 +694,7 @@ export class StreamingToolExecutor {
   private async runOne(tool: TrackedTool): Promise<void> {
     const startedAtMs = performance.now();
 
-    // AgenC `getAbortReason` + `collectResults` pre-check
+    // openclaude `getAbortReason` + `collectResults` pre-check
     // (AgenC :278-292). If the sibling / parent controllers are
     // already aborted when we start, synthesize the terminal result
     // and return. For `interrupt`-class aborts, honor the tool's
@@ -783,7 +783,7 @@ export class StreamingToolExecutor {
       tool.result = this.createSyntheticError(tool.toolCall, syntheticReason);
       tool.status = "completed";
       // Bash-thrown errors also trigger sibling abort (parity with
-      // AgenC line 354-363 behaviour when a Bash run throws).
+      // codex line 354-363 behaviour when a Bash run throws).
       if (
         tool.toolCall.name === this.bashToolName &&
         !this.hasBashErrored
@@ -805,7 +805,7 @@ export class StreamingToolExecutor {
   }
 
   /**
-   * AgenC `getAbortReason` (`StreamingToolExecutor.ts:209-231`):
+   * openclaude `getAbortReason` (`StreamingToolExecutor.ts:209-231`):
    * resolve the reason a tool should be cancelled based on the
    * current executor state. Returns `null` when the tool may proceed.
    *

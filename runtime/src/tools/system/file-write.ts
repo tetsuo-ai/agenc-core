@@ -1,7 +1,7 @@
 /**
- * `Write` — port of AgenC `FileWriteTool`.
+ * `Write` — port of openclaude `FileWriteTool`.
  *
- * Lifted from AgenC `src/tools/FileWriteTool/FileWriteTool.ts` and
+ * Lifted from openclaude `src/tools/FileWriteTool/FileWriteTool.ts` and
  * `src/tools/FileWriteTool/prompt.ts`. The model-facing description is
  * the AgenC wording, lightly adapted to AgenC's voice.
  *
@@ -25,7 +25,7 @@
  *   - `.ipynb` is rejected with a redirect to the notebook tool.
  *   - Path safety enforced via AgenC's `safePath` and
  *     `resolveToolAllowedPaths`.
- *   - Errors are returned as plain text (AgenC runtime envelope), not JSON.
+ *   - Errors are returned as plain text (codex runtime envelope), not JSON.
  *
  * Lifted FROM AgenC; the following AgenC couplings are
  * intentionally NOT lifted:
@@ -61,7 +61,7 @@ import {
 export const FILE_WRITE_TOOL_NAME = "Write";
 
 /**
- * Verbatim wording from AgenC `src/tools/FileWriteTool/prompt.ts`,
+ * Verbatim wording from openclaude `src/tools/FileWriteTool/prompt.ts`,
  * lightly adapted: the upstream "Edit tool" reference is kept (AgenC
  * exposes `Edit` for incremental edits), and the
  * pre-read instruction is generalized away from the exact
@@ -78,14 +78,14 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.`;
 
 /**
- * Verbatim from AgenC `FileWriteTool.ts:202-205`. Used when the
+ * Verbatim from openclaude `FileWriteTool.ts:202-205`. Used when the
  * target file exists but the model has not read it in this session.
  */
 const READ_REQUIRED_MESSAGE =
   "File has not been read yet. Read it first before writing to it.";
 
 /**
- * Verbatim from AgenC `FileEditTool/constants.ts` (re-exported by
+ * Verbatim from openclaude `FileEditTool/constants.ts` (re-exported by
  * `FileWriteTool.ts:43,213-217`). Used when the target was read
  * previously but the on-disk content has drifted since that read.
  */
@@ -264,7 +264,7 @@ export function createFileWriteTool(
         }
       }
 
-      // Read-before-overwrite enforcement. Verbatim AgenC wording
+      // Read-before-overwrite enforcement. Verbatim openclaude wording
       // when the existing file was not read in this session. Headless
       // invocations (no `__agencSessionId`) bypass the gate so unit
       // tests and embedded contexts keep working — same convention as
@@ -363,7 +363,7 @@ export function createFileWriteTool(
         );
       }
 
-      // Plain-text result — AgenC runtime envelope. Matches AgenC's
+      // Plain-text result — codex runtime envelope. Matches AgenC's
       // `mapToolResultToToolResultBlockParam` (FileWriteTool.ts:421-435).
       void existingStat;
       return {

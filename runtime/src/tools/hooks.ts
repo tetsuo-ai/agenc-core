@@ -1,7 +1,7 @@
 /**
  * Pre/post tool hooks + MCP output modifier.
  *
- * Subset port of AgenC `services/tools/toolHooks.ts`. AgenC's T6
+ * Subset port of openclaude `services/tools/toolHooks.ts`. AgenC's T6
  * surface is a composable chain: each hook function receives
  * `(invocation, args, dispatchResult)` and returns either a
  * pass-through value or a replacement.
@@ -65,7 +65,7 @@ export interface HookPermissionResult {
    * and the tool's `execute()` both see the rewritten values.
    */
   readonly updatedInput?: Record<string, unknown>;
-  /** AgenC `decisionReason.hookName` passthrough for analytics. */
+  /** openclaude `decisionReason.hookName` passthrough for analytics. */
   readonly hookName?: string;
 }
 
@@ -208,7 +208,7 @@ export async function runPreToolUseHooks(
     if (decision.hookPermissionResult && !hookPermissionResult) {
       // First hook that speaks up wins — subsequent hooks can still
       // rewrite args/add context but can't override the permission
-      // decision. Matches AgenC `hookPermissionResult` threading.
+      // decision. Matches openclaude `hookPermissionResult` threading.
       hookPermissionResult = decision.hookPermissionResult;
       if (decision.hookPermissionResult.updatedInput) {
         args = decision.hookPermissionResult.updatedInput;
@@ -238,7 +238,7 @@ export type PostToolUseDecision =
   | { readonly kind: "continue" }
   | { readonly kind: "rewrite"; readonly result: ToolDispatchResult }
   /**
-   * AgenC `stop` — the turn halts. Surfaces as a
+   * openclaude `stop` — the turn halts. Surfaces as a
    * `hook_stopped_continuation` attachment on the live path.
    */
   | {
@@ -246,7 +246,7 @@ export type PostToolUseDecision =
       readonly stopReason?: string;
     }
   /**
-   * AgenC `preventContinuation` — the successful tool result is
+   * openclaude `preventContinuation` — the successful tool result is
    * kept, but the turn does not loop back to the model. Live path
    * emits `hook_stopped_continuation`.
    */
@@ -256,7 +256,7 @@ export type PostToolUseDecision =
       readonly result?: ToolDispatchResult;
     }
   /**
-   * AgenC `additionalContext` — inject extra synthesized user
+   * openclaude `additionalContext` — inject extra synthesized user
    * messages after the tool_result (e.g. lint/test feedback). Live
    * path emits `hook_additional_context`.
    */
@@ -266,7 +266,7 @@ export type PostToolUseDecision =
       readonly result?: ToolDispatchResult;
     }
   /**
-   * AgenC `hook_blocking_error` — the hook errored while
+   * openclaude `hook_blocking_error` — the hook errored while
    * processing the result; surface the error alongside the (possibly
    * unchanged) result. Live path emits `hook_blocking_error`.
    */
@@ -430,7 +430,7 @@ export type PostToolUseFailureHook = (
 ) => Promise<void> | void;
 
 /**
- * Port of AgenC `executePostToolUseFailureHooks`. Fires for every
+ * Port of openclaude `executePostToolUseFailureHooks`. Fires for every
  * hook in order after a tool throws. Purely observational: exceptions
  * inside a failure hook are swallowed + reported via `onError`, and the
  * original tool error is expected to bubble up from the caller. Returns

@@ -1,7 +1,7 @@
 /**
  * Plan-mode streaming helpers.
  *
- * Port of AgenC runtime `core/src/session/turn.rs:1537-1793` (plan-mode streaming
+ * Port of codex runtime `core/src/session/turn.rs:1537-1793` (plan-mode streaming
  * pipeline). Plan mode splits a streaming assistant response into two
  * logical streams: ordinary assistant text that becomes
  * `agent_message_delta` + `agent_message` events, and proposed-plan
@@ -23,7 +23,7 @@
  * and `/plan` slash-command invoke to close out the plan-progress
  * surface on the TUI side.
  *
- * Mapping (AgenC runtime → AgenC):
+ * Mapping (codex runtime → AgenC):
  *   turn.rs:1537 handle_plan_segments                → handlePlanSegments
  *   turn.rs:1600 emit_streamed_assistant_text_delta  → emitStreamedAssistantTextDelta
  *   turn.rs:1635 flush_assistant_text_segments_for_item → flushAssistantTextSegmentsForItem
@@ -60,20 +60,20 @@ import {
 // Minimal types (T11 replaces with protocol-authoritative shapes)
 // ─────────────────────────────────────────────────────────────────────
 
-/** Discriminated plan segment, mirroring AgenC runtime `ProposedPlanSegment`. */
+/** Discriminated plan segment, mirroring codex runtime `ProposedPlanSegment`. */
 export type PlanSegment =
   | { readonly kind: "normal"; readonly delta: string }
   | { readonly kind: "proposed_plan_start" }
   | { readonly kind: "proposed_plan_delta"; readonly delta: string }
   | { readonly kind: "proposed_plan_end" };
 
-/** Minimal plan item, mirroring AgenC runtime `PlanItem`. */
+/** Minimal plan item, mirroring codex runtime `PlanItem`. */
 export interface PlanItem {
   readonly id: string;
   readonly text: string;
 }
 
-/** Minimal turn item discriminator, mirroring AgenC runtime `TurnItem`. */
+/** Minimal turn item discriminator, mirroring codex runtime `TurnItem`. */
 export type PlanTurnItem =
   | {
       readonly kind: "agent_message";
@@ -83,7 +83,7 @@ export type PlanTurnItem =
   | { readonly kind: "plan"; readonly item: PlanItem }
   | { readonly kind: "other"; readonly id?: string };
 
-/** Minimal response item, mirroring AgenC runtime `ResponseItem`. */
+/** Minimal response item, mirroring codex runtime `ResponseItem`. */
 export interface PlanResponseItem {
   readonly role?: string;
   readonly content?: ReadonlyArray<{ readonly type?: string; readonly text?: string }>;
@@ -91,7 +91,7 @@ export interface PlanResponseItem {
 
 /**
  * Bookkeeping for the lifecycle of a single plan item within a turn.
- * Port of AgenC runtime `ProposedPlanItemState`.
+ * Port of codex runtime `ProposedPlanItemState`.
  */
 export interface PlanItemState {
   readonly itemId: string;
@@ -111,7 +111,7 @@ export function createPlanItemState(turnId: string): PlanItemState {
 }
 
 /**
- * Port of AgenC runtime `PlanModeStreamState` (turn.rs:1287). Holds per-item
+ * Port of codex runtime `PlanModeStreamState` (turn.rs:1287). Holds per-item
  * bookkeeping for a single plan-mode streaming turn.
  */
 export interface PlanModeStreamState {
@@ -158,7 +158,7 @@ export function isPlanMode(ctx: TurnContext): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Parsed delta shape (mirrors AgenC runtime `ParsedAssistantTextDelta`)
+// Parsed delta shape (mirrors codex runtime `ParsedAssistantTextDelta`)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ParsedAssistantTextDelta {
@@ -199,7 +199,7 @@ function emitAgentMessage(session: Session, message: string): void {
 
 /**
  * Ensure the deferred agent_message_start has been announced for this
- * item_id. Port of AgenC runtime `maybe_emit_pending_agent_message_start`
+ * item_id. Port of codex runtime `maybe_emit_pending_agent_message_start`
  * (turn.rs:1418).
  */
 function maybeEmitPendingAgentMessageStart(
@@ -216,7 +216,7 @@ function maybeEmitPendingAgentMessageStart(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// handle_plan_segments (AgenC runtime turn.rs:1537)
+// handle_plan_segments (codex runtime turn.rs:1537)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -270,7 +270,7 @@ export function handlePlanSegments(
         break;
       }
       case "proposed_plan_end": {
-        // AgenC runtime leaves the state transition to completion-from-message.
+        // codex runtime leaves the state transition to completion-from-message.
         break;
       }
     }
@@ -446,7 +446,7 @@ export function emitPlanExited(session: Session, ctx: TurnContext): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// emit_streamed_assistant_text_delta (AgenC runtime turn.rs:1600)
+// emit_streamed_assistant_text_delta (codex runtime turn.rs:1600)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -475,11 +475,11 @@ export function emitStreamedAssistantTextDelta(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Flush helpers (AgenC runtime turn.rs:1635 / 1647)
+// Flush helpers (codex runtime turn.rs:1635 / 1647)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Minimal assistant-text parser handle used by flush helpers. AgenC runtime's
+ * Minimal assistant-text parser handle used by flush helpers. codex runtime's
  * `AssistantMessageStreamParsers` holds per-item stream-parser state; we
  * model just the flush surface here so T11 can slot in the real parser
  * without further churn to the helpers that consume it.
@@ -503,7 +503,7 @@ export function flushAssistantTextSegmentsForItem(
 /**
  * Flush all remaining per-item parser state at response completion.
  * Emits one `agent_message` per item carrying the fully accumulated
- * visible text, mirroring AgenC runtime's "turn end → drain" contract.
+ * visible text, mirroring codex runtime's "turn end → drain" contract.
  */
 export function flushAssistantTextSegmentsAll(
   session: Session,
@@ -520,14 +520,14 @@ export function flushAssistantTextSegmentsAll(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// maybe_complete_plan_item_from_message (AgenC runtime turn.rs:1666)
+// maybe_complete_plan_item_from_message (codex runtime turn.rs:1666)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * If `item` is an assistant message that contains a proposed-plan
  * block, finalize the plan item from its text.
  *
- * Mirrors AgenC runtime `maybe_complete_plan_item_from_message`: use the shared
+ * Mirrors codex runtime `maybe_complete_plan_item_from_message`: use the shared
  * proposed-plan parser contract and strip citations from the finalized
  * plan text before emitting completion.
  */
@@ -557,7 +557,7 @@ export function maybeCompletePlanItemFromMessage(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// emit_agent_message_in_plan_mode (AgenC runtime turn.rs:1695)
+// emit_agent_message_in_plan_mode (codex runtime turn.rs:1695)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -589,7 +589,7 @@ export function emitAgentMessageInPlanMode(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// emit_turn_item_in_plan_mode (AgenC runtime turn.rs:1738)
+// emit_turn_item_in_plan_mode (codex runtime turn.rs:1738)
 // ─────────────────────────────────────────────────────────────────────
 
 export function emitTurnItemInPlanMode(
@@ -609,7 +609,7 @@ export function emitTurnItemInPlanMode(
     return;
   }
   if (previouslyActiveItem === undefined) {
-    // AgenC runtime emits `emit_turn_item_started` here; no AgenC event variant
+    // codex runtime emits `emit_turn_item_started` here; no AgenC event variant
     // for that yet (T11). Downstream still sees the completion emit.
   }
   // For non-assistant items, route the completion through the plan
@@ -620,12 +620,12 @@ export function emitTurnItemInPlanMode(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// handle_assistant_item_done_in_plan_mode (AgenC runtime turn.rs:1759)
+// handle_assistant_item_done_in_plan_mode (codex runtime turn.rs:1759)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Handle a completed assistant response item in plan mode. Returns true
- * if the item was an assistant message (AgenC runtime short-circuits the caller
+ * if the item was an assistant message (codex runtime short-circuits the caller
  * when this is true).
  */
 export function handleAssistantItemDoneInPlanMode(
@@ -657,7 +657,7 @@ export function handleAssistantItemDoneInPlanMode(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// realtime_text_for_event (AgenC runtime turn.rs:1445)
+// realtime_text_for_event (codex runtime turn.rs:1445)
 // ─────────────────────────────────────────────────────────────────────
 
 /**

@@ -137,7 +137,7 @@ describe("defaultRetryPolicy + attemptWithRetry", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// AgenC runtime-parity port coverage (T7 orchestrator gap fill)
+// codex runtime-parity port coverage (T7 orchestrator gap fill)
 // ─────────────────────────────────────────────────────────────────────
 
 describe("defaultExecApprovalRequirement (sandboxing behavior)", () => {

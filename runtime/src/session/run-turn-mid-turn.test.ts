@@ -1,5 +1,5 @@
 /**
- * Mid-turn compaction — parity port of AgenC runtime `turn.rs:493-508`.
+ * Mid-turn compaction — parity port of codex runtime `turn.rs:493-508`.
  *
  * When a sampling step returns `needsFollowUp=true` and cumulative token
  * usage has crossed the current model's auto-compact limit, the outer
@@ -15,7 +15,7 @@
  *   - Failure surfaces as a `mid_turn_compact_failed` error event,
  *     matching the runtime's existing `pre_sampling_compact_failed`
  *     handling at the top of `runTurnKernel`.
- *   - Provider continuity reset (AgenC runtime `client_session.reset_websocket_session()`)
+ *   - Provider continuity reset (codex runtime `client_session.reset_websocket_session()`)
  *     lands via `session.clearProviderResponseId()` → rebind through
  *     `session.bindProviderConversation()`.
  *
@@ -552,7 +552,7 @@ describe("runTurn — mid-turn compaction (turn behavior)", () => {
   });
 
   test("rebinds provider conversation continuity after successful mid-turn compact", async () => {
-    // AgenC runtime `client_session.reset_websocket_session()` parity. The
+    // codex runtime `client_session.reset_websocket_session()` parity. The
     // cleanup chain is:
     //   runAutoCompact -> autoCompactIfNeeded -> runPostCompactCleanup
     //     -> context.clearProviderResponseId()  (wired through the
@@ -614,7 +614,7 @@ describe("runTurn — mid-turn compaction (turn behavior)", () => {
       .autoCompactTokenLimit = 10;
 
     // Pre-sampling compact succeeds so we reach the mid-turn branch.
-    // Mid-turn throws. AgenC mirrors AgenC runtime's `return None` by emitting
+    // Mid-turn throws. AgenC mirrors codex runtime's `return None` by emitting
     // an error event and terminating the turn with stopReason=error.
     let callIdx = 0;
     const fakeImpl: AutoCompactImpl = async () => {
@@ -690,7 +690,7 @@ describe("runTurn — mid-turn compaction (turn behavior)", () => {
   });
 
   test("mid-turn check is skipped when needsFollowUp is false (no tool calls)", async () => {
-    // AgenC runtime guard: `token_limit_reached && needs_follow_up`. When the
+    // codex runtime guard: `token_limit_reached && needs_follow_up`. When the
     // model returns a clean assistant with no tool calls, the turn
     // terminates naturally — mid-turn compact must NOT fire.
     const ctx = mkCtx();
@@ -740,7 +740,7 @@ describe("runTurn — mid-turn compaction (turn behavior)", () => {
 
   test("mid-turn check is skipped when total token usage is below autoCompactTokenLimit", async () => {
     // Even with `needsFollowUp=true`, mid-turn compact must NOT fire
-    // when total usage is below the threshold. AgenC runtime:
+    // when total usage is below the threshold. codex runtime:
     // `token_limit_reached = total_usage_tokens >= auto_compact_limit`.
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })
@@ -794,7 +794,7 @@ describe("runTurn — mid-turn compaction (turn behavior)", () => {
     // The dispatcher returns `false` when `autoCompactIfNeeded` reports
     // `wasCompacted=false` (circuit-breaker tripped, feature disabled,
     // shouldAutoCompact said no). Continuing the outer loop in that
-    // case would spin forever with unchanged state — match AgenC runtime's
+    // case would spin forever with unchanged state — match codex runtime's
     // failure semantics by terminating.
     const ctx = mkCtx();
     (ctx.modelInfo as unknown as { autoCompactTokenLimit: number })

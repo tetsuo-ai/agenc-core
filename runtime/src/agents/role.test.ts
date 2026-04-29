@@ -44,7 +44,7 @@ describe("role registry", () => {
     expect(names).toContain("default");
     expect(names).toContain("explorer");
     expect(names).toContain("worker");
-    expect(names).toContain("verification");
+    expect(names).not.toContain("verification");
     expect(names).not.toContain("awaiter");
   });
 
@@ -61,7 +61,6 @@ describe("role registry", () => {
   it("accepts cyberpunk role aliases without changing compatibility ids", () => {
     expect(getAgentRole("scanner")?.name).toBe("explorer");
     expect(resolveAgentRole("runner").name).toBe("worker");
-    expect(tryResolveRoleConfig("sentinel")).toBeDefined();
   });
 
   it("worker has the default description and no built-in config-layer override", () => {
@@ -73,20 +72,6 @@ describe("role registry", () => {
     expect(role.config.description).toContain(
       "Use `runner` for execution and production work",
     );
-  });
-
-  it("verification role carries the OpenClaude verifier prompt and safe allowlist", () => {
-    const role = resolveAgentRole("verification");
-    expect(role.name).toBe("verification");
-    expect(role.config.background).toBe(true);
-    expect(role.config.systemPrompt).toContain("VERDICT: PASS");
-    expect(role.config.allowlist).toContain("exec_command");
-    expect(role.config.allowlist).toContain("FileRead");
-    expect(role.config.allowlist).toContain("system.searchTools");
-    expect(role.config.allowlist).toContain("system.grep");
-    expect(role.config.allowlist).not.toContain("Write");
-    expect(role.config.allowlist).not.toContain("Bash");
-    expect(role.config.description).toContain("verify that implementation work is correct");
   });
 
   it("user-registered awaiter roles can still derive runtime hints from built-in TOML", () => {

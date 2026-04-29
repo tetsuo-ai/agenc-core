@@ -1,7 +1,7 @@
 /**
  * LiveThread — handle for an active thread's persistence lifecycle.
  *
- * Hand-port of upstream AgenC runtime `thread-store/src/live_thread.rs`.
+ * Hand-port of upstream codex runtime `thread-store/src/live_thread.rs`.
  * Upstream's `LiveThread` is a thin façade over a `ThreadStore` trait
  * (local + remote implementations), and session code calls into it for
  * turn-by-turn rollout appends, flush barriers, and thread-metadata
@@ -110,7 +110,7 @@ export interface ResumeLiveThreadParams {
 }
 
 /**
- * Handle for an active thread. Ported from upstream AgenC runtime
+ * Handle for an active thread. Ported from upstream codex runtime
  * `thread-store/src/live_thread.rs`. Immutable construction; the
  * underlying `RolloutStore` owns all mutable rollout state.
  */

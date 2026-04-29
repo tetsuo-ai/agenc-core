@@ -1,7 +1,7 @@
 /**
  * ApprovalPolicy — when / whether to ask the user for permission.
  *
- * Hand-port of AgenC runtime `protocol/src/protocol.rs:826-896` and the
+ * Hand-port of codex runtime `protocol/src/protocol.rs:826-896` and the
  * decision table at `core/src/tools/sandboxing.rs:185-221` (T11 Wave 1,
  * Agent C).
  *
@@ -13,8 +13,8 @@
  *
  * Wire format note
  * ────────────────
- * AgenC runtime serializes the enum as `kebab-case`: `"never"`, `"on-failure"`,
- * `"on-request"`, `"granular"`, `"untrusted"`. AgenC runtime code
+ * codex runtime serializes the enum as `kebab-case`: `"never"`, `"on-failure"`,
+ * `"on-request"`, `"granular"`, `"untrusted"`. codex runtime code
  * already operates on the `snake_case` form (`"on_request"`, etc.)
  * across ~12 files; the config layer handles the kebab→snake mapping
  * at parse time. This file uses the runtime-internal form.
@@ -23,7 +23,7 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────
-// ApprovalPolicy — AgenC runtime `AskForApproval` (protocol.rs:826-857)
+// ApprovalPolicy — codex runtime `AskForApproval` (protocol.rs:826-857)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -46,7 +46,7 @@ export type ApprovalPolicy =
 export const DEFAULT_APPROVAL_POLICY: ApprovalPolicy = "on_request";
 
 /**
- * Port of AgenC runtime `GranularApprovalConfig` (protocol.rs:859-874).
+ * Port of codex runtime `GranularApprovalConfig` (protocol.rs:859-874).
  * When an entry is `false`, the corresponding approval prompt is
  * auto-rejected instead of shown.
  */
@@ -59,7 +59,7 @@ export interface GranularApprovalConfig {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// FileSystemSandboxKind — AgenC runtime `FileSystemSandboxKind`
+// FileSystemSandboxKind — codex runtime `FileSystemSandboxKind`
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -68,7 +68,7 @@ export interface GranularApprovalConfig {
  * mode whose `ReadOnlyAccess` is unrestricted; `restricted` covers
  * `read_only` / `workspace_write` when access is limited.
  *
- * AgenC runtime also carries an `external_sandbox` kind. AgenC preserves that
+ * codex runtime also carries an `external_sandbox` kind. AgenC preserves that
  * (via `SandboxMode`) but the approval table itself only distinguishes
  * `full_access` vs `restricted`.
  */
@@ -89,7 +89,7 @@ export interface ResolveApprovalPolicyOptions {
 /**
  * Resolve the effective approval policy.
  *
- * Precedence (matches AgenC runtime):
+ * Precedence (matches codex runtime):
  *   1. CLI override wins outright (user typed `--ask-for-approval …`).
  *   2. Project trust file:
  *        - `trusted`   → `on_request`
@@ -117,7 +117,7 @@ export function resolveApprovalPolicy(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * The resolved decision for a single tool invocation. Port of AgenC runtime
+ * The resolved decision for a single tool invocation. Port of codex runtime
  * `ExecApprovalRequirement` (tools/sandboxing.rs:141-162).
  */
 export type ExecApprovalRequirement =
@@ -126,7 +126,7 @@ export type ExecApprovalRequirement =
   | { readonly kind: "needs_approval"; readonly reason?: string };
 
 /**
- * Port of AgenC runtime `default_exec_approval_requirement`
+ * Port of codex runtime `default_exec_approval_requirement`
  * (tools/sandboxing.rs:185-221).
  *
  * Given the current approval policy + filesystem sandbox kind,
@@ -144,7 +144,7 @@ export type ExecApprovalRequirement =
  *   | granular     | restricted  | false                     | forbidden       |
  *   | untrusted    | any         | —                         | needs_approval  |
  *
- * The `granular` + forbidden branch uses the exact AgenC runtime message so
+ * The `granular` + forbidden branch uses the exact codex runtime message so
  * downstream logs and tests round-trip cleanly.
  */
 export function defaultExecApprovalRequirement(

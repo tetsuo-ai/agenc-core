@@ -1,7 +1,7 @@
 /**
  * Auto-save — threshold-driven memory extraction via forked subagent.
  *
- * Hand-port of AgenC `services/SessionMemory/sessionMemory.ts`
+ * Hand-port of openclaude `services/SessionMemory/sessionMemory.ts`
  * (300+ LOC) + `services/extractMemories/extractMemories.ts` closure
  * machinery. Differs:
  *   - Defaults match TODO.MD §T10-C: ≥5K token growth AND ≥5 tool

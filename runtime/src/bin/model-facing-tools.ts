@@ -30,7 +30,7 @@ import {
 import type { ForkMode } from "../agents/fork-context.js";
 import type { AgentThread } from "../agents/thread.js";
 import {
-  toCodexAgentStatusJson,
+  toAgentStatusJson,
   type AgentStatus,
 } from "../agents/status.js";
 import type { Session } from "../session/session.js";
@@ -48,6 +48,16 @@ import {
   toRelativeWorkspacePath,
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
+import {
+  AgentJobCapacityError,
+  runAgentsOnCsv,
+  recordAgentJobResult,
+  type AgentJobProgressEmitter,
+  type AgentJobSpawn,
+  type AgentJobSpawnContext,
+} from "../agents/jobs/job-orchestrator.js";
+import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
+import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
   backgroundTaskLifecycle,
   registerAgentThreadTask,
@@ -312,13 +322,48 @@ function callIdFromArgs(
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
 }
 
+const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
+  "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+
+function buildSpawnAgentDescription(session: Session | null): string {
+  const base = `Spawns an agent to work on the specified task. If your current task is \`/root/task1\` and you spawn_agent with task_name "task_3" the agent will have canonical task name \`/root/task1/task_3\`.
+You are then able to refer to this agent as \`task_3\` or \`/root/task1/task_3\` interchangeably. However an agent \`/root/task2/task_3\` would only be able to communicate with this agent via its canonical name \`/root/task1/task_3\`.
+The spawned agent will have the same tools as you and the ability to spawn its own subagents.
+${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
+The new agent's canonical task name will be provided to it along with the message.`;
+  const cfg = session?.config?.multiAgentV2;
+  const concurrency =
+    cfg?.maxConcurrentThreadsPerSession !== undefined
+      ? `\nThis session is configured with \`max_concurrent_threads_per_session = ${cfg.maxConcurrentThreadsPerSession}\` for concurrently open agent threads.`
+      : "";
+  let result = `${base}${concurrency}`;
+  if (cfg?.usageHintEnabled && cfg.usageHintText) {
+    result = `${result}\n${cfg.usageHintText}`;
+  }
+  return result;
+}
+
+const csvAgentJobsRepoCache: Map<string, CsvAgentJobsRepository> = new Map();
+
+function getCsvAgentJobsRepository(
+  workspaceRoot: string,
+): CsvAgentJobsRepository {
+  const cached = csvAgentJobsRepoCache.get(workspaceRoot);
+  if (cached) return cached;
+  const driver = openStateDatabases({ cwd: workspaceRoot });
+  const repo = new CsvAgentJobsRepository(driver);
+  csvAgentJobsRepoCache.set(workspaceRoot, repo);
+  return repo;
+}
+
 function hideSpawnAgentMetadata(session: Session): boolean {
   return (
     (
       session.config as {
         multiAgentV2?: { hideSpawnAgentMetadata?: boolean };
       }
-    ).multiAgentV2?.hideSpawnAgentMetadata === true
+    )?.multiAgentV2?.hideSpawnAgentMetadata === true
   );
 }
 
@@ -449,18 +494,18 @@ function currentAgentDepth(session: Session, current: { readonly threadId: Threa
   return control.getLive(current.threadId)?.depth ?? depthOfAgentPath(current.agentPath);
 }
 
-function codexListedAgent(agent: {
+function toListedAgentJson(agent: {
   readonly agentName: string;
   readonly agentStatus: AgentStatus;
   readonly lastTaskMessage?: string;
 }): {
   readonly agent_name: string;
-  readonly agent_status: ReturnType<typeof toCodexAgentStatusJson>;
+  readonly agent_status: ReturnType<typeof toAgentStatusJson>;
   readonly last_task_message?: string;
 } {
   return {
     agent_name: agent.agentName,
-    agent_status: toCodexAgentStatusJson(agent.agentStatus),
+    agent_status: toAgentStatusJson(agent.agentStatus),
     ...(agent.lastTaskMessage !== undefined
       ? { last_task_message: agent.lastTaskMessage }
       : {}),
@@ -494,11 +539,11 @@ function tryAutoExpandTaskPanel(opts: ModelFacingToolOptions): void {
   }
 }
 
-function parseForkTurns(value: unknown): ToolResult | ForkMode {
+function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
   const raw = value === undefined ? "all" : value;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    if (trimmed.toLowerCase() === "none") return { kind: "new" };
+    if (trimmed.toLowerCase() === "none") return undefined;
     if (trimmed.toLowerCase() === "all") return { kind: "full_history" };
     const parsed = Number.parseInt(trimmed, 10);
     if (String(parsed) === trimmed && parsed > 0) {
@@ -511,14 +556,22 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode {
   );
 }
 
-function waitTimeoutMs(args: Record<string, unknown>): ToolResult | number {
+function waitTimeoutMs(
+  args: Record<string, unknown>,
+  session: Session,
+): ToolResult | number {
   const supplied = numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs);
   if (supplied !== undefined && supplied <= 0) {
     return json({ error: "timeout_ms must be greater than 0" }, true);
   }
+  const configuredMin = session.config?.multiAgentV2?.minWaitTimeoutMs;
+  const minTimeoutMs = Math.min(
+    MAX_WAIT_TIMEOUT_MS,
+    Math.max(1, configuredMin ?? MIN_WAIT_TIMEOUT_MS),
+  );
   return Math.min(
     MAX_WAIT_TIMEOUT_MS,
-    Math.max(MIN_WAIT_TIMEOUT_MS, supplied ?? DEFAULT_WAIT_TIMEOUT_MS),
+    Math.max(minTimeoutMs, supplied ?? DEFAULT_WAIT_TIMEOUT_MS),
   );
 }
 
@@ -637,9 +690,9 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "invalid reasoning_effort" }, true);
     }
     const forkMode = parseForkTurns(args.fork_turns ?? args.forkTurns);
-    if ("content" in forkMode) return forkMode;
+    if (forkMode !== undefined && "content" in forkMode) return forkMode;
     if (
-      forkMode.kind === "full_history" &&
+      forkMode?.kind === "full_history" &&
       (role !== undefined || model !== undefined || reasoningEffort !== undefined)
     ) {
       return json(
@@ -702,7 +755,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         registry,
         taskPrompt: prompt,
         agentName,
-        forkMode,
+        ...(forkMode !== undefined ? { forkMode } : {}),
         runInBackground,
         ...(role !== undefined ? { role } : {}),
         ...(model !== undefined ? { model } : {}),
@@ -782,7 +835,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (strict) return strict;
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
-    const timeoutMs = waitTimeoutMs(args);
+    const timeoutMs = waitTimeoutMs(args, sessionOrError);
     if (typeof timeoutMs !== "number") return timeoutMs;
     const current = currentAgentContext(sessionOrError, args);
     const waitCallId = callIdFromArgs(args, "wait");
@@ -875,7 +928,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: previous as AgentStatus,
       },
     });
-    return json({ previous_status: toCodexAgentStatusJson(previous) });
+    return json({ previous_status: toAgentStatusJson(previous) });
   };
 
   const sendInput = async (
@@ -893,7 +946,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       if (strict) return strict;
     } else if (optsForSend.aliasName === "followup_task") {
       const strict = strictArgs(args, {
-        allowed: new Set(["target", "message", "interrupt"]),
+        allowed: new Set(["target", "message"]),
         required: ["target", "message"],
       });
       if (strict) return strict;
@@ -923,9 +976,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "Tasks can't be assigned to the root agent" }, true);
     }
     const callId = callIdFromArgs(args, "message");
-    if (optsForSend.triggerTurn && boolValue(args.interrupt) === true) {
-      control.interrupt(agentId, "followup_task_interrupt");
-    }
     const live = control.getLive(agentId);
     const metadata = control.getAgentMetadata(agentId);
     const receiverAgentPath = metadata?.agentPath ?? live?.agentPath;
@@ -1002,8 +1052,213 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     return json({
       agents: control.listAgents({
         ...(resolvedPathPrefix !== undefined ? { pathPrefix: resolvedPathPrefix } : {}),
-      }).map(codexListedAgent),
+      }).map(toListedAgentJson),
     });
+  };
+
+  const spawnAgentsOnCsv = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set([
+        "csv_path",
+        "instruction",
+        "id_column",
+        "output_csv_path",
+        "max_concurrency",
+        "max_workers",
+        "max_runtime_seconds",
+        "output_schema",
+      ]),
+      required: ["csv_path", "instruction"],
+    });
+    if (strict) return strict;
+    const sessionOrError = getSessionOrError(opts);
+    if (!("conversationId" in sessionOrError)) return sessionOrError;
+    const session = sessionOrError;
+    const agentMaxThreads =
+      session.config?.multiAgentV2?.maxConcurrentThreadsPerSession;
+    if (agentMaxThreads === 0) {
+      // Mirrors codex `spawn_agents_on_csv` early reject at
+      // agent_jobs.rs:537 when the session forbids any concurrent
+      // worker threads.
+      return json(
+        { error: "agent_max_threads is 0; spawn_agents_on_csv is disabled" },
+        true,
+      );
+    }
+    const { control, registry } = ensureAgentControl(session);
+    const current = currentAgentContext(session, args);
+    const instruction = stringValue(args.instruction);
+    if (!instruction || instruction.trim().length === 0) {
+      return json({ error: "instruction must be non-empty" }, true);
+    }
+    const csvPath = stringValue(args.csv_path)!;
+    const idColumn = stringValue(args.id_column);
+    const outputCsvPath = stringValue(args.output_csv_path);
+    const maxConcurrency =
+      numberValue(args.max_concurrency) ?? numberValue(args.max_workers);
+    const maxRuntimeSeconds = numberValue(args.max_runtime_seconds);
+    const outputSchema =
+      typeof args.output_schema === "object" &&
+      args.output_schema !== null &&
+      !Array.isArray(args.output_schema)
+        ? (args.output_schema as Record<string, unknown>)
+        : undefined;
+
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx: AgentJobSpawnContext) {
+        const outcome = await delegate({
+          parent: session,
+          parentPath: current.agentPath,
+          control,
+          registry,
+          taskPrompt: ctx.workerPrompt,
+          agentName: ctx.itemId,
+          runInBackground: true,
+        });
+        if (outcome.kind === "rejected") {
+          // Codex's `CodexErr::AgentLimitReached` arm at
+          // agent_jobs.rs:658 surfaces as the AgenC
+          // `AgentLimitReachedError` ("agent limit reached (max=N)")
+          // re-thrown by `delegate` -> rejected outcome.
+          if (outcome.reason.toLowerCase().includes("agent limit reached")) {
+            throw new AgentJobCapacityError(outcome.reason);
+          }
+          throw new Error(
+            `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
+          );
+        }
+        const thread = outcome.thread;
+        // Codex `agent_jobs.rs:704` subscribes to thread status to detect
+        // a worker that terminates without calling `report_agent_job_result`
+        // (handled by `finalize_finished_item`). AgenC mirrors this by
+        // resolving `threadFinished` when `thread.join()` completes; the
+        // orchestrator's finalize guard then converts a still-pending item
+        // into a failed one with codex's exact error message.
+        const threadFinished = thread
+          .join()
+          .then(() => undefined)
+          .catch(() => undefined);
+        return { threadId: thread.threadId, threadFinished };
+      },
+      async cancelOutstanding() {
+        // In-memory orchestrator: workers self-terminate when they
+        // observe a stop=true report. Outstanding agents will be
+        // bounded by `max_runtime_seconds`. Hard-cancel via the
+        // control plane is deferred (codex SQLite-backed lifecycle
+        // not ported).
+      },
+    };
+
+    const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+    const callId = callIdFromArgs(args, "agent_job");
+    // Mirror codex `notify_background_event(turn, "agent_job_progress:{json}")`
+    // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
+    // chunk is the codex line verbatim. Operators wired to the AgenC
+    // event bus see the same payload codex prints.
+    const progressEmitter: AgentJobProgressEmitter = (update) => {
+      const payload = {
+        job_id: update.jobId,
+        total_items: update.totalItems,
+        pending_items: update.pendingItems,
+        running_items: update.runningItems,
+        completed_items: update.completedItems,
+        failed_items: update.failedItems,
+        ...(update.etaSeconds !== undefined
+          ? { eta_seconds: update.etaSeconds }
+          : {}),
+      };
+      emit(session, {
+        type: "tool_progress",
+        payload: {
+          callId,
+          toolName: "spawn_agents_on_csv",
+          chunk: `agent_job_progress:${JSON.stringify(payload)}`,
+          stream: "status",
+          at: Date.now(),
+        },
+      });
+    };
+
+    try {
+      const result = await runAgentsOnCsv({
+        csvPath,
+        instruction,
+        ...(idColumn !== undefined ? { idColumn } : {}),
+        ...(outputCsvPath !== undefined ? { outputCsvPath } : {}),
+        ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
+        ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
+        ...(outputSchema !== undefined ? { outputSchema } : {}),
+        ...(agentMaxThreads !== undefined ? { agentMaxThreads } : {}),
+        spawn,
+        repository,
+        progressEmitter,
+      });
+      return json({
+        job_id: result.jobId,
+        items: result.items.map((item) => ({
+          item_id: item.itemId,
+          status: item.status,
+          ...(item.error !== undefined ? { error: item.error } : {}),
+          ...(item.result !== undefined ? { result: item.result } : {}),
+        })),
+        stopped_early: result.stoppedEarly,
+        ...(result.outputCsvPath !== undefined
+          ? { output_csv_path: result.outputCsvPath }
+          : {}),
+      });
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
+  };
+
+  const reportAgentJobResultHandler = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set(["job_id", "item_id", "result", "stop"]),
+      required: ["job_id", "item_id"],
+    });
+    if (strict) return strict;
+    const jobId = stringValue(args.job_id);
+    const itemId = stringValue(args.item_id);
+    if (jobId === undefined || itemId === undefined) {
+      return json({ error: "job_id and item_id must be strings" }, true);
+    }
+    const result = args.result;
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      Array.isArray(result)
+    ) {
+      return json({ error: "result must be a JSON object" }, true);
+    }
+    const stop = args.stop;
+    if (stop !== undefined && typeof stop !== "boolean") {
+      return json({ error: "stop must be a boolean" }, true);
+    }
+    const outcome = recordAgentJobResult({
+      jobId,
+      itemId,
+      result: result as Record<string, unknown>,
+      ...(stop !== undefined ? { stop } : {}),
+    });
+    switch (outcome.kind) {
+      case "ok":
+        return json({ status: "recorded" });
+      case "unknown_job":
+        return json({ error: `unknown job_id: ${jobId}` }, true);
+      case "unknown_item":
+        return json({ error: `unknown item_id: ${itemId}` }, true);
+      case "already_reported":
+        return json({ error: `item ${itemId} already reported` }, true);
+      case "schema_violation":
+        return json({ error: outcome.reason }, true);
+    }
   };
 
   const spawnAgentSchema = {
@@ -1014,7 +1269,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       agent_type: {
         type: "string",
         description:
-          "Optional role. Prefer cyberpunk names: netrunner, scanner, runner, sentinel. Legacy aliases such as default, explorer, worker, and verification are accepted.",
+          "Optional role name. Accepts any registered built-in or user-defined role; defaults to `default` when omitted.",
       },
       model: { type: "string" },
       reasoning_effort: { type: "string" },
@@ -1028,8 +1283,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   return [
     {
       name: "spawn_agent",
-      description:
-        "Spawns an agent to work on the specified task. Prefer cyberpunk agent_type values: netrunner, scanner, runner, sentinel. Legacy aliases remain accepted. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.",
+      description: buildSpawnAgentDescription(opts.getSession()),
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "spawn", "delegate", "subagent"],
@@ -1074,7 +1328,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "followup_task",
       description:
-        "Send a string message to an existing non-root agent and trigger a turn in the target. Use interrupt=true to redirect work immediately. If interrupt=false and the target's turn has not completed, the message is queued and starts the target's next turn after the current turn completes.",
+        "Send a message to an existing non-root target agent and trigger a turn in that target. If the target is currently mid-turn, the message is queued and will be used to start the target's next turn, after the current turn completes.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "followup", "task"],
@@ -1084,7 +1338,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         properties: {
           target: { type: "string" },
           message: { type: "string" },
-          interrupt: { type: "boolean" },
         },
         required: ["target", "message"],
         additionalProperties: false,
@@ -1095,7 +1348,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "send_message",
       description:
-        "Send a string message to an existing agent without triggering a new turn.",
+        "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "message", "mailbox"],
@@ -1106,6 +1359,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           target: { type: "string" },
           message: { type: "string" },
         },
+        required: ["target", "message"],
         additionalProperties: false,
       },
       execute: (args) =>
@@ -1125,6 +1379,87 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         additionalProperties: false,
       },
       execute: listAgents,
+    },
+    {
+      name: "spawn_agents_on_csv",
+      description:
+        "Spawn one subagent per row of a CSV file. Each row is rendered into the instruction template (using `{column_name}` placeholders); the subagents must call `report_agent_job_result` exactly once with their analysis. Optionally writes an output CSV with each row's status and result.",
+      metadata: toolMetadata("agent", {
+        mutating: true,
+        keywords: ["agent", "spawn", "batch", "csv", "job"],
+      }),
+      requiresApproval: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          csv_path: {
+            type: "string",
+            description: "Path to the CSV file containing input rows.",
+          },
+          instruction: {
+            type: "string",
+            description:
+              "Instruction template applied to each row. Use `{column_name}` placeholders to inject values from the row.",
+          },
+          id_column: {
+            type: "string",
+            description: "Optional column name to use as the stable item id.",
+          },
+          output_csv_path: {
+            type: "string",
+            description: "Optional output CSV path for exported results.",
+          },
+          max_concurrency: {
+            type: "number",
+            description:
+              "Maximum concurrent workers for this job. Defaults to 16.",
+          },
+          max_workers: {
+            type: "string",
+            description: "Alias for max_concurrency. Set to 1 to run sequentially.",
+          },
+          max_runtime_seconds: {
+            type: "number",
+            description:
+              "Maximum runtime per worker before it is failed. Defaults to 1800 seconds.",
+          },
+          output_schema: { type: "object" },
+        },
+        required: ["csv_path", "instruction"],
+        additionalProperties: false,
+      },
+      execute: spawnAgentsOnCsv,
+    },
+    {
+      name: "report_agent_job_result",
+      description:
+        "Called by a subagent worker to record its analysis result for an agent-jobs item. Set `stop=true` to cancel the rest of the job after this report.",
+      metadata: toolMetadata("agent", {
+        mutating: true,
+        keywords: ["agent", "job", "report", "result"],
+      }),
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: {
+            type: "string",
+            description: "Identifier of the job.",
+          },
+          item_id: {
+            type: "string",
+            description: "Identifier of the job item.",
+          },
+          result: { type: "object" },
+          stop: {
+            type: "boolean",
+            description:
+              "Optional. When true, cancels the remaining job items after this result is recorded.",
+          },
+        },
+        required: ["job_id", "item_id", "result"],
+        additionalProperties: false,
+      },
+      execute: reportAgentJobResultHandler,
     },
   ];
 }

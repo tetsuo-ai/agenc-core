@@ -2,7 +2,7 @@
  * Phase 3 — Post-Sample Recovery.
  *
  * Evaluates the 7-strategy recovery ladder after the model stream
- * completes. Mirrors AgenC `query.ts:1082-1299`. Routes through
+ * completes. Mirrors openclaude `query.ts:1082-1299`. Routes through
  * the ordered trigger priority (I-10) under the recovery-in-flight
  * exclusive lock (I-62) with the per-turn re-entry cap (I-42).
  *

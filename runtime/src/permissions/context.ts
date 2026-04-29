@@ -1,7 +1,7 @@
 /**
  * T11 Wave 2-A — permission dialog context + queue + resolve-once.
  *
- * Ports AgenC's `src/hooks/toolPermission/PermissionContext.ts`
+ * Ports openclaude's `src/hooks/toolPermission/PermissionContext.ts`
  * into a framework-agnostic module. The REPL supplies React-backed
  * queue ops; the daemon and tests supply plain-callback ops.
  *

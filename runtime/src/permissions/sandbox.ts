@@ -1,12 +1,12 @@
 /**
  * SandboxPolicy — AgenC filesystem + network permission surface.
  *
- * Hand-port of AgenC runtime `protocol/src/protocol.rs:986-1310` (T11 Wave 1,
+ * Hand-port of codex runtime `protocol/src/protocol.rs:986-1310` (T11 Wave 1,
  * Agent C).
  *
- * AgenC vs AgenC runtime sandboxing
+ * AgenC vs codex runtime sandboxing
  * ─────────────────────────
- * AgenC runtime enforces sandboxing through OS-level primitives:
+ * codex runtime enforces sandboxing through OS-level primitives:
  *   - macOS Seatbelt (`sandbox-exec`)
  *   - Linux Landlock + seccomp-bpf
  *   - Windows AppContainer
@@ -31,7 +31,7 @@
  *
  * Wire format note
  * ────────────────
- * AgenC runtime serializes the tag using `kebab-case`: `"danger-full-access"`,
+ * codex runtime serializes the tag using `kebab-case`: `"danger-full-access"`,
  * `"read-only"`, `"workspace-write"`, `"external-sandbox"`. AgenC keeps
  * the runtime-internal type tags in `snake_case` (`{ kind: "read_only" }`)
  * because the TypeScript switch statements already use that form across
@@ -61,7 +61,7 @@ export type SandboxMode =
   | "workspace_write"
   | "danger_full_access";
 
-/** Port of AgenC runtime `NetworkAccess` (protocol.rs:898-914). */
+/** Port of codex runtime `NetworkAccess` (protocol.rs:898-914). */
 export interface NetworkAccess {
   readonly mode: "enabled" | "disabled";
 }
@@ -70,7 +70,7 @@ export const NETWORK_DISABLED: NetworkAccess = { mode: "disabled" };
 export const NETWORK_ENABLED: NetworkAccess = { mode: "enabled" };
 
 /**
- * Port of AgenC runtime `ReadOnlyAccess` (protocol.rs:925-943). Controls how
+ * Port of codex runtime `ReadOnlyAccess` (protocol.rs:925-943). Controls how
  * restricted read access is scoped inside a sandboxed policy.
  */
 export type ReadOnlyAccess =
@@ -85,12 +85,12 @@ export const READ_ONLY_ACCESS_FULL: ReadOnlyAccess = { kind: "full_access" };
 
 /**
  * A writable root with the subpaths inside it that must remain
- * read-only. Port of AgenC runtime `WritableRoot` (protocol.rs:1059-1083).
+ * read-only. Port of codex runtime `WritableRoot` (protocol.rs:1059-1083).
  *
  * Typical `read_only_subpaths` examples:
  *   - `<root>/.git/hooks`  — prevents hook injection escalation
  *   - `<root>/.agenc`      — runtime state directory (parity for
- *                             AgenC runtime `.AgenC runtime`)
+ *                             codex runtime `.codex runtime`)
  */
 export interface WritableRoot {
   readonly root: string;
@@ -174,7 +174,7 @@ export function newExternalSandboxPolicy(network?: NetworkAccess): SandboxPolicy
 
 /**
  * Default read-only blacklist subpaths for a writable root. Port of
- * AgenC runtime `default_read_only_subpaths_for_writable_root`
+ * codex runtime `default_read_only_subpaths_for_writable_root`
  * (protocol.rs:1294-1325). Kept conservative at T11 Wave 1 —
  * filesystem inspection (`is_dir`/`is_file`) is deferred to the
  * caller where needed. This function returns the standard "always
@@ -192,7 +192,7 @@ export function defaultReadOnlySubpathsFor(
 }
 
 /**
- * Port of AgenC runtime `SandboxPolicy::get_writable_roots_with_cwd`
+ * Port of codex runtime `SandboxPolicy::get_writable_roots_with_cwd`
  * (protocol.rs:1203-1291).
  *
  * Resolution order:
@@ -289,7 +289,7 @@ export function isPathWritable(
 }
 
 /**
- * Does the policy permit outbound network access? Port of AgenC runtime
+ * Does the policy permit outbound network access? Port of codex runtime
  * `SandboxPolicy::has_full_network_access` (protocol.rs:1151-1158).
  */
 export function sandboxAllowsNetwork(policy: SandboxPolicy): boolean {

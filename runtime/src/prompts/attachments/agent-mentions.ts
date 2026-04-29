@@ -1,7 +1,7 @@
 /**
  * Agent-mention attachment producer.
  *
- * Hand-port of AgenC `processAgentMentions()`
+ * Hand-port of openclaude `processAgentMentions()`
  * (`src/utils/attachments.ts:1967-1994`). Scans the latest user input
  * for `@agent-<type>` mentions and emits one `agent_mention` attachment
  * per unique reference that resolves to an active agent definition.

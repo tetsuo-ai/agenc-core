@@ -1,19 +1,19 @@
 /**
  * `FileRead` — first-class file reading tool for AgenC.
  *
- * Lifted (and adapted) from AgenC `src/tools/FileReadTool/`. The
+ * Lifted (and adapted) from openclaude `src/tools/FileReadTool/`. The
  * model-facing prompt mirrors AgenC's `FileReadTool/prompt.ts` so
  * a model trained on the AgenC surface behaves identically here.
  *
  * Key behaviors preserved from AgenC:
  *   - Token-aware text-file size cap (defaults to 25k tokens, matching
- *     AgenC `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
+ *     openclaude `DEFAULT_MAX_OUTPUT_TOKENS`). When the rough estimate
  *     exceeds the cap, the read is rejected with the exact error
  *     message AgenC emits so model-side recovery copy still works.
  *   - Image multimodal output: PNG/JPG/JPEG/GIF/WEBP read as bytes,
  *     base64-encoded, and returned via `contentItems` as
  *     `input_image` with a data URL. The text `content` carries a
- *     short summary so the AgenC runtime envelope is never empty.
+ *     short summary so the codex runtime envelope is never empty.
  *   - PDF text extraction uses the upstream-style Poppler path
  *     (`pdfinfo` + `pdftotext`) with page-range guards and a large-PDF
  *     prompt that asks the model to request explicit pages.
@@ -29,7 +29,7 @@
  *     (`snapshotTopRecentReads`) can rebuild context after a compact.
  *
  * The error envelope is plain text in `content` with `isError: true` —
- * AgenC runtime shape, not JSON-wrapped. Matches the envelope used by `Edit`
+ * codex runtime shape, not JSON-wrapped. Matches the envelope used by `Edit`
  * and `Write`.
  *
  * @module
@@ -69,7 +69,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
 
 /**
  * Default upper bound on raw file size for text reads. 256 KB is the
- * AgenC `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
+ * openclaude `MAX_OUTPUT_SIZE` derived value. Acts as a cheap pre-read
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */
@@ -189,7 +189,7 @@ export interface FileReadToolConfig {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/** AgenC runtime-shape error envelope: plain text body, isError flag. */
+/** codex runtime-shape error envelope: plain text body, isError flag. */
 function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
 }
@@ -252,7 +252,7 @@ function hasBinaryExtension(filePath: string): boolean {
   return BINARY_EXTENSIONS.has(ext);
 }
 
-/** Produce the AgenC runtime `cat -n` style numbered output. */
+/** Produce the codex runtime `cat -n` style numbered output. */
 function formatNumbered(content: string, startLine: number): string {
   return addLineNumbers({ content, startLine });
 }
@@ -712,10 +712,10 @@ async function readImageFile(
     rawContent: base64,
   });
 
-  // The `FunctionCallOutputContentItem` shape (port of AgenC runtime
+  // The `FunctionCallOutputContentItem` shape (port of codex runtime
   // `FunctionCallOutputContentItem`) accepts `input_image` carrying a
   // URL — providers that support the OpenAI Responses API consume data
-  // URLs verbatim. The text body remains a brief summary so the AgenC runtime
+  // URLs verbatim. The text body remains a brief summary so the codex runtime
   // envelope is never empty.
   const dataUrl = `data:${mime};base64,${base64}`;
   const contentItems: FunctionCallOutputContentItem[] = [

@@ -8,7 +8,7 @@
  * The class also exposes an AgenC-compatible surface (`threadName`,
  * `messages`, `memory`, `metadata`, `worktreePath`, `worktreeBranch`,
  * `fork()`, `spawn()`, `join()`)
- * so callers that expect the literal AgenC `AgentTool` shape can
+ * so callers that expect the literal openclaude `AgentTool` shape can
  * interoperate with AgenC's subagent runtime without reaching into the
  * underlying `LiveAgent` / `delegate()` surface directly.
  *
@@ -34,7 +34,7 @@ export type MemoryEntry = AgentMemoryEntry;
 export interface AgentThreadOpts {
   readonly live: LiveAgent;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
-  readonly forkMode: ForkMode;
+  readonly forkMode?: ForkMode;
   readonly worktree?: WorktreeHandle;
   readonly parentSessionId?: string;
   readonly taskPrompt: string;
@@ -42,7 +42,7 @@ export interface AgentThreadOpts {
 
 /**
  * Arguments accepted by `AgentThread.fork()` / `AgentThread.spawn()`.
- * Mirrors the AgenC `AgentTool` spawn surface: a task prompt, an
+ * Mirrors the openclaude `AgentTool` spawn surface: a task prompt, an
  * optional role, and optional isolation/worktree info. The only
  * difference between `fork` and `spawn` is the default fork mode —
  * see the method docs.
@@ -57,7 +57,7 @@ export interface AgentThreadSpawnOpts {
   /**
    * Override the fork mode. Defaults differ per entry point:
    *   - `fork()`  → `{ kind: 'full_history' }`
-   *   - `spawn()` → `{ kind: 'new' }`
+   *   - `spawn()` → undefined (no fork; child starts fresh)
    */
   readonly forkMode?: ForkMode;
 }
@@ -87,7 +87,7 @@ export interface AgentThreadWiring {
 
 export class AgentThread {
   readonly initialMessages: ReadonlyArray<LLMMessage>;
-  readonly forkMode: ForkMode;
+  readonly forkMode?: ForkMode;
   readonly worktree?: WorktreeHandle;
   readonly parentSessionId?: string;
   readonly taskPrompt: string;
@@ -102,7 +102,7 @@ export class AgentThread {
   constructor(opts: AgentThreadOpts, wiring: AgentThreadWiring = {}) {
     this.liveHandle = opts.live;
     this.initialMessages = opts.initialMessages;
-    this.forkMode = opts.forkMode;
+    if (opts.forkMode !== undefined) this.forkMode = opts.forkMode;
     if (opts.worktree !== undefined) this.worktree = opts.worktree;
     if (opts.parentSessionId !== undefined)
       this.parentSessionId = opts.parentSessionId;
@@ -202,17 +202,16 @@ export class AgentThread {
   }
 
   /**
-   * Spawn a child WITHOUT inheriting parent history. Defaults to
-   * `forkMode = { kind: 'new' }`. Same wiring requirement as
-   * `fork()`.
+   * Spawn a child WITHOUT inheriting parent history. Equivalent to
+   * codex `Option::None` for the spawn fork mode. Same wiring
+   * requirement as `fork()`.
    */
   async spawn(opts: AgentThreadSpawnOpts): Promise<AgentThread> {
-    const forkMode: ForkMode = opts.forkMode ?? { kind: "new" };
-    return this.dispatchSpawn({ ...opts, forkMode });
+    return this.dispatchSpawn({ ...opts, forkMode: opts.forkMode });
   }
 
   private async dispatchSpawn(
-    opts: AgentThreadSpawnOpts & { forkMode: ForkMode },
+    opts: AgentThreadSpawnOpts & { forkMode?: ForkMode },
   ): Promise<AgentThread> {
     const dispatch = this.wiring.delegate ?? defaultDelegate;
     const parent = this.wiring.parent;
@@ -230,7 +229,7 @@ export class AgentThread {
       control,
       registry,
       taskPrompt: opts.taskPrompt,
-      forkMode: opts.forkMode,
+      ...(opts.forkMode !== undefined ? { forkMode: opts.forkMode } : {}),
       ...(opts.role !== undefined ? { role: opts.role } : {}),
       ...(opts.isolation !== undefined ? { isolation: opts.isolation } : {}),
       ...(opts.worktreeSlug !== undefined
@@ -249,7 +248,7 @@ export class AgentThread {
         return outcome.thread;
       case "rejected":
         throw new Error(
-          `AgentThread.${opts.forkMode.kind === "full_history" ? "fork" : "spawn"} rejected: ${outcome.reason}`,
+          `AgentThread.${opts.forkMode?.kind === "full_history" ? "fork" : "spawn"} rejected: ${outcome.reason}`,
         );
     }
   }

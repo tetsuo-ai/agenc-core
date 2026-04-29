@@ -6,10 +6,10 @@
  *     `autoCompactIfNeeded`; circuit-breaker bypass is intentional
  *     per feature-matrix.md:196 and annotated in manual-compact.ts).
  *     The source lineage is AgenC's local ../opencode-compatible
- *     compaction contract, not the AgenC runtime task subsystem.
+ *     compaction contract, not the codex runtime task subsystem.
  *   - Stage-6 `prepareContext` auto-compact gating (does NOT fire when
  *     `runPreSamplingCompact` already compacted this turn — one-
- *     compact-per-turn contract matching AgenC runtime run_pre_sampling_compact
+ *     compact-per-turn contract matching codex runtime run_pre_sampling_compact
  *     + run_auto_compact routing).
  *   - I-2 `previous_response_id` clear on compact — asserts that the
  *     `ProviderHttpClient.responsesContinuationState.lastResponseId`

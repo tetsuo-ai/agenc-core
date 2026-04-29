@@ -1,7 +1,7 @@
 /**
  * Date-change attachment producer.
  *
- * Hand-port of AgenC `getDateChangeAttachments`
+ * Hand-port of openclaude `getDateChangeAttachments`
  * (`src/utils/attachments.ts:1416-1445`). Fires a one-shot
  * `date_change` attachment when the local calendar date differs from
  * the date last emitted for this session. The first turn seeds the

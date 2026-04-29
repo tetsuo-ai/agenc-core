@@ -1,0 +1,402 @@
+{
+  "contractName": "codex-control-parity",
+  "scope": "AgenC agents/control.ts ↔ codex codex-rs/core/src/agent/control.rs strict parity",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "targetRoot": "/home/tetsuo/git/AgenC/agenc-core",
+  "rows": [
+    {
+      "id": "spawn-agent-fork-mode-enum",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "SpawnAgentForkMode union mirrors codex enum: full_history | last_n_turns(n: number)",
+        "no extra variants beyond codex (new/explicit removed in B.6)",
+        "type exported for use by SpawnAgentOptions and forking helpers"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "spawn-agent-options-struct",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "SpawnAgentOptions interface mirrors codex struct fields",
+        "carries optional roleName, agentName, agentPath, model, reasoningEffort, forkMode, forkParentSpawnCallId",
+        "consumed by spawn() and spawnAgentWithMetadata()"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "live-agent-struct",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "LiveAgent interface carries agentId, agentPath, role, depth, nickname, status tracker",
+        "exposes upInbox + downInbox mailboxes (AgenC bidirectional adaptation; codex unidirectional)",
+        "metadata snapshot captured at spawn time"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "listed-agent-struct",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "ListedAgent interface returned by listAgents",
+        "fields: agentName, agentStatus, lastTaskMessage",
+        "matches codex protocol shape post-toAgentStatusJson encoding"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agent-control-construction",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "AgentControl class constructor wires session, registry, threadManager",
+        "initializes parentTokens map for spawn-time interrupt cascade",
+        "exposes registry handle for nickname allocation (Phase H.4)"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "spawn",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "I-1 depth cap: rejects when childDepth > maxDepth with MaxDepthExceededError",
+        "I-32 atomic slot reservation: reserveSpawnSlot before allocating; release on parent-interrupt race",
+        "I-37 path collision: finalizeSpawnReservation throws AgentPathExistsError on duplicate agentPath",
+        "I-63 cooperative atomicity: post-await tail through finalize is synchronous",
+        "AgentLimitReachedError surfaces from registry; emits agent_limit_reached warning",
+        "creates upInbox + downInbox mailboxes wired with backpressure warnings",
+        "registers parent token for spawn-race detection"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/agents/registry.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "spawn-agent-with-metadata",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "delegates to spawn() but accepts the richer SpawnAgentOptions",
+        "applies model + reasoningEffort overrides to child config",
+        "configSnapshot recorded on the live handle"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "spawn-forked-thread",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "requires forkMode + forkParentSpawnCallId; throws if parent-spawn-call-id missing",
+        "delegates to spawnAgentWithMetadata with fork inputs",
+        "matches codex's spawn_forked_thread guard at control.rs:337/342"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "resume-agent-from-rollout",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "rebuilds LiveAgent for root + every open descendant",
+        "honors rollout-store-owned spawn-edge snapshot",
+        "parent failures short-circuit their subtree (matches codex resume queue semantics)",
+        "emits rollout_resume_unavailable when no rollout store mounted",
+        "returns resumedCount + rootLive"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/agents/resume.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "send-input",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "routes user input to child via downInbox with direction='down'",
+        "updates registry.lastTaskMessage via renderInputPreview",
+        "rejects sends to closed mailboxes (MailboxClosedError)",
+        "I-5: bidirectional routing through child.downInbox"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "append-message",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "appends a message to child without triggering a new turn (triggerTurn=false)",
+        "updates lastTaskMessage with renderInputPreview",
+        "routes via downInbox direction='down'"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "send-inter-agent-communication",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "delivers an InterAgentCommunication to a child mailbox with author/recipient/content",
+        "trigger_turn flag controls whether recipient wakes immediately",
+        "matches codex's InterAgentCommunication shape (no metadata field on the wire)"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "interrupt-agent",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "I-5 interrupt cascade: parent interrupt propagates to all live descendants",
+        "ABORT signal flips on the parent token; new spawns observe and abort mid-spawn",
+        "synthetic interrupt notice written to child's downInbox",
+        "matches codex's interrupt_agent semantics on control.rs:680"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "shutdown-live-agent",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "transitions live agent to terminal status (shutdown/errored/completed) and releases the slot",
+        "closes both up + down mailboxes (I-31: agent_exited sentinel emitted from upInbox once)",
+        "removes the LiveAgent entry; nickname is intentionally retained per codex semantics",
+        "idempotent on already-final agents"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "close-agent",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "closes the spawned agent and ALL live descendants (subtree closure)",
+        "rejects close on root with 'root is not a spawned agent' (matches codex close_agent.rs:32-40)",
+        "subscribeStatus snapshot captured BEFORE close so previous_status is correct",
+        "emits collab_close_begin / collab_close_end events"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "get-status",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns AgentStatus for known agentId; not_found for unknown",
+        "no idle variant emitted (B.3: idle removed)",
+        "delegates to LiveAgent.status.value for live agents"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "register-session-root",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "idempotent: re-registering the same threadId is a no-op",
+        "registers /root path in registry.byPath",
+        "rootThreadId set on AgentControl"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "get-agent-metadata",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns AgentMetadata snapshot by threadId from registry",
+        "undefined for unknown agent",
+        "metadata reflects the snapshot taken at spawn time"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "list-live-agent-subtree-thread-ids",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns all live descendant thread IDs of a given parent",
+        "uses spawn-edge snapshot for tree traversal",
+        "includes the parent itself in the returned set"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "get-agent-config-snapshot",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns the LiveAgent.configSnapshot recorded at spawn time",
+        "undefined for unknown agent",
+        "snapshot is read-only and reflects spawn-time config"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "resolve-agent-reference",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "accepts canonical agentPath, relative name, agentId, or nickname",
+        "returns canonical AgentPath + threadId tuple",
+        "throws structured error when reference cannot be resolved"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "subscribe-status",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "delivers replay of current status to new subscriber (BehaviorSubject semantics)",
+        "subsequent transitions delivered in order",
+        "returns unsubscribe handle"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "format-environment-context-subagents",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "renders the subagent inventory as a string suitable for environment-context turns",
+        "includes agentPath, role, status per row",
+        "matches codex's exact line shape (port of format_environment_context_subagents)"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "list-agents",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns ListedAgent[] for live agents under optional pathPrefix",
+        "/root entry included when no prefix or prefix matches root",
+        "ordering matches codex's traversal order",
+        "agent_status JSON shape matches codex (no idle variant)"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "render-input-preview",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "free function that produces a one-line preview from an Op-shaped input value",
+        "matches codex's render_input_preview body",
+        "consumed by sendInput / appendMessage to update lastTaskMessage"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "inherited-shell-snapshot-for-source",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns the parent session's shellSnapshot (or fallback) keyed by parent threadId",
+        "fallback keys: services.shellSnapshot then services.shell.shellSnapshot",
+        "child sessions inherit through services spread; this getter exposes the explicit hook"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "inherited-exec-policy-for-source",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/control.ts",
+      "requiredBehaviors": [
+        "returns parent session's execPolicy (or fallback) keyed by parent threadId",
+        "fallback keys: services.execPolicy then services.execPolicyManager"
+      ],
+      "tests": [
+        "runtime/src/agents/control.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

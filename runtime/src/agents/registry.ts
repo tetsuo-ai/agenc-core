@@ -1,7 +1,7 @@
 /**
  * AgentRegistry — in-memory slot + path tracking for subagents.
  *
- * Hand-port of AgenC runtime `core/src/agent/registry.rs` (344 LOC).
+ * Hand-port of codex runtime `core/src/agent/registry.rs` (344 LOC).
  * Owns:
  *   - Spawn-slot counter (bounded by `maxThreads`)
  *   - `agentPath` → `AgentMetadata` map (hierarchical "/root/worker/sub")
@@ -10,7 +10,7 @@
  *
  * Invariants wired:
  *   I-37 (sibling `agentPath` collision) — `reserveAgentPath` returns
- *        `AgentPathExistsError` on collision. Mirrors AgenC runtime.
+ *        `AgentPathExistsError` on collision. Mirrors codex runtime.
  *   I-63 (atomic slot acquisition) — slot counter increment/decrement
  *        happens under `AsyncLock<void>`. Concurrent spawns never
  *        both observe `count = N-1` and both increment to `N`.
@@ -76,7 +76,7 @@ export class InvalidAgentPathError extends Error {
 /**
  * Opaque handle the caller must hold until spawn finalizes. On drop
  * (dispose), the reservation releases the slot — so failed spawns
- * don't leak counters. Matches AgenC runtime's `SpawnReservation` RAII.
+ * don't leak counters. Matches codex runtime's `SpawnReservation` RAII.
  */
 export class SpawnReservation {
   private released = false;
@@ -322,12 +322,6 @@ export class AgentRegistry {
 export function joinAgentPath(parent: AgentPath, segment: string): AgentPath {
   assertValidAgentPath(parent);
   assertValidAgentName(segment);
-  if (parent === MEMORY_AGENT_PATH) {
-    throw new InvalidAgentPathError(
-      parent,
-      "memory consolidation agent path cannot have children",
-    );
-  }
   return `${parent}/${segment}`;
 }
 
@@ -357,12 +351,6 @@ export function resolveAgentPath(
   if (reference.startsWith("/")) {
     assertValidAgentPath(reference);
     return reference;
-  }
-  if (current === MEMORY_AGENT_PATH) {
-    throw new InvalidAgentPathError(
-      reference,
-      "relative references cannot resolve below the memory consolidation agent",
-    );
   }
   for (const segment of reference.split("/")) {
     assertValidAgentName(segment);

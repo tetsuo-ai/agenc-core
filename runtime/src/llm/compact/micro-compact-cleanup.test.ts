@@ -62,7 +62,7 @@ describe('microcompact cleanup wiring', () => {
 
   test('time-based microcompact runs post-compact cleanup before returning', async () => {
     // The gut runtime gets the time-based-MC config through the compact
-    // `_deps/no-op.js` shim (not the upstream AgenC
+    // `_deps/no-op.js` shim (not the upstream openclaude
     // `services/analytics/growthbook.js` path), so mock the live import
     // surface that `time-based-mc-config.ts` actually reads from.
     vi.doMock('./time-based-mc-config.js', () => ({

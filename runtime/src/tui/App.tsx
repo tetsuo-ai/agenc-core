@@ -489,7 +489,7 @@ function TUIRoot({
   );
   // Prefer the live AppState model (updated synchronously by `/model`)
   // over the seeded prop so the status bar refreshes on the next render
-  // after a slash-command swap. Mirrors AgenC's
+  // after a slash-command swap. Mirrors openclaude's
   // `useAppState(s => s.mainLoopModel)` subscription pattern.
   const effectiveModel = liveModel ?? model;
   const statusLineSession = useMemo(

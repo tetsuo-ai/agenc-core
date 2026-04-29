@@ -1,7 +1,7 @@
 /**
  * Per-session attachment-tracking state.
  *
- * Hand-port of AgenC `bootstrap/state.ts:1622-1626 + :1333-1346`,
+ * Hand-port of openclaude `bootstrap/state.ts:1622-1626 + :1333-1346`,
  * scoped to the AgenC session via WeakMap. Matches the existing AgenC
  * pattern in `runtime/src/prompts/memory/attachments.ts:47` (sessionBudgets)
  * and `runtime/src/prompts/memory/auto-save.ts:114`.

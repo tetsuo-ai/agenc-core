@@ -152,7 +152,6 @@ function mapAgentStatus(
   try {
     switch (status.status) {
       case "pending_init":
-      case "idle":
         return;
       case "running":
         lifecycle.markRunning(taskId, { turnId: status.turnId });

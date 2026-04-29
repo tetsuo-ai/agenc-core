@@ -9,7 +9,7 @@ import type { AgentMetadata } from "./registry.js";
 function makeSession() {
   return {
     conversationId: "root-thread",
-    agentStatus: { value: { status: "idle" } },
+    agentStatus: { value: { status: "pending_init" } },
     submit: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
     abortTerminal: vi.fn(),

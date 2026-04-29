@@ -1,7 +1,7 @@
 /**
  * Nested-memory attachment producer.
  *
- * Hand-port of AgenC `getNestedMemoryAttachmentsForFile()`
+ * Hand-port of openclaude `getNestedMemoryAttachmentsForFile()`
  * (`src/utils/attachments.ts:1793-1863`), adapted to AgenC's instruction
  * filenames. Walks the directory hierarchy between `cwd` and each
  * file path mentioned in the latest user input, collecting
@@ -98,7 +98,7 @@ function readSessionId(opts: GetAttachmentsOptions): string | undefined {
 }
 
 /**
- * Mirror AgenC `getDirectoriesToProcess` (`attachments.ts:1657`).
+ * Mirror openclaude `getDirectoriesToProcess` (`attachments.ts:1657`).
  * Returns the chain of directories from `originalCwd` down to the file's
  * parent (`nestedDirs`, ordered cwd→target) and the chain of ancestors
  * from the filesystem root up to `originalCwd` (`cwdLevelDirs`, ordered

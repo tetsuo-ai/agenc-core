@@ -6,7 +6,7 @@
 // message-type implementation into AgenC yet.
 //
 // When the real runtime message graph lands, replace the stubs with real
-// types/imports from the AgenC runtime.
+// types/imports from the codex runtime.
 
 // Use an intersection of `any` and a no-op branded type so that narrowing
 // type guards like `isCompactBoundaryMessage(m): m is SystemCompactBoundaryMessage`

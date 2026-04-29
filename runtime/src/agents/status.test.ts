@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentStatusTracker, isFinal } from "./status.js";
+import { AgentStatusTracker, agentStatusFromEvent, isFinal } from "./status.js";
 
 describe("AgentStatusTracker", () => {
   it("starts pending_init", () => {
@@ -40,7 +40,6 @@ describe("AgentStatusTracker", () => {
 
   it("isFinal classifies terminal states", () => {
     expect(isFinal({ status: "pending_init" })).toBe(false);
-    expect(isFinal({ status: "idle" })).toBe(false);
     expect(isFinal({ status: "shutdown", endedAtMs: 0 })).toBe(true);
     expect(isFinal({ status: "not_found" })).toBe(true);
     // interrupted is non-final (matches AgenC semantics).
@@ -80,5 +79,77 @@ describe("AgentStatusTracker", () => {
     t.markRunning("turn-1");
     expect(seen).toBe("running");
     unsub();
+  });
+});
+
+describe("agentStatusFromEvent (codex parity)", () => {
+  it("turn_started -> running with turnId + startedAtMs", () => {
+    const status = agentStatusFromEvent({
+      type: "turn_started",
+      payload: { turnId: "t1", startedAt: 100 },
+    });
+    expect(status).toEqual({
+      status: "running",
+      turnId: "t1",
+      startedAtMs: 100,
+    });
+  });
+
+  it("turn_complete -> completed with optional last message", () => {
+    const status = agentStatusFromEvent({
+      type: "turn_complete",
+      payload: { turnId: "t1", lastAgentMessage: "done", completedAt: 200 },
+    });
+    expect(status).toMatchObject({
+      status: "completed",
+      turnId: "t1",
+      lastMessage: "done",
+      endedAtMs: 200,
+    });
+  });
+
+  it("turn_aborted Interrupted-class reasons map to interrupted", () => {
+    const status = agentStatusFromEvent({
+      type: "turn_aborted",
+      payload: { turnId: "t1", reason: "Interrupted by user" },
+    });
+    expect(status?.status).toBe("interrupted");
+  });
+
+  it("turn_aborted BudgetLimited reason maps to interrupted", () => {
+    const status = agentStatusFromEvent({
+      type: "turn_aborted",
+      payload: { turnId: "t1", reason: "BudgetLimited" },
+    });
+    expect(status?.status).toBe("interrupted");
+  });
+
+  it("turn_aborted other reasons map to errored", () => {
+    const status = agentStatusFromEvent({
+      type: "turn_aborted",
+      payload: { turnId: "t1", reason: "ProviderError" },
+    });
+    expect(status?.status).toBe("errored");
+  });
+
+  it("error event maps to errored with payload message", () => {
+    const status = agentStatusFromEvent({
+      type: "error",
+      payload: { turnId: "t1", message: "boom" },
+    });
+    expect(status).toMatchObject({
+      status: "errored",
+      turnId: "t1",
+      error: "boom",
+    });
+  });
+
+  it("unrelated event types return undefined (no transition)", () => {
+    expect(
+      agentStatusFromEvent({ type: "agent_message", payload: {} }),
+    ).toBeUndefined();
+    expect(
+      agentStatusFromEvent({ type: "tool_call_started" }),
+    ).toBeUndefined();
   });
 });

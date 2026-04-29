@@ -1,5 +1,5 @@
 /**
- * Tests for `Monitor` — verbatim AgenC `MonitorTool` port.
+ * Tests for `Monitor` — verbatim openclaude `MonitorTool` port.
  * Verifies schema parity, the upstream-style result-content sentence,
  * and that the tool wires through to AgenC's `unifiedExecManager`.
  */

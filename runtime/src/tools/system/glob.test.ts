@@ -1,5 +1,5 @@
 /**
- * Tests for the lifted AgenC `Glob` tool.
+ * Tests for the lifted openclaude `Glob` tool.
  *
  * Coverage:
  *   - simple `*.txt` pattern in a tmp dir

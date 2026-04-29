@@ -1,7 +1,7 @@
 /**
  * Permission-mode finite state machine (I-3 primitive).
  *
- * Ports AgenC's `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
+ * Ports openclaude's `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
  * transition helpers from `permissionSetup.ts` / `bootstrap/state.ts` into a
  * self-contained module with no global state. All session state that
  * AgenC stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
@@ -68,7 +68,7 @@ export const INTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
 
 /**
  * Type guard — true when `mode` is one of the Shift+Tab-visible external
- * modes. Mirrors AgenC's `isExternalPermissionMode`.
+ * modes. Mirrors openclaude's `isExternalPermissionMode`.
  */
 export function isExternalPermissionMode(mode: PermissionMode): boolean {
   return (EXTERNAL_PERMISSION_MODES as readonly PermissionMode[]).includes(mode);

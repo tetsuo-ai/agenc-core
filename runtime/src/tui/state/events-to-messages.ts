@@ -4,7 +4,7 @@
  * The live runtime emits two related streams:
  *   - `PhaseEvent` values used by the one-shot CLI path.
  *   - `EventMsg` values on `session.eventLog`, which are the richer,
- *     AgenC runtime-aligned source of truth for user messages, streaming deltas,
+ *     codex runtime-aligned source of truth for user messages, streaming deltas,
  *     compaction boundaries, tool progress, and shell exec lifecycle.
  *
  * The TUI transcript accepts both. `eventsToMessages` folds the mixed
@@ -318,7 +318,7 @@ const SILENT_TOOL_NAMES = new Set([
   "ToolSearch",
   "tool_search",
   "system.searchTools",
-  // AgenC `TodoWriteTool.renderToolUseMessage` returns null and the
+  // openclaude `TodoWriteTool.renderToolUseMessage` returns null and the
   // tool omits `renderToolResultMessage` entirely (see AgenC
   // `Tool.ts:572-574`: "Omit for tools whose results are surfaced
   // elsewhere (e.g., TodoWrite updates the todo panel, not the
@@ -1232,7 +1232,7 @@ export function eventsToMessages(
         // `markAssistantComplete()` call inside `tool_call_started` so
         // the terminal `agent_message` for this turn can still merge
         // into the streaming row instead of pushing a duplicate.
-        // Mirrors AgenC's atomic streamingText→onMessage transition
+        // Mirrors openclaude's atomic streamingText→onMessage transition
         // (utils/messages.ts:2980-2985).
         let candidateIndex: number | null =
           activeAssistantIndex !== null &&

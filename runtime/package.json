@@ -27,8 +27,9 @@
     "check:package-entrypoints": "node scripts/check-package-entrypoints.mjs",
     "check:runtime-ownership": "node scripts/check-runtime-ownership.mjs",
     "check:executor-baseline": "node scripts/check-executor-baseline.mjs",
+    "check:codex-control-parity": "node ../scripts/check-codex-control-parity.mjs",
     "test": "vitest run",
-    "validate:required": "npm run typecheck && npm run test",
+    "validate:required": "npm run typecheck && npm run test && npm run check:codex-control-parity",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

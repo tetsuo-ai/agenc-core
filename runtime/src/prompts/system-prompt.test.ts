@@ -138,13 +138,13 @@ describe("static section emitters", () => {
   test("simple_doing_tasks describes task execution protocol", () => {
     const s = getSimpleDoingTasksSection();
     expect(s).toContain("# Doing tasks");
-    // Lifted from AgenC — top-level instruction.
+    // Lifted from openclaude — top-level instruction.
     expect(s).toContain(
       "do not propose changes to code you haven't read",
     );
-    // Lifted from AgenC `USER_TYPE === 'ant'` faithful-reporting bullet.
+    // Lifted from openclaude `USER_TYPE === 'ant'` faithful-reporting bullet.
     expect(s).toContain("Report outcomes faithfully");
-    // Lifted from AgenC code-style sub-bullets.
+    // Lifted from openclaude code-style sub-bullets.
     expect(s).toContain("Default to writing no comments");
     // AgenC-specific slash-commands and bug-report bullets must be gone.
     expect(s).not.toContain("/help");

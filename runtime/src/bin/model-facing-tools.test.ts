@@ -777,7 +777,6 @@ describe("model-facing tools", () => {
         taskPrompt: "inspect",
         agentName: "task_1",
         role: "worker",
-        forkMode: { kind: "new" },
         runInBackground: true,
       }),
     );
@@ -871,7 +870,7 @@ describe("model-facing tools", () => {
       listAgents: vi.fn(() => [
         {
           agentName: "/root",
-          agentStatus: { status: "idle" },
+          agentStatus: { status: "pending_init" },
           lastTaskMessage: "Main thread",
         },
         {

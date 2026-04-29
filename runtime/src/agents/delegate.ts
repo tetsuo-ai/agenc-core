@@ -1,7 +1,7 @@
 /**
  * Delegate — the AgentTool spawn dispatcher.
  *
- * Hand-port of AgenC `tools/AgentTool/AgentTool.tsx` (1,232 LOC)
+ * Hand-port of openclaude `tools/AgentTool/AgentTool.tsx` (1,232 LOC)
  * spawn-dispatcher subset. Public entry point for:
  *
  *   - Isolation setup (worktree create + bind CWD, or CWD-only)
@@ -77,7 +77,7 @@ export async function delegate(
   opts: DelegateOpts,
 ): Promise<DelegateOutcome> {
   const isolation = opts.isolation ?? "none";
-  const forkMode = opts.forkMode ?? { kind: "new" };
+  const forkMode = opts.forkMode;
   const runInBackground = opts.runInBackground ?? true;
 
   if (
@@ -147,7 +147,7 @@ export async function delegate(
   const fork = await forkSubagent({
     parent: opts.parent,
     parentMessages: opts.parent.snapshotHistoryMessages(),
-    mode: forkMode,
+    ...(forkMode !== undefined ? { mode: forkMode } : {}),
     taskPrompt: opts.taskPrompt,
     ...(worktree?.path !== undefined ? { worktreePath: worktree.path } : {}),
   });
@@ -159,7 +159,7 @@ export async function delegate(
       {
         live,
         initialMessages: fork.messages,
-        forkMode,
+        ...(forkMode !== undefined ? { forkMode } : {}),
         ...(worktree !== undefined ? { worktree } : {}),
         parentSessionId: opts.parent.conversationId,
         taskPrompt: opts.taskPrompt,

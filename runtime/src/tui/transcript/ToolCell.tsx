@@ -2,7 +2,7 @@
  * Semantic tool-call history cell.
  *
  * AgenC keeps the transcript chrome branded, but the behavior follows the
- * upstream AgenC runtime/AgenC shape: one semantic cell per tool invocation,
+ * upstream codex runtime/AgenC shape: one semantic cell per tool invocation,
  * tool-family aware labels, in-place progress, and compact result previews.
  */
 

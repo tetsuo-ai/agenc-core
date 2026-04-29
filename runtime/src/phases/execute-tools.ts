@@ -6,7 +6,7 @@
  * to `state.messages` so the next iteration provides them to the
  * model.
  *
- * Mirrors AgenC `query.ts:1467-1635`. The executor accepts tool
+ * Mirrors openclaude `query.ts:1467-1635`. The executor accepts tool
  * calls mid-stream (AgenC query.ts:572 starts the executor
  * BEFORE streamModel returns and feeds tool_use blocks as they
  * arrive). T5's stream-model captures the complete tool-use block

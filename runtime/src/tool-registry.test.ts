@@ -75,9 +75,9 @@ describe("tool-registry dynamic and deferred catalog", () => {
     // dropped — the canonical AgenC-compatible names are the only entries.
     expect(registeredNames).not.toContain("workflow.enterPlan");
     expect(registeredNames).not.toContain("workflow.exitPlan");
-    // `update_plan` is the AgenC runtime-only checklist name. AgenC's `/plan`
+    // `update_plan` is the codex runtime-only checklist name. AgenC's `/plan`
     // surface is AgenC-owned, so the only checklist tool we
-    // ship is AgenC `TodoWrite`.
+    // ship is openclaude `TodoWrite`.
     expect(registeredNames).not.toContain("update_plan");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
@@ -123,7 +123,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    // The model-facing content follows AgenC runtime unified-exec output: status
+    // The model-facing content follows codex runtime unified-exec output: status
     // headers plus the captured stdout/stderr.
     expect(result.content).toContain("Process exited with code 0");
     expect(result.content).toContain("Output:\nagenc-runtime");
@@ -198,7 +198,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
       }),
     });
     expect(todo.isError).toBeUndefined();
-    // Verbatim AgenC `TodoWriteTool.mapToolResultToToolResultBlockParam`
+    // Verbatim openclaude `TodoWriteTool.mapToolResultToToolResultBlockParam`
     // base sentence (`src/tools/TodoWriteTool/TodoWriteTool.ts:105`).
     expect(todo.content).toBe(
       "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable",

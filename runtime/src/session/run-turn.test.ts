@@ -826,7 +826,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
     // A1: before the fix, `newContextWindow = oldContextWindow` made
     // `old > new` impossible. This test exercises the fixed path by
     // supplying a previous-turn contextWindow (from models_manager in
-    // AgenC runtime; carried on previousTurnSettings in AgenC) that exceeds
+    // codex runtime; carried on previousTurnSettings in AgenC) that exceeds
     // the current turn's contextWindow, with total usage over the new
     // auto-compact limit.
     const ctx = mkCtx();
@@ -1551,7 +1551,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// runAutoCompact dispatcher — AgenC runtime `run_auto_compact`
+// runAutoCompact dispatcher — codex runtime `run_auto_compact`
 // Covers wiring between maybeRunPreviousModelInlineCompact +
 // runPreSamplingCompact and the real `autoCompactIfNeeded` loader.
 // ─────────────────────────────────────────────────────────────────────

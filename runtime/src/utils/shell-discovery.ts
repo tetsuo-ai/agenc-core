@@ -1,9 +1,9 @@
 /**
  * Default user-shell discovery.
  *
- * Port of the relevant subset of upstream AgenC runtime `core/src/shell.rs`
+ * Port of the relevant subset of upstream codex runtime `core/src/shell.rs`
  * `default_user_shell()` + `detect_shell_type()` + `get_shell_path()`
- * (AgenC runtime-rs/core/src/shell.rs:302-336, 157-198, 312-336). Used by
+ * (codex-rs/core/src/shell.rs:302-336, 157-198, 312-336). Used by
  * `Session` bootstrap to populate `services.userShell` with a real
  * shell binding instead of the `/bin/sh` interface stub that
  * `bin/bootstrap.ts::buildDeferredServices` falls back to when no

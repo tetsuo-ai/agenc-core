@@ -1,7 +1,7 @@
 /**
  * T11 — foundational permission primitives.
  *
- * Ported from AgenC `src/types/permissions.ts`, trimmed to what
+ * Ported from openclaude `src/types/permissions.ts`, trimmed to what
  * AgenC needs for the rule + settings layer (Wave 1). Wave 2 modules
  * (yoloClassifier, hooks, dangerousPatterns) extend these types; they
  * are not required here.

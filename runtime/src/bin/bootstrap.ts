@@ -479,6 +479,8 @@ function buildDeferredConfig(
     },
     /** T9: `multiAgentV2` hints (subagent usage hints + metadata visibility). */
     multiAgentV2: {
+      maxConcurrentThreadsPerSession: 4,
+      minWaitTimeoutMs: 10_000,
       usageHintEnabled: false,
       usageHintText: "",
       hideSpawnAgentMetadata: false,
@@ -498,7 +500,7 @@ function buildDeferredConfig(
       },
       windowsSandboxPrivateDesktop: false,
     },
-    /** T-future: ghost-snapshot state machine (AgenC runtime workspace restore). */
+    /** T-future: ghost-snapshot state machine (codex runtime workspace restore). */
     ghostSnapshot: { enabled: false },
     /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
     agentRoles: listAgentRoles().map((role) => ({
@@ -922,7 +924,7 @@ export async function bootstrapLocalRuntimeSession(
     // reconstruction, sidecar register, buildTurnContext, sidecar
     // start, MCP start) is threaded in via `onBeforeSessionConfigured`
     // / `onAfterSessionConfigured`. The bin path intentionally does
-    // NOT pass `mcp` to `bootstrapSession` because upstream AgenC runtime
+    // NOT pass `mcp` to `bootstrapSession` because upstream codex runtime
     // starts the live MCP connection manager AFTER SessionConfigured
     // (session.rs:856-908); the `onAfterSessionConfigured` hook does
     // that work instead.
@@ -955,7 +957,10 @@ export async function bootstrapLocalRuntimeSession(
         sessionRef = s;
         sessionForShutdown = s;
         bootstrapServices.bindSession(s);
-        const agentRegistry = new AgentRegistry();
+        const agentRegistry = new AgentRegistry({
+          maxThreads:
+            s.config?.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
+        });
         const agentControl = new AgentControl({
           session: s,
           registry: agentRegistry,
@@ -1102,7 +1107,7 @@ export async function bootstrapLocalRuntimeSession(
                 }
               }
             }
-            // Port of AgenC runtime `Session::record_initial_history` resume
+            // Port of codex runtime `Session::record_initial_history` resume
             // branch (session/mod.rs:1150-1236): restore persisted
             // agent task, emit a model-change warning when the
             // rollout's last turn ran on a different model, and seed
@@ -1261,7 +1266,7 @@ export async function bootstrapLocalRuntimeSession(
         ]);
 
         // Start sidecars AFTER session_configured so they cannot emit
-        // earlier events. Mirrors AgenC runtime `session.rs:750-751`: "Start
+        // earlier events. Mirrors codex runtime `session.rs:750-751`: "Start
         // the watcher after SessionConfigured so it cannot emit
         // earlier events."
         if (sidecarManager !== null) {
@@ -1269,9 +1274,9 @@ export async function bootstrapLocalRuntimeSession(
         }
 
         // Start the MCP connection manager AFTER session_configured
-        // has been emitted + persisted to rollout. Mirrors AgenC runtime
+        // has been emitted + persisted to rollout. Mirrors codex runtime
         // ordering at
-        // `AgenC runtime-rs/core/src/session/session.rs:717-748, 766` where
+        // `codex-rs/core/src/session/session.rs:717-748, 766` where
         // the SessionConfiguredEvent is dispatched before
         // McpConnectionManager::new.
         await s.startMcpManager(mcpManager, {
