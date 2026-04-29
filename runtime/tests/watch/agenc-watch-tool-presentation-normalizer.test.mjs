@@ -294,6 +294,7 @@ test("normalizer classifies plan, verification, search, and disabled external re
   );
   assert.equal(verification.kind, "delegate-result");
   assert.equal(verification.agentType, "verification");
+  assert.equal(verification.agentLabel, "Sentinel");
   assert.equal(verification.status, "ok");
 
   assert.deepEqual(

@@ -4,6 +4,10 @@ import {
   getShellProfilePreferredToolNames,
   type SessionShellProfile,
 } from "./shell-profile.js";
+import {
+  resolveAgentRoleDisplayName,
+  resolveAgentRolePresentation,
+} from "./agent-role-presentation.js";
 
 export type ShellAgentRoleSource = "curated" | "built-in" | "project" | "user";
 
@@ -174,7 +178,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "coding",
-      displayName: "Coding",
+      displayName: "Runner",
       description: "Bounded implementation child for repo-local code changes.",
       source: "curated",
       trustLabel: "runtime",
@@ -191,7 +195,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "docs",
-      displayName: "Docs",
+      displayName: "Scribe",
       description: "Documentation and examples child for concise user-facing edits.",
       source: "curated",
       trustLabel: "runtime",
@@ -208,8 +212,8 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "research",
-      displayName: "Research",
-      description: "Read-only evidence-gathering child for source-backed investigation.",
+      displayName: "Scanner",
+      description: "Read-only evidence-gathering child for source-backed inspection.",
       source: "curated",
       trustLabel: "runtime",
       curated: true,
@@ -225,7 +229,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "verify",
-      displayName: "Verify",
+      displayName: "Sentinel",
       description: "Verifier child that tries to disprove an implementation with concrete checks.",
       source: "curated",
       trustLabel: "runtime",
@@ -240,7 +244,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "operator",
-      displayName: "Operator",
+      displayName: "Fixer",
       description: "Runtime operations child for daemon, approvals, MCP, plugin, and session workflows.",
       source: "curated",
       trustLabel: "runtime",
@@ -257,8 +261,8 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "marketplace",
-      displayName: "Marketplace",
-      description: "Marketplace/operator child for protocol task, skill, reputation, and governance surfaces.",
+      displayName: "Broker",
+      description: "Marketplace child for protocol task, skill, reputation, and governance surfaces.",
       source: "curated",
       trustLabel: "runtime",
       curated: true,
@@ -274,7 +278,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "browser-testing",
-      displayName: "Browser Testing",
+      displayName: "Ghost",
       description: "Browser-grounded QA child for UI and flow validation.",
       source: "curated",
       trustLabel: "runtime",
@@ -291,7 +295,7 @@ const CURATED_ROLE_DEFINITIONS: readonly CuratedShellAgentRoleDefinition[] = [
   {
     descriptor: {
       id: "remote-debugging",
-      displayName: "Remote Debugging",
+      displayName: "Trace",
       description: "Remote session and job debugging child for bounded operational diagnosis.",
       source: "curated",
       trustLabel: "runtime",
@@ -556,10 +560,17 @@ export function buildShellAgentRoleCatalog(params: {
 
   for (const definition of params.definitions) {
     const source = toRoleSource(definition.source);
+    const displayName = resolveAgentRoleDisplayName(
+      definition.name,
+      titleCaseToken(definition.name),
+    );
+    const presentation = resolveAgentRolePresentation(definition.name);
     const descriptor: ShellAgentRoleDescriptor = {
       id: toDefinitionRoleId(definition),
-      displayName: titleCaseToken(definition.name),
-      description: definition.description || `${titleCaseToken(definition.name)} agent`,
+      displayName,
+      description:
+        (presentation?.description ?? definition.description) ||
+        `${displayName} agent`,
       source,
       trustLabel: toTrustLabel(source),
       curated: false,
@@ -633,10 +644,17 @@ export function resolveShellAgentRole(params: {
     return undefined;
   }
   const source = toRoleSource(definition.source);
+  const displayName = resolveAgentRoleDisplayName(
+    definition.name,
+    titleCaseToken(definition.name),
+  );
+  const presentation = resolveAgentRolePresentation(definition.name);
   const descriptor: ShellAgentRoleDescriptor = {
     id: toDefinitionRoleId(definition),
-    displayName: titleCaseToken(definition.name),
-    description: definition.description || `${titleCaseToken(definition.name)} agent`,
+    displayName,
+    description:
+      (presentation?.description ?? definition.description) ||
+      `${displayName} agent`,
     source,
     trustLabel: toTrustLabel(source),
     curated: false,

@@ -133,7 +133,7 @@ function makeCommandRegistry(params?: {
   const listAgentRoles = vi.fn(() => [
     {
       id: "coding",
-      displayName: "Coding",
+      displayName: "Runner",
       description: "Implement code changes",
       source: "runtime",
       trustLabel: "builtin",
@@ -146,7 +146,7 @@ function makeCommandRegistry(params?: {
     },
     {
       id: "review",
-      displayName: "Reviewer",
+      displayName: "Sentinel",
       description: "Review the current changes",
       source: "runtime",
       trustLabel: "builtin",
@@ -159,7 +159,7 @@ function makeCommandRegistry(params?: {
     },
     {
       id: "verify",
-      displayName: "Verifier",
+      displayName: "Sentinel",
       description: "Verify the current implementation",
       source: "runtime",
       trustLabel: "builtin",
@@ -1081,11 +1081,12 @@ describe("createDaemonCommandRegistry coding shell commands", () => {
     const listReplies = await dispatchAndCollect(registry, "/agents list");
 
     expect(roleReplies[0]).toContain("Child-agent roles (3):");
-    expect(roleReplies[0]).toContain("coding");
+    expect(roleReplies[0]).toContain("Runner id=coding");
     expect(roleReplies[0]).toContain("verification-probes");
     expect(listReplies[0]).toContain("Child agents (1):");
     expect(listReplies[0]).toContain("child-coding-1");
-    expect(listReplies[0]).toContain("role=coding");
+    expect(listReplies[0]).toContain("role=Runner");
+    expect(listReplies[0]).toContain("id=coding");
     expect(listAgentRoles).toHaveBeenCalled();
     expect(listSubAgentInfo).toHaveBeenCalledWith("session-1");
   });
@@ -1116,9 +1117,9 @@ describe("createDaemonCommandRegistry coding shell commands", () => {
       "/agents stop task-coding-1",
     );
 
-    expect(spawnReplies[0]).toContain("Coding agent child-coding-1 [completed]");
+    expect(spawnReplies[0]).toContain("Runner agent child-coding-1 [completed]");
     expect(spawnReplies[0]).toContain("Task: task-coding-1");
-    expect(assignReplies[0]).toContain("Verifier agent child-verify-1 [completed]");
+    expect(assignReplies[0]).toContain("Sentinel agent child-verify-1 [completed]");
     expect(inspectReplies[0]).toContain("Child agent:");
     expect(inspectReplies[0]).toContain("Tool bundle: coding-core");
     expect(stopReplies[0]).toContain("Stopped child agent child-coding-1. Task task-coding-1.");

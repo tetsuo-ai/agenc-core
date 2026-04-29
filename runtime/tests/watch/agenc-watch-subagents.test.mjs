@@ -184,6 +184,46 @@ test("subagent controller records tool activity and inspect requests", () => {
   );
 });
 
+test("subagent controller uses friendly role labels instead of canonical task paths", () => {
+  const { controller, calls } = createSubagentHarness();
+
+  controller.handleSubagentLifecycleMessage("subagents.started", {
+    subagentSessionId: "subagent:scanner-abc123",
+    traceId: "trace-scanner",
+    data: {
+      role: "research",
+      stepName: "/root/scan-current-state",
+      objective: "/root/scan-current-state",
+    },
+  });
+
+  const event = calls.find(
+    (entry) => entry.type === "event" && entry.kind === "subagent",
+  );
+  assert.equal(event.title, "Scanner started");
+  assert.doesNotMatch(event.title, /\/root\//);
+  assert.doesNotMatch(event.body, /\/root\//);
+});
+
+test("subagent controller falls back to compact session label when no friendly role exists", () => {
+  const { controller, calls } = createSubagentHarness();
+
+  controller.handleSubagentLifecycleMessage("subagents.started", {
+    subagentSessionId: "subagent:unknown-987654",
+    traceId: "trace-unknown",
+    data: {
+      stepName: "/root/generated-task",
+      objective: "/root/generated-task",
+    },
+  });
+
+  const event = calls.find(
+    (entry) => entry.type === "event" && entry.kind === "subagent",
+  );
+  assert.equal(event.title, "Agent subage started");
+  assert.doesNotMatch(event.title, /\/root\//);
+});
+
 test("subagent controller preserves rich completion truth on synthesized results", () => {
   const { controller, calls } = createSubagentHarness();
 

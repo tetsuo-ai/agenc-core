@@ -524,6 +524,7 @@ async function finalizeDelegationTask(params: {
   readonly lifecycleEmitter: DelegationLifecycleEmitter;
   readonly toolName: string;
   readonly objective: string;
+  readonly role?: string;
   readonly toolCallId: string;
   readonly verifierRequirement?: VerifierRequirement;
   readonly executionEnvelopeFingerprint?: string;
@@ -569,6 +570,7 @@ async function finalizeDelegationTask(params: {
       toolName: params.toolName,
       payload: {
         objective: params.objective,
+        ...(params.role ? { role: params.role } : {}),
         durationMs: childResult?.durationMs,
         toolCalls: childResult?.toolCalls.length ?? 0,
         providerName: childResult?.providerName,
@@ -582,7 +584,7 @@ async function finalizeDelegationTask(params: {
       listId: params.sessionId,
       taskId: params.taskId,
       status: "completed",
-      summary: "Delegated worker completed successfully.",
+      summary: "Runner completed successfully.",
       output: normalizedChildOutput,
       runtimeResult: terminalOutcome.runtimeResult,
       usage:
@@ -615,6 +617,7 @@ async function finalizeDelegationTask(params: {
     toolName: params.toolName,
     payload: {
       objective: params.objective,
+      ...(params.role ? { role: params.role } : {}),
       reason,
       output: childResult?.output ?? "",
       durationMs: childResult?.durationMs,
@@ -1053,7 +1056,7 @@ export async function executeDelegationTool(
           admittedInput.objective && admittedInput.objective !== admittedInput.task
             ? admittedInput.task
             : objective,
-        activeForm: "Running delegated worker",
+        activeForm: "Running Runner",
         metadata: {
           ...(admittedInput.delegationAdmission
             ? { delegationAdmission: admittedInput.delegationAdmission }
@@ -1062,7 +1065,7 @@ export async function executeDelegationTool(
             ? { executionContext: effectiveExecutionContext }
             : {}),
         },
-        summary: "Delegated worker started.",
+        summary: "Runner started.",
         ownedArtifacts: admittedInput.delegationAdmission?.ownedArtifacts,
         workingDirectory,
         isolation: admittedInput.delegationAdmission?.isolationReason,
@@ -1169,6 +1172,7 @@ export async function executeDelegationTool(
         toolName: name,
         payload: {
           objective,
+          role: childToolProfile.roleId,
           ...(workingDirectory ? { workingDirectory } : {}),
           ...(effectiveExecutionContext?.workspaceRoot
             ? { workingDirectorySource: "execution_envelope" as const }
@@ -1211,6 +1215,7 @@ export async function executeDelegationTool(
         toolName: name,
         payload: {
           objective,
+          role: childToolProfile.roleId,
           toolCallId,
         },
       });
@@ -1239,7 +1244,7 @@ export async function executeDelegationTool(
             ...(runtimeTaskId ? { id: runtimeTaskId } : { id: childSessionId }),
             kind: "subagent",
             status: "in_progress",
-            summary: "Delegated worker running.",
+            summary: "Runner running.",
             ...(launched.outputPath ? { outputPath: launched.outputPath } : {}),
             executionLocation: localExecutionLocation,
             outputReady: false,
@@ -1340,7 +1345,7 @@ export async function executeDelegationTool(
         listId: sessionId,
         taskId: runtimeTaskId,
         childSessionId,
-        summary: "Delegated worker started.",
+        summary: "Runner started.",
       });
     }
   } catch (error) {
@@ -1351,7 +1356,7 @@ export async function executeDelegationTool(
         listId: sessionId,
         taskId: runtimeTaskId,
         status: "failed",
-        summary: `Delegated worker could not be started: ${message}`,
+        summary: `Runner could not be started: ${message}`,
         workingDirectory,
         isolation: admittedInput.delegationAdmission?.isolationReason,
         eventData: {
@@ -1387,6 +1392,7 @@ export async function executeDelegationTool(
     toolName: name,
     payload: {
       objective,
+      role: childToolProfile.roleId,
       ...(workingDirectory ? { workingDirectory } : {}),
       ...(effectiveExecutionContext?.workspaceRoot
         ? { workingDirectorySource: "execution_envelope" as const }
@@ -1429,6 +1435,7 @@ export async function executeDelegationTool(
     toolName: name,
     payload: {
       objective,
+      role: childToolProfile.roleId,
       toolCallId,
     },
   });
@@ -1448,6 +1455,7 @@ export async function executeDelegationTool(
           lifecycleEmitter,
           toolName: name,
           objective,
+          role: childToolProfile.roleId,
           toolCallId,
           verifierRequirement,
           executionEnvelopeFingerprint,
@@ -1476,7 +1484,7 @@ export async function executeDelegationTool(
           listId: sessionId,
           taskId: runtimeTaskId,
           status: "failed",
-          summary: `Delegated worker wait failed: ${message}`,
+          summary: `Runner wait failed: ${message}`,
           workingDirectory,
           isolation: admittedInput.delegationAdmission?.isolationReason,
           executionLocation: localExecutionLocation,
@@ -1509,7 +1517,7 @@ export async function executeDelegationTool(
         id: runtimeTaskId,
         kind: "subagent",
         status: "in_progress",
-        summary: "Delegated worker running.",
+        summary: "Runner running.",
         outputPath,
         executionLocation: localExecutionLocation,
         outputReady: false,
@@ -1534,6 +1542,7 @@ export async function executeDelegationTool(
           toolName: name,
           payload: {
             objective,
+            role: childToolProfile.roleId,
             elapsedMs: now - startedAt,
             toolCallId,
             parentToolCallId: toolCallId,
@@ -1580,6 +1589,7 @@ export async function executeDelegationTool(
         toolName: name,
         payload: {
           objective,
+          role: childToolProfile.roleId,
           durationMs: childResult.durationMs,
           toolCalls: childResult.toolCalls.length,
           providerName: childResult.providerName,
@@ -1594,7 +1604,7 @@ export async function executeDelegationTool(
           listId: sessionId,
           taskId: runtimeTaskId,
           status: "completed",
-          summary: "Delegated worker completed successfully.",
+          summary: "Runner completed successfully.",
           output: normalizedChildOutput,
           runtimeResult: terminalOutcome.runtimeResult,
           usage:
@@ -1649,6 +1659,7 @@ export async function executeDelegationTool(
       toolName: name,
       payload: {
         objective,
+        role: childToolProfile.roleId,
         reason,
         output: childResult.output,
         durationMs: childResult.durationMs,

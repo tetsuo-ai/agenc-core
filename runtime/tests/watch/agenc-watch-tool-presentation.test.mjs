@@ -47,11 +47,41 @@ test("tool presentation formats delegated child tasks", () => {
     acceptanceCriteria: ["tests pass", "build succeeds"],
   });
 
-  assert.equal(descriptor.title, "Delegate Implement the DAG renderer");
+  assert.equal(descriptor.title, "Runner started");
+  assert.match(descriptor.body, /task: Implement the DAG renderer/);
   assert.match(descriptor.body, /tools: system.bash, system.writeFile/);
-  assert.match(descriptor.body, /cwd: \/home\/tetsuo\/git\/AgenC\/runtime/);
+  assert.doesNotMatch(descriptor.body, /cwd:/);
   assert.match(descriptor.body, /acceptance: tests pass \| build succeeds/);
   assert.equal(descriptor.tone, "magenta");
+});
+
+test("tool presentation uses friendly agent labels and hides canonical task paths", () => {
+  const tools = createToolPresentation();
+
+  const start = tools.describeToolStart("spawn_agent", {
+    subagent_type: "research",
+    task_name: "/root/scan-current-state",
+    prompt: "Inspect runtime presentation",
+    workingDirectory: "/root/scan-current-state",
+  });
+  assert.equal(start.title, "Scanner started");
+  assert.doesNotMatch(start.body, /\/root\/scan-current-state/);
+  assert.doesNotMatch(start.body, /cwd:/);
+
+  const result = tools.describeToolResult(
+    "execute_with_agent",
+    { agent_type: "verify" },
+    false,
+    JSON.stringify({
+      subagentSessionId: "subagent:sentinel-12345678",
+      status: "completed",
+      toolCalls: 2,
+      output: "PASS",
+    }),
+  );
+  assert.equal(result.title, "Sentinel finished");
+  assert.match(result.body, /session: 12345678/);
+  assert.match(result.body, /tool calls: 2/);
 });
 
 test("tool presentation formats text-editor reads and suppresses low-signal reads", () => {
@@ -385,8 +415,34 @@ test("tool presentation formats planning, verification, and disabled external su
       prompt: "Check test output",
     }),
     {
-      title: "Verify Check test output",
-      body: "agent: verification",
+      title: "Sentinel started",
+      body: "task: Check test output",
+      tone: "blue",
+    },
+  );
+
+  assert.deepEqual(
+    tools.describeToolStart("wait_agent", {
+      targets: ["subagent:scanner-1234"],
+      agentType: "research",
+    }),
+    {
+      title: "Waiting for Scanner",
+      body: "session: ner-1234",
+      tone: "blue",
+    },
+  );
+
+  assert.deepEqual(
+    tools.describeToolResult(
+      "wait_agent",
+      { targets: ["subagent:scanner-1234"] },
+      false,
+      JSON.stringify({ status: "completed" }),
+    ),
+    {
+      title: "Finished waiting",
+      body: "{\"status\":\"completed\"}",
       tone: "blue",
     },
   );

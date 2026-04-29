@@ -118,23 +118,40 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
     switch (data.kind) {
       case "delegate-start":
         {
-          const isVerification = /verif/i.test(data.agentType ?? "");
+          const agentLabel = data.agentLabel || "Runner";
           return {
-            title: `${isVerification ? "Verify" : "Delegate"} ${truncate(data.objective || "child task", 110)}`,
+            title: `${agentLabel} started`,
             body: joinDescriptorBody(
               [
-                data.agentType ? `agent: ${data.agentType}` : null,
+                data.objective ? `task: ${truncate(data.objective, 180)}` : null,
                 data.tools.length > 0 ? `tools: ${data.tools.join(", ")}` : null,
-                data.workingDirectory ? `cwd: ${data.workingDirectory}` : null,
                 data.acceptanceCriteria.length > 0
                   ? `acceptance: ${truncate(data.acceptanceCriteria.join(" | "), 180)}`
                   : null,
               ],
-              data.objective || "(delegated child task)",
+              `${agentLabel} started`,
             ),
-            tone: isVerification ? "blue" : "magenta",
+            tone: agentLabel === "Sentinel" ? "blue" : "magenta",
           };
         }
+      case "agent-message-start":
+        return {
+          title: `Sent input to ${data.agentLabel || "Runner"}`,
+          body: data.message ? truncate(data.message, 220) : "Input sent",
+          tone: "magenta",
+        };
+      case "agent-wait-start":
+        return {
+          title: `Waiting for ${data.agentLabel || "Runner"}`,
+          body: data.targetToken ? `session: ${data.targetToken}` : "Waiting for child agent",
+          tone: "blue",
+        };
+      case "agent-close-start":
+        return {
+          title: `Closed ${data.agentLabel || "Runner"}`,
+          body: data.targetToken ? `session: ${data.targetToken}` : "Child agent closed",
+          tone: "slate",
+        };
       case "file-write-start":
         {
           const lineCount = countTextLines(data.content);
@@ -304,26 +321,46 @@ export function createWatchToolPresentationCopyBuilder(dependencies = {}) {
     switch (data.kind) {
       case "delegate-result":
         {
-          const isVerification = /verif/i.test(data.agentType ?? "");
+          const agentLabel = data.agentLabel || "Runner";
           return {
-            title: `${data.isError
-              ? isVerification ? "Verification failed" : "Delegation failed"
-              : isVerification ? "Verified plan" : "Delegated"} ${
-              data.childToken ? `child ${data.childToken}` : "child task"
-            }`,
+            title: data.isError
+              ? `${agentLabel} failed`
+              : `${agentLabel} finished`,
             body: joinDescriptorBody(
               [
-                data.agentType ? `agent: ${data.agentType}` : null,
+                data.childToken ? `session: ${data.childToken}` : null,
                 data.status ? `status: ${data.status}` : null,
                 typeof data.toolCalls === "number" ? `tool calls: ${data.toolCalls}` : null,
                 "",
                 data.errorText ?? data.outputText ?? data.errorPreview ?? data.outputPreview,
               ],
-              "(delegation finished)",
+              `${agentLabel} finished`,
             ),
-            tone: data.isError ? "red" : isVerification ? "blue" : "magenta",
+            tone: data.isError ? "red" : agentLabel === "Sentinel" ? "blue" : "magenta",
           };
         }
+      case "agent-message-result":
+        return {
+          title: data.isError
+            ? `Input to ${data.agentLabel || "Runner"} failed`
+            : `Sent input to ${data.agentLabel || "Runner"}`,
+          body: data.errorText ?? data.outputText ?? "Input sent",
+          tone: data.isError ? "red" : "magenta",
+        };
+      case "agent-wait-result":
+        return {
+          title: data.isError ? "Wait failed" : "Finished waiting",
+          body: data.errorText ?? data.outputText ?? "Finished waiting",
+          tone: data.isError ? "red" : "blue",
+        };
+      case "agent-close-result":
+        return {
+          title: data.isError
+            ? `Close ${data.agentLabel || "Runner"} failed`
+            : `Closed ${data.agentLabel || "Runner"}`,
+          body: data.errorText ?? data.outputText ?? "Child agent closed",
+          tone: data.isError ? "red" : "slate",
+        };
       case "file-write-result":
         {
           const lineCount = countTextLines(data.content);

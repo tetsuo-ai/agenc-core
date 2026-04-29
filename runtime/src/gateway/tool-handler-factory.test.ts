@@ -2050,6 +2050,7 @@ describe("createSessionToolHandler", () => {
       runtimeResult?: {
         status?: string;
         completionState?: string;
+        workerSessionId?: string;
         verifierVerdict?: { overall?: string };
         continuationSessionId?: string;
       };
@@ -2084,6 +2085,7 @@ describe("createSessionToolHandler", () => {
     expect(parsed.runtimeResult).toMatchObject({
       status: "completed",
       completionState: "completed",
+      workerSessionId: "subagent:child-1",
       continuationSessionId: "subagent:child-1",
     });
 
@@ -2101,6 +2103,12 @@ describe("createSessionToolHandler", () => {
     expect(lifecycleEvents.some((event) => event.type === "subagents.completed")).toBe(
       true,
     );
+    expect(
+      lifecycleEvents.every((event) => {
+        const payload = event.payload as Record<string, unknown> | undefined;
+        return payload?.role === "research";
+      }),
+    ).toBe(true);
   });
 
   it("executes execute_with_agent via the shell agent launcher when available", async () => {
@@ -2325,6 +2333,7 @@ describe("createSessionToolHandler", () => {
         readonly runtimeResult?: {
           readonly status?: string;
           readonly taskId?: string;
+          readonly workerSessionId?: string;
           readonly outputReady?: boolean;
         };
       };
@@ -2335,6 +2344,7 @@ describe("createSessionToolHandler", () => {
       expect(parsed.runtimeResult).toMatchObject({
         status: "in_progress",
         taskId: parsed.taskId,
+        workerSessionId: "subagent:child-async",
         outputReady: false,
       });
       expect(parsed.outputPath).toMatch(/output\.json$/);
@@ -2352,7 +2362,7 @@ describe("createSessionToolHandler", () => {
       });
       expect(waited?.status).toBe("completed");
       const output = await taskStore.readTaskOutput("session-parent", parsed.taskId!);
-      expect(output?.summary).toBe("Delegated worker completed successfully.");
+      expect(output?.summary).toBe("Runner completed successfully.");
       expect(output?.output).toBe('{"summary":"child completed"}');
       expect(output?.runtimeResult).toMatchObject({
         status: "completed",

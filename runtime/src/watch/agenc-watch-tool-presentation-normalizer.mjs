@@ -1,4 +1,8 @@
 import path from "node:path";
+import {
+  looksLikeCanonicalTaskPath,
+  resolveWatchAgentLabel,
+} from "./agenc-watch-agent-labels.mjs";
 
 export const DEFAULT_LOW_SIGNAL_SHELL_COMMANDS = new Set([
   "cat",
@@ -320,22 +324,33 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
   }
 
   function normalizeDelegatePayload(payload) {
+    const agentType = sanitizeInlineText(
+      payload.agentType
+        ?? payload.agent_type
+        ?? payload.subagent_type
+        ?? payload.subagentType
+        ?? payload.role
+        ?? "",
+    );
+    const taskName = sanitizeInlineText(payload.task_name ?? "");
+    const objectiveCandidates = [
+      payload.objective,
+      payload.task,
+      taskName,
+      payload.prompt,
+      payload.description,
+      payload.inputContract,
+    ];
+    const displayObjective =
+      objectiveCandidates
+        .map((value) => sanitizeInlineText(value ?? ""))
+        .find((value) => value && !looksLikeCanonicalTaskPath(value)) ??
+      "";
     return {
-      objective: sanitizeInlineText(
-        payload.objective
-          ?? payload.task
-          ?? payload.prompt
-          ?? payload.description
-          ?? payload.inputContract
-          ?? "",
-      ),
-      agentType: sanitizeInlineText(
-        payload.agentType
-          ?? payload.agent_type
-          ?? payload.subagent_type
-          ?? payload.subagentType
-          ?? "",
-      ),
+      objective: displayObjective,
+      taskName,
+      agentType,
+      agentLabel: resolveWatchAgentLabel(agentType, "Runner"),
       tools: Array.isArray(payload.tools)
         ? payload.tools.filter((value) => typeof value === "string")
         : [],
@@ -345,6 +360,9 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
           : typeof payload.cwd === "string"
           ? compactPathForDisplay(payload.cwd)
           : null,
+      workingDirectoryIsCanonicalTaskPath:
+        looksLikeCanonicalTaskPath(payload.workingDirectory) ||
+        looksLikeCanonicalTaskPath(payload.cwd),
       acceptanceCriteria: Array.isArray(payload.acceptanceCriteria)
         ? payload.acceptanceCriteria.filter((value) => typeof value === "string")
         : [],
@@ -476,6 +494,36 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
         return {
           kind: "delegate-start",
           ...normalizeDelegatePayload(payload),
+        };
+      case "send_input":
+        return {
+          kind: "agent-message-start",
+          agentLabel: resolveWatchAgentLabel(
+            payload.agentType ?? payload.agent_type ?? payload.subagent_type ?? payload.role,
+            "Runner",
+          ),
+          targetToken: sanitizeInlineText(String(payload.target ?? payload.agent_id ?? "")).slice(-8),
+          message: firstString(payload.message, payload.input, payload.body),
+        };
+      case "wait_agent":
+        return {
+          kind: "agent-wait-start",
+          agentLabel: resolveWatchAgentLabel(
+            payload.agentType ?? payload.agent_type ?? payload.subagent_type ?? payload.role,
+            "Runner",
+          ),
+          targetToken: sanitizeInlineText(String(
+            Array.isArray(payload.targets) ? payload.targets[0] : payload.target ?? "",
+          )).slice(-8),
+        };
+      case "close_agent":
+        return {
+          kind: "agent-close-start",
+          agentLabel: resolveWatchAgentLabel(
+            payload.agentType ?? payload.agent_type ?? payload.subagent_type ?? payload.role,
+            "Runner",
+          ),
+          targetToken: sanitizeInlineText(String(payload.target ?? "")).slice(-8),
         };
       case "Write":
       case "system.writeFile":
@@ -622,17 +670,22 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
       case "execute_with_agent":
       case "spawn_agent":
       case "Task":
-        return {
-          kind: "delegate-result",
-          isError,
-          agentType: sanitizeInlineText(
+        {
+          const agentType = sanitizeInlineText(
             payload.agentType
               ?? payload.agent_type
               ?? payload.subagent_type
               ?? payload.subagentType
+              ?? payload.role
               ?? resultObject.agentType
+              ?? resultObject.role
               ?? "",
-          ),
+          );
+        return {
+          kind: "delegate-result",
+          isError,
+          agentType,
+          agentLabel: resolveWatchAgentLabel(agentType, "Runner"),
           childToken: sanitizeInlineText(String(
             resultObject.subagentSessionId
               ?? resultObject.sessionId
@@ -655,6 +708,47 @@ export function createWatchToolPresentationNormalizer(dependencies = {}) {
           errorPreview: firstMeaningfulLine(
             typeof resultObject.error === "string" ? resultObject.error : "",
           ),
+        };
+        }
+      case "send_input":
+        return {
+          kind: "agent-message-result",
+          isError,
+          agentLabel: resolveWatchAgentLabel(
+            payload.agentType ?? payload.agent_type ?? payload.subagent_type ?? payload.role,
+            "Runner",
+          ),
+          targetToken: sanitizeInlineText(String(payload.target ?? resultObject.target ?? "")).slice(-8),
+          outputText: firstString(resultObject.output, resultObject.message, resultText),
+          errorText:
+            typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+              ? resultObject.error
+              : null,
+        };
+      case "wait_agent":
+        return {
+          kind: "agent-wait-result",
+          isError,
+          outputText: firstString(resultObject.output, resultObject.message, resultText),
+          errorText:
+            typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+              ? resultObject.error
+              : null,
+        };
+      case "close_agent":
+        return {
+          kind: "agent-close-result",
+          isError,
+          agentLabel: resolveWatchAgentLabel(
+            payload.agentType ?? payload.agent_type ?? payload.subagent_type ?? payload.role,
+            "Runner",
+          ),
+          targetToken: sanitizeInlineText(String(payload.target ?? resultObject.target ?? "")).slice(-8),
+          outputText: firstString(resultObject.output, resultObject.message, resultText),
+          errorText:
+            typeof resultObject.error === "string" && resultObject.error.trim().length > 0
+              ? resultObject.error
+              : null,
         };
       case "Write":
       case "system.writeFile":
