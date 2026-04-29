@@ -143,6 +143,9 @@ export interface AppStateSnapshot {
 
 export interface ToolLike {
   readonly name: string;
+  readonly isReadOnly?: boolean;
+  readonly requiresApproval?: boolean;
+  readonly metadata?: { readonly mutating?: boolean };
   checkPermissions?(
     input: unknown,
     context: ToolEvaluatorContext,
@@ -401,6 +404,14 @@ function checkModeGate(
   return null;
 }
 
+function toolDoesNotRequireApproval(tool: ToolLike): boolean {
+  return (
+    tool.requiresApproval === false ||
+    tool.isReadOnly === true ||
+    tool.metadata?.mutating === false
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Inner evaluator — returns a PermissionDecision (ask/allow/deny only)
 // ---------------------------------------------------------------------------
@@ -472,6 +483,19 @@ export async function hasPermissionsToUseToolInner(
 
   // Step 3 — convert passthrough → ask.
   if (toolResult.behavior === "passthrough") {
+    if (
+      toolDoesNotRequireApproval(tool) &&
+      tool.requiresUserInteraction?.() !== true
+    ) {
+      return {
+        behavior: "allow" as const,
+        updatedInput: input as Record<string, unknown>,
+        decisionReason: {
+          type: "other" as const,
+          reason: "tool does not require approval",
+        },
+      };
+    }
     return {
       behavior: "ask" as const,
       message: createPermissionRequestMessage(tool.name),

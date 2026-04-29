@@ -389,6 +389,7 @@ function recordCompletedToolCall(
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
 ): void {
+  markSearchToolSelectionsDiscovered(session, toolCall, result);
   const toolResultBytes = Buffer.byteLength(result.content, "utf8");
   session.emit({
     id: session.nextInternalSubId(),
@@ -409,6 +410,32 @@ function recordCompletedToolCall(
     toolResultUserRecord(toolCall.id, toolCall.name, result),
   );
   state.messages.push(toolResultMessage(toolCall.id, result));
+}
+
+function markSearchToolSelectionsDiscovered(
+  session: Session,
+  toolCall: LLMToolCall,
+  result: ToolDispatchResult,
+): void {
+  if (toolCall.name !== "system.searchTools" || result.isError === true) {
+    return;
+  }
+  const discovered = session.services.registry.getDiscoveredToolNames?.();
+  if (!discovered || typeof (discovered as Set<string>).add !== "function") {
+    return;
+  }
+  try {
+    const parsed = JSON.parse(result.content) as { loaded?: unknown };
+    if (!Array.isArray(parsed.loaded)) return;
+    for (const name of parsed.loaded) {
+      if (typeof name === "string" && name.trim().length > 0) {
+        (discovered as Set<string>).add(name);
+      }
+    }
+  } catch {
+    // The model-facing result has already been recorded; discovery is
+    // best-effort for the next provider request.
+  }
 }
 
 async function drainCompletedToolResults(

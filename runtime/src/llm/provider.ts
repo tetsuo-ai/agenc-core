@@ -837,7 +837,10 @@ export function createProvider(
       return buildOpenAICompatibleProvider("lmstudio", opts, {
         defaultBaseURL: "http://localhost:1234/v1",
         envBaseURL:
-          process.env.LMSTUDIO_BASE_URL ?? process.env.OPENAI_BASE_URL,
+          process.env.LMSTUDIO_BASE_URL ??
+          (!process.env.LMSTUDIO_API_KEY && process.env.OPENAI_API_KEY
+            ? process.env.OPENAI_BASE_URL
+            : undefined),
         envModel: process.env.LMSTUDIO_MODEL,
         envModelLabel: "LMSTUDIO_MODEL",
         envApiKey: process.env.LMSTUDIO_API_KEY,
