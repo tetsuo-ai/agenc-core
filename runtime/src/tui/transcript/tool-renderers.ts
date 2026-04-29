@@ -1,5 +1,6 @@
 import { join, normalize, sep } from "node:path";
 
+import { formatAgentRoleLabel } from "../../agents/role-presentation.js";
 import { resolveAgencHome } from "../../planning/plan-files.js";
 
 export type ToolRenderTone =
@@ -184,6 +185,19 @@ function idTarget(ctx: ToolRenderContext): string {
   );
 }
 
+function agentTarget(ctx: ToolRenderContext): string {
+  const target = idTarget(ctx) || queryTarget(ctx);
+  const role = readStringField(ctx.toolArgs, [
+    "agent_type",
+    "agentType",
+    "subagent_type",
+    "role",
+  ]);
+  if (!role) return target;
+  const label = formatAgentRoleLabel(role, role);
+  return target ? `${label} ${target}` : label;
+}
+
 function mcpTarget(ctx: ToolRenderContext): string {
   const server = readStringField(ctx.toolArgs, ["server", "serverName"]);
   const uri = readStringField(ctx.toolArgs, ["uri", "resourceUri"]);
@@ -284,7 +298,8 @@ function formatTaskRecord(task: Record<string, unknown>, index: number): string 
     unresolvedBlockers.length > 0
       ? ` [blocked by ${unresolvedBlockers.map((idValue) => `#${idValue}`).join(", ")}]`
       : "";
-  const ownerSuffix = owner ? ` (@${owner})` : "";
+  const ownerLabel = owner ? formatAgentRoleLabel(owner, owner) : undefined;
+  const ownerSuffix = ownerLabel ? ` (@${ownerLabel})` : "";
   return [
     id ? `#${id}` : `${index + 1}.`,
     subject ?? "task",
@@ -395,7 +410,7 @@ function agentRenderer(base: string): ToolSpecificRenderer {
     renderToolUseMessage: (ctx) => ({
       tone: "agent",
       title: titleFor(base, ctx, `${base} Running`),
-      target: idTarget(ctx) || queryTarget(ctx),
+      target: agentTarget(ctx),
     }),
     renderToolResultMessage: (ctx) => ({
       detail: commonResultDetail(ctx),

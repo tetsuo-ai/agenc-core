@@ -304,7 +304,7 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         todos.length >= 3 &&
         !todos.some((todo) => /verif/i.test(todo.content));
       const nudge = verificationNudgeNeeded
-        ? '\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Before writing your final summary, spawn the verification agent (subagent_type="verification"). You cannot self-assign PARTIAL by listing caveats in your summary; only the verifier issues a verdict.'
+        ? '\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Before writing your final summary, spawn the sentinel agent (agent_type="sentinel"). You cannot self-assign PARTIAL by listing caveats in your summary; only the sentinel issues a verdict.'
         : "";
       return textResult(`${TODO_WRITE_RESULT_MESSAGE}${nudge}`, {
         verificationNudgeNeeded,

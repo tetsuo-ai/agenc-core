@@ -1343,11 +1343,11 @@ Enter plan mode, understand the scope, and decompose the work into independent u
 
 ## Phase 2: Spawn Workers
 
-After the plan is approved, spawn one background agent per work unit using the spawn_agent tool. Each worker prompt must include the overall goal, its owned files, local conventions, the verification recipe, and instructions to test, commit, push, and report the PR URL.
+After the plan is approved, spawn one background runner per work unit using the spawn_agent tool. Each runner prompt must include the overall goal, its owned files, local conventions, the verification recipe, and instructions to test, commit, push, and report the PR URL.
 
 ## Phase 3: Track Progress
 
-Maintain a status table for each worker and update it as results arrive.`;
+Maintain a status table for each runner and update it as results arrive.`;
 }
 
 function buildDebugPrompt(args: string): string {

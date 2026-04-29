@@ -20,6 +20,10 @@
 
 import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { delegate, type IsolationMode } from "../agents/delegate.js";
+import {
+  canonicalAgentRoleName,
+  formatAgentRoleLabel,
+} from "../agents/role-presentation.js";
 import { AgentRegistry, type AgentPath } from "../agents/registry.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import type { Session } from "../session/session.js";
@@ -53,9 +57,18 @@ const DELEGATE_INPUT_SCHEMA: Record<string, unknown> = {
     },
     role: {
       type: "string",
-      enum: ["default", "explorer", "worker"],
+      enum: [
+        "netrunner",
+        "scanner",
+        "runner",
+        "sentinel",
+        "default",
+        "explorer",
+        "worker",
+        "verification",
+      ],
       description:
-        "Built-in role for the child. Shapes tool allowlist + reasoning.",
+        "Built-in role for the child. Prefer cyberpunk names: netrunner, scanner, runner, sentinel. Legacy aliases are still accepted.",
     },
     isolation: {
       type: "string",
@@ -213,7 +226,7 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
 
     const role =
       typeof args.role === "string" && args.role.length > 0
-        ? args.role
+        ? canonicalAgentRoleName(args.role)
         : undefined;
     const isolation = coerceIsolation(args.isolation);
     const worktreeSlugRaw =
@@ -269,6 +282,8 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
               threadId: outcome.thread.threadId,
               agentPath: live.agentPath,
               nickname: live.nickname,
+              role: live.role.name,
+              roleDisplayName: formatAgentRoleLabel(live.role.name),
               finalMessage: outcome.result.finalMessage ?? null,
               outcome: outcome.result.outcome,
               toolCallCount: outcome.result.toolCallCount ?? 0,
@@ -284,6 +299,8 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
               threadId: outcome.thread.threadId,
               agentPath: live.agentPath,
               nickname: live.nickname,
+              role: live.role.name,
+              roleDisplayName: formatAgentRoleLabel(live.role.name),
             }),
           };
         }
@@ -309,7 +326,7 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
   return {
     name: DELEGATE_TOOL_NAME,
     description:
-      "Spawn a subagent to handle a scoped task. Supports roles (default, explorer, worker), optional worktree isolation, and sync vs async execution.",
+      "Spawn a subagent to handle a scoped task. Supports cyberpunk roles (netrunner, scanner, runner, sentinel), legacy role aliases, optional worktree isolation, and sync vs async execution.",
     inputSchema: DELEGATE_INPUT_SCHEMA,
     metadata: {
       family: "agents",

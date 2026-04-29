@@ -255,7 +255,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     });
 
     expect(result.isError).toBeUndefined();
-    expect(result.content).toContain('spawn the verification agent (subagent_type="verification")');
+    expect(result.content).toContain('spawn the sentinel agent (agent_type="sentinel")');
     expect(result.metadata).toMatchObject({ verificationNudgeNeeded: true });
   });
 

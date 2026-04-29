@@ -28,6 +28,7 @@
 
 import React from 'react'
 
+import { formatAgentRoleLabel } from '../../../agents/role-presentation.js'
 import { Box, Text } from '../../ink-public.js'
 import { glyphs } from '../../design-system/glyphs.js'
 
@@ -181,7 +182,7 @@ function AgentLine({ agent, now }: AgentLineProps): React.ReactElement {
   )
   const elapsed = formatDuration(elapsedMs)
 
-  const label = agent.nickname ?? agent.role
+  const label = agent.nickname ?? formatAgentRoleLabel(agent.role, agent.role)
   const tokens = typeof agent.tokens === 'number' && agent.tokens > 0
     ? ` · ${glyphs.arrowUp} ${formatNumber(agent.tokens)} tokens`
     : ''

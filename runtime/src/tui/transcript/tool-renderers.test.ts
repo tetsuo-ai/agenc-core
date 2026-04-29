@@ -7,14 +7,14 @@ describe("tool renderers", () => {
     expect(
       renderToolPresentation({
         toolName: "spawn_agent",
-        toolArgs: { task: "inspect renderer" },
+        toolArgs: { task_name: "task_1", agent_type: "runner" },
         isComplete: false,
         isError: false,
       }),
     ).toMatchObject({
       tone: "agent",
       title: "Agent Running",
-      target: "inspect renderer",
+      target: "Runner task_1",
     });
 
     expect(
@@ -42,7 +42,7 @@ describe("tool renderers", () => {
             id: "2",
             subject: "Create renderer",
             status: "pending",
-            owner: "review-agent",
+            owner: "scanner",
           },
         }),
         isComplete: true,
@@ -52,7 +52,7 @@ describe("tool renderers", () => {
       tone: "task",
       title: "Task Create",
       target: "Create renderer",
-      detail: "#2 Create renderer (pending) (@review-agent)",
+      detail: "#2 Create renderer (pending) (@Scanner)",
       preserveResultLines: true,
     });
 

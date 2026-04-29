@@ -690,7 +690,7 @@ describe("model-facing tools", () => {
       agentId: "thread-1",
       agentPath: "/root/task_1",
       nickname: "Snowcrash",
-      role: { name: "default" },
+      role: { name: "worker" },
       status: {
         get value() {
           return status;
@@ -714,6 +714,7 @@ describe("model-facing tools", () => {
     const spawned = await byName.get("spawn_agent")!.execute({
       message: "inspect",
       task_name: "task_1",
+      agent_type: "runner",
       fork_turns: "none",
     });
 
@@ -721,6 +722,8 @@ describe("model-facing tools", () => {
     expect(JSON.parse(spawned.content)).toEqual({
       task_name: "/root/task_1",
       nickname: "Snowcrash",
+      agent_role: "worker",
+      agent_role_display: "Runner",
     });
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -728,12 +731,13 @@ describe("model-facing tools", () => {
         parentPath: "/root",
         taskPrompt: "inspect",
         agentName: "task_1",
+        role: "worker",
         forkMode: { kind: "new" },
         runInBackground: true,
       }),
     );
     expect(counter).toHaveBeenCalledWith("agenc.multi_agent.spawn", 1, [
-      ["role", "default"],
+      ["role", "worker"],
     ]);
 
     expect(byName.has("TaskOutput")).toBe(true);

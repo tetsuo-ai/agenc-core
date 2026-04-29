@@ -22,6 +22,10 @@ import {
   type AgentPath,
   type ThreadId,
 } from "../agents/registry.js";
+import {
+  canonicalAgentRoleName,
+  formatAgentRoleLabel,
+} from "../agents/role-presentation.js";
 import type { ForkMode } from "../agents/fork-context.js";
 import type { AgentThread } from "../agents/thread.js";
 import type { AgentStatus } from "../agents/status.js";
@@ -359,21 +363,22 @@ function receiverMetadataFor(
 ): {
   readonly receiverAgentNickname?: string;
   readonly receiverAgentRole?: string;
+  readonly receiverAgentRoleDisplayName?: string;
 } {
   const { control } = ensureAgentControl(session);
   const live = control.getLive(receiverThreadId);
   const metadata = control.getAgentMetadata(receiverThreadId) ?? live?.metadata;
+  const roleName = metadata?.agentRole ?? live?.role.name;
   return {
     ...(metadata?.agentNickname !== undefined
       ? { receiverAgentNickname: metadata.agentNickname }
       : live?.nickname !== undefined
         ? { receiverAgentNickname: live.nickname }
         : {}),
-    ...(metadata?.agentRole !== undefined
-      ? { receiverAgentRole: metadata.agentRole }
-      : live?.role.name !== undefined
-        ? { receiverAgentRole: live.role.name }
-        : {}),
+    ...(roleName !== undefined ? { receiverAgentRole: roleName } : {}),
+    ...(roleName !== undefined
+      ? { receiverAgentRoleDisplayName: formatAgentRoleLabel(roleName) }
+      : {}),
   };
 }
 
@@ -576,11 +581,12 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     }
     const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
-    const role =
+    const rawRole =
       stringValue(args.agent_type) ??
       stringValue(args.agentType) ??
       stringValue(args.subagent_type) ??
       stringValue(args.role);
+    const role = rawRole !== undefined ? canonicalAgentRoleName(rawRole) : undefined;
     const model = stringValue(args.model);
     const rawReasoningEffort = args.reasoning_effort ?? args.reasoningEffort;
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
@@ -689,6 +695,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         newThreadId: live.agentId,
         newAgentNickname: live.nickname,
         newAgentRole: live.role.name,
+        newAgentRoleDisplayName: formatAgentRoleLabel(live.role.name),
         prompt,
         model: model ?? session.sessionConfiguration.collaborationMode.model,
         reasoningEffort:
@@ -705,6 +712,12 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       task_name: live.agentPath,
       ...(!hideSpawnAgentMetadata(session)
         ? { nickname: live.nickname ?? null }
+        : {}),
+      ...(!hideSpawnAgentMetadata(session)
+        ? {
+            agent_role: live.role.name,
+            agent_role_display: formatAgentRoleLabel(live.role.name),
+          }
         : {}),
     });
   };
@@ -884,6 +897,9 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         ...(live?.role.name !== undefined
           ? { receiverAgentRole: live.role.name }
           : {}),
+        ...(live?.role.name !== undefined
+          ? { receiverAgentRoleDisplayName: formatAgentRoleLabel(live.role.name) }
+          : {}),
         prompt: message,
         status: live?.status.value ?? { status: "not_found" },
       },
@@ -894,13 +910,17 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const listAgents = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
-    const strict = strictArgs(args, { allowed: new Set(["path_prefix"]) });
+    const strict = strictArgs(args, {
+      allowed: new Set(["path_prefix", "role", "agent_type"]),
+    });
     if (strict) return strict;
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
     const current = currentAgentContext(sessionOrError, args);
-    const roleName = stringValue(args.role) ?? stringValue(args.agent_type);
+    const rawRoleName = stringValue(args.role) ?? stringValue(args.agent_type);
+    const roleName =
+      rawRoleName !== undefined ? canonicalAgentRoleName(rawRoleName) : undefined;
     const pathPrefixRaw = stringValue(args.path_prefix) ?? stringValue(args.pathPrefix);
     let resolvedPathPrefix: AgentPath | undefined;
     if (pathPrefixRaw !== undefined) {
@@ -926,7 +946,11 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     properties: {
       message: { type: "string" },
       task_name: { type: "string" },
-      agent_type: { type: "string" },
+      agent_type: {
+        type: "string",
+        description:
+          "Optional role. Prefer cyberpunk names: netrunner, scanner, runner, sentinel. Legacy aliases such as default, explorer, worker, and verification are accepted.",
+      },
       model: { type: "string" },
       reasoning_effort: { type: "string" },
       fork_turns: { type: "string" },
@@ -940,7 +964,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "spawn_agent",
       description:
-        "Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.",
+        "Spawns an agent to work on the specified task. Prefer cyberpunk agent_type values: netrunner, scanner, runner, sentinel. Legacy aliases remain accepted. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.",
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "spawn", "delegate", "subagent"],
@@ -1024,13 +1048,16 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     },
     {
       name: "list_agents",
-      description: "List live agents known to the current session.",
+      description:
+        "List live agents known to the current session. Optional role filters accept cyberpunk names such as scanner, runner, and sentinel.",
       metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
       isReadOnly: true,
       inputSchema: {
         type: "object",
         properties: {
           path_prefix: { type: "string" },
+          role: { type: "string" },
+          agent_type: { type: "string" },
         },
         additionalProperties: false,
       },
@@ -1831,7 +1858,7 @@ function formatTask(task: StoredTask): string {
     `Status: ${task.status}`,
     `Description: ${task.description}`,
   ];
-  if (task.owner) lines.push(`Owner: ${task.owner}`);
+  if (task.owner) lines.push(`Owner: ${formatTaskOwnerForDisplay(task.owner)}`);
   if (task.activeForm) lines.push(`Active form: ${task.activeForm}`);
   if (task.blockedBy.length > 0) {
     lines.push(`Blocked by: ${task.blockedBy.map((id) => `#${id}`).join(", ")}`);
@@ -1842,11 +1869,16 @@ function formatTask(task: StoredTask): string {
   return lines.join("\n");
 }
 
+function formatTaskOwnerForDisplay(owner: string): string {
+  const label = formatAgentRoleLabel(owner, owner);
+  return label === owner ? owner : `${label} (${owner})`;
+}
+
 function formatTaskList(tasks: readonly StoredTask[]): string {
   if (tasks.length === 0) return "No tasks found";
   return tasks
     .map((task) => {
-      const owner = task.owner ? ` (${task.owner})` : "";
+      const owner = task.owner ? ` (${formatTaskOwnerForDisplay(task.owner)})` : "";
       const blockedBy = "unresolvedBlockers" in task
         ? (task as { readonly unresolvedBlockers?: readonly string[] }).unresolvedBlockers ?? []
         : task.blockedBy;
