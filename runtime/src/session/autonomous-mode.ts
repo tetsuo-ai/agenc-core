@@ -8,6 +8,12 @@ export type SessionSubmitSource = "user" | typeof AUTONOMOUS_SUBMIT_SOURCE;
 
 export interface SessionSubmitOptions {
   readonly source?: SessionSubmitSource;
+  /**
+   * Transcript-facing input for this submission. `undefined` means render the
+   * caller's submitted text, while `null` suppresses the user-message row for
+   * internal wakeups such as mailbox-triggered agent follow-ups.
+   */
+  readonly displayUserMessage?: string | null;
 }
 
 function readPermissionMode(

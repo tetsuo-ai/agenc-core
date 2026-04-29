@@ -785,7 +785,7 @@ function installTuiSessionContract(params: {
       >["stopReason"] | null = null;
       const runPromptTurn = async (
         prompt: string,
-        opts: { readonly suppressDisplay?: boolean } = {},
+        opts: { readonly displayInput?: string | null } = {},
       ): Promise<void> => {
         const expanded = await expandPromptFileMentions({
           session: params.session,
@@ -807,7 +807,10 @@ function installTuiSessionContract(params: {
           session: params.session,
           ctx,
           input: expanded.input,
-          displayInput: opts.suppressDisplay === true ? null : expanded.displayInput,
+          displayInput:
+            opts.displayInput !== undefined
+              ? opts.displayInput
+              : expanded.displayInput ?? prompt,
           agencHome: params.agencHome,
           configStore: params.configStore,
           configReloadLatch,
@@ -924,7 +927,14 @@ function installTuiSessionContract(params: {
         }
       }
 
-      await runPromptTurn(message, { suppressDisplay: isAutonomousTick });
+      await runPromptTurn(message, {
+        displayInput:
+          submitOpts?.displayUserMessage !== undefined
+            ? submitOpts.displayUserMessage
+            : isAutonomousTick
+              ? null
+              : undefined,
+      });
       if (shouldScheduleNextAutonomousTick()) {
         autonomousKeepalive.scheduleNext();
       }

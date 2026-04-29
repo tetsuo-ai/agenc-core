@@ -534,7 +534,7 @@ async function submitToSession(
         metadata: { kind: "inter_agent_communication" },
       });
       if (op.communication.triggerTurn) {
-        await session.submit(op.communication.content);
+        await session.submit("", { displayUserMessage: null });
       }
       return session.conversationId;
     case "append_message":
