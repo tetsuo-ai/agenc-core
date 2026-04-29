@@ -7,7 +7,6 @@ import {
   mkdtemp,
   open,
   readFile,
-  readlink,
   rename,
   rm,
   stat,
@@ -29,7 +28,6 @@ const GENERATED_TRUST_POLICY_BASENAME = "agenc-runtime-trust-policy.json";
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 const LOCK_POLL_INTERVAL_MS = 100;
 const SUPPORTED_PLATFORM_ARCH = new Set(["darwin-arm64", "linux-x64"]);
-const FROM_SOURCE_PLATFORM_ARCH = "from-source";
 
 export class RuntimeInstallError extends Error {
   constructor(message, code = "runtime_install_error") {
@@ -566,69 +564,6 @@ function getStableManagedBinPaths(installPaths, selectedArtifact) {
   };
 }
 
-function buildFromSourceArtifactDescriptorForState(state) {
-  return {
-    runtimeVersion:
-      typeof state?.runtimeVersion === "string" && state.runtimeVersion.length > 0
-        ? state.runtimeVersion
-        : "from-source",
-    platform: FROM_SOURCE_PLATFORM_ARCH,
-    arch: "local",
-    bins: {
-      agenc: "bin/agenc.js",
-      "agenc-runtime": "bin/agenc-runtime.js",
-      daemon: "bin/daemon.js",
-      "agenc-watch": "bin/agenc-watch.js",
-    },
-    sha256: typeof state?.sha256 === "string" ? state.sha256 : "from-source",
-  };
-}
-
-async function restoreFromSourceInstallIfSelected(homeDir) {
-  const runtimeHome = getWrapperRuntimeHome(homeDir);
-  const statePath = path.join(runtimeHome, "install-state.json");
-  const state = await readJsonIfExists(statePath);
-  if (
-    state?.manifestSource !== "from-source" ||
-    typeof state.releaseDir !== "string" ||
-    typeof state.currentDir !== "string"
-  ) {
-    return null;
-  }
-
-  const selectedArtifact = buildFromSourceArtifactDescriptorForState(state);
-  const installPaths = {
-    runtimeHome,
-    releaseDir: state.releaseDir,
-    currentDir: state.currentDir,
-    statePath,
-  };
-  const bins = getStableManagedBinPaths(installPaths, selectedArtifact);
-  try {
-    await stat(path.join(state.releaseDir, selectedArtifact.bins.agenc));
-    await stat(path.join(state.releaseDir, selectedArtifact.bins["agenc-runtime"]));
-    await stat(path.join(state.releaseDir, selectedArtifact.bins.daemon));
-    await stat(path.join(state.releaseDir, selectedArtifact.bins["agenc-watch"]));
-  } catch {
-    return null;
-  }
-
-  await mkdir(path.dirname(state.currentDir), { recursive: true });
-  await removePathSafe(state.currentDir);
-  await symlink(state.releaseDir, state.currentDir, "dir");
-
-  return {
-    releaseDir: state.releaseDir,
-    currentDir: state.currentDir,
-    runtimeHome,
-    statePath,
-    manifestSource: "from-source",
-    selectedArtifact,
-    fromSource: true,
-    bins,
-  };
-}
-
 async function getDaemonPidInfo(homeDir) {
   const pidPath = path.join(getOperatorHome(homeDir), "daemon.pid");
   const pidInfo = await readJsonIfExists(pidPath);
@@ -652,12 +587,6 @@ export async function ensureRuntimeInstalled(options = {}) {
   const packageRoot = options.packageRoot ?? getPackageRoot();
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? os.homedir();
-  if (!options.force) {
-    const fromSourceInstall = await restoreFromSourceInstallIfSelected(homeDir);
-    if (fromSourceInstall) {
-      return fromSourceInstall;
-    }
-  }
   const verifiedManifest = await loadVerifiedManifest({ packageRoot, env });
   if (!verifiedManifest) {
     throw new RuntimeInstallError(
@@ -844,19 +773,6 @@ export async function describeRuntimeInstall(options = {}) {
   const runtimeHome = getWrapperRuntimeHome(homeDir);
   const statePath = path.join(runtimeHome, "install-state.json");
   const state = await readJsonIfExists(statePath);
-  if (state?.manifestSource === "from-source") {
-    return {
-      runtimeHome,
-      currentDir: path.join(runtimeHome, "current"),
-      statePath,
-      installed: typeof state.releaseDir === "string",
-      releaseDir: state?.releaseDir ?? null,
-      manifestSource: "from-source",
-      manifestDigest: null,
-      selectedArtifact: buildFromSourceArtifactDescriptorForState(state),
-      trustPolicy: null,
-    };
-  }
   const manifest = await loadVerifiedManifest({ packageRoot, env }).catch(
     () => null,
   );
@@ -948,6 +864,8 @@ export async function prefetchRuntimeOnInstall(options = {}) {
 // default.
 // ---------------------------------------------------------------------------
 
+const FROM_SOURCE_PLATFORM_ARCH = "from-source";
+
 function resolveSourceRoot({
   env = process.env,
   cwd = process.cwd(),
@@ -993,87 +911,6 @@ async function readJsonSafe(filePath) {
   } catch {
     return null;
   }
-}
-
-function packageNameToPathSegments(packageName) {
-  const parts = packageName.split("/").filter(Boolean);
-  if (parts.length === 0) {
-    return null;
-  }
-  if (packageName.startsWith("@") && parts.length !== 2) {
-    return null;
-  }
-  if (!packageName.startsWith("@") && parts.length !== 1) {
-    return null;
-  }
-  return parts;
-}
-
-async function ensureFromSourceBundledExternalPluginLinks(sourceRoot) {
-  const runtimePackage = await readJsonSafe(path.join(sourceRoot, "package.json"));
-  const declared = runtimePackage?.agenc?.bundledExternalPlugins;
-  if (!Array.isArray(declared) || declared.length === 0) {
-    return [];
-  }
-
-  const repoRoot = path.dirname(sourceRoot);
-  const linked = [];
-  for (const entry of declared) {
-    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
-    const siblingRepoPath =
-      typeof entry?.siblingRepoPath === "string"
-        ? entry.siblingRepoPath.trim()
-        : "";
-    const packagePathSegments = packageNameToPathSegments(name);
-    if (!name || !siblingRepoPath || !packagePathSegments) {
-      throw new RuntimeInstallError(
-        `invalid from-source bundled external plugin declaration: ${JSON.stringify(entry)}`,
-        "invalid_from_source_plugin",
-      );
-    }
-
-    const pluginDir = path.resolve(repoRoot, siblingRepoPath);
-    const pluginPackage = await readJsonSafe(path.join(pluginDir, "package.json"));
-    if (pluginPackage?.name !== name) {
-      throw new RuntimeInstallError(
-        `from-source bundled external plugin ${name} is missing or mismatched at ${pluginDir}`,
-        "from_source_plugin_missing",
-      );
-    }
-    if (!existsSync(path.join(pluginDir, "dist", "index.js"))) {
-      throw new RuntimeInstallError(
-        `from-source bundled external plugin ${name} has no dist/index.js at ${pluginDir}; build the plugin before starting AgenC`,
-        "from_source_plugin_unbuilt",
-      );
-    }
-
-    const linkPath = path.join(repoRoot, "node_modules", ...packagePathSegments);
-    await mkdir(path.dirname(linkPath), { recursive: true });
-    let shouldCreateLink = true;
-    try {
-      const info = await lstat(linkPath);
-      if (info.isSymbolicLink()) {
-        const target = await readlink(linkPath);
-        const resolvedTarget = path.resolve(path.dirname(linkPath), target);
-        if (resolvedTarget !== pluginDir) {
-          await unlink(linkPath);
-        } else {
-          shouldCreateLink = false;
-        }
-      } else {
-        shouldCreateLink = false;
-      }
-    } catch (error) {
-      if ((error && error.code) !== "ENOENT") {
-        throw error;
-      }
-    }
-    if (shouldCreateLink) {
-      await symlink(pluginDir, linkPath, "dir");
-    }
-    linked.push({ name, directory: pluginDir, linkPath });
-  }
-  return linked;
 }
 
 function runBuildScript(sourceRoot, env) {
@@ -1127,8 +964,6 @@ function buildFromSourceArtifactDescriptor(sourceRoot, packageJson, versionFile)
 async function ensureFromSourceCurrentPointer({
   homeDir = os.homedir(),
   distRoot,
-  runtimeVersion,
-  sha256,
 }) {
   const runtimeHome = getWrapperRuntimeHome(homeDir);
   const releaseDir = path.join(
@@ -1166,11 +1001,7 @@ async function ensureFromSourceCurrentPointer({
       {
         installedAt: new Date().toISOString(),
         manifestSource: "from-source",
-        runtimeVersion:
-          typeof runtimeVersion === "string" && runtimeVersion.length > 0
-            ? runtimeVersion
-            : "from-source",
-        sha256: typeof sha256 === "string" && sha256.length > 0 ? sha256 : "from-source",
+        runtimeVersion: path.basename(distRoot),
         platform: FROM_SOURCE_PLATFORM_ARCH,
         arch: "local",
         releaseDir,
@@ -1216,8 +1047,6 @@ export async function ensureRuntimeFromSource(options = {}) {
 
   const packageJson = await readJsonSafe(path.join(sourceRoot, "package.json"));
   const versionFile = await readBuildVersion(sourceRoot);
-  const bundledExternalPlugins =
-    await ensureFromSourceBundledExternalPluginLinks(sourceRoot);
   const selectedArtifact = buildFromSourceArtifactDescriptor(
     sourceRoot,
     packageJson,
@@ -1227,8 +1056,6 @@ export async function ensureRuntimeFromSource(options = {}) {
   const installPaths = await ensureFromSourceCurrentPointer({
     homeDir,
     distRoot,
-    runtimeVersion: selectedArtifact.runtimeVersion,
-    sha256: selectedArtifact.sha256,
   });
 
   return {
@@ -1241,7 +1068,6 @@ export async function ensureRuntimeFromSource(options = {}) {
     fromSource: true,
     sourceRoot,
     versionFile,
-    bundledExternalPlugins,
     bins: {
       agenc: path.join(installPaths.currentDir, selectedArtifact.bins.agenc),
       "agenc-runtime": path.join(
