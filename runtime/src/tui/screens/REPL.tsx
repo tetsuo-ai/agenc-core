@@ -73,7 +73,7 @@ import { useKeybinding } from "../keybindings/KeybindingContext.js";
 
 import { MessageList } from "../transcript/MessageList.js";
 import { MessageSelector } from "../transcript/MessageSelector.js";
-import { CoordinatorAgentStatus } from "../transcript/messages/CoordinatorAgentStatus.js";
+import { LiveAgentStatusPanel } from "../components/LiveAgentStatusPanel.js";
 // `VirtualMessageList` is mounted indirectly through `MessageList`. The REPL
 // surface keeps the dependency pinned via the side-effecting import below
 // so future tranches can swap to the windowed list without a separate
@@ -105,7 +105,6 @@ import {
 import { StatusNotices } from "../cockpit/StatusNotices.js";
 
 import { useQuery } from "../hooks/useQuery.js";
-import { useLiveAgentStatuses } from "../hooks/useLiveAgentStatuses.js";
 import { eventsToMessages } from "../state/events-to-messages.js";
 import { useTuiConfigView } from "../config-view.js";
 import { buildStatusLineSession } from "../status-derivation.js";
@@ -245,7 +244,6 @@ export function REPL({
   const { events, isStreaming, currentTurnId, submit } = useQuery(
     session as never,
   );
-  const liveAgentStatuses = useLiveAgentStatuses(session);
 
   // Transcript-only modes mirror the App tree so the REPL screen and
   // the live App composition behave identically when used as the
@@ -480,10 +478,7 @@ export function REPL({
         </Box>
       ) : null}
 
-      <CoordinatorAgentStatus
-        agents={liveAgentStatuses}
-        now={typeof performance !== "undefined" ? performance.now() : Date.now()}
-      />
+      <LiveAgentStatusPanel session={session} />
 
       {showMessageSelector ? (
         <Box flexDirection="column" flexShrink={0} width="100%">
