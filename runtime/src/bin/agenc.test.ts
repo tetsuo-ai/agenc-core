@@ -152,7 +152,6 @@ describe("buildDelegateTool — system.agent.delegate", () => {
       "default",
       "explorer",
       "worker",
-      "verification",
     ]);
   });
 

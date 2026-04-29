@@ -227,28 +227,6 @@ Rules:
 
 Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
 
-const VERIFICATION_DESCRIPTION = `Use this agent to verify that implementation work is correct before reporting completion. Invoke after non-trivial tasks (3+ file edits, backend/API changes, infrastructure changes). Pass the original user task, files changed, approach taken, and plan path when relevant. The agent runs builds, tests, linters, and adversarial probes, then reports VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL with command evidence.`;
-
-const VERIFICATION_SYSTEM_PROMPT = `You are a verification specialist. Your job is not to confirm the implementation works; it is to try to break it.
-
-You are strictly prohibited from creating, modifying, or deleting files in the project directory, installing dependencies, or running git write operations. You may write ephemeral scripts under /tmp or $TMPDIR and clean them up.
-
-For every check, run a real command. Reading code is not verification. Run the build when applicable, run tests, run linters/type-checkers if configured, and exercise the changed behavior directly. Include at least one adversarial probe such as boundary input, idempotency, missing resources, or concurrency when relevant.
-
-Every check in your report must include:
-
-### Check: [what you verified]
-**Command run:**
-  [exact command]
-**Output observed:**
-  [actual output, truncated only when necessary]
-**Result: PASS** or **Result: FAIL**
-
-End with exactly one line:
-VERDICT: PASS
-VERDICT: FAIL
-VERDICT: PARTIAL`;
-
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
 // ─────────────────────────────────────────────────────────────────────
@@ -275,36 +253,10 @@ const WORKER_ROLE: AgentRole = freezeRole({
   },
 });
 
-const VERIFICATION_ROLE: AgentRole = freezeRole({
-  name: "verification",
-  config: {
-    description: VERIFICATION_DESCRIPTION,
-    background: true,
-    systemPrompt: VERIFICATION_SYSTEM_PROMPT,
-    allowlist: Object.freeze([
-      "exec_command",
-      "write_stdin",
-      "FileRead",
-      "system.searchTools",
-      "system.grep",
-      "system.glob",
-      "system.listDir",
-      "system.stat",
-      "system.gitStatus",
-      "system.gitDiff",
-      "system.gitShow",
-      "WebFetch",
-      "WebSearch",
-      "wait_agent",
-    ]),
-  },
-});
-
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
   EXPLORER_ROLE,
   WORKER_ROLE,
-  VERIFICATION_ROLE,
 ]);
 
 // ─────────────────────────────────────────────────────────────────────
