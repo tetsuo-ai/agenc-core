@@ -1,9 +1,17 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentMetadata } from "../agents/registry.js";
 import { RolloutStore } from "./rollout-store.js";
+import { getSessionDir } from "./session-store.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -107,7 +115,7 @@ describe("RolloutStore thread-spawn edges", () => {
     }
   });
 
-  it("lists open descendants breadth-first in stable path order", () => {
+  it("lists status-filtered and unfiltered descendants breadth-first", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
     const sessionId = "thread-spawn-descendants";
     const store = openStore({ cwd, sessionId });
@@ -115,30 +123,30 @@ describe("RolloutStore thread-spawn edges", () => {
     try {
       store.upsertThreadSpawnEdge({
         parentThreadId: "root-1",
-        childThreadId: "child-b",
+        childThreadId: "child-z",
         parentPath: "/root",
-        metadata: metadata("child-b", "/root/bravo", 1),
-        status: "open",
+        metadata: metadata("child-z", "/root/alpha", 1),
+        status: "closed",
       });
       store.upsertThreadSpawnEdge({
         parentThreadId: "root-1",
         childThreadId: "child-a",
         parentPath: "/root",
-        metadata: metadata("child-a", "/root/alpha", 1),
+        metadata: metadata("child-a", "/root/zulu", 1),
         status: "open",
       });
       store.upsertThreadSpawnEdge({
-        parentThreadId: "child-a",
+        parentThreadId: "child-z",
         childThreadId: "grandchild-a",
         parentPath: "/root/alpha",
         metadata: metadata("grandchild-a", "/root/alpha/scout", 2),
         status: "open",
       });
       store.upsertThreadSpawnEdge({
-        parentThreadId: "child-b",
+        parentThreadId: "child-a",
         childThreadId: "grandchild-b",
-        parentPath: "/root/bravo",
-        metadata: metadata("grandchild-b", "/root/bravo/worker", 2),
+        parentPath: "/root/zulu",
+        metadata: metadata("grandchild-b", "/root/zulu/worker", 2),
         status: "closed",
       });
 
@@ -146,7 +154,158 @@ describe("RolloutStore thread-spawn edges", () => {
         store
           .listThreadSpawnDescendantsWithStatus("root-1", "open")
           .map((edge) => edge.childThreadId),
-      ).toEqual(["child-a", "child-b", "grandchild-a"]);
+      ).toEqual(["child-a"]);
+      expect(
+        store
+          .listThreadSpawnDescendantsWithStatus("root-1", "closed")
+          .map((edge) => edge.childThreadId),
+      ).toEqual(["child-z"]);
+      expect(
+        store
+          .listThreadSpawnDescendants("root-1")
+          .map((edge) => edge.childThreadId),
+      ).toEqual(["child-a", "child-z", "grandchild-a", "grandchild-b"]);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("finds direct children and descendants by canonical agent path", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "thread-spawn-path";
+    const store = openStore({ cwd, sessionId });
+
+    try {
+      store.upsertThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-open",
+        parentPath: "/root",
+        metadata: metadata("child-open", "/root/open", 1),
+        status: "open",
+      });
+      store.upsertThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-closed",
+        parentPath: "/root",
+        metadata: metadata("child-closed", "/root/closed", 1),
+        status: "closed",
+      });
+      store.upsertThreadSpawnEdge({
+        parentThreadId: "child-closed",
+        childThreadId: "grandchild-open",
+        parentPath: "/root/closed",
+        metadata: metadata("grandchild-open", "/root/closed/open", 2),
+        status: "open",
+      });
+
+      expect(store.findThreadSpawnChildByPath("root-1", "/root/open")).toBe(
+        "child-open",
+      );
+      expect(store.findThreadSpawnChildByPath("root-1", "/root/closed")).toBe(
+        "child-closed",
+      );
+      expect(
+        store.findThreadSpawnChildByPath("root-1", "/root/closed/open"),
+      ).toBeUndefined();
+      expect(
+        store.findThreadSpawnDescendantByPath("root-1", "/root/closed/open"),
+      ).toBe("grandchild-open");
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("throws when path lookup matches multiple spawned threads", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "thread-spawn-path-collision";
+    const store = openStore({ cwd, sessionId });
+
+    try {
+      store.upsertThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-a",
+        parentPath: "/root",
+        metadata: metadata("child-a", "/root/duplicate", 1),
+        status: "open",
+      });
+      store.upsertThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-b",
+        parentPath: "/root",
+        metadata: metadata("child-b", "/root/duplicate", 1),
+        status: "closed",
+      });
+
+      expect(() =>
+        store.findThreadSpawnChildByPath("root-1", "/root/duplicate"),
+      ).toThrow(/multiple spawned threads matched agent path/);
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("imports obvious legacy snapshots with implicit open status", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "thread-spawn-legacy";
+    const sessionDir = getSessionDir(cwd, sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, "thread-spawn-edges.json"),
+      `${JSON.stringify({
+        threadSpawnEdges: {
+          "child-legacy": {
+            parentThreadId: "root-1",
+            parentPath: "/root",
+            metadata: metadata("child-legacy", "/root/legacy", 1),
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const store = openStore({ cwd, sessionId, resume: true });
+    try {
+      expect(store.getThreadSpawnEdge("child-legacy")).toEqual({
+        childThreadId: "child-legacy",
+        parentThreadId: "root-1",
+        parentPath: "/root",
+        metadata: metadata("child-legacy", "/root/legacy", 1),
+        status: "open",
+      });
+    } finally {
+      store.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("backs up corrupt snapshots and starts with an empty graph", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));
+    const sessionId = "thread-spawn-corrupt";
+    const sessionDir = getSessionDir(cwd, sessionId);
+    const snapshotPath = join(sessionDir, "thread-spawn-edges.json");
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(snapshotPath, "{not-json", "utf8");
+
+    const store = openStore({ cwd, sessionId, resume: true });
+    try {
+      expect(store.listThreadSpawnChildren("root-1")).toEqual([]);
+      const backups = readdirSync(sessionDir).filter((entry) =>
+        entry.startsWith("thread-spawn-edges.json.corrupt-"),
+      );
+      expect(backups).toHaveLength(1);
+      expect(existsSync(snapshotPath)).toBe(false);
+
+      store.upsertThreadSpawnEdge({
+        parentThreadId: "root-1",
+        childThreadId: "child-after-corrupt",
+        parentPath: "/root",
+        metadata: metadata("child-after-corrupt", "/root/recovered", 1),
+        status: "open",
+      });
+      expect(existsSync(snapshotPath)).toBe(true);
     } finally {
       store.close();
       rmSync(cwd, { recursive: true, force: true });
