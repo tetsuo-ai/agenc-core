@@ -18,6 +18,7 @@ import {
   buildFilteredRegistry,
   initMcpForAgent,
   MCP_INIT_TIMEOUT_MS,
+  resolveThreadSpawnDisabledTools,
   runAgent,
   type RunAgentProgressEvent,
   type RunAgentResult,
@@ -232,6 +233,32 @@ async function spawnLive(session: Session) {
   });
   const live = await control.spawn({ parentPath: "/root" });
   return { control, registry, live };
+}
+
+function mkNamedTool(name: string): ToolRegistry["tools"][number] {
+  return {
+    name,
+    description: `${name} tool`,
+    inputSchema: { type: "object" },
+    execute: async () => ({ content: "{}" }),
+  };
+}
+
+function mkNamedRegistry(names: readonly string[]): ToolRegistry {
+  const tools = names.map(mkNamedTool);
+  return {
+    tools,
+    toLLMTools: () =>
+      tools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      })),
+    dispatch: async () => ({ content: "{}" }),
+  };
 }
 
 beforeEach(() => {
@@ -456,27 +483,13 @@ describe("runAgent", () => {
 
   it("filters disabled V2 agent tools from child tool specs and dispatch", async () => {
     const registry = buildFilteredRegistry(
-      {
-        tools: [
-          {
-            name: "spawn_agent",
-            description: "spawn",
-            inputSchema: { type: "object" },
-            execute: async () => ({ content: "{}" }),
-          },
-          {
-            name: "system.echo",
-            description: "echo",
-            inputSchema: { type: "object" },
-            execute: async () => ({ content: "{}" }),
-          },
-        ],
-        toLLMTools: () => [],
-        dispatch: async () => ({ content: "{}" }),
-      },
+      mkNamedRegistry(["spawn_agent", "system.echo"]),
       {
         childConversationId: "child-123",
-        disabledTools: new Set(["spawn_agent"]),
+        disabledTools: resolveThreadSpawnDisabledTools({
+          depth: 1,
+          maxDepth: 1,
+        }),
       },
     );
 
@@ -492,6 +505,175 @@ describe("runAgent", () => {
         error: "tool not allowed for subagent: spawn_agent",
       }),
     });
+  });
+
+  it("filters OpenClaude task and main-thread coordination tools from V2 child agents", async () => {
+    const leakedToolNames = [
+      "TaskCreate",
+      "TaskGet",
+      "TaskUpdate",
+      "TaskList",
+      "TaskOutput",
+      "TaskStop",
+      "Brief",
+      "SendUserMessage",
+      "VerifyPlanExecution",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "WorkflowTool",
+      "RemoteTrigger",
+      "EnterPlanMode",
+      "ExitPlanMode",
+    ];
+    const registry = buildFilteredRegistry(
+      mkNamedRegistry([
+        "spawn_agent",
+        "wait_agent",
+        "StructuredOutput",
+        "system.echo",
+        ...leakedToolNames,
+      ]),
+      {
+        childConversationId: "child-123",
+        disabledTools: resolveThreadSpawnDisabledTools({
+          depth: 1,
+          maxDepth: 2,
+        }),
+      },
+    );
+
+    const advertisedNames = registry.tools.map((tool) => tool.name);
+    expect(advertisedNames).toEqual([
+      "spawn_agent",
+      "wait_agent",
+      "StructuredOutput",
+      "system.echo",
+    ]);
+    for (const toolName of leakedToolNames) {
+      expect(advertisedNames).not.toContain(toolName);
+      await expect(
+        registry.dispatch({ id: `call-${toolName}`, name: toolName, arguments: "{}" }),
+      ).resolves.toMatchObject({
+        isError: true,
+        content: JSON.stringify({
+          error: `tool not allowed for subagent: ${toolName}`,
+        }),
+      });
+    }
+  });
+
+  it("keeps child denylisted tools blocked even when a role allowlist names them", async () => {
+    const registry = buildFilteredRegistry(
+      mkNamedRegistry(["TaskList", "system.echo"]),
+      {
+        allowlist: ["TaskList", "system.echo"],
+        childConversationId: "child-123",
+        disabledTools: resolveThreadSpawnDisabledTools({
+          depth: 0,
+          maxDepth: 1,
+        }),
+      },
+    );
+
+    expect(registry.tools.map((tool) => tool.name)).toEqual(["system.echo"]);
+    await expect(
+      registry.dispatch({ id: "call-task-list", name: "TaskList", arguments: "{}" }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: JSON.stringify({
+        error: "tool not allowed for subagent: TaskList",
+      }),
+    });
+  });
+
+  it("does not re-advertise tools hidden by the parent registry", async () => {
+    const tools = ["system.echo", "NotebookEdit", "TaskCreate"].map(mkNamedTool);
+    const registry = buildFilteredRegistry(
+      {
+        tools,
+        toLLMTools: () => [
+          {
+            type: "function",
+            function: {
+              name: "system.echo",
+              description: "echo",
+              parameters: { type: "object" },
+            },
+          },
+        ],
+        dispatch: async () => ({ content: "{}" }),
+      },
+      {
+        childConversationId: "child-123",
+        disabledTools: resolveThreadSpawnDisabledTools({
+          depth: 0,
+          maxDepth: 1,
+        }),
+      },
+    );
+
+    expect(registry.tools.map((tool) => tool.name)).toEqual(["system.echo"]);
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toEqual([
+      "system.echo",
+    ]);
+    await expect(
+      registry.dispatch({ id: "call-notebook", name: "NotebookEdit", arguments: "{}" }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: JSON.stringify({
+        error: "tool not allowed for subagent: NotebookEdit",
+      }),
+    });
+  });
+
+  it("tracks parent registry visibility when hidden coding tools are discovered later", async () => {
+    const tools = ["system.searchTools", "system.grep"].map(mkNamedTool);
+    let visibleNames = ["system.searchTools"];
+    const registry = buildFilteredRegistry(
+      {
+        tools,
+        toLLMTools: () =>
+          visibleNames.map((name) => ({
+            type: "function",
+            function: {
+              name,
+              description: `${name} tool`,
+              parameters: { type: "object" },
+            },
+          })),
+        dispatch: async () => ({ content: "{}" }),
+      },
+      {
+        childConversationId: "child-123",
+      },
+    );
+
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toEqual([
+      "system.searchTools",
+    ]);
+    await expect(
+      registry.dispatch({ id: "call-grep-before", name: "system.grep", arguments: "{}" }),
+    ).resolves.toMatchObject({
+      isError: true,
+      content: JSON.stringify({
+        error: "tool not allowed for subagent: system.grep",
+      }),
+    });
+
+    visibleNames = ["system.searchTools", "system.grep"];
+
+    expect(registry.toLLMTools().map((tool) => tool.function.name)).toEqual([
+      "system.searchTools",
+      "system.grep",
+    ]);
+    const result = await registry.dispatch({
+      id: "call-grep-after",
+      name: "system.grep",
+      arguments: "{}",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe("{}");
   });
 
   it("mounts a child rollout store when the parent owns one", async () => {

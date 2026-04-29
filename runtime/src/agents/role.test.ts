@@ -80,8 +80,12 @@ describe("role registry", () => {
     expect(role.name).toBe("verification");
     expect(role.config.background).toBe(true);
     expect(role.config.systemPrompt).toContain("VERDICT: PASS");
-    expect(role.config.allowlist).toContain("Bash");
+    expect(role.config.allowlist).toContain("exec_command");
+    expect(role.config.allowlist).toContain("FileRead");
+    expect(role.config.allowlist).toContain("system.searchTools");
+    expect(role.config.allowlist).toContain("system.grep");
     expect(role.config.allowlist).not.toContain("Write");
+    expect(role.config.allowlist).not.toContain("Bash");
     expect(role.config.description).toContain("verify that implementation work is correct");
   });
 

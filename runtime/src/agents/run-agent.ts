@@ -394,25 +394,41 @@ export function buildFilteredRegistry(
 ): ToolRegistry {
   const allowed = opts.allowlist ? new Set(opts.allowlist) : null;
   const disabled = opts.disabledTools ?? new Set<string>();
-  const baseTools = allowed
-    ? base.tools.filter((tool) => allowed.has(tool.name))
-    : base.tools;
-  const wrappedTools = baseTools
-    .filter((tool) => !disabled.has(tool.name))
+  const isEligible = (name: string): boolean =>
+    !disabled.has(name) &&
+    (allowed === null || allowed.has(name));
+  const wrappedTools = base.tools
+    .filter((tool) => isEligible(tool.name))
     .map((tool) => wrapToolForChild(tool, opts));
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
+  const fallbackAdvertisedTools = () =>
+    wrappedTools.map((tool) => ({
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }));
+  const advertisedLLMTools = () => {
+    const advertised = base.toLLMTools();
+    if (advertised.length === 0) {
+      return fallbackAdvertisedTools();
+    }
+    return advertised.filter((tool) =>
+      isEligible(tool.function.name as string),
+    );
+  };
+  const advertisedNames = () =>
+    new Set(advertisedLLMTools().map((tool) => tool.function.name as string));
 
   return {
-    tools: wrappedTools,
+    get tools() {
+      const names = advertisedNames();
+      return wrappedTools.filter((tool) => names.has(tool.name));
+    },
     toLLMTools() {
-      return wrappedTools.map((tool) => ({
-        type: "function" as const,
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        },
-      }));
+      return advertisedLLMTools();
     },
     async dispatch(toolCall): Promise<ToolDispatchResult> {
       if (disabled.has(toolCall.name)) {
@@ -424,6 +440,14 @@ export function buildFilteredRegistry(
         };
       }
       if (allowed && !allowed.has(toolCall.name)) {
+        return {
+          content: safeStringify({
+            error: `tool not allowed for subagent: ${toolCall.name}`,
+          }),
+          isError: true,
+        };
+      }
+      if (!advertisedNames().has(toolCall.name)) {
         return {
           content: safeStringify({
             error: `tool not allowed for subagent: ${toolCall.name}`,
@@ -460,6 +484,39 @@ const V2_AGENT_TOOL_NAMES = new Set([
   "send_message",
   "list_agents",
 ]);
+
+const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
+  "TaskCreate",
+  "TaskGet",
+  "TaskUpdate",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "Brief",
+  "SendUserMessage",
+  "VerifyPlanExecution",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "WorkflowTool",
+  "RemoteTrigger",
+  "EnterPlanMode",
+  "ExitPlanMode",
+]);
+
+const THREAD_SPAWN_DEPTH_CAPPED_TOOL_NAMES = new Set([
+  ...THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES,
+  ...V2_AGENT_TOOL_NAMES,
+]);
+
+export function resolveThreadSpawnDisabledTools(opts: {
+  readonly depth: number;
+  readonly maxDepth: number;
+}): ReadonlySet<string> {
+  return opts.depth >= opts.maxDepth
+    ? THREAD_SPAWN_DEPTH_CAPPED_TOOL_NAMES
+    : THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES;
+}
 
 function resolveSessionMaxAgentDepth(parent: Session): number {
   const asDepth = (value: unknown): number | undefined =>
@@ -681,9 +738,10 @@ function buildChildSession(
         params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,
       childConversationId: params.live.agentId,
       worktree: params.worktree,
-      ...(params.live.depth >= resolveSessionMaxAgentDepth(params.parent)
-        ? { disabledTools: V2_AGENT_TOOL_NAMES }
-        : {}),
+      disabledTools: resolveThreadSpawnDisabledTools({
+        depth: params.live.depth,
+        maxDepth: resolveSessionMaxAgentDepth(params.parent),
+      }),
     },
   );
 
