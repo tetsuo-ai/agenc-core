@@ -67,6 +67,97 @@ export function isFinal(status: AgentStatus): boolean {
   return FINAL_STATES.has(status.status);
 }
 
+/**
+ * Hand-port of codex `agent_status_from_event` (status.rs:6-21).
+ * Maps an `EventMsg` to the AgentStatus the FSM should transition to,
+ * or `undefined` if the event doesn't drive a status change.
+ *
+ * Codex's mapping:
+ *   - TurnStarted               -> Running
+ *   - TurnComplete              -> Completed(last_agent_message)
+ *   - TurnAborted(Interrupted   -> Interrupted
+ *                |BudgetLimited)
+ *   - TurnAborted(other)        -> Errored(reason)
+ *   - Error                     -> Errored(message)
+ *   - ShutdownComplete          -> Shutdown
+ *   - else                      -> None
+ *
+ * AgenC's TurnAbortedEvent.reason is a free-text string; the mapper
+ * recognizes codex's two interrupt-class reasons and treats anything
+ * else as an errored transition.
+ */
+export function agentStatusFromEvent(event: {
+  readonly type: string;
+  readonly payload?: unknown;
+}): AgentStatus | undefined {
+  switch (event.type) {
+    case "turn_started": {
+      const payload = (event.payload as {
+        turnId?: string;
+        startedAt?: number;
+      }) ?? {};
+      return {
+        status: "running",
+        turnId: payload.turnId ?? "",
+        startedAtMs: payload.startedAt ?? Date.now(),
+      };
+    }
+    case "turn_complete": {
+      const payload = (event.payload as {
+        turnId?: string;
+        lastAgentMessage?: string;
+        completedAt?: number;
+      }) ?? {};
+      return {
+        status: "completed",
+        turnId: payload.turnId ?? "",
+        endedAtMs: payload.completedAt ?? Date.now(),
+        ...(payload.lastAgentMessage !== undefined
+          ? { lastMessage: payload.lastAgentMessage }
+          : {}),
+      };
+    }
+    case "turn_aborted": {
+      const payload = (event.payload as {
+        turnId?: string;
+        reason?: string;
+      }) ?? {};
+      const reason = (payload.reason ?? "").toLowerCase();
+      const isInterruptClass =
+        reason.includes("interrupt") || reason.includes("budget");
+      const endedAtMs = Date.now();
+      if (isInterruptClass) {
+        return {
+          status: "interrupted",
+          turnId: payload.turnId ?? "",
+          endedAtMs,
+          reason: payload.reason ?? "interrupted",
+        };
+      }
+      return {
+        status: "errored",
+        turnId: payload.turnId ?? "",
+        endedAtMs,
+        error: payload.reason ?? "errored",
+      };
+    }
+    case "error": {
+      const payload = (event.payload as {
+        turnId?: string;
+        message?: string;
+      }) ?? {};
+      return {
+        status: "errored",
+        turnId: payload.turnId ?? "",
+        endedAtMs: Date.now(),
+        error: payload.message ?? "error",
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
 export function toAgentStatusJson(
   status: AgentStatus,
 ): AgentStatusJson {
