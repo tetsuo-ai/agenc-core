@@ -22,6 +22,26 @@ function makeContext(marketplaceSignerPolicy?: MarketplaceSignerPolicy) {
   };
 }
 
+const ALLOW_ALL_MUTATION_TOOLS_POLICY: MarketplaceSignerPolicy = {
+  allowedTools: [
+    "agenc.createTaskFromTemplate",
+    "agenc.submitTaskTemplateProposal",
+    "agenc.registerAgent",
+    "agenc.createTask",
+    "agenc.claimTask",
+    "agenc.completeTask",
+    "agenc.registerSkill",
+    "agenc.purchaseSkill",
+    "agenc.rateSkill",
+    "agenc.createProposal",
+    "agenc.voteProposal",
+    "agenc.initiateDispute",
+    "agenc.resolveDispute",
+    "agenc.stakeReputation",
+    "agenc.delegateReputation",
+  ],
+};
+
 function names(tools: ReturnType<typeof createAgencTools>): string[] {
   return tools.map((tool) => tool.name).sort();
 }
@@ -40,9 +60,24 @@ describe("AgenC protocol tool factory", () => {
     expect(toolNames).not.toContain("agenc.stakeReputation");
   });
 
-  it("can explicitly opt into marketplace mutation tools", () => {
+  it("does not expose signer-backed mutation tools without a signer policy", () => {
     const toolNames = names(
       createAgencTools(makeContext(), { includeMutationTools: true }),
+    );
+
+    expect(toolNames).toContain("agenc.inspectMarketplace");
+    expect(toolNames).not.toContain("agenc.createTask");
+    expect(toolNames).not.toContain("agenc.claimTask");
+    expect(toolNames).not.toContain("agenc.completeTask");
+    expect(toolNames).not.toContain("agenc.initiateDispute");
+    expect(createAgencMutationTools(makeContext())).toEqual([]);
+  });
+
+  it("can explicitly opt into marketplace mutation tools with a signer policy", () => {
+    const toolNames = names(
+      createAgencTools(makeContext(ALLOW_ALL_MUTATION_TOOLS_POLICY), {
+        includeMutationTools: true,
+      }),
     );
 
     expect(toolNames).toContain("agenc.createTask");
@@ -55,7 +90,9 @@ describe("AgenC protocol tool factory", () => {
 
   it("exposes separate read-only and mutation surfaces", () => {
     const readOnlyNames = names(createAgencReadOnlyTools(makeContext()));
-    const mutationNames = names(createAgencMutationTools(makeContext()));
+    const mutationNames = names(
+      createAgencMutationTools(makeContext(ALLOW_ALL_MUTATION_TOOLS_POLICY)),
+    );
 
     expect(readOnlyNames).toContain("agenc.listTasks");
     expect(readOnlyNames).not.toContain("agenc.createTask");

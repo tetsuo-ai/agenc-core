@@ -195,6 +195,13 @@ export function createAgencReadOnlyTools(context: ToolContext): Tool[] {
  * signer policy/approval gates are configured.
  */
 export function createAgencMutationTools(context: ToolContext): Tool[] {
+  if (!context.marketplaceSignerPolicy) {
+    context.logger.warn?.(
+      "AgenC mutation tools require marketplaceSignerPolicy; refusing to register signer-backed tools",
+    );
+    return [];
+  }
+
   const program = createAgencProgram(context, { signerBacked: true });
   const tools = [
     createCreateTaskFromTemplateTool(program, context.logger),

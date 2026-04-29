@@ -26,7 +26,11 @@ import {
   findBidderMarketStatePda,
   findClaimPda,
 } from '../../task/pda.js';
-import { isPrivateTask, parseOnChainTaskClaim } from '../../task/types.js';
+import {
+  isManualValidationTask,
+  isPrivateTask,
+  parseOnChainTaskClaim,
+} from '../../task/types.js';
 import {
   hasMarketplaceArtifactDeliveryInput,
   prepareMarketplaceArtifactDelivery,
@@ -748,6 +752,11 @@ export function createCompleteTaskTool(
           }
           if (isPrivateTask(task)) {
             return errorResult('Buyer-facing artifact delivery is disabled for private ZK tasks');
+          }
+          if (!isManualValidationTask(task)) {
+            return errorResult(
+              'Buyer-facing artifact delivery requires creator-review validation before settlement',
+            );
           }
           const preparedArtifact = await prepareMarketplaceArtifactDelivery({
             artifactFile: typeof args.artifactFile === 'string' ? args.artifactFile : undefined,
