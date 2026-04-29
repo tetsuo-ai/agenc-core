@@ -26,6 +26,10 @@ import {
   resolveDefaultGrokCompactionThreshold,
 } from "./llm-stateful-defaults.js";
 import { hasRuntimeLimit } from "../llm/runtime-limit-policy.js";
+import {
+  DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_CODEX_OAUTH_MODEL,
+} from "../llm/codex-oauth/types.js";
 
 // ============================================================================
 // Constants
@@ -232,7 +236,12 @@ function findConfiguredLlmConfigForProvider(
 
   const providerName = profile?.provider ?? provider.name;
   const normalizedProvider = providerName.toLowerCase();
-  if (normalizedProvider !== "grok" && normalizedProvider !== "ollama" && normalizedProvider !== "openai-compat") {
+  if (
+    normalizedProvider !== "grok" &&
+    normalizedProvider !== "ollama" &&
+    normalizedProvider !== "openai-compat" &&
+    normalizedProvider !== "codex"
+  ) {
     return primaryLlmConfig;
   }
 
@@ -411,6 +420,26 @@ export async function createSingleLLMProvider(
         ) ?? 32768, // AgenC system prompt requires >14K tokens; 4096 is too small
         timeoutMs,
         maxTokens: normalizeOptionalPositiveInt(maxTokens),
+        tools,
+      });
+    }
+    case "codex": {
+      const { CodexOAuthProvider } = await import(
+        "../llm/codex-oauth/adapter.js"
+      );
+      return new CodexOAuthProvider({
+        model: model ?? DEFAULT_CODEX_OAUTH_MODEL,
+        baseUrl,
+        codexHome: llmConfig.codexHome,
+        codexAuthPath: llmConfig.codexAuthPath,
+        refreshTokenUrl: llmConfig.refreshTokenUrl,
+        codexClientVersion: llmConfig.codexClientVersion,
+        contextWindowTokens:
+          normalizeOptionalPositiveInt(llmConfig.contextWindowTokens) ??
+          DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS,
+        timeoutMs,
+        maxTokens: normalizeOptionalPositiveInt(maxTokens),
+        parallelToolCalls,
         tools,
       });
     }

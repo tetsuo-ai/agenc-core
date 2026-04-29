@@ -85,6 +85,8 @@ const VALID_CLI_OUTPUT_FORMATS: ReadonlySet<string> = new Set([
 const VALID_LLM_PROVIDERS: ReadonlySet<string> = new Set([
   "grok",
   "ollama",
+  "openai-compat",
+  "codex",
 ]);
 const VALID_STOP_HOOK_PHASES = new Set<string>(STOP_HOOK_PHASES);
 const VALID_STOP_HOOK_KINDS = new Set<string>(STOP_HOOK_CONFIG_KINDS);

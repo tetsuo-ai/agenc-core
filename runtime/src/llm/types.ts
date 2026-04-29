@@ -199,7 +199,8 @@ export type LLMContextWindowSource =
   | "ollama_running_context_length"
   | "ollama_model_info"
   | "ollama_model_parameters"
-  | "ollama_default";
+  | "ollama_default"
+  | "codex_default";
 
 export interface LLMProviderExecutionProfile {
   /** Provider name exposed by the adapter. */

@@ -22,10 +22,18 @@ import type { MarketplaceSignerPolicy } from "../tools/agenc/index.js";
 // ============================================================================
 
 export interface GatewayLLMConfig extends LLMXaiCapabilitySurface {
-  provider: "grok" | "ollama" | "openai-compat";
+  provider: "grok" | "ollama" | "openai-compat" | "codex";
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /** OpenAI Codex OAuth: override `$CODEX_HOME`; defaults to process.env.CODEX_HOME or `~/.codex`. */
+  codexHome?: string;
+  /** OpenAI Codex OAuth: full path to a Codex `auth.json` credential file. */
+  codexAuthPath?: string;
+  /** OpenAI Codex OAuth: token refresh URL override for tests/private deployments. */
+  refreshTokenUrl?: string;
+  /** OpenAI Codex OAuth: version header sent to the Codex backend. */
+  codexClientVersion?: string;
   /** Maximum output tokens per completion (provider request parameter). 0 or undefined = provider default/unset. */
   maxTokens?: number;
   /** Model context window in tokens for adaptive prompt budgeting. 0 or undefined = infer from provider/model metadata. */

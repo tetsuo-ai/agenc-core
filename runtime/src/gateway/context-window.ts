@@ -4,6 +4,10 @@ import type {
   LLMContextWindowSource,
   LLMProviderExecutionProfile,
 } from "../llm/types.js";
+import {
+  DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_CODEX_OAUTH_MODEL,
+} from "../llm/codex-oauth/types.js";
 
 const DEFAULT_GROK_API_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_OLLAMA_HOST = "http://localhost:11434";
@@ -675,6 +679,9 @@ export function inferContextWindowTokens(
   if (llmConfig.provider === "ollama") {
     return DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS;
   }
+  if (llmConfig.provider === "codex") {
+    return DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS;
+  }
   return undefined;
 }
 
@@ -689,6 +696,9 @@ export async function resolveDynamicContextWindowTokens(
   if (llmConfig.provider === "ollama") {
     return (await resolveDynamicOllamaContextWindow(llmConfig, options))
       ?.contextWindowTokens;
+  }
+  if (llmConfig.provider === "codex") {
+    return DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS;
   }
   return undefined;
 }
@@ -756,6 +766,19 @@ export async function resolveContextWindowProfile(
       model,
       contextWindowTokens: DEFAULT_OLLAMA_CONTEXT_WINDOW_TOKENS,
       contextWindowSource: "ollama_default",
+      maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
+    };
+  }
+
+  if (llmConfig.provider === "codex") {
+    const model = llmConfig.model?.trim() || DEFAULT_CODEX_OAUTH_MODEL;
+    return {
+      provider: "codex",
+      model,
+      contextWindowTokens:
+        explicit ?? DEFAULT_CODEX_OAUTH_CONTEXT_WINDOW_TOKENS,
+      contextWindowSource:
+        explicit !== undefined ? "explicit_config" : "codex_default",
       maxOutputTokens: normalizeOptionalPositiveInt(llmConfig.maxTokens),
     };
   }
