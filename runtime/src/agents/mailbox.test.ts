@@ -8,8 +8,15 @@ import {
   type InterAgentCommunication,
 } from "./mailbox.js";
 
+type MakeMsgOverrides = {
+  readonly [K in keyof Omit<InterAgentCommunication, "seq">]?: Omit<
+    InterAgentCommunication,
+    "seq"
+  >[K];
+};
+
 function makeMsg(
-  overrides: Partial<Omit<InterAgentCommunication, "seq">> = {},
+  overrides: MakeMsgOverrides = {},
 ): Omit<InterAgentCommunication, "seq"> {
   return {
     author: "parent",

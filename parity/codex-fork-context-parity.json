@@ -1,0 +1,79 @@
+{
+  "contractName": "codex-fork-context-parity",
+  "scope": "AgenC agents/fork-context.ts ↔ codex codex-rs/core/src/agent/control.rs spawn_subagent fork-mode subset. Locks the codex-aligned subset of fork-context.ts: ForkMode shape, last_n_turns slicing, None-mode semantic, and the I-36 parent-rollout flush before fork. The directive-prompt builder is AgenC composition (AgenC subagent guardrail text); it is NOT a codex parity surface and is intentionally out of scope for this contract.",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "rows": [
+    {
+      "id": "fork-mode-union-shape",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/fork-context.ts",
+      "requiredBehaviors": [
+        "ForkMode union mirrors codex SpawnAgentForkMode at codex-rs/core/src/agent/control.rs:47-49",
+        "two variants: { kind: 'full_history' } and { kind: 'last_n_turns'; n: number }",
+        "no extra variants: codex has no 'new'/'explicit' kinds (Phase B.6 stripped these for strict parity)"
+      ],
+      "tests": [
+        "runtime/src/agents/fork-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "fork-mode-none-semantic",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/fork-context.ts",
+      "requiredBehaviors": [
+        "mode === undefined returns directive-only initial messages",
+        "matches codex Option<SpawnAgentForkMode>::None semantic at codex-rs/core/src/agent/control.rs:386 — the LastNTurns truncation only runs when fork_mode is Some(LastNTurns), and full_history is the only Some(_) path that copies parent history",
+        "no parent history is read when mode is undefined; child starts with task directive alone"
+      ],
+      "tests": [
+        "runtime/src/agents/fork-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "last-n-turns-rollout-truncation-integration",
+      "source": "codex-rs/core/src/thread_rollout_truncation.rs",
+      "target": "runtime/src/agents/fork-context.ts",
+      "requiredBehaviors": [
+        "last_n_turns mode delegates rollout slicing to truncateRolloutToLastNForkTurns",
+        "matches codex agent/control.rs:386-389 calling truncate_rollout_to_last_n_fork_turns(&forked_rollout_items, *last_n_turns)",
+        "when no rollout store is available, the in-memory parentMessages array is sliced via lastNUserTurns instead (functional equivalent of codex's user-turn boundary slicing)"
+      ],
+      "tests": [
+        "runtime/src/agents/fork-context.test.ts",
+        "runtime/src/agents/thread-rollout-truncation.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "filter-forked-rollout-items-integration",
+      "source": "codex-rs/core/src/thread_rollout_truncation.rs",
+      "target": "runtime/src/agents/fork-context.ts",
+      "requiredBehaviors": [
+        "rolloutItemsToForkMessages walks rollout output through filterForkedRolloutItems before mapping to LLMMessage",
+        "matches codex's pre-fork filter pass that strips items the child must not inherit (commentary, half-emitted assistant tool-call records, response-item types not allowed in child input)",
+        "compacted rollout items use payload.replacementHistory (codex's compacted snapshot semantic)"
+      ],
+      "tests": [
+        "runtime/src/agents/fork-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "i36-parent-rollout-flush-before-fork",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/fork-context.ts",
+      "requiredBehaviors": [
+        "forkSubagent calls parent.rolloutStore.flushDurable() before reading parent history (I-36)",
+        "best-effort: a flush failure must not block the fork — caller's I-8 emitError surfaces it",
+        "rationale: codex's RolloutRecorder::get_rollout_history at agent/control.rs:383-385 reads from a durable file the recorder owns; AgenC's batched recorder needs an explicit flush to give the child the same coherent snapshot"
+      ],
+      "tests": [
+        "runtime/src/agents/fork-context.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

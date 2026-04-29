@@ -1,0 +1,107 @@
+{
+  "contractName": "codex-role-parity",
+  "scope": "AgenC agents/role.ts + role-presentation.ts ↔ codex codex-rs/core/src/agent/role.rs + builtins/*.toml strict parity",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "rows": [
+    {
+      "id": "agent-role-config-shape",
+      "source": "codex-rs/core/src/agent/role.rs",
+      "target": "runtime/src/agents/role.ts",
+      "requiredBehaviors": [
+        "AgentRoleConfig fields mirror codex role TOML keys: description, configFile, background, systemPrompt, reasoningEffort, timeoutMs, nicknameCandidates",
+        "fields are optional unless required by a registered built-in",
+        "frozen via Object.freeze on built-in entries"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "built-in-roles-registered",
+      "source": "codex-rs/core/src/agent/role.rs",
+      "target": "runtime/src/agents/role.ts",
+      "requiredBehaviors": [
+        "default, explorer, worker registered (matches codex BUILT_INS)",
+        "awaiter NOT registered (matches codex's temporarily-removed state)",
+        "verification NOT registered (B.4: removed)",
+        "BUILT_INS array reflects exactly the registered set"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "embedded-role-toml-content",
+      "source": "codex-rs/core/src/agent/builtins/awaiter.toml",
+      "target": "runtime/src/agents/role.ts",
+      "requiredBehaviors": [
+        "explorer.toml is empty (matches codex)",
+        "awaiter.toml carries background_terminal_max_timeout=3600000 + model_reasoning_effort='low' + the full developer_instructions body (codex parity, modulo `\\n` escape encoding because AgenC's TOML parser is escape-only)",
+        "post-parse string for developer_instructions is byte-identical to codex's TOML"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "role-resolution-and-fallback",
+      "source": "codex-rs/core/src/agent/role.rs",
+      "target": "runtime/src/agents/role.ts",
+      "requiredBehaviors": [
+        "resolveAgentRole returns the named built-in or the default role on miss (matches codex's role-not-found fallback)",
+        "tryResolveRoleConfig reads the embedded TOML for the role's configFile and folds it into the role's config",
+        "config-layer precedence keeps role overrides without clobbering caller-supplied profile / provider unless the role explicitly sets them"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "user-defined-role-registration",
+      "source": "codex-rs/core/src/agent/role.rs",
+      "target": "runtime/src/agents/role.ts",
+      "requiredBehaviors": [
+        "registerAgentRole accepts a user-supplied AgentRole and overrides built-ins by name (matches codex's user roles shadow built-ins behavior)",
+        "user roles can reference embedded TOMLs via configFile so awaiter.toml is reachable even though awaiter is not registered",
+        "listAgentRoles enumerates the current registered set (built-in + user-registered)"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "role-presentation-aliases",
+      "source": "codex-rs/core/src/agent/role.rs",
+      "target": "runtime/src/agents/role-presentation.ts",
+      "requiredBehaviors": [
+        "canonicalAgentRoleName resolves cyberpunk public names + legacy aliases to canonical built-in ids (default/explorer/worker)",
+        "AgenC-only UX layer: codex has no alias system; this is documented intentional adaptation",
+        "agentRolePresentation returns a typed { canonicalName, publicName, label, aliases } record",
+        "no entry references the removed verification role (B.4)"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "default-nickname-candidates",
+      "source": "codex-rs/core/src/agent/role.rs",
+      "target": "runtime/src/agents/role.ts",
+      "requiredBehaviors": [
+        "defaultAgentNicknameCandidates returns a non-empty pool used by registry.allocateNickname when a role omits its own pool",
+        "AgenC-specific cyberpunk pool (codex doesn't expose nickname candidates at the role layer); intentional UX adaptation"
+      ],
+      "tests": [
+        "runtime/src/agents/role.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

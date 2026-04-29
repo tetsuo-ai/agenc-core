@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-const matrixPath = path.resolve(import.meta.dirname, "../parity/codex-control-parity.json");
+const matrixPath = path.resolve(import.meta.dirname, "../parity/codex-thread-parity.json");
 const checkerPath = path.resolve(
   os.homedir(),
   ".codex/skills/implementation-contract/scripts/check_contract.mjs",
