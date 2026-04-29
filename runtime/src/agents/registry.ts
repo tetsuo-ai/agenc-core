@@ -1,7 +1,7 @@
 /**
  * AgentRegistry — in-memory slot + path tracking for subagents.
  *
- * Hand-port of AgenC runtime `core/src/agent/registry.rs` (344 LOC).
+ * Hand-port of codex runtime `core/src/agent/registry.rs` (344 LOC).
  * Owns:
  *   - Spawn-slot counter (bounded by `maxThreads`)
  *   - `agentPath` → `AgentMetadata` map (hierarchical "/root/worker/sub")

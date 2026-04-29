@@ -1,7 +1,7 @@
 /**
  * AgentControl — subagent lifecycle + control plane.
  *
- * Port of AgenC runtime `core/src/agent/control.rs` (1,214 LOC). Covers: full
+ * Port of codex runtime `core/src/agent/control.rs` (1,214 LOC). Covers: full
  * lifecycle (spawn/interrupt/shutdown/resume), parent→child message
  * routing (followup_task / send_message / inter-agent communication),
  * metadata + subtree queries (list_agents / subtree descendants /

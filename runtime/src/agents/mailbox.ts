@@ -1,11 +1,11 @@
 /**
  * Mailbox — bidirectional typed queue for inter-agent communication.
  *
- * Hand-port of AgenC runtime `core/src/agent/mailbox.rs` (161 LOC) adapted
- * for AgenC's bounded + backpressure model. AgenC uses
- * AsyncGenerator-only (unidirectional parent polls child); AgenC runtime uses
- * unbounded `mpsc::unbounded_channel` which is unacceptable on Node.js
- * because there's no OS-level backpressure signal.
+ * Hand-port of codex runtime `core/src/agent/mailbox.rs` (161 LOC) adapted
+ * for AgenC's bounded + backpressure model. The codex implementation uses
+ * `mpsc::unbounded_channel` and relies on tokio backpressure semantics;
+ * Node has no equivalent OS-level backpressure signal, so AgenC runs
+ * a bounded queue with an overflow salvage window instead.
  *
  * AgenC's mailbox is:
  *   - **Bidirectional** (I-5) — each message carries a
