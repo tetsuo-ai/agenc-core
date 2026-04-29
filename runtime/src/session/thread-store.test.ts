@@ -1,11 +1,20 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RolloutItem } from "./rollout-item.js";
 import { RolloutStore } from "./rollout-store.js";
 import {
   FileThreadStore,
+  type ThreadSource,
   ThreadNotFoundError,
   ThreadStoreInvalidRequestError,
 } from "./thread-store.js";
@@ -114,6 +123,50 @@ describe("FileThreadStore.createThread", () => {
       expect(read.forkedFromId).toBe("parent");
       expect(read.source).toBe("cli");
       expect(read.cwd).toBe(cwd);
+    } finally {
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("persists structured sources without lossy string coercion", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "structured-source" });
+    const source = {
+      kind: "subagent",
+      source: {
+        kind: "thread_spawn",
+        parentThreadId: "parent",
+        depth: 2,
+      },
+    } satisfies ThreadSource;
+    try {
+      const store = new FileThreadStore({ cwd });
+      store.createThread({
+        threadId: "structured-source",
+        source,
+        rolloutStore: rollout,
+      });
+      expect(
+        store.readThread({
+          threadId: "structured-source",
+          includeArchived: false,
+          includeHistory: false,
+        }).source,
+      ).toEqual(source);
+
+      store.updateThreadMetadata({
+        threadId: "structured-source",
+        patch: { memoryMode: "disabled" },
+        includeArchived: false,
+      });
+      const sessionMetaLines = readFileSync(rollout.rolloutPath, "utf8")
+        .split(/\r?\n/)
+        .filter((line) => line.includes('"type":"session_meta"'));
+      const lastMeta = JSON.parse(sessionMetaLines.at(-1)!) as {
+        payload: { source?: string };
+      };
+      expect(lastMeta.payload.source).toBe(JSON.stringify(source));
     } finally {
       rollout.close();
       rmSync(cwd, { recursive: true, force: true });
@@ -333,6 +386,67 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
       expect(existsSync(archived.rolloutPath!)).toBe(false);
     } finally {
       rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("moves live archived rollouts after shutdown", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "live-archive" });
+    const originalPath = rollout.rolloutPath;
+    try {
+      const store = new FileThreadStore({ cwd });
+      store.createThread({ threadId: "live-archive", rolloutStore: rollout });
+      store.archiveThread({ threadId: "live-archive" });
+      expect(existsSync(originalPath)).toBe(true);
+
+      store.shutdownThread("live-archive");
+      const archived = store.readThread({
+        threadId: "live-archive",
+        includeArchived: true,
+        includeHistory: false,
+      });
+      expect(archived.rolloutPath).toContain("archived_sessions");
+      expect(existsSync(originalPath)).toBe(false);
+      expect(existsSync(archived.rolloutPath!)).toBe(true);
+    } finally {
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers an active rollout over an archived rollout with the same thread id", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const first = openStore({ cwd, sessionId: "same-id" });
+    try {
+      const store = new FileThreadStore({ cwd });
+      store.createThread({ threadId: "same-id", rolloutStore: first });
+      store.shutdownThread("same-id");
+      first.close();
+      store.archiveThread({ threadId: "same-id" });
+
+      const replacement = openStore({ cwd, sessionId: "same-id" });
+      try {
+        store.createThread({ threadId: "same-id", rolloutStore: replacement });
+        const active = store.readThread({
+          threadId: "same-id",
+          includeArchived: true,
+          includeHistory: false,
+        });
+        expect(active.rolloutPath).toBe(replacement.rolloutPath);
+        expect(active.archivedAt).toBeUndefined();
+        expect(
+          store.listThreads({ pageSize: 10, archived: false }).items.map(
+            (i) => i.threadId,
+          ),
+        ).toEqual(["same-id"]);
+        expect(
+          store.listThreads({ pageSize: 10, archived: true }).items,
+        ).toEqual([]);
+      } finally {
+        replacement.close();
+      }
+    } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
@@ -573,6 +687,77 @@ describe("FileThreadStore.listThreads sort order", () => {
     } finally {
       rolloutA.close();
       rolloutB.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("FileThreadStore registry durability", () => {
+  it("writes the registry with an atomic temp-file swap", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "atomic" });
+    try {
+      const store = new FileThreadStore({ cwd });
+      store.createThread({ threadId: "atomic", rolloutStore: rollout });
+
+      const registryDir = dirname(store.registryFilePath);
+      const entries = readdirSync(registryDir);
+      expect(entries).not.toContain("threads.json.lock");
+      expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
+      expect(JSON.parse(readFileSync(store.registryFilePath, "utf8"))).toMatchObject({
+        version: 1,
+      });
+    } finally {
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("backs up a corrupt registry and recovers on the next write", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "corrupt" });
+    try {
+      const store = new FileThreadStore({ cwd });
+      mkdirSync(dirname(store.registryFilePath), { recursive: true });
+      writeFileSync(store.registryFilePath, "{not-json", "utf8");
+
+      store.createThread({ threadId: "corrupt", rolloutStore: rollout });
+
+      const registryDir = dirname(store.registryFilePath);
+      expect(
+        readdirSync(registryDir).some((entry) =>
+          entry.startsWith("threads.json.corrupt-"),
+        ),
+      ).toBe(true);
+      expect(
+        store.readThread({
+          threadId: "corrupt",
+          includeArchived: false,
+          includeHistory: false,
+        }).threadId,
+      ).toBe("corrupt");
+    } finally {
+      rollout.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("imports an obvious legacy rollout when the registry is missing", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
+    const rollout = openStore({ cwd, sessionId: "legacy" });
+    try {
+      const store = new FileThreadStore({ cwd });
+      const imported = store.readThread({
+        threadId: "legacy",
+        includeArchived: false,
+        includeHistory: true,
+      });
+
+      expect(imported.threadId).toBe("legacy");
+      expect(imported.rolloutPath).toBe(rollout.rolloutPath);
+      expect(imported.history?.items[0]?.type).toBe("session_meta");
+    } finally {
+      rollout.close();
       rmSync(cwd, { recursive: true, force: true });
     }
   });
