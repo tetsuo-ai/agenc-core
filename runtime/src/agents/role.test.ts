@@ -54,8 +54,14 @@ describe("role registry", () => {
     expect(role.config.reasoningEffort).toBeUndefined();
     expect(role.config.allowlist).toBeUndefined();
     expect(role.config.description).toContain(
-      "Explorers are fast and authoritative",
+      "Scanners are fast and authoritative",
     );
+  });
+
+  it("accepts cyberpunk role aliases without changing compatibility ids", () => {
+    expect(getAgentRole("scanner")?.name).toBe("explorer");
+    expect(resolveAgentRole("runner").name).toBe("worker");
+    expect(tryResolveRoleConfig("sentinel")).toBeDefined();
   });
 
   it("worker has the default description and no built-in config-layer override", () => {
@@ -65,7 +71,7 @@ describe("role registry", () => {
     expect(role.config.reasoningEffort).toBeUndefined();
     expect(role.config.nicknameCandidates).toBeUndefined();
     expect(role.config.description).toContain(
-      "Use for execution and production work",
+      "Use `runner` for execution and production work",
     );
   });
 
@@ -317,7 +323,7 @@ describe("config-layer stack", () => {
     ]);
 
     expect(text).toContain("Available roles:");
-    expect(text).toContain("default");
+    expect(text).toContain("netrunner");
     expect(text).toContain("Default agent.");
     expect(text).toContain("model-locked-role:");
     expect(text).toContain("model is set to `gpt-test`");
@@ -327,6 +333,7 @@ describe("config-layer stack", () => {
   it("formatRoleList skips duplicate names", () => {
     const explorer = getAgentRole("explorer")!;
     const text = formatRoleList([explorer, explorer]);
-    expect(text.match(/explorer:/g)?.length).toBe(1);
+    expect(text.match(/scanner:/g)?.length).toBe(1);
+    expect(text).toContain("Legacy alias accepted: `explorer`");
   });
 });

@@ -121,6 +121,7 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     agentId: "thread-1",
     agentPath: "/root/alpha",
     nickname: "alpha",
+    role: { name: "default" },
   };
 
   it("exposes the T9 input schema", () => {
@@ -142,7 +143,16 @@ describe("buildDelegateTool — system.agent.delegate", () => {
       ]),
     );
     const roleSchema = props.role as { enum: string[] };
-    expect(roleSchema.enum).toEqual(["default", "explorer", "worker"]);
+    expect(roleSchema.enum).toEqual([
+      "netrunner",
+      "scanner",
+      "runner",
+      "sentinel",
+      "default",
+      "explorer",
+      "worker",
+      "verification",
+    ]);
   });
 
   it("rejects invocation with missing taskPrompt", async () => {
@@ -189,7 +199,7 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     });
     const result = await tool.execute({
       taskPrompt: "scan the repo",
-      role: "explorer",
+      role: "scanner",
     });
     expect(delegateSpy).toHaveBeenCalledTimes(1);
     const args = delegateSpy.mock.calls[0]![0];
@@ -985,7 +995,7 @@ describe("buildExtractMemoriesViaSubagent adapter", () => {
     expect(out[0]!.filePath).toBe("/tmp/mem/entries/user-fact-1.md");
     expect(delegateFn).toHaveBeenCalledTimes(1);
     const call = delegateFn.mock.calls[0]![0];
-    expect(call.role).toBe("explorer");
+    expect(call.role).toBe("scanner");
     expect(call.parentPath).toBe("/root");
     expect(call.forkMode).toEqual({ kind: "full_history" });
     expect(call.runInBackground).toBe(false);

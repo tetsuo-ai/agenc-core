@@ -74,6 +74,7 @@
     "jimp": "^1.6.1",
     "js-yaml": "^4.1.0",
     "lodash-es": "^4.17.21",
+    "markdown-it": "^14.1.1",
     "proper-lockfile": "^4.1.2",
     "react": "^19.0.0",
     "react-compiler-runtime": "^1.0.0",

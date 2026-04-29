@@ -61,6 +61,7 @@ import {
   type AgentRole,
   type RoleShapedConfig,
 } from "./role.js";
+import { canonicalAgentRoleName } from "./role-presentation.js";
 import { AgentStatusTracker, isFinal, type AgentStatus } from "./status.js";
 import type { ThreadManager } from "./thread-manager.js";
 
@@ -1143,6 +1144,9 @@ export class AgentControl {
     } = {},
   ): ReadonlyArray<ListedAgent> {
     const prefix = opts.pathPrefix;
+    const roleName = opts.roleName
+      ? canonicalAgentRoleName(opts.roleName)
+      : undefined;
     const result: ListedAgent[] = [];
 
     const rootMatches = !prefix || agentMatchesPrefix("/root", prefix);
@@ -1161,7 +1165,7 @@ export class AgentControl {
       );
 
     for (const metadata of metadatas) {
-      if (opts.roleName && metadata.agentRole !== opts.roleName) continue;
+      if (roleName && metadata.agentRole !== roleName) continue;
       if (
         prefix !== undefined &&
         !agentMatchesPrefix(metadata.agentPath, prefix)

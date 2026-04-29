@@ -19,12 +19,13 @@
  *     AgenC runtime's full `ConfigLayerStack` / provider-preservation reload.
  *
  * Built-in roles:
- *   - `default`  — unrestricted; inherits parent config
- *   - `explorer` — codebase queries; loads Codex runtime's built-in
- *                  `explorer.toml` role layer
- *   - `worker`   — execution/production work; inherits parent tool
- *                  catalog (mirrors Codex runtime `agent/role.rs:383`
- *                  `worker` entry)
+ *   - `netrunner` — unrestricted default agent; inherits parent config
+ *   - `scanner`   — codebase queries; compatibility alias for the
+ *                   internal `explorer` id and loads Codex runtime's
+ *                   built-in `explorer.toml` role layer
+ *   - `runner`    — execution/production work; compatibility alias for
+ *                   the internal `worker` id and inherits parent tool
+ *                   catalog
  *
  * User roles register via `registerAgentRole({ name, config })` and
  * override the built-ins.
@@ -42,6 +43,10 @@ import {
   type AgenCConfig,
 } from "../config/index.js";
 import { normalizeExternalText } from "./_deps/file-read.js";
+import {
+  agentRolePresentation,
+  canonicalAgentRoleName,
+} from "./role-presentation.js";
 
 export type AgentReasoningEffort = "none" | "low" | "medium" | "high";
 
@@ -201,22 +206,26 @@ const DEFAULT_AGENT_NICKNAME_CANDIDATES = Object.freeze([
   "NewRoseHotel",
 ] as const);
 
-const EXPLORER_DESCRIPTION = `Use \`explorer\` for specific codebase questions.
-Explorers are fast and authoritative.
+const EXPLORER_DESCRIPTION = `Use \`scanner\` for specific codebase reconnaissance.
+Scanners are fast and authoritative.
 They must be used to ask specific, well-scoped questions on the codebase.
 Rules:
-- In order to avoid redundant work, you should avoid exploring the same problem that explorers have already covered. Typically, you should trust the explorer results without additional verification. You are still allowed to inspect the code yourself to gain the needed context!
-- You are encouraged to spawn up multiple explorers in parallel when you have multiple distinct questions to ask about the codebase that can be answered independently. This allows you to get more information faster without waiting for one question to finish before asking the next. While waiting for the explorer results, you can continue working on other local tasks that do not depend on those results. This parallelism is a key advantage of delegation, so use it whenever you have multiple questions to ask.
-- Reuse existing explorers for related questions.`;
+- Avoid scanning the same problem that scanners have already covered. Typically, you should trust the scanner results without additional verification. You are still allowed to inspect the code yourself to gain the needed context.
+- Spawn multiple scanners in parallel when you have distinct codebase questions that can be answered independently. While waiting for scanner results, continue working on local tasks that do not depend on those results.
+- Reuse existing scanners for related questions.
 
-const WORKER_DESCRIPTION = `Use for execution and production work.
+Compatibility: \`explorer\` remains accepted as a legacy alias for \`scanner\`.`;
+
+const WORKER_DESCRIPTION = `Use \`runner\` for execution and production work.
 Typical tasks:
 - Implement part of a feature
 - Fix tests or bugs
 - Split large refactors into independent chunks
 Rules:
-- Explicitly assign **ownership** of the task (files / responsibility). When the subtask involves code changes, you should clearly specify which files or modules the worker is responsible for. This helps avoid merge conflicts and ensures accountability. For example, you can say "Worker 1 is responsible for updating the authentication module, while Worker 2 will handle the database layer." By defining clear ownership, you can delegate more effectively and reduce coordination overhead.
-- Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of other's work to avoid conflicts and ensure a cohesive final product.`;
+- Explicitly assign ownership of the task (files / responsibility). When the subtask involves code changes, clearly specify which files or modules the runner owns. This avoids merge conflicts and makes accountability explicit.
+- Always tell runners they are not alone in the codebase. They should not revert edits made by others, and they should adjust their implementation to accommodate changes made by others.
+
+Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
 
 const VERIFICATION_DESCRIPTION = `Use this agent to verify that implementation work is correct before reporting completion. Invoke after non-trivial tasks (3+ file edits, backend/API changes, infrastructure changes). Pass the original user task, files changed, approach taken, and plan path when relevant. The agent runs builds, tests, linters, and adversarial probes, then reports VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL with command evidence.`;
 
@@ -304,7 +313,7 @@ export function registerAgentRole(role: AgentRole): void {
 }
 
 export function getAgentRole(name: string): AgentRole | undefined {
-  return registry.get(name);
+  return registry.get(name) ?? registry.get(canonicalAgentRoleName(name));
 }
 
 export function getDefaultAgentRole(): AgentRole {
@@ -326,7 +335,7 @@ export function _resetAgentRolesForTesting(): void {
 
 export function resolveAgentRole(name: string | undefined): AgentRole {
   if (!name) return DEFAULT_ROLE;
-  return registry.get(name) ?? DEFAULT_ROLE;
+  return getAgentRole(name) ?? DEFAULT_ROLE;
 }
 
 /**
@@ -340,7 +349,7 @@ export function tryResolveRoleConfig(
   name: string | undefined,
 ): AgentRoleConfig | undefined {
   if (!name) return undefined;
-  return registry.get(name)?.config;
+  return getAgentRole(name)?.config;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -533,12 +542,17 @@ export function formatRoleList(roles: ReadonlyArray<AgentRole>): string {
   const seen = new Set<string>();
   const lines: string[] = [];
   for (const role of roles) {
-    if (seen.has(role.name)) continue;
-    seen.add(role.name);
+    const presentation = agentRolePresentation(role.name);
+    const publicName =
+      presentation?.canonicalName === role.name
+        ? presentation.publicName
+        : role.name;
+    if (seen.has(publicName)) continue;
+    seen.add(publicName);
     lines.push(formatRole(role));
   }
   return [
-    `Optional type name for the new agent. If omitted, \`${DEFAULT_ROLE.name}\` is used.`,
+    "Optional type name for the new agent. If omitted, `netrunner` is used.",
     "Available roles:",
     ...lines,
   ].join("\n");
@@ -546,7 +560,17 @@ export function formatRoleList(roles: ReadonlyArray<AgentRole>): string {
 
 function formatRole(role: AgentRole): string {
   const { description } = role.config;
-  if (!description) return `${role.name}: no description`;
+  const presentationCandidate = agentRolePresentation(role.name);
+  const presentation =
+    presentationCandidate?.canonicalName === role.name
+      ? presentationCandidate
+      : undefined;
+  const publicName = presentation?.publicName ?? role.name;
+  const aliasNote =
+    presentation !== undefined && presentation.canonicalName !== publicName
+      ? `\n- Legacy alias accepted: \`${presentation.canonicalName}\`.`
+      : "";
+  if (!description) return `${publicName}: no description${aliasNote}`;
 
   const roleLayerToml = tryLoadRoleLayerToml(role);
   const model = asString(roleLayerToml?.model);
@@ -569,7 +593,7 @@ function formatRole(role: AgentRole): string {
       `\`${reasoningEffort}\` and cannot be changed.`;
   }
 
-  return `${role.name}: {\n${description}${lockedSettingsNote}\n}`;
+  return `${publicName}: {\n${description}${aliasNote}${lockedSettingsNote}\n}`;
 }
 
 function freezeRole(role: AgentRole): AgentRole {

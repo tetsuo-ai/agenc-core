@@ -305,6 +305,7 @@ export interface CollabAgentSpawnEndEvent {
   readonly newThreadId?: string;
   readonly newAgentNickname?: string;
   readonly newAgentRole?: string;
+  readonly newAgentRoleDisplayName?: string;
   readonly prompt: string;
   readonly model: string;
   readonly reasoningEffort?: string;
@@ -324,6 +325,7 @@ export interface CollabAgentInteractionEndEvent {
   readonly receiverThreadId: string;
   readonly receiverAgentNickname?: string;
   readonly receiverAgentRole?: string;
+  readonly receiverAgentRoleDisplayName?: string;
   readonly prompt: string;
   readonly status: AgentStatus;
 }
@@ -354,6 +356,7 @@ export interface CollabCloseEndEvent {
   readonly receiverThreadId: string;
   readonly receiverAgentNickname?: string;
   readonly receiverAgentRole?: string;
+  readonly receiverAgentRoleDisplayName?: string;
   readonly status: AgentStatus;
 }
 
@@ -363,6 +366,7 @@ export interface CollabResumeBeginEvent {
   readonly receiverThreadId: string;
   readonly receiverAgentNickname?: string;
   readonly receiverAgentRole?: string;
+  readonly receiverAgentRoleDisplayName?: string;
 }
 
 export interface CollabResumeEndEvent {
@@ -371,6 +375,7 @@ export interface CollabResumeEndEvent {
   readonly receiverThreadId: string;
   readonly receiverAgentNickname?: string;
   readonly receiverAgentRole?: string;
+  readonly receiverAgentRoleDisplayName?: string;
   readonly status: AgentStatus;
 }
 

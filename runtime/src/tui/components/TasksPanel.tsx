@@ -28,6 +28,10 @@ import type { TaskStoreOptions } from "../../bin/task-store.js";
 import { useTasksList } from "../hooks/useTasksList.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useLiveAgentStatuses } from "../hooks/useLiveAgentStatuses.js";
+import {
+  formatAgentRoleLabel,
+  formatAgentRolePublicName,
+} from "../../agents/role-presentation.js";
 import type {
   LiveAgentStatus,
   LiveAgentStatusKind,
@@ -178,6 +182,9 @@ export function TasksPanel({
         const ownerAgent = task.owner ? agentLookup.get(task.owner) : undefined;
         const ownerActive =
           ownerAgent !== undefined && !isTerminalStatus(ownerAgent.status);
+        const ownerLabel = task.owner
+          ? formatTaskOwnerLabel(task.owner, ownerAgent)
+          : undefined;
         return (
           <TaskRow
             key={task.id}
@@ -185,6 +192,7 @@ export function TasksPanel({
             openBlockers={task.unresolvedBlockers}
             columns={columns}
             ownerColor={task.owner ? ownerColors.get(task.owner) : undefined}
+            ownerLabel={ownerLabel}
             ownerActive={ownerActive}
             activity={ownerAgent ? agentActivity(ownerAgent) : undefined}
           />
@@ -271,6 +279,7 @@ interface TaskRowProps {
   readonly task: ListedTask;
   readonly openBlockers: readonly string[];
   readonly ownerColor?: Color;
+  readonly ownerLabel?: string;
   readonly activity?: string;
   readonly ownerActive: boolean;
   readonly columns: number;
@@ -280,6 +289,7 @@ function TaskRow({
   task,
   openBlockers,
   ownerColor,
+  ownerLabel,
   activity,
   ownerActive,
   columns,
@@ -287,8 +297,8 @@ function TaskRow({
   const isCompleted = task.status === "completed";
   const isInProgress = task.status === "in_progress";
   const isBlocked = openBlockers.length > 0;
-  const showOwner = columns >= 60 && task.owner !== undefined;
-  const ownerWidth = showOwner ? stringWidth(` (@${task.owner})`) : 0;
+  const showOwner = columns >= 60 && ownerLabel !== undefined && ownerActive;
+  const ownerWidth = showOwner ? stringWidth(` (@${ownerLabel})`) : 0;
   const displaySubject = truncateToWidth(
     task.subject,
     Math.max(15, columns - 15 - ownerWidth),
@@ -319,7 +329,7 @@ function TaskRow({
         {showOwner ? (
           <Text color={theme.colors.muted}>
             {" ("}
-            <Text color={ownerColor ?? theme.colors.muted}>@{task.owner}</Text>
+            <Text color={ownerColor ?? theme.colors.muted}>@{ownerLabel}</Text>
             {")"}
           </Text>
         ) : null}
@@ -365,6 +375,9 @@ function buildAgentLookup(
   for (const agent of agents) {
     lookup.set(agent.threadId, agent);
     lookup.set(agent.role, agent);
+    const publicRole = formatAgentRolePublicName(agent.role);
+    if (publicRole !== undefined) lookup.set(publicRole, agent);
+    lookup.set(formatAgentRoleLabel(agent.role, agent.role), agent);
     if (agent.nickname !== undefined) lookup.set(agent.nickname, agent);
   }
   return lookup;
@@ -380,9 +393,20 @@ function buildOwnerColors(
       const color = OWNER_COLORS[index % OWNER_COLORS.length]!;
       colors.set(agent.threadId, color);
       colors.set(agent.role, color);
+      const publicRole = formatAgentRolePublicName(agent.role);
+      if (publicRole !== undefined) colors.set(publicRole, color);
+      colors.set(formatAgentRoleLabel(agent.role, agent.role), color);
       if (agent.nickname !== undefined) colors.set(agent.nickname, color);
     });
   return colors;
+}
+
+export function formatTaskOwnerLabel(
+  owner: string,
+  agent?: LiveAgentStatus,
+): string {
+  if (agent?.nickname !== undefined) return agent.nickname;
+  return formatAgentRoleLabel(agent?.role ?? owner, owner);
 }
 
 function agentActivity(agent: LiveAgentStatus): string | undefined {

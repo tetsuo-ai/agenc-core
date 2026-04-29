@@ -271,7 +271,7 @@ export function buildExtractMemoriesViaSubagent(params: {
           newMessageCount,
           existingMemories,
         }),
-        role: "explorer",
+        role: "scanner",
         forkMode: { kind: "full_history" },
         runInBackground: false,
         forceSynchronous: true,
