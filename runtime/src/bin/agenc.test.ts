@@ -988,6 +988,8 @@ describe("buildExtractMemoriesViaSubagent adapter", () => {
     expect(call.role).toBe("explorer");
     expect(call.parentPath).toBe("/root");
     expect(call.forkMode).toEqual({ kind: "full_history" });
+    expect(call.runInBackground).toBe(false);
+    expect(call.forceSynchronous).toBe(true);
     expect(call.toolAllowlist).toEqual([]);
     expect(call.taskPrompt).toMatch(/JSON array/);
     expect(call.taskPrompt).toMatch(/a transcript/);

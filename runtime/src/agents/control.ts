@@ -919,6 +919,7 @@ export class AgentControl {
     }
 
     let resumedCount = 1;
+    const seen = new Set<ThreadId>([opts.rootThreadId]);
     const resumeQueue: ThreadId[] = [opts.rootThreadId];
 
     while (resumeQueue.length > 0) {
@@ -928,6 +929,8 @@ export class AgentControl {
         "open",
       );
       for (const edge of children) {
+        if (seen.has(edge.childThreadId)) continue;
+        seen.add(edge.childThreadId);
         const existing = this.live.get(edge.childThreadId);
         if (existing) {
           resumeQueue.push(existing.agentId);

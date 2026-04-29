@@ -273,6 +273,8 @@ export function buildExtractMemoriesViaSubagent(params: {
         }),
         role: "explorer",
         forkMode: { kind: "full_history" },
+        runInBackground: false,
+        forceSynchronous: true,
         toolAllowlist: [],
       });
 

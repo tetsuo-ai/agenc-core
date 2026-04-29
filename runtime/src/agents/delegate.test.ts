@@ -112,6 +112,45 @@ describe("delegate lifecycle recovery", () => {
     expect(control.shutdown).not.toHaveBeenCalled();
   });
 
+  it("forceSynchronous overrides role-level background mode", async () => {
+    const live = {
+      ...makeLive("thread-sync", "/root/sync"),
+      role: {
+        ...resolveAgentRole(undefined),
+        config: { background: true },
+      },
+    };
+    const control = {
+      spawn: vi.fn(async () => live),
+      shutdown: vi.fn(async () => {}),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    mockRunAgent.mockImplementationOnce(() =>
+      runResult({
+        threadId: "thread-sync",
+        durationMs: 5,
+        outcome: "completed",
+        finalMessage: "done",
+      }),
+    );
+
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "run inline",
+      runInBackground: false,
+      forceSynchronous: true,
+    });
+
+    expect(outcome.kind).toBe("sync_completed");
+    expect(control.shutdown).toHaveBeenCalledWith(
+      "thread-sync",
+      "delegate_teardown",
+    );
+  });
+
   it("passes normalized parent history into forkSubagent for inherited fork modes", async () => {
     const live = makeLive("thread-1", "/root/alpha");
     const control = {
