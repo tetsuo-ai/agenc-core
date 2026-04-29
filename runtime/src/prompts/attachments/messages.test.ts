@@ -107,7 +107,7 @@ describe("attachmentsToMessages", () => {
       "You have completed implementing the plan",
     );
     expect(out[0]?.content).toContain("Please verify directly");
-    expect(out[0]?.content).toContain("NOT via the Agent tool or an agent");
+    expect(out[0]?.content).toContain("NOT via the spawn_agent tool or an agent");
     expect(out[0]?.content).not.toContain("VerifyPlanExecution");
     expect(out[0]?.content).toContain("<system-reminder>");
   });
@@ -244,11 +244,11 @@ describe("attachmentsToMessages", () => {
       },
     ]);
     expect(initial[0]?.content).toContain(
-      "Available agent types for the Agent tool",
+      "Available agent types for the spawn_agent tool",
     );
     expect(initial[0]?.content).toContain("explore — codebase exploration");
     expect(delta[0]?.content).toContain(
-      "New agent types are now available for the Agent tool",
+      "New agent types are now available for the spawn_agent tool",
     );
     expect(delta[0]?.content).toContain("plan-reviewer");
     expect(delta[0]?.content).toContain(

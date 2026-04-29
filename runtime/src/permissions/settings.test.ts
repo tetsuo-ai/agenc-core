@@ -221,12 +221,12 @@ describe("settingsJsonToRules", () => {
     expect(rules.length).toBe(1);
   });
 
-  test("normalizes legacy tool names (Task → Agent)", () => {
+  test("keeps permission tool names literal", () => {
     const rules = settingsJsonToRules(
-      { permissions: { allow: ["Task(Explore)"] } },
+      { permissions: { allow: ["spawn_agent(worker)"] } },
       "userSettings",
     );
-    expect(rules[0]?.ruleValue.toolName).toBe("Agent");
+    expect(rules[0]?.ruleValue.toolName).toBe("spawn_agent");
   });
 });
 

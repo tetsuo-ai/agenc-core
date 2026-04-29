@@ -370,7 +370,7 @@ describe("stripDangerousPermissionsForAutoMode / restoreDangerousPermissions", (
   it("round-trips: strip then restore reproduces the original allow set", () => {
     const original = baseCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(python:*)", "Read(src/**)", "Agent(worker)"],
+        userSettings: ["Bash(python:*)", "Read(src/**)", "spawn_agent(worker)"],
         projectSettings: ["Bash(*)", "Write(/tmp/**)"],
       },
     });
@@ -378,7 +378,7 @@ describe("stripDangerousPermissionsForAutoMode / restoreDangerousPermissions", (
     expect(stripped.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
     expect(stripped.alwaysAllowRules.projectSettings).toEqual(["Write(/tmp/**)"]);
     expect(stripped.strippedDangerousRules?.userSettings?.sort()).toEqual(
-      ["Agent(worker)", "Bash(python:*)"].sort(),
+      ["spawn_agent(worker)", "Bash(python:*)"].sort(),
     );
     expect(stripped.strippedDangerousRules?.projectSettings).toEqual(["Bash(*)"]);
 
@@ -387,7 +387,7 @@ describe("stripDangerousPermissionsForAutoMode / restoreDangerousPermissions", (
     const us = [...(restored.alwaysAllowRules.userSettings ?? [])].sort();
     const ps = [...(restored.alwaysAllowRules.projectSettings ?? [])].sort();
     expect(us).toEqual(
-      ["Bash(python:*)", "Read(src/**)", "Agent(worker)"].sort(),
+      ["Bash(python:*)", "Read(src/**)", "spawn_agent(worker)"].sort(),
     );
     expect(ps).toEqual(["Bash(*)", "Write(/tmp/**)"].sort());
   });

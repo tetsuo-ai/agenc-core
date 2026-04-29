@@ -668,9 +668,9 @@ async function runAutoClassifierPipeline(
   const denialState =
     context.denialTracking ?? appState.denialTracking;
 
-  // 5.4 — acceptEdits simulation fast-path. Skip for Agent/REPL as in
+  // 5.4 — acceptEdits simulation fast-path. Skip for spawn_agent/REPL as in
   // AgenC.
-  if (tool.name !== "Agent" && tool.name !== "REPL") {
+  if (tool.name !== "spawn_agent" && tool.name !== "REPL") {
     const acceptEditsResult = await tryAcceptEditsSimulation(
       tool,
       input,
@@ -729,7 +729,7 @@ function handleClassifierResult(
     if (classifierResult.transcriptTooLong === true) {
       if (headless) {
         throw new DOMException(
-          "Agent aborted: auto mode classifier transcript exceeded context window in headless mode",
+          "spawn_agent aborted: auto mode classifier transcript exceeded context window in headless mode",
           "AbortError",
         );
       }

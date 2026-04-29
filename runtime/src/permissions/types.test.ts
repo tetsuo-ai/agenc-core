@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   ALL_PERMISSION_MODES,
   EDITABLE_SOURCES,
-  LEGACY_TOOL_NAME_ALIASES,
   PERMISSION_BEHAVIORS,
   PERMISSION_RULE_SOURCES,
   SETTING_SOURCES,
@@ -78,16 +77,6 @@ describe("permissions/types constants", () => {
     }
   });
 
-  test("legacy aliases cover Task/KillShell/AgentOutputTool/BashOutputTool", () => {
-    expect(LEGACY_TOOL_NAME_ALIASES.Task).toBe("Agent");
-    expect(LEGACY_TOOL_NAME_ALIASES.KillShell).toBe("TaskStop");
-    expect(LEGACY_TOOL_NAME_ALIASES.AgentOutputTool).toBe("TaskOutput");
-    expect(LEGACY_TOOL_NAME_ALIASES.BashOutputTool).toBe("TaskOutput");
-  });
-
-  test("LEGACY_TOOL_NAME_ALIASES is frozen", () => {
-    expect(Object.isFrozen(LEGACY_TOOL_NAME_ALIASES)).toBe(true);
-  });
 });
 
 describe("isPermissionMode", () => {
@@ -205,20 +194,6 @@ describe("source ordering invariants", () => {
     for (let i = 0; i < SETTING_SOURCES.length; i++) {
       expect(PERMISSION_RULE_SOURCES[i]).toBe(SETTING_SOURCES[i]);
     }
-  });
-});
-
-describe("legacy alias coverage", () => {
-  test("no alias maps to itself", () => {
-    for (const [legacy, canonical] of Object.entries(LEGACY_TOOL_NAME_ALIASES)) {
-      expect(legacy).not.toBe(canonical);
-    }
-  });
-
-  test("AgentOutputTool and BashOutputTool collapse into TaskOutput", () => {
-    expect(LEGACY_TOOL_NAME_ALIASES.AgentOutputTool).toBe(
-      LEGACY_TOOL_NAME_ALIASES.BashOutputTool,
-    );
   });
 });
 

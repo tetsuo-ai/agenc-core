@@ -59,7 +59,7 @@ describe("isAutoModeAllowlistedTool", () => {
   });
 
   it("returns false for tools not in the allowlist", () => {
-    for (const name of ["Bash", "Edit", "Write", "Agent"]) {
+    for (const name of ["Bash", "Edit", "Write", "Agent", "resume_agent"]) {
       expect(isAutoModeAllowlistedTool(name)).toBe(false);
     }
   });

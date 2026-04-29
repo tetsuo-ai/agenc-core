@@ -83,7 +83,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
     case "verify_plan_reminder": {
       return userContextMessage(
         wrapSystemReminder(
-          `You have completed implementing the plan. Please verify directly (NOT via the Agent tool or an agent) that all plan items were completed correctly.`,
+          `You have completed implementing the plan. Please verify directly (NOT via the spawn_agent tool or an agent) that all plan items were completed correctly.`,
         ),
       );
     }
@@ -167,8 +167,8 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
       const parts: string[] = [];
       if (attachment.addedLines.length > 0) {
         const header = attachment.isInitial
-          ? "Available agent types for the Agent tool:"
-          : "New agent types are now available for the Agent tool:";
+          ? "Available agent types for the spawn_agent tool:"
+          : "New agent types are now available for the spawn_agent tool:";
         parts.push(`${header}\n${attachment.addedLines.join("\n")}`);
       }
       if (attachment.removedTypes.length > 0) {

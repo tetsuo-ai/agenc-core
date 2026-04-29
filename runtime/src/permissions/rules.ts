@@ -16,7 +16,6 @@
  */
 
 import {
-  LEGACY_TOOL_NAME_ALIASES,
   PERMISSION_RULE_SOURCES,
   type PermissionBehavior,
   type PermissionRule,
@@ -28,22 +27,6 @@ import {
   type ToolPermissionRulesBySource,
   deepFreeze,
 } from "./types.js";
-
-// ─────────────────────────────────────────────────────────────────────
-// Legacy name normalization
-// ─────────────────────────────────────────────────────────────────────
-
-export function normalizeLegacyToolName(name: string): string {
-  return LEGACY_TOOL_NAME_ALIASES[name] ?? name;
-}
-
-export function getLegacyToolNames(canonicalName: string): readonly string[] {
-  const result: string[] = [];
-  for (const [legacy, canonical] of Object.entries(LEGACY_TOOL_NAME_ALIASES)) {
-    if (canonical === canonicalName) result.push(legacy);
-  }
-  return Object.freeze(result);
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Escape helpers (parens + backslash)
@@ -101,8 +84,7 @@ function findLastUnescapedChar(str: string, char: string): number {
  * Parse a permission-rule string into its components.
  *
  * Returns `null` when the input is empty or obviously malformed
- * (caller-decided). Legacy tool names are normalized through
- * {@link normalizeLegacyToolName}.
+ * (caller-decided).
  *
  * Grammar:
  *   rule      := toolName ( "(" content ")" )?
@@ -119,31 +101,31 @@ export function parseRuleString(raw: string): PermissionRuleValue | null {
 
   const openParenIndex = findFirstUnescapedChar(ruleString, "(");
   if (openParenIndex === -1) {
-    return Object.freeze({ toolName: normalizeLegacyToolName(ruleString) });
+    return Object.freeze({ toolName: ruleString });
   }
 
   const closeParenIndex = findLastUnescapedChar(ruleString, ")");
   if (closeParenIndex === -1 || closeParenIndex <= openParenIndex) {
-    return Object.freeze({ toolName: normalizeLegacyToolName(ruleString) });
+    return Object.freeze({ toolName: ruleString });
   }
 
   if (closeParenIndex !== ruleString.length - 1) {
-    return Object.freeze({ toolName: normalizeLegacyToolName(ruleString) });
+    return Object.freeze({ toolName: ruleString });
   }
 
   const toolName = ruleString.substring(0, openParenIndex);
   const rawContent = ruleString.substring(openParenIndex + 1, closeParenIndex);
 
   if (!toolName) {
-    return Object.freeze({ toolName: normalizeLegacyToolName(ruleString) });
+    return Object.freeze({ toolName: ruleString });
   }
 
   if (rawContent === "" || rawContent === "*") {
-    return Object.freeze({ toolName: normalizeLegacyToolName(toolName) });
+    return Object.freeze({ toolName });
   }
 
   return Object.freeze({
-    toolName: normalizeLegacyToolName(toolName),
+    toolName,
     ruleContent: unescapeRuleContent(rawContent),
   });
 }
@@ -325,13 +307,13 @@ export function getRuleByContentsForTool(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Agent(agentType) helpers
+// spawn_agent(agentType) helpers
 // ─────────────────────────────────────────────────────────────────────
 
 export function getDenyRuleForAgent(
   ctx: ToolPermissionContext,
   agentType: string,
-  agentToolName = "Agent",
+  agentToolName = "spawn_agent",
 ): PermissionRule | null {
   return (
     getDenyRules(ctx).find(
@@ -345,7 +327,7 @@ export function getDenyRuleForAgent(
 export function filterDeniedAgents<T extends { readonly agentType: string }>(
   ctx: ToolPermissionContext,
   candidates: readonly T[],
-  agentToolName = "Agent",
+  agentToolName = "spawn_agent",
 ): T[] {
   const denied = new Set<string>();
   for (const r of getDenyRules(ctx)) {

@@ -3,7 +3,7 @@
  *
  * Port of AgenC runtime `core/src/agent/control.rs` (1,214 LOC). Covers: full
  * lifecycle (spawn/interrupt/shutdown/resume), parent→child message
- * routing (send_input / append_message / inter-agent communication),
+ * routing (followup_task / send_message / inter-agent communication),
  * metadata + subtree queries (list_agents / subtree descendants /
  * token totals / environment context), completion watcher, fork-mode
  * spawn helpers, and subtree genealogy bookkeeping.
@@ -21,7 +21,7 @@
  * Invariants wired:
  *   I-1  (MAX_AGENT_DEPTH=1) — spawn rejects `childDepth > cap`.
  *        Matches Codex runtime's `DEFAULT_AGENT_MAX_DEPTH=1`.
- *   I-5  (bidirectional mailbox) — routing methods (send_input /
+ *   I-5  (bidirectional mailbox) — routing methods (followup_task /
  *        append_message / IAC / interrupt) go through the child's
  *        `downInbox` with `direction: 'down'`.
  *   I-32 (parent-interrupt race) — cancellation token from the
@@ -532,7 +532,7 @@ export class AgentControl {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * Port of AgenC runtime `send_input` (`control.rs:582`). Routes a user-input
+   * Port of AgenC runtime child-input routing (`control.rs:582`). Routes a user-input
    * message to a live child via its `downInbox` with triggerTurn=true,
    * and records the preview for `ListedAgent.lastTaskMessage`.
    */

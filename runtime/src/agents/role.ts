@@ -278,7 +278,7 @@ const VERIFICATION_ROLE: AgentRole = freezeRole({
       "LS",
       "WebFetch",
       "WebSearch",
-      "TaskOutput",
+      "wait_agent",
     ]),
   },
 });

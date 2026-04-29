@@ -501,9 +501,7 @@ function renderToolBody(tool: string, args: unknown): React.ReactElement {
     tool === "TaskCreate" ||
     tool === "TaskGet" ||
     tool === "TaskUpdate" ||
-    tool === "TaskList" ||
-    tool === "TeamCreate" ||
-    tool === "TeamDelete"
+    tool === "TaskList"
   ) {
     return <TaskRequest args={args} />;
   }
