@@ -1510,7 +1510,8 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       },
     });
 
-    await drain(session.runTurn("apply profile", { ctx }));
+    // Empty input still exercises the runTurn switch consumer, then skips sampling.
+    await drain(session.runTurn("", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
@@ -1539,7 +1540,8 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       // configStore intentionally omitted
     });
 
-    await drain(session.runTurn("apply profile", { ctx }));
+    // Empty input still exercises the runTurn switch consumer, then skips sampling.
+    await drain(session.runTurn("", { ctx }));
 
     expect(session.pendingProviderSwitch).toBeNull();
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
