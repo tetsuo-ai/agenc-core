@@ -1,0 +1,121 @@
+{
+  "contractName": "codex-mailbox-parity",
+  "scope": "AgenC agents/mailbox.ts ↔ codex codex-rs/core/src/agent/mailbox.rs strict parity (with documented Node-platform adaptations: bounded queue + agent_exited sentinel + bidirectional direction tag)",
+  "sourceRoot": "/home/tetsuo/git/codex",
+  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "rows": [
+    {
+      "id": "inter-agent-communication-shape",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "InterAgentCommunication carries author, recipient, content, triggerTurn matching codex protocol shape",
+        "AgenC adds direction (up/down) for bidirectional routing — documented adaptation for I-5",
+        "AgenC adds metadata field as a typed extension surface for interrupt reason / task id"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-class",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "Mailbox class combines codex's Mailbox + MailboxReceiver into a single owner (single-threaded JS adaptation)",
+        "monotonically increasing seq numbers (codex Mailbox::send returns u64 seq)",
+        "BehaviorSubject seqWatch replays current seq + delivers next on subscribe (matches codex tokio::watch semantics)",
+        "I-31: agent_exited sentinel emitted exactly once after close()"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-send",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "I-64 non-blocking synchronous send",
+        "I-16 bounded with overflow salvage window (Node-specific adaptation; codex uses unbounded mpsc)",
+        "throws MailboxClosedError after close() so spurious sends surface immediately",
+        "advances seq + notifies seqWatch under all accepted paths"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-has-pending",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "non-mutating peek; true iff queued items exist OR a closed mailbox still owes the agent_exited sentinel",
+        "matches codex MailboxReceiver::has_pending semantics (sync_pending_mails + queue check)"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-has-pending-trigger-turn",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "true iff any queued message has triggerTurn=true",
+        "matches codex's MailboxReceiver::has_pending_trigger_turn"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-drain",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "removes + returns all queued items in FIFO delivery order",
+        "promotes the overflow salvage slot before returning so a successful drain wins the salvage race (I-16)",
+        "emits the agent_exited sentinel exactly once on the first drain after close (I-31); subsequent drains return empty"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-close-and-sentinel",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "close() is idempotent",
+        "I-31: AgentExitedSentinel emitted from drain exactly once after close, never again",
+        "subsequent send() throws MailboxClosedError (AgenC closure semantic; codex has no closed-mailbox concept)",
+        "overflow timer cleared on close so it cannot fire after close"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mailbox-watch-iterator",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/mailbox.ts",
+      "requiredBehaviors": [
+        "AsyncIterable yields new arrivals as they land",
+        "terminates after agent_exited sentinel emit (matches codex's tokio watch+drain pattern that ends when the channel closes)",
+        "yields items in FIFO order; observers don't miss a queued message that lands during a yield gap"
+      ],
+      "tests": [
+        "runtime/src/agents/mailbox.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}
