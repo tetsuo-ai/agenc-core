@@ -131,16 +131,10 @@ describe("model-facing tools", () => {
         "WebSearch",
         "spawn_agent",
         "wait_agent",
-        "resume_agent",
         "close_agent",
         "followup_task",
-        "send_input",
         "send_message",
         "list_agents",
-        "Agent",
-        "TaskOutput",
-        "TaskStop",
-        "SendMessage",
         "Skill",
         "ListMcpResourcesTool",
         "ReadMcpResourceTool",
@@ -163,6 +157,14 @@ describe("model-facing tools", () => {
       ]),
     );
     expect(allNames.some((name) => name.startsWith("system.http"))).toBe(false);
+    expect(allNames).not.toContain("Agent");
+    expect(allNames).not.toContain("TaskOutput");
+    expect(allNames).not.toContain("TaskStop");
+    expect(allNames).not.toContain("SendMessage");
+    expect(allNames).not.toContain("send_input");
+    expect(allNames).not.toContain("resume_agent");
+    expect(allNames).not.toContain("TeamCreate");
+    expect(allNames).not.toContain("TeamDelete");
 
     const visibleNames = registry.toLLMTools().map((tool) => tool.function.name);
     expect(visibleNames).toEqual(
@@ -180,28 +182,12 @@ describe("model-facing tools", () => {
     );
     expect(allNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("system.agent.delegate");
-    expect(visibleNames).not.toContain("resume_agent");
-    expect(visibleNames).not.toContain("send_input");
     expect(visibleNames).not.toContain("NotebookEdit");
     expect(visibleNames).not.toContain("TaskCreate");
-
-    expect(
-      registry.tools.find((tool) => tool.name === "resume_agent")?.metadata,
-    ).toMatchObject({ deferred: true, hiddenByDefault: true });
-    expect(
-      registry.tools.find((tool) => tool.name === "send_input")?.metadata,
-    ).toMatchObject({ deferred: true, hiddenByDefault: true });
     expect(
       registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
     ).toMatchObject({
       required: ["message", "task_name"],
-      additionalProperties: false,
-    });
-    expect(
-      registry.tools.find((tool) => tool.name === "resume_agent")?.inputSchema,
-    ).toMatchObject({
-      properties: { id: { type: "string" } },
-      required: ["id"],
       additionalProperties: false,
     });
   });
@@ -504,7 +490,7 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toContain("not model-invocable");
   });
 
-  it("rejects legacy fields on strict Codex v2 agent tools", async () => {
+  it("rejects removed compatibility fields on strict agent tools", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: fakeSession,
@@ -514,7 +500,7 @@ describe("model-facing tools", () => {
     const spawn = await byName.get("spawn_agent")!.execute({
       message: "inspect",
       task_name: "task_1",
-      items: [{ text: "legacy" }],
+      items: [{ text: "removed compatibility field" }],
     });
     expect(spawn.isError).toBe(true);
     expect(JSON.parse(spawn.content).error).toContain("unknown field `items`");
@@ -642,25 +628,12 @@ describe("model-facing tools", () => {
         runInBackground: true,
       }),
     );
-    expect(counter).toHaveBeenCalledWith("codex.multi_agent.spawn", 1, [
+    expect(counter).toHaveBeenCalledWith("agenc.multi_agent.spawn", 1, [
       ["role", "default"],
     ]);
 
-    status = {
-      status: "completed" as const,
-      turnId: "turn-1",
-      endedAtMs: 2,
-      lastMessage: "done",
-    };
-    const output = await byName.get("TaskOutput")!.execute({
-      target: "thread-1",
-      timeout_ms: 0,
-    });
-    expect(join).toHaveBeenCalledOnce();
-    expect(JSON.parse(output.content).status["thread-1:result"]).toMatchObject({
-      outcome: "completed",
-      finalMessage: "done",
-    });
+    expect(byName.has("TaskOutput")).toBe(false);
+    expect(join).not.toHaveBeenCalled();
   });
 
   it("hides spawn_agent nickname metadata when configured", async () => {
@@ -701,149 +674,6 @@ describe("model-facing tools", () => {
 
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content)).toEqual({ task_name: "/root/task_1" });
-  });
-
-  it("resume_agent returns live status using the Codex id shape", async () => {
-    const session = fakeSession();
-    const emit = vi.fn();
-    const counter = vi.fn();
-    (session as unknown as { emit: typeof emit }).emit = emit;
-    (session.services as unknown as { sessionTelemetry: unknown }).sessionTelemetry = {
-      counter,
-    };
-    const threadId = "550e8400-e29b-41d4-a716-446655440001";
-    const status = {
-      status: "running" as const,
-      turnId: "turn-1",
-      startedAtMs: 1,
-    };
-    const control = {
-      getLive: vi.fn(() => ({
-        agentId: threadId,
-        agentPath: "/root/live",
-        nickname: "Euclid",
-        role: { name: "default" },
-        status: { value: status },
-        metadata: {
-          agentId: threadId,
-          agentPath: "/root/live",
-          agentNickname: "Euclid",
-          agentRole: "default",
-          depth: 1,
-        },
-      })),
-      getAgentMetadata: vi.fn(() => ({
-        agentId: threadId,
-        agentPath: "/root/live",
-        agentNickname: "Euclid",
-        agentRole: "default",
-        depth: 1,
-      })),
-      getStatus: vi.fn(async () => status),
-      resumeAgentFromRollout: vi.fn(),
-    };
-    _setAgentControlForTesting(session, {
-      control: control as never,
-      registry: {} as never,
-    });
-    try {
-      const resume = createModelFacingTools({
-        workspaceRoot: process.cwd(),
-        getSession: () => session,
-      }).find((tool) => tool.name === "resume_agent")!;
-
-      const result = await resume.execute({ id: threadId });
-
-      expect(result.isError).toBeUndefined();
-      expect(JSON.parse(result.content)).toEqual({ status });
-      expect(control.resumeAgentFromRollout).not.toHaveBeenCalled();
-      expect(counter).toHaveBeenCalledWith("codex.multi_agent.resume", 1, []);
-      expect(emit.mock.calls.map((call) => call[0].msg.type)).toEqual([
-        "collab_resume_begin",
-        "collab_resume_end",
-      ]);
-    } finally {
-      _clearAgentControlCacheForTesting(session);
-    }
-  });
-
-  it("resume_agent only accepts a strict id argument", async () => {
-    const resume = createModelFacingTools({
-      workspaceRoot: process.cwd(),
-      getSession: fakeSession,
-    }).find((tool) => tool.name === "resume_agent")!;
-
-    const alias = await resume.execute({ target: "/root/live" });
-    expect(alias.isError).toBe(true);
-    expect(JSON.parse(alias.content).error).toContain("unknown field `target`");
-
-    const invalid = await resume.execute({ id: "/root/live" });
-    expect(invalid.isError).toBe(true);
-    expect(JSON.parse(invalid.content).error).toContain("invalid agent id");
-  });
-
-  it("resume_agent reopens a closed rollout-backed agent", async () => {
-    const session = fakeSession();
-    const threadId = "550e8400-e29b-41d4-a716-446655440002";
-    const statuses = [
-      { status: "not_found" as const },
-      { status: "pending_init" as const },
-    ];
-    const rootLive = {
-      agentId: threadId,
-      agentPath: "/root/closed",
-      nickname: "Noether",
-      role: { name: "worker" },
-      status: { value: statuses[1] },
-      metadata: {
-        agentId: threadId,
-        agentPath: "/root/closed",
-        agentNickname: "Noether",
-        agentRole: "worker",
-        depth: 1,
-      },
-    };
-    const control = {
-      getLive: vi.fn(() => undefined),
-      getAgentMetadata: vi.fn(() => undefined),
-      getStatus: vi
-        .fn()
-        .mockResolvedValueOnce(statuses[0])
-        .mockResolvedValue(statuses[1]),
-      resumeAgentFromRollout: vi.fn(async () => ({
-        resumedCount: 1,
-        rootLive,
-      })),
-    };
-    (session as unknown as { rolloutStore: unknown }).rolloutStore = {
-      getThreadSpawnEdge: () => ({
-        childThreadId: threadId,
-        parentPath: "/root",
-        metadata: rootLive.metadata,
-      }),
-    };
-    _setAgentControlForTesting(session, {
-      control: control as never,
-      registry: {} as never,
-    });
-    try {
-      const resume = createModelFacingTools({
-        workspaceRoot: process.cwd(),
-        getSession: () => session,
-      }).find((tool) => tool.name === "resume_agent")!;
-
-      const result = await resume.execute({ id: threadId });
-
-      expect(result.isError).toBeUndefined();
-      expect(JSON.parse(result.content)).toEqual({ status: statuses[1] });
-      expect(control.resumeAgentFromRollout).toHaveBeenCalledWith({
-        rootThreadId: threadId,
-        parentPath: "/root",
-        metadata: rootLive.metadata,
-      });
-    } finally {
-      _clearAgentControlCacheForTesting(session);
-    }
   });
 
   it("rejects empty v2 agent messages before dispatch", async () => {

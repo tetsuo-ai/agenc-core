@@ -13,11 +13,9 @@ import {
   getDenyRuleForAgent,
   getDenyRuleForTool,
   getDenyRules,
-  getLegacyToolNames,
   getRuleByContentsForTool,
   isPermissionUpdateDestination,
   matchRule,
-  normalizeLegacyToolName,
   parseRuleString,
   serializeRuleValue,
   setRulesForSource,
@@ -58,42 +56,6 @@ describe("escapeRuleContent / unescapeRuleContent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Legacy name normalization
-// ---------------------------------------------------------------------------
-
-describe("normalizeLegacyToolName", () => {
-  test("returns canonical name for Task", () => {
-    expect(normalizeLegacyToolName("Task")).toBe("Agent");
-  });
-
-  test("returns canonical name for KillShell", () => {
-    expect(normalizeLegacyToolName("KillShell")).toBe("TaskStop");
-  });
-
-  test("collapses AgentOutputTool and BashOutputTool into TaskOutput", () => {
-    expect(normalizeLegacyToolName("AgentOutputTool")).toBe("TaskOutput");
-    expect(normalizeLegacyToolName("BashOutputTool")).toBe("TaskOutput");
-  });
-
-  test("passes unknown names through unchanged", () => {
-    expect(normalizeLegacyToolName("Bash")).toBe("Bash");
-    expect(normalizeLegacyToolName("Read")).toBe("Read");
-  });
-});
-
-describe("getLegacyToolNames", () => {
-  test("lists both legacy outputs that normalize to TaskOutput", () => {
-    const legacy = getLegacyToolNames("TaskOutput");
-    expect(legacy).toContain("AgentOutputTool");
-    expect(legacy).toContain("BashOutputTool");
-  });
-
-  test("returns empty array for names with no legacy", () => {
-    expect(getLegacyToolNames("Bash")).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // parseRuleString
 // ---------------------------------------------------------------------------
 
@@ -117,10 +79,10 @@ describe("parseRuleString", () => {
     expect(parseRuleString("Bash()")).toEqual({ toolName: "Bash" });
   });
 
-  test("normalizes legacy tool names", () => {
-    expect(parseRuleString("Task")).toEqual({ toolName: "Agent" });
-    expect(parseRuleString("Task(analysis)")).toEqual({
-      toolName: "Agent",
+  test("keeps tool names literal", () => {
+    expect(parseRuleString("spawn_agent")).toEqual({ toolName: "spawn_agent" });
+    expect(parseRuleString("spawn_agent(analysis)")).toEqual({
+      toolName: "spawn_agent",
       ruleContent: "analysis",
     });
   });
@@ -326,15 +288,15 @@ describe("getRuleByContentsForTool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Agent(agentType) helpers
+// spawn_agent(agentType) helpers
 // ---------------------------------------------------------------------------
 
 describe("agent deny helpers", () => {
-  test("getDenyRuleForAgent matches Agent(<type>) by content", () => {
+  test("getDenyRuleForAgent matches spawn_agent(<type>) by content", () => {
     const deny: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "deny",
-      ruleValue: { toolName: "Agent", ruleContent: "Explore" },
+      ruleValue: { toolName: "spawn_agent", ruleContent: "Explore" },
     };
     const ctx = buildCtxWithRules([deny]);
     expect(getDenyRuleForAgent(ctx, "Explore")?.ruleValue.ruleContent).toBe(
@@ -347,7 +309,7 @@ describe("agent deny helpers", () => {
     const deny: PermissionRule = {
       source: "userSettings",
       ruleBehavior: "deny",
-      ruleValue: { toolName: "Agent", ruleContent: "Bad" },
+      ruleValue: { toolName: "spawn_agent", ruleContent: "Bad" },
     };
     const ctx = buildCtxWithRules([deny]);
     const candidates = [

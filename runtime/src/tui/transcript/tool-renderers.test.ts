@@ -6,7 +6,7 @@ describe("tool renderers", () => {
   test("renders model-facing agent and task tools with specific labels", () => {
     expect(
       renderToolPresentation({
-        toolName: "Agent",
+        toolName: "spawn_agent",
         toolArgs: { task: "inspect renderer" },
         isComplete: false,
         isError: false,

@@ -7,7 +7,6 @@ Primary source anchors:
 
 - `codex-rs/core/src/agent/control.rs`
 - `codex-rs/core/src/thread_manager.rs`
-- `codex-rs/core/src/tools/handlers/multi_agents/resume_agent.rs`
 - `codex-rs/core/src/tools/handlers/multi_agents_tests.rs`
 - `codex-rs/core/src/agent/control_tests.rs`
 - `codex-rs/state/src/model/graph.rs`
@@ -31,14 +30,15 @@ control semantics:
 
 Tool contract:
 
-- `resume_agent` remains a hidden/deferred compatibility tool. It is not exposed
-  in the default strict Codex v2 tool list.
-- The strict legacy `resume_agent` input shape is `{ id: string }` and returns
-  `{ status }`.
-- AgenC compatibility aliases `{ target }`, `{ agent_id }`, and `{ agentId }`
-  normalize to the same thread id path before dispatch.
+- AgenC exposes only the current strict agent tool names:
+  `spawn_agent`, `wait_agent`, `close_agent`, `followup_task`, `send_message`,
+  and `list_agents`.
+- Legacy Codex aliases are intentionally not registered as model-facing tools.
+  Removed names include `Agent`, `send_input`, `TaskOutput`, `TaskStop`,
+  `SendMessage`, `resume_agent`, `TeamCreate`, and `TeamDelete`.
 - Live agents return current control-plane status. Closed rollout-backed agents
-  resume through `AgentControl.resumeAgentFromRollout(...)`, which rehydrates
+  may be rehydrated internally through `AgentControl.resumeAgentFromRollout(...)`,
+  which rehydrates
   the root handle and breadth-first open descendants from persisted
   thread-spawn edges. Closed descendants stay closed.
 
@@ -55,9 +55,7 @@ Intentional TypeScript/runtime adaptations:
   model is represented by available TypeScript session metadata and rollout
   edge metadata. Any deeper Rust-only config inheritance remains a known
   language/runtime difference, not a model-facing shortcut.
-- `Agent`, `send_input`, `TaskOutput`, `TaskStop`, and `SendMessage` remain
-  hidden/deferred compatibility aliases. The visible Codex v2 tools stay
-  strict.
+- Historical legacy aliases are not preserved in the model-facing registry.
 
 Parity tests should cover every upstream behavior category from:
 
@@ -90,7 +88,7 @@ Status values:
 | `spawn_agent` model-facing dispatcher, strict v2 shape, task-name/path handling, sync vs async launch | `codex-rs/core/src/tools/handlers/multi_agents_v2/spawn.rs`; `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` | `runtime/src/agents/delegate.ts`; `runtime/src/agents/thread.ts` | `runtime/src/agents/delegate.test.ts`; `runtime/src/agents/thread.test.ts` | adapted |
 | Child run loop: parent history handoff, child session metadata, worktree root, rollout store mount, down-inbox follow-up turns, completion/error/interruption status | Codex visible contract in `multi_agents_v2/spawn.rs` / `wait.rs`; execution adapted through AgenC session loop | `runtime/src/agents/run-agent.ts` | `runtime/src/agents/run-agent.test.ts` | adapted |
 | Fork context: `new`, `full_history`, `last_n_turns`, `explicit`, cache-safe tool filtering, rollout-backed history filtering | `codex-rs/core/src/agent/control.rs` fork tests; upstream plan source `forkSubagent.ts` / `utils/forkedAgent.ts` | `runtime/src/agents/fork-context.ts`; `runtime/src/agents/thread-rollout-truncation.ts` | `runtime/src/agents/fork-context.test.ts`; `runtime/src/agents/thread-rollout-truncation.test.ts` | covered |
-| Resume hidden/deferred compatibility tool: strict `{ id }`, active no-op, missing/invalid errors, rollout-backed restore | `codex-rs/core/src/tools/handlers/multi_agents/resume_agent.rs`; `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` | `runtime/src/agents/resume.ts`; `runtime/src/agents/control.ts`; `runtime/src/bin/model-facing-tools.ts` | `runtime/src/agents/resume.test.ts`; `runtime/src/agents/control.test.ts`; `runtime/src/bin/model-facing-tools.test.ts` | covered |
+| Rollout-backed internal restore: active no-op, missing/invalid errors, restore open descendants | `codex-rs/core/src/agent/control.rs`; `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` | `runtime/src/agents/resume.ts`; `runtime/src/agents/control.ts` | `runtime/src/agents/resume.test.ts`; `runtime/src/agents/control.test.ts` | covered |
 | Close/resume subtree semantics: close descendants, resume open descendants, keep explicitly closed descendants closed | `codex-rs/core/src/tools/handlers/multi_agents_v2/close_agent.rs`; `codex-rs/core/src/tools/handlers/multi_agents_tests.rs` | `runtime/src/agents/control.ts`; `runtime/src/agents/thread-manager.ts` | `runtime/src/agents/control.test.ts` (`resumeAgentFromRollout` cases) | covered |
 | Worktree create/bind/remove/stale cleanup and sparse-checkout hygiene | Codex model-facing worktree expectations; plan source `utils/worktree.ts` | `runtime/src/agents/worktree.ts` | `runtime/src/agents/worktree.test.ts` | covered |
 | I-1 recursion depth cap | `codex-rs/core/src/tools/handlers/multi_agents_common.rs`; depth checks in `multi_agents_tests.rs` | `runtime/src/agents/control.ts`; `runtime/src/agents/registry.ts` | `runtime/src/agents/control.test.ts` (`I-1` cases) | covered |
@@ -102,7 +100,7 @@ Status values:
 | I-35 sparse-checkout teardown verifies stale state before failing remove | Plan source `utils/worktree.ts`; invariant from `docs/plan/invariants.md` | `runtime/src/agents/worktree.ts` | `runtime/src/agents/worktree.test.ts` (`checks linked-worktree sparse state`) | covered |
 | I-36 parent rollout is flushed before forked child reads history | `codex-rs/core/src/agent/control_tests.rs` (`spawn_agent_fork_flushes_parent_rollout_before_loading_history`) | `runtime/src/agents/fork-context.ts` | `runtime/src/agents/fork-context.test.ts` (`I-36`) | covered |
 | I-37 sibling `agentPath` collision returns a typed error | `codex-rs/core/src/agent/registry.rs`; `codex-rs/core/src/agent/registry_tests.rs` | `runtime/src/agents/registry.ts` | `runtime/src/agents/registry.test.ts` (`I-37`) | covered |
-| Hidden/deferred legacy aliases (`Agent`, `send_input`, `TaskOutput`, `TaskStop`, `SendMessage`, legacy `resume_agent`) stay out of the default strict Codex v2 tool list | `codex-rs/core/src/tools/handlers/multi_agents.rs`; `codex-rs/core/src/tools/handlers/multi_agents_v2.rs` | `runtime/src/bin/model-facing-tools.ts`; `runtime/src/agents/resume.ts` | `runtime/src/bin/model-facing-tools.test.ts`; model-facing tool registry tests | deferred |
+| Legacy Codex aliases are absent from AgenC's model-facing registry | `codex-rs/core/src/tools/handlers/multi_agents_v2.rs` | `runtime/src/bin/model-facing-tools.ts` | `runtime/src/bin/model-facing-tools.test.ts` | covered |
 | Deferred MCP and built-in tool activation after `system.searchTools` selection | Codex deferred-tool contract represented by `multi_agents_v2` strict provider calls; plan T10 deferred schema row | `runtime/src/tool-registry.ts`; `runtime/src/tools/router.ts`; `runtime/src/phases/execute-tools.ts`; `runtime/src/permissions/evaluator.ts` | `runtime/src/bin/bootstrap-mcp.e2e.test.ts`; `runtime/src/tool-registry.test.ts`; `runtime/src/permissions/evaluator.test.ts` | covered |
 
 ## Validation Blocker Audit

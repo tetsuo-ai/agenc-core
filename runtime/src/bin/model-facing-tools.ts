@@ -19,7 +19,6 @@ import {
   ROOT_AGENT_PATH,
   normalizeAgentNameForPath,
   resolveAgentPath,
-  type AgentMetadata,
   type AgentPath,
   type ThreadId,
 } from "../agents/registry.js";
@@ -86,40 +85,6 @@ interface StoredCron {
 
 interface ToolState {
   readonly crons: readonly StoredCron[];
-}
-
-interface SpawnedAgentRecord {
-  readonly threadId: string;
-  readonly agentPath: string;
-  readonly nickname: string;
-  readonly join: () => Promise<unknown>;
-  readonly status: () => AgentStatus;
-}
-
-interface RolloutSpawnEdgeLookup {
-  getThreadSpawnEdge?: (childThreadId: ThreadId) =>
-    | {
-        readonly childThreadId: ThreadId;
-        readonly parentPath: AgentPath;
-        readonly metadata: AgentMetadata;
-      }
-    | undefined;
-}
-
-const SESSION_SPAWNED_AGENTS = new WeakMap<
-  Session,
-  Map<string, SpawnedAgentRecord>
->();
-
-function spawnedAgentsForSession(
-  session: Session,
-): Map<string, SpawnedAgentRecord> {
-  let records = SESSION_SPAWNED_AGENTS.get(session);
-  if (!records) {
-    records = new Map<string, SpawnedAgentRecord>();
-    SESSION_SPAWNED_AGENTS.set(session, records);
-  }
-  return records;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -286,17 +251,6 @@ function normalizeUrl(raw: string): string {
   return url.toString();
 }
 
-function parseTarget(args: Record<string, unknown>): string | undefined {
-  return (
-    stringValue(args.target) ??
-    stringValue(args.agent_id) ??
-    stringValue(args.agentId) ??
-    stringValue(args.task_id) ??
-    stringValue(args.taskId) ??
-    stringValue(args.id)
-  );
-}
-
 function strictArgs(
   args: Record<string, unknown>,
   opts: {
@@ -340,12 +294,6 @@ function callIdFromArgs(
   prefix: string,
 ): string {
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
-}
-
-function isValidThreadId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
-    value,
-  );
 }
 
 function hideSpawnAgentMetadata(session: Session): boolean {
@@ -459,14 +407,6 @@ function resolveAgentId(
   });
 }
 
-function rolloutSpawnEdgeFor(
-  session: Session,
-  childThreadId: ThreadId,
-): ReturnType<NonNullable<RolloutSpawnEdgeLookup["getThreadSpawnEdge"]>> {
-  const rolloutStore = session.rolloutStore as RolloutSpawnEdgeLookup | undefined;
-  return rolloutStore?.getThreadSpawnEdge?.(childThreadId);
-}
-
 function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
   const session = opts.getSession();
   if (session === null) {
@@ -492,26 +432,6 @@ function tryAutoExpandTaskPanel(opts: ModelFacingToolOptions): void {
   } catch {
     // Bridge access must never break a tool call.
   }
-}
-
-function promptFromAgentArgs(args: Record<string, unknown>): string | undefined {
-  const direct =
-    stringValue(args.message) ??
-    stringValue(args.prompt) ??
-    stringValue(args.task) ??
-    stringValue(args.taskPrompt) ??
-    stringValue(args.description);
-  if (direct) return direct;
-  if (!Array.isArray(args.items)) return undefined;
-  const parts = args.items
-    .map((item) => {
-      if (typeof item === "string") return item;
-      if (typeof item !== "object" || item === null) return "";
-      const record = item as Record<string, unknown>;
-      return stringValue(record.text) ?? stringValue(record.path) ?? "";
-    })
-    .filter((part) => part.length > 0);
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
 function parseForkTurns(value: unknown): ToolResult | ForkMode {
@@ -602,52 +522,46 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
 
   const spawn = async (
     args: Record<string, unknown>,
-    aliasName: string,
   ): Promise<ToolResult> => {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
-    if (aliasName === "spawn_agent") {
-      const strict = strictArgs(args, {
-        allowed: new Set([
-          "message",
-          "task_name",
-          "agent_type",
-          "model",
-          "reasoning_effort",
-          "fork_turns",
-          "fork_context",
-        ]),
-        required: ["message", "task_name"],
-      });
-      if (strict) return strict;
-      for (const key of [
+    const strict = strictArgs(args, {
+      allowed: new Set([
         "message",
         "task_name",
         "agent_type",
         "model",
         "reasoning_effort",
         "fork_turns",
-      ]) {
-        if (args[key] !== undefined && typeof args[key] !== "string") {
-          return json({ error: `${key} must be a string` }, true);
-        }
-      }
-      if (
-        args.fork_context !== undefined &&
-        typeof args.fork_context !== "boolean"
-      ) {
-        return json({ error: "fork_context must be a boolean" }, true);
+        "fork_context",
+      ]),
+      required: ["message", "task_name"],
+    });
+    if (strict) return strict;
+    for (const key of [
+      "message",
+      "task_name",
+      "agent_type",
+      "model",
+      "reasoning_effort",
+      "fork_turns",
+    ]) {
+      if (args[key] !== undefined && typeof args[key] !== "string") {
+        return json({ error: `${key} must be a string` }, true);
       }
     }
-    const prompt =
-      aliasName === "spawn_agent"
-        ? stringValue(args.message)
-        : promptFromAgentArgs(args);
+    if (
+      args.fork_context !== undefined &&
+      typeof args.fork_context !== "boolean"
+    ) {
+      return json({ error: "fork_context must be a boolean" }, true);
+    }
+    const prompt = stringValue(args.message);
     if (!prompt || prompt.trim().length === 0) {
-      return json({ error: "message or task prompt is required" }, true);
+      return json({ error: "message is required" }, true);
     }
-    if (aliasName === "spawn_agent" && args.fork_context !== undefined) {
+    if (args.fork_context !== undefined) {
       return json(
         { error: "fork_context is not supported; use fork_turns instead" },
         true,
@@ -666,13 +580,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (rawReasoningEffort !== undefined && reasoningEffort === undefined) {
       return json({ error: "invalid reasoning_effort" }, true);
     }
-    const forkMode =
-      aliasName === "spawn_agent"
-        ? parseForkTurns(args.fork_turns ?? args.forkTurns)
-        : boolValue(args.fork_context) === true ||
-            boolValue(args.forkContext) === true
-          ? { kind: "full_history" as const }
-          : parseForkTurns(args.fork_turns ?? args.forkTurns ?? "none");
+    const forkMode = parseForkTurns(args.fork_turns ?? args.forkTurns);
     if ("content" in forkMode) return forkMode;
     if (
       forkMode.kind === "full_history" &&
@@ -692,20 +600,12 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     });
     if (overrideError) return overrideError;
-    const taskName =
-      aliasName === "spawn_agent"
-        ? stringValue(args.task_name)
-        : stringValue(args.task_name) ??
-          stringValue(args.taskName) ??
-          normalizeAgentNameForPath(role ?? prompt.slice(0, 48));
+    const taskName = stringValue(args.task_name);
     if (!taskName) {
       return json({ error: "task_name is required" }, true);
     }
     const agentName = normalizeAgentNameForPath(taskName);
-    const runInBackground =
-      boolValue(args.run_in_background) ??
-      boolValue(args.runInBackground) ??
-      true;
+    const runInBackground = true;
     const callId = callIdFromArgs(args, "agent");
 
     emit(session, {
@@ -761,16 +661,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "spawn_agent did not return an agent thread" }, true);
     }
     const live = thread.live;
-    const spawned = spawnedAgentsForSession(session);
-    spawned.set(live.agentId, {
-      threadId: live.agentId,
-      agentPath: live.agentPath,
-      nickname: live.nickname,
-      join: () => thread.join(),
-      status: () => live.status.value as AgentStatus,
-    });
-    spawned.set(live.agentPath, spawned.get(live.agentId)!);
-    spawned.set(live.nickname, spawned.get(live.agentId)!);
     emit(session, {
       type: "collab_agent_spawn_end",
       payload: {
@@ -787,26 +677,15 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: live.status.value,
       },
     });
-    recordAgentCounter(session, "codex.multi_agent.spawn", [
+    recordAgentCounter(session, "agenc.multi_agent.spawn", [
       ["role", live.role.name],
     ]);
 
-    if (aliasName === "spawn_agent") {
-      return json({
-        task_name: live.agentPath,
-        ...(!hideSpawnAgentMetadata(session)
-          ? { nickname: live.nickname ?? null }
-          : {}),
-      });
-    }
-
     return json({
-      tool: aliasName,
-      status: runInBackground ? "running" : live.status.value.status,
       task_name: live.agentPath,
-      agent_id: live.agentId,
-      agent_path: live.agentPath,
-      nickname: live.nickname,
+      ...(!hideSpawnAgentMetadata(session)
+        ? { nickname: live.nickname ?? null }
+        : {}),
     });
   };
 
@@ -850,73 +729,15 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     });
   };
 
-  const taskOutput = async (
-    args: Record<string, unknown>,
-  ): Promise<ToolResult> => {
-    const targets = stringArray(args.targets);
-    const target =
-      parseTarget(args) ??
-      (targets.length === 1 ? targets[0] : undefined);
-    if (!target && targets.length === 0) {
-      return json({ error: "target or targets is required" }, true);
-    }
-    const timeoutMs = Math.max(
-      0,
-      Math.min(
-        numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs) ?? 30_000,
-        MAX_WAIT_TIMEOUT_MS,
-      ),
-    );
-    const allTargets = targets.length > 0 ? targets : [target!];
-    const deadline = Date.now() + timeoutMs;
-    const statuses: Record<string, unknown> = {};
-    const sessionOrError = getSessionOrError(opts);
-    if (!("conversationId" in sessionOrError)) return sessionOrError;
-    const spawned = spawnedAgentsForSession(sessionOrError);
-    for (const item of allTargets) {
-      const record = spawned.get(item);
-      if (record) {
-        if (timeoutMs > 0) {
-          while (Date.now() < deadline) {
-            const status = record.status();
-            if (status.status !== "running") break;
-            await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
-          }
-        }
-        const status = record.status();
-        statuses[item] = status;
-        if (status.status !== "running") {
-          try {
-            statuses[`${item}:result`] = await record.join();
-          } catch (error) {
-            statuses[`${item}:error`] =
-              error instanceof Error ? error.message : String(error);
-          }
-        }
-        continue;
-      }
-      const { control } = ensureAgentControl(sessionOrError);
-      const listed = control.listAgents();
-      statuses[item] =
-        listed.find((agent) => agent.agentName === item) ??
-        { status: "not_found" };
-    }
-    return json({ status: statuses });
-  };
-
   const closeAgent = async (
     args: Record<string, unknown>,
-    aliasName: "close_agent" | "TaskStop",
   ): Promise<ToolResult> => {
-    if (aliasName === "close_agent") {
-      const strict = strictArgs(args, {
-        allowed: new Set(["target"]),
-        required: ["target"],
-      });
-      if (strict) return strict;
-    }
-    const target =
-      aliasName === "close_agent" ? stringValue(args.target) : parseTarget(args);
+    const strict = strictArgs(args, {
+      allowed: new Set(["target"]),
+      required: ["target"],
+    });
+    if (strict) return strict;
+    const target = stringValue(args.target);
     if (!target) return json({ error: "target is required" }, true);
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
@@ -964,11 +785,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     args: Record<string, unknown>,
     optsForSend: {
       readonly triggerTurn: boolean;
-      readonly aliasName:
-        | "followup_task"
-        | "send_message"
-        | "send_input"
-        | "SendMessage";
+      readonly aliasName: "followup_task" | "send_message";
     },
   ): Promise<ToolResult> => {
     if (optsForSend.aliasName === "send_message") {
@@ -984,20 +801,8 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       });
       if (strict) return strict;
     }
-    const target =
-      optsForSend.aliasName === "send_message" ||
-      optsForSend.aliasName === "followup_task"
-        ? stringValue(args.target)
-        : parseTarget(args);
-    const message =
-      optsForSend.aliasName === "send_message" ||
-      optsForSend.aliasName === "followup_task"
-        ? typeof args.message === "string"
-          ? args.message
-          : undefined
-        : stringValue(args.message) ??
-          stringValue(args.input) ??
-          stringValue(args.prompt);
+    const target = stringValue(args.target);
+    const message = typeof args.message === "string" ? args.message : undefined;
     if (!target || !message) {
       return json({ error: "target and message are required" }, true);
     }
@@ -1063,17 +868,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: live?.status.value ?? { status: "not_found" },
       },
     });
-    if (
-      optsForSend.aliasName === "send_message" ||
-      optsForSend.aliasName === "followup_task"
-    ) {
-      return { content: "" };
-    }
-    return json({
-      accepted: true,
-      target: agentId,
-      trigger_turn: optsForSend.triggerTurn,
-    });
+    return { content: "" };
   };
 
   const listAgents = async (
@@ -1121,24 +916,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     additionalProperties: false,
   };
 
-  const agentSchema = {
-    type: "object",
-    properties: {
-      message: { type: "string" },
-      task_name: { type: "string" },
-      prompt: { type: "string" },
-      task: { type: "string" },
-      items: { type: "array" },
-      agent_type: { type: "string" },
-      role: { type: "string" },
-      model: { type: "string" },
-      reasoning_effort: { type: "string" },
-      fork_turns: { type: ["string", "number"] },
-      run_in_background: { type: "boolean" },
-    },
-    additionalProperties: true,
-  };
-
   return [
     {
       name: "spawn_agent",
@@ -1150,20 +927,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       requiresApproval: true,
       inputSchema: spawnAgentSchema,
-      execute: (args) => spawn(args, "spawn_agent"),
-    },
-    {
-      name: "Agent",
-      description:
-        "Compatibility alias for spawn_agent. Prefer spawn_agent for new AgenC calls.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        keywords: ["agent", "task", "compatibility"],
-      }),
-      requiresApproval: true,
-      inputSchema: agentSchema,
-      execute: (args) => spawn(args, "Agent"),
+      execute: spawn,
     },
     {
       name: "wait_agent",
@@ -1181,28 +945,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       execute: waitForAgent,
     },
     {
-      name: "TaskOutput",
-      description:
-        "Compatibility alias for wait_agent that returns the latest known task or agent status.",
-      metadata: toolMetadata("agent", {
-        deferred: true,
-        keywords: ["agent", "task", "output"],
-      }),
-      isReadOnly: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          task_id: { type: "string" },
-          agent_id: { type: "string" },
-          target: { type: "string" },
-          targets: { type: "array", items: { type: "string" } },
-          timeout_ms: { type: "number" },
-        },
-        additionalProperties: true,
-      },
-      execute: taskOutput,
-    },
-    {
       name: "close_agent",
       description: "Close a spawned agent and its descendants.",
       metadata: toolMetadata("agent", {
@@ -1218,28 +960,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         required: ["target"],
         additionalProperties: false,
       },
-      execute: (args) => closeAgent(args, "close_agent"),
-    },
-    {
-      name: "TaskStop",
-      description:
-        "Compatibility alias for close_agent. Prefer close_agent for new AgenC calls.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        keywords: ["agent", "task", "stop"],
-      }),
-      requiresApproval: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          task_id: { type: "string" },
-          agent_id: { type: "string" },
-          reason: { type: "string" },
-        },
-        additionalProperties: true,
-      },
-      execute: (args) => closeAgent(args, "TaskStop"),
+      execute: closeAgent,
     },
     {
       name: "followup_task",
@@ -1263,28 +984,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         sendInput(args, { triggerTurn: true, aliasName: "followup_task" }),
     },
     {
-      name: "send_input",
-      description:
-        "Compatibility alias for followup_task. Prefer followup_task for new AgenC calls.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        hiddenByDefault: true,
-        keywords: ["agent", "input", "message"],
-      }),
-      inputSchema: {
-        type: "object",
-        properties: {
-          target: { type: "string" },
-          message: { type: "string" },
-          input: { type: "string" },
-        },
-        additionalProperties: false,
-      },
-      execute: (args) =>
-        sendInput(args, { triggerTurn: true, aliasName: "send_input" }),
-    },
-    {
       name: "send_message",
       description:
         "Send a string message to an existing agent without triggering a new turn.",
@@ -1304,161 +1003,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         sendInput(args, { triggerTurn: false, aliasName: "send_message" }),
     },
     {
-      name: "SendMessage",
-      description:
-        "Compatibility alias for send_message. Prefer send_message for new AgenC calls.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        keywords: ["agent", "message", "compatibility"],
-      }),
-      inputSchema: {
-        type: "object",
-        properties: {
-          target: { type: "string" },
-          message: { type: "string" },
-        },
-        additionalProperties: true,
-      },
-      execute: (args) =>
-        sendInput(args, { triggerTurn: false, aliasName: "SendMessage" }),
-    },
-    {
-      name: "resume_agent",
-      description:
-        "Compatibility alias for legacy multi-agent sessions. Codex multi-agent v2 does not expose resume_agent by default.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        hiddenByDefault: true,
-        keywords: ["agent", "resume"],
-      }),
-      inputSchema: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-        },
-        required: ["id"],
-        additionalProperties: false,
-      },
-      execute: async (args) => {
-        const strict = strictArgs(args, {
-          allowed: new Set(["id"]),
-          required: ["id"],
-        });
-        if (strict) return strict;
-        const target = stringValue(args.id);
-        if (!target) return json({ error: "id is required" }, true);
-        if (!isValidThreadId(target)) {
-          return json({ error: `invalid agent id ${target}` }, true);
-        }
-        const sessionOrError = getSessionOrError(opts);
-        if (!("conversationId" in sessionOrError)) return sessionOrError;
-        const { control } = ensureAgentControl(sessionOrError);
-        const current = currentAgentContext(sessionOrError, args);
-        const receiverThreadId = target as ThreadId;
-        const callId = callIdFromArgs(args, "resume");
-        const liveBefore = control.getLive(receiverThreadId);
-        const edge = rolloutSpawnEdgeFor(sessionOrError, receiverThreadId);
-        const metadata =
-          control.getAgentMetadata(receiverThreadId) ??
-          liveBefore?.metadata ??
-          edge?.metadata;
-        emit(sessionOrError, {
-          type: "collab_resume_begin",
-          payload: {
-            callId,
-            senderThreadId: current.threadId,
-            receiverThreadId,
-            ...(metadata?.agentNickname !== undefined
-              ? { receiverAgentNickname: metadata.agentNickname }
-              : liveBefore?.nickname !== undefined
-                ? { receiverAgentNickname: liveBefore.nickname }
-                : {}),
-            ...(metadata?.agentRole !== undefined
-              ? { receiverAgentRole: metadata.agentRole }
-              : liveBefore?.role.name !== undefined
-                ? { receiverAgentRole: liveBefore.role.name }
-                : {}),
-          },
-        });
-
-        let status = await control.getStatus(receiverThreadId);
-        let resumeError: unknown;
-        if (status.status === "not_found") {
-          if (!metadata?.agentId || !metadata.agentPath) {
-            resumeError = new Error(
-              `thread ${receiverThreadId} is not a resumable spawned agent`,
-            );
-          } else {
-            try {
-              const resumed = await control.resumeAgentFromRollout({
-                rootThreadId: receiverThreadId,
-                parentPath: edge?.parentPath ?? current.agentPath,
-                metadata,
-              });
-              const rootLive = resumed.rootLive;
-              if (rootLive) {
-                const record: SpawnedAgentRecord = {
-                  threadId: rootLive.agentId,
-                  agentPath: rootLive.agentPath,
-                  nickname: rootLive.nickname,
-                  join: async () => ({
-                    threadId: rootLive.agentId,
-                    status: rootLive.status.value,
-                  }),
-                  status: () => rootLive.status.value as AgentStatus,
-                };
-                const spawned = spawnedAgentsForSession(sessionOrError);
-                spawned.set(rootLive.agentId, record);
-                spawned.set(rootLive.agentPath, record);
-                spawned.set(rootLive.nickname, record);
-              }
-              status = await control.getStatus(receiverThreadId);
-            } catch (error) {
-              resumeError = error;
-              status = await control.getStatus(receiverThreadId);
-            }
-          }
-        }
-
-        const liveAfter = control.getLive(receiverThreadId) ?? liveBefore;
-        emit(sessionOrError, {
-          type: "collab_resume_end",
-          payload: {
-            callId,
-            senderThreadId: current.threadId,
-            receiverThreadId,
-            ...(metadata?.agentNickname !== undefined
-              ? { receiverAgentNickname: metadata.agentNickname }
-              : liveAfter?.nickname !== undefined
-                ? { receiverAgentNickname: liveAfter.nickname }
-                : {}),
-            ...(metadata?.agentRole !== undefined
-              ? { receiverAgentRole: metadata.agentRole }
-              : liveAfter?.role.name !== undefined
-                ? { receiverAgentRole: liveAfter.role.name }
-                : {}),
-            status,
-          },
-        });
-
-        if (resumeError !== undefined) {
-          return json(
-            {
-              error:
-                resumeError instanceof Error
-                  ? resumeError.message
-                  : String(resumeError),
-            },
-            true,
-          );
-        }
-        recordAgentCounter(sessionOrError, "codex.multi_agent.resume");
-        return json({ status });
-      },
-    },
-    {
       name: "list_agents",
       description: "List live agents known to the current session.",
       metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
@@ -1471,67 +1015,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         additionalProperties: false,
       },
       execute: listAgents,
-    },
-    {
-      name: "TeamCreate",
-      description:
-        "Compatibility helper that launches several background agents and groups their ids in this session.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        keywords: ["team", "swarm", "agent"],
-      }),
-      requiresApproval: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          team_name: { type: "string" },
-          agents: { type: "array" },
-        },
-        required: ["agents"],
-        additionalProperties: true,
-      },
-      execute: async (args) => {
-        const agents = Array.isArray(args.agents) ? args.agents : [];
-        if (agents.length === 0) return json({ error: "agents is required" }, true);
-        const launched: unknown[] = [];
-        for (const agent of agents) {
-          if (typeof agent !== "object" || agent === null) continue;
-          const result = await spawn(agent as Record<string, unknown>, "TeamCreate");
-          launched.push(JSON.parse(result.content));
-        }
-        return json({
-          team_name: stringValue(args.team_name) ?? `team-${randomUUID()}`,
-          agents: launched,
-        });
-      },
-    },
-    {
-      name: "TeamDelete",
-      description:
-        "Compatibility helper that closes the listed agents for a session-local team.",
-      metadata: toolMetadata("agent", {
-        mutating: true,
-        deferred: true,
-        keywords: ["team", "swarm", "agent", "close"],
-      }),
-      requiresApproval: true,
-      inputSchema: {
-        type: "object",
-        properties: {
-          targets: { type: "array", items: { type: "string" } },
-        },
-        additionalProperties: true,
-      },
-      execute: async (args) => {
-        const targets = stringArray(args.targets);
-        const closed: unknown[] = [];
-        for (const target of targets) {
-          const result = await closeAgent({ target }, "TaskStop");
-          closed.push(JSON.parse(result.content));
-        }
-        return json({ closed });
-      },
     },
   ];
 }

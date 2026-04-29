@@ -365,28 +365,6 @@ export interface ToolPermissionContext {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Legacy tool name aliases
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Legacy tool-name aliases. When a tool is renamed, add `old → new`
- * here so permission rules, hooks, and persisted wire names resolve to
- * the canonical name. Exactly the mapping shipped by AgenC:
- *
- *   - `Task`           → `Agent`           (subagent tool rename)
- *   - `KillShell`      → `TaskStop`        (tool rename)
- *   - `AgentOutputTool`→ `TaskOutput`
- *   - `BashOutputTool` → `TaskOutput`
- */
-export const LEGACY_TOOL_NAME_ALIASES: Readonly<Record<string, string>> =
-  Object.freeze({
-    Task: "Agent",
-    KillShell: "TaskStop",
-    AgentOutputTool: "TaskOutput",
-    BashOutputTool: "TaskOutput",
-  });
-
-// ─────────────────────────────────────────────────────────────────────
 // Deep-freeze helpers (module-private)
 // ─────────────────────────────────────────────────────────────────────
 

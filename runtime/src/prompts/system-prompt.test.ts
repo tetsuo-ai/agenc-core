@@ -616,7 +616,7 @@ describe("assembleSystemPrompt", () => {
     expect(text).not.toContain("# Output Style:");
     expect(text).not.toContain("# MCP Server Instructions");
     expect(text).not.toContain("# Scratchpad Directory");
-    // Agent tool gated off without system.agent.delegate.
+    // spawn_agent tool gated off without system.agent.delegate.
     expect(text).not.toContain("# Subagents");
   });
 });

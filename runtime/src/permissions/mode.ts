@@ -484,11 +484,11 @@ const DANGEROUS_BASH_PATTERNS: readonly string[] = Object.freeze([
 ] as const);
 
 /**
- * Tool names treated as always-dangerous when allowlisted. Any Agent allow
+ * Tool names treated as always-dangerous when allowlisted. Any spawn_agent allow
  * rule auto-approves sub-agent spawns before the classifier can see the
  * prompt (delegation attack surface).
  */
-const DANGEROUS_TOOLS: readonly string[] = Object.freeze(["Agent"] as const);
+const DANGEROUS_TOOLS: readonly string[] = Object.freeze(["spawn_agent"] as const);
 
 /**
  * Returns true if a Bash permission rule is dangerous for auto mode.
@@ -519,7 +519,7 @@ export function isDangerousBashPermission(
 }
 
 /**
- * Similar detector for PowerShell and Agent allow rules. Scoped narrowly to
+ * Similar detector for PowerShell and spawn_agent allow rules. Scoped narrowly to
  * the cases AgenC explicitly catches in
  * `isDangerousPowerShellPermission` + `isDangerousTaskPermission`. We keep
  * the matcher conservative — if the content looks like a non-exact rule
@@ -564,7 +564,7 @@ function isDangerousPowerShellPermission(
 }
 
 /**
- * Any Agent allow rule is dangerous because it auto-approves sub-agent
+ * Any spawn_agent allow rule is dangerous because it auto-approves sub-agent
  * spawns before the classifier can inspect the sub-agent's prompt.
  */
 function isDangerousAgentPermission(

@@ -41,7 +41,7 @@ const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any 
 - Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths sorted by modification time
 - Use this tool when you need to find files by name patterns
-- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead`;
+- When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the spawn_agent tool instead`;
 
 interface GlobToolInput extends ToolExecutionInjectedArgs {
   readonly pattern?: unknown;

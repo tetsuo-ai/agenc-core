@@ -29,7 +29,7 @@ import { resolveToolAllowedPaths, safePath } from "./filesystem.js";
 export const GREP_TOOL_NAME = "Grep";
 
 const BASH_TOOL_NAME = "Bash";
-const AGENT_TOOL_NAME = "Agent";
+const AGENT_TOOL_NAME = "spawn_agent";
 
 /** Verbatim adaptation of AgenC `GrepTool/prompt.ts:7-17`. */
 const GREP_DESCRIPTION = `A powerful search tool built on ripgrep

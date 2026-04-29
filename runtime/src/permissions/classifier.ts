@@ -81,11 +81,8 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "TaskGet",
     "TaskUpdate",
     "TaskList",
-    "TaskStop",
-    "TaskOutput",
     "wait_agent",
     "list_agents",
-    "resume_agent",
     // Plan-mode / UI
     "AskUserQuestion",
     "EnterPlanMode",
@@ -93,10 +90,6 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "VerifyPlanExecution",
     "Brief",
     "SendUserMessage",
-    // Team coordination
-    "TeamCreate",
-    "TeamDelete",
-    "SendMessage",
     // Workflow orchestration
     "Workflow",
     // Misc safe

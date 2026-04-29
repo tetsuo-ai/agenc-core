@@ -135,8 +135,8 @@ export function createMonitorTool(config: MonitorToolConfig): Tool {
 
         // Verbatim port of AgenC
         // `mapToolResultToToolResultBlockParam` content
-        // (`MonitorTool.ts:140-145`), with TaskStop replaced by the
-        // AgenC primitive the model already knows.
+        // (`MonitorTool.ts:140-145`), with the stop instruction phrased
+        // around AgenC's current tool surface.
         const content =
           `Monitor task started with ID: ${taskId}. ` +
           `Output is being streamed to: ${outputFile}. ` +

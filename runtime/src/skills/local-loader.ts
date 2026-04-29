@@ -1309,7 +1309,7 @@ Run \`git diff\` (or \`git diff HEAD\` if there are staged changes) to see what 
 
 ## Phase 2: Launch Three Review Agents in Parallel
 
-Use the Agent tool to launch all three agents concurrently in a single message. Pass each agent the full diff so it has complete context.
+Use the spawn_agent tool to launch all three agents concurrently in a single message. Pass each agent the full diff so it has complete context.
 
 1. Code reuse review: find existing utilities and helpers that should replace newly written code.
 2. Code quality review: find redundant state, copy-paste, leaky abstractions, stringly typed code, and unnecessary comments.
@@ -1343,7 +1343,7 @@ Enter plan mode, understand the scope, and decompose the work into independent u
 
 ## Phase 2: Spawn Workers
 
-After the plan is approved, spawn one background agent per work unit using the Agent tool. Each worker prompt must include the overall goal, its owned files, local conventions, the verification recipe, and instructions to test, commit, push, and report the PR URL.
+After the plan is approved, spawn one background agent per work unit using the spawn_agent tool. Each worker prompt must include the overall goal, its owned files, local conventions, the verification recipe, and instructions to test, commit, push, and report the PR URL.
 
 ## Phase 3: Track Progress
 
