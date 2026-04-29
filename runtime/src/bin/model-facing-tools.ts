@@ -1014,7 +1014,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       agent_type: {
         type: "string",
         description:
-          "Optional role. Prefer cyberpunk names: netrunner, scanner, runner. Legacy aliases such as default, explorer, and worker are accepted.",
+          "Optional role name. Accepts any registered built-in or user-defined role; defaults to `default` when omitted.",
       },
       model: { type: "string" },
       reasoning_effort: { type: "string" },

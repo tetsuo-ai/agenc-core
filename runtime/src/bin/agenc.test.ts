@@ -143,16 +143,9 @@ describe("buildDelegateTool — system.agent.delegate", () => {
         "runInBackground",
       ]),
     );
-    const roleSchema = props.role as { enum: string[] };
-    expect(roleSchema.enum).toEqual([
-      "netrunner",
-      "scanner",
-      "runner",
-      "sentinel",
-      "default",
-      "explorer",
-      "worker",
-    ]);
+    const roleSchema = props.role as { type: string; enum?: string[] };
+    expect(roleSchema.type).toBe("string");
+    expect(roleSchema.enum).toBeUndefined();
   });
 
   it("rejects invocation with missing taskPrompt", async () => {
