@@ -12,6 +12,7 @@ import { GovernanceOperations } from '../../governance/operations.js';
 import { DisputeOperations } from '../../dispute/operations.js';
 import { ReputationEconomyOperations } from '../../reputation/economy.js';
 import { TaskOperations } from '../../task/operations.js';
+import { MANUAL_VALIDATION_SENTINEL } from '../../task/types.js';
 import {
   findBidBookPda,
   findBidPda,
@@ -267,7 +268,7 @@ describe('agenc mutation tools', () => {
     expect(String(parseJson(result).error)).toContain('proofHash');
   });
 
-  it('agenc.completeTask commits artifact files through resultData and proofHash', async () => {
+  it('agenc.completeTask commits reviewed-public artifact files through resultData and proofHash', async () => {
     const rootDir = await makeTempDir();
     const artifactFile = path.join(rootDir, 'delivery.md');
     const content = '# Delivery\n\nReport for buyer review.\n';
@@ -277,7 +278,7 @@ describe('agenc mutation tools', () => {
     vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
       creator: CREATOR_WALLET,
       taskType: TaskType.Exclusive,
-      constraintHash: new Uint8Array(32),
+      constraintHash: new Uint8Array(MANUAL_VALIDATION_SENTINEL),
     } as never);
     const completeSpy = vi
       .spyOn(TaskOperations.prototype, 'completeTask')
@@ -306,6 +307,30 @@ describe('agenc mutation tools', () => {
     });
     const resultData = completeSpy.mock.calls[0]?.[3] as Uint8Array;
     expect(decodeMarketplaceArtifactSha256FromResultData(resultData)).toBe(sha256);
+  });
+
+  it('agenc.completeTask blocks buyer-facing artifacts on public auto-settle tasks', async () => {
+    const rootDir = await makeTempDir();
+    const artifactFile = path.join(rootDir, 'delivery.md');
+    await writeFile(artifactFile, '# Delivery\n', 'utf8');
+    const program = createMockProgram();
+    vi.spyOn(TaskOperations.prototype, 'fetchTask').mockResolvedValue({
+      creator: CREATOR_WALLET,
+      taskType: TaskType.Exclusive,
+      constraintHash: new Uint8Array(32),
+    } as never);
+    const completeSpy = vi.spyOn(TaskOperations.prototype, 'completeTask');
+
+    const tool = createCompleteTaskTool(program as never, silentLogger);
+    const result = await tool.execute({
+      taskPda: TASK_PDA.toBase58(),
+      artifactFile,
+      workerAgentPda: AGENT_PDA.toBase58(),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(String(parseJson(result).error)).toContain('creator-review');
+    expect(completeSpy).not.toHaveBeenCalled();
   });
 
   it('agenc.completeTask fails closed for buyer-facing artifacts on private ZK tasks', async () => {
