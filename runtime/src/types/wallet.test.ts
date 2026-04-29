@@ -16,6 +16,7 @@ import {
   getDefaultKeypairPath,
   loadDefaultKeypair,
   KeypairFileError,
+  expandPath,
   Wallet,
 } from "./wallet";
 
@@ -418,5 +419,66 @@ describe("KeypairFileError", () => {
 
     expect(error instanceof Error).toBe(true);
     expect(error instanceof KeypairFileError).toBe(true);
+  });
+});
+
+describe("expandPath", () => {
+  it("expands ~/path to absolute home directory path", () => {
+    const result = expandPath("~/.config/solana/id.json");
+    expect(result).toBe(path.join(os.homedir(), ".config/solana/id.json"));
+    expect(result).not.toContain("~");
+  });
+
+  it("expands ~/nested/path correctly", () => {
+    const result = expandPath("~/workshop/agencproj/keypair.json");
+    expect(result).toBe(
+      path.join(os.homedir(), "workshop/agencproj/keypair.json"),
+    );
+  });
+
+  it("passes absolute paths through unchanged", () => {
+    const abs = "/Users/foo/.config/solana/id.json";
+    expect(expandPath(abs)).toBe(abs);
+  });
+
+  it("passes relative paths through unchanged", () => {
+    const rel = "relative/path/keypair.json";
+    expect(expandPath(rel)).toBe(rel);
+  });
+
+  it("does not expand a bare tilde with no slash", () => {
+    // Only ~/... is expanded; a bare ~ or ~user is passed through unchanged
+    expect(expandPath("~")).toBe("~");
+  });
+});
+
+describe("loadKeypairFromFile tilde expansion", () => {
+  const tmpDir = os.tmpdir();
+  const tildeKeypairPath = path.join(tmpDir, "test-keypair-tilde.json");
+  let testKeypair: Keypair;
+
+  beforeAll(() => {
+    testKeypair = Keypair.generate();
+    fs.writeFileSync(
+      tildeKeypairPath,
+      JSON.stringify(Array.from(testKeypair.secretKey)),
+    );
+  });
+
+  afterAll(() => {
+    try {
+      fs.unlinkSync(tildeKeypairPath);
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it("loads keypair when path uses tilde notation", async () => {
+    // Construct a ~/... path that resolves to the tmp file
+    const homeRelative = path.relative(os.homedir(), tildeKeypairPath);
+    const tildePath = `~/${homeRelative}`;
+
+    const loaded = await loadKeypairFromFile(tildePath);
+    expect(loaded.publicKey.equals(testKeypair.publicKey)).toBe(true);
   });
 });
