@@ -7,14 +7,61 @@ describe("tool renderers", () => {
     expect(
       renderToolPresentation({
         toolName: "spawn_agent",
-        toolArgs: { task_name: "task_1", agent_type: "runner" },
-        isComplete: false,
+        toolArgs: {
+          task_name: "task_1",
+          agent_type: "runner",
+          message: "go inspect the parser",
+          model: "qwen3",
+          reasoning_effort: "medium",
+        },
+        result: JSON.stringify({
+          task_name: "/root/task_1",
+          nickname: "BridgeRunner",
+          agent_role: "worker",
+          agent_role_display: "Runner",
+        }),
+        isComplete: true,
         isError: false,
       }),
     ).toMatchObject({
       tone: "agent",
-      title: "Agent Running",
-      target: "Runner task_1",
+      title: "Spawned BridgeRunner [Runner] (qwen3 medium)",
+      target: "",
+      detail: "go inspect the parser",
+    });
+
+    expect(
+      renderToolPresentation({
+        toolName: "close_agent",
+        toolArgs: { target: "/root/task_1" },
+        result: JSON.stringify({
+          previous_status: { status: "running", turnId: "t", startedAtMs: 1 },
+        }),
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "agent",
+      title: "Closed /root/task_1",
+      target: "",
+    });
+
+    expect(
+      renderToolPresentation({
+        toolName: "wait_agent",
+        toolArgs: {},
+        result: JSON.stringify({
+          message: "Wait completed.",
+          timed_out: false,
+        }),
+        isComplete: true,
+        isError: false,
+      }),
+    ).toMatchObject({
+      tone: "agent",
+      title: "Finished waiting",
+      target: "",
+      detail: "Wait completed.",
     });
 
     expect(

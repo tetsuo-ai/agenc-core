@@ -27,6 +27,14 @@ import type { EventMsg } from "../../session/event-log.js";
 import type { TranscriptMessage } from "../transcript/MessageList.js";
 import type { PlanEvent } from "../transcript/PlanProgress.js";
 import {
+  formatAgentStatusSummary,
+  formatCollabAgentLabel,
+  formatPromptPreview,
+  formatSpawnRequestSuffix,
+  formatWaitCompleteLines,
+  type CollabAgentStatusEntry as RenderCollabAgentStatusEntry,
+} from "../transcript/collab-agent-rendering.js";
+import {
   appendBoundedTranscriptLine,
   appendBoundedTranscriptText,
   truncateTranscriptJsonArgs,
@@ -62,6 +70,8 @@ type TranscriptEventMsg = Extract<
       | "collab_waiting_end"
       | "collab_close_begin"
       | "collab_close_end"
+      | "collab_resume_begin"
+      | "collab_resume_end"
       | "plan_started"
       | "plan_delta"
       | "plan_item_completed"
@@ -392,21 +402,19 @@ function formatDeprecation(
   return `Deprecated ${payload.subject}${replacement}: ${payload.reason}`;
 }
 
-function agentStatusLabel(status: { readonly status: string }): string {
-  switch (status.status) {
-    case "completed":
-      return "completed";
-    case "errored":
-      return "failed";
-    case "shutdown":
-      return "closed";
-    case "interrupted":
-      return "interrupted";
-    case "running":
-      return "running";
-    default:
-      return status.status;
-  }
+function collabAgentStatusEntries(
+  entries: Extract<
+    TranscriptEventMsg,
+    { readonly type: "collab_waiting_end" }
+  >["payload"]["agentStatuses"],
+): readonly RenderCollabAgentStatusEntry[] {
+  return (entries ?? []).map((entry) => ({
+    threadId: entry.threadId,
+    nickname: entry.agentNickname,
+    role: entry.agentRole,
+    roleDisplayName: entry.agentRoleDisplayName,
+    status: entry.status,
+  }));
 }
 
 function formatSessionConfigured(
@@ -714,6 +722,23 @@ export function eventsToMessages(
     const index = messages.length - 1;
     toolMessageIndexByCallId.set(callId, index);
     return index;
+  };
+
+  const removeToolMessage = (callId: string): void => {
+    const index = toolMessageIndexByCallId.get(callId);
+    if (index === undefined) return;
+    messages.splice(index, 1);
+    toolMessageIndexByCallId.delete(callId);
+    for (const [id, existingIndex] of toolMessageIndexByCallId) {
+      if (existingIndex > index) {
+        toolMessageIndexByCallId.set(id, existingIndex - 1);
+      }
+    }
+  };
+
+  const suppressToolMessage = (callId: string): void => {
+    suppressedToolCallIds.add(callId);
+    removeToolMessage(callId);
   };
 
   for (const [index, event] of events.entries()) {
@@ -1260,81 +1285,143 @@ export function eventsToMessages(
         break;
       }
       case "collab_agent_spawn_begin": {
+        suppressToolMessage(event.payload.callId);
         if (options.includeHidden === true) {
+          const prompt = formatPromptPreview(event.payload.prompt);
           messages.push({
             id: event.id ?? `agent-spawn-begin-${event.payload.callId}`,
             turnId: ensureTurnId(currentTurnId),
             kind: "meta",
             label: "agent",
-            content: `Starting agent: ${truncateTranscriptText(event.payload.prompt, 300)}`,
+            content:
+              prompt !== undefined
+                ? `Spawning agent\n  └ ${prompt}`
+                : "Spawning agent",
             timestamp,
           });
         }
         break;
       }
       case "collab_agent_spawn_end": {
-        const name =
-          event.payload.newAgentNickname ??
-          event.payload.newThreadId ??
-          "agent";
+        const label = event.payload.newThreadId
+          ? formatCollabAgentLabel({
+              threadId: event.payload.newThreadId,
+              nickname: event.payload.newAgentNickname,
+              role: event.payload.newAgentRole,
+              roleDisplayName: event.payload.newAgentRoleDisplayName,
+            })
+          : "agent";
+        const prompt = formatPromptPreview(event.payload.prompt);
+        const suffix = formatSpawnRequestSuffix({
+          model: event.payload.model,
+          reasoningEffort: event.payload.reasoningEffort,
+        });
         messages.push({
           id: event.id ?? `agent-spawn-end-${event.payload.callId}`,
           turnId: ensureTurnId(currentTurnId),
           kind:
             event.payload.status.status === "errored" ? "error" : "meta",
           label: "agent",
-          content: `${name} ${agentStatusLabel(event.payload.status)}`,
+          content:
+            event.payload.newThreadId === undefined
+              ? "Agent spawn failed"
+              : prompt !== undefined
+                ? `Spawned ${label}${suffix}\n  └ ${prompt}`
+                : `Spawned ${label}${suffix}`,
           timestamp,
         });
         break;
       }
       case "collab_agent_interaction_begin": {
+        suppressToolMessage(event.payload.callId);
         if (options.includeHidden === true) {
+          const prompt = formatPromptPreview(event.payload.prompt);
           messages.push({
             id: event.id ?? `agent-interaction-begin-${event.payload.callId}`,
             turnId: ensureTurnId(currentTurnId),
             kind: "meta",
             label: "agent",
-            content: `Message to ${event.payload.receiverThreadId}`,
+            content:
+              prompt !== undefined
+                ? `Sending input to ${event.payload.receiverThreadId}\n  └ ${prompt}`
+                : `Sending input to ${event.payload.receiverThreadId}`,
             timestamp,
           });
         }
         break;
       }
       case "collab_agent_interaction_end": {
+        const label = formatCollabAgentLabel({
+          threadId: event.payload.receiverThreadId,
+          nickname: event.payload.receiverAgentNickname,
+          role: event.payload.receiverAgentRole,
+          roleDisplayName: event.payload.receiverAgentRoleDisplayName,
+        });
+        const prompt = formatPromptPreview(event.payload.prompt);
         messages.push({
           id: event.id ?? `agent-interaction-end-${event.payload.callId}`,
           turnId: ensureTurnId(currentTurnId),
           kind: "meta",
           label: "agent",
-          content: `Sent to ${event.payload.receiverAgentNickname ?? event.payload.receiverThreadId}`,
+          content:
+            prompt !== undefined
+              ? `Sent input to ${label}\n  └ ${prompt}`
+              : `Sent input to ${label}`,
           timestamp,
         });
         break;
       }
       case "collab_waiting_begin": {
+        suppressToolMessage(event.payload.callId);
+        const receiverAgents = event.payload.receiverAgents ?? [];
+        const labels =
+          receiverAgents.length > 0
+            ? receiverAgents.map((agent) =>
+                formatCollabAgentLabel({
+                  threadId: agent.threadId,
+                  nickname: agent.agentNickname,
+                  role: agent.agentRole,
+                  roleDisplayName: agent.agentRoleDisplayName,
+                }),
+              )
+            : event.payload.receiverThreadIds.map((threadId) =>
+                formatCollabAgentLabel({ threadId }),
+              );
+        const title =
+          labels.length === 1
+            ? `Waiting for ${labels[0]}`
+            : labels.length === 0
+              ? "Waiting for agents"
+              : `Waiting for ${labels.length} agents`;
+        const detail =
+          labels.length > 1 ? `\n  └ ${labels.join("\n    ")}` : "";
         messages.push({
           id: event.id ?? `agent-wait-begin-${event.payload.callId}`,
           turnId: ensureTurnId(currentTurnId),
           kind: "meta",
           label: "agent",
-          content: `Waiting on ${event.payload.receiverThreadIds.length} agent${event.payload.receiverThreadIds.length === 1 ? "" : "s"}`,
+          content: `${title}${detail}`,
           timestamp,
         });
         break;
       }
       case "collab_waiting_end": {
+        const lines = formatWaitCompleteLines(
+          event.payload.statuses,
+          collabAgentStatusEntries(event.payload.agentStatuses),
+        );
         messages.push({
           id: event.id ?? `agent-wait-end-${event.payload.callId}`,
           turnId: ensureTurnId(currentTurnId),
           kind: "meta",
           label: "agent",
-          content: `Agent wait complete`,
+          content: `Finished waiting\n  └ ${lines.join("\n    ")}`,
           timestamp,
         });
         break;
       }
       case "collab_close_begin": {
+        suppressToolMessage(event.payload.callId);
         if (options.includeHidden === true) {
           messages.push({
             id: event.id ?? `agent-close-begin-${event.payload.callId}`,
@@ -1348,12 +1435,53 @@ export function eventsToMessages(
         break;
       }
       case "collab_close_end": {
+        const label = formatCollabAgentLabel({
+          threadId: event.payload.receiverThreadId,
+          nickname: event.payload.receiverAgentNickname,
+          role: event.payload.receiverAgentRole,
+          roleDisplayName: event.payload.receiverAgentRoleDisplayName,
+        });
         messages.push({
           id: event.id ?? `agent-close-end-${event.payload.callId}`,
           turnId: ensureTurnId(currentTurnId),
           kind: "meta",
           label: "agent",
-          content: `${event.payload.receiverAgentNickname ?? event.payload.receiverThreadId} closed`,
+          content: `Closed ${label}`,
+          timestamp,
+        });
+        break;
+      }
+      case "collab_resume_begin": {
+        suppressToolMessage(event.payload.callId);
+        const label = formatCollabAgentLabel({
+          threadId: event.payload.receiverThreadId,
+          nickname: event.payload.receiverAgentNickname,
+          role: event.payload.receiverAgentRole,
+          roleDisplayName: event.payload.receiverAgentRoleDisplayName,
+        });
+        messages.push({
+          id: event.id ?? `agent-resume-begin-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind: "meta",
+          label: "agent",
+          content: `Resuming ${label}`,
+          timestamp,
+        });
+        break;
+      }
+      case "collab_resume_end": {
+        const label = formatCollabAgentLabel({
+          threadId: event.payload.receiverThreadId,
+          nickname: event.payload.receiverAgentNickname,
+          role: event.payload.receiverAgentRole,
+          roleDisplayName: event.payload.receiverAgentRoleDisplayName,
+        });
+        messages.push({
+          id: event.id ?? `agent-resume-end-${event.payload.callId}`,
+          turnId: ensureTurnId(currentTurnId),
+          kind: "meta",
+          label: "agent",
+          content: `Resumed ${label}\n  └ ${formatAgentStatusSummary(event.payload.status)}`,
           timestamp,
         });
         break;

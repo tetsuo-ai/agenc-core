@@ -703,6 +703,10 @@ function toTranscriptEvent(event: Event): TranscriptEventEnvelope | null {
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "collab_close_end":
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_resume_begin":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
+    case "collab_resume_end":
+      return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_started":
       return makeTranscriptEnvelope(event.id, event.seq, event.msg.type, event.msg.payload);
     case "plan_delta":

@@ -2,6 +2,12 @@ import { join, normalize, sep } from "node:path";
 
 import { formatAgentRoleLabel } from "../../agents/role-presentation.js";
 import { resolveAgencHome } from "../../planning/plan-files.js";
+import {
+  formatAgentToolError,
+  formatCollabAgentLabel,
+  formatPromptPreview,
+  formatSpawnRequestSuffix,
+} from "./collab-agent-rendering.js";
 
 export type ToolRenderTone =
   | "read"
@@ -185,17 +191,59 @@ function idTarget(ctx: ToolRenderContext): string {
   );
 }
 
-function agentTarget(ctx: ToolRenderContext): string {
-  const target = idTarget(ctx) || queryTarget(ctx);
-  const role = readStringField(ctx.toolArgs, [
-    "agent_type",
-    "agentType",
-    "subagent_type",
-    "role",
+function promptFromToolArgs(ctx: ToolRenderContext): string | undefined {
+  return readStringField(ctx.toolArgs, [
+    "message",
+    "prompt",
+    "task",
+    "description",
   ]);
-  if (!role) return target;
-  const label = formatAgentRoleLabel(role, role);
-  return target ? `${label} ${target}` : label;
+}
+
+function modelFromToolArgs(ctx: ToolRenderContext): string | undefined {
+  return readStringField(ctx.toolArgs, ["model"]);
+}
+
+function reasoningEffortFromToolArgs(ctx: ToolRenderContext): string | undefined {
+  return readStringField(ctx.toolArgs, [
+    "reasoning_effort",
+    "reasoningEffort",
+  ]);
+}
+
+function resultRecord(ctx: ToolRenderContext): Record<string, unknown> | undefined {
+  const parsed = parsedResult(ctx);
+  return isRecord(parsed) ? parsed : undefined;
+}
+
+function agentLabelFromTool(
+  ctx: ToolRenderContext,
+  result: Record<string, unknown> | undefined = resultRecord(ctx),
+): string {
+  const threadId =
+    readStringField(result, ["task_name", "taskName", "thread_id", "threadId"]) ??
+    idTarget(ctx);
+  const nickname = readStringField(result, ["nickname", "agent_nickname"]);
+  const role =
+    readStringField(result, ["agent_role", "agentRole", "role"]) ??
+    readStringField(ctx.toolArgs, [
+      "agent_type",
+      "agentType",
+      "subagent_type",
+      "role",
+    ]);
+  const roleDisplayName = readStringField(result, [
+    "agent_role_display",
+    "agentRoleDisplay",
+    "agent_role_display_name",
+    "agentRoleDisplayName",
+  ]);
+  return formatCollabAgentLabel({
+    threadId,
+    nickname,
+    role,
+    roleDisplayName,
+  });
 }
 
 function mcpTarget(ctx: ToolRenderContext): string {
@@ -405,21 +453,85 @@ const MCP_RESOURCE_RENDERER: ToolSpecificRenderer = {
   renderToolUseErrorMessage: (ctx) => ({ detail: commonResultDetail(ctx) }),
 };
 
-function agentRenderer(base: string): ToolSpecificRenderer {
-  return {
-    renderToolUseMessage: (ctx) => ({
-      tone: "agent",
-      title: titleFor(base, ctx, `${base} Running`),
-      target: agentTarget(ctx),
-    }),
-    renderToolResultMessage: (ctx) => ({
-      detail: commonResultDetail(ctx),
-    }),
-    renderToolUseErrorMessage: (ctx) => ({
-      detail: commonResultDetail(ctx),
-    }),
-  };
-}
+const SPAWN_AGENT_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: (ctx) => ({
+    tone: "agent",
+    title: "Spawning agent",
+    target: "",
+    detail: formatPromptPreview(promptFromToolArgs(ctx)),
+  }),
+  renderToolResultMessage: (ctx) => {
+    const result = resultRecord(ctx);
+    const label = agentLabelFromTool(ctx, result);
+    return {
+      title: `Spawned ${label}${formatSpawnRequestSuffix({
+        model: modelFromToolArgs(ctx),
+        reasoningEffort: reasoningEffortFromToolArgs(ctx),
+      })}`,
+      target: "",
+      detail: formatPromptPreview(promptFromToolArgs(ctx)),
+    };
+  },
+  renderToolUseErrorMessage: (ctx) => ({
+    title: "Agent spawn failed",
+    target: "",
+    detail: formatAgentToolError(parsedResult(ctx)) ?? commonResultDetail(ctx),
+  }),
+};
+
+const WAIT_AGENT_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: () => ({
+    tone: "agent",
+    title: "Waiting for agents",
+    target: "",
+  }),
+  renderToolResultMessage: (ctx) => ({
+    title: "Finished waiting",
+    target: "",
+    detail: resultStringField(ctx, ["message"]),
+  }),
+  renderToolUseErrorMessage: (ctx) => ({
+    title: "Agent wait failed",
+    target: "",
+    detail: formatAgentToolError(parsedResult(ctx)) ?? commonResultDetail(ctx),
+  }),
+};
+
+const CLOSE_AGENT_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: (ctx) => ({
+    tone: "agent",
+    title: `Closing ${agentLabelFromTool(ctx, undefined)}`,
+    target: "",
+  }),
+  renderToolResultMessage: (ctx) => ({
+    title: `Closed ${agentLabelFromTool(ctx, resultRecord(ctx))}`,
+    target: "",
+  }),
+  renderToolUseErrorMessage: (ctx) => ({
+    title: "Agent close failed",
+    target: "",
+    detail: formatAgentToolError(parsedResult(ctx)) ?? commonResultDetail(ctx),
+  }),
+};
+
+const SEND_AGENT_INPUT_RENDERER: ToolSpecificRenderer = {
+  renderToolUseMessage: (ctx) => ({
+    tone: "agent",
+    title: `Sending input to ${agentLabelFromTool(ctx, undefined)}`,
+    target: "",
+    detail: formatPromptPreview(promptFromToolArgs(ctx)),
+  }),
+  renderToolResultMessage: (ctx) => ({
+    title: `Sent input to ${agentLabelFromTool(ctx, resultRecord(ctx))}`,
+    target: "",
+    detail: formatPromptPreview(promptFromToolArgs(ctx)),
+  }),
+  renderToolUseErrorMessage: (ctx) => ({
+    title: "Agent input failed",
+    target: "",
+    detail: formatAgentToolError(parsedResult(ctx)) ?? commonResultDetail(ctx),
+  }),
+};
 
 const LIST_AGENTS_RENDERER: ToolSpecificRenderer = {
   renderToolUseMessage: (ctx) => ({
@@ -593,13 +705,13 @@ const REGISTERED_RENDERERS: readonly RegisteredToolRenderer[] = [
     renderer: BASH_RENDERER,
   },
   { names: ["PowerShell"], renderer: POWERSHELL_RENDERER },
-  { names: ["spawn_agent"], renderer: agentRenderer("Agent") },
+  { names: ["spawn_agent"], renderer: SPAWN_AGENT_RENDERER },
   { names: ["list_agents"], renderer: LIST_AGENTS_RENDERER },
-  { names: ["wait_agent"], renderer: agentRenderer("Agent Wait") },
-  { names: ["close_agent"], renderer: agentRenderer("Agent Close") },
+  { names: ["wait_agent"], renderer: WAIT_AGENT_RENDERER },
+  { names: ["close_agent"], renderer: CLOSE_AGENT_RENDERER },
   {
-    names: ["send_message", "followup_task"],
-    renderer: agentRenderer("Send Message"),
+    names: ["send_message", "followup_task", "send_input"],
+    renderer: SEND_AGENT_INPUT_RENDERER,
   },
   { names: ["TaskCreate"], renderer: taskRenderer("Task Create", queryTarget) },
   { names: ["TaskGet"], renderer: taskRenderer("Task Get", idTarget) },
@@ -688,5 +800,13 @@ export function toolRendererTone(toolName: string | undefined): ToolRenderTone {
   if (renderer === EXIT_PLAN_MODE_RENDERER) return "plan";
   if (renderer === WORKFLOW_RENDERER) return "schedule";
   if (renderer === LIST_AGENTS_RENDERER) return "agent";
+  if (
+    renderer === SPAWN_AGENT_RENDERER ||
+    renderer === WAIT_AGENT_RENDERER ||
+    renderer === CLOSE_AGENT_RENDERER ||
+    renderer === SEND_AGENT_INPUT_RENDERER
+  ) {
+    return "agent";
+  }
   return "generic";
 }
