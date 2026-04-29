@@ -101,7 +101,7 @@ export class StateThreadRepository {
          FROM threads`,
       )
       .all()
-      .map((row) => rowToThread(row));
+      .map((row: ThreadRow) => rowToThread(row));
   }
 
   replaceRolloutItems(params: {

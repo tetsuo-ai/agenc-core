@@ -70,7 +70,7 @@ export class ThreadSpawnEdgeRepository {
          ORDER BY child_thread_id ASC`,
       )
       .all()
-      .map((row) => rowToEdge(row));
+      .map((row: SpawnEdgeRow) => rowToEdge(row));
   }
 }
 

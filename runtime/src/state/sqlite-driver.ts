@@ -119,7 +119,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   const appliedRows = db
     .prepare<[], { version: number }>("SELECT version FROM schema_migrations")
     .all();
-  const applied = new Set(appliedRows.map((row) => row.version));
+  const applied = new Set(
+    appliedRows.map((row: { version: number }) => row.version),
+  );
   const insert = db.prepare<[number, string]>(
     "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
   );
