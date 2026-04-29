@@ -41,7 +41,7 @@ export class ConfigStore {
     this.opts = opts;
     // Start from defaults + env — safe to call before first reload().
     const base = opts.base ?? defaultConfig();
-    this.snapshot = applyEnvOverrides(base, opts.env);
+    this.snapshot = applyEnvOverrides(base, opts.env, opts.onWarn);
   }
 
   /** Current frozen snapshot. Never mutates. */
@@ -82,7 +82,7 @@ export class ConfigStore {
       });
       loaded = result.config;
     }
-    const next = applyEnvOverrides(loaded, this.opts.env);
+    const next = applyEnvOverrides(loaded, this.opts.env, this.opts.onWarn);
     this.snapshot = next;
     for (const listener of this.listeners) {
       try {

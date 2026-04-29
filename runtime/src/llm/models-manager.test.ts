@@ -86,6 +86,37 @@ describe("StaticModelsManager", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("keeps explicit provider max_output_tokens authoritative", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "lmstudio",
+        model: "qwen3.6-35b-a3b-fp8",
+        max_output_tokens: 12_000,
+        capped_default_max_output_tokens: true,
+        providers: {
+          lmstudio: {
+            default_model: "qwen3.6-35b-a3b-fp8",
+            context_window_tokens: 262_144,
+            max_output_tokens: 60_000,
+          },
+        },
+      }),
+      fallbackProvider: "lmstudio",
+      metadata: {
+        env: {
+          AGENC_MAX_OUTPUT_TOKENS: "32_000",
+        },
+      },
+    });
+
+    const info = await manager.getModelInfo("qwen3.6-35b-a3b-fp8");
+    expect(info.contextWindow).toBe(262_144);
+    expect(info.maxOutputTokens).toBe(60_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(60_000);
+    expect(info.maxOutputTokensExplicit).toBe(true);
+    expect(info.maxOutputTokensCappedDefault).toBe(false);
+  });
+
   it("reads live OpenAI-compatible endpoint metadata for vLLM-style models", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe("http://127.0.0.1:8000/v1/models");
@@ -233,7 +264,77 @@ describe("StaticModelsManager", () => {
 
     const info = await manager.getModelInfo("lmstudio:missing-local-model");
     expect(info.contextWindow).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
+    expect(info.maxOutputTokens).toBe(32_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(64_000);
     expect(info.usedFallbackModelMetadata).toBe(true);
     expect(info.effectiveContextWindowPercent).toBe(100);
+  });
+
+  it("bounds AGENC_MAX_OUTPUT_TOKENS to the model upper limit", async () => {
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+      metadata: {
+        env: {
+          AGENC_MAX_OUTPUT_TOKENS: "32000",
+        },
+      },
+    });
+
+    const info = await manager.getModelInfo("openai:gpt-4o");
+    expect(info.contextWindow).toBe(128_000);
+    expect(info.maxOutputTokens).toBe(16_384);
+    expect(info.maxOutputTokensUpperLimit).toBe(16_384);
+    expect(info.maxOutputTokensExplicit).toBe(true);
+  });
+
+  it("ignores invalid AGENC_MAX_OUTPUT_TOKENS with diagnostics", async () => {
+    const warnings: string[] = [];
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "lmstudio",
+      metadata: {
+        env: {
+          AGENC_MAX_OUTPUT_TOKENS: "bogus",
+        },
+        onWarn: (message) => warnings.push(message),
+      },
+    });
+
+    const info = await manager.getModelInfo("lmstudio:missing-local-model");
+    expect(info.maxOutputTokens).toBe(32_000);
+    expect(warnings).toEqual([
+      '[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="bogus"; expected a positive integer',
+    ]);
+  });
+
+  it("uses the optional capped default and marks escalation eligibility", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        capped_default_max_output_tokens: true,
+      }),
+      fallbackProvider: "lmstudio",
+    });
+
+    const info = await manager.getModelInfo("lmstudio:missing-local-model");
+    expect(info.maxOutputTokens).toBe(8_000);
+    expect(info.maxOutputTokensUpperLimit).toBe(64_000);
+    expect(info.maxOutputTokensExplicit).toBe(false);
+    expect(info.maxOutputTokensCappedDefault).toBe(true);
+  });
+
+  it("lets explicit output overrides bypass the capped default", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        max_output_tokens: 12_000,
+        capped_default_max_output_tokens: true,
+      }),
+      fallbackProvider: "lmstudio",
+    });
+
+    const info = await manager.getModelInfo("lmstudio:missing-local-model");
+    expect(info.maxOutputTokens).toBe(12_000);
+    expect(info.maxOutputTokensExplicit).toBe(true);
+    expect(info.maxOutputTokensCappedDefault).toBe(false);
   });
 });

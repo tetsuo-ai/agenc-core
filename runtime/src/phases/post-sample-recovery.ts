@@ -41,6 +41,7 @@ import {
 import { runReactiveCompact } from "../recovery/reactive-compact.js";
 import { runMaxOutputTokensRecovery } from "../recovery/max-output-tokens.js";
 import { runModelFallback } from "../recovery/model-fallback.js";
+import { escalatedMaxOutputTokensForModel } from "../llm/model-metadata.js";
 import {
   evaluateWithholdCascade,
   isMediaWithholdRoute,
@@ -182,6 +183,12 @@ export async function postSampleRecovery(
         const outcome = runMaxOutputTokensRecovery({
           session: c.session,
           state: c.state,
+          escalateAllowed:
+            ctx.modelInfo.maxOutputTokensCappedDefault === true &&
+            ctx.modelInfo.maxOutputTokensExplicit !== true,
+          escalatedMaxOutputTokens: escalatedMaxOutputTokensForModel(
+            ctx.modelInfo,
+          ),
         });
         if (outcome.kind === "escalate" || outcome.kind === "continuation") {
           return { kind: "applied", reason: outcome.kind };

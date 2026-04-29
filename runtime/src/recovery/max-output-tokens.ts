@@ -31,8 +31,9 @@ import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import { appendTerminalToolResults } from "./terminal-tool-result.js";
+import { ESCALATED_MAX_OUTPUT_TOKENS } from "../llm/openai-compatible-token-limits.js";
 
-export const MAX_OUTPUT_TOKENS_ESCALATED = 64_000;
+export const MAX_OUTPUT_TOKENS_ESCALATED = ESCALATED_MAX_OUTPUT_TOKENS;
 export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 
 const RESUME_META_CONTENT =
@@ -47,9 +48,9 @@ export type MaxOutputTokensOutcome =
 export interface RunMaxOutputTokensOpts {
   readonly session: Session;
   readonly state: TurnState;
-  /** Whether this call should ever escalate to 64k. Providers that
-   *  already cap below 8k can opt out. */
+  /** Whether this call should retry the same request at the escalated ceiling. */
   readonly escalateAllowed?: boolean;
+  readonly escalatedMaxOutputTokens?: number;
 }
 
 /**
@@ -117,7 +118,8 @@ export function runMaxOutputTokensRecovery(
 
   // Step 1: escalate path — first attempt, override unset.
   if (overrideUnset && escalateAllowed) {
-    state.maxOutputTokensOverride = MAX_OUTPUT_TOKENS_ESCALATED;
+    state.maxOutputTokensOverride =
+      opts.escalatedMaxOutputTokens ?? ESCALATED_MAX_OUTPUT_TOKENS;
     state.transition = { reason: "max_output_tokens_escalate" };
     discardExecutorForMaxOutputTokens(session, state);
     removeTruncatedAssistantForRetry(state);

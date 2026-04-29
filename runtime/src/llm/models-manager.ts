@@ -49,6 +49,18 @@ function buildModelInfo(params: {
     ...(params.metadata.maxOutputTokens !== undefined
       ? { maxOutputTokens: params.metadata.maxOutputTokens }
       : {}),
+    ...(params.metadata.maxOutputTokensUpperLimit !== undefined
+      ? { maxOutputTokensUpperLimit: params.metadata.maxOutputTokensUpperLimit }
+      : {}),
+    ...(params.metadata.maxOutputTokensExplicit !== undefined
+      ? { maxOutputTokensExplicit: params.metadata.maxOutputTokensExplicit }
+      : {}),
+    ...(params.metadata.maxOutputTokensCappedDefault !== undefined
+      ? {
+        maxOutputTokensCappedDefault:
+          params.metadata.maxOutputTokensCappedDefault,
+      }
+      : {}),
     effectiveContextWindowPercent:
       params.metadata.usedFallbackModelMetadata
         ? 100

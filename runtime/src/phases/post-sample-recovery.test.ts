@@ -33,7 +33,7 @@ import {
   type CollapseDrainDriver,
 } from "../recovery/collapse-drain.js";
 
-function mkCtx(): TurnContext {
+function mkCtx(modelInfo: Record<string, unknown> = {}): TurnContext {
   return {
     subId: "t1",
     realtimeActive: false,
@@ -43,7 +43,7 @@ function mkCtx(): TurnContext {
       permissions: { allowLoginShell: false },
     },
     configSnapshot: {},
-    modelInfo: { slug: "stub" },
+    modelInfo: { slug: "stub", ...modelInfo },
     cwd: "/tmp",
     depth: 0,
   } as unknown as TurnContext;
@@ -172,9 +172,46 @@ describe("post-sample-recovery integration", () => {
         },
       ],
     });
-    await postSampleRecovery(state, mkCtx(), session);
+    await postSampleRecovery(
+      state,
+      mkCtx({
+        maxOutputTokensCappedDefault: true,
+        maxOutputTokensUpperLimit: 64_000,
+      }),
+      session,
+    );
     expect(state.transition?.reason).toBe("max_output_tokens_escalate");
     expect(state.maxOutputTokensOverride).toBe(64_000);
+  });
+
+  test("max-output-tokens explicit override bypasses capped-default escalation", async () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState({
+      assistantMessages: [
+        {
+          uuid: "a",
+          role: "assistant",
+          text: "",
+          toolCalls: [],
+          apiError: "max_output_tokens",
+        },
+      ],
+    });
+
+    await postSampleRecovery(
+      state,
+      mkCtx({
+        maxOutputTokensExplicit: true,
+        maxOutputTokensCappedDefault: false,
+        maxOutputTokensUpperLimit: 64_000,
+      }),
+      session,
+    );
+
+    expect(state.transition?.reason).toBe("max_output_tokens_recovery");
+    expect(state.maxOutputTokensOverride).toBeUndefined();
+    expect(state.maxOutputTokensRecoveryCount).toBe(1);
   });
 
   test("normal stream (no recovery) → no transition", async () => {

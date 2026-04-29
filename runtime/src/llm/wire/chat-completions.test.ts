@@ -43,7 +43,7 @@ describe("buildChatCompletionsRequest", () => {
       },
     });
 
-    expect(request.max_tokens).toBe(4096);
+    expect(request.max_tokens).toBe(32_000);
   });
 
   test("can target max_completion_tokens for providers that require it", () => {

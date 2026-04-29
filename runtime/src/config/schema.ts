@@ -334,6 +334,8 @@ export interface AgenCConfig {
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly toolBudget?: ToolBudget;
   readonly stream_watchdog_timeout_ms?: number;
+  readonly max_output_tokens?: number;
+  readonly capped_default_max_output_tokens?: boolean;
   readonly max_turns?: number;
   readonly max_budget_usd?: number;
   readonly autonomous_mode?: boolean;
@@ -455,6 +457,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "telemetryOptIn",
   "toolBudget",
   "stream_watchdog_timeout_ms",
+  "max_output_tokens",
+  "capped_default_max_output_tokens",
   "max_turns",
   "max_budget_usd",
   "autonomous_mode",
