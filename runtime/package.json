@@ -33,7 +33,10 @@
     "check:codex-status-parity": "node ../scripts/check-codex-status-parity.mjs",
     "check:codex-role-parity": "node ../scripts/check-codex-role-parity.mjs",
     "check:codex-thread-manager-parity": "node ../scripts/check-codex-thread-manager-parity.mjs",
-    "check:codex-agents-parity": "npm run check:codex-control-parity && npm run check:codex-registry-parity && npm run check:codex-mailbox-parity && npm run check:codex-status-parity && npm run check:codex-role-parity && npm run check:codex-thread-manager-parity",
+    "check:codex-fork-context-parity": "node ../scripts/check-codex-fork-context-parity.mjs",
+    "check:codex-thread-parity": "node ../scripts/check-codex-thread-parity.mjs",
+    "check:codex-run-agent-parity": "node ../scripts/check-codex-run-agent-parity.mjs",
+    "check:codex-agents-parity": "npm run check:codex-control-parity && npm run check:codex-registry-parity && npm run check:codex-mailbox-parity && npm run check:codex-status-parity && npm run check:codex-role-parity && npm run check:codex-thread-manager-parity && npm run check:codex-fork-context-parity && npm run check:codex-thread-parity && npm run check:codex-run-agent-parity",
     "test": "vitest run",
     "validate:required": "npm run typecheck && npm run test && npm run check:codex-agents-parity",
     "prepublishOnly": "npm run build"
