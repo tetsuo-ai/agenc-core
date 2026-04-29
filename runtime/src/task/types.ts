@@ -169,6 +169,39 @@ export interface OnChainTaskClaim {
   bump: number;
 }
 
+/**
+ * Parsed Task Validation V2 submission account data.
+ * PDA seeds: ["task_submission", claim_pda]
+ */
+export interface OnChainTaskSubmission {
+  /** Task being submitted */
+  task: PublicKey;
+  /** Claim tied to this submission */
+  claim: PublicKey;
+  /** Worker agent that submitted the result */
+  worker: PublicKey;
+  /** Current submission status */
+  status: TaskSubmissionStatus;
+  /** Latest proof hash supplied by the worker */
+  proofHash: Uint8Array;
+  /** Latest result payload supplied by the worker */
+  resultData: Uint8Array;
+  /** Number of times this claim has been submitted for review */
+  submissionCount: number;
+  /** Timestamp of latest submission */
+  submittedAt: number;
+  /** Timestamp after which the review window has elapsed */
+  reviewDeadlineAt: number;
+  /** Acceptance timestamp, 0 when unresolved */
+  acceptedAt: number;
+  /** Rejection timestamp, 0 when unresolved */
+  rejectedAt: number;
+  /** Optional rejection reason hash */
+  rejectionHash: Uint8Array;
+  /** PDA bump seed */
+  bump: number;
+}
+
 // ============================================================================
 // Raw Interfaces (as received from Anchor account fetch)
 // ============================================================================
@@ -234,6 +267,32 @@ export interface RawOnChainTaskClaim {
   isCompleted: boolean;
   isValidated: boolean;
   rewardPaid: { toString: () => string };
+  bump: number;
+}
+
+/**
+ * Raw task submission data from Anchor's program.account.taskSubmission.fetch().
+ */
+export interface RawOnChainTaskSubmission {
+  task: PublicKey;
+  claim: PublicKey;
+  worker: PublicKey;
+  status:
+    | {
+        idle?: object;
+        submitted?: object;
+        accepted?: object;
+        rejected?: object;
+      }
+    | number;
+  proofHash: number[] | Uint8Array;
+  resultData: number[] | Uint8Array;
+  submissionCount: number;
+  submittedAt: { toNumber: () => number };
+  reviewDeadlineAt: { toNumber: () => number };
+  acceptedAt: { toNumber: () => number };
+  rejectedAt: { toNumber: () => number };
+  rejectionHash: number[] | Uint8Array;
   bump: number;
 }
 
@@ -379,6 +438,52 @@ function isRawOnChainTaskClaim(
   if (typeof obj.isValidated !== "boolean") return false;
 
   // Number fields (u8)
+  if (typeof obj.bump !== "number") return false;
+
+  return true;
+}
+
+/**
+ * Type guard for RawOnChainTaskSubmission data.
+ */
+function isPublicKeyLike(value: unknown): value is PublicKey {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).toBuffer === "function"
+  );
+}
+
+function isRawOnChainTaskSubmission(
+  data: unknown,
+): data is RawOnChainTaskSubmission {
+  if (typeof data !== "object" || data === null) {
+    return false;
+  }
+  const obj = data as Record<string, unknown>;
+
+  if (!isPublicKeyLike(obj.task)) return false;
+  if (!isPublicKeyLike(obj.claim)) return false;
+  if (!isPublicKeyLike(obj.worker)) return false;
+  if (
+    typeof obj.status !== "number" &&
+    (typeof obj.status !== "object" || obj.status === null)
+  )
+    return false;
+  if (!Array.isArray(obj.proofHash) && !(obj.proofHash instanceof Uint8Array))
+    return false;
+  if (!Array.isArray(obj.resultData) && !(obj.resultData instanceof Uint8Array))
+    return false;
+  if (
+    !Array.isArray(obj.rejectionHash) &&
+    !(obj.rejectionHash instanceof Uint8Array)
+  )
+    return false;
+  if (typeof obj.submissionCount !== "number") return false;
+  if (!isBNLikeWithToNumber(obj.submittedAt)) return false;
+  if (!isBNLikeWithToNumber(obj.reviewDeadlineAt)) return false;
+  if (!isBNLikeWithToNumber(obj.acceptedAt)) return false;
+  if (!isBNLikeWithToNumber(obj.rejectedAt)) return false;
   if (typeof obj.bump !== "number") return false;
 
   return true;
@@ -702,6 +807,66 @@ export function parseOnChainTaskClaim(data: unknown): OnChainTaskClaim {
     isCompleted: data.isCompleted,
     isValidated: data.isValidated,
     rewardPaid: BigInt(data.rewardPaid.toString()),
+    bump: data.bump,
+  };
+}
+
+/**
+ * Parses TaskSubmissionStatus from Anchor's enum representation.
+ */
+export function parseTaskSubmissionStatus(
+  status:
+    | {
+        idle?: object;
+        submitted?: object;
+        accepted?: object;
+        rejected?: object;
+      }
+    | number,
+): TaskSubmissionStatus {
+  if (typeof status === "number") {
+    if (
+      status < TaskSubmissionStatus.Idle ||
+      status > TaskSubmissionStatus.Rejected
+    ) {
+      throw new Error(`Invalid task submission status value: ${status}`);
+    }
+    return status;
+  }
+
+  if ("idle" in status) return TaskSubmissionStatus.Idle;
+  if ("submitted" in status) return TaskSubmissionStatus.Submitted;
+  if ("accepted" in status) return TaskSubmissionStatus.Accepted;
+  if ("rejected" in status) return TaskSubmissionStatus.Rejected;
+
+  throw new Error("Invalid task submission status format");
+}
+
+/**
+ * Parses raw Anchor task submission data into the runtime shape.
+ */
+export function parseOnChainTaskSubmission(
+  data: unknown,
+): OnChainTaskSubmission {
+  if (!isRawOnChainTaskSubmission(data)) {
+    throw new Error(
+      "Invalid task submission data: missing required fields",
+    );
+  }
+
+  return {
+    task: data.task,
+    claim: data.claim,
+    worker: data.worker,
+    status: parseTaskSubmissionStatus(data.status),
+    proofHash: toUint8Array(data.proofHash),
+    resultData: toUint8Array(data.resultData),
+    submissionCount: data.submissionCount,
+    submittedAt: data.submittedAt.toNumber(),
+    reviewDeadlineAt: data.reviewDeadlineAt.toNumber(),
+    acceptedAt: data.acceptedAt.toNumber(),
+    rejectedAt: data.rejectedAt.toNumber(),
+    rejectionHash: toUint8Array(data.rejectionHash),
     bump: data.bump,
   };
 }

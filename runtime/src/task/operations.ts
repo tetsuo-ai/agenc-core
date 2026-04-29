@@ -27,6 +27,7 @@ import { silentLogger } from "../utils/logger.js";
 import type {
   OnChainTask,
   OnChainTaskClaim,
+  OnChainTaskSubmission,
   ClaimResult,
   CompleteResult,
   TaskSubmissionResult,
@@ -39,6 +40,7 @@ import {
   parseOnChainTask,
   parseOnChainTaskAccountData,
   parseOnChainTaskClaim,
+  parseOnChainTaskSubmission,
   OnChainTaskStatus,
 } from "./types.js";
 import {
@@ -377,6 +379,53 @@ export class TaskOperations {
     }
 
     return results;
+  }
+
+  /**
+   * Fetch all task submissions (Task Validation V2 creator-review accounts).
+   *
+   * Used by the dashboard transport to surface buyer-facing delivery artifacts
+   * for tasks under creator-review — the artifact ends up in the submission's
+   * `resultData`, not the task account, so we have to enumerate the submission
+   * PDAs separately. Returns an empty array if the program version does not
+   * expose the `taskSubmission` account API yet.
+   */
+  async fetchAllTaskSubmissions(): Promise<
+    Array<{ submission: OnChainTaskSubmission; submissionPda: PublicKey }>
+  > {
+    const accountApi = (this.program.account as any).taskSubmission;
+    if (!accountApi?.all) return [];
+
+    const accounts = await accountApi.all();
+    const results: Array<{
+      submission: OnChainTaskSubmission;
+      submissionPda: PublicKey;
+    }> = [];
+
+    for (const acc of accounts) {
+      try {
+        results.push({
+          submission: parseOnChainTaskSubmission(acc.account),
+          submissionPda: acc.publicKey,
+        });
+      } catch (err) {
+        this.logger.warn(
+          `Skipping undecodable task submission ${acc.publicKey?.toBase58?.() ?? "unknown"}: ${String(err)}`,
+        );
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Fetch task submissions filtered to a specific task PDA.
+   */
+  async fetchTaskSubmissionsForTask(taskPda: PublicKey): Promise<
+    Array<{ submission: OnChainTaskSubmission; submissionPda: PublicKey }>
+  > {
+    const submissions = await this.fetchAllTaskSubmissions();
+    return submissions.filter(({ submission }) => submission.task.equals(taskPda));
   }
 
   /**

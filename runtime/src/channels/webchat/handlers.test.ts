@@ -9,9 +9,12 @@ const mocks = vi.hoisted(() => ({
   getDefaultKeypairPath: vi.fn(() => '/tmp/test-id.json'),
   fetchAllTasks: vi.fn(),
   fetchActiveClaims: vi.fn(),
+  fetchAllTaskSubmissions: vi.fn(),
   serializeMarketplaceDisputeDetail: vi.fn(),
   serializeMarketplaceTask: vi.fn(),
   serializeMarketplaceTaskEntry: vi.fn(),
+  decodeMarketplaceArtifactSha256FromResultData: vi.fn(),
+  readMarketplaceArtifactReference: vi.fn(),
 }));
 
 vi.mock('../../idl.js', () => ({
@@ -29,7 +32,14 @@ vi.mock('../../task/operations.js', () => ({
   TaskOperations: class {
     fetchAllTasks = mocks.fetchAllTasks;
     fetchActiveClaims = mocks.fetchActiveClaims;
+    fetchAllTaskSubmissions = mocks.fetchAllTaskSubmissions;
   },
+}));
+
+vi.mock('../../marketplace/artifact-delivery.js', () => ({
+  decodeMarketplaceArtifactSha256FromResultData:
+    mocks.decodeMarketplaceArtifactSha256FromResultData,
+  readMarketplaceArtifactReference: mocks.readMarketplaceArtifactReference,
 }));
 
 vi.mock('../../marketplace/serialization.js', () => ({
@@ -49,6 +59,12 @@ import { handleTasksList } from './handlers.js';
 describe('handleTasksList', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: no creator-review submissions to hydrate from. Individual tests
+    // can override this when they want to exercise the submission-hydration
+    // path.
+    mocks.fetchAllTaskSubmissions.mockResolvedValue([]);
+    mocks.decodeMarketplaceArtifactSha256FromResultData.mockReturnValue(null);
+    mocks.readMarketplaceArtifactReference.mockResolvedValue(null);
   });
 
   it('lists tasks even when signer enrichment is unavailable', async () => {
@@ -210,6 +226,169 @@ describe('handleTasksList', () => {
         },
       ],
       id: 'req-owned',
+    });
+  });
+
+  it('hydrates buyer-facing delivery artifacts from creator-review task submissions', async () => {
+    // Creator-review tasks land their result in a separate task_submission PDA,
+    // so the dashboard has to look at fetchAllTaskSubmissions() and decode the
+    // sha256-prefixed artifact reference out of the latest submission's
+    // resultData. Verify that flow surfaces a deliveryArtifact on the summary.
+    const taskPda = PublicKey.unique();
+    const sha256 = 'a'.repeat(64);
+
+    mocks.createReadOnlyProgram.mockReturnValue({ program: 'readonly' });
+    mocks.loadKeypairFromFile.mockImplementation(() => {
+      throw new Error('signer keypair unavailable for this scenario');
+    });
+    mocks.fetchAllTasks.mockResolvedValue([
+      { task: { createdAt: 1 }, taskPda },
+    ]);
+    mocks.fetchAllTaskSubmissions.mockResolvedValue([
+      {
+        submission: {
+          task: taskPda,
+          resultData: new Uint8Array(64),
+          submittedAt: 1700000200,
+        },
+        submissionPda: PublicKey.unique(),
+      },
+    ]);
+    mocks.decodeMarketplaceArtifactSha256FromResultData.mockReturnValue(sha256);
+    mocks.readMarketplaceArtifactReference.mockResolvedValue({
+      kind: 'agenc.marketplace.artifactReference',
+      schemaVersion: 1,
+      sha256,
+      uri: 'agenc://artifact/sha256/' + sha256 + '/report.md',
+      source: 'file',
+      createdAt: '2026-04-27T00:00:00.000Z',
+      sizeBytes: 256,
+      mediaType: 'text/markdown; charset=utf-8',
+      fileName: 'report.md',
+      localPath: '/tmp/reports/' + sha256 + '/report.md',
+    });
+    mocks.serializeMarketplaceTaskEntry.mockReturnValue({
+      taskPda: taskPda.toBase58(),
+      status: 'completed',
+      rewardLamports: '50000000',
+      creator: 'creator-1',
+      description: 'review-mode task',
+      currentWorkers: 1,
+      // No deliveryArtifact on the task itself (creator-review case) — the
+      // hydration must come from the submission map.
+      deliveryArtifact: undefined,
+      resultPreview: undefined,
+    });
+
+    const send = vi.fn();
+    const deps: WebChatDeps = {
+      gateway: {
+        getStatus: () =>
+          ({
+            state: 'running',
+            uptimeMs: 0,
+            channels: [],
+            activeSessions: 0,
+            controlPlanePort: 0,
+          }) as any,
+        config: { connection: { rpcUrl: 'https://api.devnet.solana.com' } },
+      },
+      connection: {} as any,
+    };
+
+    await handleTasksList(deps, undefined, 'req-hydrate', send);
+
+    expect(mocks.fetchAllTaskSubmissions).toHaveBeenCalledOnce();
+    expect(mocks.readMarketplaceArtifactReference).toHaveBeenCalledWith(sha256);
+    expect(send).toHaveBeenCalledWith({
+      type: 'tasks.list',
+      payload: [
+        {
+          id: taskPda.toBase58(),
+          status: 'completed',
+          reward: '0.05',
+          creator: 'creator-1',
+          description: 'review-mode task',
+          worker: '1 worker(s)',
+          deliveryArtifact: {
+            source: 'task-submission',
+            sha256,
+            verified: true,
+            uri: 'agenc://artifact/sha256/' + sha256 + '/report.md',
+            fileName: 'report.md',
+            mediaType: 'text/markdown; charset=utf-8',
+            sizeBytes: 256,
+          },
+        },
+      ],
+      id: 'req-hydrate',
+    });
+  });
+
+  it('reports an unverified delivery artifact when only the protocol sha256 is decodable', async () => {
+    const taskPda = PublicKey.unique();
+    const sha256 = 'b'.repeat(64);
+
+    mocks.createReadOnlyProgram.mockReturnValue({ program: 'readonly' });
+    mocks.loadKeypairFromFile.mockImplementation(() => {
+      throw new Error('signer keypair unavailable for this scenario');
+    });
+    mocks.fetchAllTasks.mockResolvedValue([
+      { task: { createdAt: 1 }, taskPda },
+    ]);
+    mocks.fetchAllTaskSubmissions.mockResolvedValue([
+      {
+        submission: {
+          task: taskPda,
+          resultData: new Uint8Array(64),
+          submittedAt: 1700000300,
+        },
+        submissionPda: PublicKey.unique(),
+      },
+    ]);
+    mocks.decodeMarketplaceArtifactSha256FromResultData.mockReturnValue(sha256);
+    // No local-store reference yet for this sha256 (e.g. fresh worker box).
+    mocks.readMarketplaceArtifactReference.mockResolvedValue(null);
+    mocks.serializeMarketplaceTaskEntry.mockReturnValue({
+      taskPda: taskPda.toBase58(),
+      status: 'completed',
+      rewardLamports: '10000000',
+      creator: 'creator-1',
+      description: 'review-mode task',
+      currentWorkers: 1,
+    });
+
+    const send = vi.fn();
+    const deps: WebChatDeps = {
+      gateway: {
+        getStatus: () =>
+          ({
+            state: 'running',
+            uptimeMs: 0,
+            channels: [],
+            activeSessions: 0,
+            controlPlanePort: 0,
+          }) as any,
+        config: { connection: { rpcUrl: 'https://api.devnet.solana.com' } },
+      },
+      connection: {} as any,
+    };
+
+    await handleTasksList(deps, undefined, 'req-unverified', send);
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'tasks.list',
+      payload: [
+        expect.objectContaining({
+          id: taskPda.toBase58(),
+          deliveryArtifact: {
+            source: 'task-submission',
+            sha256,
+            verified: false,
+          },
+        }),
+      ],
+      id: 'req-unverified',
     });
   });
 });
