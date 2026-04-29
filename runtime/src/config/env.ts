@@ -10,6 +10,8 @@
 //   AGENC_HOME                                     → ~/.agenc override
 //   AGENC_SIMPLE                                   → simple UI/mode
 //   AGENC_AUTONOMOUS                              → autonomous tick mode
+//   AGENC_MAX_OUTPUT_TOKENS                       → global output budget
+//   AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS        → 8k default + retry mode
 //   AGENC_MAX_BUDGET_USD                           → session cost budget
 //
 // `applyEnvOverrides(config)` layers env values onto a base config and
@@ -30,6 +32,8 @@ export interface EnvSnapshot {
   readonly AGENC_WORKSPACE?: string;
   readonly AGENC_SIMPLE?: string;
   readonly AGENC_AUTONOMOUS?: string;
+  readonly AGENC_MAX_OUTPUT_TOKENS?: string;
+  readonly AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS?: string;
   readonly AGENC_MAX_BUDGET_USD?: string;
   readonly XAI_API_KEY?: string;
   readonly GROK_API_KEY?: string;
@@ -196,6 +200,22 @@ function readPositiveNumber(raw: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function readPositiveInteger(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const trimmed = raw.trim();
+  if (!/^\d+(?:_\d+)*$/.test(trimmed)) return undefined;
+  const parsed = Number.parseInt(trimmed.replaceAll("_", ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function readBoolean(raw: string | undefined): boolean | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const normalized = raw.trim().toLowerCase();
+  if (TRUTHY.has(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
 /** AGENC_SIMPLE truthy → simple mode enabled. */
 export function resolveSimpleMode(env: EnvSnapshot = process.env): boolean {
   const e = readEnv(env);
@@ -213,6 +233,7 @@ export function resolveSimpleMode(env: EnvSnapshot = process.env): boolean {
 export function applyEnvOverrides(
   config: AgenCConfig,
   env: EnvSnapshot = process.env,
+  onWarn?: (msg: string) => void,
 ): AgenCConfig {
   const e = readEnv(env);
   const override: Mutable<Partial<AgenCConfig>> = {};
@@ -235,6 +256,26 @@ export function applyEnvOverrides(
   }
   if (e.AGENC_AUTONOMOUS !== undefined && e.AGENC_AUTONOMOUS.length > 0) {
     override.autonomous_mode = TRUTHY.has(e.AGENC_AUTONOMOUS.toLowerCase());
+  }
+  if (e.AGENC_MAX_OUTPUT_TOKENS !== undefined) {
+    const maxOutputTokens = readPositiveInteger(e.AGENC_MAX_OUTPUT_TOKENS);
+    if (maxOutputTokens !== undefined) {
+      override.max_output_tokens = maxOutputTokens;
+    } else if (e.AGENC_MAX_OUTPUT_TOKENS.trim().length > 0) {
+      onWarn?.(
+        `[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="${e.AGENC_MAX_OUTPUT_TOKENS}"; expected a positive integer`,
+      );
+    }
+  }
+  if (e.AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS !== undefined) {
+    const capped = readBoolean(e.AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS);
+    if (capped !== undefined) {
+      override.capped_default_max_output_tokens = capped;
+    } else if (e.AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS.trim().length > 0) {
+      onWarn?.(
+        `[agenc:config] invalid AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS="${e.AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS}"; expected boolean-like value`,
+      );
+    }
   }
   const maxBudgetUsd = readPositiveNumber(e.AGENC_MAX_BUDGET_USD);
   if (maxBudgetUsd !== undefined) {

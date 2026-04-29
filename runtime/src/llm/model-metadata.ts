@@ -3,8 +3,19 @@ import {
   readProviderConfig,
   type AgenCConfig,
 } from "./_deps/config.js";
+import {
+  boundedOutputTokens,
+  CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+  ESCALATED_MAX_OUTPUT_TOKENS,
+  getOpenAICompatibleContextWindow,
+  getOpenAICompatibleMaxOutputTokens,
+  OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
+} from "./openai-compatible-token-limits.js";
 
-export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS = 128_000;
+export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS =
+  OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW;
 
 const DEFAULT_METADATA_TIMEOUT_MS = 1_000;
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
@@ -52,6 +63,9 @@ export type ModelMetadataSource =
 export interface ResolvedModelMetadata {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
+  readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensExplicit?: boolean;
+  readonly maxOutputTokensCappedDefault?: boolean;
   readonly source: ModelMetadataSource;
   readonly usedFallbackModelMetadata: boolean;
 }
@@ -60,6 +74,7 @@ export interface ModelMetadataResolverOptions {
   readonly fetchImpl?: typeof fetch;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
+  readonly onWarn?: (msg: string) => void;
 }
 
 interface LookupParams {
@@ -71,6 +86,8 @@ interface LookupParams {
 interface ModelMetadataValues {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
+  readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensExplicit?: boolean;
 }
 
 interface FetchJsonOptions {
@@ -81,44 +98,40 @@ export class ModelMetadataResolver {
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
+  private readonly onWarn?: (msg: string) => void;
   private readonly jsonCache = new Map<string, Promise<unknown | undefined>>();
+  private readonly warnedInvalidEnv = new Set<string>();
 
   constructor(options: ModelMetadataResolverOptions = {}) {
     this.fetchImpl = options.fetchImpl;
     this.env = options.env ?? process.env;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_METADATA_TIMEOUT_MS;
+    this.onWarn = options.onWarn;
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
     const explicit = readExplicitConfigMetadata(params);
     if (hasAnyMetadata(explicit)) {
-      return {
-        ...explicit,
-        source: "explicit_config",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, explicit, "explicit_config", false);
     }
 
     const builtIn = inferBuiltInMetadata(params.provider, params.model);
     if (hasAnyMetadata(builtIn)) {
-      return {
-        ...builtIn,
-        source: "built_in_heuristic",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, builtIn, "built_in_heuristic", false);
     }
 
-    return conservativeFallback();
+    return this.finalize(
+      params,
+      conservativeFallbackValues(),
+      "conservative_fallback",
+      true,
+    );
   }
 
   async resolve(params: LookupParams): Promise<ResolvedModelMetadata> {
     const explicit = readExplicitConfigMetadata(params);
     if (hasAnyMetadata(explicit)) {
-      return {
-        ...explicit,
-        source: "explicit_config",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, explicit, "explicit_config", false);
     }
 
     const builtIn = inferBuiltInMetadata(params.provider, params.model);
@@ -126,58 +139,70 @@ export class ModelMetadataResolver {
       hasAnyMetadata(builtIn) &&
       !shouldPreferDynamicMetadata(params, this.env)
     ) {
-      return {
-        ...builtIn,
-        source: "built_in_heuristic",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, builtIn, "built_in_heuristic", false);
     }
 
     const live = await this.resolveLiveEndpointMetadata(params);
     if (hasAnyMetadata(live)) {
-      return {
-        ...live,
-        source: "live_endpoint",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, live, "live_endpoint", false);
     }
 
     const openrouter = await this.resolveOpenRouterMetadata(params);
     if (hasAnyMetadata(openrouter)) {
-      return {
-        ...openrouter,
-        source: "openrouter_registry",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, openrouter, "openrouter_registry", false);
     }
 
     const modelsDev = await this.resolveModelsDevMetadata(params);
     if (hasAnyMetadata(modelsDev)) {
-      return {
-        ...modelsDev,
-        source: "models_dev",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, modelsDev, "models_dev", false);
     }
 
     const litellm = await this.resolveLiteLlmMetadata(params);
     if (hasAnyMetadata(litellm)) {
-      return {
-        ...litellm,
-        source: "litellm",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, litellm, "litellm", false);
     }
 
     if (hasAnyMetadata(builtIn)) {
-      return {
-        ...builtIn,
-        source: "built_in_heuristic",
-        usedFallbackModelMetadata: false,
-      };
+      return this.finalize(params, builtIn, "built_in_heuristic", false);
     }
 
-    return conservativeFallback();
+    return this.finalize(
+      params,
+      conservativeFallbackValues(),
+      "conservative_fallback",
+      true,
+    );
+  }
+
+  private finalize(
+    params: LookupParams,
+    metadata: ModelMetadataValues,
+    source: ModelMetadataSource,
+    usedFallbackModelMetadata: boolean,
+  ): ResolvedModelMetadata {
+    const output = resolveEffectiveOutputTokens({
+      config: params.config,
+      env: this.env,
+      metadata,
+      onWarn: this.warnOnce.bind(this),
+    });
+    return {
+      ...(metadata.contextWindow !== undefined
+        ? { contextWindow: metadata.contextWindow }
+        : {}),
+      maxOutputTokens: output.maxOutputTokens,
+      maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,
+      maxOutputTokensExplicit: output.maxOutputTokensExplicit,
+      maxOutputTokensCappedDefault: output.maxOutputTokensCappedDefault,
+      source,
+      usedFallbackModelMetadata,
+    };
+  }
+
+  private warnOnce(msg: string): void {
+    if (this.warnedInvalidEnv.has(msg)) return;
+    this.warnedInvalidEnv.add(msg);
+    this.onWarn?.(msg);
   }
 
   private async resolveLiveEndpointMetadata(
@@ -266,11 +291,11 @@ export function readExplicitProviderMaxOutputTokens(
     .maxOutputTokens;
 }
 
-function conservativeFallback(): ResolvedModelMetadata {
+function conservativeFallbackValues(): ModelMetadataValues {
   return {
     contextWindow: CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
-    source: "conservative_fallback",
-    usedFallbackModelMetadata: true,
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+    maxOutputTokensUpperLimit: DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
   };
 }
 
@@ -328,10 +353,27 @@ function readExplicitConfigMetadata(
           "maxOutputTokens",
           "maxTokens",
         ),
+        maxOutputTokensUpperLimit: readPositiveInteger(
+          providerConfig,
+          "max_output_tokens",
+          "maxOutputTokens",
+          "maxTokens",
+        ),
+        maxOutputTokensExplicit: true,
       }
       : {}),
   };
 }
+
+const OPENAI_COMPATIBLE_METADATA_PROVIDERS = new Set([
+  "openai",
+  "lmstudio",
+  "openrouter",
+  "groq",
+  "deepseek",
+  "gemini",
+  "ollama",
+]);
 
 function inferBuiltInMetadata(
   provider: string,
@@ -339,6 +381,21 @@ function inferBuiltInMetadata(
 ): ModelMetadataValues | undefined {
   const normalizedProvider = normalizeProvider(provider);
   const normalizedModel = model.trim().toLowerCase();
+  if (OPENAI_COMPATIBLE_METADATA_PROVIDERS.has(normalizedProvider)) {
+    const contextWindow = getOpenAICompatibleContextWindow(model);
+    const maxOutputTokens = getOpenAICompatibleMaxOutputTokens(model);
+    if (contextWindow !== undefined || maxOutputTokens !== undefined) {
+      return {
+        ...(contextWindow !== undefined ? { contextWindow } : {}),
+        ...(maxOutputTokens !== undefined
+          ? {
+            maxOutputTokens,
+            maxOutputTokensUpperLimit: maxOutputTokens,
+          }
+          : {}),
+      };
+    }
+  }
   switch (normalizedProvider) {
     case "grok":
       if (!normalizedModel.startsWith("grok-")) return undefined;
@@ -348,47 +405,9 @@ function inferBuiltInMetadata(
           : 2_000_000,
         maxOutputTokens: 32_768,
       };
-    case "openai":
-      if (
-        !/(?:^|[/:])(gpt-5|gpt-4|gpt-4o|gpt-3\.5|o1|o3|o4)(?:$|[-_.:])/.test(
-          normalizedModel,
-        )
-      ) {
-        return undefined;
-      }
-      return {
-        contextWindow: /(?:^|[/:])(gpt-5|o3|o4|o1)(?:$|[-_.:])/.test(
-          normalizedModel,
-        )
-          ? 1_000_000
-          : 128_000,
-        ...(/(?:^|[/:])gpt-5(?:$|[-_.:])/.test(normalizedModel)
-          ? { maxOutputTokens: 128_000 }
-          : {}),
-      };
     case "anthropic":
       if (!normalizedModel.includes("claude")) return undefined;
       return { contextWindow: 200_000 };
-    case "openrouter":
-      if (!/(?:gpt-5|o3|o4|o1|gemini-2\.5)/.test(normalizedModel)) {
-        return undefined;
-      }
-      return {
-        contextWindow: 1_000_000,
-      };
-    case "groq":
-      if (
-        !/^(?:llama-3\.[13]|mixtral-8x7b)/.test(normalizedModel)
-      ) {
-        return undefined;
-      }
-      return { contextWindow: 128_000 };
-    case "deepseek":
-      if (!normalizedModel.startsWith("deepseek-")) return undefined;
-      return { contextWindow: 128_000 };
-    case "gemini":
-      if (!normalizedModel.startsWith("gemini-")) return undefined;
-      return { contextWindow: 1_000_000 };
     default:
       return undefined;
   }
@@ -446,6 +465,9 @@ function metadataFromModelsDevModels(
       ...(readPositiveInteger(limit, "output") !== undefined
         ? { maxOutputTokens: readPositiveInteger(limit, "output") }
         : {}),
+      ...(readPositiveInteger(limit, "output") !== undefined
+        ? { maxOutputTokensUpperLimit: readPositiveInteger(limit, "output") }
+        : {}),
     };
   }
   return undefined;
@@ -481,6 +503,14 @@ function metadataFromLiteLlm(
         : {}),
       ...(readPositiveInteger(record, "max_output_tokens") !== undefined
         ? { maxOutputTokens: readPositiveInteger(record, "max_output_tokens") }
+        : {}),
+      ...(readPositiveInteger(record, "max_output_tokens") !== undefined
+        ? {
+          maxOutputTokensUpperLimit: readPositiveInteger(
+            record,
+            "max_output_tokens",
+          ),
+        }
         : {}),
     };
   }
@@ -528,6 +558,26 @@ function metadataFromGenericRecord(
       : readPositiveInteger(topProvider, "max_completion_tokens") !== undefined
         ? {
           maxOutputTokens: readPositiveInteger(
+            topProvider,
+            "max_completion_tokens",
+          ),
+        }
+        : {}),
+    ...(readPositiveInteger(
+      record,
+      "max_output_tokens",
+      "max_completion_tokens",
+    ) !== undefined
+      ? {
+        maxOutputTokensUpperLimit: readPositiveInteger(
+          record,
+          "max_output_tokens",
+          "max_completion_tokens",
+        ),
+      }
+      : readPositiveInteger(topProvider, "max_completion_tokens") !== undefined
+        ? {
+          maxOutputTokensUpperLimit: readPositiveInteger(
             topProvider,
             "max_completion_tokens",
           ),
@@ -672,6 +722,93 @@ function normalizePositiveInteger(value: unknown): number | undefined {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
   }
   return undefined;
+}
+
+interface EffectiveOutputTokens {
+  readonly maxOutputTokens: number;
+  readonly maxOutputTokensUpperLimit: number;
+  readonly maxOutputTokensExplicit: boolean;
+  readonly maxOutputTokensCappedDefault: boolean;
+}
+
+function resolveEffectiveOutputTokens(params: {
+  readonly config: AgenCConfig;
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly metadata: ModelMetadataValues;
+  readonly onWarn?: (msg: string) => void;
+}): EffectiveOutputTokens {
+  const metadata = params.metadata;
+  const metadataDefault = metadata.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const metadataUpper =
+    metadata.maxOutputTokensUpperLimit ??
+    metadata.maxOutputTokens ??
+    DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT;
+
+  if (
+    metadata.maxOutputTokens !== undefined &&
+    metadata.maxOutputTokensExplicit === true
+  ) {
+    return {
+      maxOutputTokens: metadata.maxOutputTokens,
+      maxOutputTokensUpperLimit: metadata.maxOutputTokens,
+      maxOutputTokensExplicit: true,
+      maxOutputTokensCappedDefault: false,
+    };
+  }
+
+  const configOverride = normalizePositiveInteger(params.config.max_output_tokens);
+  const envOverride = readEnvMaxOutputTokens(params.env, params.onWarn);
+  const explicitOverride = envOverride ?? configOverride;
+  if (explicitOverride !== undefined) {
+    return {
+      maxOutputTokens: boundedOutputTokens(explicitOverride, metadataUpper),
+      maxOutputTokensUpperLimit: metadataUpper,
+      maxOutputTokensExplicit: true,
+      maxOutputTokensCappedDefault: false,
+    };
+  }
+
+  if (params.config.capped_default_max_output_tokens === true) {
+    return {
+      maxOutputTokens: boundedOutputTokens(
+        CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
+        metadataUpper,
+      ),
+      maxOutputTokensUpperLimit: metadataUpper,
+      maxOutputTokensExplicit: false,
+      maxOutputTokensCappedDefault: true,
+    };
+  }
+
+  return {
+    maxOutputTokens: boundedOutputTokens(metadataDefault, metadataUpper),
+    maxOutputTokensUpperLimit: metadataUpper,
+    maxOutputTokensExplicit: false,
+    maxOutputTokensCappedDefault: false,
+  };
+}
+
+function readEnvMaxOutputTokens(
+  env: Readonly<Record<string, string | undefined>>,
+  onWarn: ((msg: string) => void) | undefined,
+): number | undefined {
+  const raw = env.AGENC_MAX_OUTPUT_TOKENS;
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  const parsed = normalizePositiveInteger(raw);
+  if (parsed !== undefined) return parsed;
+  onWarn?.(
+    `[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="${raw}"; expected a positive integer`,
+  );
+  return undefined;
+}
+
+export function escalatedMaxOutputTokensForModel(
+  metadata: Pick<ResolvedModelMetadata, "maxOutputTokensUpperLimit">,
+): number {
+  return boundedOutputTokens(
+    ESCALATED_MAX_OUTPUT_TOKENS,
+    metadata.maxOutputTokensUpperLimit ?? DEFAULT_MAX_OUTPUT_TOKENS_UPPER_LIMIT,
+  );
 }
 
 function hasAnyMetadata(

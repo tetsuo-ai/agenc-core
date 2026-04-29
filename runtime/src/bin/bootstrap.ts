@@ -793,6 +793,11 @@ export async function bootstrapLocalRuntimeSession(
     metadata: {
       fetchImpl: globalThis.fetch.bind(globalThis),
       env,
+      onWarn: (message) =>
+        emitProviderWarning({
+          cause: "model_token_limit_config",
+          message,
+        }),
     },
   });
   // Register the live (model, ModelsManager) pair so sync helpers like

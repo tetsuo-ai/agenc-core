@@ -11,6 +11,7 @@ import type {
   LLMTool,
   LLMToolCall,
 } from "../types.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
   coerceUsage,
@@ -50,7 +51,7 @@ export interface ChatCompletionsRequestMetadata {
   readonly toolCount: number;
 }
 
-const DEFAULT_CHAT_COMPLETIONS_MAX_TOKENS = 4096;
+const DEFAULT_CHAT_COMPLETIONS_MAX_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS;
 
 function positiveInteger(value: number | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;

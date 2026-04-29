@@ -154,6 +154,16 @@ describe("schema: normalizeRawConfig", () => {
     expect(out._unknown).toBeUndefined();
   });
 
+  test("preserves global output-token knobs on the typed path", () => {
+    const out = normalizeRawConfig({
+      max_output_tokens: 32_000,
+      capped_default_max_output_tokens: true,
+    });
+    expect(out.max_output_tokens).toBe(32_000);
+    expect(out.capped_default_max_output_tokens).toBe(true);
+    expect(out._unknown).toBeUndefined();
+  });
+
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
       editorMode: "vim",
@@ -1029,6 +1039,34 @@ describe("env: resolvers", () => {
       AGENC_MAX_BUDGET_USD: "12.50",
     });
     expect(out.max_budget_usd).toBe(12.5);
+  });
+
+  test("applyEnvOverrides propagates output-token env knobs", () => {
+    const base = defaultConfig();
+    const out = applyEnvOverrides(base, {
+      AGENC_MAX_OUTPUT_TOKENS: "60_000",
+      AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS: "true",
+    });
+    expect(out.max_output_tokens).toBe(60_000);
+    expect(out.capped_default_max_output_tokens).toBe(true);
+  });
+
+  test("applyEnvOverrides ignores invalid output-token env knobs with diagnostics", () => {
+    const warnings: string[] = [];
+    const out = applyEnvOverrides(
+      defaultConfig(),
+      {
+        AGENC_MAX_OUTPUT_TOKENS: "bogus",
+        AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS: "maybe",
+      },
+      (message) => warnings.push(message),
+    );
+    expect(out.max_output_tokens).toBeUndefined();
+    expect(out.capped_default_max_output_tokens).toBeUndefined();
+    expect(warnings).toEqual([
+      '[agenc:config] invalid AGENC_MAX_OUTPUT_TOKENS="bogus"; expected a positive integer',
+      '[agenc:config] invalid AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS="maybe"; expected boolean-like value',
+    ]);
   });
 
   test("applyEnvOverrides: AGENC_SIMPLE=false yields simpleMode=false", () => {

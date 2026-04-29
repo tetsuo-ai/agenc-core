@@ -58,6 +58,9 @@ export interface ModelInfo {
   readonly contextWindow?: number;
   readonly effectiveContextWindowPercent: number;
   readonly maxOutputTokens?: number;
+  readonly maxOutputTokensUpperLimit?: number;
+  readonly maxOutputTokensExplicit?: boolean;
+  readonly maxOutputTokensCappedDefault?: boolean;
   readonly supportedReasoningLevels: ReadonlyArray<ReasoningEffort>;
   readonly defaultReasoningLevel?: ReasoningEffort;
   readonly defaultReasoningSummary: ReasoningSummary;

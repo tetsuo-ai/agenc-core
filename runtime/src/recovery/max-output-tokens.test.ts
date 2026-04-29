@@ -179,6 +179,21 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     expect(state.streamingToolExecutor).toBeNull();
   });
 
+  test("escalate path honors model upper limit", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState();
+
+    const outcome = runMaxOutputTokensRecovery({
+      session,
+      state,
+      escalatedMaxOutputTokens: 32_768,
+    });
+
+    expect(outcome.kind).toBe("escalate");
+    expect(state.maxOutputTokensOverride).toBe(32_768);
+  });
+
   test("exhausted path: no executor discard (no state mutation to recover)", () => {
     const log = new EventLog();
     const session = mkSession(log);

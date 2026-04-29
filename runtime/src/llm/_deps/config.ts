@@ -73,6 +73,8 @@ export interface ProviderConfig {
 export interface AgenCConfig {
   readonly model?: string;
   readonly model_provider?: string;
+  readonly max_output_tokens?: number;
+  readonly capped_default_max_output_tokens?: boolean;
   readonly providers?: Readonly<Record<string, ProviderConfig>>;
 }
 
