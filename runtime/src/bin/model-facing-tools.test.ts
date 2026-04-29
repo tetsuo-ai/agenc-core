@@ -585,7 +585,7 @@ describe("model-facing tools", () => {
     const live = {
       agentId: "thread-1",
       agentPath: "/root/task_1",
-      nickname: "Euclid",
+      nickname: "Snowcrash",
       role: { name: "default" },
       status: {
         get value() {
@@ -616,7 +616,7 @@ describe("model-facing tools", () => {
     expect(spawned.isError).not.toBe(true);
     expect(JSON.parse(spawned.content)).toEqual({
       task_name: "/root/task_1",
-      nickname: "Euclid",
+      nickname: "Snowcrash",
     });
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -647,7 +647,7 @@ describe("model-facing tools", () => {
         live: {
           agentId: "550e8400-e29b-41d4-a716-446655440000",
           agentPath: "/root/task_1",
-          nickname: "Euclid",
+          nickname: "Snowcrash",
           role: { name: "default" },
           status: {
             value: {
@@ -739,14 +739,14 @@ describe("model-facing tools", () => {
       getLive: vi.fn(() => ({
         agentId: "550e8400-e29b-41d4-a716-446655440003",
         agentPath: "/root/live",
-        nickname: "Curie",
+        nickname: "Neuromancer",
         role: { name: "worker" },
         status: { value: status },
       })),
       getAgentMetadata: vi.fn(() => ({
         agentId: "550e8400-e29b-41d4-a716-446655440003",
         agentPath: "/root/live",
-        agentNickname: "Curie",
+        agentNickname: "Neuromancer",
         agentRole: "worker",
         depth: 1,
       })),
@@ -767,11 +767,11 @@ describe("model-facing tools", () => {
       expect(result.isError).toBeUndefined();
       expect(emit.mock.calls.map((call) => call[0].msg.payload)).toEqual([
         expect.objectContaining({
-          receiverAgentNickname: "Curie",
+          receiverAgentNickname: "Neuromancer",
           receiverAgentRole: "worker",
         }),
         expect.objectContaining({
-          receiverAgentNickname: "Curie",
+          receiverAgentNickname: "Neuromancer",
           receiverAgentRole: "worker",
           status,
         }),

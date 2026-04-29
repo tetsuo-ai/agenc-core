@@ -32,7 +32,7 @@ describe("role registry", () => {
     const role = resolveAgentRole(undefined);
     expect(role.name).toBe("default");
     expect(role.config.nicknameCandidates).toBeUndefined();
-    expect(defaultAgentNicknameCandidates()).toContain("Euclid");
+    expect(defaultAgentNicknameCandidates()).toContain("Snowcrash");
   });
 
   it("falls back to default for unknown role names", () => {
@@ -48,7 +48,7 @@ describe("role registry", () => {
     expect(names).not.toContain("awaiter");
   });
 
-  it("explorer resolves through Codex-shaped config-file metadata", () => {
+  it("explorer resolves through upstream-compatible config-file metadata", () => {
     const role = getAgentRole("explorer")!;
     expect(role.config.configFile).toBe("explorer.toml");
     expect(role.config.reasoningEffort).toBeUndefined();
@@ -58,7 +58,7 @@ describe("role registry", () => {
     );
   });
 
-  it("worker has the Codex description and no built-in config-layer override", () => {
+  it("worker has the default description and no built-in config-layer override", () => {
     const role = resolveAgentRole("worker");
     expect(role.name).toBe("worker");
     expect(role.config.configFile).toBeUndefined();

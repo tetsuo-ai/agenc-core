@@ -9,7 +9,7 @@
  *
  * Carve-outs vs openclaude `components/TaskListV2.tsx`:
  *   - No team / teammate / agent-color rendering — AgenC has no team
- *     scoping concept and codex agents do not surface as colored
+ *     scoping concept and AgenC agents do not surface as colored
  *     in-process teammates.
  *   - No recent-completed TTL fade — the simpler render is sufficient
  *     for the lean coding profile.
