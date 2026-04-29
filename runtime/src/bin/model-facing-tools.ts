@@ -16,8 +16,9 @@ import {
   resolve,
 } from "node:path";
 import {
+  assertValidAgentName,
+  depthOfAgentPath,
   ROOT_AGENT_PATH,
-  normalizeAgentNameForPath,
   resolveAgentPath,
   type AgentPath,
   type ThreadId,
@@ -28,7 +29,10 @@ import {
 } from "../agents/role-presentation.js";
 import type { ForkMode } from "../agents/fork-context.js";
 import type { AgentThread } from "../agents/thread.js";
-import type { AgentStatus } from "../agents/status.js";
+import {
+  toCodexAgentStatusJson,
+  type AgentStatus,
+} from "../agents/status.js";
 import type { Session } from "../session/session.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
 import type { Tool, ToolResult } from "../tools/types.js";
@@ -104,6 +108,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 const MAX_WAIT_TIMEOUT_MS = 3_600_000;
 const MAX_FETCH_CHARS = 120_000;
 const MAX_SEARCH_RESULTS = 8;
+const DEFAULT_MAX_AGENT_DEPTH = 1;
 
 function json(content: unknown, isError?: boolean): ToolResult {
   return { content: safeStringify(content), ...(isError ? { isError: true } : {}) };
@@ -413,10 +418,53 @@ function resolveAgentId(
   currentAgentPath: AgentPath,
 ): ThreadId {
   const { control } = ensureAgentControl(session);
+  if (target === session.conversationId) return target;
+  if (control.getLive(target)) return target;
   return control.resolveAgentReference({
     currentAgentPath,
     reference: target,
   });
+}
+
+function resolveSessionMaxAgentDepth(session: Session): number {
+  const candidate = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1
+      ? value
+      : undefined;
+  return (
+    candidate((session.config as { agent_max_depth?: unknown }).agent_max_depth) ??
+    candidate(
+      (
+        session.sessionConfiguration.originalConfigDoNotUse as
+          | { agent_max_depth?: unknown }
+          | undefined
+      )?.agent_max_depth,
+    ) ??
+    DEFAULT_MAX_AGENT_DEPTH
+  );
+}
+
+function currentAgentDepth(session: Session, current: { readonly threadId: ThreadId; readonly agentPath: AgentPath }): number {
+  const { control } = ensureAgentControl(session);
+  return control.getLive(current.threadId)?.depth ?? depthOfAgentPath(current.agentPath);
+}
+
+function codexListedAgent(agent: {
+  readonly agentName: string;
+  readonly agentStatus: AgentStatus;
+  readonly lastTaskMessage?: string;
+}): {
+  readonly agent_name: string;
+  readonly agent_status: ReturnType<typeof toCodexAgentStatusJson>;
+  readonly last_task_message?: string;
+} {
+  return {
+    agent_name: agent.agentName,
+    agent_status: toCodexAgentStatusJson(agent.agentStatus),
+    ...(agent.lastTaskMessage !== undefined
+      ? { last_task_message: agent.lastTaskMessage }
+      : {}),
+  };
 }
 
 function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
@@ -448,15 +496,10 @@ function tryAutoExpandTaskPanel(opts: ModelFacingToolOptions): void {
 
 function parseForkTurns(value: unknown): ToolResult | ForkMode {
   const raw = value === undefined ? "all" : value;
-  if (raw === "none") return { kind: "new" };
-  if (raw === "all") return { kind: "full_history" };
-  if (typeof raw === "number" && Number.isInteger(raw) && raw > 0) {
-    return { kind: "last_n_turns", n: raw };
-  }
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    if (trimmed === "none") return { kind: "new" };
-    if (trimmed === "all") return { kind: "full_history" };
+    if (trimmed.toLowerCase() === "none") return { kind: "new" };
+    if (trimmed.toLowerCase() === "all") return { kind: "full_history" };
     const parsed = Number.parseInt(trimmed, 10);
     if (String(parsed) === trimmed && parsed > 0) {
       return { kind: "last_n_turns", n: parsed };
@@ -575,7 +618,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     }
     if (args.fork_context !== undefined) {
       return json(
-        { error: "fork_context is not supported; use fork_turns instead" },
+        { error: "fork_context is not supported in MultiAgentV2; use fork_turns instead" },
         true,
       );
     }
@@ -602,7 +645,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json(
         {
           error:
-            "Full-history forked agents inherit the current agent configuration; use fork_turns `none` or a positive integer with overrides.",
+            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
         },
         true,
       );
@@ -617,7 +660,23 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (!taskName) {
       return json({ error: "task_name is required" }, true);
     }
-    const agentName = normalizeAgentNameForPath(taskName);
+    try {
+      assertValidAgentName(taskName);
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
+    const childDepth = currentAgentDepth(session, current) + 1;
+    const maxDepth = resolveSessionMaxAgentDepth(session);
+    if (childDepth > maxDepth) {
+      return json(
+        { error: "Agent depth limit reached. Solve the task yourself." },
+        true,
+      );
+    }
+    const agentName = taskName;
     const runInBackground = true;
     const callId = callIdFromArgs(args, "agent");
 
@@ -713,12 +772,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       ...(!hideSpawnAgentMetadata(session)
         ? { nickname: live.nickname ?? null }
         : {}),
-      ...(!hideSpawnAgentMetadata(session)
-        ? {
-            agent_role: live.role.name,
-            agent_role_display: formatAgentRoleLabel(live.role.name),
-          }
-        : {}),
     });
   };
 
@@ -799,7 +852,18 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         ...receiverMetadata,
       },
     });
-    const previous = control.getLive(agentId)?.status.value ?? { status: "unknown" };
+    let previous: AgentStatus;
+    try {
+      const subscription = await control.subscribeStatus(agentId);
+      previous = subscription.value;
+      subscription.unsubscribe();
+    } catch {
+      previous =
+        control.getLive(agentId)?.status.value ??
+        (typeof (control as { getStatus?: unknown }).getStatus === "function"
+          ? await control.getStatus(agentId)
+          : { status: "not_found" });
+    }
     await control.shutdown(agentId, "closed_by_tool");
     emit(sessionOrError, {
       type: "collab_close_end",
@@ -811,7 +875,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: previous as AgentStatus,
       },
     });
-    return json({ previous_status: previous });
+    return json({ previous_status: toCodexAgentStatusJson(previous) });
   };
 
   const sendInput = async (
@@ -859,6 +923,15 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "Tasks can't be assigned to the root agent" }, true);
     }
     const callId = callIdFromArgs(args, "message");
+    if (optsForSend.triggerTurn && boolValue(args.interrupt) === true) {
+      control.interrupt(agentId, "followup_task_interrupt");
+    }
+    const live = control.getLive(agentId);
+    const metadata = control.getAgentMetadata(agentId);
+    const receiverAgentPath = metadata?.agentPath ?? live?.agentPath;
+    if (!receiverAgentPath) {
+      return json({ error: "target agent is missing an agent_path" }, true);
+    }
     emit(sessionOrError, {
       type: "collab_agent_interaction_begin",
       payload: {
@@ -868,13 +941,10 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         prompt: message,
       },
     });
-    if (optsForSend.triggerTurn && boolValue(args.interrupt) === true) {
-      control.interrupt(agentId, "followup_task_interrupt");
-    }
     try {
       await control.sendInterAgentCommunication(agentId, {
         author: current.agentPath,
-        recipient: target,
+        recipient: receiverAgentPath,
         content: message,
         triggerTurn: optsForSend.triggerTurn,
       });
@@ -884,7 +954,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         true,
       );
     }
-    const live = control.getLive(agentId);
     emit(sessionOrError, {
       type: "collab_agent_interaction_end",
       payload: {
@@ -901,7 +970,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           ? { receiverAgentRoleDisplayName: formatAgentRoleLabel(live.role.name) }
           : {}),
         prompt: message,
-        status: live?.status.value ?? { status: "not_found" },
+        status: await control.getStatus(agentId),
       },
     });
     return { content: "" };
@@ -911,17 +980,14 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
     const strict = strictArgs(args, {
-      allowed: new Set(["path_prefix", "role", "agent_type"]),
+      allowed: new Set(["path_prefix"]),
     });
     if (strict) return strict;
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const { control } = ensureAgentControl(sessionOrError);
     const current = currentAgentContext(sessionOrError, args);
-    const rawRoleName = stringValue(args.role) ?? stringValue(args.agent_type);
-    const roleName =
-      rawRoleName !== undefined ? canonicalAgentRoleName(rawRoleName) : undefined;
-    const pathPrefixRaw = stringValue(args.path_prefix) ?? stringValue(args.pathPrefix);
+    const pathPrefixRaw = stringValue(args.path_prefix);
     let resolvedPathPrefix: AgentPath | undefined;
     if (pathPrefixRaw !== undefined) {
       try {
@@ -935,9 +1001,8 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     }
     return json({
       agents: control.listAgents({
-        ...(roleName !== undefined ? { roleName } : {}),
         ...(resolvedPathPrefix !== undefined ? { pathPrefix: resolvedPathPrefix } : {}),
-      }),
+      }).map(codexListedAgent),
     });
   };
 
@@ -1049,15 +1114,13 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "list_agents",
       description:
-        "List live agents known to the current session. Optional role filters accept cyberpunk names such as scanner, runner, and sentinel.",
+        "List live agents known to the current session. Optionally scope results with path_prefix.",
       metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
       isReadOnly: true,
       inputSchema: {
         type: "object",
         properties: {
           path_prefix: { type: "string" },
-          role: { type: "string" },
-          agent_type: { type: "string" },
         },
         additionalProperties: false,
       },

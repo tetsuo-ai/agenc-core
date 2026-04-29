@@ -48,6 +48,15 @@ export type AgentStatus =
       readonly reason: string;
     };
 
+export type CodexAgentStatusJson =
+  | "pending_init"
+  | "running"
+  | "interrupted"
+  | "shutdown"
+  | "not_found"
+  | { readonly completed: string | null }
+  | { readonly errored: string };
+
 const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
   "completed",
   "errored",
@@ -57,6 +66,39 @@ const FINAL_STATES: ReadonlySet<AgentStatus["status"]> = new Set([
 
 export function isFinal(status: AgentStatus): boolean {
   return FINAL_STATES.has(status.status);
+}
+
+export function toCodexAgentStatusJson(
+  status: AgentStatus,
+): CodexAgentStatusJson {
+  switch (status.status) {
+    case "pending_init":
+      return "pending_init";
+    case "idle":
+      return "pending_init";
+    case "running":
+      return "running";
+    case "interrupted":
+      return "interrupted";
+    case "completed":
+      return { completed: status.lastMessage ?? null };
+    case "errored":
+      return { errored: status.error };
+    case "shutdown":
+      return "shutdown";
+    case "not_found":
+      return "not_found";
+  }
+}
+
+export function formatSubagentNotification(params: {
+  readonly agentPath: string;
+  readonly status: AgentStatus;
+}): string {
+  return `<subagent_notification>\n${JSON.stringify({
+    agent_path: params.agentPath,
+    status: toCodexAgentStatusJson(params.status),
+  })}\n</subagent_notification>`;
 }
 
 /**

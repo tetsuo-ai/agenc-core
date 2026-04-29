@@ -1069,8 +1069,7 @@ describe("eventsToMessages", () => {
         type: "tool_call_completed",
         payload: {
           callId: "spawn-1",
-          result:
-            '{"task_name":"/root/parser","nickname":"BridgeRunner","agent_role":"worker","agent_role_display":"Runner"}',
+          result: '{"task_name":"/root/parser","nickname":"BridgeRunner"}',
           isError: false,
         },
       },
