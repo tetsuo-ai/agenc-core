@@ -80,6 +80,7 @@ import {
   getPlanFilePath,
   type PlanFileContext,
 } from "../planning/plan-files.js";
+import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -606,7 +607,11 @@ export class ToolRouter {
             subId: toolCall.id,
           })),
       });
-      markSearchToolSelectionsDiscovered(toolCall.name, result, opts);
+      markLoadedToolNamesDiscovered(
+        toolCall.name,
+        result,
+        opts.discoveredToolNames,
+      );
       return result;
     } catch (err) {
       return toolDispatchErrorResult(err);
@@ -630,30 +635,6 @@ export class ToolRouter {
     return createDiffConsumer(
       typeof toolName === "string" ? toolName : nameDisplay(toolName),
     );
-  }
-}
-
-function markSearchToolSelectionsDiscovered(
-  toolName: string,
-  result: ToolDispatchResult,
-  opts: Pick<LiveToolDispatchOptions, "discoveredToolNames">,
-): void {
-  if (toolName !== "system.searchTools" || result.isError === true) return;
-  const discovered = opts.discoveredToolNames;
-  if (!discovered || typeof (discovered as Set<string>).add !== "function") {
-    return;
-  }
-  try {
-    const parsed = JSON.parse(result.content) as { loaded?: unknown };
-    if (!Array.isArray(parsed.loaded)) return;
-    for (const name of parsed.loaded) {
-      if (typeof name === "string" && name.trim().length > 0) {
-        (discovered as Set<string>).add(name);
-      }
-    }
-  } catch {
-    // Search tool output is best-effort telemetry; the tool itself already
-    // returned its model-facing result.
   }
 }
 
