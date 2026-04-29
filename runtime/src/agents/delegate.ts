@@ -59,6 +59,7 @@ export interface DelegateOpts {
   readonly worktreeSlug?: string;
   readonly forkMode?: ForkMode;
   readonly runInBackground?: boolean;
+  readonly forceSynchronous?: boolean;
   readonly toolAllowlist?: ReadonlyArray<string>;
   readonly resumeManager?: ResumeManager;
 }
@@ -193,7 +194,7 @@ export async function delegate(
         : {}),
     });
 
-  if (runInBackground || live.role.config.background) {
+  if (!opts.forceSynchronous && (runInBackground || live.role.config.background)) {
     // Async mode — fire-and-forget; caller sees the AgentThread handle.
     let thread!: AgentThread;
     const joinPromise = Promise.resolve().then(async () => {

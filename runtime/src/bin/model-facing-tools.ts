@@ -19,6 +19,7 @@ import {
   ROOT_AGENT_PATH,
   normalizeAgentNameForPath,
   resolveAgentPath,
+  type AgentMetadata,
   type AgentPath,
   type ThreadId,
 } from "../agents/registry.js";
@@ -93,6 +94,16 @@ interface SpawnedAgentRecord {
   readonly nickname: string;
   readonly join: () => Promise<unknown>;
   readonly status: () => AgentStatus;
+}
+
+interface RolloutSpawnEdgeLookup {
+  getThreadSpawnEdge?: (childThreadId: ThreadId) =>
+    | {
+        readonly childThreadId: ThreadId;
+        readonly parentPath: AgentPath;
+        readonly metadata: AgentMetadata;
+      }
+    | undefined;
 }
 
 const SESSION_SPAWNED_AGENTS = new WeakMap<
@@ -365,6 +376,14 @@ function resolveAgentId(
     currentAgentPath,
     reference: target,
   });
+}
+
+function rolloutSpawnEdgeFor(
+  session: Session,
+  childThreadId: ThreadId,
+): ReturnType<NonNullable<RolloutSpawnEdgeLookup["getThreadSpawnEdge"]>> {
+  const rolloutStore = session.rolloutStore as RolloutSpawnEdgeLookup | undefined;
+  return rolloutStore?.getThreadSpawnEdge?.(childThreadId);
 }
 
 function getSessionOrError(opts: ModelFacingToolOptions): Session | ToolResult {
@@ -1225,24 +1244,138 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       }),
       inputSchema: {
         type: "object",
-        properties: { target: { type: "string" }, agent_id: { type: "string" } },
+        properties: {
+          id: { type: "string" },
+          target: { type: "string" },
+          agent_id: { type: "string" },
+          agentId: { type: "string" },
+        },
         additionalProperties: false,
       },
       execute: async (args) => {
-        const target = parseTarget(args);
-        if (!target) return json({ error: "target is required" }, true);
+        const strict = strictArgs(args, {
+          allowed: new Set(["id", "target", "agent_id", "agentId"]),
+        });
+        if (strict) return strict;
+        const strictId = stringValue(args.id);
+        const target = strictId ?? parseTarget(args);
+        if (!target) return json({ error: "id is required" }, true);
         const sessionOrError = getSessionOrError(opts);
         if (!("conversationId" in sessionOrError)) return sessionOrError;
-        const record = spawnedAgentsForSession(sessionOrError).get(target);
-        if (record) {
-          return json({
-            status: record.status(),
-            agent_id: record.threadId,
-            agent_path: record.agentPath,
-            nickname: record.nickname,
-          });
+        const { control } = ensureAgentControl(sessionOrError);
+        const current = currentAgentContext(sessionOrError, args);
+        let receiverThreadId = target as ThreadId;
+        if (strictId === undefined) {
+          try {
+            receiverThreadId = resolveAgentId(
+              sessionOrError,
+              target,
+              current.agentPath,
+            );
+          } catch {
+            receiverThreadId =
+              spawnedAgentsForSession(sessionOrError).get(target)?.threadId ??
+              receiverThreadId;
+          }
         }
-        return json({ status: "not_found", target });
+        const callId = callIdFromArgs(args, "resume");
+        const liveBefore = control.getLive(receiverThreadId);
+        const edge = rolloutSpawnEdgeFor(sessionOrError, receiverThreadId);
+        const metadata =
+          control.getAgentMetadata(receiverThreadId) ??
+          liveBefore?.metadata ??
+          edge?.metadata;
+        emit(sessionOrError, {
+          type: "collab_resume_begin",
+          payload: {
+            callId,
+            senderThreadId: current.threadId,
+            receiverThreadId,
+            ...(metadata?.agentNickname !== undefined
+              ? { receiverAgentNickname: metadata.agentNickname }
+              : liveBefore?.nickname !== undefined
+                ? { receiverAgentNickname: liveBefore.nickname }
+                : {}),
+            ...(metadata?.agentRole !== undefined
+              ? { receiverAgentRole: metadata.agentRole }
+              : liveBefore?.role.name !== undefined
+                ? { receiverAgentRole: liveBefore.role.name }
+                : {}),
+          },
+        });
+
+        let status = await control.getStatus(receiverThreadId);
+        let resumeError: unknown;
+        if (status.status === "not_found") {
+          if (!metadata?.agentId || !metadata.agentPath) {
+            resumeError = new Error(
+              `thread ${receiverThreadId} is not a resumable spawned agent`,
+            );
+          } else {
+            try {
+              const resumed = await control.resumeAgentFromRollout({
+                rootThreadId: receiverThreadId,
+                parentPath: edge?.parentPath ?? current.agentPath,
+                metadata,
+              });
+              const rootLive = resumed.rootLive;
+              if (rootLive) {
+                const record: SpawnedAgentRecord = {
+                  threadId: rootLive.agentId,
+                  agentPath: rootLive.agentPath,
+                  nickname: rootLive.nickname,
+                  join: async () => ({
+                    threadId: rootLive.agentId,
+                    status: rootLive.status.value,
+                  }),
+                  status: () => rootLive.status.value as AgentStatus,
+                };
+                const spawned = spawnedAgentsForSession(sessionOrError);
+                spawned.set(rootLive.agentId, record);
+                spawned.set(rootLive.agentPath, record);
+                spawned.set(rootLive.nickname, record);
+              }
+              status = await control.getStatus(receiverThreadId);
+            } catch (error) {
+              resumeError = error;
+              status = await control.getStatus(receiverThreadId);
+            }
+          }
+        }
+
+        const liveAfter = control.getLive(receiverThreadId) ?? liveBefore;
+        emit(sessionOrError, {
+          type: "collab_resume_end",
+          payload: {
+            callId,
+            senderThreadId: current.threadId,
+            receiverThreadId,
+            ...(metadata?.agentNickname !== undefined
+              ? { receiverAgentNickname: metadata.agentNickname }
+              : liveAfter?.nickname !== undefined
+                ? { receiverAgentNickname: liveAfter.nickname }
+                : {}),
+            ...(metadata?.agentRole !== undefined
+              ? { receiverAgentRole: metadata.agentRole }
+              : liveAfter?.role.name !== undefined
+                ? { receiverAgentRole: liveAfter.role.name }
+                : {}),
+            status,
+          },
+        });
+
+        if (resumeError !== undefined) {
+          return json(
+            {
+              error:
+                resumeError instanceof Error
+                  ? resumeError.message
+                  : String(resumeError),
+            },
+            true,
+          );
+        }
+        return json({ status });
       },
     },
     {

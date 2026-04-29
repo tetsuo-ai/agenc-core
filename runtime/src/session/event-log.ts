@@ -357,6 +357,23 @@ export interface CollabCloseEndEvent {
   readonly status: AgentStatus;
 }
 
+export interface CollabResumeBeginEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly receiverThreadId: string;
+  readonly receiverAgentNickname?: string;
+  readonly receiverAgentRole?: string;
+}
+
+export interface CollabResumeEndEvent {
+  readonly callId: string;
+  readonly senderThreadId: string;
+  readonly receiverThreadId: string;
+  readonly receiverAgentNickname?: string;
+  readonly receiverAgentRole?: string;
+  readonly status: AgentStatus;
+}
+
 /**
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
@@ -547,6 +564,14 @@ export type EventMsg =
       readonly payload: CollabCloseEndEvent;
     }
   | {
+      readonly type: "collab_resume_begin";
+      readonly payload: CollabResumeBeginEvent;
+    }
+  | {
+      readonly type: "collab_resume_end";
+      readonly payload: CollabResumeEndEvent;
+    }
+  | {
       readonly type: "entered_review_mode";
       readonly payload: import("./review.js").ReviewRequest;
     }
@@ -676,6 +701,8 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "collab_waiting_end",
     "collab_close_begin",
     "collab_close_end",
+    "collab_resume_begin",
+    "collab_resume_end",
     "entered_review_mode",
     "deprecation_notice",
     "plan_started",

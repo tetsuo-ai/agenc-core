@@ -162,6 +162,13 @@ export class RolloutStore {
     this.persistThreadSpawnEdgesSnapshot();
   }
 
+  getThreadSpawnEdge(
+    childThreadId: ThreadId,
+  ): ThreadSpawnEdgeRecord | undefined {
+    const edge = this.threadSpawnEdges.get(childThreadId);
+    return edge ? cloneThreadSpawnEdge(edge) : undefined;
+  }
+
   listThreadSpawnChildrenWithStatus(
     parentThreadId: ThreadId,
     status: ThreadSpawnEdgeStatus,
@@ -189,9 +196,12 @@ export class RolloutStore {
     }
 
     const descendants: ThreadSpawnEdgeRecord[] = [];
+    const seen = new Set<ThreadId>([rootThreadId]);
     const queue = [...(childrenByParent.get(rootThreadId) ?? [])];
     while (queue.length > 0) {
       const next = queue.shift()!;
+      if (seen.has(next.childThreadId)) continue;
+      seen.add(next.childThreadId);
       descendants.push(cloneThreadSpawnEdge(next));
       const children = childrenByParent.get(next.childThreadId) ?? [];
       queue.push(...children);

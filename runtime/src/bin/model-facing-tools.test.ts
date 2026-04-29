@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../session/session.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
+import { _clearAgentControlCacheForTesting, _setAgentControlForTesting } from "./delegate-tool.js";
 
 const { delegateMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
@@ -633,6 +634,127 @@ describe("model-facing tools", () => {
       outcome: "completed",
       finalMessage: "done",
     });
+  });
+
+  it("resume_agent returns live status using the Codex id shape", async () => {
+    const session = fakeSession();
+    const emit = vi.fn();
+    (session as unknown as { emit: typeof emit }).emit = emit;
+    const status = {
+      status: "running" as const,
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    const control = {
+      getLive: vi.fn(() => ({
+        agentId: "thread-live",
+        agentPath: "/root/live",
+        nickname: "Euclid",
+        role: { name: "default" },
+        status: { value: status },
+        metadata: {
+          agentId: "thread-live",
+          agentPath: "/root/live",
+          agentNickname: "Euclid",
+          agentRole: "default",
+          depth: 1,
+        },
+      })),
+      getAgentMetadata: vi.fn(() => ({
+        agentId: "thread-live",
+        agentPath: "/root/live",
+        agentNickname: "Euclid",
+        agentRole: "default",
+        depth: 1,
+      })),
+      getStatus: vi.fn(async () => status),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const resume = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "resume_agent")!;
+
+      const result = await resume.execute({ id: "thread-live" });
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({ status });
+      expect(control.resumeAgentFromRollout).not.toHaveBeenCalled();
+      expect(emit.mock.calls.map((call) => call[0].msg.type)).toEqual([
+        "collab_resume_begin",
+        "collab_resume_end",
+      ]);
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
+  it("resume_agent reopens a closed rollout-backed agent", async () => {
+    const session = fakeSession();
+    const statuses = [
+      { status: "not_found" as const },
+      { status: "pending_init" as const },
+    ];
+    const rootLive = {
+      agentId: "thread-closed",
+      agentPath: "/root/closed",
+      nickname: "Noether",
+      role: { name: "worker" },
+      status: { value: statuses[1] },
+      metadata: {
+        agentId: "thread-closed",
+        agentPath: "/root/closed",
+        agentNickname: "Noether",
+        agentRole: "worker",
+        depth: 1,
+      },
+    };
+    const control = {
+      getLive: vi.fn(() => undefined),
+      getAgentMetadata: vi.fn(() => undefined),
+      getStatus: vi
+        .fn()
+        .mockResolvedValueOnce(statuses[0])
+        .mockResolvedValue(statuses[1]),
+      resumeAgentFromRollout: vi.fn(async () => ({
+        resumedCount: 1,
+        rootLive,
+      })),
+    };
+    (session as unknown as { rolloutStore: unknown }).rolloutStore = {
+      getThreadSpawnEdge: () => ({
+        childThreadId: "thread-closed",
+        parentPath: "/root",
+        metadata: rootLive.metadata,
+      }),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const resume = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "resume_agent")!;
+
+      const result = await resume.execute({ id: "thread-closed" });
+
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content)).toEqual({ status: statuses[1] });
+      expect(control.resumeAgentFromRollout).toHaveBeenCalledWith({
+        rootThreadId: "thread-closed",
+        parentPath: "/root",
+        metadata: rootLive.metadata,
+      });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
   });
 
   it("rejects empty v2 agent messages before dispatch", async () => {
