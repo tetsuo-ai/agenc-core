@@ -52,6 +52,7 @@ import {
   AgentJobCapacityError,
   runAgentsOnCsv,
   recordAgentJobResult,
+  type AgentJobProgressEmitter,
   type AgentJobSpawn,
   type AgentJobSpawnContext,
 } from "../agents/jobs/job-orchestrator.js";
@@ -1151,6 +1152,34 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     };
 
     const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
+    const callId = callIdFromArgs(args, "agent_job");
+    // Mirror codex `notify_background_event(turn, "agent_job_progress:{json}")`
+    // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
+    // chunk is the codex line verbatim. Operators wired to the AgenC
+    // event bus see the same payload codex prints.
+    const progressEmitter: AgentJobProgressEmitter = (update) => {
+      const payload = {
+        job_id: update.jobId,
+        total_items: update.totalItems,
+        pending_items: update.pendingItems,
+        running_items: update.runningItems,
+        completed_items: update.completedItems,
+        failed_items: update.failedItems,
+        ...(update.etaSeconds !== undefined
+          ? { eta_seconds: update.etaSeconds }
+          : {}),
+      };
+      emit(session, {
+        type: "tool_progress",
+        payload: {
+          callId,
+          toolName: "spawn_agents_on_csv",
+          chunk: `agent_job_progress:${JSON.stringify(payload)}`,
+          stream: "status",
+          at: Date.now(),
+        },
+      });
+    };
 
     try {
       const result = await runAgentsOnCsv({
@@ -1164,6 +1193,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         ...(agentMaxThreads !== undefined ? { agentMaxThreads } : {}),
         spawn,
         repository,
+        progressEmitter,
       });
       return json({
         job_id: result.jobId,
