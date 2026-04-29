@@ -71,7 +71,7 @@ describe("FileThreadStore.createThread", () => {
     try {
       const store = new FileThreadStore({ cwd });
       store.createThread({ threadId: "t1", rolloutStore: rollout });
-      expect(existsSync(store.registryFilePath)).toBe(true);
+      expect(existsSync(join(dirname(store.registryFilePath), "agenc-state_1.sqlite"))).toBe(true);
 
       const read = store.readThread({
         threadId: "t1",
@@ -693,7 +693,7 @@ describe("FileThreadStore.listThreads sort order", () => {
 });
 
 describe("FileThreadStore registry durability", () => {
-  it("writes the registry with an atomic temp-file swap", () => {
+  it("indexes threads in SQLite without registry temp files", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const rollout = openStore({ cwd, sessionId: "atomic" });
     try {
@@ -704,9 +704,7 @@ describe("FileThreadStore registry durability", () => {
       const entries = readdirSync(registryDir);
       expect(entries).not.toContain("threads.json.lock");
       expect(entries.some((entry) => entry.endsWith(".tmp"))).toBe(false);
-      expect(JSON.parse(readFileSync(store.registryFilePath, "utf8"))).toMatchObject({
-        version: 1,
-      });
+      expect(existsSync(join(registryDir, "agenc-state_1.sqlite"))).toBe(true);
     } finally {
       rollout.close();
       rmSync(cwd, { recursive: true, force: true });
@@ -724,9 +722,10 @@ describe("FileThreadStore registry durability", () => {
       store.createThread({ threadId: "corrupt", rolloutStore: rollout });
 
       const registryDir = dirname(store.registryFilePath);
+      const corruptDir = join(registryDir, "state-corrupt");
       expect(
-        readdirSync(registryDir).some((entry) =>
-          entry.startsWith("threads.json.corrupt-"),
+        readdirSync(corruptDir).some((entry) =>
+          entry.startsWith("threads-") && entry.endsWith(".json"),
         ),
       ).toBe(true);
       expect(

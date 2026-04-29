@@ -14,11 +14,10 @@
  * @module
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
-import {
-  getProjectDir,
-} from "../session/session-store.js";
+import { readFileSync, statSync } from "node:fs";
+import { basename } from "node:path";
+import type { RolloutItem } from "../session/rollout-item.js";
+import { FileThreadStore } from "../session/thread-store.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -122,63 +121,54 @@ function truncate(s: string, max: number): string {
   return collapsed.length > max ? collapsed.slice(0, max - 1) + "…" : collapsed;
 }
 
-/** Walk the sessions directory for this cwd. */
+/** Read resumable sessions through the project thread store. */
 export function listResumableSessions(
   cwd: string,
   opts: { maxFiles?: number; limit?: number } = {},
 ): RolloutEntry[] {
-  const maxFiles = opts.maxFiles ?? MAX_SCAN_FILES;
   const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
-  const projectDir = getProjectDir(cwd);
-  const sessionsRoot = join(projectDir, "sessions");
+  const maxFiles = opts.maxFiles ?? MAX_SCAN_FILES;
+  const store = new FileThreadStore({ cwd });
   const entries: RolloutEntry[] = [];
-  let scanned = 0;
-
-  let sessionDirs: string[] = [];
-  try {
-    sessionDirs = readdirSync(sessionsRoot);
-  } catch {
-    return [];
-  }
-
-  for (const dirName of sessionDirs) {
-    if (scanned >= maxFiles) break;
-    const dir = join(sessionsRoot, dirName);
-    let inner: string[];
+  for (const thread of store.listThreads({
+    pageSize: maxFiles,
+    sortKey: "updated_at",
+    sortDirection: "desc",
+    archived: false,
+  }).items) {
+    if (entries.length >= limit) break;
+    if (thread.rolloutPath === undefined) continue;
+    let mtimeMs = Date.parse(thread.updatedAt);
     try {
-      inner = readdirSync(dir);
+      mtimeMs = statSync(thread.rolloutPath).mtimeMs;
     } catch {
-      continue;
+      if (!Number.isFinite(mtimeMs)) continue;
     }
-    for (const fname of inner) {
-      if (scanned >= maxFiles) break;
-      if (!fname.startsWith("rollout-") || !fname.endsWith(".jsonl")) continue;
-      scanned++;
-      const full = join(dir, fname);
-      let mtimeMs = 0;
-      try {
-        mtimeMs = statSync(full).mtimeMs;
-      } catch {
-        continue;
-      }
-      const sessionId = sessionIdFromFilename(fname) ?? dirName;
-      entries.push({
-        filePath: full,
-        sessionId,
-        mtimeMs,
-        firstUserPreview: "",
-      });
-    }
+    const read = store.readThread({
+      threadId: thread.threadId,
+      includeArchived: false,
+      includeHistory: true,
+    });
+    entries.push({
+      filePath: thread.rolloutPath,
+      sessionId: thread.threadId,
+      mtimeMs,
+      firstUserPreview:
+        previewFromHistory(read.history?.items ?? []) ||
+        readFirstUserPreview(thread.rolloutPath),
+    });
   }
 
   entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const top = entries.slice(0, limit);
-  // Populate previews lazily only for the top slice to keep the listing cheap.
-  for (const e of top) {
-    (e as { firstUserPreview: string }).firstUserPreview =
-      readFirstUserPreview(e.filePath);
+  return entries.slice(0, limit);
+}
+
+function previewFromHistory(items: ReadonlyArray<RolloutItem>): string {
+  for (const item of items) {
+    const preview = extractUserText(item);
+    if (preview) return truncate(preview, 80);
   }
-  return top;
+  return "";
 }
 
 function formatEntries(entries: ReadonlyArray<RolloutEntry>): string {
