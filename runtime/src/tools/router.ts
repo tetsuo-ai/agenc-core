@@ -80,6 +80,7 @@ import {
   getPlanFilePath,
   type PlanFileContext,
 } from "../planning/plan-files.js";
+import { markLoadedToolNamesDiscovered } from "./deferred-discovery.js";
 
 export interface ToolCall {
   readonly toolName: ToolName;
@@ -568,7 +569,7 @@ export class ToolRouter {
     }
 
     try {
-      return await orchestrateToolCall({
+      const result = await orchestrateToolCall({
         tool: spec.tool,
         approvalCtx,
         approvalPolicy: opts.approvalPolicy,
@@ -606,6 +607,12 @@ export class ToolRouter {
             subId: toolCall.id,
           })),
       });
+      markLoadedToolNamesDiscovered(
+        toolCall.name,
+        result,
+        opts.discoveredToolNames,
+      );
+      return result;
     } catch (err) {
       return toolDispatchErrorResult(err);
     } finally {

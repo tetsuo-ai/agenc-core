@@ -70,6 +70,7 @@ import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import {
   recoverableFailureKind,
 } from "../tools/result-metadata.js";
+import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
 
 function toolResultMessage(
   callId: string,
@@ -389,6 +390,11 @@ function recordCompletedToolCall(
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
 ): void {
+  markLoadedToolNamesDiscovered(
+    toolCall.name,
+    result,
+    session.services.registry.getDiscoveredToolNames?.(),
+  );
   const toolResultBytes = Buffer.byteLength(result.content, "utf8");
   session.emit({
     id: session.nextInternalSubId(),

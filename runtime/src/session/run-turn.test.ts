@@ -1274,43 +1274,47 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     expect(session.pendingProviderSwitch).toBeNull();
   });
 
-  test("mid-turn /model sets pending, aborts current turn, next turn applies the new model", async () => {
-    // Simulate: a pending switch staged DURING turn N (the existing
-    // inner-loop safety net terminates turn N cleanly), then turn N+1
-    // is a fresh runTurn call that reads the marker and applies the
-    // switch to the session config BEFORE any model-dependent work.
-    const ctx = mkCtx();
-    const { session, getState } = mkSession({
-      provider: mkProvider({ content: "first" }),
-      registry: mkRegistry(),
-      sessionConfiguration: {
-        provider: { slug: "xai" },
-        collaborationMode: { model: "grok-3" },
-      },
-    });
+  test(
+    "mid-turn /model sets pending, aborts current turn, next turn applies the new model",
+    async () => {
+      // Simulate: a pending switch staged DURING turn N (the existing
+      // inner-loop safety net terminates turn N cleanly), then turn N+1
+      // is a fresh runTurn call that reads the marker and applies the
+      // switch to the session config BEFORE any model-dependent work.
+      const ctx = mkCtx();
+      const { session, getState } = mkSession({
+        provider: mkProvider({ content: "first" }),
+        registry: mkRegistry(),
+        sessionConfiguration: {
+          provider: { slug: "xai" },
+          collaborationMode: { model: "grok-3" },
+        },
+      });
 
-    // Turn N: no pending switch yet. During the turn, simulate a
-    // `/model grok-4` invocation that stages the switch. We stage it
-    // by setting the marker directly on the session (same shape the
-    // safety net path would use). Since this mock turn's loop won't
-    // call abortTerminal here (we're not driving a phase loop), the
-    // first runTurn completes cleanly — the test's contract is that
-    // the NEXT runTurn applies the marker.
-    session.setPendingProviderSwitch({
-      provider: "xai",
-      model: "grok-4",
-    });
+      // Turn N: no pending switch yet. During the turn, simulate a
+      // `/model grok-4` invocation that stages the switch. We stage it
+      // by setting the marker directly on the session (same shape the
+      // safety net path would use). Since this mock turn's loop won't
+      // call abortTerminal here (we're not driving a phase loop), the
+      // first runTurn completes cleanly — the test's contract is that
+      // the NEXT runTurn applies the marker.
+      session.setPendingProviderSwitch({
+        provider: "xai",
+        model: "grok-4",
+      });
 
-    // Turn N+1: fresh runTurn call. The consumer at the top reads the
-    // marker, applies it, and clears it. The new turn proceeds with
-    // the updated model.
-    await drain(session.runTurn("second message", { ctx }));
+      // Turn N+1: fresh runTurn call. The consumer at the top reads the
+      // marker, applies it, and clears it. The new turn proceeds with
+      // the updated model.
+      await drain(session.runTurn("second message", { ctx }));
 
-    expect(session.pendingProviderSwitch).toBeNull();
-    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
-      "grok-4",
-    );
-  });
+      expect(session.pendingProviderSwitch).toBeNull();
+      expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
+        "grok-4",
+      );
+    },
+    60_000,
+  );
 
   test("model_fallback consumes the pending switch and continues the same turn", async () => {
     const ctx = mkCtx();

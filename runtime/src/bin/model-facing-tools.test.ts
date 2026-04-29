@@ -184,6 +184,26 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("send_input");
     expect(visibleNames).not.toContain("NotebookEdit");
     expect(visibleNames).not.toContain("TaskCreate");
+
+    expect(
+      registry.tools.find((tool) => tool.name === "resume_agent")?.metadata,
+    ).toMatchObject({ deferred: true, hiddenByDefault: true });
+    expect(
+      registry.tools.find((tool) => tool.name === "send_input")?.metadata,
+    ).toMatchObject({ deferred: true, hiddenByDefault: true });
+    expect(
+      registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
+    ).toMatchObject({
+      required: ["message", "task_name"],
+      additionalProperties: false,
+    });
+    expect(
+      registry.tools.find((tool) => tool.name === "resume_agent")?.inputSchema,
+    ).toMatchObject({
+      properties: { id: { type: "string" } },
+      required: ["id"],
+      additionalProperties: false,
+    });
   });
 
   it("persists TaskCreate/TaskGet/TaskUpdate/TaskList against the per-project task board", async () => {
@@ -550,6 +570,10 @@ describe("model-facing tools", () => {
 
   it("launches strict spawn_agent through the delegate runner and stores a joinable thread", async () => {
     const session = fakeSession();
+    const counter = vi.fn();
+    (session.services as unknown as { sessionTelemetry: unknown }).sessionTelemetry = {
+      counter,
+    };
     let status:
       | {
           status: "running";
@@ -618,6 +642,9 @@ describe("model-facing tools", () => {
         runInBackground: true,
       }),
     );
+    expect(counter).toHaveBeenCalledWith("codex.multi_agent.spawn", 1, [
+      ["role", "default"],
+    ]);
 
     status = {
       status: "completed" as const,
@@ -636,10 +663,55 @@ describe("model-facing tools", () => {
     });
   });
 
+  it("hides spawn_agent nickname metadata when configured", async () => {
+    const session = fakeSession();
+    (session.config as unknown as { multiAgentV2: unknown }).multiAgentV2 = {
+      hideSpawnAgentMetadata: true,
+    };
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: "550e8400-e29b-41d4-a716-446655440000",
+          agentPath: "/root/task_1",
+          nickname: "Euclid",
+          role: { name: "default" },
+          status: {
+            value: {
+              status: "running",
+              turnId: "turn-1",
+              startedAtMs: 1,
+            },
+          },
+        },
+        join: vi.fn(),
+      },
+    });
+
+    const spawn = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+
+    const result = await spawn.execute({
+      message: "inspect",
+      task_name: "task_1",
+      fork_turns: "none",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content)).toEqual({ task_name: "/root/task_1" });
+  });
+
   it("resume_agent returns live status using the Codex id shape", async () => {
     const session = fakeSession();
     const emit = vi.fn();
+    const counter = vi.fn();
     (session as unknown as { emit: typeof emit }).emit = emit;
+    (session.services as unknown as { sessionTelemetry: unknown }).sessionTelemetry = {
+      counter,
+    };
+    const threadId = "550e8400-e29b-41d4-a716-446655440001";
     const status = {
       status: "running" as const,
       turnId: "turn-1",
@@ -647,13 +719,13 @@ describe("model-facing tools", () => {
     };
     const control = {
       getLive: vi.fn(() => ({
-        agentId: "thread-live",
+        agentId: threadId,
         agentPath: "/root/live",
         nickname: "Euclid",
         role: { name: "default" },
         status: { value: status },
         metadata: {
-          agentId: "thread-live",
+          agentId: threadId,
           agentPath: "/root/live",
           agentNickname: "Euclid",
           agentRole: "default",
@@ -661,7 +733,7 @@ describe("model-facing tools", () => {
         },
       })),
       getAgentMetadata: vi.fn(() => ({
-        agentId: "thread-live",
+        agentId: threadId,
         agentPath: "/root/live",
         agentNickname: "Euclid",
         agentRole: "default",
@@ -680,11 +752,12 @@ describe("model-facing tools", () => {
         getSession: () => session,
       }).find((tool) => tool.name === "resume_agent")!;
 
-      const result = await resume.execute({ id: "thread-live" });
+      const result = await resume.execute({ id: threadId });
 
       expect(result.isError).toBeUndefined();
       expect(JSON.parse(result.content)).toEqual({ status });
       expect(control.resumeAgentFromRollout).not.toHaveBeenCalled();
+      expect(counter).toHaveBeenCalledWith("codex.multi_agent.resume", 1, []);
       expect(emit.mock.calls.map((call) => call[0].msg.type)).toEqual([
         "collab_resume_begin",
         "collab_resume_end",
@@ -694,20 +767,36 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("resume_agent only accepts a strict id argument", async () => {
+    const resume = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    }).find((tool) => tool.name === "resume_agent")!;
+
+    const alias = await resume.execute({ target: "/root/live" });
+    expect(alias.isError).toBe(true);
+    expect(JSON.parse(alias.content).error).toContain("unknown field `target`");
+
+    const invalid = await resume.execute({ id: "/root/live" });
+    expect(invalid.isError).toBe(true);
+    expect(JSON.parse(invalid.content).error).toContain("invalid agent id");
+  });
+
   it("resume_agent reopens a closed rollout-backed agent", async () => {
     const session = fakeSession();
+    const threadId = "550e8400-e29b-41d4-a716-446655440002";
     const statuses = [
       { status: "not_found" as const },
       { status: "pending_init" as const },
     ];
     const rootLive = {
-      agentId: "thread-closed",
+      agentId: threadId,
       agentPath: "/root/closed",
       nickname: "Noether",
       role: { name: "worker" },
       status: { value: statuses[1] },
       metadata: {
-        agentId: "thread-closed",
+        agentId: threadId,
         agentPath: "/root/closed",
         agentNickname: "Noether",
         agentRole: "worker",
@@ -728,7 +817,7 @@ describe("model-facing tools", () => {
     };
     (session as unknown as { rolloutStore: unknown }).rolloutStore = {
       getThreadSpawnEdge: () => ({
-        childThreadId: "thread-closed",
+        childThreadId: threadId,
         parentPath: "/root",
         metadata: rootLive.metadata,
       }),
@@ -743,12 +832,12 @@ describe("model-facing tools", () => {
         getSession: () => session,
       }).find((tool) => tool.name === "resume_agent")!;
 
-      const result = await resume.execute({ id: "thread-closed" });
+      const result = await resume.execute({ id: threadId });
 
       expect(result.isError).toBeUndefined();
       expect(JSON.parse(result.content)).toEqual({ status: statuses[1] });
       expect(control.resumeAgentFromRollout).toHaveBeenCalledWith({
-        rootThreadId: "thread-closed",
+        rootThreadId: threadId,
         parentPath: "/root",
         metadata: rootLive.metadata,
       });
@@ -804,6 +893,62 @@ describe("model-facing tools", () => {
 
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content).error).toBe("root is not a spawned agent");
+  });
+
+  it("close_agent emits receiver nickname and role metadata", async () => {
+    const session = fakeSession();
+    const emit = vi.fn();
+    (session as unknown as { emit: typeof emit }).emit = emit;
+    const status = {
+      status: "running" as const,
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    const control = {
+      resolveAgentReference: vi.fn(() => "550e8400-e29b-41d4-a716-446655440003"),
+      getLive: vi.fn(() => ({
+        agentId: "550e8400-e29b-41d4-a716-446655440003",
+        agentPath: "/root/live",
+        nickname: "Curie",
+        role: { name: "worker" },
+        status: { value: status },
+      })),
+      getAgentMetadata: vi.fn(() => ({
+        agentId: "550e8400-e29b-41d4-a716-446655440003",
+        agentPath: "/root/live",
+        agentNickname: "Curie",
+        agentRole: "worker",
+        depth: 1,
+      })),
+      shutdown: vi.fn(),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const close = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "close_agent")!;
+
+      const result = await close.execute({ target: "/root/live" });
+
+      expect(result.isError).toBeUndefined();
+      expect(emit.mock.calls.map((call) => call[0].msg.payload)).toEqual([
+        expect.objectContaining({
+          receiverAgentNickname: "Curie",
+          receiverAgentRole: "worker",
+        }),
+        expect.objectContaining({
+          receiverAgentNickname: "Curie",
+          receiverAgentRole: "worker",
+          status,
+        }),
+      ]);
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
   });
 
   it("edits notebook cells structurally", async () => {

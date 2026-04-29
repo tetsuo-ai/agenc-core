@@ -442,6 +442,29 @@ describe("hasPermissionsToUseTool — step 2b toolAlwaysAllowedRule", () => {
 });
 
 describe("hasPermissionsToUseTool — step 3 passthrough → ask", () => {
+  it("allows tools explicitly tagged as not requiring approval", async () => {
+    const { context } = buildHarness({ mode: "default" });
+    const result = await hasPermissionsToUseTool(
+      makeTool({ name: "system.searchTools", requiresApproval: false }),
+      {},
+      context,
+    );
+    expect(result.behavior).toBe("allow");
+  });
+
+  it("allows read-only metadata tools without prompting", async () => {
+    const { context } = buildHarness({ mode: "default" });
+    const result = await hasPermissionsToUseTool(
+      makeTool({
+        name: "system.gitStatus",
+        metadata: { mutating: false },
+      }),
+      {},
+      context,
+    );
+    expect(result.behavior).toBe("allow");
+  });
+
   it("converts a passthrough tool result into ask", async () => {
     const tool = makeTool({
       name: "Bash",
