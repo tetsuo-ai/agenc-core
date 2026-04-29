@@ -117,6 +117,7 @@ import type {
   ShellAgentRoleSource,
   ShellAgentToolBundleName,
 } from "./shell-agent-roles.js";
+import { resolveAgentRoleDisplayName } from "./agent-role-presentation.js";
 import {
   evaluateShellFeatureRollout,
   formatShellRolloutHoldback,
@@ -896,7 +897,8 @@ function formatAgentRoleCatalog(
     `Child-agent roles (${roles.length}):`,
     ...roles.map((role) =>
       [
-        `  ${role.id}`,
+        `  ${role.displayName}`,
+        `id=${role.id}`,
         `source=${role.source}`,
         `trust=${role.trustLabel}`,
         `profile=${role.defaultShellProfile}`,
@@ -930,7 +932,10 @@ function formatAgentListReply(entries: readonly {
       [
         `  ${entry.sessionId}`,
         `[${entry.status}]`,
-        entry.role ? `role=${entry.role}` : null,
+        entry.role
+          ? `role=${resolveAgentRoleDisplayName(entry.role, entry.role)}`
+          : null,
+        entry.role ? `id=${entry.role}` : null,
         entry.roleSource ? `source=${entry.roleSource}` : null,
         entry.taskId ? `task=${entry.taskId}` : null,
         entry.shellProfile ? `profile=${entry.shellProfile}` : null,
@@ -965,7 +970,8 @@ function formatAgentInspectReply(entry: {
     `  Session: ${entry.sessionId ?? "none"}`,
     `  Task id: ${entry.taskId ?? "none"}`,
     `  Status: ${entry.status}`,
-    `  Role: ${entry.role ?? "unknown"}`,
+    `  Role: ${entry.role ? resolveAgentRoleDisplayName(entry.role, entry.role) : "unknown"}`,
+    `  Role id: ${entry.role ?? "unknown"}`,
     `  Role source: ${entry.roleSource ?? "unknown"}`,
     `  Shell profile: ${entry.shellProfile ?? "unknown"}`,
     `  Tool bundle: ${entry.toolBundle ?? "inherit"}`,

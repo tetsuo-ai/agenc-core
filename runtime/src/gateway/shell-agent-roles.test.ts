@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { ToolCatalogEntry } from "../tools/types.js";
-import { resolveShellAgentRole } from "./shell-agent-roles.js";
+import {
+  buildShellAgentRoleCatalog,
+  resolveShellAgentRole,
+} from "./shell-agent-roles.js";
 
 function makeCatalogEntry(name: string): ToolCatalogEntry {
   return {
@@ -47,6 +50,63 @@ describe("resolveShellAgentRole(verify)", () => {
 
     expect(resolved?.descriptor.mutating).toBe(false);
     expect(resolved?.descriptor.worktreeEligible).toBe(false);
+  });
+});
+
+describe("shell agent role presentation", () => {
+  it("keeps stable role ids while exposing Netrunner display names", () => {
+    const roles = buildShellAgentRoleCatalog({ definitions: [] });
+    const byId = new Map(roles.map((role) => [role.id, role]));
+
+    expect(byId.get("coding")?.displayName).toBe("Runner");
+    expect(byId.get("research")?.displayName).toBe("Scanner");
+    expect(byId.get("verify")?.displayName).toBe("Sentinel");
+    expect(byId.get("operator")?.displayName).toBe("Fixer");
+    expect(byId.get("docs")?.displayName).toBe("Scribe");
+    expect(byId.get("marketplace")?.displayName).toBe("Broker");
+    expect(byId.get("browser-testing")?.displayName).toBe("Ghost");
+    expect(byId.get("remote-debugging")?.displayName).toBe("Trace");
+
+    expect([...byId.keys()]).toEqual([
+      "coding",
+      "docs",
+      "research",
+      "verify",
+      "operator",
+      "marketplace",
+      "browser-testing",
+      "remote-debugging",
+    ]);
+  });
+
+  it("maps built-in definition names to friendly labels without changing ids", () => {
+    const roles = buildShellAgentRoleCatalog({
+      definitions: [
+        {
+          name: "explore",
+          description: "Fast read-only codebase exploration",
+          model: "inherit",
+          source: "built-in",
+          tools: ["system.readFile"],
+          maxTurns: 3,
+          filePath: "/tmp/explore.md",
+          body: "Inspect only.",
+        },
+        {
+          name: "implement",
+          description: "Targeted file mutation agent",
+          model: "inherit",
+          source: "built-in",
+          tools: ["system.writeFile"],
+          maxTurns: 3,
+          filePath: "/tmp/implement.md",
+          body: "Edit files.",
+        },
+      ],
+    });
+
+    expect(roles.find((role) => role.id === "explore")?.displayName).toBe("Scanner");
+    expect(roles.find((role) => role.id === "implement")?.displayName).toBe("Runner");
   });
 });
 

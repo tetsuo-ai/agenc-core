@@ -1,3 +1,9 @@
+import {
+  compactAgentSessionFallback,
+  looksLikeCanonicalTaskPath,
+  resolveWatchAgentLabel,
+} from "./agenc-watch-agent-labels.mjs";
+
 function assertFunction(name, value) {
   if (typeof value !== "function") {
     throw new TypeError(`createWatchSubagentController requires a ${name} function`);
@@ -129,15 +135,39 @@ export function createWatchSubagentController(dependencies = {}) {
   function subagentLabel(payload) {
     const token = compactSessionToken(payload?.subagentSessionId);
     const data = subagentPayloadData(payload);
+    const explicitName = sanitizeInlineText(
+      data.agentDisplayName ?? data.childName ?? data.agentName ?? data.name ?? "",
+    );
+    if (explicitName && !looksLikeCanonicalTaskPath(explicitName)) {
+      return explicitName;
+    }
+    const roleLabel = resolveWatchAgentLabel(
+      data.role ?? data.agentType ?? data.subagentType,
+      data.agentLabel ?? null,
+    );
+    if (roleLabel) {
+      return roleLabel;
+    }
     const step = ensureSubagentPlanStep({
       stepName: data.stepName,
       objective: data.objective,
       subagentSessionId: payload?.subagentSessionId,
     });
-    const base = step
-      ? planStepDisplayName(step, token ? 22 : 30)
-      : "Delegated child";
-    return token ? `${base} · ${token}` : base;
+    const stepLabel = step ? planStepDisplayName(step, token ? 22 : 30) : "";
+    if (stepLabel && !looksLikeCanonicalTaskPath(stepLabel)) {
+      return stepLabel;
+    }
+    return compactAgentSessionFallback(payload?.subagentSessionId, compactSessionToken);
+  }
+
+  function subagentDisplayDetail(...values) {
+    for (const value of values) {
+      const text = sanitizeInlineText(value ?? "");
+      if (text && !looksLikeCanonicalTaskPath(text)) {
+        return text;
+      }
+    }
+    return null;
   }
 
   function formatValidationCode(value) {
@@ -338,7 +368,7 @@ export function createWatchSubagentController(dependencies = {}) {
         pushEvent(
           "subagent",
           `${label} started`,
-          objective || stepName || label,
+          subagentDisplayDetail(objective, stepName) ?? label,
           "magenta",
           baseMetadata,
         );
