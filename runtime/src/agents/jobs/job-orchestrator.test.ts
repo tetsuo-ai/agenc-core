@@ -1,0 +1,147 @@
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  recordAgentJobResult,
+  runAgentsOnCsv,
+  type AgentJobSpawn,
+  type AgentJobSpawnContext,
+} from "./job-orchestrator.js";
+
+let workDir: string;
+
+beforeEach(async () => {
+  workDir = await mkdtemp(join(tmpdir(), "agenc-job-test-"));
+});
+
+afterEach(async () => {
+  await rm(workDir, { recursive: true, force: true });
+});
+
+function fakeSpawnReporter(): AgentJobSpawn & {
+  receivedPrompts: AgentJobSpawnContext[];
+} {
+  const receivedPrompts: AgentJobSpawnContext[] = [];
+  return {
+    receivedPrompts,
+    async spawn(ctx) {
+      receivedPrompts.push(ctx);
+      // Auto-report on the next tick to simulate a worker that immediately
+      // produces a result.
+      queueMicrotask(() => {
+        recordAgentJobResult({
+          jobId: ctx.jobId,
+          itemId: ctx.itemId,
+          result: { echoed: ctx.row.value ?? "" },
+        });
+      });
+    },
+    async cancelOutstanding() {
+      // No-op; in-memory orchestrator relies on workers self-terminating.
+    },
+  };
+}
+
+describe("runAgentsOnCsv", () => {
+  it("spawns one worker per row and collects their results", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id,value\nrow1,a\nrow2,b\n", "utf8");
+    const spawn = fakeSpawnReporter();
+    const result = await runAgentsOnCsv({
+      csvPath,
+      instruction: "process {value}",
+      idColumn: "id",
+      spawn,
+    });
+    expect(result.items.map((item) => item.itemId)).toEqual(["row1", "row2"]);
+    expect(result.items.every((item) => item.status === "completed")).toBe(true);
+    expect(result.items[0]!.result).toEqual({ echoed: "a" });
+    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("Job ID: ");
+    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("Item ID: row1");
+    expect(spawn.receivedPrompts[0]!.workerPrompt).toContain("process a");
+  });
+
+  it("writes an output CSV when output_csv_path is set", async () => {
+    const csvPath = join(workDir, "input.csv");
+    const outPath = join(workDir, "out.csv");
+    await writeFile(csvPath, "id,value\nrow1,hi\n", "utf8");
+    await runAgentsOnCsv({
+      csvPath,
+      instruction: "do",
+      idColumn: "id",
+      outputCsvPath: outPath,
+      spawn: fakeSpawnReporter(),
+    });
+    const written = await readFile(outPath, "utf8");
+    expect(written).toContain("id,value,_status,_error,echoed");
+    expect(written).toContain("row1,hi,completed,,hi");
+  });
+
+  it("short-circuits the remaining items when a worker requests stop", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id\nrow1\nrow2\nrow3\n", "utf8");
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx) {
+        queueMicrotask(() => {
+          recordAgentJobResult({
+            jobId: ctx.jobId,
+            itemId: ctx.itemId,
+            result: {},
+            stop: ctx.itemId === "row1",
+          });
+        });
+      },
+      async cancelOutstanding() {},
+    };
+    const result = await runAgentsOnCsv({
+      csvPath,
+      instruction: "x",
+      idColumn: "id",
+      maxConcurrency: 1,
+      spawn,
+    });
+    expect(result.stoppedEarly).toBe(true);
+    expect(result.items[0]!.status).toBe("completed");
+    expect(result.items.slice(1).every((it) => it.status === "cancelled")).toBe(
+      true,
+    );
+  });
+
+  it("rejects when csv contains zero data rows", async () => {
+    const csvPath = join(workDir, "empty.csv");
+    await writeFile(csvPath, "id\n", "utf8");
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "x",
+        spawn: fakeSpawnReporter(),
+      }),
+    ).rejects.toThrow(/zero data rows/);
+  });
+
+  it("rejects when id_column is not in the header", async () => {
+    const csvPath = join(workDir, "input.csv");
+    await writeFile(csvPath, "id\nrow1\n", "utf8");
+    await expect(
+      runAgentsOnCsv({
+        csvPath,
+        instruction: "x",
+        idColumn: "missing",
+        spawn: fakeSpawnReporter(),
+      }),
+    ).rejects.toThrow(/id_column/);
+  });
+});
+
+describe("recordAgentJobResult", () => {
+  it("returns unknown_job when the job id is not registered", () => {
+    expect(
+      recordAgentJobResult({
+        jobId: "nope",
+        itemId: "x",
+        result: {},
+      }),
+    ).toEqual({ kind: "unknown_job" });
+  });
+});

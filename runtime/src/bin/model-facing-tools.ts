@@ -49,6 +49,12 @@ import {
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
 import {
+  runAgentsOnCsv,
+  recordAgentJobResult,
+  type AgentJobSpawn,
+  type AgentJobSpawnContext,
+} from "../agents/jobs/job-orchestrator.js";
+import {
   backgroundTaskLifecycle,
   registerAgentThreadTask,
   BackgroundTaskError,
@@ -1036,6 +1042,148 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     });
   };
 
+  const spawnAgentsOnCsv = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set([
+        "csv_path",
+        "instruction",
+        "id_column",
+        "output_csv_path",
+        "max_concurrency",
+        "max_workers",
+        "max_runtime_seconds",
+        "output_schema",
+      ]),
+      required: ["csv_path", "instruction"],
+    });
+    if (strict) return strict;
+    const sessionOrError = getSessionOrError(opts);
+    if (!("conversationId" in sessionOrError)) return sessionOrError;
+    const session = sessionOrError;
+    const { control, registry } = ensureAgentControl(session);
+    const current = currentAgentContext(session, args);
+    const instruction = stringValue(args.instruction);
+    if (!instruction || instruction.trim().length === 0) {
+      return json({ error: "instruction must be non-empty" }, true);
+    }
+    const csvPath = stringValue(args.csv_path)!;
+    const idColumn = stringValue(args.id_column);
+    const outputCsvPath = stringValue(args.output_csv_path);
+    const maxConcurrency =
+      numberValue(args.max_concurrency) ?? numberValue(args.max_workers);
+    const maxRuntimeSeconds = numberValue(args.max_runtime_seconds);
+    const outputSchema =
+      typeof args.output_schema === "object" &&
+      args.output_schema !== null &&
+      !Array.isArray(args.output_schema)
+        ? (args.output_schema as Record<string, unknown>)
+        : undefined;
+
+    const spawn: AgentJobSpawn = {
+      async spawn(ctx: AgentJobSpawnContext) {
+        const outcome = await delegate({
+          parent: session,
+          parentPath: current.agentPath,
+          control,
+          registry,
+          taskPrompt: ctx.workerPrompt,
+          agentName: ctx.itemId,
+          runInBackground: true,
+        });
+        if (outcome.kind === "rejected") {
+          throw new Error(
+            `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
+          );
+        }
+      },
+      async cancelOutstanding() {
+        // In-memory orchestrator: workers self-terminate when they
+        // observe a stop=true report. Outstanding agents will be
+        // bounded by `max_runtime_seconds`. Hard-cancel via the
+        // control plane is deferred (codex SQLite-backed lifecycle
+        // not ported).
+      },
+    };
+
+    try {
+      const result = await runAgentsOnCsv({
+        csvPath,
+        instruction,
+        ...(idColumn !== undefined ? { idColumn } : {}),
+        ...(outputCsvPath !== undefined ? { outputCsvPath } : {}),
+        ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
+        ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
+        ...(outputSchema !== undefined ? { outputSchema } : {}),
+        spawn,
+      });
+      return json({
+        job_id: result.jobId,
+        items: result.items.map((item) => ({
+          item_id: item.itemId,
+          status: item.status,
+          ...(item.error !== undefined ? { error: item.error } : {}),
+          ...(item.result !== undefined ? { result: item.result } : {}),
+        })),
+        stopped_early: result.stoppedEarly,
+        ...(result.outputCsvPath !== undefined
+          ? { output_csv_path: result.outputCsvPath }
+          : {}),
+      });
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
+        true,
+      );
+    }
+  };
+
+  const reportAgentJobResultHandler = async (
+    args: Record<string, unknown>,
+  ): Promise<ToolResult> => {
+    const strict = strictArgs(args, {
+      allowed: new Set(["job_id", "item_id", "result", "stop"]),
+      required: ["job_id", "item_id"],
+    });
+    if (strict) return strict;
+    const jobId = stringValue(args.job_id);
+    const itemId = stringValue(args.item_id);
+    if (jobId === undefined || itemId === undefined) {
+      return json({ error: "job_id and item_id must be strings" }, true);
+    }
+    const result = args.result;
+    if (
+      typeof result !== "object" ||
+      result === null ||
+      Array.isArray(result)
+    ) {
+      return json({ error: "result must be a JSON object" }, true);
+    }
+    const stop = args.stop;
+    if (stop !== undefined && typeof stop !== "boolean") {
+      return json({ error: "stop must be a boolean" }, true);
+    }
+    const outcome = recordAgentJobResult({
+      jobId,
+      itemId,
+      result: result as Record<string, unknown>,
+      ...(stop !== undefined ? { stop } : {}),
+    });
+    switch (outcome.kind) {
+      case "ok":
+        return json({ status: "recorded" });
+      case "unknown_job":
+        return json({ error: `unknown job_id: ${jobId}` }, true);
+      case "unknown_item":
+        return json({ error: `unknown item_id: ${itemId}` }, true);
+      case "already_reported":
+        return json({ error: `item ${itemId} already reported` }, true);
+      case "schema_violation":
+        return json({ error: outcome.reason }, true);
+    }
+  };
+
   const spawnAgentSchema = {
     type: "object",
     properties: {
@@ -1154,6 +1302,87 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         additionalProperties: false,
       },
       execute: listAgents,
+    },
+    {
+      name: "spawn_agents_on_csv",
+      description:
+        "Spawn one subagent per row of a CSV file. Each row is rendered into the instruction template (using `{column_name}` placeholders); the subagents must call `report_agent_job_result` exactly once with their analysis. Optionally writes an output CSV with each row's status and result.",
+      metadata: toolMetadata("agent", {
+        mutating: true,
+        keywords: ["agent", "spawn", "batch", "csv", "job"],
+      }),
+      requiresApproval: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          csv_path: {
+            type: "string",
+            description: "Path to the CSV file containing input rows.",
+          },
+          instruction: {
+            type: "string",
+            description:
+              "Instruction template applied to each row. Use `{column_name}` placeholders to inject values from the row.",
+          },
+          id_column: {
+            type: "string",
+            description: "Optional column name to use as the stable item id.",
+          },
+          output_csv_path: {
+            type: "string",
+            description: "Optional output CSV path for exported results.",
+          },
+          max_concurrency: {
+            type: "number",
+            description:
+              "Maximum concurrent workers for this job. Defaults to 16.",
+          },
+          max_workers: {
+            type: "string",
+            description: "Alias for max_concurrency. Set to 1 to run sequentially.",
+          },
+          max_runtime_seconds: {
+            type: "number",
+            description:
+              "Maximum runtime per worker before it is failed. Defaults to 1800 seconds.",
+          },
+          output_schema: { type: "object" },
+        },
+        required: ["csv_path", "instruction"],
+        additionalProperties: false,
+      },
+      execute: spawnAgentsOnCsv,
+    },
+    {
+      name: "report_agent_job_result",
+      description:
+        "Called by a subagent worker to record its analysis result for an agent-jobs item. Set `stop=true` to cancel the rest of the job after this report.",
+      metadata: toolMetadata("agent", {
+        mutating: true,
+        keywords: ["agent", "job", "report", "result"],
+      }),
+      inputSchema: {
+        type: "object",
+        properties: {
+          job_id: {
+            type: "string",
+            description: "Identifier of the job.",
+          },
+          item_id: {
+            type: "string",
+            description: "Identifier of the job item.",
+          },
+          result: { type: "object" },
+          stop: {
+            type: "boolean",
+            description:
+              "Optional. When true, cancels the remaining job items after this result is recorded.",
+          },
+        },
+        required: ["job_id", "item_id", "result"],
+        additionalProperties: false,
+      },
+      execute: reportAgentJobResultHandler,
     },
   ];
 }
