@@ -138,13 +138,14 @@ function toolMetadata(
   opts: {
     readonly mutating?: boolean;
     readonly deferred?: boolean;
+    readonly hiddenByDefault?: boolean;
     readonly keywords?: readonly string[];
   } = {},
 ): Tool["metadata"] {
   return {
     family,
     source: "builtin",
-    hiddenByDefault: false,
+    hiddenByDefault: opts.hiddenByDefault ?? false,
     mutating: opts.mutating ?? false,
     deferred: opts.deferred ?? false,
     keywords: opts.keywords ?? [family],
@@ -339,6 +340,86 @@ function callIdFromArgs(
   prefix: string,
 ): string {
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
+}
+
+function isValidThreadId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(
+    value,
+  );
+}
+
+function hideSpawnAgentMetadata(session: Session): boolean {
+  return (
+    (
+      session.config as {
+        multiAgentV2?: { hideSpawnAgentMetadata?: boolean };
+      }
+    ).multiAgentV2?.hideSpawnAgentMetadata === true
+  );
+}
+
+function recordAgentCounter(
+  session: Session,
+  name: string,
+  tags: readonly [string, string][] = [],
+): void {
+  const telemetry = ((
+    session as unknown as {
+      sessionTelemetry?: {
+        counter?: (
+          name: string,
+          increment: number,
+          tags: readonly [string, string][],
+        ) => void;
+      };
+      services?: {
+        sessionTelemetry?: {
+          counter?: (
+            name: string,
+            increment: number,
+            tags: readonly [string, string][],
+          ) => void;
+        };
+      };
+    }
+  ).sessionTelemetry ?? session.services.sessionTelemetry) as
+    | {
+        counter?: (
+          name: string,
+          increment: number,
+          tags: readonly [string, string][],
+        ) => void;
+      }
+    | undefined;
+  try {
+    telemetry?.counter?.(name, 1, tags);
+  } catch {
+    // Telemetry must never affect model-facing tool behavior.
+  }
+}
+
+function receiverMetadataFor(
+  session: Session,
+  receiverThreadId: ThreadId,
+): {
+  readonly receiverAgentNickname?: string;
+  readonly receiverAgentRole?: string;
+} {
+  const { control } = ensureAgentControl(session);
+  const live = control.getLive(receiverThreadId);
+  const metadata = control.getAgentMetadata(receiverThreadId) ?? live?.metadata;
+  return {
+    ...(metadata?.agentNickname !== undefined
+      ? { receiverAgentNickname: metadata.agentNickname }
+      : live?.nickname !== undefined
+        ? { receiverAgentNickname: live.nickname }
+        : {}),
+    ...(metadata?.agentRole !== undefined
+      ? { receiverAgentRole: metadata.agentRole }
+      : live?.role.name !== undefined
+        ? { receiverAgentRole: live.role.name }
+        : {}),
+  };
 }
 
 function currentAgentContext(session: Session, args: Record<string, unknown>): {
@@ -706,11 +787,16 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: live.status.value,
       },
     });
+    recordAgentCounter(session, "codex.multi_agent.spawn", [
+      ["role", live.role.name],
+    ]);
 
     if (aliasName === "spawn_agent") {
       return json({
         task_name: live.agentPath,
-        ...(live.nickname ? { nickname: live.nickname } : {}),
+        ...(!hideSpawnAgentMetadata(session)
+          ? { nickname: live.nickname ?? null }
+          : {}),
       });
     }
 
@@ -849,12 +935,14 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "root is not a spawned agent" }, true);
     }
     const callId = callIdFromArgs(args, "close");
+    const receiverMetadata = receiverMetadataFor(sessionOrError, agentId);
     emit(sessionOrError, {
       type: "collab_close_begin",
       payload: {
         callId,
         senderThreadId: current.threadId,
         receiverThreadId: agentId,
+        ...receiverMetadata,
       },
     });
     const previous = control.getLive(agentId)?.status.value ?? { status: "unknown" };
@@ -865,6 +953,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         callId,
         senderThreadId: current.threadId,
         receiverThreadId: agentId,
+        ...receiverMetadata,
         status: previous as AgentStatus,
       },
     });
@@ -1180,6 +1269,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       metadata: toolMetadata("agent", {
         mutating: true,
         deferred: true,
+        hiddenByDefault: true,
         keywords: ["agent", "input", "message"],
       }),
       inputSchema: {
@@ -1240,44 +1330,33 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       metadata: toolMetadata("agent", {
         mutating: true,
         deferred: true,
+        hiddenByDefault: true,
         keywords: ["agent", "resume"],
       }),
       inputSchema: {
         type: "object",
         properties: {
           id: { type: "string" },
-          target: { type: "string" },
-          agent_id: { type: "string" },
-          agentId: { type: "string" },
         },
+        required: ["id"],
         additionalProperties: false,
       },
       execute: async (args) => {
         const strict = strictArgs(args, {
-          allowed: new Set(["id", "target", "agent_id", "agentId"]),
+          allowed: new Set(["id"]),
+          required: ["id"],
         });
         if (strict) return strict;
-        const strictId = stringValue(args.id);
-        const target = strictId ?? parseTarget(args);
+        const target = stringValue(args.id);
         if (!target) return json({ error: "id is required" }, true);
+        if (!isValidThreadId(target)) {
+          return json({ error: `invalid agent id ${target}` }, true);
+        }
         const sessionOrError = getSessionOrError(opts);
         if (!("conversationId" in sessionOrError)) return sessionOrError;
         const { control } = ensureAgentControl(sessionOrError);
         const current = currentAgentContext(sessionOrError, args);
-        let receiverThreadId = target as ThreadId;
-        if (strictId === undefined) {
-          try {
-            receiverThreadId = resolveAgentId(
-              sessionOrError,
-              target,
-              current.agentPath,
-            );
-          } catch {
-            receiverThreadId =
-              spawnedAgentsForSession(sessionOrError).get(target)?.threadId ??
-              receiverThreadId;
-          }
-        }
+        const receiverThreadId = target as ThreadId;
         const callId = callIdFromArgs(args, "resume");
         const liveBefore = control.getLive(receiverThreadId);
         const edge = rolloutSpawnEdgeFor(sessionOrError, receiverThreadId);
@@ -1375,6 +1454,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
             true,
           );
         }
+        recordAgentCounter(sessionOrError, "codex.multi_agent.resume");
         return json({ status });
       },
     },
