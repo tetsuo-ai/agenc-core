@@ -2,14 +2,15 @@
  * Fork-context — build a child's initial message set from the
  * parent's history.
  *
- * Hand-port of AgenC `tools/AgentTool/forkSubagent.ts` +
- * `utils/forkedAgent.ts` (410 LOC combined). Four fork modes:
+ * Two fork modes (matches codex `SpawnAgentForkMode`):
  *
  *   - `full_history` — child receives the full parent history.
  *   - `last_n_turns` — child receives the last N user-turn
  *     boundaries + their assistant replies.
- *   - `new` — child starts fresh with just the task directive.
- *   - `explicit` — caller supplies the exact LLMMessage[] prefix.
+ *
+ * When the caller passes no fork mode (`mode === undefined`) the
+ * child starts fresh with just the task directive (codex
+ * `Option<SpawnAgentForkMode>::None`).
  *
  * Invariants wired:
  *   I-36 (parent rollout flush before fork) — `forkSubagent`
@@ -33,14 +34,12 @@ import {
 
 export type ForkMode =
   | { readonly kind: "full_history" }
-  | { readonly kind: "last_n_turns"; readonly n: number }
-  | { readonly kind: "new" }
-  | { readonly kind: "explicit"; readonly messages: ReadonlyArray<LLMMessage> };
+  | { readonly kind: "last_n_turns"; readonly n: number };
 
 export interface ForkContextInput {
   readonly parent: Session;
   readonly parentMessages: ReadonlyArray<LLMMessage>;
-  readonly mode: ForkMode;
+  readonly mode?: ForkMode;
   readonly taskPrompt: string;
   readonly worktreePath?: string;
 }
@@ -154,7 +153,7 @@ function rolloutBackedParentMessages(input: ForkContextInput): LLMMessage[] {
   if (!rolloutStore) return [...input.parentMessages];
   try {
     const rolloutItems =
-      input.mode.kind === "last_n_turns"
+      input.mode?.kind === "last_n_turns"
         ? truncateRolloutToLastNForkTurns(rolloutStore.readAll(), input.mode.n)
         : rolloutStore.readAll();
     const rolloutMessages = rolloutItemsToForkMessages(
@@ -197,15 +196,17 @@ export async function forkSubagent(
     role: "user",
     content: directivePrompt,
   };
+
+  if (input.mode === undefined) {
+    return {
+      messages: [directiveMessage],
+      directivePrompt,
+    };
+  }
+
   const parentMessages = rolloutBackedParentMessages(input);
 
   switch (input.mode.kind) {
-    case "new":
-      return {
-        messages: [directiveMessage],
-        directivePrompt,
-      };
-
     case "full_history":
       return {
         messages: [...parentMessages, directiveMessage],
@@ -220,12 +221,6 @@ export async function forkSubagent(
             : lastNUserTurns(parentMessages, input.mode.n)),
           directiveMessage,
         ],
-        directivePrompt,
-      };
-
-    case "explicit":
-      return {
-        messages: [...input.mode.messages, directiveMessage],
         directivePrompt,
       };
   }

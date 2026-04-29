@@ -35,7 +35,6 @@ describe("AgentThread", () => {
     const t = new AgentThread({
       live: makeLive(),
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.threadId).toBe("thread-1");
@@ -48,7 +47,6 @@ describe("AgentThread", () => {
     const t = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.isInterrupted).toBe(false);
@@ -61,7 +59,6 @@ describe("AgentThread", () => {
     const t = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     const seen: string[] = [];
@@ -76,7 +73,6 @@ describe("AgentThread", () => {
     const thread = new AgentThread({
       live: live1,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
 
@@ -107,8 +103,7 @@ describe("AgentThread", () => {
       thread: new AgentThread({
         live: makeLive(),
         initialMessages: [],
-        forkMode: { kind: "new" },
-        taskPrompt: "child",
+          taskPrompt: "child",
       }),
     }));
 
@@ -116,8 +111,7 @@ describe("AgentThread", () => {
       {
         live: makeLive(),
         initialMessages: [],
-        forkMode: { kind: "new" },
-        taskPrompt: "parent",
+          taskPrompt: "parent",
       },
       {
         delegate: delegateFn as unknown as Parameters<typeof AgentThread>[1]["delegate"],
@@ -148,7 +142,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.threadName).toBe(live.agentId);
@@ -159,7 +152,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.threadName).toBe("alpha");
@@ -173,7 +165,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t = new AgentThread({
       live: makeLive(),
       initialMessages: msgs,
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.messages).toEqual(msgs);
@@ -185,7 +176,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t = new AgentThread({
       live,
       initialMessages: [{ role: "user", content: "seed" }],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.messages).toEqual([{ role: "assistant", content: "live reply" }]);
@@ -195,7 +185,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t = new AgentThread({
       live: makeLive(),
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.metadata.agentPath).toBe("/root/alpha");
@@ -208,7 +197,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t.memory).toEqual([{ key: "k", value: "v", at: 1 }]);
@@ -218,7 +206,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t1 = new AgentThread({
       live: makeLive(),
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
     });
     expect(t1.worktreePath).toBeUndefined();
@@ -226,7 +213,6 @@ describe("AgentThread — AgenC-compatible getters", () => {
     const t2 = new AgentThread({
       live: makeLive(),
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "hi",
       worktree: {
         path: "/tmp/wt",
@@ -265,8 +251,7 @@ describe("AgentThread — fork/spawn/join", () => {
       {
         live: parentLive,
         initialMessages: [],
-        forkMode: { kind: "new" },
-        taskPrompt: "parent",
+          taskPrompt: "parent",
       },
       {
         delegate: delegateFn as unknown as Parameters<typeof AgentThread>[1]["delegate"],
@@ -286,12 +271,11 @@ describe("AgentThread — fork/spawn/join", () => {
     expect(delegateFn.mock.calls[0]![0]!.taskPrompt).toBe("do the thing");
   });
 
-  it("spawn() dispatches with forkMode = new by default", async () => {
+  it("spawn() dispatches with forkMode undefined by default", async () => {
     const childLive = makeLive();
     const childThread = new AgentThread({
       live: childLive,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "child-task",
     });
     const delegateFn = vi.fn(async () => ({
@@ -303,8 +287,7 @@ describe("AgentThread — fork/spawn/join", () => {
       {
         live: makeLive(),
         initialMessages: [],
-        forkMode: { kind: "new" },
-        taskPrompt: "parent",
+          taskPrompt: "parent",
       },
       {
         delegate: delegateFn as unknown as Parameters<typeof AgentThread>[1]["delegate"],
@@ -316,14 +299,13 @@ describe("AgentThread — fork/spawn/join", () => {
 
     const child = await parent.spawn({ taskPrompt: "go" });
     expect(child).toBe(childThread);
-    expect(delegateFn.mock.calls[0]![0]!.forkMode).toEqual({ kind: "new" });
+    expect(delegateFn.mock.calls[0]![0]!.forkMode).toBeUndefined();
   });
 
   it("fork() without wiring throws a clear error", async () => {
     const parent = new AgentThread({
       live: makeLive(),
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "parent",
     });
     await expect(parent.fork({ taskPrompt: "x" })).rejects.toThrow(
@@ -336,8 +318,7 @@ describe("AgentThread — fork/spawn/join", () => {
       {
         live: makeLive(),
         initialMessages: [],
-        forkMode: { kind: "new" },
-        taskPrompt: "parent",
+          taskPrompt: "parent",
       },
       {
         initialResult: {
@@ -358,7 +339,6 @@ describe("AgentThread — fork/spawn/join", () => {
     const parent = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "parent",
     });
     // Transition asynchronously.
@@ -376,7 +356,6 @@ describe("AgentThread — fork/spawn/join", () => {
     const parent = new AgentThread({
       live,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "parent",
     });
     queueMicrotask(() => {
@@ -393,7 +372,6 @@ describe("AgentThread — fork/spawn/join", () => {
     const thread = new AgentThread({
       live: live1,
       initialMessages: [],
-      forkMode: { kind: "new" },
       taskPrompt: "parent",
     });
 

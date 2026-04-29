@@ -28,11 +28,10 @@ const history: ReadonlyArray<LLMMessage> = [
 ];
 
 describe("forkSubagent", () => {
-  it("mode=new returns directive only", async () => {
+  it("mode=undefined returns directive only", async () => {
     const res = await forkSubagent({
       parent: stubSession(),
       parentMessages: history,
-      mode: { kind: "new" },
       taskPrompt: "do the thing",
     });
     expect(res.messages).toHaveLength(1);
@@ -61,18 +60,14 @@ describe("forkSubagent", () => {
     expect((res.messages[0] as LLMMessage).content).toBe("turn 2 user");
   });
 
-  it("mode=explicit uses caller-supplied prefix + directive", async () => {
-    const explicit: ReadonlyArray<LLMMessage> = [
-      { role: "user", content: "override" },
-    ];
+  it("mode=undefined yields directive-only context (codex Option::None)", async () => {
     const res = await forkSubagent({
       parent: stubSession(),
       parentMessages: history,
-      mode: { kind: "explicit", messages: explicit },
       taskPrompt: "t",
     });
-    expect(res.messages.length).toBe(2);
-    expect((res.messages[0] as LLMMessage).content).toBe("override");
+    expect(res.messages.length).toBe(1);
+    expect((res.messages[0] as LLMMessage).content).toContain("Task: t");
   });
 
   it("I-36: flushes parent rollout before building the fork", async () => {
@@ -81,7 +76,6 @@ describe("forkSubagent", () => {
     await forkSubagent({
       parent,
       parentMessages: history,
-      mode: { kind: "new" },
       taskPrompt: "t",
     });
     expect(flush).toHaveBeenCalledOnce();
@@ -131,7 +125,6 @@ describe("forkSubagent", () => {
     const res = await forkSubagent({
       parent: stubSession(),
       parentMessages: history,
-      mode: { kind: "new" },
       taskPrompt: "t",
       worktreePath: "/tmp/wt",
     });
@@ -142,7 +135,6 @@ describe("forkSubagent", () => {
     const res = await forkSubagent({
       parent: stubSession(),
       parentMessages: history,
-      mode: { kind: "new" },
       taskPrompt: "t",
       worktreePath: "/tmp/wt",
     });

@@ -494,11 +494,11 @@ function tryAutoExpandTaskPanel(opts: ModelFacingToolOptions): void {
   }
 }
 
-function parseForkTurns(value: unknown): ToolResult | ForkMode {
+function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
   const raw = value === undefined ? "all" : value;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    if (trimmed.toLowerCase() === "none") return { kind: "new" };
+    if (trimmed.toLowerCase() === "none") return undefined;
     if (trimmed.toLowerCase() === "all") return { kind: "full_history" };
     const parsed = Number.parseInt(trimmed, 10);
     if (String(parsed) === trimmed && parsed > 0) {
@@ -637,9 +637,9 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       return json({ error: "invalid reasoning_effort" }, true);
     }
     const forkMode = parseForkTurns(args.fork_turns ?? args.forkTurns);
-    if ("content" in forkMode) return forkMode;
+    if (forkMode !== undefined && "content" in forkMode) return forkMode;
     if (
-      forkMode.kind === "full_history" &&
+      forkMode?.kind === "full_history" &&
       (role !== undefined || model !== undefined || reasoningEffort !== undefined)
     ) {
       return json(
@@ -702,7 +702,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         registry,
         taskPrompt: prompt,
         agentName,
-        forkMode,
+        ...(forkMode !== undefined ? { forkMode } : {}),
         runInBackground,
         ...(role !== undefined ? { role } : {}),
         ...(model !== undefined ? { model } : {}),

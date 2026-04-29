@@ -777,7 +777,6 @@ describe("model-facing tools", () => {
         taskPrompt: "inspect",
         agentName: "task_1",
         role: "worker",
-        forkMode: { kind: "new" },
         runInBackground: true,
       }),
     );
