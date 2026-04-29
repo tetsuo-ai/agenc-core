@@ -8,7 +8,7 @@ import type { TranscriptMessage } from "../transcript/MessageList.js";
 import type { SessionLike as StatusLineSessionLike } from "./StatusLineConfig.js";
 
 /**
- * Footer notices are intentionally backed only by local AgenC runtime state:
+ * Footer notices are intentionally backed only by local codex runtime state:
  * usage sidecars, transcript warnings, budget settings, and pending approval
  * counts. OpenClaude account-rate-limit, remote/cloud, and IDE plugin notices
  * are omitted here until AgenC exposes equivalent live signals; rendering

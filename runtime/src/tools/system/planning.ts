@@ -24,9 +24,9 @@
  *                      `plan_started` / `plan_item_completed` event pair
  *                      emitted by the workflow controller.
  *
- * AgenC runtime `update_plan` is intentionally NOT shipped here — `/plan` itself
+ * codex runtime `update_plan` is intentionally NOT shipped here — `/plan` itself
  * is an AgenC port (see `runtime/src/commands/plan.ts:4`) so the
- * matching checklist tool is AgenC `TodoWrite`. Mixing AgenC runtime and
+ * matching checklist tool is AgenC `TodoWrite`. Mixing codex runtime and
  * AgenC planning surfaces causes the duplicate-render and
  * raw-JSON-result bugs that surfaced in scrollback.
  */

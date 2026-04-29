@@ -18,7 +18,7 @@
  * env info, memory, project instructions, MCP server instructions, output
  * style overrides, and scratchpad info.
  *
- * Sole AgenC runtime holdout: `getPermissionsSection` (in `permissions-prompt.ts`)
+ * Sole codex runtime holdout: `getPermissionsSection` (in `permissions-prompt.ts`)
  * — orthogonal to the AgenC content and load-bearing for the
  * approval-policy / sandbox-mode prose.
  *

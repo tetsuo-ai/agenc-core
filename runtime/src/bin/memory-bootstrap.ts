@@ -95,7 +95,7 @@ function buildExtractPrompt(params: {
  * substring, or null if none is found. Walks string literals (with backslash
  * escapes) so brackets inside quoted strings don't unbalance the scan.
  *
- * Mirrors AgenC runtime's tolerant input parsing in memory_trace.rs:128-145, which
+ * Mirrors codex runtime's tolerant input parsing in memory_trace.rs:128-145, which
  * skips non-JSON-starting lines and parses the first JSON-looking value it
  * finds. We extract a single top-level array because the extractor prompt
  * specifies an array and we only ever consume one.
@@ -147,7 +147,7 @@ export function parseExtractedMemoryCandidates(
   raw: string,
   memoryDir: string,
 ): readonly MemoryCandidate[] {
-  // Two-stage parse, matching AgenC runtime's tolerant input pattern: try the whole
+  // Two-stage parse, matching codex runtime's tolerant input pattern: try the whole
   // string first; on failure, scan for the first balanced JSON array and
   // parse that. Handles the common model failure modes:
   //   1. JSON followed by trailing prose ("[...]\nThese are the memories...")

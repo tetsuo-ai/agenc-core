@@ -5,7 +5,7 @@
  * memory-file cache.
  *
  * Compact called these for cross-cutting cache invalidation in the
- * AgenC runtime. The gut runtime does not own these caches, so
+ * codex runtime. The gut runtime does not own these caches, so
  * these are no-ops that satisfy the call signature without side
  * effect.
  */

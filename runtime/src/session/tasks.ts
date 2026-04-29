@@ -1,14 +1,14 @@
 /**
  * Task dispatch subsystem for the AgenC session kernel.
  *
- * Port of the upstream AgenC runtime task-dispatch machinery:
- *   - `AgenC runtime-rs/core/src/tasks/mod.rs` — `spawn_task`, `start_task`,
+ * Port of the upstream codex runtime task-dispatch machinery:
+ *   - `codex-rs/core/src/tasks/mod.rs` — `spawn_task`, `start_task`,
  *     `abort_all_tasks`, `on_task_finished`, `handle_task_abort`, and
  *     the `SessionTask` / `AnySessionTask` traits.
- *   - `AgenC runtime-rs/core/src/state/turn.rs` — `ActiveTurn`, `TurnState`,
+ *   - `codex-rs/core/src/state/turn.rs` — `ActiveTurn`, `TurnState`,
  *     `RunningTask`, `TaskKind`, `MailboxDeliveryPhase`.
  *
- * Purpose. Session holds a single `active_turn` slot. AgenC runtime guarantees
+ * Purpose. Session holds a single `active_turn` slot. codex runtime guarantees
  * the outer "one turn in flight at a time" contract by taking the
  * `active_turn` mutex at every state-mutation site AND by routing task
  * spawn/abort through `spawn_task` (which calls `abort_all_tasks` on
@@ -21,14 +21,14 @@
  * Layout choice (Option A). The task-dispatch types live here;
  * `Session.spawnTask`, `Session.onTaskFinished`, and
  * `Session.abortAllTasks` are methods on `Session` in `session.ts` so
- * they can reach private slots without friction. This mirrors AgenC runtime's
+ * they can reach private slots without friction. This mirrors codex runtime's
  * own layout (types in `state/turn.rs`, impls on `Session` in
  * `tasks/mod.rs` via `impl Session { ... }`).
  *
  * TurnState naming note. Gut already has `runtime/src/session/turn-state.ts`
  * defining a per-iteration phase-machine loop state (24 fields:
  * messages, assistantMessages, toolUseBlocks, etc.). That type is a
- * DIFFERENT concept from upstream AgenC runtime `state/turn.rs::TurnState`,
+ * DIFFERENT concept from upstream codex runtime `state/turn.rs::TurnState`,
  * which carries 11 fields of turn-local, lock-guarded state (pending
  * approvals, pending input, mailbox delivery phase, granted
  * permissions, tool-call counter, memory-citation flag, token usage
@@ -44,9 +44,9 @@ import type { TurnContext } from "./turn-context.js";
 import type { PhaseEvent } from "../phases/events.js";
 
 /**
- * Upstream AgenC runtime `tasks/mod.rs::TaskKind`. String-union keeps JS
+ * Upstream codex runtime `tasks/mod.rs::TaskKind`. String-union keeps JS
  * switch/compare semantics ergonomic without importing an enum type.
- * The full set from AgenC runtime includes Regular, Compact, Review, plus
+ * The full set from codex runtime includes Regular, Compact, Review, plus
  * Ghost/Undo/UserShell; we port the three referenced by forthcoming
  * work (steer-input gate needs Regular vs Review vs Compact) and
  * leave room to add more when their tasks land.
@@ -54,18 +54,18 @@ import type { PhaseEvent } from "../phases/events.js";
 export type TaskKind = "regular" | "compact" | "review";
 
 /**
- * Upstream AgenC runtime `protocol/src/protocol.rs::TurnAbortReason`. String
+ * Upstream codex runtime `protocol/src/protocol.rs::TurnAbortReason`. String
  * union mirroring the three enum arms.
  *
  *   - `interrupted` — user-triggered cancel (Ctrl-C / interrupt event).
  *   - `replaced` — a new turn spawned while this one was in flight
- *     (AgenC runtime `spawn_task` calls `abort_all_tasks(TurnAbortReason::Replaced)`).
+ *     (codex runtime `spawn_task` calls `abort_all_tasks(TurnAbortReason::Replaced)`).
  *   - `review_ended` — review session concluded.
  */
 export type TurnAbortReason = "interrupted" | "replaced" | "review_ended";
 
 /**
- * Upstream AgenC runtime `state/turn.rs::MailboxDeliveryPhase`.
+ * Upstream codex runtime `state/turn.rs::MailboxDeliveryPhase`.
  *
  *   - `current_turn` — late mailbox mail may still fold into this turn.
  *   - `next_turn` — this turn already emitted visible final text; mail
@@ -108,11 +108,11 @@ export interface SessionTask {
 export type AnySessionTask = SessionTask;
 
 /**
- * Upstream AgenC runtime `state/turn.rs::RunningTask`. Fields:
+ * Upstream codex runtime `state/turn.rs::RunningTask`. Fields:
  *
  *   - `subId` — turn/sub identifier; key in the `tasks` registry.
- *   - `kind` — upstream AgenC runtime `TaskKind`.
- *   - `abortController` — upstream AgenC runtime `CancellationToken` translated
+ *   - `kind` — upstream codex runtime `TaskKind`.
+ *   - `abortController` — upstream codex runtime `CancellationToken` translated
  *     per `docs/plan/translation-conventions.md`. Firing this aborts
  *     the task's own cancellation surface. The running kernel's
  *     `mergeSignals(opts.signal, session.abortController.signal)`
@@ -122,7 +122,7 @@ export type AnySessionTask = SessionTask;
  *     Upstream uses `Arc<Notify>`; JS equivalent is a Promise + its
  *     resolve handle. `abortAllTasks` awaits `done` under a bounded
  *     timeout so callers see graceful shutdown before the new turn
- *     proceeds, matching upstream AgenC runtime `tasks/mod.rs::handle_task_abort`.
+ *     proceeds, matching upstream codex runtime `tasks/mod.rs::handle_task_abort`.
  *   - `startedAtMs` — wall clock for telemetry / `turn_complete`
  *     duration math.
  */
@@ -139,7 +139,7 @@ export interface RunningTask {
 }
 
 /**
- * Upstream AgenC runtime `state/turn.rs::TurnState`. Per-turn state held under
+ * Upstream codex runtime `state/turn.rs::TurnState`. Per-turn state held under
  * its own lock inside `ActiveTurn`. Gut exposes the 11 fields so later
  * waves can wire consumers without schema churn. Each field below is
  * classified per its current gut status:
@@ -155,7 +155,7 @@ export interface RunningTask {
  *     present so a future refactor can bridge into the lock.
  *
  *   SLOT-ONLY — no gut consumer today. Field reserved so upstream
- *     AgenC runtime mutation sites can be ported without schema churn. Each
+ *     codex runtime mutation sites can be ported without schema churn. Each
  *     SLOT-ONLY field carries a `RESERVED:` breadcrumb citing the
  *     upstream `session/mod.rs` lock site(s) it will connect to.
  *
@@ -193,51 +193,51 @@ export interface RunningTask {
  * not need to re-implement the clear contract.
  */
 export interface ActiveTurnState {
-  // RESERVED: upstream AgenC runtime session/mod.rs:1812 (exec approval insert),
+  // RESERVED: upstream codex runtime session/mod.rs:1812 (exec approval insert),
   // mod.rs:1880 (apply-patch approval insert), mod.rs:2299 (notify_approval
   // remove). Gut approval flow uses closure-based `ApprovalRequestFn`
   // (tools/execution.ts:368) rather than a keyed registry; the slot is
   // reserved for the T11 approval-RPC port.
   /** Upstream `pending_approvals`. SLOT-ONLY. */
   pendingApprovals: Map<string, (decision: unknown) => void>;
-  // RESERVED: upstream AgenC runtime session/mod.rs:2036 (request_permissions
+  // RESERVED: upstream codex runtime session/mod.rs:2036 (request_permissions
   // insert), mod.rs:2067 (cancellation remove), mod.rs:2153
   // (notify_request_permissions_response remove).
   /** Upstream `pending_request_permissions`. SLOT-ONLY. */
   pendingRequestPermissions: Map<string, unknown>;
-  // RESERVED: upstream AgenC runtime session/mod.rs:2092 (request_user_input
+  // RESERVED: upstream codex runtime session/mod.rs:2092 (request_user_input
   // insert), mod.rs:2124 (notify_user_input_response remove).
   /** Upstream `pending_user_input`. SLOT-ONLY. */
   pendingUserInput: Map<string, (response: unknown) => void>;
-  // RESERVED: upstream AgenC runtime elicitation surface (MCP elicitation
+  // RESERVED: upstream codex runtime elicitation surface (MCP elicitation
   // callback registry). Gut's `Session.outOfBandElicitationPaused`
   // carries only the paused-state BehaviorSubject; no elicitation
   // callback is kept in a keyed registry yet.
   /** Upstream `pending_elicitations`. SLOT-ONLY. */
   pendingElicitations: Map<string, (response: unknown) => void>;
-  // RESERVED: upstream AgenC runtime session/mod.rs:2274 (notify_dynamic_tool_response
+  // RESERVED: upstream codex runtime session/mod.rs:2274 (notify_dynamic_tool_response
   // remove). Gut has no dynamic-tool-response surface yet.
   /** Upstream `pending_dynamic_tools`. SLOT-ONLY. */
   pendingDynamicTools: Map<string, (response: unknown) => void>;
   // WIRED-EXTERNAL: consumed via `session.ts::SimpleMailbox`
   // (`enqueueIdleInput` / `hasPendingInput` / `drainIdleInput`).
-  // Upstream AgenC runtime sites: session/mod.rs:2948 (steer_input push),
+  // Upstream codex runtime sites: session/mod.rs:2948 (steer_input push),
   // mod.rs:3001 (inject_response_items), tasks/mod.rs:484
   // (on_task_finished drain).
   /** Upstream `pending_input`. WIRED-EXTERNAL (SimpleMailbox). */
   pendingInput: unknown[];
   // WIRED-EXTERNAL: tied to the same mailbox consumer above. Upstream
-  // AgenC runtime sites: session/mod.rs:3018 (defer_mailbox_delivery_to_next_turn),
+  // codex runtime sites: session/mod.rs:3018 (defer_mailbox_delivery_to_next_turn),
   // mod.rs:3030 (accept_mailbox_delivery_for_current_turn).
   /** Upstream `mailbox_delivery_phase`. WIRED-EXTERNAL (mailbox). */
   mailboxDeliveryPhase: MailboxDeliveryPhase;
-  // RESERVED: upstream AgenC runtime session/mod.rs:2244 (granted_turn_permissions
+  // RESERVED: upstream codex runtime session/mod.rs:2244 (granted_turn_permissions
   // read). Gut has no per-turn permission-grant storage yet; permissions
   // are evaluated through `permissions/evaluator.ts` without a turn-scoped
   // grant cache.
   /** Upstream `granted_permissions`. SLOT-ONLY. */
   grantedPermissions: unknown | null;
-  // RESERVED: upstream AgenC runtime session/mod.rs:2255
+  // RESERVED: upstream codex runtime session/mod.rs:2255
   // (strict_auto_review_enabled_for_turn read). No review subsystem in gut.
   /** Upstream `strict_auto_review_enabled`. SLOT-ONLY. */
   strictAutoReviewEnabled: boolean;
@@ -248,7 +248,7 @@ export interface ActiveTurnState {
   // `on_task_finished` for turn-complete telemetry.
   /** Upstream `tool_calls` counter. WIRED-NOW (dispatchModelToolCall). */
   toolCalls: number;
-  // RESERVED: upstream AgenC runtime session/mod.rs:3046
+  // RESERVED: upstream codex runtime session/mod.rs:3046
   // (record_memory_citation_for_turn write), tasks/mod.rs:485
   // (on_task_finished read). Gut has no memory subsystem yet.
   /** Upstream `has_memory_citation`. SLOT-ONLY. */
@@ -332,13 +332,13 @@ export function acceptsMailboxDeliveryForCurrentTurn(
 }
 
 /**
- * Upstream AgenC runtime `tasks/mod.rs:62` — graceful interruption timeout
+ * Upstream codex runtime `tasks/mod.rs:62` — graceful interruption timeout
  * before force-aborting. Keep the same ms budget so behavior matches.
  */
 export const GRACEFUL_INTERRUPTION_TIMEOUT_MS = 100;
 
 /**
- * Options accepted by `Session.spawnTask`. Mirrors upstream AgenC runtime
+ * Options accepted by `Session.spawnTask`. Mirrors upstream codex runtime
  * `spawn_task` signature modulo the TS-native AbortController.
  */
 export interface SpawnTaskOptions {
@@ -415,7 +415,7 @@ export interface ActiveTurnLike {
 // ─────────────────────────────────────────────────────────────────────
 // Steer-input surface
 //
-// Port of upstream AgenC runtime `session/mod.rs::steer_input` +
+// Port of upstream codex runtime `session/mod.rs::steer_input` +
 // `SteerInputError` (`session/mod.rs:213`). `steer_input` folds
 // user-provided items into an in-flight turn. The non-negotiable
 // contract is that only `regular` turns accept steering; `compact`
@@ -425,7 +425,7 @@ export interface ActiveTurnLike {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream AgenC runtime `protocol/src/protocol.rs::NonSteerableTurnKind`
+ * Upstream codex runtime `protocol/src/protocol.rs::NonSteerableTurnKind`
  * (`protocol.rs:1964`). The two kinds that reject same-turn steering.
  *
  * Kept as a string union to mirror gut's `TaskKind` style and serialize
@@ -434,7 +434,7 @@ export interface ActiveTurnLike {
 export type NonSteerableTurnKind = "review" | "compact";
 
 /**
- * Upstream AgenC runtime `TaskKind::is_steerable`-equivalent predicate. Returns
+ * Upstream codex runtime `TaskKind::is_steerable`-equivalent predicate. Returns
  * `true` when a task of this kind can absorb mid-stream user prompts
  * via `steer_input`.
  *
@@ -444,7 +444,7 @@ export type NonSteerableTurnKind = "review" | "compact";
  *     with `SteerInputError::ActiveTurnNotSteerable`.
  *
  * Keeping this as a free function (instead of a method on `TaskKind`)
- * matches how upstream AgenC runtime distinguishes the cases via a `match` arm
+ * matches how upstream codex runtime distinguishes the cases via a `match` arm
  * rather than a trait method; both are direct port styles and the free
  * function stays trivially callable from `Session.steerInput`, tests,
  * and any future gate site.
@@ -462,7 +462,7 @@ export function isSteerable(kind: TaskKind): boolean {
 /**
  * Maps a non-steerable `TaskKind` back onto the upstream
  * `NonSteerableTurnKind` discriminator so `SteerInputError` payloads
- * use the same label surface AgenC runtime emits.
+ * use the same label surface codex runtime emits.
  *
  * Returns `null` when the kind is steerable (caller should not raise
  * `ActiveTurnNotSteerable` in that case).
@@ -481,7 +481,7 @@ export function nonSteerableTurnKindFrom(
 }
 
 /**
- * Upstream AgenC runtime `session/mod.rs::SteerInputError` (`session/mod.rs:213`).
+ * Upstream codex runtime `session/mod.rs::SteerInputError` (`session/mod.rs:213`).
  * Discriminated union so callers can switch on `kind` and pull the
  * variant-specific payload without downcasts.
  *

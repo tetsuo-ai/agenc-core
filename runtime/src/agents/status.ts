@@ -8,7 +8,7 @@
  * Final states: `completed`, `errored`, `shutdown`, `not_found`.
  * Non-final: `pending_init`, `running`, `interrupted`.
  *
- * `interrupted` is intentionally non-final (matches AgenC runtime
+ * `interrupted` is intentionally non-final (matches codex runtime
  * `status.rs` — `is_final` returns false for `Running | PendingInit |
  * Interrupted`). Completion watchers must loop past an interrupt
  * until a truly terminal state arrives.

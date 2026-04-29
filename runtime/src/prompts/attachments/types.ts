@@ -8,7 +8,7 @@
  * `lsp_diagnostics`, `ide_selection`,
  * `structured_output`) are intentionally absent — when AgenC
  * adds the underlying feature, the variant lands here alongside its
- * producer. Provider-neutral usage/budget notices are AgenC runtime
+ * producer. Provider-neutral usage/budget notices are codex runtime
  * surfaces and intentionally do not mirror any provider account upsell.
  *
  * Attachment names use AgenC branding. Otherwise the prose, schema, and

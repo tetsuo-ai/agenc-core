@@ -1,8 +1,8 @@
 /**
  * Per-turn immutable context.
  *
- * Hand-port of AgenC runtime `core/src/session/turn_context.rs` (626 LOC Rust)
- * per `docs/plan/translation-conventions.md`. Every field of AgenC runtime's
+ * Hand-port of codex runtime `core/src/session/turn_context.rs` (626 LOC Rust)
+ * per `docs/plan/translation-conventions.md`. Every field of codex runtime's
  * `TurnContext` struct has a corresponding TypeScript field. Forward-
  * dep types (whose real implementations land in T7/T9/T10/T11/T13)
  * use placeholder interfaces with `// T<N> wires` comments.
@@ -27,14 +27,14 @@ import type { PendingWorktreeState } from "./pending-worktree.js";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * AgenC runtime `AuthManager` metadata. Provider adapters own concrete OAuth refresh.
+ * codex runtime `AuthManager` metadata. Provider adapters own concrete OAuth refresh.
  *
- * `mode` matches AgenC runtime `AuthMode` at the transport level: `bearer_key` for
+ * `mode` matches codex runtime `AuthMode` at the transport level: `bearer_key` for
  * static API keys, `oauth` for any OAuth-authorized session, and
  * `local_no_auth` for local-only loopback providers.
  *
  * `authProvider` narrows an `oauth` session to the specific upstream so
- * gates like `imageGenerationToolAuthAllowed` can match AgenC runtime's
+ * gates like `imageGenerationToolAuthAllowed` can match codex runtime's
  * `AuthMode::Chatgpt`-only behavior instead of lighting up for every
  * OAuth provider.
  */
@@ -52,7 +52,7 @@ export interface AuthManager {
   readonly authProvider?: AuthProviderId;
 }
 
-/** AgenC runtime `ModelInfo` shape backed by the runtime models manager. */
+/** codex runtime `ModelInfo` shape backed by the runtime models manager. */
 export interface ModelInfo {
   readonly slug: string;
   readonly contextWindow?: number;
@@ -65,7 +65,7 @@ export interface ModelInfo {
   readonly defaultReasoningLevel?: ReasoningEffort;
   readonly defaultReasoningSummary: ReasoningSummary;
   readonly truncationPolicy: TruncationPolicy;
-  /** Whether the metadata came from a fallback (warn user — see AgenC runtime 594-606). */
+  /** Whether the metadata came from a fallback (warn user — see codex runtime 594-606). */
   readonly usedFallbackModelMetadata: boolean;
 }
 
@@ -73,35 +73,35 @@ export type ReasoningEffort = "low" | "medium" | "high" | "none";
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 export type TruncationPolicy = "head" | "middle" | "off";
 
-/** AgenC runtime `SessionTelemetry`. T6 (event log + sidecars) lands real impl. */
+/** codex runtime `SessionTelemetry`. T6 (event log + sidecars) lands real impl. */
 export interface SessionTelemetry {
   readonly modelSlug?: string;
   // T6 expands: emit timing, retry phase, transport classification, etc.
 }
 
-/** AgenC runtime `Environment`. T7 (tool runtime) wires; today optional placeholder. */
+/** codex runtime `Environment`. T7 (tool runtime) wires; today optional placeholder. */
 export interface Environment {
   readonly cwd: string;
   // T7 adds: filesystem handle, network proxy ref, sandbox policy ref, etc.
 }
 
-/** AgenC runtime `CollaborationMode`. T11 (modes + slash commands) lands real impl. */
+/** codex runtime `CollaborationMode`. T11 (modes + slash commands) lands real impl. */
 export interface CollaborationMode {
   readonly model: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly developerInstructions?: string;
 }
 
-/** AgenC runtime `Personality`. T10 (config) lands real impl. */
+/** codex runtime `Personality`. T10 (config) lands real impl. */
 export type Personality = string;
 
-/** AgenC runtime `Constrained<T>` value carrier with current + allowed-set. */
+/** codex runtime `Constrained<T>` value carrier with current + allowed-set. */
 export interface Constrained<T> {
   readonly value: T;
   readonly allowed?: ReadonlyArray<T>;
 }
 
-/** AgenC runtime `AskForApproval` enum. T11 (permissions) lands real values. */
+/** codex runtime `AskForApproval` enum. T11 (permissions) lands real values. */
 export type ApprovalPolicy =
   | "never"
   | "on_failure"
@@ -109,14 +109,14 @@ export type ApprovalPolicy =
   | "granular"
   | "untrusted";
 
-/** AgenC runtime `SandboxPolicy` enum. T11 lands real shape. */
+/** codex runtime `SandboxPolicy` enum. T11 lands real shape. */
 export type SandboxPolicy =
   | "danger_full_access"
   | "read_only"
   | "workspace_write"
   | "external_sandbox";
 
-/** AgenC runtime `FileSystemSandboxPolicy`. T11 lands real shape. */
+/** codex runtime `FileSystemSandboxPolicy`. T11 lands real shape. */
 export interface FileSystemSandboxPolicy {
   readonly allowWrite: ReadonlyArray<string>;
   readonly denyWrite: ReadonlyArray<string>;
@@ -124,30 +124,30 @@ export interface FileSystemSandboxPolicy {
   readonly denyRead: ReadonlyArray<string>;
 }
 
-/** AgenC runtime `NetworkSandboxPolicy`. T11 lands real shape. */
+/** codex runtime `NetworkSandboxPolicy`. T11 lands real shape. */
 export interface NetworkSandboxPolicy {
   readonly allowlist: ReadonlyArray<string>;
   readonly denylist: ReadonlyArray<string>;
   readonly allowManagedDomainsOnly: boolean;
-  /** T5 placeholder for AgenC runtime `Enabled` vs `Restricted` network access. */
+  /** T5 placeholder for codex runtime `Enabled` vs `Restricted` network access. */
   readonly enabled?: boolean;
 }
 
-/** AgenC runtime `NetworkProxy`. Managed network transport remains deferred. */
+/** codex runtime `NetworkProxy`. Managed network transport remains deferred. */
 export interface NetworkProxy {
   readonly httpsProxy?: string;
 }
 
-/** AgenC runtime `WindowsSandboxLevel`. T11 lands real impl. */
+/** codex runtime `WindowsSandboxLevel`. T11 lands real impl. */
 export type WindowsSandboxLevel = "none" | "permissive" | "strict";
 
-/** AgenC runtime `ShellEnvironmentPolicy`. T11 lands real impl. */
+/** codex runtime `ShellEnvironmentPolicy`. T11 lands real impl. */
 export interface ShellEnvironmentPolicy {
   readonly allowedEnvVars: ReadonlyArray<string>;
   readonly blockedEnvVars: ReadonlyArray<string>;
 }
 
-/** AgenC runtime `ToolsConfig`. T7 (tool registry + concurrency) lands real impl. */
+/** codex runtime `ToolsConfig`. T7 (tool registry + concurrency) lands real impl. */
 export interface ToolsConfig {
   readonly webSearchMode?: "auto" | "always" | "never";
   readonly webSearchConfig?: unknown;
@@ -156,7 +156,7 @@ export interface ToolsConfig {
   readonly unifiedExecShellMode?: unknown;
 }
 
-/** AgenC runtime `ManagedFeatures`. T10 (config feature flags). */
+/** codex runtime `ManagedFeatures`. T10 (config feature flags). */
 export interface ManagedFeatures {
   /** Returns whether `apps_enabled_for_auth(is_chatgpt_auth)` is true. */
   readonly appsEnabledForAuth: (isChatgptAuth: boolean) => boolean;
@@ -164,12 +164,12 @@ export interface ManagedFeatures {
   readonly useLegacyLandlock: () => boolean;
 }
 
-/** AgenC runtime `GhostSnapshotConfig`. Defer to a later tranche. */
+/** codex runtime `GhostSnapshotConfig`. Defer to a later tranche. */
 export interface GhostSnapshotConfig {
   readonly enabled: boolean;
 }
 
-/** AgenC runtime `ReadinessFlag`. Lightweight one-shot ready-flag (used as
+/** codex runtime `ReadinessFlag`. Lightweight one-shot ready-flag (used as
  *  `tool_call_gate`). Real impl is a boolean + waiters list; T7 wires. */
 export class ReadinessFlag {
   private ready = false;
@@ -188,18 +188,18 @@ export class ReadinessFlag {
   }
 }
 
-/** AgenC runtime `JsReplHandle`. T9 (subagents) wires; today opaque handle. */
+/** codex runtime `JsReplHandle`. T9 (subagents) wires; today opaque handle. */
 export interface JsReplHandle {
   readonly id: string;
 }
 
-/** AgenC runtime `DynamicToolSpec`. T7 wires. */
+/** codex runtime `DynamicToolSpec`. T7 wires. */
 export interface DynamicToolSpec {
   readonly name: string;
   readonly description: string;
 }
 
-/** AgenC runtime `TurnMetadataState`. T6 (event log) wires. */
+/** codex runtime `TurnMetadataState`. T6 (event log) wires. */
 export interface TurnMetadataState {
   readonly conversationId: string;
   readonly subId: string;
@@ -207,7 +207,7 @@ export interface TurnMetadataState {
   spawnGitEnrichmentTask(): void;
 }
 
-/** AgenC runtime `TurnSkillsContext`. T10 (memory + skills) wires. */
+/** codex runtime `TurnSkillsContext`. T10 (memory + skills) wires. */
 export interface SkillLoadOutcome {
   readonly invokedSkills: ReadonlyArray<string>;
   readonly availableSkills?: ReadonlyArray<{
@@ -245,13 +245,13 @@ export class TurnSkillsContext {
   }
 }
 
-/** AgenC runtime `TurnTimingState`. T6 wires. */
+/** codex runtime `TurnTimingState`. T6 wires. */
 export class TurnTimingState {
   readonly startedAtMs: number = performance.now();
   readonly samples: Array<{ phase: string; durationMs: number }> = [];
 }
 
-/** AgenC runtime `SessionConfiguration` (the big config blob). T10 lands real shape. */
+/** codex runtime `SessionConfiguration` (the big config blob). T10 lands real shape. */
 export interface SessionConfiguration {
   readonly cwd: string;
   readonly approvalPolicy: Constrained<ApprovalPolicy>;
@@ -273,50 +273,50 @@ export interface SessionConfiguration {
   readonly dynamicTools: ReadonlyArray<DynamicToolSpec>;
   readonly sessionSource: SessionSource;
 
-  // ─── AgenC runtime `SessionConfiguration` fields not yet bound to a real AgenC
+  // ─── codex runtime `SessionConfiguration` fields not yet bound to a real AgenC
   // subsystem. Kept optional/unknown until the naming tranche lands; the
   // shape tracks AgenC behavior so `apply`, builder inputs, and cross-turn
   // state propagation already line up.
 
-  /** Active `LLMProvider` for the session (AgenC runtime `provider: SharedModelProvider`). */
+  /** Active `LLMProvider` for the session (codex runtime `provider: SharedModelProvider`). */
   readonly provider?: LLMProvider;
-  /** AgenC runtime `base_instructions` — baseline system prompt for the session. */
+  /** codex runtime `base_instructions` — baseline system prompt for the session. */
   readonly baseInstructions?: string;
-  /** AgenC runtime `AgenC runtime_home` — directory containing agent state for the session. */
+  /** codex runtime `codex runtime_home` — directory containing agent state for the session. */
   readonly agencHome?: string;
-  /** AgenC runtime `thread_name` — optional user-facing thread label. */
+  /** codex runtime `thread_name` — optional user-facing thread label. */
   readonly threadName?: string;
   /**
-   * AgenC runtime `original_config_do_not_use` — raw config snapshot used to derive
+   * codex runtime `original_config_do_not_use` — raw config snapshot used to derive
    * per-turn config. T10 replaces with the real typed config once the config
    * surface lands.
    */
   readonly originalConfigDoNotUse?: Config;
-  /** AgenC runtime `metrics_service_name` — optional service name tag for metrics. */
+  /** codex runtime `metrics_service_name` — optional service name tag for metrics. */
   readonly metricsServiceName?: string;
-  /** AgenC runtime `app_server_client_version`. Pairs with `appServerClientName`. */
+  /** codex runtime `app_server_client_version`. Pairs with `appServerClientName`. */
   readonly appServerClientVersion?: string;
-  /** AgenC runtime `persist_extended_history` — when true, record extended rollout events. */
+  /** codex runtime `persist_extended_history` — when true, record extended rollout events. */
   readonly persistExtendedHistory?: boolean;
   /**
-   * AgenC runtime `inherited_shell_snapshot` — opaque shell-snapshot handle inherited
+   * codex runtime `inherited_shell_snapshot` — opaque shell-snapshot handle inherited
    * by this session. T11 (permissions + shell snapshot) wires the real type.
    */
   readonly inheritedShellSnapshot?: unknown;
   /**
-   * AgenC runtime `user_shell_override` — operator override for the detected user
+   * codex runtime `user_shell_override` — operator override for the detected user
    * shell. T11 (shell discovery) wires the real `Shell` type.
    */
   readonly userShellOverride?: unknown;
 }
 
 /**
- * AgenC runtime `SessionSettingsUpdate` — partial overlay applied via
+ * codex runtime `SessionSettingsUpdate` — partial overlay applied via
  * `applySessionConfiguration` when a turn mutates session state.
  *
- * Mirrors AgenC runtime `SessionSettingsUpdate`: every field is optional, and a
+ * Mirrors codex runtime `SessionSettingsUpdate`: every field is optional, and a
  * missing field means "keep the previous value". `finalOutputJsonSchema`
- * uses a double-option shape in AgenC runtime (`Option<Option<Value>>`); we model
+ * uses a double-option shape in codex runtime (`Option<Option<Value>>`); we model
  * it the same way so a caller can set it to `undefined` explicitly to
  * clear the previous schema versus leaving it off entirely to keep it.
  */
@@ -356,7 +356,7 @@ export type SubAgentSource =
   | { readonly kind: "memory_consolidation" }
   | { readonly kind: "other"; readonly label: string };
 
-/** AgenC runtime `SessionSource`. */
+/** codex runtime `SessionSource`. */
 export type SessionSource =
   | "cli_main"
   | "cli_subagent"
@@ -427,7 +427,7 @@ export interface ConfigToolBudget {
   readonly truncateToBytes?: number;
 }
 
-/** AgenC runtime `Config`. The original config blob (large). T10 lands real shape. */
+/** codex runtime `Config`. The original config blob (large). T10 lands real shape. */
 export interface Config {
   readonly model: string;
   readonly reviewModel?: string;
@@ -466,7 +466,7 @@ export interface Config {
 }
 
 /**
- * AgenC runtime `TurnContextItem` — the rollout-stamped shape (T6).
+ * codex runtime `TurnContextItem` — the rollout-stamped shape (T6).
  *
  * Every field here must exist on the rollout-side `TurnContextItem` in
  * `event-log.ts` as well. The rollout reader consumes this type
@@ -511,7 +511,7 @@ export interface TurnContextNetworkItem {
 /**
  * The context needed for a single turn of the thread.
  *
- * Faithful port of AgenC runtime `TurnContext` struct (turn_context.rs:29-74).
+ * Faithful port of codex runtime `TurnContext` struct (turn_context.rs:29-74).
  * All fields `readonly` per I-30 (config snapshot per-turn-immutable).
  */
 export interface TurnContext {
@@ -620,7 +620,7 @@ export interface TurnContext {
   /** Optional structured-output schema for the final assistant message. */
   readonly finalOutputJsonSchema?: unknown;
 
-  /** Path to the AgenC runtime/agenc self exe (for spawning child processes). */
+  /** Path to the codex runtime/agenc self exe (for spawning child processes). */
   readonly agencSelfExe?: string;
 
   /** Linux sandbox helper exe path. */
@@ -664,12 +664,12 @@ export interface TurnContext {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Helpers (matching AgenC runtime `impl TurnContext` methods).
+// Helpers (matching codex runtime `impl TurnContext` methods).
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Effective context window: model's context window × `effectiveContextWindowPercent` / 100.
- * Mirrors AgenC runtime `TurnContext::model_context_window`.
+ * Mirrors codex runtime `TurnContext::model_context_window`.
  */
 export function modelContextWindow(ctx: TurnContext): number | undefined {
   const cw = ctx.modelInfo.contextWindow;
@@ -679,7 +679,7 @@ export function modelContextWindow(ctx: TurnContext): number | undefined {
 
 /**
  * Resolve a relative path against the turn's `cwd`.
- * Mirrors AgenC runtime `TurnContext::resolve_path`.
+ * Mirrors codex runtime `TurnContext::resolve_path`.
  */
 export function resolvePath(ctx: TurnContext, path?: string): string {
   if (!path) return ctx.cwd;
@@ -689,7 +689,7 @@ export function resolvePath(ctx: TurnContext, path?: string): string {
 
 /**
  * Snapshot the current TurnContext into a serializable rollout item.
- * Mirrors AgenC runtime `TurnContext::to_turn_context_item`.
+ * Mirrors codex runtime `TurnContext::to_turn_context_item`.
  */
 export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
   return {
@@ -717,7 +717,7 @@ export function toTurnContextItem(ctx: TurnContext): TurnContextItem {
 /**
  * Narrow predicate: is this auth session the ChatGPT OAuth mode?
  *
- * AgenC runtime gates several features on `AuthMode::Chatgpt` specifically,
+ * codex runtime gates several features on `AuthMode::Chatgpt` specifically,
  * not on "any OAuth session". Non-ChatGPT OAuth providers (e.g. xAI,
  * OpenRouter) should NOT enable ChatGPT-only tool surfaces.
  */
@@ -740,7 +740,7 @@ export function imageGenerationToolAuthAllowed(
 
 /**
  * Compute (currentDate, timezone) at turn-construction time.
- * Falls back to UTC on tz lookup failure (mirrors AgenC runtime `local_time_context`).
+ * Falls back to UTC on tz lookup failure (mirrors codex runtime `local_time_context`).
  */
 export function localTimeContext(): {
   currentDate: string;
@@ -883,17 +883,17 @@ function cloneConfigForSnapshot(config: Config): Config {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// SessionConfiguration helpers (AgenC runtime `impl SessionConfiguration` parity).
+// SessionConfiguration helpers (codex runtime `impl SessionConfiguration` parity).
 // ─────────────────────────────────────────────────────────────────────
 
-/** Mirror of AgenC runtime `SessionConfiguration::AgenC runtime_home` — thin accessor. */
+/** Mirror of codex runtime `SessionConfiguration::codex runtime_home` — thin accessor. */
 export function agencHome(sc: SessionConfiguration): string | undefined {
   return sc.agencHome;
 }
 
 /**
  * Shallow snapshot of the thread-shaping fields of `SessionConfiguration`.
- * Mirrors AgenC runtime `SessionConfiguration::thread_config_snapshot`. Returns a
+ * Mirrors codex runtime `SessionConfiguration::thread_config_snapshot`. Returns a
  * fresh object so mutations by the caller cannot leak back into the live
  * session configuration.
  */
@@ -939,7 +939,7 @@ export function threadConfigSnapshot(
 /**
  * Apply a `SessionSettingsUpdate` and return the merged `SessionConfiguration`.
  *
- * Mirrors AgenC runtime `SessionConfiguration::apply`. Notable parity:
+ * Mirrors codex runtime `SessionConfiguration::apply`. Notable parity:
  *
  *   - Legacy-FS-policy preservation on cwd-only updates. If only `cwd`
  *     changes and the current `fileSystemSandboxPolicy` matches the
@@ -1047,7 +1047,7 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 /**
  * Rebuild a `FileSystemSandboxPolicy` from a legacy `SandboxPolicy`
- * mode + cwd. Mirrors AgenC runtime
+ * mode + cwd. Mirrors codex runtime
  * `FileSystemSandboxPolicy::from_legacy_sandbox_policy` default
  * projection for each mode:
  *
@@ -1061,7 +1061,7 @@ type Mutable<T> = { -readonly [K in keyof T]: T[K] };
  *
  * The full deny-entry-preserving rebuild (which inspects the previous
  * richer policy) is T11's job; this intermediate helper covers the
- * AgenC runtime-parity default projection so a mode change does not silently
+ * codex runtime-parity default projection so a mode change does not silently
  * keep the old policy.
  */
 export function deriveFileSystemSandboxPolicyForMode(
@@ -1103,7 +1103,7 @@ export function deriveFileSystemSandboxPolicyForMode(
 /**
  * Rebuild a `NetworkSandboxPolicy` from a legacy `SandboxPolicy`.
  *
- * AgenC runtime's real network policy is binary (`Enabled` vs `Restricted`).
+ * codex runtime's real network policy is binary (`Enabled` vs `Restricted`).
  * T5 keeps the placeholder allow/deny lists untouched and mirrors the
  * binary state via `enabled` so sandbox-policy updates do not leave a
  * stale per-session network snapshot behind.
@@ -1138,7 +1138,7 @@ function readonlyArrayEquals<T>(a: ReadonlyArray<T>, b: ReadonlyArray<T>): boole
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// TurnContext builder (AgenC runtime `Session::make_turn_context` parity).
+// TurnContext builder (codex runtime `Session::make_turn_context` parity).
 // Subset matching the AgenC T5 surface; later tranches expand the
 // builder as their subsystems land.
 // ─────────────────────────────────────────────────────────────────────
@@ -1171,7 +1171,7 @@ export interface BuildTurnContextOptions {
 
 /**
  * Build a fresh TurnContext for a new turn.
- * Mirrors AgenC runtime `Session::make_turn_context` (turn_context.rs:335-447).
+ * Mirrors codex runtime `Session::make_turn_context` (turn_context.rs:335-447).
  */
 export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
   const sc = opts.sessionConfiguration;
@@ -1262,16 +1262,16 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// AgenC runtime `impl Session` turn-builder helpers.
+// codex runtime `impl Session` turn-builder helpers.
 //
-// Mirrors AgenC runtime `turn_context.rs:303/449/609/614`. Structural inputs
+// Mirrors codex runtime `turn_context.rs:303/449/609/614`. Structural inputs
 // keep this module free of a Session-class import (session.ts already
 // imports from this module, so a direct dependency would be cyclic).
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Structural view of the session state this module needs to build a
- * per-turn snapshot. Matches the subset of AgenC runtime `Session` that the
+ * per-turn snapshot. Matches the subset of codex runtime `Session` that the
  * real `make_turn_context` pulls from.
  */
 export interface SessionForTurn {
@@ -1293,16 +1293,16 @@ export interface SessionForTurn {
    * wiring can keep omitting it.
    */
   readonly permissionModeRegistry?: PermissionModeRegistry;
-  /** Monotonic sub-id allocator (AgenC runtime `next_internal_sub_id`). */
+  /** Monotonic sub-id allocator (codex runtime `next_internal_sub_id`). */
   nextInternalSubId(): string;
 }
 
 /**
- * AgenC runtime `Session::build_per_turn_config` (turn_context.rs:303).
+ * codex runtime `Session::build_per_turn_config` (turn_context.rs:303).
  *
  * Returns a frozen `Config` snapshot for this turn. The snapshot is
  * rebuilt from `SessionConfiguration` atop the original session config
- * blob (`originalConfigDoNotUse`) when available, matching AgenC runtime's
+ * blob (`originalConfigDoNotUse`) when available, matching codex runtime's
  * `build_per_turn_config`, then caller overrides are layered on top
  * before freeze. I-30: callers MUST read the returned snapshot rather
  * than the live session config for the lifetime of the turn —
@@ -1346,7 +1346,7 @@ export function buildPerTurnConfig(
 }
 
 /**
- * AgenC runtime `Session::new_default_turn_with_sub_id` (turn_context.rs:614).
+ * codex runtime `Session::new_default_turn_with_sub_id` (turn_context.rs:614).
  *
  * Builds a `TurnContext` using the session's defaults plus an
  * operator-supplied sub-id (so the caller can join the turn's event
@@ -1382,7 +1382,7 @@ export function newDefaultTurnWithSubId(
 }
 
 /**
- * AgenC runtime `Session::new_default_turn` (turn_context.rs:609).
+ * codex runtime `Session::new_default_turn` (turn_context.rs:609).
  *
  * Convenience wrapper that allocates a fresh sub-id via the session's
  * monotonic allocator, then delegates to
@@ -1393,7 +1393,7 @@ export function newDefaultTurn(session: SessionForTurn): TurnContext {
 }
 
 /**
- * AgenC runtime `Session::new_turn_with_sub_id` (turn_context.rs:449).
+ * codex runtime `Session::new_turn_with_sub_id` (turn_context.rs:449).
  *
  * Builds a `TurnContext` with a caller-supplied sub-id and optional
  * per-turn `Config` overrides layered on top of the session defaults.

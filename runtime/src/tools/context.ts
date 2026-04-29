@@ -1,7 +1,7 @@
 /**
  * Tool dispatch context types.
  *
- * Hand-port of AgenC runtime `core/src/tools/context.rs` (584 LOC). The AgenC runtime
+ * Hand-port of codex runtime `core/src/tools/context.rs` (584 LOC). The codex runtime
  * trait `ToolOutput` has multiple concrete impls (`CallToolResult`,
  * `McpToolOutput`, `FunctionToolOutput`, `ToolSearchOutput`,
  * `AbortedToolOutput`, `ExecCommandToolOutput`) each with a distinct
@@ -26,7 +26,7 @@ import type { TurnContext } from "../session/turn-context.js";
 // ToolCallSource — which layer injected the call
 // ─────────────────────────────────────────────────────────────────────
 
-/** Port of AgenC runtime `ToolCallSource` (context.rs:32-37). */
+/** Port of codex runtime `ToolCallSource` (context.rs:32-37). */
 export type ToolCallSource = "direct" | "js_repl" | "code_mode";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ export type ToolCallSource = "direct" | "js_repl" | "code_mode";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of AgenC runtime `ToolPayload` (context.rs:50-68). The variants stay
+ * Port of codex runtime `ToolPayload` (context.rs:50-68). The variants stay
  * explicit so direct calls, JS REPL calls, MCP calls, and code-mode
  * projections can preserve their upstream payload-specific behavior.
  */
@@ -74,7 +74,7 @@ export function logPayload(payload: ToolPayload): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ToolName — namespaced name (port of AgenC runtime `ToolName`)
+// ToolName — namespaced name (port of codex runtime `ToolName`)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ToolName {
@@ -97,7 +97,7 @@ export function parseToolName(full: string): ToolName {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of AgenC runtime `ToolInvocation` (context.rs:39-47). Bundles session +
+ * Port of codex runtime `ToolInvocation` (context.rs:39-47). Bundles session +
  * turn + tracker + callId + tool name + payload so downstream hooks
  * receive a consistent shape.
  */
@@ -112,7 +112,7 @@ export interface ToolInvocation {
 }
 
 /**
- * Port of AgenC runtime `SharedTurnDiffTracker` (context.rs:30). Tracks file
+ * Port of codex runtime `SharedTurnDiffTracker` (context.rs:30). Tracks file
  * diffs emitted during a single turn so the final `TurnDiff` event
  * can be synthesized from the tool-side. T7 ships an empty tracker;
  * T12 (TUI transcript) materializes the diffs.
@@ -143,7 +143,7 @@ export function createTurnDiffTracker(): SharedTurnDiffTracker {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Telemetry preview — port of AgenC runtime `telemetry_preview`
+// Telemetry preview — port of codex runtime `telemetry_preview`
 // (context.rs:542-580). Byte-boundary + line-limit truncation with a
 // trailing notice marker. Constants mirror `tools/mod.rs:24-27`.
 // ─────────────────────────────────────────────────────────────────────
@@ -155,7 +155,7 @@ export const TELEMETRY_PREVIEW_TRUNCATION_NOTICE =
 
 /**
  * Take up to `maxBytes` bytes from `s` respecting UTF-8 character
- * boundaries (AgenC runtime `take_bytes_at_char_boundary`). Returns the
+ * boundaries (codex runtime `take_bytes_at_char_boundary`). Returns the
  * original string when it already fits.
  */
 function takeBytesAtCharBoundary(s: string, maxBytes: number): string {
@@ -171,7 +171,7 @@ function takeBytesAtCharBoundary(s: string, maxBytes: number): string {
 }
 
 /**
- * Port of AgenC runtime `telemetry_preview` (context.rs:542-580). Truncates
+ * Port of codex runtime `telemetry_preview` (context.rs:542-580). Truncates
  * `content` by byte and line caps and appends the truncation notice
  * only when truncation occurred. Byte boundary is UTF-8 safe.
  */
@@ -223,7 +223,7 @@ export function telemetryPreviewWith(
   }
 
   // Preserve the immediate trailing newline when the truncated slice
-  // had one at the cut point (AgenC runtime lines 565-571).
+  // had one at the cut point (codex runtime lines 565-571).
   if (
     preview.length < truncatedSlice.length &&
     truncatedSlice[preview.length] === "\n"
@@ -238,7 +238,7 @@ export function telemetryPreviewWith(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Image detail sanitizer — port of AgenC runtime
+// Image detail sanitizer — port of codex runtime
 // `sanitize_original_image_detail` (tools/src/image_detail.rs). When
 // the model does not support `detail: "original"`, rewrite it to the
 // default ("auto"). Returns a fresh copy; input is not mutated.
@@ -291,7 +291,7 @@ export type MCPContentItem =
     };
 
 /**
- * Port of AgenC runtime `sanitize_original_image_detail` (tools/image_detail.rs:23-38).
+ * Port of codex runtime `sanitize_original_image_detail` (tools/image_detail.rs:23-38).
  * When the model does not support `detail: "original"`, rewrite every
  * nested `original_image_detail` on image items to the default
  * (`"auto"`). Non-mutating: the returned array is a fresh copy.
@@ -338,7 +338,7 @@ export interface MCPStructuredContent {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// ToolOutputVariant — discriminated union mirroring the 7 AgenC runtime impls
+// ToolOutputVariant — discriminated union mirroring the 7 codex runtime impls
 // ─────────────────────────────────────────────────────────────────────
 
 /** Common fields carried by every variant. */
@@ -351,7 +351,7 @@ interface ToolOutputVariantCommon {
 }
 
 /**
- * Discriminated union — AgenC runtime `context.rs:82-96` trait `ToolOutput`
+ * Discriminated union — codex runtime `context.rs:82-96` trait `ToolOutput`
  * plus its concrete impls:
  *
  *   - `function`      — `FunctionToolOutput` (context.rs:226-275)
@@ -407,7 +407,7 @@ export type ToolOutputVariant =
     } & ToolOutputVariantCommon);
 
 /**
- * Function-call output content item — port of AgenC runtime
+ * Function-call output content item — port of codex runtime
  * `FunctionCallOutputContentItem`. Matches the OpenAI responses input
  * shape. Image URLs carry an optional `detail` field.
  */
@@ -456,7 +456,7 @@ export interface ToolOutput {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of AgenC runtime `FunctionToolOutput::from_text` (context.rs:233-239).
+ * Port of codex runtime `FunctionToolOutput::from_text` (context.rs:233-239).
  */
 export function functionToolOutputFromText(opts: {
   readonly callId: string;
@@ -476,7 +476,7 @@ export function functionToolOutputFromText(opts: {
 }
 
 /**
- * Port of AgenC runtime `FunctionToolOutput::from_content` (context.rs:241-250).
+ * Port of codex runtime `FunctionToolOutput::from_content` (context.rs:241-250).
  */
 export function functionToolOutputFromContent(opts: {
   readonly callId: string;
@@ -534,7 +534,7 @@ function buildFunctionToolOutput(opts: {
 }
 
 /**
- * Port of AgenC runtime `McpToolOutput` (context.rs:123-183). Preserves the
+ * Port of codex runtime `McpToolOutput` (context.rs:123-183). Preserves the
  * full MCP structured content + wall time. `toText()` synthesizes the
  * "Wall time: N.NNNN seconds\nOutput:" header (`response_payload`).
  */
@@ -574,7 +574,7 @@ export function mcpToolOutput(opts: {
 }
 
 /**
- * Port of AgenC runtime `ExecCommandToolOutput` (context.rs:349-455).
+ * Port of codex runtime `ExecCommandToolOutput` (context.rs:349-455).
  * `rawOutput` is a Buffer to preserve byte-level fidelity. The cap is
  * applied by `execResponseText()` via `truncatedOutput()`.
  */
@@ -629,7 +629,7 @@ export function execToolOutput(opts: {
 }
 
 /**
- * Port of AgenC runtime `ToolSearchOutput` (context.rs:186-224).
+ * Port of codex runtime `ToolSearchOutput` (context.rs:186-224).
  */
 export function toolSearchToolOutput(opts: {
   readonly callId: string;
@@ -662,7 +662,7 @@ export function toolSearchToolOutput(opts: {
 }
 
 /**
- * Port of AgenC runtime `AbortedToolOutput` (context.rs:312-347). Preserves
+ * Port of codex runtime `AbortedToolOutput` (context.rs:312-347). Preserves
  * the abort message; `toResponseItem` dispatches on the payload
  * variant so ToolSearch/MCP callers get shape-compatible outputs.
  */
@@ -745,7 +745,7 @@ export function functionToolOutput(opts: {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of AgenC runtime `function_call_output_content_items_to_text`. Flattens
+ * Port of codex runtime `function_call_output_content_items_to_text`. Flattens
  * a content-item body to a plain text body by joining text parts.
  */
 export function contentItemsToText(
@@ -760,7 +760,7 @@ export function contentItemsToText(
 }
 
 /**
- * Port of AgenC runtime `FunctionToolOutput::into_text` (context.rs:252-254).
+ * Port of codex runtime `FunctionToolOutput::into_text` (context.rs:252-254).
  */
 export function intoText(output: ToolOutput): string {
   return toText(output);
@@ -788,14 +788,14 @@ export function toText(output: ToolOutput): string {
 }
 
 /**
- * Port of AgenC runtime `ToolOutput::log_preview` dispatch (context.rs:83).
+ * Port of codex runtime `ToolOutput::log_preview` dispatch (context.rs:83).
  */
 export function logPreview(output: ToolOutput): string {
   return telemetryPreview(toText(output));
 }
 
 /**
- * Port of AgenC runtime `ToolOutput::success_for_logging` (context.rs:85).
+ * Port of codex runtime `ToolOutput::success_for_logging` (context.rs:85).
  */
 export function successForLogging(output: ToolOutput): boolean {
   const variant = output.variant;
@@ -815,7 +815,7 @@ export function successForLogging(output: ToolOutput): boolean {
 }
 
 /**
- * Port of AgenC runtime `McpToolOutput::response_payload` (context.rs:159-182).
+ * Port of codex runtime `McpToolOutput::response_payload` (context.rs:159-182).
  * Prepends the wall-time header and runs the image-detail sanitizer
  * on nested image items.
  */
@@ -844,7 +844,7 @@ function mcpResponseText(
 }
 
 /**
- * Port of AgenC runtime `ExecCommandToolOutput::response_text` + `truncated_output`
+ * Port of codex runtime `ExecCommandToolOutput::response_text` + `truncated_output`
  * (context.rs:422-454). Applies the 400KB cap (I-15) and composes the
  * chunk/exit/process sections.
  */
@@ -872,9 +872,9 @@ function execResponseText(
 }
 
 /**
- * Port of AgenC runtime `ExecCommandToolOutput::truncated_output`
+ * Port of codex runtime `ExecCommandToolOutput::truncated_output`
  * (context.rs:422-426). AgenC uses byte-based truncation via
- * `DEFAULT_MAX_EXEC_OUTPUT_BYTES` (I-15: 400KB) instead of AgenC runtime's
+ * `DEFAULT_MAX_EXEC_OUTPUT_BYTES` (I-15: 400KB) instead of codex runtime's
  * token-based policy — the cap is equivalent and avoids pulling a
  * tokenizer into the runtime.
  */
@@ -895,7 +895,7 @@ function execTruncatedOutput(
 }
 
 /**
- * Port of AgenC runtime `ToolOutput::to_response_item` dispatch plus the
+ * Port of codex runtime `ToolOutput::to_response_item` dispatch plus the
  * per-impl implementations (context.rs:87, 109-114, 144-149, 208-222,
  * 268-270, 296-305, 325-345). Emits an AgenC `LLMMessage`
  * (`role:"tool"`, `toolCallId`, `content`) — provider adapters map
@@ -953,7 +953,7 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
       };
     }
     case "aborted":
-      // Dispatch on payload variant — matches AgenC runtime `AbortedToolOutput::to_response_item`
+      // Dispatch on payload variant — matches codex runtime `AbortedToolOutput::to_response_item`
       // (context.rs:325-345).
       if (variant.payload.kind === "tool_search") {
         return {
@@ -985,11 +985,11 @@ export function toResponseItem(output: ToolOutput): LLMToolResultMessage {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// code_mode projection — port of AgenC runtime code-mode result mapping
+// code_mode projection — port of codex runtime code-mode result mapping
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of AgenC runtime `response_input_to_code_mode_result`
+ * Port of codex runtime `response_input_to_code_mode_result`
  * (context.rs:483-515) adapted to AgenC's provider-neutral
  * `LLMToolResultMessage` shape. This is used by code-mode host paths
  * that only have the response item, not the original `ToolOutput`.
@@ -1013,7 +1013,7 @@ export function codeModeResult(output: ToolOutput): unknown {
 }
 
 /**
- * Port of AgenC runtime `response_input_to_code_mode_result` for the
+ * Port of codex runtime `response_input_to_code_mode_result` for the
  * `LLMToolResultMessage` form emitted by `toResponseItem`.
  */
 export function responseInputToCodeModeResult(
@@ -1036,7 +1036,7 @@ export function responseInputToCodeModeResult(
 }
 
 /**
- * Port of AgenC runtime `content_items_to_code_mode_result`
+ * Port of codex runtime `content_items_to_code_mode_result`
  * (context.rs:517-534). Code-mode receives the useful item payloads
  * joined by newlines, not the response/transcript wrapper text.
  */

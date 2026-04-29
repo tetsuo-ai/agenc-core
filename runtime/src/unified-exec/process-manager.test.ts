@@ -96,8 +96,8 @@ describe("UnifiedExecProcessManager", () => {
     // have no hard kill — the model could yield and forget, leaving the
     // child running indefinitely. We saw this in the wild with three
     // `./agenc -c 'echo hi' --dump-tokens` zombies burning ~97% CPU each
-    // for 95+ minutes after the agent moved on. AgenC runtime always enforces a
-    // timeout (AgenC runtime-rs/core/src/exec.rs `consume_output`); we now do too.
+    // for 95+ minutes after the agent moved on. codex runtime always enforces a
+    // timeout (codex-rs/core/src/exec.rs `consume_output`); we now do too.
     const manager = new UnifiedExecProcessManager({
       cwd: process.cwd(),
       maxTimeoutMs: 400,
@@ -138,8 +138,8 @@ describe("UnifiedExecProcessManager", () => {
   });
 
   test("respects explicit timeoutMs for tty calls (default does not apply)", async () => {
-    // tty=true is the interactive-session path — AgenC runtime doesn't have a
-    // direct analog because AgenC runtime exec is always one-shot. We deliberately
+    // tty=true is the interactive-session path — codex runtime doesn't have a
+    // direct analog because codex runtime exec is always one-shot. We deliberately
     // exempt tty from the default hard timeout so persistent shells stay
     // alive across write_stdin polls. This test asserts that exemption.
     if (!hasPtySupport) return;

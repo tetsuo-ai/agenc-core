@@ -1,7 +1,7 @@
 /**
  * REPL — main interactive AgenC TUI screen.
  *
- * OpenClaude-parity composition for the AgenC runtime surfaces that exist
+ * OpenClaude-parity composition for the codex runtime surfaces that exist
  * locally. Upstream `REPL.tsx` also pulls in product-specific surfaces that
  * AgenC does not ship today; this screen keeps the live AgenC paths aligned
  * with OpenClaude behavior where an equivalent signal/component exists.

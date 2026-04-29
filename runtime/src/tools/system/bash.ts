@@ -763,13 +763,13 @@ export function createBashTool(config?: BashToolConfig): Tool {
 
   return {
     name: "system.bash",
-    // Marked deferred: exec_command is the canonical shell tool (AgenC runtime
-    // parity — AgenC runtime's `local_shell` + `write_stdin` is what AgenC's
+    // Marked deferred: exec_command is the canonical shell tool (codex runtime
+    // parity — codex runtime's `local_shell` + `write_stdin` is what AgenC's
     // `exec_command` + `write_stdin` mirrors). system.bash stays
     // available via system.searchTools for callers that genuinely
     // need the direct-mode (command + args) split or the dual-mode
     // semantics, but defaults to off to keep the visible catalog
-    // AgenC runtime-small and avoid duplicate-tool confusion.
+    // codex runtime-small and avoid duplicate-tool confusion.
     metadata: {
       family: "terminal",
       source: "builtin",

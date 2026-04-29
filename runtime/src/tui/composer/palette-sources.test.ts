@@ -2,7 +2,7 @@
  * Tests for the palette item suppliers.
  *
  * `getSlashCommandItems` is tested against a hand-rolled registry stub so
- * we don't have to build a full AgenC runtime context.
+ * we don't have to build a full codex runtime context.
  *
  * `getMentionItems` is tested against a real tmpdir created via
  * `fs.mkdtemp`. memfs is not on the runtime's dep list, and pulling it in

@@ -167,7 +167,7 @@ describe("ToolRouter", () => {
   });
 
   test("toolSupportsParallel hard-false for non-Function/Freeform spec variants (router behavior)", () => {
-    // AgenC runtime `ToolSpec::Namespace | ToolSpec::ToolSearch |
+    // codex runtime `ToolSpec::Namespace | ToolSpec::ToolSearch |
     // ToolSpec::LocalShell | ToolSpec::ImageGeneration |
     // ToolSpec::WebSearch` are hard-coded non-parallel regardless of
     // the `supports_parallel_tool_calls` flag.

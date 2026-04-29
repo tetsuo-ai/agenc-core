@@ -385,7 +385,7 @@ export type RecompactionInfo = {
  * Order: boundaryMarker, summaryMessages, messagesToKeep, attachments, hookResults.
  * Mid-turn compaction can additionally inject a serialized reference-
  * context message immediately before the last real user message
- * (or, if none survives, before the summary), matching AgenC runtime's
+ * (or, if none survives, before the summary), matching codex runtime's
  * `BeforeLastUserMessage` behavior.
  */
 export function buildPostCompactMessages(result: CompactionResult): Message[] {

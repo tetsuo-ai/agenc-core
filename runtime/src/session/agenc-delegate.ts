@@ -9,7 +9,7 @@
  *
  * Product-facing names are AgenC-owned. References to upstream behavior
  * in comments are provenance only; live file names, exported types, and
- * events avoid AgenC runtime-branded delegate names.
+ * events avoid codex runtime-branded delegate names.
  *
  * @module
  */
@@ -53,7 +53,7 @@ import type { ToolRegistry } from "./_deps/tool-registry.js";
 // ─────────────────────────────────────────────────────────────────────
 // Structural dependencies (`AgenCDelegateSessionLike`, `AgenCDelegateTurnContextLike`)
 //
-// Upstream AgenC runtime passes `Arc<Session>` + `Arc<TurnContext>`. Gut stays
+// Upstream codex runtime passes `Arc<Session>` + `Arc<TurnContext>`. Gut stays
 // structural so tests can build minimal fixtures. The *minimum* a
 // delegate needs is: a provider handle, an event emitter, and a task
 // registrar. Everything else is an opt-in extension.
@@ -68,10 +68,10 @@ import type { ToolRegistry } from "./_deps/tool-registry.js";
  * internals.
  */
 export interface AgenCDelegateEventSink {
-  /** Upstream AgenC runtime `Session::send_event` — sends an event with the
+  /** Upstream codex runtime `Session::send_event` — sends an event with the
    *  given sub_id stamped as `id`. */
   sendEvent(subId: string, msg: EventMsg): void;
-  /** Upstream AgenC runtime `Session::emit` — emit with a pre-built event. */
+  /** Upstream codex runtime `Session::emit` — emit with a pre-built event. */
   emit(event: Event): void;
 }
 
@@ -97,11 +97,11 @@ export interface AgenCDelegateSessionLike extends AgenCDelegateEventSink {
       getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
     };
   };
-  /** Upstream AgenC runtime `Session::spawn_task`. Used so the delegate's
+  /** Upstream codex runtime `Session::spawn_task`. Used so the delegate's
    *  review turn participates in the Wave 2 task lifecycle (replace-
    *  on-new-turn, abort cascade, done promise). */
   spawnTask(opts: SpawnTaskOptions): Promise<RunningTask>;
-  /** Upstream AgenC runtime `Session::on_task_finished`. Called by the
+  /** Upstream codex runtime `Session::on_task_finished`. Called by the
    *  delegate on every termination path so the task drains cleanly. */
   onTaskFinished(subId: string): Promise<void>;
 }
@@ -200,8 +200,8 @@ export interface AgenCReviewOneShotRequest {
 }
 
 /**
- * Upstream AgenC runtime `AgenC runtime` return value of `run_AgenC runtime_thread_one_shot`
- * (the wrapped `AgenC runtime` struct from `AgenC runtime_delegate.rs:230-236`). Gut
+ * Upstream codex runtime `codex runtime` return value of `run_codex runtime_thread_one_shot`
+ * (the wrapped `codex runtime` struct from `codex runtime_delegate.rs:230-236`). Gut
  * collapses this into a synchronous outcome because there is no
  * child-Session event channel to drain. Shape preserves the
  * essential fields a caller needs:
@@ -230,12 +230,12 @@ export interface AgenCReviewOneShotOutcome {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Error shapes (upstream AgenC runtimeErr / guardian review errors)
+// Error shapes (upstream codex runtimeErr / guardian review errors)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Raised when the request specifies a reviewer model that the
- * provider does not support. Upstream AgenC runtime surfaces this through
+ * provider does not support. Upstream codex runtime surfaces this through
  * `ModelsManager::get_model_info` failing to resolve the model slug.
  * Gut's delegate checks it up-front so callers get a typed rejection
  * before any provider round-trip.
@@ -348,7 +348,7 @@ export function buildGuardianReviewSessionConfig(
 /**
  * Build the review-scoped `TurnContext` from the parent context +
  * reviewer overrides. Mirrors the inline turn-context assembly at
- * upstream `AgenC runtime-rs/core/src/session/review.rs:101-146`.
+ * upstream `codex-rs/core/src/session/review.rs:101-146`.
  *
  * Unlike upstream's hand-built `TurnContext { ... }` struct literal,
  * gut threads the overrides through `buildTurnContext` so the frozen-
@@ -944,7 +944,7 @@ export async function runAgenCReviewOneShot(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream AgenC runtime `ExitedReviewModeEvent`
+ * Upstream codex runtime `ExitedReviewModeEvent`
  * (`protocol/src/protocol.rs:2157-2159`). Carries the review output
  * so the UI can render results; gut adds the termination `reason`
  * and the `modelUsed` for telemetry + a compact `subId` for event

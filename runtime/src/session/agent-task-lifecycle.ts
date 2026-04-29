@@ -2,21 +2,21 @@
  * Agent task registration lifecycle.
  *
  * AgenC-specific session layer over the low-level agent-task
- * registration primitive that upstream AgenC runtime exposes in
- * `AgenC runtime-rs/agent-identity/src/lib.rs::register_agent_task` (the
+ * registration primitive that upstream codex runtime exposes in
+ * `codex-rs/agent-identity/src/lib.rs::register_agent_task` (the
  * HTTP call that mints a `task_id` for a given agent runtime).
- * Upstream AgenC runtime caches a single `task_id` per process in
+ * Upstream codex runtime caches a single `task_id` per process in
  * `AgentIdentityAuth::ensure_runtime`
- * (`AgenC runtime-rs/login/src/auth/agent_identity.rs::ensure_runtime`) via a
+ * (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`) via a
  * `OnceCell`. No session-scoped cache, rollout persistence, identity
  * rotation handling, or double-checked registration lock exists in the
- * current AgenC runtime tree; this module is the AgenC extension that adds
+ * current codex runtime tree; this module is the AgenC extension that adds
  * those. Each helper takes `session: Session` as its first argument.
  *
  * The only function in this module with a direct upstream port is
  * `recordInitialHistoryOnResume`, which mirrors the
  * `InitialHistory::Resumed` arm of
- * `AgenC runtime-rs/core/src/session/mod.rs::record_initial_history`
+ * `codex-rs/core/src/session/mod.rs::record_initial_history`
  * (model-change warning and token-info seed). See that function's
  * docstring for exact line references.
  *
@@ -42,8 +42,8 @@ export type { RolloutItem, SessionStateUpdate } from "./rollout-item.js";
 
 /**
  * AgenC-specific in-memory shape for a task registered with the
- * identity-binding service. Upstream AgenC runtime does not define an
- * equivalent struct: `AgenC runtime-rs/agent-identity/src/lib.rs::register_agent_task`
+ * identity-binding service. Upstream codex runtime does not define an
+ * equivalent struct: `codex-rs/agent-identity/src/lib.rs::register_agent_task`
  * returns only a `task_id: String`, and the surrounding agent runtime id
  * and registration timestamp live outside that return value. AgenC
  * groups them together so the session-scoped cache and rollout
@@ -57,8 +57,8 @@ export interface RegisteredAgentTask {
 
 /**
  * AgenC-specific wire representation of a RegisteredAgentTask used in
- * `RolloutItem::SessionState(update)` persistence. Upstream AgenC runtime has
- * no equivalent struct in `AgenC runtime-protocol` or elsewhere in the current
+ * `RolloutItem::SessionState(update)` persistence. Upstream codex runtime has
+ * no equivalent struct in `codex runtime-protocol` or elsewhere in the current
  * tree. Shape is kept identical to `RegisteredAgentTask` to keep the
  * conversion helpers below trivial.
  */
@@ -169,9 +169,9 @@ async function persistRolloutItems(
 
 // ─────────────────────────────────────────────────────────────────────
 // Session-scoped task-registration lifecycle — AgenC-specific.
-// Upstream AgenC runtime keeps only a process-wide `OnceCell<String>` cache in
+// Upstream codex runtime keeps only a process-wide `OnceCell<String>` cache in
 // `AgentIdentityAuth::ensure_runtime`
-// (`AgenC runtime-rs/login/src/auth/agent_identity.rs::ensure_runtime`) and
+// (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`) and
 // makes no attempt to invalidate on identity rotation, persist the
 // registration, or double-check a session-scoped cache. The helpers
 // below are the AgenC additions that wrap the same underlying HTTP
@@ -181,8 +181,8 @@ async function persistRolloutItems(
 /**
  * AgenC-specific. Startup task registration is best-effort: regular
  * turns retry on demand, and a prewarm failure should not shut down the
- * session. AgenC runtime's equivalent startup path is `ensure_runtime`
- * (`AgenC runtime-rs/login/src/auth/agent_identity.rs`), which has no
+ * session. codex runtime's equivalent startup path is `ensure_runtime`
+ * (`codex-rs/login/src/auth/agent_identity.rs`), which has no
  * swallow-and-continue wrapper because it runs from the async auth
  * handshake, not the session boot.
  */
@@ -204,7 +204,7 @@ export async function maybePrewarmAgentTaskRegistration(
  * update, wrapped in a `{ value }` envelope so callers can distinguish
  * "no SessionState ever persisted" (returns `undefined`) from
  * "SessionState persisted with the slot explicitly cleared" (returns
- * `{ value: undefined }`). Upstream AgenC runtime does not persist an
+ * `{ value: undefined }`). Upstream codex runtime does not persist an
  * agent-task slot on rollout, so there is no equivalent walker.
  */
 export function latestPersistedAgentTask(
@@ -222,7 +222,7 @@ export function latestPersistedAgentTask(
 /**
  * AgenC-specific. If the most recent persisted `SessionState` has an
  * agent task, validate it against the current identity and either keep
- * it (on match) or clear the cached task (on mismatch). Upstream AgenC runtime
+ * it (on match) or clear the cached task (on mismatch). Upstream codex runtime
  * has no persisted agent-task restore path; on process restart it
  * simply re-registers a fresh task through `ensure_runtime`.
  */
@@ -251,12 +251,12 @@ export async function restorePersistedAgentTask(
 }
 
 /**
- * AgenC runtime `Session::last_token_info_from_rollout`
+ * codex runtime `Session::last_token_info_from_rollout`
  * (session/mod.rs:1257-1262). Walks rollout items in reverse and
  * returns the most recent `token_count` event payload. Returns
  * `undefined` if no token_count event was ever persisted.
  *
- * AgenC stores token usage in the `TokenCountEvent` payload; AgenC runtime
+ * AgenC stores token usage in the `TokenCountEvent` payload; codex runtime
  * uses `TokenUsageInfo` directly. The field set is equivalent.
  */
 export function lastTokenInfoFromRollout(
@@ -274,9 +274,9 @@ export function lastTokenInfoFromRollout(
 }
 
 /**
- * Port of the `InitialHistory::Resumed` arm of AgenC runtime
+ * Port of the `InitialHistory::Resumed` arm of codex runtime
  * `Session::record_initial_history`
- * (`AgenC runtime-rs/core/src/session/mod.rs::record_initial_history`,
+ * (`codex-rs/core/src/session/mod.rs::record_initial_history`,
  * function at lines 1151-1236; the Resumed arm runs roughly
  * 1172-1209).
  *
@@ -284,15 +284,15 @@ export function lastTokenInfoFromRollout(
  * has a single entrypoint for them:
  *
  *   1. **Agent-task restore.** Delegates to `restorePersistedAgentTask`.
- *      AgenC-specific: no equivalent exists in AgenC runtime because AgenC runtime does
+ *      AgenC-specific: no equivalent exists in codex runtime because codex runtime does
  *      not persist the agent task to the rollout. Runs first so the
  *      cached task is consistent with the post-replay session identity
  *      before any model-dependent state mutations.
- *   2. **Model-change warning.** AgenC runtime emits
+ *   2. **Model-change warning.** codex runtime emits
  *      `EventMsg::Warning(WarningEvent { ... })` at
  *      `session/mod.rs:1185-1196` when the rollout's last
  *      `turn_context.model` differs from the session's active model.
- *      The warning wording mirrors AgenC runtime's English sentence; "AgenC runtime" is
+ *      The warning wording mirrors codex runtime's English sentence; "codex runtime" is
  *      swapped for "AgenC".
  *   3. **Token-info seed.** Sets `initialTokenUsage` on session state
  *      from the last persisted `token_count` event so UIs display
@@ -319,8 +319,8 @@ export async function recordInitialHistoryOnResume(
   // identity before any model-dependent state mutations.
   await restorePersistedAgentTask(session, rolloutItems);
 
-  // 2. Model-change warning. Matches AgenC runtime's sentence at
-  // session/mod.rs:1189-1192 with "AgenC runtime" → "AgenC".
+  // 2. Model-change warning. Matches codex runtime's sentence at
+  // session/mod.rs:1189-1192 with "codex runtime" → "AgenC".
   if (
     opts.previousModel !== undefined &&
     opts.previousModel !== opts.currentModel
@@ -340,7 +340,7 @@ export async function recordInitialHistoryOnResume(
   }
 
   // 3. Seed token_info so downstream UIs see persisted usage. Mirrors
-  // AgenC runtime session/mod.rs:1200-1203.
+  // codex runtime session/mod.rs:1200-1203.
   const info = lastTokenInfoFromRollout(rolloutItems);
   if (info !== undefined) {
     await session.state.with((s) => {
@@ -353,7 +353,7 @@ export async function recordInitialHistoryOnResume(
 /**
  * AgenC-specific. Persist a `SessionState` rollout item carrying the
  * current agent-task cache value (or an explicit clear when `agentTask`
- * is null). Upstream AgenC runtime does not persist this slot.
+ * is null). Upstream codex runtime does not persist this slot.
  */
 async function persistAgentTaskUpdate(
   session: Session,
@@ -372,7 +372,7 @@ async function persistAgentTaskUpdate(
 /**
  * AgenC-specific. Clear the cached task only if it still matches the
  * passed-in task, which avoids clobbering a task another flow wrote
- * concurrently. Upstream AgenC runtime has no session-scoped cache to clear.
+ * concurrently. Upstream codex runtime has no session-scoped cache to clear.
  */
 async function clearCachedAgentTask(
   session: Session,
@@ -395,8 +395,8 @@ async function clearCachedAgentTask(
 /**
  * AgenC-specific. Write the task into session state if it differs from
  * the current cached value, then persist the update to the rollout.
- * Upstream AgenC runtime stores only a `OnceCell<String>` per process
- * (`AgenC runtime-rs/login/src/auth/agent_identity.rs::ensure_runtime`) and
+ * Upstream codex runtime stores only a `OnceCell<String>` per process
+ * (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`) and
  * never rewrites or persists it.
  */
 async function cacheAgentTask(
@@ -422,7 +422,7 @@ async function cacheAgentTask(
 /**
  * AgenC-specific. Returns the cached task iff it still matches the
  * current agent identity; on mismatch, clears the cached value and
- * returns undefined. Upstream AgenC runtime does no per-call identity match
+ * returns undefined. Upstream codex runtime does no per-call identity match
  * check against its `OnceCell<String>` task cache.
  */
 export async function cachedAgentTaskForCurrentIdentity(
@@ -443,11 +443,11 @@ export async function cachedAgentTaskForCurrentIdentity(
 }
 
 /**
- * AgenC-specific session-scoped wrapper around the AgenC runtime low-level
+ * AgenC-specific session-scoped wrapper around the codex runtime low-level
  * registration primitive `register_agent_task`
- * (`AgenC runtime-rs/agent-identity/src/lib.rs`, pub fn at line 109). AgenC runtime's
+ * (`codex-rs/agent-identity/src/lib.rs`, pub fn at line 109). codex runtime's
  * only caller, `AgentIdentityAuth::ensure_runtime`
- * (`AgenC runtime-rs/login/src/auth/agent_identity.rs::ensure_runtime`), just
+ * (`codex-rs/login/src/auth/agent_identity.rs::ensure_runtime`), just
  * memoizes the returned task id in a `OnceCell<String>` and never
  * retries, re-validates, or double-checks.
  *

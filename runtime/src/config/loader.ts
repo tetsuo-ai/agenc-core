@@ -20,7 +20,7 @@
 //   - Date-time values
 //   - Hex/octal/binary integers
 //
-// This is enough for AgenC's config surface (AgenC runtime + AgenC fields).
+// This is enough for AgenC's config surface (codex runtime + AgenC fields).
 // Unknown TOML values are still parsed and surfaced to the caller via
 // `normalizeRawConfig` (→ `_unknown` side-table).
 //

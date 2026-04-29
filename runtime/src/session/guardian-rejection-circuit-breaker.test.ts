@@ -1,8 +1,8 @@
 /**
  * Tests for GuardianRejectionCircuitBreaker.
  *
- * Mirrors upstream AgenC runtime tests from
- * `AgenC runtime-rs/core/src/guardian/tests.rs`:
+ * Mirrors upstream codex runtime tests from
+ * `codex-rs/core/src/guardian/tests.rs`:
  *   - `guardian_rejection_circuit_breaker_interrupts_after_three_consecutive_denials`
  *   - `guardian_rejection_circuit_breaker_resets_consecutive_denials_on_non_denial`
  *   - `guardian_rejection_circuit_breaker_interrupts_after_ten_total_denials`

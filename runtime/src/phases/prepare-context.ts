@@ -488,7 +488,7 @@ export async function prepareContext(
   // `MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES=3`.
   //
   // Double-compact gate: `run-turn.ts::runPreSamplingCompact` is the
-  // canonical pre-turn compact dispatcher per AgenC runtime (turn.rs:712-735)
+  // canonical pre-turn compact dispatcher per codex runtime (turn.rs:712-735)
   // and runs BEFORE the phase loop. If it already compacted this turn,
   // it stamps `state.autoCompactTracking` with compacted=true and
   // turnCounter=0 (see run-turn.ts:334-339). commit.ts bumps

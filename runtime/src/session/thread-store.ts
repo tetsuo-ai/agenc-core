@@ -1,10 +1,10 @@
 /**
  * ThreadStore — storage-neutral thread persistence boundary.
  *
- * Partial hand-port of source runtime AgenC runtime `thread-store/` crate
- * (`AgenC runtime-rs/thread-store/src/store.rs` trait + `local/` default impl).
+ * Partial hand-port of source runtime codex runtime `thread-store/` crate
+ * (`codex-rs/thread-store/src/store.rs` trait + `local/` default impl).
  * Source runtime is a large subsystem with two back-ends (filesystem + remote
- * RPC), a SQLite `AgenC runtime-state` metadata DB, paging/cursor listing, cwd
+ * RPC), a SQLite `codex runtime-state` metadata DB, paging/cursor listing, cwd
  * filters, search-term filters, Git-info patches, `ThreadNameUpdated`
  * rollout events, and an `archived_sessions/` subdir convention. AgenC TS runtime
  * has none of that scaffolding yet. This port therefore covers only
@@ -136,7 +136,7 @@ import { StateThreadRepository } from "../state/threads.js";
 import { backfillRolloutFile } from "../state/backfill.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Params + types — mirrored from AgenC runtime `thread-store/src/types.rs`.
+// Params + types — mirrored from codex runtime `thread-store/src/types.rs`.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -239,7 +239,7 @@ export interface ListThreadsParams {
 
 /** Mirror of source runtime `StoredThread` (`types.rs:157`), narrowed to the
  *  fields AgenC TS runtime actually persists in the registry. Fields source runtime
- *  reconstructs from a `AgenC runtime-state` SQLite row (token usage,
+ *  reconstructs from a `codex runtime-state` SQLite row (token usage,
  *  reasoning effort, approval mode, sandbox policy, git info, full
  *  preview, cli version) are not populated. */
 export interface StoredThread {
@@ -343,7 +343,7 @@ export class ThreadStoreConflictError extends Error {
  * Storage-neutral thread persistence boundary.
  *
  * Matches the source runtime `ThreadStore` trait
- * (`AgenC runtime-rs/thread-store/src/store.rs:20`) method for method. Method
+ * (`codex-rs/thread-store/src/store.rs:20`) method for method. Method
  * names are lower-camel-cased per `docs/plan/translation-conventions.md`;
  * parameter shapes match source runtime.
  */
@@ -410,7 +410,7 @@ export interface FileThreadStoreOpts {
  * thread id.
  *
  * Wire-format deviations from source runtime:
- *   - No `AgenC runtime-state` SQLite db: metadata lives in the JSON registry.
+ *   - No `codex runtime-state` SQLite db: metadata lives in the JSON registry.
  *   - Live archives defer the `archived_sessions/` move until the writer is
  *     no longer registered, preserving the open `RolloutStore` path.
  *   - No on-disk `ThreadNameUpdated` rows: name updates only rewrite the

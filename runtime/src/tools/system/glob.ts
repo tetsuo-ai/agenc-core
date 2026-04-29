@@ -10,7 +10,7 @@
  * dependencies and matches the bare AgenC name (`Glob`) the model
  * has been trained to call.
  *
- * Output is plain text (AgenC runtime envelope), one path per line, sorted
+ * Output is plain text (codex runtime envelope), one path per line, sorted
  * newest-first by mtime, capped at `MAX_RESULTS=100` with a truncation
  * note. Every emitted path is verified via `safePath()` against the
  * configured allowedPaths so a clever pattern can't escape the

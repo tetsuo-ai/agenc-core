@@ -10,7 +10,7 @@
  *
  * Build once per session. The registry is intentionally flat — every
  * surviving tool registers into one router-backed list with no grouping.
- * The provider-visible catalog is request scoped: AgenC runtime-primary tools
+ * The provider-visible catalog is request scoped: codex runtime-primary tools
  * are visible by default, while compatibility built-ins, MCP, and
  * explicitly deferred tools become visible after discovery.
  *
@@ -255,7 +255,7 @@ const DEFAULT_VISIBLE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   FILE_WRITE_TOOL_NAME,
   GLOB_TOOL_NAME,
   GREP_TOOL_NAME,
-  // `TodoWrite` is the AgenC port; AgenC runtime `update_plan`
+  // `TodoWrite` is the AgenC port; codex runtime `update_plan`
   // is intentionally not shipped — `/plan` itself is AgenC-owned
   // (see `runtime/src/commands/plan.ts:4`), so the matching checklist
   // tool is AgenC `TodoWrite`.
@@ -322,7 +322,7 @@ export interface BuildToolRegistryOptions {
   readonly mcpToolsProvider?: ToolListProvider;
   /**
    * Hide MCP tool schemas until `system.searchTools` discovers them.
-   * This mirrors AgenC runtime's deferred MCP catalog path and prevents large
+   * This mirrors codex runtime's deferred MCP catalog path and prevents large
    * MCP installs from bloating every request by default.
    */
   readonly deferMcpTools?: boolean;
@@ -340,7 +340,7 @@ export interface BuildToolRegistryOptions {
   /**
    * Include AgenC-owned structured git/symbol/repo-inventory tools in
    * the catalog. Defaults to true, but those tools stay deferred so the
-   * default model-visible prompt remains AgenC runtime-small.
+   * default model-visible prompt remains codex runtime-small.
    */
   readonly codeIntelligenceTools?: boolean;
   /** Live plan-mode bridge for EnterPlanMode/ExitPlanMode. */

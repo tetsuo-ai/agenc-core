@@ -1,7 +1,7 @@
 /**
  * ExecCell — shell execution history cell.
  *
- * Mirrors AgenC runtime's history-cell shape more closely than the older boxed
+ * Mirrors codex runtime's history-cell shape more closely than the older boxed
  * `$ command` widget: a single semantic Bash(command) header, optional
  * indented stdout / stderr lines, and a compact status note.
  *

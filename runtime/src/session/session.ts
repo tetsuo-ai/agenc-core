@@ -1,16 +1,16 @@
 /**
  * Session — initialized model agent context.
  *
- * Hand-port of AgenC runtime `core/src/session/session.rs` (852 LOC Rust)
- * per `docs/plan/AgenC runtime-inventory.md §1` Session struct mapping table.
- * Every field of AgenC runtime's `Session` struct has a TypeScript equivalent.
+ * Hand-port of codex runtime `core/src/session/session.rs` (852 LOC Rust)
+ * per `docs/plan/codex runtime-inventory.md §1` Session struct mapping table.
+ * Every field of codex runtime's `Session` struct has a TypeScript equivalent.
  * Forward-dep subsystems (~50 types: ModelsManager, RolloutRecorder,
  * McpConnectionManager, AgentControl, etc.) are placeholder interfaces
  * with `// T<N> wires` comments naming the tranche that lands the
  * real impl.
  *
  * "A session has at most 1 running task at a time, and can be
- *  interrupted by user input." — AgenC runtime doc-comment, session.rs:5
+ *  interrupted by user input." — codex runtime doc-comment, session.rs:5
  *
  * Invariants enforced here:
  *   I-5  (bidirectional mailbox) — Session holds both `mailbox` (its own
@@ -140,7 +140,7 @@ import {
 // Real impls land in the named tranche.
 // ─────────────────────────────────────────────────────────────────────
 
-/** AgenC runtime `ThreadId`. Conversation/thread unique identifier. */
+/** codex runtime `ThreadId`. Conversation/thread unique identifier. */
 export type ThreadId = string;
 
 // Event / EventMsg / SessionConfiguredEvent are re-exported from
@@ -168,7 +168,7 @@ export {
   nonSteerableTurnKindFrom,
 } from "./tasks.js";
 
-/** AgenC runtime `AgentStatus` FSM. T9 (subagents) expands. */
+/** codex runtime `AgentStatus` FSM. T9 (subagents) expands. */
 export type AgentStatus =
   | { readonly status: "pending_init" }
   | { readonly status: "running"; readonly turnId: string; readonly startedAtMs: number }
@@ -178,7 +178,7 @@ export type AgentStatus =
   | { readonly status: "not_found" }
   | { readonly status: "interrupted"; readonly turnId: string };
 
-/** AgenC runtime `SessionState`. Mutable state under `state` mutex. */
+/** codex runtime `SessionState`. Mutable state under `state` mutex. */
 export interface SessionState {
   /** Active configuration (mutable per `/model`, `/provider`, etc.). */
   sessionConfiguration: SessionConfiguration;
@@ -199,7 +199,7 @@ export interface SessionState {
   referenceContextItem?: TurnContextItem;
   /**
    * Seeded from the last persisted `token_count` event on resume/fork
-   * (AgenC runtime `last_token_info_from_rollout` at session/mod.rs:1257). UIs
+   * (codex runtime `last_token_info_from_rollout` at session/mod.rs:1257). UIs
    * that need to display cumulative token usage immediately on resume
    * read this instead of waiting for the first new completion. The
    * live per-turn accounting path continues to update it via the
@@ -213,13 +213,13 @@ export interface SessionState {
     readonly reasoningOutputTokens?: number;
   };
   /**
-   * Cross-turn cumulative token usage. Mirrors AgenC runtime
+   * Cross-turn cumulative token usage. Mirrors codex runtime
    * `TokenUsageInfo.total_token_usage` (protocol.rs:2259-2297) and is
    * the authoritative source for the mid-turn compact gate's
    * `total_usage_tokens >= auto_compact_limit` check. The writer in
    * `stream-model.ts` element-wise accumulates every provider-reported
    * `LLMUsage` under the session state lock after each stream
-   * completes, matching AgenC runtime's `TokenUsageInfo::append_last_usage`
+   * completes, matching codex runtime's `TokenUsageInfo::append_last_usage`
    * (protocol.rs:2294-2297). Undefined until the first response with
    * usage lands so an unpopulated session reports zero.
    */
@@ -230,15 +230,15 @@ export interface SessionState {
     readonly cachedInputTokens: number;
     readonly reasoningOutputTokens: number;
   };
-  /** Pending session-start hook source (AgenC runtime line 841). T10 wires. */
+  /** Pending session-start hook source (codex runtime line 841). T10 wires. */
   pendingSessionStartSource?: SessionStartSource;
 }
 
-/** AgenC runtime `SessionStartSource` (AgenC runtime_hooks). */
+/** codex runtime `SessionStartSource` (codex runtime_hooks). */
 export type SessionStartSource = "startup" | "resume" | "clear";
 
 /**
- * AgenC runtime `ResponseInputItem` / `UserInput` — opaque payload the turn
+ * codex runtime `ResponseInputItem` / `UserInput` — opaque payload the turn
  * machine consumes. Structural alias kept permissive so both text and
  * multimodal items can route through idle-input merge without the
  * session module pulling in the provider-specific shape.
@@ -253,7 +253,7 @@ export type UserInput = unknown;
 export const MAILBOX_SOURCE_IDLE_INPUT = "idle";
 
 /**
- * Upstream AgenC runtime `state/turn.rs::ActiveTurn`. Holds the running-task
+ * Upstream codex runtime `state/turn.rs::ActiveTurn`. Holds the running-task
  * registry and the per-turn lock-guarded state (`ActiveTurnState`).
  *
  * Gut originally exposed only `{turnId, startedAtMs, abortController}`
@@ -275,7 +275,7 @@ export interface ActiveTurn {
   readonly turnState: AsyncLock<ActiveTurnState>;
 }
 
-/** AgenC runtime `Mailbox` + `MailboxReceiver`. T9 (subagents) provides the
+/** codex runtime `Mailbox` + `MailboxReceiver`. T9 (subagents) provides the
  *  full bidirectional impl per I-5/I-16/I-31/I-64. Today we expose the
  *  shape so Session can hold its own inbox + per-child outbound
  *  mailboxes.
@@ -337,17 +337,17 @@ export class SimpleMailbox<T extends { seq: number }> implements Mailbox<T> {
   }
 }
 
-/** AgenC runtime `RealtimeConversationManager`. T-future (realtime voice). */
+/** codex runtime `RealtimeConversationManager`. T-future (realtime voice). */
 export interface RealtimeConversationManager {
   runningState(): Promise<unknown | undefined>;
 }
 
-/** AgenC runtime `GuardianReviewSessionManager`. T11 (permissions) wires. */
+/** codex runtime `GuardianReviewSessionManager`. T11 (permissions) wires. */
 export interface GuardianReviewSessionManager {
   readonly enabled: boolean;
 }
 
-/** AgenC runtime `RolloutRecorder`. T6 (event log + sidecars) wires. */
+/** codex runtime `RolloutRecorder`. T6 (event log + sidecars) wires. */
 export interface RolloutRecorder {
   rolloutPath(): string;
   record(item: unknown): Promise<void>;
@@ -355,14 +355,14 @@ export interface RolloutRecorder {
   setWindowGeneration(n: number): void;
 }
 
-/** AgenC runtime `ModelsManager`; runtime provider/model catalog. */
+/** codex runtime `ModelsManager`; runtime provider/model catalog. */
 export interface ModelsManager {
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
   listModels(strategy?: "online_if_uncached"): Promise<ReadonlyArray<ModelInfo>>;
 }
 
-/** AgenC runtime `McpManager`. T9 (MCP extensions) wires. */
+/** codex runtime `McpManager`. T9 (MCP extensions) wires. */
 export interface McpManager {
   effectiveServers(config: unknown, auth: unknown): Promise<Map<string, McpServerInfo>>;
   toolPluginProvenance(config: unknown): Promise<unknown>;
@@ -402,26 +402,26 @@ export interface McpServerInfo {
   readonly command?: string;
 }
 
-/** AgenC runtime `McpConnectionManager`. T9 (MCP extensions) wires. */
+/** codex runtime `McpConnectionManager`. T9 (MCP extensions) wires. */
 export interface McpConnectionManager {
   setApprovalPolicy(policy: unknown): void;
   setSandboxPolicy(policy: unknown): void;
   requiredStartupFailures(servers: ReadonlyArray<string>): Promise<ReadonlyArray<{ server: string; error: string }>>;
 }
 
-/** AgenC runtime `AgentControl`. T9 (subagents) wires. */
+/** codex runtime `AgentControl`. T9 (subagents) wires. */
 export interface AgentControl {
   readonly maxThreads: number;
   spawnAgent(opts: unknown): Promise<unknown>;
   shutdownAgentTree(threadId: ThreadId): Promise<void>;
 }
 
-/** AgenC runtime `AgentIdentityManager`. T9 wires. */
+/** codex runtime `AgentIdentityManager`. T9 wires. */
 export interface AgentIdentityManager {
   ensureRegistered(): Promise<void>;
 }
 
-/** AgenC runtime `Hooks`. T6 wires (uses existing AgenC `runtime/src/llm/hooks/`). */
+/** codex runtime `Hooks`. T6 wires (uses existing AgenC `runtime/src/llm/hooks/`). */
 export interface Hooks {
   startupWarnings(): ReadonlyArray<string>;
   executePreCompact(...args: unknown[]): Promise<unknown>;
@@ -430,7 +430,7 @@ export interface Hooks {
   executeStopFailure(...args: unknown[]): Promise<unknown>;
 }
 
-/** AgenC runtime `SkillsManager` + `SkillsWatcher` + `PluginsManager`. T10 wires. */
+/** codex runtime `SkillsManager` + `SkillsWatcher` + `PluginsManager`. T10 wires. */
 export interface SkillsManager {
   skillsForConfig(input: unknown, fs: unknown): Promise<SkillLoadOutcome>;
   resolveSkill?(
@@ -472,17 +472,17 @@ export interface PluginsManager {
   pluginsForConfig(config: unknown): Promise<{ effectiveSkillRoots(): unknown }>;
 }
 
-/** AgenC runtime `ExecPolicyManager`. T11 wires. */
+/** codex runtime `ExecPolicyManager`. T11 wires. */
 export interface ExecPolicyManager {
   current(): unknown;
 }
 
-/** AgenC runtime `AnalyticsEventsClient`. T-future (telemetry). */
+/** codex runtime `AnalyticsEventsClient`. T-future (telemetry). */
 export interface AnalyticsEventsClient {
   emit(event: unknown): Promise<void>;
 }
 
-/** AgenC runtime `ApprovalStore`. T11 wires. */
+/** codex runtime `ApprovalStore`. T11 wires. */
 export interface ApprovalStore {
   hasApproval(key: string): boolean;
   approve(key: string): void;
@@ -493,19 +493,19 @@ export interface ApprovalStore {
   }): Promise<unknown>;
 }
 
-/** AgenC runtime `LocalThreadStore`. T6 (event log) wires. */
+/** codex runtime `LocalThreadStore`. T6 (event log) wires. */
 export interface LocalThreadStore {
   threadName(threadId: ThreadId): Promise<string | undefined>;
   setThreadName(threadId: ThreadId, name: string): Promise<void>;
 }
 
-/** Deferred AgenC runtime `ModelClient`; live provider dispatch uses `services.provider`. */
+/** Deferred codex runtime `ModelClient`; live provider dispatch uses `services.provider`. */
 export interface ModelClient {
   setWindowGeneration(n: number): void;
-  // Deferred until a caller needs the full AgenC runtime ModelClient facade.
+  // Deferred until a caller needs the full codex runtime ModelClient facade.
 }
 
-/** AgenC runtime `NetworkApprovalService`. T11 (network approval). */
+/** codex runtime `NetworkApprovalService`. T11 (network approval). */
 export interface NetworkApprovalService {
   enabled(): boolean;
   clearSessionHosts?(): void;
@@ -513,31 +513,31 @@ export interface NetworkApprovalService {
   requestDeferredApproval?(opts: unknown): Promise<unknown>;
 }
 
-/** AgenC runtime `Shell`. T7 (tools) wires. */
+/** codex runtime `Shell`. T7 (tools) wires. */
 export interface UserShell {
   readonly path: string;
   deriveExecArgs(input: string, useLoginShell: boolean): string[];
 }
 
-/** AgenC runtime `UnifiedExecProcessManager`. */
+/** codex runtime `UnifiedExecProcessManager`. */
 export type UnifiedExecProcessManager = UnifiedExecProcessManagerLike;
 
-/** AgenC runtime `BehaviorSubject<unknown>` for shell snapshot tx. T9 wires. */
+/** codex runtime `BehaviorSubject<unknown>` for shell snapshot tx. T9 wires. */
 export type ShellSnapshotTx = BehaviorSubject<unknown | null>;
 
-/** AgenC runtime `state_db_ctx`. T6 wires. */
+/** codex runtime `state_db_ctx`. T6 wires. */
 export interface StateDbContext {
   readonly path: string;
 }
 
-/** AgenC runtime `InitialHistory`. */
+/** codex runtime `InitialHistory`. */
 export type InitialHistory =
   | { readonly kind: "new" }
   | { readonly kind: "cleared" }
   | { readonly kind: "forked"; readonly forkedFromId: ThreadId }
   | { readonly kind: "resumed"; readonly conversationId: ThreadId; readonly rolloutPath: string; readonly history: ReadonlyArray<unknown> };
 
-/** AgenC runtime `SessionServices` — DI container of all session-scoped services. */
+/** codex runtime `SessionServices` — DI container of all session-scoped services. */
 export interface SessionServices {
   readonly mcpConnectionManager: McpConnectionManager;
   readonly mcpStartupCancellationToken: McpStartupCancellationToken;
@@ -548,7 +548,7 @@ export interface SessionServices {
   readonly hooks: Hooks;
   readonly rollout: RolloutRecorder | undefined;
   /**
-   * AgenC runtime `rollout_trace` (T6 diagnostics). Coexists with `rollout`:
+   * codex runtime `rollout_trace` (T6 diagnostics). Coexists with `rollout`:
    * `rollout` is the authoritative rollout item log (source of truth),
    * `rolloutTrace` is the best-effort diagnostic trace bundle recorder
    * used for replay analysis and post-mortem debugging.
@@ -556,7 +556,7 @@ export interface SessionServices {
    * Declared optional (`?`) instead of `RolloutTraceRecorder | undefined`
    * so existing `SessionServices` construction sites in `bin/bootstrap.ts`
    * and test fixtures do not need to be updated in this tranche. Upstream
-   * AgenC runtime treats this slot as required and passes a disabled handle when
+   * codex runtime treats this slot as required and passes a disabled handle when
    * tracing is off; AgenC callers can opt in by supplying
    * `createRolloutTraceRecorder(...)` or `RolloutTraceRecorder.disabled()`.
    */
@@ -572,9 +572,9 @@ export interface SessionServices {
   readonly toolApprovals: ApprovalStore;
   readonly guardianRejections: Map<string, unknown>;
   /**
-   * AgenC runtime `GuardianRejectionCircuitBreaker` (per-turn guardian-denial
+   * codex runtime `GuardianRejectionCircuitBreaker` (per-turn guardian-denial
    * counter with consecutive + total thresholds). Ported from upstream
-   * AgenC runtime `core/src/guardian/mod.rs`. Optional while callers are wired up;
+   * codex runtime `core/src/guardian/mod.rs`. Optional while callers are wired up;
    * the bootstrap default map above stays until every consumer routes
    * denials through the breaker instead.
    *
@@ -589,7 +589,7 @@ export interface SessionServices {
    * `guardianRejectionCircuitBreaker`.
    */
   readonly guardianApprovalReviewer?: GuardianApprovalReviewer;
-  /** T13 review-task port. AgenC runtime `session/review.rs` manager analog. */
+  /** T13 review-task port. codex runtime `session/review.rs` manager analog. */
   readonly reviewManager?: import("./review.js").ReviewManager;
   readonly skillsManager: SkillsManager;
   readonly pluginsManager: PluginsManager;
@@ -613,7 +613,7 @@ export interface SessionServices {
   readonly stateDb?: StateDbContext;
   readonly threadStore: LocalThreadStore;
   /**
-   * Upstream AgenC runtime `services.live_thread: Option<LiveThread>`
+   * Upstream codex runtime `services.live_thread: Option<LiveThread>`
    * (core/src/state/service.rs:66). Optional because gut has no
    * ThreadStore subsystem: the service is populated by callers that
    * construct a `LiveThread` against the session's `RolloutStore`, and
@@ -687,7 +687,7 @@ export type AbortReason =
   | "process_killed";
 
 // ─────────────────────────────────────────────────────────────────────
-// Session class — the field-faithful port of AgenC runtime `Session` struct.
+// Session class — the field-faithful port of codex runtime `Session` struct.
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SessionOpts {
@@ -785,10 +785,10 @@ function activeAgentDefinitionsFromRoles(
 /**
  * Initialized model agent context.
  *
- * Mirrors AgenC runtime `Session` struct (session.rs:6-29).
+ * Mirrors codex runtime `Session` struct (session.rs:6-29).
  */
 export class Session {
-  /** AgenC runtime: `conversation_id: ThreadId` */
+  /** codex runtime: `conversation_id: ThreadId` */
   readonly conversationId: ThreadId;
 
   /**
@@ -798,46 +798,46 @@ export class Session {
    */
   readonly txEvent: AsyncQueue<Event>;
 
-  /** AgenC runtime: `agent_status: watch::Sender<AgentStatus>` — status with replay-current. */
+  /** codex runtime: `agent_status: watch::Sender<AgentStatus>` — status with replay-current. */
   readonly agentStatus: BehaviorSubject<AgentStatus>;
 
-  /** AgenC runtime: `out_of_band_elicitation_paused: watch::Sender<bool>` — AgenC runtime realtime parity. */
+  /** codex runtime: `out_of_band_elicitation_paused: watch::Sender<bool>` — codex runtime realtime parity. */
   readonly outOfBandElicitationPaused: BehaviorSubject<boolean>;
 
-  /** AgenC runtime: `state: Mutex<SessionState>` — async-locked session state. */
+  /** codex runtime: `state: Mutex<SessionState>` — async-locked session state. */
   readonly state: AsyncLock<SessionState>;
 
-  /** AgenC runtime: `managed_network_proxy_refresh_lock: Mutex<()>` — serializes proxy rebuilds. */
+  /** codex runtime: `managed_network_proxy_refresh_lock: Mutex<()>` — serializes proxy rebuilds. */
   readonly managedNetworkProxyRefreshLock: AsyncLock<void>;
 
-  /** AgenC runtime: `features: ManagedFeatures` — invariant for the lifetime of the session. */
+  /** codex runtime: `features: ManagedFeatures` — invariant for the lifetime of the session. */
   readonly features: ManagedFeatures;
 
-  /** AgenC runtime: `pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>`. T9 wires. */
+  /** codex runtime: `pending_mcp_server_refresh_config: Mutex<Option<McpServerRefreshConfig>>`. T9 wires. */
   readonly pendingMcpServerRefreshConfig: AsyncLock<unknown | null>;
 
-  /** AgenC runtime: `conversation: Arc<RealtimeConversationManager>`. T-future (realtime). */
+  /** codex runtime: `conversation: Arc<RealtimeConversationManager>`. T-future (realtime). */
   readonly conversation: RealtimeConversationManager;
 
-  /** AgenC runtime: `active_turn: Mutex<Option<ActiveTurn>>` — at most one running task. */
+  /** codex runtime: `active_turn: Mutex<Option<ActiveTurn>>` — at most one running task. */
   readonly activeTurn: AsyncLock<ActiveTurn | null>;
 
-  /** AgenC runtime: `mailbox: Mailbox` — Session's own inbox (parent or peer can send). */
+  /** codex runtime: `mailbox: Mailbox` — Session's own inbox (parent or peer can send). */
   readonly mailbox: Mailbox;
 
   /** Sequence watcher for root mailbox delivery. */
   readonly mailboxSeqWatch: BehaviorSubject<number>;
 
-  /** AgenC runtime: `mailbox_rx: Mutex<MailboxReceiver>` — drain receiver. T9 wires the full impl. */
+  /** codex runtime: `mailbox_rx: Mutex<MailboxReceiver>` — drain receiver. T9 wires the full impl. */
   readonly mailboxRx: AsyncLock<{ drain(): InterAgentCommunication[] }>;
 
-  /** AgenC runtime: `guardian_review_session: GuardianReviewSessionManager`. T11 wires. */
+  /** codex runtime: `guardian_review_session: GuardianReviewSessionManager`. T11 wires. */
   readonly guardianReviewSession: GuardianReviewSessionManager;
 
-  /** AgenC runtime: `services: SessionServices` — DI container. */
+  /** codex runtime: `services: SessionServices` — DI container. */
   readonly services: SessionServices;
 
-  /** AgenC runtime: `js_repl: Arc<JsReplHandle>`. */
+  /** codex runtime: `js_repl: Arc<JsReplHandle>`. */
   readonly jsRepl: JsReplHandle;
 
   /** Session-root config snapshot used to build per-turn frozen configs. */
@@ -846,16 +846,16 @@ export class Session {
   /** Session-root model metadata used by the turn-context builder. */
   readonly modelInfo: ModelInfo;
 
-  /** AgenC runtime: `next_internal_sub_id: AtomicU64` — monotonic sub-id counter. */
+  /** codex runtime: `next_internal_sub_id: AtomicU64` — monotonic sub-id counter. */
   private nextInternalSubIdValue: number;
 
-  /** AgenC runtime: `agent_task_registration_lock: Mutex<()>` — serializes task registration. */
+  /** codex runtime: `agent_task_registration_lock: Mutex<()>` — serializes task registration. */
   readonly agentTaskRegistrationLock: AsyncLock<void>;
 
   /**
    * Serializes `spawnTask` + `abortAllTasks` so the "abort old then
    * install new" sequence is atomic w.r.t. other spawn/abort callers.
-   * Upstream AgenC runtime doesn't need this because `spawn_task` is always
+   * Upstream codex runtime doesn't need this because `spawn_task` is always
    * called from the single submit dispatcher; gut exposes `spawnTask`
    * to `runTurnKernel`, slash-command adapters, and tests, so we add a
    * dedicated mutex to keep the two-lock sequence race-free. See
@@ -864,7 +864,7 @@ export class Session {
   private readonly taskDispatchLock: AsyncLock<void> = new AsyncLock<void>(undefined);
 
   // ───────────────────────────────────────────────────────────
-  // AgenC-specific additions (not in AgenC runtime):
+  // AgenC-specific additions (not in codex runtime):
   // ───────────────────────────────────────────────────────────
 
   /** I-5: per-child outbound mailboxes (parent → child Interrupt/Resume). T9 wires. */
@@ -1481,7 +1481,7 @@ export class Session {
   }
 
   /**
-   * Mirrors AgenC runtime `Session::next_internal_sub_id` — monotonic id allocation.
+   * Mirrors codex runtime `Session::next_internal_sub_id` — monotonic id allocation.
    */
   nextInternalSubId(): string {
     const id = this.nextInternalSubIdValue;
@@ -1701,7 +1701,7 @@ export class Session {
   }
 
   /**
-   * Upstream AgenC runtime `session/mod.rs::steer_input` (line 2938). Folds
+   * Upstream codex runtime `session/mod.rs::steer_input` (line 2938). Folds
    * `items` into the live turn's mailbox/idle-input pipeline so the
    * running task picks them up at the next idle-merge boundary, and
    * sets the mailbox delivery phase back to `current_turn` so the
@@ -1849,21 +1849,21 @@ export class Session {
   /**
    * AgenC behavior: send_event_raw — emit with caller-supplied envelope.
    * Used for SessionConfigured + DeprecationNotice events at startup
-   * (AgenC runtime session.rs:746-748).
+   * (codex runtime session.rs:746-748).
    */
   sendEventRaw(event: Event): void {
     this.emit(event);
   }
 
   // ───────────────────────────────────────────────────────────
-  // Task dispatch — port of upstream AgenC runtime `tasks/mod.rs`.
+  // Task dispatch — port of upstream codex runtime `tasks/mod.rs`.
   // See `session/tasks.ts` for the rationale. These methods own the
   // `activeTurn` lock so the outer "one turn in flight at a time"
   // invariant is enforced at every spawn / finish / abort site.
   // ───────────────────────────────────────────────────────────
 
   /**
-   * Upstream AgenC runtime `tasks/mod.rs::spawn_task`. Serializes the new-turn
+   * Upstream codex runtime `tasks/mod.rs::spawn_task`. Serializes the new-turn
    * boundary: first aborts any in-flight task with `TurnAbortReason::Replaced`
    * (matching upstream's `abort_all_tasks(TurnAbortReason::Replaced)`),
    * then installs a fresh `ActiveTurn` for the new task keyed by `subId`.
@@ -1876,7 +1876,7 @@ export class Session {
    */
   async spawnTask(opts: SpawnTaskOptions): Promise<RunningTask> {
     return this.taskDispatchLock.with(async () => {
-      // Upstream AgenC runtime: `spawn_task` always calls
+      // Upstream codex runtime: `spawn_task` always calls
       // `abort_all_tasks(TurnAbortReason::Replaced)` before installing
       // the new task. This is the non-negotiable serialization point.
       await this.abortAllTasksLocked("replaced");
@@ -1885,7 +1885,7 @@ export class Session {
   }
 
   /**
-   * Upstream AgenC runtime `tasks/mod.rs::start_task`. Installs the task under
+   * Upstream codex runtime `tasks/mod.rs::start_task`. Installs the task under
    * `activeTurn` after the caller has serialized the abort-then-start
    * boundary.
    */
@@ -1941,7 +1941,7 @@ export class Session {
   }
 
   /**
-   * Upstream AgenC runtime `tasks/mod.rs::on_task_finished`. Removes the task
+   * Upstream codex runtime `tasks/mod.rs::on_task_finished`. Removes the task
    * from the `tasks` registry. When the registry empties, clears the
    * `activeTurn` slot so the next `spawnTask` sees a clean state.
    *
@@ -1968,7 +1968,7 @@ export class Session {
   }
 
   /**
-   * Upstream AgenC runtime `tasks/mod.rs::abort_all_tasks`. Takes the
+   * Upstream codex runtime `tasks/mod.rs::abort_all_tasks`. Takes the
    * `activeTurn` slot (upstream `take_active_turn`), drains every
    * running task by firing its cancellation token and awaiting its
    * `done` signal under the graceful-interruption budget, then
@@ -2007,7 +2007,7 @@ export class Session {
   }
 
   /**
-   * Upstream AgenC runtime `tasks/mod.rs::abort_turn_if_active`. If the
+   * Upstream codex runtime `tasks/mod.rs::abort_turn_if_active`. If the
    * currently-active turn's registry contains `turnId`, aborts it;
    * otherwise returns false.
    */
@@ -2036,7 +2036,7 @@ export class Session {
   }
 
   /**
-   * Upstream AgenC runtime `tasks/mod.rs::handle_task_abort`. Fires the task's
+   * Upstream codex runtime `tasks/mod.rs::handle_task_abort`. Fires the task's
    * cancellation signal, awaits `done` up to `GRACEFUL_INTERRUPTION_TIMEOUT_MS`,
    * then returns even if the task did not signal done in time. We do
    * not call `handle.abort()` like upstream does because JS has no
@@ -2236,8 +2236,8 @@ function deriveMinimalSessionConfig(
  * Session without wiring a real `ModelsManager`. The runtime models manager is
  * the real owner of per-model metadata.
  *
- * `effectiveContextWindowPercent: 100` matches AgenC runtime's "no reduction"
- * meaning (AgenC runtime backend default is 95; 100 here is the safe fallback when
+ * `effectiveContextWindowPercent: 100` matches codex runtime's "no reduction"
+ * meaning (codex runtime backend default is 95; 100 here is the safe fallback when
  * no authoritative per-model metadata is available). The previous `1`
  * value silently truncated the live context window to 1% via
  * `modelContextWindow()` and broke compaction/budgeting math.

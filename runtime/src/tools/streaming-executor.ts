@@ -783,7 +783,7 @@ export class StreamingToolExecutor {
       tool.result = this.createSyntheticError(tool.toolCall, syntheticReason);
       tool.status = "completed";
       // Bash-thrown errors also trigger sibling abort (parity with
-      // AgenC line 354-363 behaviour when a Bash run throws).
+      // codex line 354-363 behaviour when a Bash run throws).
       if (
         tool.toolCall.name === this.bashToolName &&
         !this.hasBashErrored

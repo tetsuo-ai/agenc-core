@@ -4,7 +4,7 @@
  * The live runtime emits two related streams:
  *   - `PhaseEvent` values used by the one-shot CLI path.
  *   - `EventMsg` values on `session.eventLog`, which are the richer,
- *     AgenC runtime-aligned source of truth for user messages, streaming deltas,
+ *     codex runtime-aligned source of truth for user messages, streaming deltas,
  *     compaction boundaries, tool progress, and shell exec lifecycle.
  *
  * The TUI transcript accepts both. `eventsToMessages` folds the mixed

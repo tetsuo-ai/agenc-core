@@ -12,7 +12,7 @@
 let configsEnabled = false;
 
 /**
- * No-op gate retained for shape parity with the AgenC runtime.
+ * No-op gate retained for shape parity with the codex runtime.
  * Idempotent. Callers (`agenc.ts::initializeCliRuntime`) invoke this
  * exactly once during CLI bootstrap.
  */

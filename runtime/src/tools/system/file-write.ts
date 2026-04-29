@@ -25,7 +25,7 @@
  *   - `.ipynb` is rejected with a redirect to the notebook tool.
  *   - Path safety enforced via AgenC's `safePath` and
  *     `resolveToolAllowedPaths`.
- *   - Errors are returned as plain text (AgenC runtime envelope), not JSON.
+ *   - Errors are returned as plain text (codex runtime envelope), not JSON.
  *
  * Lifted FROM AgenC; the following AgenC couplings are
  * intentionally NOT lifted:
@@ -363,7 +363,7 @@ export function createFileWriteTool(
         );
       }
 
-      // Plain-text result — AgenC runtime envelope. Matches AgenC's
+      // Plain-text result — codex runtime envelope. Matches AgenC's
       // `mapToolResultToToolResultBlockParam` (FileWriteTool.ts:421-435).
       void existingStat;
       return {

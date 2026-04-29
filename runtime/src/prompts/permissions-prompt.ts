@@ -1,27 +1,27 @@
 /**
- * Permissions / sandbox prompt-injection — port of AgenC runtime's
+ * Permissions / sandbox prompt-injection — port of codex runtime's
  * `core/src/context/prompts/permissions/**` plus the composer logic in
  * `core/src/context/permissions_instructions.rs`.
  *
- * The eight `.md` files AgenC runtime bundles for approval-policy and sandbox-
+ * The eight `.md` files codex runtime bundles for approval-policy and sandbox-
  * mode are ported here as exported string constants, byte-for-byte
  * (whitespace, casing, leading spaces all preserved). A small selector
  * function combines the right pair into a single dynamic system-prompt
  * section based on the current AgenC permission mode.
  *
  * AgenC's permission model has four user-addressable modes that don't
- * map 1:1 onto AgenC runtime's two-axis (approval × sandbox) model. Mapping:
+ * map 1:1 onto codex runtime's two-axis (approval × sandbox) model. Mapping:
  *
  *   AgenC `"plan"`              → approval `unless_trusted` + sandbox `read_only`
  *   AgenC `"default"`           → approval `on_request`     + sandbox `workspace_write`
  *   AgenC `"acceptEdits"`       → approval `on_failure`     + sandbox `workspace_write`
  *   AgenC `"bypassPermissions"` → approval `never`          + sandbox `danger_full_access`
  *
- * AgenC runtime's sandbox-mode `.md` files include a `{{network_access}}` template
- * placeholder that AgenC runtime resolves to either `enabled` or `restricted` at
+ * codex runtime's sandbox-mode `.md` files include a `{{network_access}}` template
+ * placeholder that codex runtime resolves to either `enabled` or `restricted` at
  * render time. AgenC mirrors that here: for `bypassPermissions` /
  * `danger_full_access` we substitute `enabled`; for everything else we
- * substitute `restricted` to match AgenC runtime's default sandbox-policy
+ * substitute `restricted` to match codex runtime's default sandbox-policy
  * behavior. The constants themselves keep the placeholder literal so
  * tests can compare them against the upstream files byte-for-byte.
  *
@@ -39,14 +39,14 @@ import type {
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/approval_policy/never.md`.
+ * `codex-rs/core/src/context/prompts/permissions/approval_policy/never.md`.
  */
 export const APPROVAL_POLICY_NEVER =
   "Approval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n";
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/approval_policy/unless_trusted.md`.
+ * `codex-rs/core/src/context/prompts/permissions/approval_policy/unless_trusted.md`.
  *
  * Note: the upstream file begins with a single literal space character.
  * Preserved here exactly.
@@ -56,14 +56,14 @@ export const APPROVAL_POLICY_UNLESS_TRUSTED =
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/approval_policy/on_failure.md`.
+ * `codex-rs/core/src/context/prompts/permissions/approval_policy/on_failure.md`.
  */
 export const APPROVAL_POLICY_ON_FAILURE =
   "Approvals are your mechanism to get user consent to run shell commands without the sandbox. `approval_policy` is `on-failure`: The harness will allow all commands to run in the sandbox (if enabled), and failures will be escalated to the user for approval to run again without the sandbox.\n";
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/approval_policy/on_request.md`.
+ * `codex-rs/core/src/context/prompts/permissions/approval_policy/on_request.md`.
  */
 export const APPROVAL_POLICY_ON_REQUEST = `# Escalation Requests
 
@@ -126,7 +126,7 @@ Good examples of prefixes:
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/approval_policy/on_request_rule_request_permission.md`.
+ * `codex-rs/core/src/context/prompts/permissions/approval_policy/on_request_rule_request_permission.md`.
  */
 export const APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION = `# Permission Requests
 
@@ -166,27 +166,27 @@ Each segment is evaluated independently for sandbox restrictions and approval re
 // ─────────────────────────────────────────────────────────────────────
 // Sandbox-mode `.md` constants — verbatim ports.
 // The `{{network_access}}` placeholder is preserved as-is; the selector
-// substitutes it at render time, matching AgenC runtime's
+// substitutes it at render time, matching codex runtime's
 // `permissions_instructions.rs::sandbox_text` behavior.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/sandbox_mode/danger_full_access.md`.
+ * `codex-rs/core/src/context/prompts/permissions/sandbox_mode/danger_full_access.md`.
  */
 export const SANDBOX_MODE_DANGER_FULL_ACCESS =
   "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands are permitted. Network access is {{network_access}}.\n";
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/sandbox_mode/workspace_write.md`.
+ * `codex-rs/core/src/context/prompts/permissions/sandbox_mode/workspace_write.md`.
  */
 export const SANDBOX_MODE_WORKSPACE_WRITE =
   "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `workspace-write`: The sandbox permits reading files, and editing files in `cwd` and `writable_roots`. Editing files in other directories requires approval. Network access is {{network_access}}.\n";
 
 /**
  * Verbatim port of
- * `AgenC runtime-rs/core/src/context/prompts/permissions/sandbox_mode/read_only.md`.
+ * `codex-rs/core/src/context/prompts/permissions/sandbox_mode/read_only.md`.
  */
 export const SANDBOX_MODE_READ_ONLY =
   "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is {{network_access}}.\n";
@@ -197,7 +197,7 @@ export const SANDBOX_MODE_READ_ONLY =
 
 /**
  * Mapping from AgenC permission mode to a (approval-policy, sandbox-mode,
- * network-access, label) tuple. Modes that don't have a clean AgenC runtime analog
+ * network-access, label) tuple. Modes that don't have a clean codex runtime analog
  * map to `null` and the section is dropped (returns `null` from
  * `getPermissionsSection`).
  */
@@ -239,11 +239,11 @@ const MODE_BINDINGS: Partial<Record<PermissionMode, ModeBinding>> = {
 
 /**
  * Render a sandbox-mode template by substituting the `{{network_access}}`
- * placeholder. Mirrors AgenC runtime's `sandbox_text` (which goes through the
+ * placeholder. Mirrors codex runtime's `sandbox_text` (which goes through the
  * `Template::render` path) byte-for-byte for the supported placeholder.
  *
  * The trailing `\n` from the upstream `.md` is stripped first so the
- * outer composition controls section spacing exactly, matching AgenC runtime's
+ * outer composition controls section spacing exactly, matching codex runtime's
  * `Template::parse(...)` on `trim_end()`-ed source.
  */
 function renderSandbox(
@@ -256,16 +256,16 @@ function renderSandbox(
 /**
  * Build the dynamic permissions/sandbox system-prompt section for the
  * supplied AgenC permission context. Returns `null` when the context is
- * absent or the mode has no AgenC runtime analog (e.g. internal-only `bubble`,
+ * absent or the mode has no codex runtime analog (e.g. internal-only `bubble`,
  * `dontAsk`, or `auto` — these do not yet have published behavioral
- * descriptions on the AgenC runtime side and are intentionally elided rather
+ * descriptions on the codex runtime side and are intentionally elided rather
  * than misrepresented).
  *
- * Composition order, per AgenC runtime `permissions_instructions.rs`:
+ * Composition order, per codex runtime `permissions_instructions.rs`:
  * sandbox text first, then approval text, joined with a blank line.
- * The brief originally specified approval-then-sandbox; the AgenC runtime
- * composer is the authoritative source ("Take each AgenC runtime .md byte-for-
- * byte. No rewording.") so we follow AgenC runtime's actual ordering here.
+ * The brief originally specified approval-then-sandbox; the codex runtime
+ * composer is the authoritative source ("Take each codex runtime .md byte-for-
+ * byte. No rewording.") so we follow codex runtime's actual ordering here.
  */
 export function getPermissionsSection(
   ctx: ToolPermissionContext | null,

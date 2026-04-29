@@ -651,7 +651,7 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     const { isRetryableStreamError } = await import("./run-turn.js");
     const { isTransientProviderError } = await import("../recovery/api-errors.js");
 
-    // Typed path (covers the AgenC runtime 5xx branch that was previously a
+    // Typed path (covers the codex runtime 5xx branch that was previously a
     // brittle substring match).
     const { StreamModelError } = await import("../phases/stream-model.js");
     const { LLMServerError } = await import("../llm/errors.js");

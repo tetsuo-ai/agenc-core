@@ -265,7 +265,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
     // Hard timeout: explicit `timeoutMs` always wins. When unset, non-tty
     // calls fall back to `maxTimeoutMs` so abandoned processes (yield-and-
-    // forget) eventually get reaped — AgenC runtime/exec.rs always enforces a
+    // forget) eventually get reaped — codex runtime/exec.rs always enforces a
     // timeout. Tty sessions are intentionally long-lived (write_stdin
     // interaction) and stay opt-in.
     const explicitTimeoutMs =

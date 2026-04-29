@@ -1,7 +1,7 @@
 /**
  * `/init` — create `<cwd>/AGENC.md` from the AgenC init template.
  *
- * Mirrors AgenC runtime TUI `/init` behaviour with AgenC naming: writes a
+ * Mirrors codex runtime TUI `/init` behaviour with AgenC naming: writes a
  * contributor-guide scaffold to `AGENC.md` at the current project root. If the file
  * already exists we skip to avoid overwriting user content.
  *
@@ -26,7 +26,7 @@ import {
 /**
  * AgenC-neutralized contributor-guide scaffold. Kept inline so the
  * command works regardless of deployment layout. Matches the structure
- * of AgenC runtime's `prompt_for_init_command.md` (contributor guide outline)
+ * of codex runtime's `prompt_for_init_command.md` (contributor guide outline)
  * but strips runtime-specific phrasing.
  */
 export const INIT_TARGET_FILENAME = "AGENC.md";

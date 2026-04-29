@@ -1479,7 +1479,7 @@ For create/update requests, collect the cron expression, prompt, timezone, durab
 function buildApiPrompt(args: string): string {
   return `# AgenC API Guidance
 
-Help the user build against AgenC runtime APIs or the configured model provider APIs.
+Help the user build against codex runtime APIs or the configured model provider APIs.
 
 ## User Request
 
@@ -1566,7 +1566,7 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
   {
     name: "agenc-api",
     aliases: ["claude-api"],
-    description: "Use AgenC runtime APIs or configured provider APIs correctly.",
+    description: "Use codex runtime APIs or configured provider APIs correctly.",
     argumentHint: "[api task]",
     getPrompt: (args) => buildApiPrompt(args),
   },

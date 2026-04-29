@@ -1,8 +1,8 @@
 /**
  * `bootstrapSession` tests.
  *
- * Covers the bootstrap sequencing contract ported from upstream AgenC runtime
- * `Session::new` (AgenC runtime-rs/core/src/session/session.rs:258-967):
+ * Covers the bootstrap sequencing contract ported from upstream codex runtime
+ * `Session::new` (codex-rs/core/src/session/session.rs:258-967):
  *
  *   1. Happy path — real discovered shell, `SessionConfigured` emitted
  *      exactly once, `activeTurn` is clean.

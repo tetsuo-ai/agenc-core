@@ -41,7 +41,7 @@ import { provisionContentReplacementState } from "./_deps/tool-result-storage.js
  *   1338 → stop_hook_blocking
  *   1375 → token_budget_continuation
  *   1457 → continuation_nudge
- * Plus AgenC runtime model-fallback site → model_fallback.
+ * Plus codex runtime model-fallback site → model_fallback.
  *
  * T8 disambiguation:
  *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
@@ -101,7 +101,7 @@ export interface Terminal {
  * AgenC `AutoCompactTrackingState` from the compaction pipeline.
  * Real import lands when `src/llm/compact/**` is lifted from tsconfig
  * exclude (T5b/T6). Structural shape documented here; runtime matches
- * AgenC runtime/AgenC schema.
+ * codex runtime/AgenC schema.
  */
 export interface AutoCompactTrackingState {
   readonly compacted: boolean;
@@ -385,7 +385,7 @@ export interface TurnState {
 // (see session/turn-context.ts). Phases read the frozen config from
 // `ctx.configSnapshot`, never from `session.state` directly. TurnState
 // does not duplicate the snapshot — there is exactly one immutable
-// snapshot per turn, on the TurnContext, mirroring AgenC runtime's pattern.
+// snapshot per turn, on the TurnContext, mirroring codex runtime's pattern.
 
 // ─────────────────────────────────────────────────────────────────────
 // Builder

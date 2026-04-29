@@ -1324,7 +1324,7 @@ required = true
 
   it("enforces the runtime bootstrap step ordering invariant", async () => {
     // Asserts the concrete step order the bin bootstrap is required to
-    // follow, mirroring upstream AgenC runtime
+    // follow, mirroring upstream codex runtime
     // `core/src/session/session.rs:814-908, 931-942`:
     //
     //   1. Session construction (Session instance exists).
@@ -1448,7 +1448,7 @@ required = true
 
       const idx = (label: string): number => ordering.indexOf(label);
 
-      // The recorded step order must match the upstream AgenC runtime
+      // The recorded step order must match the upstream codex runtime
       // contract: each step happens strictly before the next. Every
       // label must have been recorded (index >= 0).
       const mountIdx = idx("rollout_store_mounted");

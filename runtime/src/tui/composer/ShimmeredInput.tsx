@@ -9,7 +9,7 @@
  *
  * The implementation is intentionally local: the upstream shimmer
  * relies on `@alcalzone/ansi-tokenize` and a `ShimmerChar` widget that
- * are not in the AgenC runtime today, so this file owns the small
+ * are not in the codex runtime today, so this file owns the small
  * segment-and-paint loop in plain React. Highlights are resolved with
  * a simple "first writer wins after priority sort" pass — exactly the
  * upstream contract — but we skip the full ANSI re-tokenization step

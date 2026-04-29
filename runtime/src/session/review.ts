@@ -1,21 +1,21 @@
 /**
  * Review-task subsystem for the AgenC session kernel.
  *
- * Port of the upstream AgenC runtime review machinery:
- *   - `AgenC runtime-rs/core/src/tasks/review.rs` — the `ReviewTask` trait impl
+ * Port of the upstream codex runtime review machinery:
+ *   - `codex-rs/core/src/tasks/review.rs` — the `ReviewTask` trait impl
  *     (`TaskKind::Review`, `span_name("session_task.review")`, run/abort
  *     wiring, process_review_events, exit_review_mode, and the
  *     JSON-parsing fallback for `ReviewOutputEvent`).
- *   - `AgenC runtime-rs/core/src/session/review.rs` — the `spawn_review_thread`
+ *   - `codex-rs/core/src/session/review.rs` — the `spawn_review_thread`
  *     entry point that builds a review-scoped `TurnContext`, disables
  *     web-search / view-image features, and spawns the `ReviewTask` via
  *     `Session::spawn_task`.
- *   - `AgenC runtime-rs/core/src/guardian/review_session.rs` —
+ *   - `codex-rs/core/src/guardian/review_session.rs` —
  *     `GuardianReviewSessionManager`. This file ports the manager's
  *     shape and lifecycle primitives (`shutdown`, trunk vs ephemeral
  *     review-session tracking).
- *   - `AgenC runtime-rs/core/review_prompt.md` and the two
- *     `AgenC runtime-rs/core/templates/review/*.xml` templates — lifted
+ *   - `codex-rs/core/review_prompt.md` and the two
+ *     `codex-rs/core/templates/review/*.xml` templates — lifted
  *     verbatim into the three exported string constants so future
  *     `spawnReviewTask` wiring can reach them without adding a file
  *     loader.
@@ -29,10 +29,10 @@
  *   1. `spawnReviewTask(session, opts)` — the session-scoped entry
  *      point. Calls `session.spawnTask({kind: "review", ...})` so the
  *      review task flows through the same replace-on-new-turn lifecycle
- *      as regular turns (upstream AgenC runtime
+ *      as regular turns (upstream codex runtime
  *      `session/review.rs::spawn_review_thread -> sess.spawn_task`).
  *
- *   2. `ReviewManager` — the AgenC runtime `GuardianReviewSessionManager`
+ *   2. `ReviewManager` — the codex runtime `GuardianReviewSessionManager`
  *      port. Tracks the "trunk" review session and any ephemeral fork
  *      review sessions by subId so `shutdown()` can cancel them all on
  *      session teardown. The full trunk-reuse and ephemeral-fork
@@ -42,7 +42,7 @@
  *
  *   3. `isTaskKindSteerable(kind)` — the classifier used by the
  *      forthcoming steer_input port (Item 6). Review tasks are
- *      explicitly NON-steerable (upstream AgenC runtime treats
+ *      explicitly NON-steerable (upstream codex runtime treats
  *      `TaskKind::Review` as reject-on-steer). The classifier is
  *      implemented against the TaskKind contract so it can be asserted
  *      today even before the steer_input path is wired through.
@@ -54,8 +54,8 @@
  *      system prompt and exit-templates without a file loader.
  *
  *   5. `ReviewRequest`, `ReviewFinding`, `ReviewOutput` — the
- *      structural types corresponding to upstream AgenC runtime
- *      `AgenC runtime-protocol::protocol::{ReviewRequest, ReviewOutputEvent}`
+ *      structural types corresponding to upstream codex runtime
+ *      `codex runtime-protocol::protocol::{ReviewRequest, ReviewOutputEvent}`
  *      and `ReviewLineRange` / `ReviewCodeLocation`. Shapes are
  *      preserved so `parseReviewOutput` can deserialize a reviewer
  *      model's JSON response (or fall back to the plain-text path
@@ -85,11 +85,11 @@ import type { ResponseItem } from "./rollout-item.js";
 import type { LLMMessage } from "../llm/types.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Structural types (upstream `AgenC runtime-protocol` review surface)
+// Structural types (upstream `codex runtime-protocol` review surface)
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream AgenC runtime `AgenC runtime-protocol::protocol::ReviewRequest`. Describes
+ * Upstream codex runtime `codex runtime-protocol::protocol::ReviewRequest`. Describes
  * what the user / operator asked the reviewer model to look at. The
  * target is a free-form description (e.g. "Diff between HEAD and
  * main") that upstream threads through `resolved.target`.
@@ -100,7 +100,7 @@ export interface ReviewRequest {
 }
 
 /**
- * Upstream AgenC runtime `AgenC runtime-protocol::protocol::ReviewLineRange`.
+ * Upstream codex runtime `codex runtime-protocol::protocol::ReviewLineRange`.
  */
 export interface ReviewLineRange {
   readonly start: number;
@@ -108,7 +108,7 @@ export interface ReviewLineRange {
 }
 
 /**
- * Upstream AgenC runtime `AgenC runtime-protocol::protocol::ReviewCodeLocation`.
+ * Upstream codex runtime `codex runtime-protocol::protocol::ReviewCodeLocation`.
  */
 export interface ReviewCodeLocation {
   readonly absolutePath: string;
@@ -116,7 +116,7 @@ export interface ReviewCodeLocation {
 }
 
 /**
- * Upstream AgenC runtime `AgenC runtime-protocol::protocol::ReviewFinding`.
+ * Upstream codex runtime `codex runtime-protocol::protocol::ReviewFinding`.
  */
 export interface ReviewFinding {
   readonly title: string;
@@ -127,7 +127,7 @@ export interface ReviewFinding {
 }
 
 /**
- * Upstream AgenC runtime `AgenC runtime-protocol::protocol::ReviewOutputEvent`. Shape
+ * Upstream codex runtime `codex runtime-protocol::protocol::ReviewOutputEvent`. Shape
  * of the structured review output the reviewer model returns. The
  * plain-text fallback path in `parseReviewOutput` stuffs the raw text
  * into `overallExplanation` and leaves `findings` empty, matching
@@ -158,7 +158,7 @@ export function emptyReviewOutput(): ReviewOutput {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream AgenC runtime `tasks/mod.rs` classification consumed by the
+ * Upstream codex runtime `tasks/mod.rs` classification consumed by the
  * steer_input gate (Item 6 port): a review task cannot be steered
  * with a mid-turn user message. Upstream rejects with
  * `ActiveTurnNotSteerable`.
@@ -187,7 +187,7 @@ export function isTaskKindSteerable(kind: TaskKind): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream AgenC runtime `core/review_prompt.md`. Used as the reviewer
+ * Upstream codex runtime `core/review_prompt.md`. Used as the reviewer
  * model's `base_instructions` in `tasks/review.rs::start_review_conversation`.
  * Ported verbatim so a later runner can set it on the review-scoped
  * config without needing a file loader. First-line header retained
@@ -216,7 +216,7 @@ export const REVIEW_SYSTEM_PROMPT: string = [
 ].join("\n");
 
 /**
- * Upstream AgenC runtime `core/templates/review/exit_success.xml`. Rendered
+ * Upstream codex runtime `core/templates/review/exit_success.xml`. Rendered
  * by `render_review_exit_success` with `{{results}}` substituted in.
  * Ported verbatim; `renderReviewExitSuccess` below performs the
  * single-placeholder substitution (no template engine dependency).
@@ -232,7 +232,7 @@ export const REVIEW_EXIT_SUCCESS_TMPL: string = [
 ].join("\n");
 
 /**
- * Upstream AgenC runtime `core/templates/review/exit_interrupted.xml`.
+ * Upstream codex runtime `core/templates/review/exit_interrupted.xml`.
  * Emitted when `review_output` is `None` in upstream
  * `exit_review_mode`.
  */
@@ -248,9 +248,9 @@ export const REVIEW_EXIT_INTERRUPTED_TMPL: string = [
 ].join("\n");
 
 /**
- * Upstream AgenC runtime `tasks/review.rs::render_review_exit_success`. Single
+ * Upstream codex runtime `tasks/review.rs::render_review_exit_success`. Single
  * placeholder template substitution (`{{results}}`). Upstream uses a
- * real template engine (`AgenC runtime_utils_template::Template`); gut uses
+ * real template engine (`codex runtime_utils_template::Template`); gut uses
  * plain string replace because there is only ever one placeholder.
  */
 export function renderReviewExitSuccess(results: string): string {
@@ -366,7 +366,7 @@ export async function recordReviewExitRollout(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Upstream AgenC runtime `tasks/review.rs::parse_review_output_event`. Parses
+ * Upstream codex runtime `tasks/review.rs::parse_review_output_event`. Parses
  * a reviewer model's response text as JSON matching `ReviewOutput`.
  * If the raw text is not valid JSON, attempts to extract the
  * first-`{` to last-`}` substring and parse that (matching upstream's
@@ -468,7 +468,7 @@ interface TrackedReview {
 }
 
 /**
- * Upstream AgenC runtime `guardian/review_session.rs::GuardianReviewSessionManager`,
+ * Upstream codex runtime `guardian/review_session.rs::GuardianReviewSessionManager`,
  * ported to the gut session surface. Tracks live review tasks by
  * subId so a session-level shutdown can cancel them all.
  *
@@ -550,7 +550,7 @@ export class ReviewManager {
   }
 
   /**
-   * Upstream AgenC runtime `guardian/review_session.rs::run_review` orchestrator
+   * Upstream codex runtime `guardian/review_session.rs::run_review` orchestrator
    * (the on-session wrapper that threads timeout + fork snapshot +
    * delta prompt logic around the child-session delegate). AgenC port
    * wraps the T13 delegate with:
@@ -899,7 +899,7 @@ export interface SpawnedReviewTask {
 }
 
 /**
- * Upstream AgenC runtime `session/review.rs::spawn_review_thread` entry point.
+ * Upstream codex runtime `session/review.rs::spawn_review_thread` entry point.
  * Registers a `kind: "review"` task, then starts the full isolated
  * AgenC child-session reviewer driver. The returned `done` promise
  * resolves only after the reviewer finishes and the parent task slot is
@@ -959,7 +959,7 @@ export async function spawnReviewTask(
     startedAtMs: opts.startedAtMs,
   });
   if (task.kind !== "review") {
-    // Defensive: upstream AgenC runtime `spawn_task` never rewrites the kind,
+    // Defensive: upstream codex runtime `spawn_task` never rewrites the kind,
     // but the JS surface is structural, so surface a clear contract
     // violation instead of silently proceeding.
     throw new Error(
