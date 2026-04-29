@@ -48,7 +48,7 @@ export type AgentStatus =
       readonly reason: string;
     };
 
-export type CodexAgentStatusJson =
+export type AgentStatusJson =
   | "pending_init"
   | "running"
   | "interrupted"
@@ -68,9 +68,9 @@ export function isFinal(status: AgentStatus): boolean {
   return FINAL_STATES.has(status.status);
 }
 
-export function toCodexAgentStatusJson(
+export function toAgentStatusJson(
   status: AgentStatus,
-): CodexAgentStatusJson {
+): AgentStatusJson {
   switch (status.status) {
     case "pending_init":
       return "pending_init";
@@ -97,7 +97,7 @@ export function formatSubagentNotification(params: {
 }): string {
   return `<subagent_notification>\n${JSON.stringify({
     agent_path: params.agentPath,
-    status: toCodexAgentStatusJson(params.status),
+    status: toAgentStatusJson(params.status),
   })}\n</subagent_notification>`;
 }
 

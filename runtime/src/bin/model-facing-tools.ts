@@ -30,7 +30,7 @@ import {
 import type { ForkMode } from "../agents/fork-context.js";
 import type { AgentThread } from "../agents/thread.js";
 import {
-  toCodexAgentStatusJson,
+  toAgentStatusJson,
   type AgentStatus,
 } from "../agents/status.js";
 import type { Session } from "../session/session.js";
@@ -449,18 +449,18 @@ function currentAgentDepth(session: Session, current: { readonly threadId: Threa
   return control.getLive(current.threadId)?.depth ?? depthOfAgentPath(current.agentPath);
 }
 
-function codexListedAgent(agent: {
+function toListedAgentJson(agent: {
   readonly agentName: string;
   readonly agentStatus: AgentStatus;
   readonly lastTaskMessage?: string;
 }): {
   readonly agent_name: string;
-  readonly agent_status: ReturnType<typeof toCodexAgentStatusJson>;
+  readonly agent_status: ReturnType<typeof toAgentStatusJson>;
   readonly last_task_message?: string;
 } {
   return {
     agent_name: agent.agentName,
-    agent_status: toCodexAgentStatusJson(agent.agentStatus),
+    agent_status: toAgentStatusJson(agent.agentStatus),
     ...(agent.lastTaskMessage !== undefined
       ? { last_task_message: agent.lastTaskMessage }
       : {}),
@@ -875,7 +875,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         status: previous as AgentStatus,
       },
     });
-    return json({ previous_status: toCodexAgentStatusJson(previous) });
+    return json({ previous_status: toAgentStatusJson(previous) });
   };
 
   const sendInput = async (
@@ -1002,7 +1002,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     return json({
       agents: control.listAgents({
         ...(resolvedPathPrefix !== undefined ? { pathPrefix: resolvedPathPrefix } : {}),
-      }).map(codexListedAgent),
+      }).map(toListedAgentJson),
     });
   };
 
