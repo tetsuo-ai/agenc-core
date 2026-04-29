@@ -119,6 +119,26 @@ export class AgentJobCapacityError extends Error {
   }
 }
 
+/**
+ * One progress notification, mirroring codex `AgentJobProgressUpdate`
+ * (the payload of `agent_job_progress:{...}` events emitted via
+ * `notify_background_event` at `agent_jobs.rs:172-174`). Fields match
+ * codex's serialized struct exactly.
+ */
+export interface AgentJobProgressUpdate {
+  readonly jobId: JobId;
+  readonly totalItems: number;
+  readonly pendingItems: number;
+  readonly runningItems: number;
+  readonly completedItems: number;
+  readonly failedItems: number;
+  readonly etaSeconds?: number;
+}
+
+export type AgentJobProgressEmitter = (
+  update: AgentJobProgressUpdate,
+) => void;
+
 export interface RunAgentsOnCsvOpts {
   readonly csvPath: string;
   readonly instruction: string;
@@ -131,6 +151,15 @@ export interface RunAgentsOnCsvOpts {
   readonly repository?: CsvAgentJobsRepository;
   readonly jobName?: string;
   readonly threadOps?: AgentJobThreadOps;
+  /**
+   * Optional progress callback. The orchestrator rate-limits emissions
+   * to one per second except when state actually changes (matches codex
+   * `JobProgressEmitter::maybe_emit` at `agent_jobs.rs:134-179`). The
+   * caller is responsible for serializing the update to a JSON-encoded
+   * `agent_job_progress:{payload}` event if it wants byte-for-byte
+   * codex parity on the emitted line.
+   */
+  readonly progressEmitter?: AgentJobProgressEmitter;
   /**
    * Session-level cap on concurrent agent threads. Mirrors codex
    * `turn.config.agent_max_threads`. When set, the effective
@@ -159,7 +188,113 @@ interface JobRuntimeState {
   >;
   readonly repository?: CsvAgentJobsRepository;
   readonly threadOps?: AgentJobThreadOps;
+  readonly progress: JobProgressEmitterImpl;
   stopRequested: boolean;
+}
+
+/**
+ * Hand-port of codex `JobProgressEmitter` at `agent_jobs.rs:113-180`.
+ * Decides when to fire a progress callback: forced (init/completion),
+ * or when the processed/failed counts change, or when 1 second has
+ * elapsed since the last emission. Computes `eta_seconds` from
+ * processed-rate (matches codex agent_jobs.rs:150-161).
+ */
+class JobProgressEmitterImpl {
+  private readonly startedAtMs = Date.now();
+  private lastEmitAtMs = 0;
+  private lastProcessed = 0;
+  private lastFailed = 0;
+  private static readonly EMIT_INTERVAL_MS = 1000;
+
+  constructor(private readonly emit: AgentJobProgressEmitter | undefined) {}
+
+  maybeEmit(
+    jobId: JobId,
+    progress: {
+      readonly totalItems: number;
+      readonly pendingItems: number;
+      readonly runningItems: number;
+      readonly completedItems: number;
+      readonly failedItems: number;
+    },
+    force: boolean,
+  ): void {
+    if (this.emit === undefined) return;
+    const processed = progress.completedItems + progress.failedItems;
+    const elapsedSinceLastMs = Date.now() - this.lastEmitAtMs;
+    const shouldEmit =
+      force ||
+      processed !== this.lastProcessed ||
+      progress.failedItems !== this.lastFailed ||
+      elapsedSinceLastMs >= JobProgressEmitterImpl.EMIT_INTERVAL_MS;
+    if (!shouldEmit) return;
+    const elapsedSec = (Date.now() - this.startedAtMs) / 1000;
+    let etaSeconds: number | undefined;
+    if (processed > 0 && elapsedSec > 0) {
+      const rate = processed / elapsedSec;
+      if (rate > 0) {
+        const remaining = Math.max(0, progress.totalItems - processed);
+        etaSeconds = Math.round(remaining / rate);
+      }
+    }
+    this.emit({
+      jobId,
+      totalItems: progress.totalItems,
+      pendingItems: progress.pendingItems,
+      runningItems: progress.runningItems,
+      completedItems: progress.completedItems,
+      failedItems: progress.failedItems,
+      ...(etaSeconds !== undefined ? { etaSeconds } : {}),
+    });
+    this.lastEmitAtMs = Date.now();
+    this.lastProcessed = processed;
+    this.lastFailed = progress.failedItems;
+  }
+}
+
+function computeProgressSnapshot(state: JobRuntimeState): {
+  readonly totalItems: number;
+  readonly pendingItems: number;
+  readonly runningItems: number;
+  readonly completedItems: number;
+  readonly failedItems: number;
+} {
+  if (state.repository !== undefined) {
+    return state.repository.getJobProgress(state.config.jobId);
+  }
+  let pending = 0;
+  let running = 0;
+  let completed = 0;
+  let failed = 0;
+  for (const item of state.items.values()) {
+    switch (item.status) {
+      case "pending":
+        pending += 1;
+        break;
+      case "completed":
+        completed += 1;
+        break;
+      case "failed":
+        failed += 1;
+        break;
+      case "cancelled":
+        // Codex AgentJobItemStatus has no Cancelled; mapping cancelled
+        // items into failedItems for the purpose of progress counts
+        // matches "processed = completed + failed" in the emitter.
+        failed += 1;
+        break;
+    }
+    if (item.assignedThreadId !== undefined && item.status === "pending") {
+      running += 1;
+    }
+  }
+  return {
+    totalItems: state.items.size,
+    pendingItems: pending,
+    runningItems: running,
+    completedItems: completed,
+    failedItems: failed,
+  };
 }
 
 const jobs: Map<JobId, JobRuntimeState> = new Map();
@@ -252,6 +387,7 @@ export async function runAgentsOnCsv(
     pending: new Map(),
     ...(opts.repository !== undefined ? { repository: opts.repository } : {}),
     ...(opts.threadOps !== undefined ? { threadOps: opts.threadOps } : {}),
+    progress: new JobProgressEmitterImpl(opts.progressEmitter),
     stopRequested: false,
   };
   jobs.set(jobId, state);
@@ -262,6 +398,8 @@ export async function runAgentsOnCsv(
     // created jobs this is a no-op; the helper is defensive against
     // re-entry where an item was left in `running` status.
     await recoverRunningItems(state);
+    // Initial progress (force=true) — codex agent_jobs.rs:597-605.
+    state.progress.maybeEmit(jobId, computeProgressSnapshot(state), true);
     await processItems(state, opts.spawn);
     if (opts.outputCsvPath !== undefined) {
       await writeOutputCsv(opts.outputCsvPath, csv.headers, items);
@@ -281,6 +419,8 @@ export async function runAgentsOnCsv(
         opts.repository.markJobCompleted(jobId);
       }
     }
+    // Final progress (force=true) — codex agent_jobs.rs:790-803.
+    state.progress.maybeEmit(jobId, computeProgressSnapshot(state), true);
     return {
       jobId,
       items: Array.from(items.values()),
@@ -547,6 +687,14 @@ async function processItems(
     if (completed.retryItemId !== undefined) {
       queue.unshift(completed.retryItemId);
     }
+    // Per-iteration progress emit. The emitter throttles to one
+    // notification per second except on actual state change
+    // (agent_jobs.rs:142-149).
+    state.progress.maybeEmit(
+      state.config.jobId,
+      computeProgressSnapshot(state),
+      false,
+    );
   }
 
   if (state.stopRequested) {
