@@ -273,27 +273,127 @@ export function writePlanSync(ctx: PlanFileContext, content: string): string {
   return filePath;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return asRecord(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function recoverPlanFromRecord(record: Record<string, unknown>): string | null {
+  const directType = stringField(record, "type");
+  if (directType === "plan_file_reference") {
+    return stringField(record, "planContent") ?? stringField(record, "plan_content");
+  }
+
+  const attachment = asRecord(record.attachment);
+  if (attachment !== null) {
+    const attachmentType = stringField(attachment, "type");
+    if (attachmentType === "plan_file_reference") {
+      return stringField(attachment, "planContent") ??
+        stringField(attachment, "plan_content");
+    }
+  }
+
+  const toolName = stringField(record, "toolName") ??
+    stringField(record, "tool") ??
+    stringField(record, "name");
+  if (toolName === "ExitPlanMode") {
+    const input = asRecord(record.input) ??
+      asRecord(record.args) ??
+      (typeof record.arguments === "string" ? parseJsonObject(record.arguments) : null);
+    const plan = input ? stringField(input, "plan") : null;
+    if (plan !== null) return plan;
+  }
+
+  for (const key of ["payload", "msg", "message", "content"]) {
+    const nested = record[key];
+    if (typeof nested === "string") {
+      const parsed = parseJsonObject(nested);
+      if (parsed !== null) {
+        const recovered = recoverPlanFromRecord(parsed);
+        if (recovered !== null) return recovered;
+      }
+      continue;
+    }
+    const nestedRecord = asRecord(nested);
+    if (nestedRecord !== null) {
+      const recovered = recoverPlanFromRecord(nestedRecord);
+      if (recovered !== null) return recovered;
+    }
+    if (Array.isArray(nested)) {
+      const recovered = recoverPlanFromMessages(nested);
+      if (recovered !== null) return recovered;
+    }
+  }
+
+  return null;
+}
+
+export function recoverPlanFromMessages(
+  messages: readonly unknown[],
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const record = asRecord(messages[index]);
+    if (record === null) continue;
+    const recovered = recoverPlanFromRecord(record);
+    if (recovered !== null) return recovered;
+  }
+  return null;
+}
+
 export function copyPlanForResume(
   source: PlanFileContext,
   target: PlanFileContext,
+  opts: { readonly messages?: readonly unknown[] } = {},
 ): string | null {
   const sourcePath = getPlanFilePath(source);
-  if (!existsSync(sourcePath)) return null;
   const targetPath = getPlanFilePath(target);
   mkdirSync(dirname(targetPath), { recursive: true });
-  copyFileSync(sourcePath, targetPath);
+  if (existsSync(sourcePath)) {
+    if (sourcePath === targetPath) return targetPath;
+    copyFileSync(sourcePath, targetPath);
+    return targetPath;
+  }
+  const recovered = opts.messages
+    ? recoverPlanFromMessages(opts.messages)
+    : null;
+  if (recovered === null) return null;
+  writeFileSync(targetPath, recovered, "utf8");
   return targetPath;
 }
 
 export async function copyPlanForFork(
   source: PlanFileContext,
   target: PlanFileContext,
+  opts: { readonly messages?: readonly unknown[] } = {},
 ): Promise<string | null> {
   const sourcePath = getPlanFilePath(source);
-  if (!existsSync(sourcePath)) return null;
   const targetPath = getPlanFilePath(target);
   await mkdir(dirname(targetPath), { recursive: true });
-  await copyFile(sourcePath, targetPath);
+  if (existsSync(sourcePath)) {
+    if (sourcePath === targetPath) return targetPath;
+    await copyFile(sourcePath, targetPath);
+    return targetPath;
+  }
+  const recovered = opts.messages
+    ? recoverPlanFromMessages(opts.messages)
+    : null;
+  if (recovered === null) return null;
+  await writeFile(targetPath, recovered, "utf8");
   return targetPath;
 }
 

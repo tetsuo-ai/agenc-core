@@ -561,6 +561,11 @@ export function buildToolRegistry(
       }
       try {
         const args = parseToolCallArguments(toolCall);
+        Object.defineProperty(args, "__callId", {
+          value: toolCall.id,
+          enumerable: false,
+          configurable: true,
+        });
         if (spec.tool.name === "system.searchTools") {
           Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
             value: visibleSpecs().map((visible) => visible.tool.name),

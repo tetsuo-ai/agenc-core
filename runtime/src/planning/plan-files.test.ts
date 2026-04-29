@@ -23,6 +23,7 @@ import {
   getPlanFilePath,
   getPlansDirectory,
   isSessionPlanFile,
+  recoverPlanFromMessages,
   setPlanSlug,
   writePlanSync,
 } from "./plan-files.js";
@@ -140,5 +141,47 @@ describe("isSessionPlanFile", () => {
     expect(copiedPath).toBe(getPlanFilePath(target));
     expect(getPlan(target)).toBe("# Plan\n\nOriginal content.");
     expect(getPlanFilePath(source)).not.toBe(getPlanFilePath(target));
+  });
+
+  test("recovers plan content from post-compact plan_file_reference attachments", () => {
+    const recovered = recoverPlanFromMessages([
+      { type: "agent_message", payload: { message: "older" } },
+      {
+        type: "attachment",
+        attachment: {
+          type: "plan_file_reference",
+          planFilePath: "/tmp/agenc/plans/session.md",
+          planContent: "# Recovered Plan\n\nDo the work.",
+        },
+      },
+    ]);
+
+    expect(recovered).toBe("# Recovered Plan\n\nDo the work.");
+  });
+
+  test("copyPlanForResume writes recovered plan content when the source file is missing", () => {
+    const source = { sessionId: "missing-source", agencHome };
+    const target = { sessionId: "recovered-target", agencHome };
+    setPlanSlug(source, "missing-source-plan");
+    setPlanSlug(target, "target-plan-33333333");
+
+    const copiedPath = copyPlanForResume(source, target, {
+      messages: [
+        {
+          msg: {
+            type: "attachment",
+            payload: {
+              attachment: {
+                type: "plan_file_reference",
+                planContent: "# Transcript Plan\n\nRecovered.",
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    expect(copiedPath).toBe(getPlanFilePath(target));
+    expect(getPlan(target)).toBe("# Transcript Plan\n\nRecovered.");
   });
 });

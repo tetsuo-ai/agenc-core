@@ -44,6 +44,7 @@ describe("role registry", () => {
     expect(names).toContain("default");
     expect(names).toContain("explorer");
     expect(names).toContain("worker");
+    expect(names).toContain("verification");
     expect(names).not.toContain("awaiter");
   });
 
@@ -66,6 +67,16 @@ describe("role registry", () => {
     expect(role.config.description).toContain(
       "Use for execution and production work",
     );
+  });
+
+  it("verification role carries the OpenClaude verifier prompt and safe allowlist", () => {
+    const role = resolveAgentRole("verification");
+    expect(role.name).toBe("verification");
+    expect(role.config.background).toBe(true);
+    expect(role.config.systemPrompt).toContain("VERDICT: PASS");
+    expect(role.config.allowlist).toContain("Bash");
+    expect(role.config.allowlist).not.toContain("Write");
+    expect(role.config.description).toContain("verify that implementation work is correct");
   });
 
   it("user-registered awaiter roles can still derive runtime hints from built-in TOML", () => {

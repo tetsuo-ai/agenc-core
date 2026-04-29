@@ -48,6 +48,7 @@ import {
 import { RolloutStore } from "../session/rollout-store.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import { recordInitialHistoryOnResume } from "../session/agent-task-lifecycle.js";
+import { copyPlanForResume } from "../planning/plan-files.js";
 import {
   bootstrapSession,
   type BootstrapSessionConfiguredPayload,
@@ -1069,6 +1070,11 @@ export async function bootstrapLocalRuntimeSession(
             ]);
             initialMessages = transcriptMessagesFrom(initialTranscriptEvents);
             s.setInitialTranscriptEvents(initialTranscriptEvents);
+            copyPlanForResume(
+              { sessionId: conversationId, agencHome },
+              { sessionId: conversationId, agencHome },
+              { messages: existingItems },
+            );
             if (reconstruction.synthesizedEvents.length > 0) {
               for (const synth of reconstruction.synthesizedEvents) {
                 if (synth.type === "event_msg") {

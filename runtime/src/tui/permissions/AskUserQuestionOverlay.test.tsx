@@ -270,4 +270,52 @@ describe("AskUserQuestionOverlay", () => {
     expect(onResolve.mock.calls[0]?.[0]).toEqual({ behavior: "deny" });
     unmount();
   });
+
+  test("C returns a chat-about-this plan interview response through the tool", async () => {
+    const onResolve = vi.fn<[AskUserQuestionDecision], void>();
+    const { emitter, unmount } = await mount(
+      <AskUserQuestionOverlay
+        requestId="ask-chat"
+        input={ASK_INPUT}
+        onResolve={onResolve}
+        abortSignal={new AbortController().signal}
+      />,
+    );
+
+    emitter.emit("input", makeKeyEvent({ sequence: "c" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onResolve).toHaveBeenCalledWith({ behavior: "allow" });
+    const result = await createAskUserQuestionTool().execute({
+      ...ASK_INPUT,
+      __callId: "ask-chat",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("chat about these questions");
+    unmount();
+  });
+
+  test("K skips the interview and tells the model to plan immediately", async () => {
+    const onResolve = vi.fn<[AskUserQuestionDecision], void>();
+    const { emitter, unmount } = await mount(
+      <AskUserQuestionOverlay
+        requestId="ask-skip"
+        input={ASK_INPUT}
+        onResolve={onResolve}
+        abortSignal={new AbortController().signal}
+      />,
+    );
+
+    emitter.emit("input", makeKeyEvent({ sequence: "k" }));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(onResolve).toHaveBeenCalledWith({ behavior: "allow" });
+    const result = await createAskUserQuestionTool().execute({
+      ...ASK_INPUT,
+      __callId: "ask-skip",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("skipped the planning interview");
+    unmount();
+  });
 });

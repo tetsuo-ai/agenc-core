@@ -8,6 +8,7 @@ import {
   INTERNAL_PERMISSION_MODES,
   PermissionModeRegistry,
   __setAutoModeGateResolverForTesting,
+  __setPlanAutoModeResolverForTesting,
   canCycleToAuto,
   cyclePermissionMode,
   getNextPermissionMode,
@@ -18,6 +19,7 @@ import {
   restoreDangerousPermissions,
   stripDangerousPermissionsForAutoMode,
   transitionPermissionMode,
+  shouldPlanUseAutoMode,
 } from "./mode.js";
 import type { PermissionMode, ToolPermissionContext } from "./types.js";
 
@@ -330,6 +332,37 @@ describe("prepareContextForPlanMode", () => {
     expect(next.prePlanMode).toBe("auto");
     expect(next.autoModeActive).toBe(true);
     expect(next.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+  });
+
+  it("uses auto semantics in plan only when both the setting and auto gate are enabled", () => {
+    withGateEnabled(false, () => {
+      const restore = __setPlanAutoModeResolverForTesting(() => true);
+      try {
+        expect(shouldPlanUseAutoMode()).toBe(false);
+      } finally {
+        restore();
+      }
+    });
+
+    withGateEnabled(true, () => {
+      const restore = __setPlanAutoModeResolverForTesting(() => true);
+      try {
+        expect(shouldPlanUseAutoMode()).toBe(true);
+        const next = transitionPermissionMode(
+          "default",
+          "plan",
+          baseCtx({
+            alwaysAllowRules: { userSettings: ["Bash(*)", "Read(src/**)"] },
+          }),
+        );
+        expect("error" in next).toBe(false);
+        if ("error" in next) return;
+        expect(next.autoModeActive).toBe(true);
+        expect(next.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+      } finally {
+        restore();
+      }
+    });
   });
 });
 

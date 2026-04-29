@@ -179,8 +179,32 @@ export function cyclePermissionMode(
  * default to false; Wave-2 YOLO wiring can override this via
  * `prepareContextForPlanMode`'s `shouldUseAutoInPlan` option.
  */
+let planAutoModeResolver: (() => boolean) | null = null;
+
+function envBoolean(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on";
+}
+
 export function shouldPlanUseAutoMode(): boolean {
-  return false;
+  const setting = planAutoModeResolver
+    ? planAutoModeResolver()
+    : envBoolean(process.env.AGENC_USE_AUTO_MODE_DURING_PLAN);
+  return setting && isAutoModeGateEnabled();
+}
+
+export function __setPlanAutoModeResolverForTesting(
+  resolver: () => boolean,
+): () => void {
+  const previous = planAutoModeResolver;
+  planAutoModeResolver = resolver;
+  return () => {
+    planAutoModeResolver = previous;
+  };
 }
 
 /**

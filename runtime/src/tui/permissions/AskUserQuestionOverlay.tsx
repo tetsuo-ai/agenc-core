@@ -113,6 +113,19 @@ function buildAnsweredInput(
   };
 }
 
+function buildPlanInterviewActionInput(
+  parsed: AskUserQuestionInput,
+  action: "chat_about_this" | "skip_plan_interview",
+): AskUserQuestionInput {
+  return {
+    ...parsed,
+    metadata: {
+      ...(parsed.metadata ?? {}),
+      planInterviewAction: action,
+    },
+  };
+}
+
 function NavigationBar({
   questions,
   index,
@@ -202,6 +215,21 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
     resolveOnce({ behavior: "allow" });
   }, [parsed, requestId, resolveOnce, selections]);
 
+  const resolvePlanInterviewAction = useCallback(
+    (action: "chat_about_this" | "skip_plan_interview") => {
+      if (!parsed.ok) {
+        resolveOnce({ behavior: "deny" });
+        return;
+      }
+      recordAskUserQuestionResponse(
+        requestId,
+        buildPlanInterviewActionInput(parsed.input, action),
+      );
+      resolveOnce({ behavior: "allow" });
+    },
+    [parsed, requestId, resolveOnce],
+  );
+
   useEffect(() => {
     if (!parsed.ok) return;
     const emitter = stdin.internal_eventEmitter;
@@ -237,7 +265,11 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
       if (resolvedRef.current) return;
       const key = event.key;
       if (!key.ctrl && !key.meta && event.input === "c") {
-        resolveOnce({ behavior: "abort" });
+        resolvePlanInterviewAction("chat_about_this");
+        return;
+      }
+      if (!key.ctrl && !key.meta && event.input === "k") {
+        resolvePlanInterviewAction("skip_plan_interview");
         return;
       }
       if (otherInputActive) {
@@ -361,6 +393,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
     parsed,
     questionIndex,
     resolveOnce,
+    resolvePlanInterviewAction,
     stdin,
     submit,
   ]);
@@ -459,7 +492,7 @@ export const AskUserQuestionOverlay: React.FC<AskUserQuestionOverlayProps> = ({
         <Text dim>
           {otherInputActive
             ? "Type answer · Enter saves · Esc returns"
-            : "Enter selects · Space toggles multi-select · arrows navigate · Tab switches question · S submits · Esc cancels"}
+            : "Enter selects · Space toggles multi-select · arrows navigate · Tab switches question · S submits · C chats · K skips interview · Esc cancels"}
         </Text>
       </Box>
     </Box>

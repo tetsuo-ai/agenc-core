@@ -811,6 +811,12 @@ export async function* runAgent(
       params.initialMessages,
       params.taskPrompt,
     );
+    if (live.role.config.systemPrompt) {
+      history.unshift({
+        role: "system",
+        content: live.role.config.systemPrompt,
+      } as LLMMessage);
+    }
     let nextUserMessage = userMessage;
     let firstTurn = true;
     let assistantText = "";

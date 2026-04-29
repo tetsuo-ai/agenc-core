@@ -242,6 +242,15 @@ function formatAnswers(
     .join(", ");
 }
 
+function specialPlanInterviewAction(
+  input: AskUserQuestionInput,
+): "chat_about_this" | "skip_plan_interview" | null {
+  const action = input.metadata?.planInterviewAction;
+  return action === "chat_about_this" || action === "skip_plan_interview"
+    ? action
+    : null;
+}
+
 const DESCRIPTION =
   "Asks the user multiple choice questions to gather information, clarify ambiguity, understand preferences, make decisions, or offer choices.";
 
@@ -332,6 +341,29 @@ export function createAskUserQuestionTool(): Tool {
         return { content: parsed.error, isError: true };
       }
       const answered = consumeAnsweredInput(args);
+      if (answered !== null) {
+        const specialAction = specialPlanInterviewAction(answered);
+        if (specialAction === "chat_about_this") {
+          return {
+            content:
+              "User wants to chat about these questions before answering. Continue conversationally, address their concern, and use AskUserQuestion again only if concrete choices are still needed.",
+            codeModeResult: {
+              questions: answered.questions,
+              planInterviewAction: specialAction,
+            },
+          };
+        }
+        if (specialAction === "skip_plan_interview") {
+          return {
+            content:
+              "User skipped the planning interview and wants you to plan immediately. Continue plan mode using the existing request and context, write or revise the plan file, then call ExitPlanMode when ready.",
+            codeModeResult: {
+              questions: answered.questions,
+              planInterviewAction: specialAction,
+            },
+          };
+        }
+      }
       if (answered === null || Object.keys(answered.answers ?? {}).length === 0) {
         return {
           content: "User did not provide answers.",

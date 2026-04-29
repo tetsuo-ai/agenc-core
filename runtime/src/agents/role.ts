@@ -65,6 +65,8 @@ export interface AgentRoleConfig {
   /** Optional explicit tool allowlist. This is runtime metadata, not a
    *  AgenC runtime role-layer config field. */
   readonly allowlist?: ReadonlyArray<string>;
+  /** Optional system prompt prepended to child-agent history. */
+  readonly systemPrompt?: string;
   /** Whether this role runs synchronously (parent blocks) or async
    *  (parent registers + continues). */
   readonly background?: boolean;
@@ -214,6 +216,28 @@ Rules:
 - Explicitly assign **ownership** of the task (files / responsibility). When the subtask involves code changes, you should clearly specify which files or modules the worker is responsible for. This helps avoid merge conflicts and ensures accountability. For example, you can say "Worker 1 is responsible for updating the authentication module, while Worker 2 will handle the database layer." By defining clear ownership, you can delegate more effectively and reduce coordination overhead.
 - Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of other's work to avoid conflicts and ensure a cohesive final product.`;
 
+const VERIFICATION_DESCRIPTION = `Use this agent to verify that implementation work is correct before reporting completion. Invoke after non-trivial tasks (3+ file edits, backend/API changes, infrastructure changes). Pass the original user task, files changed, approach taken, and plan path when relevant. The agent runs builds, tests, linters, and adversarial probes, then reports VERDICT: PASS, VERDICT: FAIL, or VERDICT: PARTIAL with command evidence.`;
+
+const VERIFICATION_SYSTEM_PROMPT = `You are a verification specialist. Your job is not to confirm the implementation works; it is to try to break it.
+
+You are strictly prohibited from creating, modifying, or deleting files in the project directory, installing dependencies, or running git write operations. You may write ephemeral scripts under /tmp or $TMPDIR and clean them up.
+
+For every check, run a real command. Reading code is not verification. Run the build when applicable, run tests, run linters/type-checkers if configured, and exercise the changed behavior directly. Include at least one adversarial probe such as boundary input, idempotency, missing resources, or concurrency when relevant.
+
+Every check in your report must include:
+
+### Check: [what you verified]
+**Command run:**
+  [exact command]
+**Output observed:**
+  [actual output, truncated only when necessary]
+**Result: PASS** or **Result: FAIL**
+
+End with exactly one line:
+VERDICT: PASS
+VERDICT: FAIL
+VERDICT: PARTIAL`;
+
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
 // ─────────────────────────────────────────────────────────────────────
@@ -240,10 +264,30 @@ const WORKER_ROLE: AgentRole = freezeRole({
   },
 });
 
+const VERIFICATION_ROLE: AgentRole = freezeRole({
+  name: "verification",
+  config: {
+    description: VERIFICATION_DESCRIPTION,
+    background: true,
+    systemPrompt: VERIFICATION_SYSTEM_PROMPT,
+    allowlist: Object.freeze([
+      "Bash",
+      "Read",
+      "Glob",
+      "Grep",
+      "LS",
+      "WebFetch",
+      "WebSearch",
+      "TaskOutput",
+    ]),
+  },
+});
+
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
   EXPLORER_ROLE,
   WORKER_ROLE,
+  VERIFICATION_ROLE,
 ]);
 
 // ─────────────────────────────────────────────────────────────────────

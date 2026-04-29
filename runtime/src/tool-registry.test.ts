@@ -1,9 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { buildToolRegistry } from "./tool-registry.js";
 import { PermissionModeRegistry } from "./permissions/mode.js";
 import { createEmptyToolPermissionContext } from "./permissions/types.js";
+import {
+  clearExitPlanModeApprovalsForTest,
+  recordExitPlanModeApproval,
+} from "./planning/exit-plan-approval.js";
 import type { Tool } from "./tools/types.js";
 import { QuickJsCodeModeService } from "./tools/code-mode/service.js";
+
+afterEach(() => {
+  clearExitPlanModeApprovalsForTest();
+});
 
 describe("T7 tool-registry ConcurrencyClass tagging", () => {
   test("read-only fs tools get SharedRead + isReadOnly=true", () => {
@@ -231,6 +239,26 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(emittedPlans).toHaveLength(1);
   });
 
+  test("TodoWrite adds the OpenClaude verification-agent nudge when closing 3+ tasks without verification", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
+
+    const result = await registry.dispatch({
+      id: "todo-verification-nudge",
+      name: "TodoWrite",
+      arguments: JSON.stringify({
+        todos: [
+          { content: "Implement feature", status: "completed", activeForm: "Implementing feature" },
+          { content: "Update tests", status: "completed", activeForm: "Updating tests" },
+          { content: "Run typecheck", status: "completed", activeForm: "Running typecheck" },
+        ],
+      }),
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain('spawn the verification agent (subagent_type="verification")');
+    expect(result.metadata).toMatchObject({ verificationNudgeNeeded: true });
+  });
+
   test("TodoWrite schema requires content/status/activeForm and rejects extras (AgenC behavior)", () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
     const todoWrite = registry.tools.find((t) => t.name === "TodoWrite");
@@ -357,6 +385,122 @@ describe("tool-registry dynamic and deferred catalog", () => {
       planFilePath: "/tmp/agenc/plans/plan.md",
       planWasEdited: true,
       isAgent: false,
+    });
+  });
+
+  test("ExitPlanMode consumes TUI plan approval decisions for requested prompts and target mode", async () => {
+    const permissionRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan", prePlanMode: "default" }),
+    );
+    let plan = "# Original Plan\n\nDo it.";
+    let exited = false;
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        getPermissionModeRegistry: () => permissionRegistry,
+        syncPermissionContext: async () => {},
+        emitPlanExited: () => {
+          exited = true;
+        },
+        getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+        readPlan: () => plan,
+        writePlan: async (content) => {
+          plan = content;
+        },
+      },
+    });
+    recordExitPlanModeApproval("exit-approval", {
+      action: "approve",
+      plan: "# Approved Plan\n\nRun the checks.",
+      mode: "acceptEdits",
+      applyAllowedPrompts: true,
+      allowedPrompts: [{ tool: "Bash", prompt: "npm test" }],
+    });
+
+    const result = await registry.dispatch({
+      id: "exit-approval",
+      name: "ExitPlanMode",
+      arguments: "{}",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("# Approved Plan");
+    expect(permissionRegistry.current().mode).toBe("acceptEdits");
+    expect(permissionRegistry.current().alwaysAllowRules.session).toEqual([
+      "Bash(npm test)",
+    ]);
+    expect(result.metadata).toMatchObject({
+      planWasEdited: true,
+      appliedPlanPermissionUpdates: 1,
+      toMode: "acceptEdits",
+    });
+    expect(exited).toBe(true);
+  });
+
+  test("ExitPlanMode invokes the controller clear-context hook when requested by TUI approval", async () => {
+    const permissionRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan", prePlanMode: "default" }),
+    );
+    let clearedPlan: string | null | undefined;
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        getPermissionModeRegistry: () => permissionRegistry,
+        syncPermissionContext: async () => {},
+        getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+        readPlan: () => "# Plan\n\nClear context.",
+        requestContextClearAfterPlanApproval: async (plan) => {
+          clearedPlan = plan;
+        },
+      },
+    });
+    recordExitPlanModeApproval("exit-clear", {
+      action: "approve",
+      clearContext: true,
+    });
+
+    const result = await registry.dispatch({
+      id: "exit-clear",
+      name: "ExitPlanMode",
+      arguments: "{}",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(clearedPlan).toBe("# Plan\n\nClear context.");
+    expect(result.metadata).toMatchObject({ clearContextRequested: true });
+  });
+
+  test("ExitPlanMode keeps plan mode active when TUI asks for revision feedback", async () => {
+    const permissionRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ mode: "plan", prePlanMode: "default" }),
+    );
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      workflowController: {
+        getPermissionModeRegistry: () => permissionRegistry,
+        syncPermissionContext: async () => {},
+        getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+        readPlan: () => "# Plan\n\nInitial.",
+        writePlan: async () => {},
+      },
+    });
+    recordExitPlanModeApproval("exit-revise", {
+      action: "revise",
+      feedback: "Add rollback steps.",
+    });
+
+    const result = await registry.dispatch({
+      id: "exit-revise",
+      name: "ExitPlanMode",
+      arguments: "{}",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("Add rollback steps.");
+    expect(permissionRegistry.current().mode).toBe("plan");
+    expect(result.metadata).toMatchObject({
+      planRejected: true,
+      feedback: "Add rollback steps.",
     });
   });
 

@@ -35,6 +35,7 @@ import {
   ApprovalOverlay,
   type ApprovalDecision,
 } from "./ApprovalOverlay.js";
+import { PlanApprovalOverlay } from "./PlanApprovalOverlay.js";
 import { useOptionalAgenCAppState } from "../state/AppState.js";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
@@ -139,6 +140,10 @@ export type InteractiveRequestClassifier = (
 function getActiveTurnId(session: SessionLike): string | null {
   const turnId = session.activeTurn?.unsafePeek()?.turnId;
   return typeof turnId === "string" && turnId.length > 0 ? turnId : null;
+}
+
+function isExitPlanTool(toolName: string): boolean {
+  return toolName === "ExitPlanMode";
 }
 
 function getStaleState(
@@ -426,6 +431,24 @@ export const InteractiveHandler: React.FC<InteractiveHandlerProps> = ({
             onResolve={(decision) => {
               settleIfFresh({ ...decision, source: "user" }, "user");
             }}
+            abortSignal={abortSignal}
+          />,
+        );
+        staleTimer = setInterval(() => {
+          if (cancelledRef.current || request.resolveOnce.isResolved()) return;
+          dropIfStale("stale");
+        }, STALE_WATCH_INTERVAL_MS);
+        return;
+      }
+
+      if (isExitPlanTool(request.toolName)) {
+        disposeRef.current = overlayContext.push(
+          <PlanApprovalOverlay
+            requestId={request.requestId}
+            input={request.toolInput}
+            workspacePath={workspacePath}
+            turnId={request.turnId}
+            onResolve={handleResolve}
             abortSignal={abortSignal}
           />,
         );

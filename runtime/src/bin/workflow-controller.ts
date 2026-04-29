@@ -1,5 +1,6 @@
 import type { EventMsg } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import { clearSession } from "../commands/clear.js";
 import {
   getPlan,
   getPlanFilePath,
@@ -149,6 +150,20 @@ export function buildWorkflowToolController(
           planItemId,
           finalText: renderPlanState(state),
           timestamp,
+        },
+      });
+    },
+    requestContextClearAfterPlanApproval: async (approvedPlan) => {
+      const session = options.getSession();
+      if (session === null) return;
+      await clearSession(session);
+      emit(session, {
+        type: "warning",
+        payload: {
+          cause: "plan_context_cleared",
+          message: approvedPlan && approvedPlan.trim().length > 0
+            ? "Cleared conversation context after plan approval; the approved plan remains in the ExitPlanMode tool result."
+            : "Cleared conversation context after plan approval.",
         },
       });
     },

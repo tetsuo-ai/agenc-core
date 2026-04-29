@@ -32,7 +32,18 @@
  */
 import type { PermissionModeRegistry } from "../../permissions/mode.js";
 import { transitionPermissionMode } from "../../permissions/mode.js";
-import type { ToolPermissionContext } from "../../permissions/types.js";
+import type {
+  PermissionMode,
+  PermissionUpdate,
+  ToolPermissionContext,
+} from "../../permissions/types.js";
+import { applyPermissionUpdates } from "../../permissions/rules.js";
+import {
+  buildPlanPromptPermissionUpdates,
+  consumeExitPlanModeApproval,
+  parseExitPlanAllowedPrompts,
+  targetPermissionModeForPlanApproval,
+} from "../../planning/exit-plan-approval.js";
 import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
 
@@ -64,6 +75,9 @@ export interface WorkflowToolController {
   readonly emitWarning?: (cause: string, message: string) => void;
   readonly emitPlanExited?: () => void;
   readonly emitPlanUpdated?: (state: PlanState) => void;
+  readonly requestContextClearAfterPlanApproval?: (
+    approvedPlan: string | null,
+  ) => void | Promise<void>;
 }
 
 export interface PlanningToolOptions {
@@ -164,7 +178,8 @@ function inputPlan(args: Record<string, unknown>): string | undefined {
 
 async function updatePermissionMode(params: {
   readonly controller: WorkflowToolController | undefined;
-  readonly target: "plan" | "default";
+  readonly target: "plan" | "default" | PermissionMode;
+  readonly permissionUpdates?: readonly PermissionUpdate[];
 }): Promise<
   | {
       readonly fromMode: ToolPermissionContext["mode"];
@@ -198,10 +213,11 @@ async function updatePermissionMode(params: {
   if (current.mode !== "plan") {
     return { fromMode: current.mode, toMode: current.mode, changed: false };
   }
-  const requestedTarget =
-    current.prePlanMode && current.prePlanMode !== "plan"
+  const requestedTarget = params.target === "default"
+    ? current.prePlanMode && current.prePlanMode !== "plan"
       ? current.prePlanMode
-      : "default";
+      : "default"
+    : params.target;
   let nextCtx: ToolPermissionContext;
   try {
     nextCtx = {
@@ -213,6 +229,9 @@ async function updatePermissionMode(params: {
       ...transitionPermissionMode("plan", "default", current),
       mode: "default",
     };
+  }
+  if (params.permissionUpdates && params.permissionUpdates.length > 0) {
+    nextCtx = applyPermissionUpdates(nextCtx, params.permissionUpdates);
   }
   await registry.update(nextCtx);
   await params.controller?.syncPermissionContext?.(nextCtx);
@@ -237,9 +256,10 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
    *
    * Tool result content is AgenC
    * `mapToolResultToToolResultBlockParam`'s `base` sentence
-   * (`TodoWriteTool.ts:105`). The verification-nudge variant is
-   * deliberately not ported — it depends on AgenC's verification
-   * agent and feature flag plumbing that AgenC does not run.
+   * (`TodoWriteTool.ts:105`). When the OpenClaude verification-agent
+   * contract is enabled, the close-out nudge below mirrors upstream:
+   * finishing 3+ tasks without a verification item reminds the model
+   * to spawn the verification agent before final response.
    */
   const todoWriteTool: Tool = {
     name: "TodoWrite",
@@ -278,7 +298,17 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
         updatedAt: new Date().toISOString(),
       };
       options.workflowController?.emitPlanUpdated?.(state);
-      return textResult(TODO_WRITE_RESULT_MESSAGE);
+      const allDone = todos.length > 0 &&
+        todos.every((todo) => todo.status === "completed");
+      const verificationNudgeNeeded = allDone &&
+        todos.length >= 3 &&
+        !todos.some((todo) => /verif/i.test(todo.content));
+      const nudge = verificationNudgeNeeded
+        ? '\n\nNOTE: You just closed out 3+ tasks and none of them was a verification step. Before writing your final summary, spawn the verification agent (subagent_type="verification"). You cannot self-assign PARTIAL by listing caveats in your summary; only the verifier issues a verdict.'
+        : "";
+      return textResult(`${TODO_WRITE_RESULT_MESSAGE}${nudge}`, {
+        verificationNudgeNeeded,
+      });
     },
   };
 
@@ -357,22 +387,60 @@ Remember: DO NOT write or edit any files except the plan file.`,
           "You are not in plan mode. This tool is only for exiting plan mode after writing a plan. If your plan was already approved, continue with implementation.",
         );
       }
-      const editedPlan = inputPlan(args);
+      const approval = consumeExitPlanModeApproval(args);
+      const editedPlan = approval?.plan ?? inputPlan(args);
       if (editedPlan !== undefined) {
         await options.workflowController?.writePlan?.(editedPlan);
       }
       const plan = editedPlan ?? options.workflowController?.readPlan?.() ?? null;
       const filePath = options.workflowController?.getPlanFilePath?.();
+      if (approval?.action === "revise") {
+        const feedback = approval.feedback?.trim();
+        return textResult(
+          feedback && feedback.length > 0
+            ? `User wants changes before approving the plan:\n\n${feedback}\n\nRemain in plan mode, revise the plan file, then call ExitPlanMode again.`
+            : "User wants you to keep planning. Remain in plan mode, revise the plan file, then call ExitPlanMode again.",
+          {
+            planRejected: true,
+            ...(feedback && feedback.length > 0 ? { feedback } : {}),
+            ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
+          },
+        );
+      }
+      const allowedPrompts = approval?.allowedPrompts ??
+        parseExitPlanAllowedPrompts(args.allowedPrompts);
+      const permissionUpdates = approval?.action === "approve" &&
+        approval.applyAllowedPrompts === true
+        ? buildPlanPromptPermissionUpdates(allowedPrompts)
+        : [];
+      const targetMode = registry
+        ? targetPermissionModeForPlanApproval(
+            approval?.action === "approve" ? approval.mode : undefined,
+            registry.current().prePlanMode,
+          )
+        : "default";
       const result = await updatePermissionMode({
         controller: options.workflowController,
-        target: "default",
+        target: targetMode,
+        permissionUpdates,
       });
       if ("error" in result) return errorResult(result.error);
+      if (approval?.action === "approve" && approval.clearContext === true) {
+        await options.workflowController?.requestContextClearAfterPlanApproval?.(
+          plan,
+        );
+      }
       if (!plan || plan.trim().length === 0) {
         return textResult("User has approved exiting plan mode. You can now proceed.", {
           plan: null,
           isAgent: false,
           ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
+          ...(permissionUpdates.length > 0
+            ? { appliedPlanPermissionUpdates: permissionUpdates.length }
+            : {}),
+          ...(approval?.action === "approve" && approval.clearContext === true
+            ? { clearContextRequested: true }
+            : {}),
           ...result,
         });
       }
@@ -393,6 +461,12 @@ ${plan}`,
           isAgent: false,
           ...(filePath !== undefined ? { filePath, planFilePath: filePath } : {}),
           ...(editedPlan !== undefined ? { planWasEdited: true } : {}),
+          ...(permissionUpdates.length > 0
+            ? { appliedPlanPermissionUpdates: permissionUpdates.length }
+            : {}),
+          ...(approval?.action === "approve" && approval.clearContext === true
+            ? { clearContextRequested: true }
+            : {}),
           ...result,
         },
       );
