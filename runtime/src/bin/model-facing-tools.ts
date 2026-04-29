@@ -312,6 +312,28 @@ function callIdFromArgs(
   return stringValue(args.__callId) ?? `${prefix}-${randomUUID()}`;
 }
 
+const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE =
+  "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
+
+function buildSpawnAgentDescription(session: Session | null): string {
+  const base = `Spawns an agent to work on the specified task. If your current task is \`/root/task1\` and you spawn_agent with task_name "task_3" the agent will have canonical task name \`/root/task1/task_3\`.
+You are then able to refer to this agent as \`task_3\` or \`/root/task1/task_3\` interchangeably. However an agent \`/root/task2/task_3\` would only be able to communicate with this agent via its canonical name \`/root/task1/task_3\`.
+The spawned agent will have the same tools as you and the ability to spawn its own subagents.
+${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
+It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
+The new agent's canonical task name will be provided to it along with the message.`;
+  const cfg = session?.config.multiAgentV2;
+  const concurrency =
+    cfg?.maxConcurrentThreadsPerSession !== undefined
+      ? `\nThis session is configured with \`max_concurrent_threads_per_session = ${cfg.maxConcurrentThreadsPerSession}\` for concurrently open agent threads.`
+      : "";
+  let result = `${base}${concurrency}`;
+  if (cfg?.usageHintEnabled && cfg.usageHintText) {
+    result = `${result}\n${cfg.usageHintText}`;
+  }
+  return result;
+}
+
 function hideSpawnAgentMetadata(session: Session): boolean {
   return (
     (
@@ -511,14 +533,22 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
   );
 }
 
-function waitTimeoutMs(args: Record<string, unknown>): ToolResult | number {
+function waitTimeoutMs(
+  args: Record<string, unknown>,
+  session: Session,
+): ToolResult | number {
   const supplied = numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs);
   if (supplied !== undefined && supplied <= 0) {
     return json({ error: "timeout_ms must be greater than 0" }, true);
   }
+  const configuredMin = session.config.multiAgentV2?.minWaitTimeoutMs;
+  const minTimeoutMs = Math.min(
+    MAX_WAIT_TIMEOUT_MS,
+    Math.max(1, configuredMin ?? MIN_WAIT_TIMEOUT_MS),
+  );
   return Math.min(
     MAX_WAIT_TIMEOUT_MS,
-    Math.max(MIN_WAIT_TIMEOUT_MS, supplied ?? DEFAULT_WAIT_TIMEOUT_MS),
+    Math.max(minTimeoutMs, supplied ?? DEFAULT_WAIT_TIMEOUT_MS),
   );
 }
 
@@ -782,7 +812,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     if (strict) return strict;
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
-    const timeoutMs = waitTimeoutMs(args);
+    const timeoutMs = waitTimeoutMs(args, sessionOrError);
     if (typeof timeoutMs !== "number") return timeoutMs;
     const current = currentAgentContext(sessionOrError, args);
     const waitCallId = callIdFromArgs(args, "wait");
@@ -1028,8 +1058,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
   return [
     {
       name: "spawn_agent",
-      description:
-        "Spawns an agent to work on the specified task. Prefer cyberpunk agent_type values: netrunner, scanner, runner, sentinel. Legacy aliases remain accepted. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.",
+      description: buildSpawnAgentDescription(opts.getSession()),
       metadata: toolMetadata("agent", {
         mutating: true,
         keywords: ["agent", "spawn", "delegate", "subagent"],

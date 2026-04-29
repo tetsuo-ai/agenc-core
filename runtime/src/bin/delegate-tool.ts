@@ -136,7 +136,9 @@ export function ensureAgentControl(session: Session): {
       return pair;
     }
   }
-  const registry = new AgentRegistry();
+  const registry = new AgentRegistry({
+    maxThreads: session.config.multiAgentV2?.maxConcurrentThreadsPerSession ?? 4,
+  });
   const existingThreadManager =
     services.threadManager instanceof ThreadManager
       ? services.threadManager

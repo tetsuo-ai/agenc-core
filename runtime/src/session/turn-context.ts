@@ -441,8 +441,12 @@ export interface Config {
   readonly cwd: string;
   readonly features: ManagedFeatures;
   readonly multiAgentV2: {
+    readonly maxConcurrentThreadsPerSession?: number;
+    readonly minWaitTimeoutMs?: number;
     readonly usageHintEnabled: boolean;
     readonly usageHintText: string;
+    readonly rootAgentUsageHintText?: string;
+    readonly subagentUsageHintText?: string;
     readonly hideSpawnAgentMetadata: boolean;
   };
   readonly permissions: {
