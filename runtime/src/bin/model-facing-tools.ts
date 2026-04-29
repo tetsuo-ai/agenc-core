@@ -49,6 +49,7 @@ import {
 } from "../tools/system/code-intel.js";
 import { delegate } from "../agents/delegate.js";
 import {
+  AgentJobCapacityError,
   runAgentsOnCsv,
   recordAgentJobResult,
   type AgentJobSpawn,
@@ -1074,6 +1075,17 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const sessionOrError = getSessionOrError(opts);
     if (!("conversationId" in sessionOrError)) return sessionOrError;
     const session = sessionOrError;
+    const agentMaxThreads =
+      session.config?.multiAgentV2?.maxConcurrentThreadsPerSession;
+    if (agentMaxThreads === 0) {
+      // Mirrors codex `spawn_agents_on_csv` early reject at
+      // agent_jobs.rs:537 when the session forbids any concurrent
+      // worker threads.
+      return json(
+        { error: "agent_max_threads is 0; spawn_agents_on_csv is disabled" },
+        true,
+      );
+    }
     const { control, registry } = ensureAgentControl(session);
     const current = currentAgentContext(session, args);
     const instruction = stringValue(args.instruction);
@@ -1105,6 +1117,13 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           runInBackground: true,
         });
         if (outcome.kind === "rejected") {
+          // Codex's `CodexErr::AgentLimitReached` arm at
+          // agent_jobs.rs:658 surfaces as the AgenC
+          // `AgentLimitReachedError` ("agent limit reached (max=N)")
+          // re-thrown by `delegate` -> rejected outcome.
+          if (outcome.reason.toLowerCase().includes("agent limit reached")) {
+            throw new AgentJobCapacityError(outcome.reason);
+          }
           throw new Error(
             `agent-jobs spawn rejected for item ${ctx.itemId}: ${outcome.reason}`,
           );
@@ -1131,6 +1150,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
         ...(maxRuntimeSeconds !== undefined ? { maxRuntimeSeconds } : {}),
         ...(outputSchema !== undefined ? { outputSchema } : {}),
+        ...(agentMaxThreads !== undefined ? { agentMaxThreads } : {}),
         spawn,
         repository,
       });

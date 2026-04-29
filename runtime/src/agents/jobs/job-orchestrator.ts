@@ -76,6 +76,21 @@ export interface AgentJobSpawn {
   cancelOutstanding(jobId: JobId): Promise<void>;
 }
 
+/**
+ * Thrown by an `AgentJobSpawn.spawn` adapter when the underlying agent
+ * control plane refuses to spawn because the session is at its concurrent
+ * thread cap. Mirrors codex's `CodexErr::AgentLimitReached` arm at
+ * `agent_jobs.rs:658`. The orchestrator catches this specifically: it
+ * rolls the item back to `pending` and breaks the dispatch loop until
+ * an inflight worker completes (capacity opens up).
+ */
+export class AgentJobCapacityError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "AgentJobCapacityError";
+  }
+}
+
 export interface RunAgentsOnCsvOpts {
   readonly csvPath: string;
   readonly instruction: string;
@@ -87,6 +102,13 @@ export interface RunAgentsOnCsvOpts {
   readonly spawn: AgentJobSpawn;
   readonly repository?: CsvAgentJobsRepository;
   readonly jobName?: string;
+  /**
+   * Session-level cap on concurrent agent threads. Mirrors codex
+   * `turn.config.agent_max_threads`. When set, the effective
+   * concurrency is `min(min(requested_or_16, 64), agent_max_threads)`
+   * (codex `normalize_concurrency` at agent_jobs.rs:552-560).
+   */
+  readonly agentMaxThreads?: number;
 }
 
 export interface RunAgentsOnCsvResult {
@@ -131,7 +153,7 @@ export async function runAgentsOnCsv(
     jobId,
     instruction: opts.instruction,
     ...(opts.outputSchema !== undefined ? { outputSchema: opts.outputSchema } : {}),
-    maxConcurrency: clampConcurrency(opts.maxConcurrency),
+    maxConcurrency: clampConcurrency(opts.maxConcurrency, opts.agentMaxThreads),
     maxRuntimeSeconds: opts.maxRuntimeSeconds ?? DEFAULT_MAX_RUNTIME_SECONDS,
   };
   const items = new Map<ItemId, JobItemRecord>();
@@ -234,27 +256,44 @@ export async function runAgentsOnCsv(
   }
 }
 
-function clampConcurrency(value: number | undefined): number {
-  const raw = value ?? DEFAULT_MAX_CONCURRENCY;
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_MAX_CONCURRENCY;
-  return Math.max(1, Math.min(64, Math.floor(raw)));
+function clampConcurrency(
+  requested: number | undefined,
+  agentMaxThreads: number | undefined,
+): number {
+  // Mirrors codex `normalize_concurrency` (agent_jobs.rs:552-560):
+  //   requested = unwrap_or(16).max(1).min(64);
+  //   if let Some(max_threads) = max_threads { requested.min(max_threads.max(1)) } else { requested }
+  const raw = requested ?? DEFAULT_MAX_CONCURRENCY;
+  let effective =
+    !Number.isFinite(raw) || raw <= 0
+      ? DEFAULT_MAX_CONCURRENCY
+      : Math.max(1, Math.min(64, Math.floor(raw)));
+  if (agentMaxThreads !== undefined) {
+    effective = Math.min(effective, Math.max(1, Math.floor(agentMaxThreads)));
+  }
+  return effective;
 }
 
 async function processItems(
   state: JobRuntimeState,
   spawn: AgentJobSpawn,
 ): Promise<void> {
-  const itemIds = Array.from(state.items.keys());
   const max = state.config.maxConcurrency;
-  let cursor = 0;
-  const inflight: Set<Promise<void>> = new Set();
+  // Preserve original row order while still allowing capacity-rejected
+  // items to be re-queued at the front. `unshift` inside the catch path
+  // matches codex's `mark_agent_job_item_pending` + `break` behavior at
+  // agent_jobs.rs:658-665.
+  const queue: ItemId[] = Array.from(state.items.keys());
+  const inflight: Set<Promise<{ retryItemId?: ItemId }>> = new Set();
 
-  const runOne = async (itemId: ItemId): Promise<void> => {
+  const runOne = async (
+    itemId: ItemId,
+  ): Promise<{ retryItemId?: ItemId }> => {
     if (state.stopRequested) {
       const item = state.items.get(itemId)!;
       item.status = "cancelled";
       item.completedAt = new Date();
-      return;
+      return {};
     }
     const item = state.items.get(itemId)!;
     const ctx: AgentJobSpawnContext = {
@@ -274,12 +313,9 @@ async function processItems(
       ),
     );
     item.attemptCount += 1;
-    // Mirror codex `mark_agent_job_item_running_with_thread` ordering:
-    // status flips to running before the worker has any chance to report.
-    // The thread_id is attached separately after the spawn returns, so a
-    // synchronous report from the worker can never clobber the running
-    // transition (codex doesn't hit this race because its worker runs
-    // asynchronously after the spawn boundary).
+    // Mirror codex ordering: status flips to running before the worker
+    // can report. Thread_id is attached after spawn returns. On capacity
+    // rejection we roll back to pending below.
     state.repository?.markItemRunning(state.config.jobId, itemId);
     try {
       const outcome = await spawn.spawn(ctx);
@@ -292,27 +328,37 @@ async function processItems(
         );
       }
       await Promise.race([completion, timeout]);
+      return {};
     } catch (err) {
+      if (err instanceof AgentJobCapacityError) {
+        // Codex agent_jobs.rs:658-665: capacity rejection rolls the
+        // item back to pending and the dispatch loop breaks until an
+        // inflight worker frees a slot.
+        state.repository?.markItemPending(state.config.jobId, itemId);
+        return { retryItemId: itemId };
+      }
       const reason = err instanceof Error ? err.message : String(err);
       item.status = "failed";
       item.error = reason;
       item.completedAt = new Date();
       state.repository?.markItemFailed(state.config.jobId, itemId, reason);
+      return {};
     } finally {
       state.pending.delete(itemId);
     }
   };
 
-  while (cursor < itemIds.length || inflight.size > 0) {
-    while (inflight.size < max && cursor < itemIds.length) {
-      const id = itemIds[cursor]!;
-      cursor += 1;
+  while (queue.length > 0 || inflight.size > 0) {
+    while (inflight.size < max && queue.length > 0) {
+      const id = queue.shift()!;
       const promise = runOne(id);
       inflight.add(promise);
       promise.finally(() => inflight.delete(promise));
     }
-    if (inflight.size > 0) {
-      await Promise.race(inflight);
+    if (inflight.size === 0) break;
+    const completed = await Promise.race(inflight);
+    if (completed.retryItemId !== undefined) {
+      queue.unshift(completed.retryItemId);
     }
   }
 
