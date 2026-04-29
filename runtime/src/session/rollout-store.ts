@@ -21,7 +21,6 @@ import {
   openSync,
   readFileSync,
   renameSync,
-  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -37,6 +36,7 @@ import {
   type AppendOptions,
   type CompactionIndexSnapshot,
   type SessionStoreOpts,
+  rewriteAtomically,
 } from "./session-store.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
@@ -62,6 +62,7 @@ interface ThreadSpawnEdgeSnapshot {
 }
 
 const THREAD_SPAWN_EDGE_SNAPSHOT_VERSION = 1;
+const THREAD_SPAWN_EDGE_CORRUPT_BACKUP_ATTEMPTS = 100;
 
 export class RolloutStore {
   readonly store: SessionStore;
@@ -173,20 +174,68 @@ export class RolloutStore {
     parentThreadId: ThreadId,
     status: ThreadSpawnEdgeStatus,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
-    return Array.from(this.threadSpawnEdges.values())
-      .filter((edge) => edge.parentThreadId === parentThreadId)
-      .filter((edge) => edge.status === status)
-      .sort(compareThreadSpawnEdges)
-      .map((edge) => cloneThreadSpawnEdge(edge));
+    return this.listThreadSpawnChildrenMatching(parentThreadId, status);
+  }
+
+  listThreadSpawnChildren(
+    parentThreadId: ThreadId,
+  ): ReadonlyArray<ThreadSpawnEdgeRecord> {
+    return this.listThreadSpawnChildrenMatching(parentThreadId);
+  }
+
+  listThreadSpawnDescendants(
+    rootThreadId: ThreadId,
+  ): ReadonlyArray<ThreadSpawnEdgeRecord> {
+    return this.listThreadSpawnDescendantsMatching(rootThreadId);
   }
 
   listThreadSpawnDescendantsWithStatus(
     rootThreadId: ThreadId,
     status: ThreadSpawnEdgeStatus,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
+    return this.listThreadSpawnDescendantsMatching(rootThreadId, status);
+  }
+
+  findThreadSpawnChildByPath(
+    parentThreadId: ThreadId,
+    agentPath: AgentPath,
+  ): ThreadId | undefined {
+    const matches = this.listThreadSpawnChildren(parentThreadId)
+      .filter((edge) => edge.metadata.agentPath === agentPath)
+      .map((edge) => edge.childThreadId)
+      .sort();
+    return oneThreadIdFromPathMatches(matches, agentPath);
+  }
+
+  findThreadSpawnDescendantByPath(
+    rootThreadId: ThreadId,
+    agentPath: AgentPath,
+  ): ThreadId | undefined {
+    const matches = this.listThreadSpawnDescendants(rootThreadId)
+      .filter((edge) => edge.metadata.agentPath === agentPath)
+      .map((edge) => edge.childThreadId)
+      .sort();
+    return oneThreadIdFromPathMatches(matches, agentPath);
+  }
+
+  private listThreadSpawnChildrenMatching(
+    parentThreadId: ThreadId,
+    status?: ThreadSpawnEdgeStatus,
+  ): ReadonlyArray<ThreadSpawnEdgeRecord> {
+    return Array.from(this.threadSpawnEdges.values())
+      .filter((edge) => edge.parentThreadId === parentThreadId)
+      .filter((edge) => status === undefined || edge.status === status)
+      .sort(compareThreadSpawnEdges)
+      .map((edge) => cloneThreadSpawnEdge(edge));
+  }
+
+  private listThreadSpawnDescendantsMatching(
+    rootThreadId: ThreadId,
+    status?: ThreadSpawnEdgeStatus,
+  ): ReadonlyArray<ThreadSpawnEdgeRecord> {
     const childrenByParent = new Map<ThreadId, ThreadSpawnEdgeRecord[]>();
     for (const edge of this.threadSpawnEdges.values()) {
-      if (edge.status !== status) continue;
+      if (status !== undefined && edge.status !== status) continue;
       const bucket = childrenByParent.get(edge.parentThreadId) ?? [];
       bucket.push(edge);
       childrenByParent.set(edge.parentThreadId, bucket);
@@ -197,14 +246,17 @@ export class RolloutStore {
 
     const descendants: ThreadSpawnEdgeRecord[] = [];
     const seen = new Set<ThreadId>([rootThreadId]);
-    const queue = [...(childrenByParent.get(rootThreadId) ?? [])];
-    while (queue.length > 0) {
-      const next = queue.shift()!;
-      if (seen.has(next.childThreadId)) continue;
-      seen.add(next.childThreadId);
-      descendants.push(cloneThreadSpawnEdge(next));
-      const children = childrenByParent.get(next.childThreadId) ?? [];
-      queue.push(...children);
+    let level = [...(childrenByParent.get(rootThreadId) ?? [])];
+    while (level.length > 0) {
+      level.sort(compareThreadSpawnEdges);
+      const nextLevel: ThreadSpawnEdgeRecord[] = [];
+      for (const next of level) {
+        if (seen.has(next.childThreadId)) continue;
+        seen.add(next.childThreadId);
+        descendants.push(cloneThreadSpawnEdge(next));
+        nextLevel.push(...(childrenByParent.get(next.childThreadId) ?? []));
+      }
+      level = nextLevel;
     }
     return descendants;
   }
@@ -224,25 +276,43 @@ export class RolloutStore {
       return;
     }
 
-    const raw = readFileSync(this.threadSpawnEdgePath, "utf8");
-    const parsed = JSON.parse(raw) as ThreadSpawnEdgeSnapshot;
-    if (
-      parsed.version !== THREAD_SPAWN_EDGE_SNAPSHOT_VERSION ||
-      !Array.isArray(parsed.edges)
-    ) {
-      throw new Error(
-        `invalid thread-spawn edge snapshot at ${this.threadSpawnEdgePath}`,
-      );
-    }
+    try {
+      const raw = readFileSync(this.threadSpawnEdgePath, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      const edges = normalizeThreadSpawnEdgesSnapshot(parsed);
 
-    this.threadSpawnEdges.clear();
-    for (const edge of parsed.edges) {
-      const normalized = normalizeThreadSpawnEdge(edge);
-      this.threadSpawnEdges.set(
-        normalized.childThreadId,
-        cloneThreadSpawnEdge(normalized),
-      );
+      this.threadSpawnEdges.clear();
+      for (const edge of edges) {
+        this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
+      }
+    } catch {
+      this.threadSpawnEdges.clear();
+      this.backupCorruptThreadSpawnEdgesSnapshot();
     }
+  }
+
+  private backupCorruptThreadSpawnEdgesSnapshot(): void {
+    const timestamp = new Date().toISOString().replace(/[^0-9A-Za-z]/g, "");
+    for (
+      let attempt = 0;
+      attempt < THREAD_SPAWN_EDGE_CORRUPT_BACKUP_ATTEMPTS;
+      attempt += 1
+    ) {
+      const backupPath = `${this.threadSpawnEdgePath}.corrupt-${timestamp}-${process.pid}-${attempt}`;
+      try {
+        renameSync(this.threadSpawnEdgePath, backupPath);
+        fsyncPath(this.store.sessionDir);
+        return;
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code === "ENOENT") return;
+        if (code === "EEXIST") continue;
+        throw err;
+      }
+    }
+    throw new Error(
+      `unable to back up corrupt thread-spawn edge snapshot at ${this.threadSpawnEdgePath}`,
+    );
   }
 
   private persistThreadSpawnEdgesSnapshot(): void {
@@ -252,25 +322,69 @@ export class RolloutStore {
         .sort(compareThreadSpawnEdges)
         .map((edge) => cloneThreadSpawnEdge(edge)),
     };
-    const tmpPath = `${this.threadSpawnEdgePath}.tmp`;
     const serialized = `${JSON.stringify(payload, null, 2)}\n`;
-    writeFileSync(tmpPath, serialized, "utf8");
-    fsyncPath(tmpPath);
-    renameSync(tmpPath, this.threadSpawnEdgePath);
-    fsyncPath(this.store.sessionDir);
+    rewriteAtomically(this.threadSpawnEdgePath, serialized);
   }
+}
+
+function normalizeThreadSpawnEdgesSnapshot(
+  parsed: unknown,
+): ReadonlyArray<ThreadSpawnEdgeRecord> {
+  if (Array.isArray(parsed)) {
+    return parsed.map((edge) => normalizeThreadSpawnEdge(edge));
+  }
+
+  if (!isRecord(parsed)) {
+    throw new Error("invalid thread-spawn edge snapshot");
+  }
+
+  if ("version" in parsed || "edges" in parsed) {
+    if (
+      parsed.version !== THREAD_SPAWN_EDGE_SNAPSHOT_VERSION ||
+      !Array.isArray(parsed.edges)
+    ) {
+      throw new Error("invalid thread-spawn edge snapshot");
+    }
+    return parsed.edges.map((edge) => normalizeThreadSpawnEdge(edge));
+  }
+
+  if (Array.isArray(parsed.threadSpawnEdges)) {
+    return parsed.threadSpawnEdges.map((edge) => normalizeThreadSpawnEdge(edge));
+  }
+
+  if (isRecord(parsed.threadSpawnEdges)) {
+    return Object.entries(parsed.threadSpawnEdges).map(([childThreadId, edge]) =>
+      normalizeThreadSpawnEdge(edge, childThreadId),
+    );
+  }
+
+  const entries = Object.entries(parsed);
+  if (entries.length > 0 && entries.every(([, edge]) => isRecord(edge))) {
+    return entries.map(([childThreadId, edge]) =>
+      normalizeThreadSpawnEdge(edge, childThreadId),
+    );
+  }
+
+  throw new Error("invalid thread-spawn edge snapshot");
+}
+
+function oneThreadIdFromPathMatches(
+  matches: readonly ThreadId[],
+  agentPath: AgentPath,
+): ThreadId | undefined {
+  if (matches.length > 1) {
+    throw new Error(
+      `multiple spawned threads matched agent path ${agentPath}: ${matches.join(", ")}`,
+    );
+  }
+  return matches[0];
 }
 
 function compareThreadSpawnEdges(
   left: ThreadSpawnEdgeRecord,
   right: ThreadSpawnEdgeRecord,
 ): number {
-  const pathCompare = (left.metadata.agentPath ?? left.parentPath).localeCompare(
-    right.metadata.agentPath ?? right.parentPath,
-  );
-  return pathCompare !== 0
-    ? pathCompare
-    : left.childThreadId.localeCompare(right.childThreadId);
+  return left.childThreadId.localeCompare(right.childThreadId);
 }
 
 function cloneThreadSpawnEdge(
@@ -298,25 +412,63 @@ function cloneAgentMetadata(metadata: AgentMetadata): AgentMetadata {
 }
 
 function normalizeThreadSpawnEdge(
-  edge: ThreadSpawnEdgeRecord,
+  edge: unknown,
+  fallbackChildThreadId?: string,
 ): ThreadSpawnEdgeRecord {
+  if (!isRecord(edge)) {
+    throw new Error("invalid thread-spawn edge record");
+  }
+
+  const childThreadId =
+    typeof edge.childThreadId === "string"
+      ? edge.childThreadId
+      : fallbackChildThreadId;
+  const status =
+    edge.status === undefined ? "open" : edge.status;
+
   if (
-    !edge ||
-    typeof edge.childThreadId !== "string" ||
+    typeof childThreadId !== "string" ||
     typeof edge.parentThreadId !== "string" ||
     typeof edge.parentPath !== "string" ||
-    (edge.status !== "open" && edge.status !== "closed")
+    (status !== "open" && status !== "closed")
   ) {
     throw new Error("invalid thread-spawn edge record");
   }
 
   return {
-    childThreadId: edge.childThreadId,
+    childThreadId,
     parentThreadId: edge.parentThreadId,
     parentPath: edge.parentPath,
-    metadata: cloneAgentMetadata(edge.metadata),
-    status: edge.status,
+    metadata: normalizeAgentMetadata(edge.metadata),
+    status,
   };
+}
+
+function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
+  if (!isRecord(metadata) || typeof metadata.depth !== "number") {
+    throw new Error("invalid thread-spawn edge metadata");
+  }
+
+  const normalized: AgentMetadata = { depth: metadata.depth };
+  for (const key of [
+    "agentId",
+    "agentPath",
+    "agentNickname",
+    "agentRole",
+    "lastTaskMessage",
+  ] as const) {
+    const value = metadata[key];
+    if (value === undefined) continue;
+    if (typeof value !== "string") {
+      throw new Error("invalid thread-spawn edge metadata");
+    }
+    (normalized as Record<typeof key, string>)[key] = value;
+  }
+  return normalized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function fsyncPath(path: string): void {
