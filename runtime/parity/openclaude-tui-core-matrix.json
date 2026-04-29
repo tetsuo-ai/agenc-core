@@ -1,7 +1,7 @@
 {
   "contractName": "openclaude-tui-core",
   "scope": "OpenClaude core TUI renderer parity for transcript rendering, message orchestration, structured content, diffs, markdown, and raw Ink repaint behavior.",
-  "sourceRoot": "../../../openclaude",
+  "sourceRoot": "../../../../openclaude",
   "targetRoot": "../..",
   "validationCommand": "npm run validate:tui-openclaude-core-parity --workspace=@tetsuo-ai/runtime",
   "rows": [
