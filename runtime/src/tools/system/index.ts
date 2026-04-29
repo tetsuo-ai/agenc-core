@@ -1,12 +1,15 @@
 /**
- * System tools for @tetsuo-ai/runtime — lean coding CLI surface.
- *
- * Post-gut: only the coding-profile tools survive. pdf/office/sqlite/
- * calendar/browser/process/server/sandbox/remote-job/remote-session/
- * research/task-tracker families were removed.
+ * System tools for @tetsuo-ai/runtime.
  *
  * @module
  */
+
+export {
+  createHttpTools,
+  isDomainAllowed,
+  type HttpToolConfig,
+  type HttpResponse,
+} from "./http.js";
 
 export {
   createFilesystemTools,
@@ -25,22 +28,34 @@ export {
 } from "./coding.js";
 
 export {
-  createPlanningTools,
-  type PlanningToolOptions,
-  type WorkflowToolController,
-} from "./planning.js";
+  createPdfTools,
+} from "./pdf.js";
 
 export {
-  ASK_USER_QUESTION_TOOL_NAME,
-  createAskUserQuestionTool,
-  parseAskUserQuestionInput,
-  recordAskUserQuestionResponse,
-  clearAskUserQuestionResponse,
-  clearAskUserQuestionResponsesForTest,
-  type AskUserQuestion,
-  type AskUserQuestionInput,
-  type AskUserQuestionOption,
-} from "./ask-user-question.js";
+  createOfficeDocumentTools,
+} from "./office-document.js";
+
+export {
+  createEmailMessageTools,
+} from "./email-message.js";
+
+export {
+  createCalendarTools,
+} from "./calendar.js";
+
+export {
+  createSqliteTools,
+} from "./sqlite.js";
+
+export {
+  createSpreadsheetTools,
+} from "./spreadsheet.js";
+
+export {
+  createBrowserTools,
+  closeBrowser,
+  type BrowserToolConfig,
+} from "./browser.js";
 
 export {
   createBashTool,
@@ -49,59 +64,46 @@ export {
 } from "./bash.js";
 
 export {
-  createExecCommandTool,
-  type ExecCommandToolConfig,
-} from "./exec-command.js";
+  createProcessTools,
+  SystemProcessManager,
+} from "./process.js";
 
 export {
-  createWriteStdinTool,
-  type WriteStdinToolConfig,
-} from "./write-stdin.js";
-
-export { createSleepTool } from "./sleep.js";
+  createServerTools,
+  SystemServerManager,
+} from "./server.js";
 
 export {
-  createMonitorTool,
-  type MonitorToolConfig,
-} from "./monitor.js";
+  createRemoteJobTools,
+  SystemRemoteJobManager,
+} from "./remote-job.js";
 
 export {
-  createEnterWorktreeTool,
-  createExitWorktreeTool,
-  type WorktreeToolConfig,
-} from "./worktree.js";
-
-// AgenC-owned file/search tools (lifted into AgenC; free to modify).
-// These are the canonical first-class file/search surface.
-export {
-  createFileReadTool,
-  FILE_READ_TOOL_NAME,
-  type FileReadToolConfig,
-} from "./file-read.js";
+  createRemoteSessionTools,
+  SystemRemoteSessionManager,
+} from "./remote-session.js";
 
 export {
-  createFileEditTool,
-  FILE_EDIT_TOOL_NAME,
-  type FileEditToolConfig,
-} from "./file-edit.js";
+  createResearchTools,
+  SystemResearchManager,
+} from "./research.js";
 
 export {
-  createFileWriteTool,
-  FILE_WRITE_TOOL_NAME,
-  type FileWriteToolConfig,
-} from "./file-write.js";
+  createSandboxTools,
+  SystemSandboxManager,
+} from "./sandbox-handle.js";
 
 export {
-  createGlobTool,
-  GLOB_TOOL_NAME,
-  type GlobToolConfig,
-} from "./glob.js";
-
-export {
-  createGrepTool,
-  GREP_TOOL_NAME,
-  type GrepToolConfig,
-} from "./grep.js";
+  createTaskTrackerTools,
+  TaskStore,
+  TASK_LIST_ARG,
+  DEFAULT_TASK_LIST_ID,
+  TASK_TRACKER_TOOL_NAMES,
+  type Task,
+  type TaskStatus,
+  type TaskCreateInput,
+  type TaskUpdatePatch,
+} from "./task-tracker.js";
 
 export {
   type BashToolConfig,
@@ -113,4 +115,18 @@ export {
   DEFAULT_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
   DANGEROUS_SHELL_PATTERNS,
+  type SystemProcessLifecycleEvent,
+  type SystemProcessToolConfig,
+  type SystemServerToolConfig,
+  type SystemRemoteJobToolConfig,
+  type SystemRemoteSessionToolConfig,
+  type SystemResearchToolConfig,
+  type SystemSandboxToolConfig,
+  type SystemSandboxWorkspaceAccessMode,
+  type SystemSqliteToolConfig,
+  type SystemPdfToolConfig,
+  type SystemSpreadsheetToolConfig,
+  type SystemOfficeDocumentToolConfig,
+  type SystemEmailMessageToolConfig,
+  type SystemCalendarToolConfig,
 } from "./types.js";

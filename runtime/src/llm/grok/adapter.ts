@@ -28,6 +28,12 @@ import type {
 } from "../types.js";
 import { validateToolCallDetailed } from "../types.js";
 import { LLMProviderError, mapLLMError } from "../errors.js";
+import {
+  DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS,
+  validateXaiRequestPreFlight,
+  validateXaiResponsePostFlight,
+  XAI_RESPONSES_MAX_TOOL_COUNT,
+} from "./xai-strict-filter.js";
 import { ensureLazyImport } from "../lazy-import.js";
 import {
   assertXaiReasoningEffortCompatibility,
@@ -41,23 +47,9 @@ import { parseStructuredOutputText } from "../structured-output.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
 import type { GrokProviderConfig } from "./types.js";
-import {
-  IncrementalTracker,
-  registerIncrementalTracker,
-  type IncrementalRequestShape,
-  type LastResponseSnapshot,
-} from "./incremental.js";
-import {
-  isUnauthorizedError,
-  retryWithAuthRefresh,
-  type AuthRefreshCallbacks,
-  type AuthRefreshOutcome,
-} from "./auth-refresh.js";
-import { monotonicMs } from "../_deps/monotonic.js";
-import { resolveContextWindowProfile } from "../_deps/context-window.js";
+import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 import {
   buildProviderTraceErrorPayload,
-  isContinuationRetrievalFailure,
   buildToolSelectionTraceContext,
   cloneProviderTracePayload,
   extractTraceToolNames,
@@ -67,22 +59,24 @@ import {
   truncate,
   type ToolSelectionDiagnostics,
 } from "./adapter-utils.js";
-import { isProviderCapabilityMismatch } from "../capabilities.js";
-import {
-  buildXaiResponsesInputItems,
-  resolveXaiResponsesToolChoice,
-  toXaiResponsesTools,
-  XAI_ENCRYPTED_REASONING_INCLUDE,
-} from "../wire/responses-xai.js";
 
 const DEFAULT_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_MODEL = "grok-4-1-fast-reasoning";
 const DEFAULT_VISION_MODEL = "grok-4-0709";
 const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_MESSAGES_PAYLOAD_CHARS = 80_000;
+const MAX_SYSTEM_MESSAGE_CHARS = 16_000;
+const MAX_MESSAGE_CHARS_PER_ENTRY = 4_000;
 // MAX_TOOL_SCHEMA_CHARS_FOLLOWUP removed 2026-04-09: see buildParams() comment
 // near `selectedTools.tools.length > 0`. The 20K limit was silently dropping
 // the entire tools array on every tool-followup request.
 //
+// The canonical /v1/responses field allowlist now lives in
+// `xai-strict-filter.ts` as `DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS` and is
+// imported above. Single source of truth — both the strict pre-flight
+// validator and `sanitizeToDocumentedXaiResponsesParams()` use the same set.
+const DOCUMENTED_XAI_RESPONSES_FIELDS = DOCUMENTED_XAI_RESPONSES_REQUEST_FIELDS;
+
 /** Vision models known to support function-calling alongside image understanding. */
 const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4-0709",
@@ -92,6 +86,41 @@ const VISION_MODELS_WITH_TOOLS = new Set([
   "grok-4.20-0309-non-reasoning",
   "grok-4.20-multi-agent-0309",
 ]);
+
+const XAI_RESPONSES_TRIM_PRIORITY_TOOL_NAMES = new Set([
+  "agenc.inspectMarketplace",
+  "agenc.listTasks",
+  "agenc.getTask",
+  "agenc.getJobSpec",
+  "agenc.listApprovedTaskTemplates",
+  "agenc.getApprovedTaskTemplate",
+  "agenc.createTaskFromTemplate",
+  "agenc.submitTaskTemplateProposal",
+  "agenc.getReputationSummary",
+  "agenc.getTokenBalance",
+  "agenc.registerAgent",
+  "agenc.claimTask",
+  "agenc.completeTask",
+]);
+
+function prioritizeToolsForXaiResponsesLimit<T extends Record<string, unknown>>(
+  tools: readonly T[],
+): T[] {
+  return tools
+    .map((tool, index) => ({
+      tool,
+      index,
+      priority: getXaiResponsesTrimPriority(tool),
+    }))
+    .sort((a, b) => a.priority - b.priority || a.index - b.index)
+    .map(({ tool }) => tool);
+}
+
+function getXaiResponsesTrimPriority(tool: Record<string, unknown>): number {
+  const name = extractTraceToolNames([tool])[0] ?? "";
+  return XAI_RESPONSES_TRIM_PRIORITY_TOOL_NAMES.has(name) ? 0 : 1;
+}
+
 
 interface ProviderResponseTraceMeta {
   readonly providerRequestId?: string;
@@ -126,6 +155,16 @@ function normalizeTimeoutMs(timeoutMs: number | undefined): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.floor(timeoutMs));
+}
+
+function sanitizeToDocumentedXaiResponsesParams(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(params).filter(([key]) =>
+      DOCUMENTED_XAI_RESPONSES_FIELDS.has(key)
+    ),
+  );
 }
 
 type RequestTimeoutSource =
@@ -254,6 +293,48 @@ function closeAsyncIterator(iterator: AsyncIterator<unknown>): void {
   } catch {
     // best-effort stream cleanup
   }
+}
+
+function sanitizeLargeText(value: string): string {
+  return value
+    .replace(
+      /data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g,
+      "(image omitted)",
+    )
+    .replace(/[A-Za-z0-9+/=\r\n]{400,}/g, "(base64 omitted)");
+}
+
+function normalizeResponsesToolChoice(
+  toolChoice: LLMToolChoice | undefined,
+): string | Record<string, unknown> | undefined {
+  if (toolChoice === undefined || typeof toolChoice === "string") {
+    return toolChoice;
+  }
+
+  const directName = typeof toolChoice.name === "string"
+    ? toolChoice.name.trim()
+    : "";
+  if (toolChoice.type === "function" && directName.length > 0) {
+    return { type: "function", function: { name: directName } };
+  }
+
+  const legacyName = typeof (toolChoice as { function?: { name?: unknown } }).function
+      ?.name === "string"
+    ? (toolChoice as { function?: { name?: string } }).function!.name!.trim()
+    : "";
+  if (toolChoice.type === "function" && legacyName.length > 0) {
+    return { type: "function", function: { name: legacyName } };
+  }
+
+  return toolChoice;
+}
+
+function resolveResponsesToolChoice(
+  toolChoice: LLMToolChoice | undefined,
+): string | Record<string, unknown> | undefined {
+  // xAI documents `required` as a first-class tool_choice mode. Preserve it
+  // instead of tightening it into a named-function selection.
+  return normalizeResponsesToolChoice(toolChoice);
 }
 
 function estimateOpenAIContentChars(content: unknown): number {
@@ -486,9 +567,7 @@ function serializeResponseHeaders(
   response: Response | undefined,
 ): Record<string, string> | undefined {
   if (!response) return undefined;
-  const entries = Array.from(
-    response.headers as unknown as Iterable<readonly [string, string]>,
-  );
+  const entries = Array.from(response.headers.entries());
   if (entries.length === 0) return undefined;
   return Object.fromEntries(entries);
 }
@@ -571,53 +650,93 @@ function emitProviderTraceEvent(
   options?.trace?.onProviderTraceEvent?.(event);
 }
 
-function errorMessageFromStreamEvent(event: unknown): string {
-  if (!event || typeof event !== "object") {
-    return "Provider stream returned an error event";
-  }
-  const record = event as Record<string, unknown>;
-  const nestedError =
-    record.error &&
-    typeof record.error === "object" &&
-    !Array.isArray(record.error)
-      ? (record.error as Record<string, unknown>)
-      : undefined;
-  const message = record.message ?? nestedError?.message ?? record.error;
-  return typeof message === "string" && message.trim().length > 0
-    ? message.trim()
-    : "Provider stream returned an error event";
+
+function hasImageContent(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (!part || typeof part !== "object") return false;
+    const p = part as Record<string, unknown>;
+    return p.type === "image_url";
+  });
 }
 
-function statusFromStreamEvent(event: unknown): number | undefined {
-  if (!event || typeof event !== "object") return undefined;
-  const record = event as Record<string, unknown>;
-  const nestedError =
-    record.error &&
-    typeof record.error === "object" &&
-    !Array.isArray(record.error)
-      ? (record.error as Record<string, unknown>)
-      : undefined;
-  const raw =
-    record.status ??
-    record.status_code ??
-    record.statusCode ??
-    nestedError?.status ??
-    nestedError?.status_code ??
-    nestedError?.statusCode ??
-    nestedError?.code;
-  const parsed =
-    typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
+function compactOpenAIMessage(
+  msg: Record<string, unknown>,
+  maxChars: number,
+): Record<string, unknown> {
+  const role = String(msg.role ?? "user");
+  const compact = { ...msg };
+  const content = msg.content;
+
+  if (typeof content === "string") {
+    compact.content = truncate(sanitizeLargeText(content), maxChars);
+    return compact;
+  }
+
+  if (Array.isArray(content)) {
+    // In hard-cap mode we collapse multimodal payloads to compact text.
+    const text = content
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const p = part as Record<string, unknown>;
+        if (p.type === "text") return String(p.text ?? "");
+        if (p.type === "image_url") return "[image omitted]";
+        return "";
+      })
+      .filter((s) => s.length > 0)
+      .join("\n");
+    compact.content = truncate(sanitizeLargeText(text || "[content omitted]"), maxChars);
+    return compact;
+  }
+
+  compact.content = role === "tool" ? "Tool executed." : "";
+  return compact;
 }
 
-function errorFromStreamEvent(event: unknown): Error {
-  const message = errorMessageFromStreamEvent(event);
-  const status = statusFromStreamEvent(event);
-  const error = new Error(message) as Error & { status?: number };
-  if (status !== undefined) {
-    error.status = status;
+function enforceMessageBudget(
+  messages: Record<string, unknown>[],
+  maxChars: number,
+): Record<string, unknown>[] {
+  const total = messages.reduce(
+    (sum, m) => sum + estimateOpenAIContentChars(m.content) + 48,
+    0,
+  );
+  if (total <= maxChars) return messages;
+
+  const firstSystemIndex = messages.findIndex((m) => m.role === "system");
+  const firstSystem =
+    firstSystemIndex >= 0
+      ? compactOpenAIMessage(messages[firstSystemIndex], MAX_SYSTEM_MESSAGE_CHARS)
+      : undefined;
+  const systemChars = firstSystem
+    ? estimateOpenAIContentChars(firstSystem.content) + 48
+    : 0;
+  const nonSystemBudget = Math.max(4_000, maxChars - systemChars);
+
+  const nonSystem = messages.filter((_, idx) => idx !== firstSystemIndex);
+  const selected: Record<string, unknown>[] = [];
+  let used = 0;
+
+  for (let i = nonSystem.length - 1; i >= 0; i--) {
+    const compact = compactOpenAIMessage(
+      nonSystem[i],
+      MAX_MESSAGE_CHARS_PER_ENTRY,
+    );
+    const chars = estimateOpenAIContentChars(compact.content) + 48;
+    if (used + chars <= nonSystemBudget) {
+      selected.push(compact);
+      used += chars;
+      continue;
+    }
+    if (selected.length === 0) {
+      const remaining = Math.max(256, nonSystemBudget - used - 48);
+      selected.push(compactOpenAIMessage(nonSystem[i], remaining));
+    }
+    break;
   }
-  return error;
+
+  selected.reverse();
+  return firstSystem ? [firstSystem, ...selected] : selected;
 }
 
 export class GrokProvider implements LLMProvider {
@@ -625,21 +744,6 @@ export class GrokProvider implements LLMProvider {
 
   private client: unknown | null = null;
   private readonly config: GrokProviderConfig;
-  /** I-2 / I-14 tracker — zeroed by post-compact-cleanup.ts via
-   *  clearAllResponseIds(); used to send delta input with
-   *  previous_response_id when the request shape is unchanged. */
-  private readonly incrementalTracker = new IncrementalTracker();
-  /** Registry unsubscribe; called on dispose to drop the tracker. */
-  private readonly unregisterIncrementalTracker: () => void;
-  /** I-14 auth refresh callback. Bearer-key auth has no refresh;
-   *  callers can override via `withAuthRefreshCallbacks()` for OAuth
-   *  flows. */
-  private authRefreshCallbacks: AuthRefreshCallbacks = {
-    refreshBearer: async (): Promise<AuthRefreshOutcome> => ({
-      kind: "skipped",
-      reason: "grok_bearer_key_mode_has_no_refresh",
-    }),
-  };
   private readonly rawToolsByName = new Map<string, LLMTool>();
   private readonly tools: LLMTool[];
   private readonly responseTools: Record<string, unknown>[];
@@ -650,6 +754,7 @@ export class GrokProvider implements LLMProvider {
     string,
     ProviderNativeToolDefinition
   >();
+  private readonly warnedPostFlightAnomalies = new Set<string>();
   private readonly toolChars: number;
   private readonly configuredTimeoutMs: number | undefined;
 
@@ -670,7 +775,7 @@ export class GrokProvider implements LLMProvider {
     }
     const slimmed = slimTools(rawTools);
     this.tools = slimmed.tools;
-    this.responseTools = toXaiResponsesTools(this.tools);
+    this.responseTools = this.toResponseTools(this.tools);
     for (let i = 0; i < this.tools.length; i++) {
       const name = this.tools[i]?.function?.name;
       const responseTool = this.responseTools[i];
@@ -699,106 +804,27 @@ export class GrokProvider implements LLMProvider {
         (sum, definition) => sum + definition.schemaChars,
         0,
       );
-    // I-2: register the tracker so post-compact-cleanup can zero it.
-    this.unregisterIncrementalTracker = registerIncrementalTracker(
-      this.incrementalTracker,
-    );
   }
 
-  /**
-   * I-14 hook point: supply real OAuth-refresh callbacks. Bearer-key
-   * mode leaves the default (no-refresh) in place.
-   */
-  withAuthRefreshCallbacks(callbacks: AuthRefreshCallbacks): this {
-    this.authRefreshCallbacks = callbacks;
-    return this;
-  }
-
-  /** Drop the tracker registration (used on provider swap / session shutdown). */
-  dispose(): void {
-    this.unregisterIncrementalTracker();
-  }
-
-  /**
-   * I-2 / I-14 incremental-tracker integration for chat path.
-   * Records the pre-flight request shape + post-response snapshot so
-   * `clearAllResponseIds()` (called from post-compact-cleanup.ts) can
-   * zero the cached previous_response_id. Matching follow-up turns reuse
-   * the cached response ID and send only the delta input.
-   */
-  private noteIncrementalRequest(
-    messages: readonly LLMMessage[],
-    params: Record<string, unknown>,
-  ): void {
-    const shape = this.buildIncrementalRequestShape(params);
-    this.incrementalTracker.recordRequest(shape, messages);
-  }
-
-  private noteIncrementalResponse(
-    previousResponseId: string | undefined,
-    itemsAdded: LLMMessage[],
-  ): void {
-    if (!previousResponseId) return;
-    const snapshot: LastResponseSnapshot = {
-      previousResponseId,
-      itemsAdded,
-      recordedAtMs: monotonicMs(),
-    };
-    this.incrementalTracker.recordResponse(snapshot);
-  }
-
-  private emitRuntimeWarning(cause: string, message: string): void {
-    this.config.emitWarning?.({ cause, message });
-  }
-
-  private notifyCapabilityDrift(error: unknown): void {
-    if (!this.config.onCapabilityDrift) return;
-    const candidate = error as {
-      readonly status?: number;
-      readonly statusCode?: number;
-      readonly message?: string;
-    };
-    const status =
-      typeof candidate.status === "number"
-        ? candidate.status
-        : typeof candidate.statusCode === "number"
-          ? candidate.statusCode
-          : undefined;
-    const message = String(candidate.message ?? "");
-    if (!isProviderCapabilityMismatch({ status, message })) {
-      return;
+  private logPostFlightAnomaly(anomaly: {
+    code: string;
+    message: string;
+    evidence?: Record<string, unknown>;
+  }): void {
+    const warningKey =
+      anomaly.code === "model_silently_aliased"
+        ? `${anomaly.code}:${String(anomaly.evidence?.requestedModel ?? "")}:${String(anomaly.evidence?.responseModel ?? "")}`
+        : undefined;
+    if (warningKey) {
+      if (this.warnedPostFlightAnomalies.has(warningKey)) {
+        return;
+      }
+      this.warnedPostFlightAnomalies.add(warningKey);
     }
-    this.config.onCapabilityDrift({ message, status });
-  }
-
-  private buildIncrementalRequestShape(
-    params: Record<string, unknown>,
-  ): IncrementalRequestShape {
-    return {
-      model: String(params.model ?? this.config.model),
-      instructions:
-        typeof params.instructions === "string" ? params.instructions : undefined,
-      tools: params.tools,
-      parallelToolCalls:
-        typeof params.parallel_tool_calls === "boolean"
-          ? params.parallel_tool_calls
-          : Boolean(this.config.parallelToolCalls),
-      extra: {
-        ...(params.prompt_cache_key !== undefined
-          ? { prompt_cache_key: params.prompt_cache_key }
-          : {}),
-        ...(params.temperature !== undefined
-          ? { temperature: params.temperature }
-          : {}),
-        ...(params.max_turns !== undefined ? { max_turns: params.max_turns } : {}),
-        ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
-        ...(params.include !== undefined ? { include: params.include } : {}),
-        ...(params.text !== undefined ? { text: params.text } : {}),
-        ...(params.tool_choice !== undefined
-          ? { tool_choice: params.tool_choice }
-          : {}),
-      },
-    };
+    console.warn(
+      `[GrokProvider] xAI post-flight anomaly (${anomaly.code}): ${anomaly.message}`,
+      anomaly.evidence,
+    );
   }
 
   async chat(
@@ -854,7 +880,21 @@ export class GrokProvider implements LLMProvider {
           this.name,
           options?.signal,
         );
-        const response = result.data;
+        const originalResponse = result.data;
+        // Auto-mitigate the xAI mid-sentence truncation bug by
+        // replaying with tool_choice="none" when the strict filter
+        // detects the trigger pattern. See report.txt §4.4.
+        const truncationMitigatedResponse = await this.maybeRetryMidSentenceTruncation(
+          client,
+          activePlan.params as Record<string, unknown>,
+          originalResponse as Record<string, unknown>,
+          options,
+          "chat",
+        );
+        const response = (
+          truncationMitigatedResponse ??
+          originalResponse
+        ) as typeof originalResponse;
         const responseMeta = buildProviderResponseMeta({
           response: result.response,
           requestId: result.requestId,
@@ -862,6 +902,7 @@ export class GrokProvider implements LLMProvider {
         });
         const parsed = this.parseResponse(
           response,
+          activePlan.params,
           activePlan.requestMetrics,
           activePlan.compactionDiagnostics,
           options?.structuredOutput,
@@ -899,94 +940,8 @@ export class GrokProvider implements LLMProvider {
     };
 
     try {
-      // I-2 / I-14: record the outbound request shape for the
-      // incremental tracker before the HTTP call. clearAllResponseIds
-      // (called from post-compact-cleanup) zeros this on every
-      // compaction.
-      this.noteIncrementalRequest(
-        plan.requestMessages ?? messages,
-        plan.params as Record<string, unknown>,
-      );
-
-      // I-14: retry-on-401 wrapper. Bearer-key mode's refresh callback
-      // returns `skipped`, so the original 401 bubbles up unchanged.
-      // OAuth-capable providers install real refresh callbacks via
-      // withAuthRefreshCallbacks(); bearer-key mode skips refresh.
-      const parsed = await retryWithAuthRefresh(
-        String(this.config.apiKey),
-        async () => run(plan),
-        this.authRefreshCallbacks,
-      );
-
-      // Record the response metadata so the tracker can supply
-      // previous_response_id and delta input on the next compatible call.
-      const respId = (parsed as { requestMetrics?: { responseId?: string } })
-        ?.requestMetrics?.responseId;
-      if (respId) {
-        this.noteIncrementalResponse(respId, [
-          {
-            role: "assistant",
-            content: parsed.content,
-            ...(parsed.toolCalls.length > 0
-              ? { toolCalls: parsed.toolCalls }
-              : {}),
-          },
-        ]);
-      }
-      return parsed;
+      return await run(plan);
     } catch (err: unknown) {
-      if (
-        isContinuationRetrievalFailure(err) &&
-        "previous_response_id" in plan.params
-      ) {
-        this.incrementalTracker.clearResponseId();
-        this.emitRuntimeWarning(
-          "previous_response_id_expired",
-          `${this.name} rejected previous_response_id; clearing continuation state and retrying once with full history`,
-        );
-        try {
-          const retryPlan = this.buildRequestPlan(messages, options, {
-            disableIncremental: true,
-          });
-          this.noteIncrementalRequest(
-            retryPlan.requestMessages ?? messages,
-            retryPlan.params as Record<string, unknown>,
-          );
-          const parsed = await retryWithAuthRefresh(
-            String(this.config.apiKey),
-            async () => run(retryPlan),
-            this.authRefreshCallbacks,
-          );
-          const respId = (parsed as { requestMetrics?: { responseId?: string } })
-            ?.requestMetrics?.responseId;
-          if (respId) {
-            this.noteIncrementalResponse(respId, [
-              {
-                role: "assistant",
-                content: parsed.content,
-                ...(parsed.toolCalls.length > 0
-                  ? { toolCalls: parsed.toolCalls }
-                  : {}),
-              },
-            ]);
-          }
-          return parsed;
-        } catch (retryErr) {
-          err = retryErr;
-        }
-      }
-      // 401s that propagated past the refresh wrapper classify through
-      // the normal mapper so callers see `LLMProviderError` rather
-      // than the raw transport.
-      this.notifyCapabilityDrift(err);
-      if (isUnauthorizedError(err)) {
-        const mapped = this.mapError(
-          err,
-          lastAttemptTimeoutMs ?? requestTimeout.timeoutMs,
-        );
-        this.logPromptOverflowDiagnostics(mapped, plan.params);
-        throw mapped;
-      }
       const mapped = this.mapError(
         err,
         lastAttemptTimeoutMs ?? requestTimeout.timeoutMs,
@@ -1003,10 +958,6 @@ export class GrokProvider implements LLMProvider {
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
     let plan = this.buildRequestPlan(messages, options);
-    this.noteIncrementalRequest(
-      plan.requestMessages ?? messages,
-      plan.params as Record<string, unknown>,
-    );
     let params: Record<string, unknown> = { ...plan.params, stream: true };
     const requestMetrics = {
       ...plan.requestMetrics,
@@ -1057,52 +1008,17 @@ export class GrokProvider implements LLMProvider {
           requestAttemptTimeout,
         ),
       });
-      let result;
-      try {
-        result = await withTimeout(
-          async (signal) =>
-            createWithResponseMetadata<AsyncIterable<any>>(
-              client,
-              params,
-              signal,
-            ),
-          requestAttemptTimeout.timeoutMs,
-          this.name,
-          options?.signal,
-        );
-      } catch (err) {
-        if (
-          isContinuationRetrievalFailure(err) &&
-          "previous_response_id" in params
-        ) {
-          this.incrementalTracker.clearResponseId();
-          this.emitRuntimeWarning(
-            "previous_response_id_expired",
-            `${this.name} rejected previous_response_id; clearing continuation state and retrying once with full history`,
-          );
-          plan = this.buildRequestPlan(messages, options, {
-            disableIncremental: true,
-          });
-          this.noteIncrementalRequest(
-            plan.requestMessages ?? messages,
-            plan.params as Record<string, unknown>,
-          );
-          params = { ...plan.params, stream: true };
-          result = await withTimeout(
-            async (signal) =>
-              createWithResponseMetadata<AsyncIterable<any>>(
-                client,
-                params,
-                signal,
-              ),
-            requestAttemptTimeout.timeoutMs,
-            this.name,
-            options?.signal,
-          );
-        } else {
-          throw err;
-        }
-      }
+      const result = await withTimeout(
+        async (signal) =>
+          createWithResponseMetadata<AsyncIterable<any>>(
+            client,
+            params,
+            signal,
+          ),
+        requestAttemptTimeout.timeoutMs,
+        this.name,
+        options?.signal,
+      );
       const stream = result.data;
       streamResponseMeta = buildProviderResponseMeta({
         response: result.response,
@@ -1126,9 +1042,6 @@ export class GrokProvider implements LLMProvider {
       });
 
       streamIterator = stream[Symbol.asyncIterator]();
-      if (streamIterator === null) {
-        throw new LLMProviderError(this.name, "provider stream did not open");
-      }
       let streamEventIndex = 0;
       const streamOpenedAt = Date.now();
       let receivedTerminalEvent = false;
@@ -1203,32 +1116,64 @@ export class GrokProvider implements LLMProvider {
           continue;
         }
 
-        if (event.type === "error") {
-          receivedTerminalEvent = true;
-          emitProviderTraceEvent(options, {
-            kind: "error",
-            transport: "chat_stream",
-            provider: this.name,
-            model,
-            payload:
-              cloneProviderTracePayload(event) ??
-              { error: "provider_error_trace_unavailable" },
-            context: buildProviderResponseTraceContext(
-              undefined,
-              streamResponseMeta,
-            ),
-          });
-          finishReason = "error";
-          responseError = this.mapError(
-            errorFromStreamEvent(event),
-            streamTimeout.timeoutMs,
-          );
-          break;
-        }
-
         if (event.type === "response.completed") {
           receivedTerminalEvent = true;
-          const response = event.response ?? {};
+          let response = event.response ?? {};
+
+          // Auto-mitigate the xAI mid-sentence truncation bug on the
+          // streaming terminal payload. The user has already seen the
+          // truncated deltas via onChunk; the mitigation replaces the
+          // accumulated content with the retry result so the final
+          // LLMResponse returned to the executor carries the corrected
+          // text. A secondary onChunk is emitted with the corrected
+          // content so UIs that re-render on the latest delta show
+          // the corrected version. See report.txt §4.4.
+          const truncationMitigatedResponse =
+            await this.maybeRetryMidSentenceTruncation(
+            client,
+            params,
+            response as Record<string, unknown>,
+            options,
+            "chat_stream",
+          );
+          const mitigatedResponse = truncationMitigatedResponse;
+          if (mitigatedResponse) {
+            response = mitigatedResponse;
+            // Reset stream-accumulated tool calls; the mitigation
+            // retry ran with tool_choice="none" so it cannot have
+            // emitted a function_call, but we still clear the map
+            // so any lingering partial deltas from the original
+            // stream don't leak into the final response.
+            toolCallAccum.clear();
+            // Replace streamed content with the corrected text so
+            // the returned LLMResponse has the full response.
+            const correctedText = String(
+              (mitigatedResponse as { output_text?: unknown }).output_text ??
+                "",
+            );
+            const correctedFromOutput = this.extractOutputText(
+              mitigatedResponse,
+            );
+            const effectiveCorrected =
+              correctedText.length > 0
+                ? correctedText
+                : correctedFromOutput ?? "";
+            if (effectiveCorrected.length > 0) {
+              // Signal the correction as a SNAPSHOT (full replacement)
+              // rather than a delta. The TUI appends delta chunks into a
+              // running buffer; if we emit a delta here the corrected
+              // text gets concatenated AFTER the truncated stream and
+              // the user sees duplicate/garbled content. `resetBuffer`
+              // tells downstream consumers to replace the accumulated
+              // stream with this content instead of appending.
+              onChunk({
+                content: effectiveCorrected,
+                done: false,
+                resetBuffer: true,
+              });
+              content = effectiveCorrected;
+            }
+          }
 
           streamResponseMeta = {
             ...(streamResponseMeta ?? {}),
@@ -1251,6 +1196,23 @@ export class GrokProvider implements LLMProvider {
           } = this.extractToolCallsFromOutput(response.output);
           for (const toolCall of completedToolCalls) {
             toolCallAccum.set(toolCall.id, toolCall);
+          }
+
+          // Strict post-flight on the streaming terminal payload. Same
+          // contract as the non-streaming parseResponse() path: error-level
+          // anomalies throw, warn-level anomalies log via console.warn.
+          // Mid-sentence truncation is handled above (via the mitigation
+          // retry) so it is skipped here — if the retry succeeded, the
+          // anomaly is no longer present; if the retry failed, the
+          // original anomaly was already logged inside the mitigation
+          // path and re-logging would be noise.
+          const xaiAnomalies = validateXaiResponsePostFlight({
+            request: params,
+            response: response as Record<string, unknown>,
+          });
+          for (const anomaly of xaiAnomalies) {
+            if (anomaly.code === "truncated_response_mid_sentence") continue;
+            this.logPostFlightAnomaly(anomaly);
           }
 
           this.emitToolCallNormalizationIssues(
@@ -1355,7 +1317,6 @@ export class GrokProvider implements LLMProvider {
         model,
         payload: buildProviderTraceErrorPayload(err),
       });
-      this.notifyCapabilityDrift(err);
       const mappedError = this.mapError(err, streamTimeout.timeoutMs);
       this.logPromptOverflowDiagnostics(mappedError, params);
       if (content.length > 0) {
@@ -1477,9 +1438,6 @@ export class GrokProvider implements LLMProvider {
   private buildRequestPlan(
     messages: readonly LLMMessage[],
     options?: LLMChatOptions,
-    overrides?: {
-      disableIncremental?: boolean;
-    },
   ): {
     params: Record<string, unknown>;
     requestMetrics: LLMRequestMetrics;
@@ -1491,21 +1449,17 @@ export class GrokProvider implements LLMProvider {
     const toolSelection = this.resolveResponseTools(
       options?.toolRouting?.allowedToolNames,
       options?.toolChoice,
-      options?.tools,
     );
     const built = this.buildParams(messages, {
       store: false,
       allowedToolNames: options?.toolRouting?.allowedToolNames,
       toolChoice: options?.toolChoice,
       maxTurns: options?.maxTurns,
-      model: options?.model?.trim() || undefined,
       reasoningEffort: options?.reasoningEffort,
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
       structuredOutput: options?.structuredOutput,
       toolSelection,
       promptCacheKey: options?.promptCacheKey?.trim() || undefined,
-      systemPrompt: options?.systemPrompt?.trim() || undefined,
-      disableIncremental: overrides?.disableIncremental,
     });
     return {
       params: built.params,
@@ -1515,7 +1469,7 @@ export class GrokProvider implements LLMProvider {
       ),
       toolSelection: built.toolSelection,
       compactionDiagnostics,
-      requestMessages: built.requestMessages,
+      requestMessages: messages,
     };
   }
 
@@ -1545,33 +1499,82 @@ export class GrokProvider implements LLMProvider {
       includeEncryptedReasoning?: boolean;
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
-      model?: string;
       promptCacheKey?: string;
-      systemPrompt?: string;
-      disableIncremental?: boolean;
     },
   ): {
     params: Record<string, unknown>;
     toolSelection: ToolSelectionDiagnostics;
-    requestMessages: readonly LLMMessage[];
   } {
     const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
-    const requestMessages =
-      options?.systemPrompt && options.systemPrompt.length > 0
-        ? [{ role: "system" as const, content: options.systemPrompt }, ...messages]
-        : messages;
-    const repairedMessages = repairToolTurnSequence(requestMessages);
+    const repairedMessages = repairToolTurnSequence(messages);
     validateToolTurnSequence(repairedMessages, {
       providerName: this.name,
     });
 
-    const xaiInput = buildXaiResponsesInputItems(repairedMessages);
-    const model =
-      options?.model ?? (xaiInput.hasImages ? visionModel : this.config.model);
+    // Build mapped messages, handling multimodal tool messages.
+    // The OpenAI API requires tool message content to be a string.
+    // When tool results contain images (e.g. screenshots), we extract
+    // the text for the tool message and inject images as a user message
+    // after all tool results in the block.
+    const mapped: Record<string, unknown>[] = [];
+    const pendingImages: Array<{
+      type: "image_url";
+      image_url: { url: string };
+    }> = [];
+
+    for (let i = 0; i < repairedMessages.length; i++) {
+      const m = repairedMessages[i];
+
+      // Collect images from multimodal tool messages
+      if (m.role === "tool" && Array.isArray(m.content)) {
+        for (const part of m.content) {
+          if (part.type === "image_url") {
+            pendingImages.push({
+              type: "image_url",
+              image_url: part.image_url,
+            });
+          }
+        }
+      }
+
+      mapped.push(this.toOpenAIMessage(m));
+
+      // Flush collected images as a user message after the last tool message
+      // in a contiguous tool-result block
+      if (pendingImages.length > 0) {
+        const nextMsg = repairedMessages[i + 1];
+        if (!nextMsg || nextMsg.role !== "tool") {
+          mapped.push({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Here is the screenshot from the tool result above.",
+              },
+              ...pendingImages.map((img) => ({
+                type: img.type,
+                image_url: img.image_url,
+              })),
+            ],
+          });
+          pendingImages.length = 0;
+        }
+      }
+    }
+
+    const boundedMessages = enforceMessageBudget(
+      mapped,
+      MAX_MESSAGES_PAYLOAD_CHARS,
+    );
+    const hasImages = boundedMessages.some((m) => hasImageContent(m.content));
+    const model = hasImages ? visionModel : this.config.model;
+    const input = boundedMessages.flatMap((message) =>
+      this.toResponseInputItems(message),
+    );
 
     const params: Record<string, unknown> = {
       model,
-      input: xaiInput.input,
+      input,
       store: options?.store ?? false,
     };
     // Cut 5.10: xAI prompt caching is prefix-based and is maximized by
@@ -1611,7 +1614,7 @@ export class GrokProvider implements LLMProvider {
     const includeEncryptedReasoning =
       options?.includeEncryptedReasoning ?? this.config.includeEncryptedReasoning;
     if (includeEncryptedReasoning) {
-      params.include = [XAI_ENCRYPTED_REASONING_INCLUDE];
+      params.include = ["reasoning.encrypted_content"];
     }
     const selectedTools = {
       ...(options?.toolSelection ??
@@ -1638,11 +1641,47 @@ export class GrokProvider implements LLMProvider {
     // array is cheap; the previous guard was a token-saving theory that
     // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
-      if (!xaiInput.hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+      if (!hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+        // Enforce the documented xAI Responses API maximum of 128
+        // tools (developers/rest-api-reference/inference/chat). The
+        // strict pre-flight validator throws on any request with more
+        // than XAI_RESPONSES_MAX_TOOL_COUNT tools; trim here so a
+        // local catalog that legitimately exceeds the limit (e.g.
+        // many MCP servers enabled) stays functional instead of
+        // failing closed at every request. Preserve critical AgenC
+        // task-lifecycle tools before trimming so marketplace runs
+        // can still claim and submit completions even with a large
+        // MCP catalog. The trim is deterministic and the dropped
+        // tool names are logged so operators can reorder their tool
+        // registry or drop unused MCP servers to reclaim the slots.
+        if (selectedTools.tools.length > XAI_RESPONSES_MAX_TOOL_COUNT) {
+          const prioritizedTools = prioritizeToolsForXaiResponsesLimit(
+            selectedTools.tools,
+          );
+          const dropped = prioritizedTools.slice(
+            XAI_RESPONSES_MAX_TOOL_COUNT,
+          );
+          const droppedNames = dropped
+            .map((t) => String((t as { name?: unknown }).name ?? "<unnamed>"))
+            .join(", ");
+          console.warn(
+            `[GrokProvider] Tool catalog has ${selectedTools.tools.length} ` +
+              `tools but xAI Responses API documents a maximum of ` +
+              `${XAI_RESPONSES_MAX_TOOL_COUNT}. Trimming lower-priority ` +
+              `tools to stay within the contract. Dropped tools (after ` +
+              `preserving critical tools): ${droppedNames}. Reorder your tool ` +
+              `registry or disable unused MCP servers if these should be ` +
+              `retained.`,
+          );
+          selectedTools.tools = prioritizedTools.slice(
+            0,
+            XAI_RESPONSES_MAX_TOOL_COUNT,
+          ) as typeof selectedTools.tools;
+        }
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;
-        const toolChoice = resolveXaiResponsesToolChoice(options?.toolChoice);
+        const toolChoice = resolveResponsesToolChoice(options?.toolChoice);
         if (toolChoice !== undefined) {
           params.tool_choice = toolChoice;
         }
@@ -1676,82 +1715,35 @@ export class GrokProvider implements LLMProvider {
         },
       };
     }
-    if (!options?.disableIncremental) {
-      const previousResponseId = this.incrementalTracker.previousResponseId();
-      const decision = this.incrementalTracker.decide({
-        currentShape: this.buildIncrementalRequestShape(params),
-        currentInput: repairedMessages,
-      });
-      if (decision.kind === "reuse" && previousResponseId) {
-        const deltaBuilt = this.buildParams(decision.delta, {
-          ...options,
-          disableIncremental: true,
-        });
-        params.input = deltaBuilt.params.input;
-        params.previous_response_id = previousResponseId;
-      }
-    }
+    // Strict pre-flight: validate the outgoing /v1/responses request body
+    // against the documented xAI contract before it leaves the runtime.
+    // Throws XaiUnknownModelError / XaiUndocumentedFieldError on rejection.
+    // The throws map to provider_error via classifyLLMFailure() and flow
+    // through the existing retry-with-fallback policy. Runs BEFORE
+    // sanitizeToDocumentedXaiResponsesParams() so the validator sees the
+    // params as the runtime intends to send them, including any field
+    // that the sanitize step would silently strip.
+    validateXaiRequestPreFlight(params);
 
     return {
-      params,
+      params: sanitizeToDocumentedXaiResponsesParams(params),
       toolSelection: selectedTools,
-      requestMessages: repairedMessages,
     };
   }
 
   private resolveResponseTools(
     allowedToolNames?: readonly string[],
     toolChoice?: LLMToolChoice,
-    requestTools?: readonly LLMTool[],
   ): ToolSelectionDiagnostics {
-    const rawRequestTools = requestTools ? [...requestTools] : undefined;
-    const requestToolCatalog = rawRequestTools
-      ? slimTools(rawRequestTools).tools
-      : undefined;
-    const responseTools = requestToolCatalog
-      ? toXaiResponsesTools(requestToolCatalog)
-      : this.responseTools;
-    const rawToolsByName = rawRequestTools
-      ? new Map(rawRequestTools.map((tool) => [tool.function.name, tool]))
-      : this.rawToolsByName;
-    const responseToolsByName = requestToolCatalog
-      ? new Map(
-          responseTools
-            .map((tool, index) => {
-              const name = requestToolCatalog[index]?.function?.name;
-              return name ? [name, tool] : undefined;
-            })
-            .filter(
-              (
-                entry,
-              ): entry is [string, Record<string, unknown>] =>
-                entry !== undefined,
-            ),
-        )
-      : this.responseToolsByName;
-    const responseToolCharsByName = requestToolCatalog
-      ? new Map(
-          responseTools
-            .map((tool, index) => {
-              const name = requestToolCatalog[index]?.function?.name;
-              return name ? [name, JSON.stringify(tool).length] : undefined;
-            })
-            .filter(
-              (
-                entry,
-              ): entry is [string, number] => entry !== undefined,
-            ),
-        )
-      : this.responseToolCharsByName;
     const providerNativeTools = this.providerNativeTools;
     const providerCatalogToolCount =
-      responseTools.length + providerNativeTools.length;
+      this.responseTools.length + providerNativeTools.length;
     const providerCatalogToolNames = [
-      ...extractTraceToolNames(responseTools),
+      ...extractTraceToolNames(this.responseTools),
       ...providerNativeTools.map((definition) => definition.name),
     ];
     const fullCatalogTools = [
-      ...responseTools,
+      ...this.responseTools,
       ...providerNativeTools.map((definition) => definition.payload),
     ];
     if (allowedToolNames === undefined) {
@@ -1770,12 +1762,7 @@ export class GrokProvider implements LLMProvider {
       }
       return {
         tools: fullCatalogTools,
-        chars: rawRequestTools
-          ? fullCatalogTools.reduce(
-              (sum, tool) => sum + JSON.stringify(tool).length,
-              0,
-            )
-          : this.toolChars,
+        chars: this.toolChars,
         requestedToolNames: [],
         resolvedToolNames: providerCatalogToolNames,
         missingRequestedToolNames: [],
@@ -1824,13 +1811,13 @@ export class GrokProvider implements LLMProvider {
     const resolvedToolNames: string[] = [];
     let chars = 0;
     for (const name of requestedToolNames) {
-      let responseTool = responseToolsByName.get(name);
-      let responseToolChars = responseToolCharsByName.get(name);
+      let responseTool = this.responseToolsByName.get(name);
+      let responseToolChars = this.responseToolCharsByName.get(name);
       if (!responseTool) {
-        const rawTool = rawToolsByName.get(name);
+        const rawTool = this.rawToolsByName.get(name);
         if (rawTool) {
           const slimTool = toSlimTool(rawTool);
-          responseTool = toXaiResponsesTools([slimTool.tool])[0];
+          responseTool = this.toResponseTools([slimTool.tool])[0];
           responseToolChars = JSON.stringify(responseTool).length;
         }
       }
@@ -1889,8 +1876,281 @@ export class GrokProvider implements LLMProvider {
     };
   }
 
+  private toOpenAIMessage(msg: LLMMessage): Record<string, unknown> {
+    if (msg.role === "assistant" && msg.toolCalls && msg.toolCalls.length > 0) {
+      return {
+        role: "assistant",
+        content: msg.content,
+        tool_calls: msg.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: {
+            name: tc.name,
+            arguments: tc.arguments,
+          },
+        })),
+      };
+    }
+
+    if (msg.role === "tool") {
+      // Tool messages require string content per the OpenAI API spec.
+      // When content is a multimodal array (e.g. from screenshot tool results),
+      // extract only the text parts. Images are injected separately by buildParams.
+      let content: string;
+      if (Array.isArray(msg.content)) {
+        content =
+          msg.content
+            .filter((p) => p.type === "text")
+            .map((p) => (p as { type: "text"; text: string }).text)
+            .join("\n") || "Tool executed successfully.";
+      } else {
+        content = msg.content;
+      }
+      return {
+        role: "tool",
+        content,
+        tool_call_id: msg.toolCallId,
+      };
+    }
+    return {
+      role: msg.role,
+      content: msg.content,
+    };
+  }
+
+  private toResponseTools(tools: readonly LLMTool[]): Record<string, unknown>[] {
+    return tools.map((tool) => ({
+      type: "function",
+      name: tool.function.name,
+      description: tool.function.description,
+      parameters: tool.function.parameters,
+    }));
+  }
+
+  private toResponseInputItems(
+    message: Record<string, unknown>,
+  ): Record<string, unknown>[] {
+    const role = String(message.role ?? "");
+    const content = message.content;
+
+    if (role === "tool") {
+      const toolCallId = String(message.tool_call_id ?? "").trim();
+      if (!toolCallId) return [];
+      let output: string;
+      if (typeof content === "string") {
+        output = content;
+      } else {
+        try {
+          output = JSON.stringify(content);
+        } catch {
+          output = String(content ?? "");
+        }
+      }
+      return [
+        {
+          type: "function_call_output",
+          call_id: toolCallId,
+          output,
+        },
+      ];
+    }
+
+    if (role === "assistant") {
+      const toolCalls = Array.isArray(message.tool_calls)
+        ? (message.tool_calls as Array<Record<string, unknown>>)
+        : [];
+      const items: Record<string, unknown>[] = [];
+      const normalizedContent = this.normalizeResponseMessageContent(content);
+      if (normalizedContent !== undefined) {
+        items.push({
+          role,
+          content: normalizedContent,
+        });
+      } else if (toolCalls.length > 0) {
+        // xAI requires every message to have at least one content
+        // element. When an assistant message carries tool calls but
+        // has empty content (e.g. at-mention file injection preludes),
+        // emit a minimal placeholder so the function_call items are
+        // not orphaned.
+        items.push({
+          role,
+          content: "Calling tool.",
+        });
+      }
+      for (const tc of toolCalls) {
+        const functionData = (tc.function as Record<string, unknown> | undefined) ?? {};
+        const callId = String(tc.id ?? "").trim();
+        const name = String(functionData.name ?? "").trim();
+        const args = String(functionData.arguments ?? "");
+        if (!callId || !name) continue;
+        items.push({
+          type: "function_call",
+          call_id: callId,
+          name,
+          arguments: args,
+        });
+      }
+      return items;
+    }
+
+    if (role === "system" || role === "user") {
+      const normalizedContent = this.normalizeResponseMessageContent(content);
+      if (normalizedContent === undefined) return [];
+      return [{ role, content: normalizedContent }];
+    }
+
+    const normalizedContent = this.normalizeResponseMessageContent(content);
+    if (normalizedContent === undefined) return [];
+    return [{ role, content: normalizedContent }];
+  }
+
+  private normalizeResponseMessageContent(
+    content: unknown,
+  ): string | Array<Record<string, unknown>> | undefined {
+    if (typeof content === "string") {
+      if (content.length === 0) return undefined;
+      return content;
+    }
+    if (!Array.isArray(content)) {
+      return undefined;
+    }
+    const parts: Array<Record<string, unknown>> = [];
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const entry = part as Record<string, unknown>;
+      if (entry.type === "text") {
+        const text = String(entry.text ?? "");
+        if (text.length > 0) {
+          parts.push({ type: "input_text", text });
+        }
+      } else if (entry.type === "image_url") {
+        const image = (entry.image_url as Record<string, unknown> | undefined) ?? {};
+        const url = String(image.url ?? "");
+        if (url.length > 0) {
+          parts.push({ type: "input_image", image_url: url });
+        }
+      }
+    }
+    if (parts.length === 0) return undefined;
+    return parts;
+  }
+
+  /**
+   * Auto-mitigate the documented xAI /v1/responses mid-sentence
+   * truncation bug (report.txt §4.4). When a response matches the
+   * known trigger — status="completed", incomplete_details=null,
+   * zero tool-call blocks, tools sent, tool_choice="auto", input has
+   * prior function_call_output turns, text ends mid-sentence — this
+   * method re-issues the SAME request with tool_choice="none" to
+   * force xAI's text-mode decoder path, which the reproduction matrix
+   * proves is not affected by the bug.
+   *
+   * Returns the corrected response payload on successful mitigation,
+   * or `undefined` if the original response was not truncated, the
+   * retry failed, or the retry itself also truncated (a second
+   * truncation would indicate a different failure mode and the
+   * original response is returned upstream).
+   *
+   * The retry is single-shot (no loops), non-streaming (simpler to
+   * buffer), and does not propagate any client-side AbortSignal so a
+   * user-initiated cancel still fires at the higher level.
+   */
+  private async maybeRetryMidSentenceTruncation(
+    client: unknown,
+    originalParams: Record<string, unknown>,
+    originalResponse: Record<string, unknown>,
+    options: LLMChatOptions | undefined,
+    transport: "chat" | "chat_stream",
+  ): Promise<Record<string, unknown> | undefined> {
+    const anomalies = validateXaiResponsePostFlight({
+      request: originalParams,
+      response: originalResponse,
+    });
+    const truncation = anomalies.find(
+      (a) => a.code === "truncated_response_mid_sentence",
+    );
+    if (!truncation) return undefined;
+
+    // Clone params and force the mitigating tool_choice. Keep the
+    // retry non-streaming so the caller doesn't have to re-buffer
+    // SSE deltas. parallel_tool_calls is meaningless with
+    // tool_choice="none" — drop it so the strict pre-flight doesn't
+    // see a redundant field on the retry.
+    const retryParams: Record<string, unknown> = {
+      ...originalParams,
+      tool_choice: "none",
+      stream: false,
+    };
+    delete retryParams.parallel_tool_calls;
+
+    emitProviderTraceEvent(options, {
+      kind: "request",
+      transport,
+      provider: this.name,
+      model: String(retryParams.model ?? this.config.model),
+      payload:
+        cloneProviderTracePayload(retryParams) ??
+        { error: "provider_retry_request_trace_unavailable" },
+      context: {
+        retryReason: "xai_mid_sentence_truncation_mitigation",
+        originalEvidence: truncation.evidence,
+      } as unknown as ReturnType<typeof buildProviderRequestTraceContext>,
+    });
+
+    try {
+      const retryResult = await createWithResponseMetadata<
+        Record<string, unknown>
+      >(client, retryParams, undefined);
+      const retryResponse = retryResult.data;
+
+      emitProviderTraceEvent(options, {
+        kind: "response",
+        transport,
+        provider: this.name,
+        model: String(
+          (retryResponse as { model?: unknown }).model ?? retryParams.model,
+        ),
+        payload:
+          cloneProviderTracePayload(retryResponse) ??
+          { error: "provider_retry_response_trace_unavailable" },
+        context: {
+          retryReason: "xai_mid_sentence_truncation_mitigation",
+        } as unknown as ReturnType<typeof buildProviderResponseTraceContext>,
+      });
+
+      // Re-run post-flight on the retry. If the retry ALSO truncated
+      // (a second hit of the same bug on the mitigation path), give
+      // up and let the caller surface the original response so the
+      // failure stays visible rather than hanging on mitigation.
+      const retryAnomalies = validateXaiResponsePostFlight({
+        request: retryParams,
+        response: retryResponse,
+      });
+      const retryTruncated = retryAnomalies.some(
+        (a) => a.code === "truncated_response_mid_sentence",
+      );
+      if (retryTruncated) {
+        console.warn(
+          `[GrokProvider] xAI mid-sentence truncation retry with ` +
+            `tool_choice="none" also returned a truncated response; ` +
+            `falling through to original.`,
+        );
+        return undefined;
+      }
+
+      return retryResponse;
+    } catch (err) {
+      console.warn(
+        `[GrokProvider] xAI mid-sentence truncation retry failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
   private parseResponse(
     response: any,
+    request: Record<string, unknown> | undefined,
     requestMetrics?: LLMRequestMetrics,
     compactionDiagnostics?: LLMCompactionDiagnostics,
     structuredOutputRequest?: LLMChatOptions["structuredOutput"],
@@ -1900,6 +2160,26 @@ export class GrokProvider implements LLMProvider {
     const { toolCalls, normalizationIssues } = this.extractToolCallsFromOutput(
       response.output,
     );
+
+    // Strict post-flight: detect xAI semantic-degradation patterns and
+    // log them at the anomaly level. Pass-through when no request
+    // context is available (e.g. parsing a stored response by ID).
+    if (request) {
+      const anomalies = validateXaiResponsePostFlight({
+        request,
+        response: response as Record<string, unknown>,
+      });
+      for (const anomaly of anomalies) {
+        // truncated_response_mid_sentence is handled upstream by
+        // maybeRetryMidSentenceTruncation() BEFORE parseResponse is
+        // called. If it surfaces here, it means the retry ran and
+        // also truncated, OR parseResponse was called on a stored
+        // response that bypassed the mitigation. Either way the
+        // truncation has already been logged; don't re-log here.
+        if (anomaly.code === "truncated_response_mid_sentence") continue;
+        this.logPostFlightAnomaly(anomaly);
+      }
+    }
 
     const finishReason = this.mapResponseFinishReason(response, toolCalls);
     const compaction = compactionDiagnostics;
@@ -1927,7 +2207,9 @@ export class GrokProvider implements LLMProvider {
   }
 
   private toStoredResponse(response: Record<string, unknown>): LLMStoredResponse {
-    const parsed = this.parseResponse(response);
+    // Stored responses are retrieved by ID; we don't have the original
+    // request body, so the post-flight validator runs in pass-through mode.
+    const parsed = this.parseResponse(response, undefined);
     const encryptedReasoning = this.extractEncryptedReasoningDiagnostics(response, {
       requested: undefined,
     });

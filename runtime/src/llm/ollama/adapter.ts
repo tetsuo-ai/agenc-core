@@ -31,9 +31,8 @@ import {
 } from "../provider-capabilities.js";
 import { withTimeout } from "../timeout.js";
 import { repairToolTurnSequence, validateToolTurnSequence } from "../tool-turn-validator.js";
-import { safeStringify } from "../_deps/safe-stringify.js";
-import { resolveContextWindowProfile } from "../_deps/context-window.js";
-import { withOllamaHealthSidecar } from "../providers/ollama/health.js";
+import { safeStringify } from "../../tools/types.js";
+import { resolveContextWindowProfile } from "../../gateway/context-window.js";
 
 const DEFAULT_HOST = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3";
@@ -257,11 +256,7 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
-    const requestTools = options?.tools ? [...options.tools] : this.tools;
-    const toolSelection = this.selectTools(
-      options?.toolRouting?.allowedToolNames,
-      requestTools,
-    );
+    const toolSelection = this.selectTools(options?.toolRouting?.allowedToolNames);
     const params = this.buildParams(messages, options, toolSelection);
     const requestMetrics = collectParamDiagnostics(params, toolSelection);
     const requestTimeoutMs = resolveRequestTimeoutMs(
@@ -317,11 +312,7 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
     const client = await this.ensureClient();
-    const requestTools = options?.tools ? [...options.tools] : this.tools;
-    const toolSelection = this.selectTools(
-      options?.toolRouting?.allowedToolNames,
-      requestTools,
-    );
+    const toolSelection = this.selectTools(options?.toolRouting?.allowedToolNames);
     const params: Record<string, unknown> = {
       ...this.buildParams(messages, options, toolSelection),
       stream: true,
@@ -332,7 +323,7 @@ export class OllamaProvider implements LLMProvider {
       options?.timeoutMs,
     );
     let content = "";
-    let model = String(params.model ?? this.config.model);
+    let model = this.config.model;
     let toolCalls: LLMToolCall[] = [];
     let promptTokens = 0;
     let completionTokens = 0;
@@ -348,18 +339,12 @@ export class OllamaProvider implements LLMProvider {
           { error: "provider_request_trace_unavailable" },
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
-      const stream = await withOllamaHealthSidecar({
-        signal: options?.signal,
-        healthCheck: async () => await this.healthCheck(),
-        operation: async (signal) =>
-          await withTimeout(
-            async (activeSignal) =>
-              (client as any).chat(params, { signal: activeSignal }),
-            requestTimeoutMs,
-            this.name,
-            signal,
-          ),
-      });
+      const stream = await withTimeout(
+        async (signal) => (client as any).chat(params, { signal }),
+        requestTimeoutMs,
+        this.name,
+        options?.signal,
+      );
 
       for await (const chunk of stream as AsyncIterable<any>) {
         if (chunk.message?.content) {
@@ -506,15 +491,11 @@ export class OllamaProvider implements LLMProvider {
     options?: LLMChatOptions,
     toolSelection?: ToolSelectionDiagnostics,
   ): Record<string, unknown> {
-    const requestMessages =
-      options?.systemPrompt?.trim()
-        ? [{ role: "system" as const, content: options.systemPrompt.trim() }, ...messages]
-        : messages;
-    const repairedMessages = repairToolTurnSequence(requestMessages);
+    const repairedMessages = repairToolTurnSequence(messages);
     validateToolTurnSequence(repairedMessages, { providerName: this.name });
 
     const params: Record<string, unknown> = {
-      model: options?.model?.trim() || this.config.model,
+      model: this.config.model,
       messages: repairedMessages.map((m) => this.toOllamaMessage(m)),
     };
 
@@ -523,13 +504,11 @@ export class OllamaProvider implements LLMProvider {
     if (this.config.temperature !== undefined)
       modelOptions.temperature = this.config.temperature;
     if (
-      typeof (options?.maxOutputTokens ?? this.config.maxTokens) === "number" &&
-      Number.isFinite(options?.maxOutputTokens ?? this.config.maxTokens) &&
-      (options?.maxOutputTokens ?? this.config.maxTokens)! > 0
+      typeof this.config.maxTokens === "number" &&
+      Number.isFinite(this.config.maxTokens) &&
+      this.config.maxTokens > 0
     )
-      modelOptions.num_predict = Math.floor(
-        (options?.maxOutputTokens ?? this.config.maxTokens)!,
-      );
+      modelOptions.num_predict = this.config.maxTokens;
     if (this.config.numCtx !== undefined) modelOptions.num_ctx = this.config.numCtx;
     if (this.config.numGpu !== undefined) modelOptions.num_gpu = this.config.numGpu;
     if (Object.keys(modelOptions).length > 0) params.options = modelOptions;
@@ -538,11 +517,9 @@ export class OllamaProvider implements LLMProvider {
       params.keep_alive = this.config.keepAlive;
 
     // Tools — Ollama uses OpenAI-compatible format
-    const requestTools = options?.tools ? [...options.tools] : this.tools;
-    if (requestTools.length > 0) {
+    if (this.tools.length > 0) {
       params.tools = (toolSelection ?? this.selectTools(
         options?.toolRouting?.allowedToolNames,
-        requestTools,
       )).tools;
     }
 
@@ -551,13 +528,12 @@ export class OllamaProvider implements LLMProvider {
 
   private selectTools(
     allowedToolNames?: readonly string[],
-    tools: readonly LLMTool[] = this.tools,
   ): ToolSelectionDiagnostics {
-    const providerCatalogToolCount = tools.length;
-    const providerCatalogToolNames = tools.map((tool) => tool.function.name);
+    const providerCatalogToolCount = this.tools.length;
+    const providerCatalogToolNames = this.tools.map((tool) => tool.function.name);
     if (allowedToolNames === undefined) {
       return {
-        tools: [...tools],
+        tools: this.tools,
         requestedToolNames: [],
         resolvedToolNames: providerCatalogToolNames,
         missingRequestedToolNames: [],
@@ -597,7 +573,7 @@ export class OllamaProvider implements LLMProvider {
     }
 
     const requestedToolNames = [...allowed];
-    const filtered = tools.filter((tool) => allowed.has(tool.function.name));
+    const filtered = this.tools.filter((tool) => allowed.has(tool.function.name));
     const resolvedToolNames = filtered.map((tool) => tool.function.name);
     const missingRequestedToolNames = requestedToolNames.filter((name) =>
       !resolvedToolNames.includes(name)
@@ -694,7 +670,7 @@ export class OllamaProvider implements LLMProvider {
       content,
       toolCalls,
       usage,
-      model: response.model ?? options?.model?.trim() ?? this.config.model,
+      model: response.model ?? this.config.model,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ...this.buildUnsupportedDiagnostics(options),
     };

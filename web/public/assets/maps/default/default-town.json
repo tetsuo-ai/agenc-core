@@ -1,0 +1,105 @@
+{
+  "width": 16,
+  "height": 12,
+  "tilewidth": 16,
+  "tileheight": 16,
+  "orientation": "orthogonal",
+  "renderorder": "right-down",
+  "tilesets": [
+    {
+      "firstgid": 1,
+      "name": "default-tiles",
+      "image": "tileset.png",
+      "imagewidth": 128,
+      "imageheight": 128,
+      "tilewidth": 16,
+      "tileheight": 16,
+      "tilecount": 64,
+      "columns": 8,
+      "margin": 0,
+      "spacing": 0
+    }
+  ],
+  "layers": [
+    {
+      "id": 1,
+      "name": "ground",
+      "type": "tilelayer",
+      "width": 16,
+      "height": 12,
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0,
+      "data": [
+        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+      ]
+    },
+    {
+      "id": 2,
+      "name": "locations",
+      "type": "objectgroup",
+      "visible": true,
+      "opacity": 1,
+      "x": 0,
+      "y": 0,
+      "objects": [
+        {
+          "id": 1,
+          "name": "location-a",
+          "type": "location",
+          "x": 16,
+          "y": 16,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 2,
+          "name": "location-b",
+          "type": "location",
+          "x": 144,
+          "y": 16,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 3,
+          "name": "location-c",
+          "type": "location",
+          "x": 16,
+          "y": 112,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        },
+        {
+          "id": 4,
+          "name": "location-d",
+          "type": "location",
+          "x": 144,
+          "y": 112,
+          "width": 96,
+          "height": 64,
+          "rotation": 0,
+          "visible": true
+        }
+      ]
+    }
+  ]
+}

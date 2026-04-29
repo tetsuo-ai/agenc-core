@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T16:16:30.645Z",
+  "mode": "tui",
+  "iterations": 3,
+  "childMaxWaitSeconds": 300,
+  "maxPendingWaitSeconds": 0,
+  "allowDeferred": false,
+  "overallPassed": true,
+  "runs": [
+    {
+      "flow": "tui",
+      "iteration": 1,
+      "startedAt": "2026-04-23T15:38:34.814Z",
+      "status": "completed",
+      "rpc429Count": 86,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/tui-run-1-1776958714814.json",
+      "okLine": "[ok] marketplace TUI devnet smoke complete: dispute status=resolved, task status=cancelled, task claim=7tjs95xuQfxnkNbERefwU797nhnE8pms7MHUa5LdFD6o",
+      "finishedAt": "2026-04-23T15:51:11.239Z",
+      "durationMs": 756425,
+      "exitCode": 0
+    },
+    {
+      "flow": "tui",
+      "iteration": 2,
+      "startedAt": "2026-04-23T15:51:13.241Z",
+      "status": "completed",
+      "rpc429Count": 90,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/tui-run-2-1776959473241.json",
+      "okLine": "[ok] marketplace TUI devnet smoke complete: dispute status=resolved, task status=cancelled, task claim=5mJUbGWDtSVFQW7tsZ6zxuHCD9cvzC8hagtTNMZnYSbr",
+      "finishedAt": "2026-04-23T16:03:50.817Z",
+      "durationMs": 757576,
+      "exitCode": 0
+    },
+    {
+      "flow": "tui",
+      "iteration": 3,
+      "startedAt": "2026-04-23T16:03:52.818Z",
+      "status": "completed",
+      "rpc429Count": 83,
+      "notes": [],
+      "artifactPath": "/var/folders/gd/mvb492r97z1bw8c0nzrwhj_m0000gp/T/agenc-marketplace-soak/tui-run-3-1776960232818.json",
+      "okLine": "[ok] marketplace TUI devnet smoke complete: dispute status=resolved, task status=cancelled, task claim=33STvck8tua6WGnq6zBTJCEY9WKkUrovVWrRHTxGTmtN",
+      "finishedAt": "2026-04-23T16:16:28.644Z",
+      "durationMs": 755826,
+      "exitCode": 0
+    }
+  ]
+}

@@ -49,20 +49,14 @@ export interface LLMMessage {
      * When `true`, this message is preserved across compaction
      * boundaries. Compaction extracts anchor-marked messages from
      * the segment being summarized and retains them alongside the
-     * kept tail — matches upstream's `messagesToKeep` compaction pattern.
-     * Reserved for messages the
+     * kept tail — matches upstream's `messagesToKeep` pattern at
+     * `services/compact/compact.ts`. Reserved for messages the
      * runtime depends on for trigger anchoring (e.g. injected
      * reminders whose re-emission gates scan for prior-injection
      * headers in history). Use sparingly; anchor messages that
      * accumulate indefinitely inflate post-compact history.
      */
     readonly anchorPreserve?: boolean;
-    readonly recoverableToolFailure?: {
-      readonly hiddenFromTranscript: true;
-      readonly kind:
-        | "input_validation"
-        | "shell_workspace_write_policy";
-    };
   };
   /** For assistant messages that request tool execution */
   toolCalls?: LLMToolCall[];
@@ -107,61 +101,6 @@ export interface ToolCallValidationFailure {
 interface ToolCallValidationResult {
   readonly toolCall: LLMToolCall | null;
   readonly failure?: ToolCallValidationFailure;
-}
-
-const STRING_ARGUMENT_TOOL_FIELDS: Readonly<Record<string, string>> = {
-  exec_command: "cmd",
-  "system.bash": "command",
-  FileRead: "file_path",
-  Write: "file_path",
-  Edit: "file_path",
-  "system.listDir": "path",
-  "system.stat": "path",
-  "system.mkdir": "path",
-  "system.delete": "path",
-  Glob: "pattern",
-  Grep: "pattern",
-  "system.glob": "pattern",
-  exec: "code",
-};
-
-function isBlankString(value: string): boolean {
-  return value.trim().length === 0;
-}
-
-function isLikelyStructuredObjectLiteral(value: string): boolean {
-  return /^\s*\{\s*['"]?\w+['"]?\s*:/.test(value);
-}
-
-function shouldTreatMalformedArgumentsAsStructuredLiteral(
-  toolName: string,
-  value: string,
-): boolean {
-  if (isLikelyStructuredObjectLiteral(value)) {
-    return true;
-  }
-  // AgenC preserves Bash's plain-string command mode even when the
-  // command starts with bracket syntax (`[ -f foo ] && pwd`, `{ pwd; }`).
-  // File/path tools do not have that escape hatch: if their arguments start
-  // with JSON-like delimiters but failed to parse, keep them as malformed
-  // structured input instead of converting the entire blob into a fake path.
-  if (toolName === "system.bash" || toolName === "exec_command") {
-    return false;
-  }
-  return /^\s*[\[{]/.test(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function wrapPlainStringToolArguments(
-  toolName: string,
-  value: string,
-): Record<string, string> | null {
-  const field = STRING_ARGUMENT_TOOL_FIELDS[toolName];
-  if (!field) return null;
-  return { [field]: value };
 }
 
 /**
@@ -288,9 +227,6 @@ interface LLMChatToolRoutingOptions {
 }
 
 type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
-type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
-type LLMModelVerbosity = "low" | "medium" | "high";
-type LLMServiceTier = "fast" | "flex";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -502,23 +438,6 @@ export type LLMToolChoice =
  */
 export interface LLMChatOptions {
   /**
-   * Request-scoped model override. Providers default to their constructor
-   * model, but delegated turns such as reviewer/guardian sessions must be
-   * able to run a different model without rebuilding the whole parent
-   * session.
-   */
-  readonly model?: string;
-  /**
-   * Stable request instructions kept out of the conversation transcript.
-   * Provider adapters serialize this through their native system/instructions
-   * field instead of injecting a mid-conversation system message.
-   */
-  readonly systemPrompt?: string;
-  /** Effective input context window for this request. */
-  readonly contextWindowTokens?: number;
-  /** Positive output-token budget for this request. */
-  readonly maxOutputTokens?: number;
-  /**
    * Optional stable session key passed to providers that expose a
    * prompt-cache routing hint (xAI `prompt_cache_key`, etc.). Pure
    * optimization — has no effect on correctness. No server-side
@@ -526,10 +445,6 @@ export interface LLMChatOptions {
    */
   readonly promptCacheKey?: string;
   readonly toolRouting?: LLMChatToolRoutingOptions;
-  /** Request-scoped tool catalog. Providers should prefer this over
-   * constructor-time tools so late MCP/dynamic tools can appear after
-   * session startup. */
-  readonly tools?: ReadonlyArray<LLMTool>;
   readonly toolChoice?: LLMToolChoice;
   /** Optional request-scoped structured output contract. */
   readonly structuredOutput?: LLMStructuredOutputRequest;
@@ -539,12 +454,6 @@ export interface LLMChatOptions {
   readonly maxTurns?: number;
   /** Provider-native reasoning depth override. */
   readonly reasoningEffort?: LLMReasoningEffort;
-  /** Provider-facing reasoning-summary hint for APIs that expose it. */
-  readonly reasoningSummary?: LLMReasoningSummary;
-  /** Provider-facing output verbosity hint for APIs that expose it. */
-  readonly modelVerbosity?: LLMModelVerbosity;
-  /** Provider-facing service-tier hint for APIs that expose it. */
-  readonly serviceTier?: LLMServiceTier;
   readonly trace?: LLMChatTraceOptions;
   /** Upper bound for this individual provider call. */
   readonly timeoutMs?: number;
@@ -709,10 +618,6 @@ export interface LLMProviderConfig {
   maxRetries?: number;
   /** Base delay between retries in milliseconds */
   retryDelayMs?: number;
-  /** Best-effort warning sink for provider/transport contract events. */
-  emitWarning?: (warning: { cause: string; message: string }) => void;
-  /** Capability-drift hook fired when the provider rejects a claimed feature. */
-  onCapabilityDrift?: (warning: { message: string; status?: number }) => void;
 }
 
 /**
@@ -745,38 +650,19 @@ function decodeHtmlEntitiesDeep(value: unknown): unknown {
   );
 }
 
-function normalizeToolArguments(
-  toolName: string,
+function parseToolArguments(
   argumentsRaw: string,
 ): { value: unknown } | null {
-  const finalizeParsed = (value: unknown): { value: unknown } => {
-    if (isRecord(value)) {
-      return { value };
-    }
-    if (typeof value === "string" && !isBlankString(value)) {
-      return {
-        value: wrapPlainStringToolArguments(toolName, value) ?? value,
-      };
-    }
-    return { value };
-  };
   try {
-    return finalizeParsed(JSON.parse(argumentsRaw) as unknown);
+    return {
+      value: JSON.parse(argumentsRaw) as unknown,
+    };
   } catch {
     try {
-      return finalizeParsed(JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown);
+      return {
+        value: JSON.parse(decodeHtmlEntities(argumentsRaw)) as unknown,
+      };
     } catch {
-      const decoded = decodeHtmlEntities(argumentsRaw);
-      if (
-        isBlankString(decoded) ||
-        shouldTreatMalformedArgumentsAsStructuredLiteral(toolName, decoded)
-      ) {
-        return { value: {} };
-      }
-      const wrapped = wrapPlainStringToolArguments(toolName, decoded);
-      if (wrapped) {
-        return { value: wrapped };
-      }
       return null;
     }
   }
@@ -836,7 +722,7 @@ export function validateToolCallDetailed(
     };
   }
 
-  const parsedResult = normalizeToolArguments(name, argumentsRaw);
+  const parsedResult = parseToolArguments(argumentsRaw);
   if (!parsedResult) {
     return {
       toolCall: null,

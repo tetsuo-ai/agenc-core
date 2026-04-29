@@ -40,19 +40,6 @@ export const color = {
   panelHiBg: "\x1b[48;5;234m",
   panelMessageBg: "\x1b[48;5;236m",
   tableHeaderBg: "\x1b[48;5;236m",
-  // AgenC cyberpunk brand — truecolor, brand-stable across watch presets.
-  // applyWatchTheme() does not touch these keys.
-  agencFuchsia: "\x1b[38;2;217;70;239m",
-  agencPeriwinkle: "\x1b[38;2;167;139;250m",
-  agencFrost: "\x1b[38;2;192;132;252m",
-  agencInk: "\x1b[38;2;245;243;255m",
-  agencSlateViolet: "\x1b[38;2;156;163;175m",
-  agencDeepSlate: "\x1b[38;2;71;85;105m",
-  agencVoid: "\x1b[38;2;5;2;8m",
-  agencVoidLifted: "\x1b[38;2;15;8;23m",
-  agencDeepViolet: "\x1b[38;2;76;29;149m",
-  agencCrimson: "\x1b[38;2;255;0;60m",
-  agencRose: "\x1b[38;2;251;113;133m",
 };
 
 /** Tone-to-fg/bg mapping. */
@@ -136,28 +123,6 @@ const WATCH_THEME_PRESETS = Object.freeze({
     panelHiBg: "\x1b[48;5;236m",
     panelMessageBg: "\x1b[48;5;238m",
     tableHeaderBg: "\x1b[48;5;238m",
-  }),
-  cyberpunk: Object.freeze({
-    border: "\x1b[38;2;76;29;149m",
-    borderStrong: "\x1b[38;2;167;139;250m",
-    ink: "\x1b[38;2;245;243;255m",
-    softInk: "\x1b[38;2;156;163;175m",
-    slate: "\x1b[38;2;156;163;175m",
-    fog: "\x1b[38;2;71;85;105m",
-    cyan: "\x1b[38;2;167;139;250m",
-    teal: "\x1b[38;2;167;139;250m",
-    blue: "\x1b[38;2;167;139;250m",
-    green: "\x1b[38;2;192;132;252m",
-    lime: "\x1b[38;2;192;132;252m",
-    yellow: "\x1b[38;2;251;113;133m",
-    amber: "\x1b[38;2;251;113;133m",
-    magenta: "\x1b[38;2;217;70;239m",
-    red: "\x1b[38;2;255;0;60m",
-    panelBg: "\x1b[48;2;5;2;8m",
-    panelAltBg: "\x1b[48;2;15;8;23m",
-    panelHiBg: "\x1b[48;2;30;15;46m",
-    panelMessageBg: "\x1b[48;2;15;8;23m",
-    tableHeaderBg: "\x1b[48;2;15;8;23m",
   }),
 });
 

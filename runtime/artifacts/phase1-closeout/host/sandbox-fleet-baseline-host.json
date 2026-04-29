@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T18:17:30.867Z",
+  "config": {
+    "sandboxes": 4,
+    "jobsPerSandbox": 2,
+    "waves": 2,
+    "jobDurationMs": 2000,
+    "timeoutSeconds": 120,
+    "image": "node:20-slim",
+    "workspaceAccess": "none",
+    "networkAccess": false,
+    "maxTrackedJobs": null
+  },
+  "overallPassed": true,
+  "waves": [
+    {
+      "wave": 1,
+      "startedAt": "2026-04-23T18:17:17.585Z",
+      "finishedAt": "2026-04-23T18:17:24.037Z",
+      "sandboxesStarted": 4,
+      "jobsStarted": 8,
+      "jobsCompleted": 8,
+      "jobResults": [
+        {
+          "sandboxId": "sandbox_c6f4ef7695",
+          "sandboxJobId": "sjob_f7e0ee7262",
+          "processId": "proc_93c4a80a",
+          "durationMs": 4295
+        },
+        {
+          "sandboxId": "sandbox_c6f4ef7695",
+          "sandboxJobId": "sjob_a8dee8c4f6",
+          "processId": "proc_174f33a5",
+          "durationMs": 4289
+        },
+        {
+          "sandboxId": "sandbox_c27968c584",
+          "sandboxJobId": "sjob_131be08673",
+          "processId": "proc_9a2f20c1",
+          "durationMs": 4070
+        },
+        {
+          "sandboxId": "sandbox_c27968c584",
+          "sandboxJobId": "sjob_54539694a4",
+          "processId": "proc_d853b530",
+          "durationMs": 4053
+        },
+        {
+          "sandboxId": "sandbox_4edeb727f4",
+          "sandboxJobId": "sjob_4b969fe8e0",
+          "processId": "proc_121427bc",
+          "durationMs": 3698
+        },
+        {
+          "sandboxId": "sandbox_4edeb727f4",
+          "sandboxJobId": "sjob_62b2ed9815",
+          "processId": "proc_771d2b60",
+          "durationMs": 3638
+        },
+        {
+          "sandboxId": "sandbox_cabccf1466",
+          "sandboxJobId": "sjob_9652cf6744",
+          "processId": "proc_1f58eafd",
+          "durationMs": 3151
+        },
+        {
+          "sandboxId": "sandbox_cabccf1466",
+          "sandboxJobId": "sjob_5f71615843",
+          "processId": "proc_72215ca6",
+          "durationMs": 3137
+        }
+      ]
+    },
+    {
+      "wave": 2,
+      "startedAt": "2026-04-23T18:17:24.728Z",
+      "finishedAt": "2026-04-23T18:17:29.866Z",
+      "sandboxesStarted": 4,
+      "jobsStarted": 8,
+      "jobsCompleted": 8,
+      "jobResults": [
+        {
+          "sandboxId": "sandbox_a5157d2458",
+          "sandboxJobId": "sjob_34b6b97c92",
+          "processId": "proc_9aff80ef",
+          "durationMs": 2913
+        },
+        {
+          "sandboxId": "sandbox_a5157d2458",
+          "sandboxJobId": "sjob_585cce5ac7",
+          "processId": "proc_b5e87c03",
+          "durationMs": 3912
+        },
+        {
+          "sandboxId": "sandbox_902043cc7c",
+          "sandboxJobId": "sjob_aff4184bb2",
+          "processId": "proc_74f00a11",
+          "durationMs": 3693
+        },
+        {
+          "sandboxId": "sandbox_902043cc7c",
+          "sandboxJobId": "sjob_4cdec1f94c",
+          "processId": "proc_52a2e7ad",
+          "durationMs": 3678
+        },
+        {
+          "sandboxId": "sandbox_d316479570",
+          "sandboxJobId": "sjob_a84ad3489b",
+          "processId": "proc_58d0cc28",
+          "durationMs": 3436
+        },
+        {
+          "sandboxId": "sandbox_d316479570",
+          "sandboxJobId": "sjob_e5e6c01e20",
+          "processId": "proc_8dc0168b",
+          "durationMs": 3371
+        },
+        {
+          "sandboxId": "sandbox_1434091532",
+          "sandboxJobId": "sjob_a7642f2ce3",
+          "processId": "proc_77b45508",
+          "durationMs": 3078
+        },
+        {
+          "sandboxId": "sandbox_1434091532",
+          "sandboxJobId": "sjob_1c5a9ae13f",
+          "processId": "proc_829ae784",
+          "durationMs": 3057
+        }
+      ]
+    }
+  ]
+}

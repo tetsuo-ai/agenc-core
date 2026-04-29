@@ -12,51 +12,13 @@ import type {
   MCPServerConfig,
   MCPToolBridge,
 } from "./types.js";
-import type { Tool } from "./_deps/tools-types.js";
-import type { Logger } from "./_deps/logger.js";
-import { silentLogger } from "./_deps/logger.js";
+import type { Tool } from "../tools/types.js";
+import type { Logger } from "../utils/logger.js";
+import { silentLogger } from "../utils/logger.js";
 import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tool-bridge.js";
 import { ResilientMCPBridge } from "./resilient-bridge.js";
-import type {
-  MCPCallObserver,
-  MCPToolCatalogPolicyConfig,
-} from "./tool-bridge.js";
-import {
-  createResourceBridge,
-  type MCPResourceBridge,
-  type MCPResourceContent,
-  type MCPResourceDescriptor,
-} from "./resource-bridge.js";
-import {
-  createPromptBridge,
-  type MCPPromptBridge,
-  type MCPPromptDescriptor,
-  type MCPPromptRendered,
-} from "./prompt-bridge.js";
-
-/** I-50: cancellable MCP startup wait; 30s default. */
-export const MCP_STARTUP_TIMEOUT_MS = 30_000;
-
-export interface MCPManagerStartOpts {
-  /** Cancel the startup wait — fires I-50. Any in-flight connect that
-   *  has not yet resolved is abandoned; connected bridges stay. */
-  readonly signal?: AbortSignal;
-  /** Override timeout for the initial listTools + connect RPC. */
-  readonly timeoutMs?: number;
-  /** I-20: require at least one server to come up — fail-hard
-   *  otherwise. Default false (fail-soft). */
-  readonly requireOneReady?: boolean;
-  /** I-20: require THESE named servers to come up. Overrides
-   *  `requireOneReady` when both set. */
-  readonly requiredServers?: ReadonlyArray<string>;
-}
-
-interface StartupGate {
-  cancel(reason: string): void;
-  isCancelled(): boolean;
-  reason(): string | undefined;
-}
+import type { MCPToolCatalogPolicyConfig } from "../policy/mcp-governance.js";
 
 function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
@@ -88,26 +50,9 @@ function toToolCatalogPolicyConfig(
  * ```
  */
 export class MCPManager {
-  private configs: MCPServerConfig[];
+  private readonly configs: MCPServerConfig[];
   private readonly logger: Logger;
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
-  private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
-  private readonly promptBridges: Map<string, MCPPromptBridge> = new Map();
-  /**
-   * Per-server `InitializeResult.instructions` blob captured at connect
-   * time. Consumed by the per-turn `mcp_instructions_delta` attachment
-   * producer (`runtime/src/prompts/attachments/mcp-delta.ts`) to detect
-   * mid-session server connect / disconnect / reconfigure events. Empty
-   * map for servers that don't supply an instructions blob.
-   */
-  private readonly serverInstructions: Map<string, string> = new Map();
-  /**
-   * T6 gap #119: optional observer wired by the session layer so MCP
-   * tool calls emit `mcp_tool_call_begin` / `mcp_tool_call_end` events
-   * into the session event log. Manager stays session-free; the session
-   * owner sets this to a shim that calls `session.emit(...)`.
-   */
-  private callObserver: MCPCallObserver | undefined;
 
   constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
     this.configs = configs;
@@ -115,27 +60,10 @@ export class MCPManager {
   }
 
   /**
-   * T6 gap #119: install the call-observer that the bridge factory
-   * passes to each per-tool `execute()` wrapper. Safe to call before or
-   * after `start()`; observer applies to bridges created after the
-   * call.
-   */
-  setCallObserver(observer: MCPCallObserver | undefined): void {
-    this.callObserver = observer;
-  }
-
-  /**
    * Connect to all enabled MCP servers and create tool bridges.
-   * Failures on individual servers are logged but don't block others
-   * (I-6 fail-soft) — unless `requireOneReady` / `requiredServers`
-   * is set, in which case I-20 aggregate-failure trips.
-   *
-   * I-50: the caller may pass `signal` to abort the startup wait;
-   * any servers that connected still stay connected, the rest are
-   * left to resolve/reject in the background under their own
-   * connect-timeout.
+   * Failures on individual servers are logged but don't block others.
    */
-  async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+  async start(): Promise<void> {
     const enabledConfigs = this.configs.filter((c) => c.enabled !== false);
 
     if (enabledConfigs.length === 0) {
@@ -143,46 +71,20 @@ export class MCPManager {
       return;
     }
 
-    const signal = opts.signal;
-    if (signal?.aborted) {
-      throw new Error(
-        `MCP startup cancelled before first connect (${signal.reason ?? "unspecified"})`,
-      );
-    }
-    const timeoutMs = opts.timeoutMs ?? MCP_STARTUP_TIMEOUT_MS;
-
     this.logger.info(`Starting ${enabledConfigs.length} MCP server(s)...`);
 
-    // I-50: race each per-server connect against the external signal.
-    const results = await Promise.all(
-      enabledConfigs.map((config) =>
-        {
-          const gate = createStartupGate();
-          return raceWithSignal(
-            this.connectServer(config, gate),
-          signal,
-          timeoutMs,
-          `MCP server "${config.name}" connect`,
-          gate,
-          ).then(
-          (bridge) => ({ status: "fulfilled" as const, value: bridge }),
-          (err: unknown) => ({ status: "rejected" as const, reason: err }),
-          );
-        },
-      ),
+    const results = await Promise.allSettled(
+      enabledConfigs.map(async (config) => this.connectServer(config)),
     );
 
     let successCount = 0;
-    const failures: Array<{ name: string; reason: unknown }> = [];
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
-      const cfg = enabledConfigs[i];
       if (result.status === "fulfilled") {
         successCount++;
       } else {
-        failures.push({ name: cfg.name, reason: result.reason });
         this.logger.error(
-          `Failed to connect to MCP server "${cfg.name}":`,
+          `Failed to connect to MCP server "${enabledConfigs[i].name}":`,
           result.reason,
         );
       }
@@ -192,29 +94,6 @@ export class MCPManager {
     this.logger.info(
       `MCP: ${successCount}/${enabledConfigs.length} servers connected, ${totalTools} tools available`,
     );
-
-    // I-20: aggregate-failure check.
-    if (opts.requiredServers && opts.requiredServers.length > 0) {
-      const missing = opts.requiredServers.filter(
-        (name) => !this.bridges.has(name),
-      );
-      if (missing.length > 0) {
-        const reason = failures
-          .filter((f) => missing.includes(f.name))
-          .map((f) => `${f.name}: ${errMessage(f.reason)}`)
-          .join("; ");
-        throw new Error(
-          `MCP aggregate startup failure — required server(s) not ready: ${missing.join(", ")}${reason ? ` (${reason})` : ""}`,
-        );
-      }
-    } else if (opts.requireOneReady && successCount === 0) {
-      const detail = failures
-        .map((f) => `${f.name}: ${errMessage(f.reason)}`)
-        .join("; ");
-      throw new Error(
-        `MCP aggregate startup failure — zero servers ready${detail ? ` (${detail})` : ""}`,
-      );
-    }
   }
 
   /**
@@ -222,34 +101,10 @@ export class MCPManager {
    */
   async stop(): Promise<void> {
     const bridges = Array.from(this.bridges.values());
-    const resourceBridges = Array.from(this.resourceBridges.values());
-    const promptBridges = Array.from(this.promptBridges.values());
-    // Dispose all bridges first, then clear the maps to avoid race conditions
-    await Promise.allSettled([
-      ...bridges.map((bridge) => bridge.dispose()),
-      ...resourceBridges.map((bridge) => bridge.dispose()),
-      ...promptBridges.map((bridge) => bridge.dispose()),
-    ]);
+    // Dispose all bridges first, then clear the map to avoid race conditions
+    await Promise.allSettled(bridges.map((bridge) => bridge.dispose()));
     this.bridges.clear();
-    this.resourceBridges.clear();
-    this.promptBridges.clear();
-    this.serverInstructions.clear();
     this.logger.info("All MCP servers disconnected");
-  }
-
-  /**
-   * Replace the configured MCP server set without replacing this
-   * manager instance. The registry holds a provider reference to this
-   * object, so config reloads must refresh in place rather than
-   * swapping in a new manager behind stale callers.
-   */
-  async refreshServers(
-    configs: ReadonlyArray<MCPServerConfig>,
-    opts: MCPManagerStartOpts = {},
-  ): Promise<void> {
-    await this.stop();
-    this.configs = [...configs];
-    await this.start(opts);
   }
 
   /**
@@ -277,17 +132,6 @@ export class MCPManager {
     return Array.from(this.bridges.keys());
   }
 
-  /**
-   * Return the `InitializeResult.instructions` blob the server reported
-   * at connect time, or `undefined` if the server didn't supply one (or
-   * the bridge isn't connected). Read by the per-turn
-   * `mcp_instructions_delta` attachment producer to compute add/remove
-   * deltas across turns.
-   */
-  getServerInstructions(name: string): string | undefined {
-    return this.serverInstructions.get(name);
-  }
-
   getConfiguredServers(): readonly MCPServerConfig[] {
     return [...this.configs];
   }
@@ -298,52 +142,6 @@ export class MCPManager {
 
   isConnected(name: string): boolean {
     return this.bridges.has(name);
-  }
-
-  /**
-   * Given a namespaced MCP tool name (`mcp.<server>.<tool>`), return
-   * the owning server name if the tool is registered on a connected
-   * bridge. Returns `undefined` otherwise.
-   *
-   * Router replacement for the brittle `namespace.startsWith("mcp")`
-   * heuristic — the router now resolves MCP attribution through this
-   * lookup instead of prefix-matching the stringified name.
-   */
-  getServerForTool(namespacedName: string): string | undefined {
-    for (const [serverName, bridge] of this.bridges) {
-      for (const tool of bridge.tools) {
-        if (tool.name === namespacedName) return serverName;
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * Port of AgenC runtime `Session::resolve_mcp_tool_info` (session.rs). Given
-   * a tool name the model emitted, either return `{ serverName,
-   * toolName }` when the tool is MCP-backed, or `undefined`.
-   *
-   * Accepts both the namespaced `mcp.<server>.<tool>` form and a plain
-   * tool name that matches a single registered MCP tool.
-   */
-  resolveMcpToolInfo(
-    toolName: string,
-  ): { readonly serverName: string; readonly toolName: string } | undefined {
-    if (toolName.startsWith("mcp.")) {
-      const server = this.getServerForTool(toolName);
-      if (!server) return undefined;
-      const prefix = `mcp.${server}.`;
-      if (!toolName.startsWith(prefix)) return undefined;
-      return { serverName: server, toolName: toolName.slice(prefix.length) };
-    }
-    for (const [serverName, bridge] of this.bridges) {
-      for (const tool of bridge.tools) {
-        if (tool.name === toolName) {
-          return { serverName, toolName };
-        }
-      }
-    }
-    return undefined;
   }
 
   async reconnectServer(name: string): Promise<MCPReconnectResult> {
@@ -368,36 +166,11 @@ export class MCPManager {
     const existing = this.bridges.get(name);
     if (existing) {
       this.bridges.delete(name);
-      this.serverInstructions.delete(name);
       try {
         await existing.dispose();
       } catch (error) {
         this.logger.warn?.(
           `Error disposing MCP server "${name}" before reconnect:`,
-          error,
-        );
-      }
-    }
-    const existingResource = this.resourceBridges.get(name);
-    if (existingResource) {
-      this.resourceBridges.delete(name);
-      try {
-        await existingResource.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP resource bridge for "${name}" before reconnect:`,
-          error,
-        );
-      }
-    }
-    const existingPrompt = this.promptBridges.get(name);
-    if (existingPrompt) {
-      this.promptBridges.delete(name);
-      try {
-        await existingPrompt.dispose();
-      } catch (error) {
-        this.logger.warn?.(
-          `Error disposing MCP prompt bridge for "${name}" before reconnect:`,
           error,
         );
       }
@@ -420,126 +193,9 @@ export class MCPManager {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // T9-D: MCP resource + prompt surface
-  // ─────────────────────────────────────────────────────────────────
-
-  /**
-   * List resources exposed by every connected server (flattened).
-   * Per-server failures are swallowed by the resource bridge itself,
-   * so the aggregate result only contains servers that successfully
-   * listed resources.
-   */
-  async getResources(): Promise<ReadonlyArray<MCPResourceDescriptor>> {
-    const bridges = Array.from(this.resourceBridges.values());
-    if (bridges.length === 0) return [];
-    const results = await Promise.allSettled(
-      bridges.map((bridge) => bridge.listResources()),
-    );
-    const flattened: MCPResourceDescriptor[] = [];
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        flattened.push(...result.value);
-      }
-    }
-    return flattened;
-  }
-
-  /**
-   * List resources exposed by a specific connected server.
-   * Returns `[]` if the server is unknown or has no resource bridge.
-   */
-  async getResourcesByServer(
-    name: string,
-  ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
-    const bridge = this.resourceBridges.get(name);
-    if (!bridge) return [];
-    return bridge.listResources();
-  }
-
-  /**
-   * Read a resource by its namespaced name `mcp.<server>.<uri>`.
-   * Returns `null` when the referenced server is not connected.
-   */
-  async readResource(
-    namespacedName: string,
-  ): Promise<MCPResourceContent | null> {
-    const parsed = parseNamespacedName(namespacedName);
-    if (!parsed) return null;
-    const bridge = this.resourceBridges.get(parsed.serverName);
-    if (!bridge) return null;
-    return bridge.readResource(parsed.rest);
-  }
-
-  /**
-   * List prompts exposed by every connected server (flattened).
-   */
-  async listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
-    const bridges = Array.from(this.promptBridges.values());
-    if (bridges.length === 0) return [];
-    const results = await Promise.allSettled(
-      bridges.map((bridge) => bridge.listPrompts()),
-    );
-    const flattened: MCPPromptDescriptor[] = [];
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        flattened.push(...result.value);
-      }
-    }
-    return flattened;
-  }
-
-  /**
-   * List prompts exposed by a specific connected server.
-   */
-  async listPromptsByServer(
-    name: string,
-  ): Promise<ReadonlyArray<MCPPromptDescriptor>> {
-    const bridge = this.promptBridges.get(name);
-    if (!bridge) return [];
-    return bridge.listPrompts();
-  }
-
-  /**
-   * Render a prompt by namespaced name `mcp.<server>.<prompt>`.
-   * Returns `null` when the referenced server is not connected.
-   */
-  async renderPrompt(
-    namespacedName: string,
-    args?: Record<string, unknown>,
-  ): Promise<MCPPromptRendered | null> {
-    const parsed = parseNamespacedName(namespacedName);
-    if (!parsed) return null;
-    const bridge = this.promptBridges.get(parsed.serverName);
-    if (!bridge) return null;
-    return bridge.renderPrompt(parsed.rest, args);
-  }
-
-  private async connectServer(
-    config: MCPServerConfig,
-    startupGate?: StartupGate,
-  ): Promise<MCPToolBridge> {
+  private async connectServer(config: MCPServerConfig): Promise<MCPToolBridge> {
     const client = await createMCPConnection(config, this.logger);
     try {
-      if (startupGate?.isCancelled()) {
-        throw new Error(
-          `MCP server "${config.name}" connect abandoned (${startupGate.reason() ?? "cancelled"})`,
-        );
-      }
-      // Capture the server's `InitializeResult.instructions` blob if any.
-      // The MCP SDK stores it after `client.connect()` completes; the
-      // value is immutable for the lifetime of the connection.
-      try {
-        const instructions = (
-          client as { getInstructions?: () => string | undefined }
-        ).getInstructions?.();
-        if (typeof instructions === "string" && instructions.length > 0) {
-          this.serverInstructions.set(config.name, instructions);
-        }
-      } catch {
-        // Best-effort capture — the producer simply emits no block for
-        // this server when the SDK call throws.
-      }
       const rawBridge = await createToolBridge(
         client,
         config.name,
@@ -548,64 +204,10 @@ export class MCPManager {
           listToolsTimeoutMs: config.timeout,
           callToolTimeoutMs: config.timeout,
           serverConfig: toToolCatalogPolicyConfig(config),
-          ...(this.callObserver !== undefined
-            ? { callObserver: this.callObserver }
-            : {}),
         },
       );
-      if (startupGate?.isCancelled()) {
-        throw new Error(
-          `MCP server "${config.name}" bridge abandoned (${startupGate.reason() ?? "cancelled"})`,
-        );
-      }
-      // I-73: reject MCP tools whose namespaced names collide with
-      // already-registered tools (from earlier servers). Bail the
-      // whole bridge — the caller can re-configure the namespace.
-      this.assertNoNameShadowing(config.name, rawBridge);
       const bridge = new ResilientMCPBridge(config, rawBridge, this.logger);
       this.bridges.set(config.name, bridge);
-
-      // T9-D: resource + prompt bridges are optional on many servers.
-      // Failures here must not take down the whole server connection —
-      // log and continue so the tool surface still works.
-      try {
-        const resourceBridge = await createResourceBridge(
-          client,
-          config.name,
-          this.logger,
-          {
-            ...(config.timeout !== undefined
-              ? { rpcTimeoutMs: config.timeout }
-              : {}),
-          },
-        );
-        this.resourceBridges.set(config.name, resourceBridge);
-      } catch (error) {
-        this.logger.warn?.(
-          `MCP server "${config.name}" resource bridge unavailable:`,
-          error,
-        );
-      }
-
-      try {
-        const promptBridge = await createPromptBridge(
-          client,
-          config.name,
-          this.logger,
-          {
-            ...(config.timeout !== undefined
-              ? { rpcTimeoutMs: config.timeout }
-              : {}),
-          },
-        );
-        this.promptBridges.set(config.name, promptBridge);
-      } catch (error) {
-        this.logger.warn?.(
-          `MCP server "${config.name}" prompt bridge unavailable:`,
-          error,
-        );
-      }
-
       return bridge;
     } catch (error) {
       try {
@@ -616,120 +218,4 @@ export class MCPManager {
       throw error;
     }
   }
-
-  private assertNoNameShadowing(
-    serverName: string,
-    bridge: MCPToolBridge,
-  ): void {
-    const existing = new Set<string>();
-    for (const b of this.bridges.values()) {
-      for (const t of b.tools) existing.add(t.name);
-    }
-    const collisions: string[] = [];
-    for (const tool of bridge.tools) {
-      if (existing.has(tool.name)) collisions.push(tool.name);
-    }
-    if (collisions.length > 0) {
-      throw new Error(
-        `MCP server "${serverName}" tools shadow already-registered tool names (I-73): ${collisions.join(", ")}`,
-      );
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Parse a `mcp.<serverName>.<rest>` namespaced identifier.
- * Returns `null` when the input does not match the namespace prefix
- * or is missing the `rest` segment. `rest` can itself contain `.`
- * (resource URIs frequently do), so this only splits on the first
- * two separators.
- */
-function parseNamespacedName(
-  namespacedName: string,
-): { serverName: string; rest: string } | null {
-  if (!namespacedName.startsWith("mcp.")) return null;
-  const afterPrefix = namespacedName.slice("mcp.".length);
-  const firstDot = afterPrefix.indexOf(".");
-  if (firstDot <= 0) return null;
-  const serverName = afterPrefix.slice(0, firstDot);
-  const rest = afterPrefix.slice(firstDot + 1);
-  if (rest.length === 0) return null;
-  return { serverName, rest };
-}
-
-/**
- * Race a promise against an abort signal and an absolute timeout.
- * I-50 uses this so an orchestrator can cancel MCP startup mid-wait
- * (e.g. when the user hits Ctrl+C before any server connects).
- */
-function raceWithSignal<T>(
-  task: Promise<T>,
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-  label: string,
-  startupGate?: StartupGate,
-): Promise<T> {
-  const contenders: Promise<T>[] = [task];
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-
-  if (signal) {
-    contenders.push(
-      new Promise<T>((_, reject) => {
-        if (signal.aborted) {
-          const reason = `${label} aborted (${signal.reason ?? "signal"})`;
-          startupGate?.cancel(reason);
-          reject(new Error(reason));
-          return;
-        }
-        onAbort = () => {
-          const reason = `${label} aborted (${signal.reason ?? "signal"})`;
-          startupGate?.cancel(reason);
-          reject(new Error(reason));
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-      }),
-    );
-  }
-  contenders.push(
-    new Promise<T>((_, reject) => {
-      timer = setTimeout(() => {
-        const reason = `${label} timed out after ${timeoutMs}ms`;
-        startupGate?.cancel(reason);
-        reject(new Error(reason));
-      }, timeoutMs);
-    }),
-  );
-
-  return Promise.race(contenders).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-    if (onAbort !== undefined && signal) {
-      signal.removeEventListener("abort", onAbort);
-    }
-  });
-}
-
-function createStartupGate(): StartupGate {
-  let cancelled = false;
-  let cancelReason: string | undefined;
-  return {
-    cancel(reason: string) {
-      cancelled = true;
-      cancelReason = reason;
-    },
-    isCancelled() {
-      return cancelled;
-    },
-    reason() {
-      return cancelReason;
-    },
-  };
 }

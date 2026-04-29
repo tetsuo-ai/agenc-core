@@ -1,0 +1,118 @@
+/**
+ * Tool system for @tetsuo-ai/runtime
+ *
+ * MCP-compatible tool registry that bridges the Skills system and
+ * LLM adapters. Provides built-in AgenC protocol query tools and
+ * a skill-to-tool adapter.
+ *
+ * @module
+ */
+
+// Core types
+export {
+  type Tool,
+  type ToolCatalogEntry,
+  type ToolMetadata,
+  type ToolSource,
+  type ToolResult,
+  type ToolContext,
+  type ToolRegistryConfig,
+  type JSONSchema,
+  bigintReplacer,
+  safeStringify,
+} from "./types.js";
+
+// Error types
+export {
+  ToolNotFoundError,
+  ToolAlreadyRegisteredError,
+  ToolExecutionError,
+} from "./errors.js";
+
+// Registry
+export { ToolRegistry } from "./registry.js";
+
+// Skill-to-Tool adapter
+export {
+  skillToTools,
+  type ActionSchemaMap,
+  type SkillToToolsOptions,
+  JUPITER_ACTION_SCHEMAS,
+} from "./skill-adapter.js";
+
+// Built-in AgenC tools
+export {
+  createAgencTools,
+  createAgencReadOnlyTools,
+  createAgencMutationTools,
+  evaluateMarketplaceSignerPolicyForIntent,
+  type CreateAgencToolsOptions,
+  type MarketplaceSignerPolicy,
+  type MarketplaceSignerPolicyEvaluation,
+  createListTasksTool,
+  createGetTaskTool,
+  createGetTokenBalanceTool,
+  createListApprovedTaskTemplatesTool,
+  createGetApprovedTaskTemplateTool,
+  createCreateTaskFromTemplateTool,
+  createSubmitTaskTemplateProposalTool,
+  createCreateTaskTool,
+  createGetAgentTool,
+  createGetProtocolConfigTool,
+  type SerializedTask,
+  type SerializedAgent,
+  type SerializedProtocolConfig,
+} from "./agenc/index.js";
+
+// System tools
+export {
+  // HTTP
+  createHttpTools,
+  isDomainAllowed,
+  type HttpToolConfig,
+  type HttpResponse,
+  // Filesystem
+  createFilesystemTools,
+  createCodingTools,
+  isPathAllowed,
+  safePath,
+  type FilesystemToolConfig,
+  type CodingToolConfig,
+  // Browser
+  createBrowserTools,
+  closeBrowser,
+  type BrowserToolConfig,
+  // Bash
+  createBashTool,
+  createProcessTools,
+  createRemoteJobTools,
+  createRemoteSessionTools,
+  createResearchTools,
+  createSandboxTools,
+  createServerTools,
+  SystemProcessManager,
+  SystemRemoteJobManager,
+  SystemRemoteSessionManager,
+  SystemResearchManager,
+  SystemSandboxManager,
+  SystemServerManager,
+  isCommandAllowed,
+  validateShellCommand,
+  type BashToolConfig,
+  type BashToolInput,
+  type BashExecutionResult,
+  type DangerousShellPattern,
+  type SystemProcessLifecycleEvent,
+  type SystemProcessToolConfig,
+  type SystemRemoteJobToolConfig,
+  type SystemRemoteSessionToolConfig,
+  type SystemResearchToolConfig,
+  type SystemSandboxToolConfig,
+  type SystemSandboxWorkspaceAccessMode,
+  type SystemServerToolConfig,
+  DEFAULT_DENY_LIST,
+  DEFAULT_DENY_PREFIXES,
+  DEFAULT_TIMEOUT_MS,
+  DEFAULT_MAX_OUTPUT_BYTES,
+  DANGEROUS_SHELL_PATTERNS,
+} from "./system/index.js";

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-04-23T16:44:14.812Z",
+  "config": {
+    "sandboxes": 8,
+    "jobsPerSandbox": 3,
+    "waves": 3,
+    "jobDurationMs": 3000,
+    "timeoutSeconds": 120,
+    "image": "node:20-slim",
+    "workspaceAccess": "none",
+    "networkAccess": false
+  },
+  "overallPassed": false,
+  "waves": []
+}
