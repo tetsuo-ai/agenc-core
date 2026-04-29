@@ -83,6 +83,33 @@ describe("ThreadManager", () => {
     expect(manager.getThread("child-thread").kind).toBe("agent");
   });
 
+  it("routes trigger-turn IAC to the root mailbox and wakes without display text", async () => {
+    const session = makeSession();
+    const manager = new ThreadManager(session);
+
+    await manager.sendOp("root-thread", {
+      type: "inter_agent_communication",
+      communication: {
+        author: "/root/idoru",
+        recipient: "/root",
+        content: '[{ "name": "agenc-m2-next" }]',
+        triggerTurn: true,
+      },
+    });
+
+    expect(session.mailbox.send).toHaveBeenCalledWith({
+      author: "/root/idoru",
+      recipient: "/root",
+      content: '[{ "name": "agenc-m2-next" }]',
+      triggerTurn: true,
+      direction: "up",
+      metadata: { kind: "inter_agent_communication" },
+    });
+    expect(session.submit).toHaveBeenCalledWith("", {
+      displayUserMessage: null,
+    });
+  });
+
   it("owns agent spawning when bound to AgentControl", async () => {
     const live = makeLive();
     const control = {
