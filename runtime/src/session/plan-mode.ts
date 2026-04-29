@@ -673,9 +673,13 @@ export function realtimeTextForEvent(msg: EventMsg): string | undefined {
     case "agent_message_delta":
       return msg.payload.delta;
     case "user_message":
-      return msg.payload.message;
+      return msg.payload.displayText ??
+        (typeof msg.payload.message === "string"
+          ? msg.payload.message
+          : msg.payload.message
+              .map((part) => (part.type === "text" ? part.text : "[image]"))
+              .join("\n"));
     default:
       return undefined;
   }
 }
-

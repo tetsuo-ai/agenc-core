@@ -142,16 +142,13 @@ export class LogUpdate {
     if (!this.options.isTTY) {
       return this.renderFullFrame(next)
     }
-    // Forced full repaint: bypass the prev->next diff path entirely and
-    // re-emit every visible cell. Used when the terminal's actual state
-    // can't be trusted to match `prev` (overlay activity, external writes,
-    // resize, alt-screen toggle, focus regain). Diff would otherwise skip
-    // any cell where prev === next, so any drift between our model and the
-    // physical terminal stays drifted forever. Full repaint reasserts
-    // physical truth by writing every cell from the React-rendered next
-    // buffer, regardless of equality.
     if (forceFullRepaint) {
-      return this.renderFullFrame(next)
+      next.screen.damage = {
+        x: 0,
+        y: 0,
+        width: next.screen.width,
+        height: next.screen.height,
+      }
     }
 
     const startTime = performance.now()
@@ -188,11 +185,10 @@ export class LogUpdate {
     //
     // decstbmSafe: caller passes false when the DECSTBM→diff sequence
     // can't be made atomic (no DEC 2026 / BSU/ESU). Without atomicity the
-    // outer terminal renders the intermediate state — region scrolled,
-    // edge rows not yet painted — a visible vertical jump on every frame
-    // where scrollTop moves. Falling through to the diff loop writes all
-    // shifted rows: more bytes, no intermediate state. next.screen from
-    // render-node-to-output's blit+shift is correct either way.
+    // outer terminal can render the intermediate scroll-region state.
+    // Falling through to the diff loop writes all shifted rows: more bytes,
+    // no intermediate state. next.screen from render-node-to-output's
+    // blit+shift is correct either way.
     let scrollPatch: Diff = []
     if (altScreen && next.scrollHint && decstbmSafe) {
       const { top, bottom, delta } = next.scrollHint

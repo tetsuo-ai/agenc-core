@@ -9,7 +9,9 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=@tetsuo-ai/runtime",
+    "install:tui-openclaude-core-parity-hook": "bash scripts/install-tui-openclaude-parity-hook.sh",
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
+    "validate:tui-openclaude-core-parity": "npm run validate:tui-openclaude-core-parity --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
   },

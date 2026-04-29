@@ -20,7 +20,7 @@
  * @module
  */
 
-import React, { useContext, useEffect, useMemo, useRef } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 
 import Box from "../ink/components/Box.js";
 import { TerminalSizeContext } from "../ink/components/TerminalSizeContext.js";
@@ -28,14 +28,19 @@ import Text from "../ink/components/Text.js";
 import ScrollBox, {
   type ScrollBoxHandle,
 } from "../ink/components/ScrollBox.js";
-import { useVirtualScroll } from "../hooks/useVirtualScroll.js";
 import { useKeybinding } from "../keybindings/KeybindingContext.js";
 
 import { MessageRow } from "./MessageRow.js";
-import { OffscreenFreeze } from "./OffscreenFreeze.js";
 import type { PlanEvent } from "./PlanProgress.js";
 import { normalizeTranscriptMessages } from "./normalize.js";
 import type { SlashCommandResult } from "../_deps/commands.js";
+import { VirtualMessageList, type JumpHandle } from "./VirtualMessageList.js";
+import {
+  transcriptMessageSearchText,
+  type AssistantTranscriptContentBlock,
+  type TranscriptAttachmentBlock,
+  type UserTranscriptContentBlock,
+} from "./content-blocks.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
 /* Types                                                                   */
@@ -49,6 +54,8 @@ export type TranscriptMessageKind =
   | "tool_group"
   | "tool_result"
   | "activity"
+  | "attachment"
+  | "system"
   | "meta"
   | "warning"
   | "error"
@@ -75,6 +82,13 @@ export interface TranscriptMessage {
   readonly toolProgressContent?: string;
   readonly toolResultContent?: string;
   readonly toolResultMetadata?: Readonly<Record<string, unknown>>;
+  readonly userContent?: readonly UserTranscriptContentBlock[];
+  readonly assistantContent?: readonly AssistantTranscriptContentBlock[];
+  readonly attachments?: readonly TranscriptAttachmentBlock[];
+  readonly systemSubtype?: string;
+  readonly isCompactSummary?: boolean;
+  readonly isVisibleInTranscriptOnly?: boolean;
+  readonly imagePasteIds?: readonly (string | number)[];
   readonly timestamp: number;
   readonly slashInput?: string;
   readonly slashResult?: SlashCommandResult;
@@ -133,6 +147,12 @@ export interface MessageListProps {
   readonly isStreaming?: boolean;
   /** Show every raw row without grouping/collapse. */
   readonly verbose?: boolean;
+  /** Index where unseen transcript content starts. */
+  readonly unseenStartIndex?: number;
+  /** Optional cap for non-transcript prompt mode. */
+  readonly renderCap?: number;
+  readonly jumpRef?: React.RefObject<JumpHandle | null>;
+  readonly onSearchMatchesChange?: (total: number, current: number) => void;
 }
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -211,6 +231,17 @@ function groupedToolsMutationKey(
     .join(";");
 }
 
+function contentBlocksMutationKey(message: TranscriptMessage): string {
+  return [
+    fingerprintOf(message.userContent),
+    fingerprintOf(message.assistantContent),
+    fingerprintOf(message.attachments),
+    message.systemSubtype ?? "",
+    message.isCompactSummary === true ? "compact" : "",
+    message.isVisibleInTranscriptOnly === true ? "transcript-only" : "",
+  ].join("|");
+}
+
 export function transcriptMutationKey(
   messages: readonly TranscriptMessage[],
   isStreaming: boolean = false,
@@ -237,6 +268,7 @@ export function transcriptMutationKey(
     fingerprintOf(tail.execReturnCodeInterpretation),
     fingerprintOf(tail.execBackgroundTaskId),
     groupedToolsMutationKey(tail.groupedTools),
+    contentBlocksMutationKey(tail),
     fingerprintOf(tail.toolProgressContent),
     fingerprintOf(tail.toolResultContent),
     metadataFingerprintOf(tail.toolResultMetadata),
@@ -281,13 +313,40 @@ export const MessageList: React.FC<MessageListProps> = ({
   messages,
   isStreaming = false,
   verbose = false,
+  unseenStartIndex,
+  renderCap,
+  jumpRef,
+  onSearchMatchesChange,
 }) => {
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const terminalSize = useContext(TerminalSizeContext);
-  const normalizedMessages = useMemo(
+  const normalizedUncappedMessages = useMemo(
     () => normalizeTranscriptMessages(messages, { verbose }),
     [messages, verbose],
   );
+  const normalizedMessages = useMemo(() => {
+    if (
+      renderCap === undefined ||
+      verbose ||
+      normalizedUncappedMessages.length <= renderCap
+    ) {
+      return normalizedUncappedMessages;
+    }
+    return normalizedUncappedMessages.slice(-renderCap);
+  }, [normalizedUncappedMessages, renderCap, verbose]);
+  const slicedOffCount =
+    normalizedUncappedMessages.length - normalizedMessages.length;
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleExpanded = (message: TranscriptMessage): void => {
+    setExpandedIds((current) => {
+      const next = new Set(current);
+      if (next.has(message.id)) next.delete(message.id);
+      else next.add(message.id);
+      return next;
+    });
+  };
   // Remember whether the operator was glued to the bottom at the moment
   // the last message arrived. Using a ref here instead of state avoids
   // re-rendering the whole list on every scroll tick.
@@ -433,13 +492,29 @@ export const MessageList: React.FC<MessageListProps> = ({
     () => normalizedMessages.map((message, index) => `${message.id}:${index}`),
     [normalizedMessages],
   );
-  const virtual = useVirtualScroll(
-    scrollRef,
-    itemKeys,
-    terminalSize?.columns ?? 80,
-  );
-  const [visibleStart, visibleEnd] = virtual.range;
-  const visibleMessages = normalizedMessages.slice(visibleStart, visibleEnd);
+  const itemKey = (message: TranscriptMessage): string => {
+    const index = normalizedMessages.indexOf(message);
+    return itemKeys[index] ?? message.id;
+  };
+
+  const renderItem = (message: TranscriptMessage, index: number): React.ReactNode => {
+    const absoluteIndex = index + slicedOffCount;
+    const expanded = expandedIds.has(message.id);
+    return (
+      <Box flexDirection="column">
+        {unseenStartIndex !== undefined && absoluteIndex === unseenStartIndex ? (
+          <Box flexDirection="row" marginY={1}>
+            <Text dim>{"── unseen ──"}</Text>
+          </Box>
+        ) : null}
+        <MessageRow
+          message={message}
+          verbose={verbose || expanded}
+          isTranscriptMode={verbose}
+        />
+      </Box>
+    );
+  };
 
   return (
     <ScrollBox
@@ -452,30 +527,24 @@ export const MessageList: React.FC<MessageListProps> = ({
       stickyScroll
     >
       <Box flexDirection="column" width="100%">
-        {virtual.topSpacer > 0 ? (
-          <Box height={Math.floor(virtual.topSpacer)} flexShrink={0} />
-        ) : null}
-        {visibleMessages.map((message, offset) => {
-          const virtualIndex = visibleStart + offset;
-          const key = itemKeys[virtualIndex] ?? message.id;
-          return (
-            <Box
-              key={key}
-              ref={virtual.measureRef(key)}
-              flexDirection="column"
-            >
-              <OffscreenFreeze
-                cacheKey={transcriptMutationKey([message], isStreaming)}
-                freeze={message.isComplete !== false}
-              >
-                <MessageRow message={message} verbose={verbose} />
-              </OffscreenFreeze>
-            </Box>
-          );
-        })}
-        {virtual.bottomSpacer > 0 ? (
-          <Box height={Math.floor(virtual.bottomSpacer)} flexShrink={0} />
-        ) : null}
+        <VirtualMessageList
+          messages={normalizedMessages}
+          scrollRef={scrollRef}
+          columns={terminalSize?.columns ?? 80}
+          itemKey={itemKey}
+          renderItem={renderItem}
+          extractSearchText={transcriptMessageSearchText}
+          jumpRef={jumpRef}
+          onSearchMatchesChange={onSearchMatchesChange}
+          onItemClick={toggleExpanded}
+          isItemClickable={(message) =>
+            message.kind === "tool_call" ||
+            message.kind === "tool_group" ||
+            message.kind === "assistant" ||
+            message.kind === "user"
+          }
+          isItemExpanded={(message) => expandedIds.has(message.id)}
+        />
         {isStreaming && !hasInlineStreamingAssistant ? (
           <Box flexDirection="row">
             <Text dim>{"\u2026"}</Text>
