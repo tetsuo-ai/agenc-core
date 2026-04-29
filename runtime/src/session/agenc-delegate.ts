@@ -660,7 +660,7 @@ export function spawnAgenCDelegateThread(
     jsRepl: parent.jsRepl,
     config: req.config,
     modelInfo: reviewerModelInfo,
-    agentStatus: { status: "idle" },
+    agentStatus: { status: "pending_init" },
   });
 
   const rxEvent = new AsyncQueue<Event>({ maxDepth: DELEGATE_EVENT_QUEUE_DEPTH });

@@ -171,7 +171,6 @@ export {
 /** AgenC runtime `AgentStatus` FSM. T9 (subagents) expands. */
 export type AgentStatus =
   | { readonly status: "pending_init" }
-  | { readonly status: "idle" }
   | { readonly status: "running"; readonly turnId: string; readonly startedAtMs: number }
   | { readonly status: "completed"; readonly turnId: string; readonly endedAtMs: number }
   | { readonly status: "errored"; readonly turnId: string; readonly error: string }
@@ -975,7 +974,7 @@ export class Session {
       opts.eventQueue ??
       new AsyncQueue<Event>({ maxDepth: DEFAULT_LEGACY_EVENT_QUEUE_DEPTH });
     this.agentStatus = new BehaviorSubject<AgentStatus>(
-      opts.agentStatus ?? { status: "idle" },
+      opts.agentStatus ?? { status: "pending_init" },
     );
     this.outOfBandElicitationPaused = new BehaviorSubject<boolean>(false);
     this.state = new AsyncLock<SessionState>(opts.initialState);

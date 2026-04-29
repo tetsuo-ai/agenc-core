@@ -6,7 +6,7 @@
  * terminal states.
  *
  * Final states: `completed`, `errored`, `shutdown`, `not_found`.
- * Non-final: `pending_init`, `idle`, `running`, `interrupted`.
+ * Non-final: `pending_init`, `running`, `interrupted`.
  *
  * `interrupted` is intentionally non-final (matches AgenC runtime
  * `status.rs` — `is_final` returns false for `Running | PendingInit |
@@ -21,7 +21,6 @@ import { monotonicMs } from "./_deps/monotonic.js";
 
 export type AgentStatus =
   | { readonly status: "pending_init" }
-  | { readonly status: "idle" }
   | {
       readonly status: "running";
       readonly turnId: string;
@@ -73,8 +72,6 @@ export function toAgentStatusJson(
 ): AgentStatusJson {
   switch (status.status) {
     case "pending_init":
-      return "pending_init";
-    case "idle":
       return "pending_init";
     case "running":
       return "running";

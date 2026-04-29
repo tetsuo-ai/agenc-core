@@ -1158,7 +1158,7 @@ export class AgentControl {
     if (rootMatches && this.rootThreadId) {
       result.push({
         agentName: "/root",
-        agentStatus: { status: "idle" },
+        agentStatus: { status: "pending_init" },
         lastTaskMessage: "Main thread",
       });
     }
