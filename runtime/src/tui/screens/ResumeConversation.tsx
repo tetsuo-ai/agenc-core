@@ -8,14 +8,14 @@
  * supports keyboard navigation (Up/Down/Enter), local type-to-filter
  * search over the `ResumableSession` fields AgenC already persists, and
  * a cancel path (Esc / Ctrl+C) so this surface can stand in for the
- * upstream LogSelector without pulling in upstream-only worktree,
+ * source runtime LogSelector without pulling in source runtime-only worktree,
  * agentic search, cross-project, remote/cloud, IDE, or coordinator-mode
  * integrations.
  *
- * Adaptations from upstream:
- *   - Drops upstream worktree/cross-project resume gating; AgenC has no
+ * Adaptations from source runtime:
+ *   - Drops source runtime worktree/cross-project resume gating; AgenC has no
  *     `worktreePaths` notion at this layer yet.
- *   - Drops upstream `feature('COORDINATOR_MODE')` and
+ *   - Drops source runtime `feature('COORDINATOR_MODE')` and
  *     `feature('CONTEXT_COLLAPSE')` branches.
  *   - Drops the `LogSelector` dependency and the agentic-search hook.
  *     The local search here is intentionally metadata-only: no remote
@@ -44,6 +44,7 @@ import {
   listResumableSessions,
   type ResumableSession,
 } from "../../session/session-store.js";
+import { listIndexedResumableSessions } from "../../state/resume.js";
 
 export interface ResumeConversationProps {
   /**
@@ -191,7 +192,9 @@ export function ResumeConversation({
     let cancelled = false;
     setLoading(true);
     try {
-      const list = listResumableSessions(projectDir);
+      const indexed = listIndexedResumableSessions(projectDir);
+      const list =
+        indexed.length > 0 ? indexed : listResumableSessions(projectDir);
       if (!cancelled) {
         setSessions(list);
         setLoading(false);

@@ -15,13 +15,12 @@
  */
 
 import {
-  closeSync,
+  copyFileSync,
   existsSync,
-  fsyncSync,
-  openSync,
+  mkdirSync,
   readFileSync,
-  renameSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type {
   AgentMetadata,
@@ -36,8 +35,12 @@ import {
   type AppendOptions,
   type CompactionIndexSnapshot,
   type SessionStoreOpts,
-  rewriteAtomically,
 } from "./session-store.js";
+import {
+  openStateDatabases,
+  type StateSqliteDriver,
+} from "../state/sqlite-driver.js";
+import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
   /** Flush interval in ms. Default 100. */
@@ -56,13 +59,7 @@ export interface ThreadSpawnEdgeRecord {
   readonly status: ThreadSpawnEdgeStatus;
 }
 
-interface ThreadSpawnEdgeSnapshot {
-  readonly version: number;
-  readonly edges: ReadonlyArray<ThreadSpawnEdgeRecord>;
-}
-
 const THREAD_SPAWN_EDGE_SNAPSHOT_VERSION = 1;
-const THREAD_SPAWN_EDGE_CORRUPT_BACKUP_ATTEMPTS = 100;
 
 export class RolloutStore {
   readonly store: SessionStore;
@@ -70,6 +67,8 @@ export class RolloutStore {
   private readonly startScheduler: boolean;
   readonly projectRootMarkers?: readonly string[];
   private readonly threadSpawnEdgePath: string;
+  private readonly stateDriver: StateSqliteDriver;
+  private readonly threadSpawnEdgeRepo: ThreadSpawnEdgeRepository;
   private readonly threadSpawnEdges = new Map<ThreadId, ThreadSpawnEdgeRecord>();
 
   constructor(opts: RolloutStoreOpts) {
@@ -84,7 +83,12 @@ export class RolloutStore {
       this.store.sessionDir,
       "thread-spawn-edges.json",
     );
-    this.loadThreadSpawnEdgesSnapshot();
+    this.stateDriver = openStateDatabases({
+      cwd: opts.cwd,
+      projectRootMarkers: opts.projectRootMarkers,
+    });
+    this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
+    this.loadThreadSpawnEdges();
   }
 
   open(meta: Parameters<SessionStore["open"]>[0]): void {
@@ -144,7 +148,7 @@ export class RolloutStore {
 
   upsertThreadSpawnEdge(edge: ThreadSpawnEdgeRecord): void {
     this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
-    this.persistThreadSpawnEdgesSnapshot();
+    this.threadSpawnEdgeRepo.upsert(edge);
   }
 
   setThreadSpawnEdgeStatus(
@@ -160,7 +164,7 @@ export class RolloutStore {
       status,
       metadata: cloneAgentMetadata(existing.metadata),
     });
-    this.persistThreadSpawnEdgesSnapshot();
+    this.threadSpawnEdgeRepo.upsert({ ...existing, status });
   }
 
   getThreadSpawnEdge(
@@ -268,62 +272,46 @@ export class RolloutStore {
 
   close(): void {
     this.scheduler.stop();
+    this.stateDriver.close();
     this.store.close();
   }
 
-  private loadThreadSpawnEdgesSnapshot(): void {
+  private loadThreadSpawnEdges(): void {
+    this.threadSpawnEdges.clear();
+    for (const edge of this.threadSpawnEdgeRepo.list()) {
+      this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
+    }
+
+    for (const edge of this.readLegacyThreadSpawnEdges()) {
+      if (this.threadSpawnEdges.has(edge.childThreadId)) continue;
+      this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
+      this.threadSpawnEdgeRepo.upsert(edge);
+    }
+  }
+
+  private readLegacyThreadSpawnEdges(): ReadonlyArray<ThreadSpawnEdgeRecord> {
     if (!existsSync(this.threadSpawnEdgePath)) {
-      return;
+      return [];
     }
 
     try {
       const raw = readFileSync(this.threadSpawnEdgePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
-      const edges = normalizeThreadSpawnEdgesSnapshot(parsed);
-
-      this.threadSpawnEdges.clear();
-      for (const edge of edges) {
-        this.threadSpawnEdges.set(edge.childThreadId, cloneThreadSpawnEdge(edge));
-      }
+      return normalizeThreadSpawnEdgesSnapshot(parsed);
     } catch {
-      this.threadSpawnEdges.clear();
-      this.backupCorruptThreadSpawnEdgesSnapshot();
+      this.copyCorruptLegacyThreadSpawnEdges();
+      return [];
     }
   }
 
-  private backupCorruptThreadSpawnEdgesSnapshot(): void {
-    const timestamp = new Date().toISOString().replace(/[^0-9A-Za-z]/g, "");
-    for (
-      let attempt = 0;
-      attempt < THREAD_SPAWN_EDGE_CORRUPT_BACKUP_ATTEMPTS;
-      attempt += 1
-    ) {
-      const backupPath = `${this.threadSpawnEdgePath}.corrupt-${timestamp}-${process.pid}-${attempt}`;
-      try {
-        renameSync(this.threadSpawnEdgePath, backupPath);
-        fsyncPath(this.store.sessionDir);
-        return;
-      } catch (err) {
-        const code = (err as { code?: string }).code;
-        if (code === "ENOENT") return;
-        if (code === "EEXIST") continue;
-        throw err;
-      }
-    }
-    throw new Error(
-      `unable to back up corrupt thread-spawn edge snapshot at ${this.threadSpawnEdgePath}`,
-    );
-  }
-
-  private persistThreadSpawnEdgesSnapshot(): void {
-    const payload: ThreadSpawnEdgeSnapshot = {
-      version: THREAD_SPAWN_EDGE_SNAPSHOT_VERSION,
-      edges: Array.from(this.threadSpawnEdges.values())
-        .sort(compareThreadSpawnEdges)
-        .map((edge) => cloneThreadSpawnEdge(edge)),
-    };
-    const serialized = `${JSON.stringify(payload, null, 2)}\n`;
-    rewriteAtomically(this.threadSpawnEdgePath, serialized);
+  private copyCorruptLegacyThreadSpawnEdges(): void {
+    const raw = readFileSync(this.threadSpawnEdgePath);
+    const hash = createHash("sha256").update(raw).digest("hex");
+    const corruptDir = join(this.stateDriver.projectDir, "state-corrupt");
+    const target = join(corruptDir, `thread-spawn-edges-${hash}.json`);
+    if (existsSync(target)) return;
+    mkdirSync(corruptDir, { recursive: true, mode: 0o700 });
+    copyFileSync(this.threadSpawnEdgePath, target);
   }
 }
 
@@ -469,13 +457,4 @@ function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function fsyncPath(path: string): void {
-  const fd = openSync(path, "r");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
 }

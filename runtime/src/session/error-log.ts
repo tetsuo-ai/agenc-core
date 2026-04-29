@@ -29,6 +29,8 @@ import type { Event } from "./event-log.js";
 import { DegradedStore } from "./degraded-store.js";
 import { isDegradedErrno } from "./session-store.js";
 import type { Sidecar } from "./sidecar.js";
+import { StateSqliteDriver } from "../state/sqlite-driver.js";
+import { LogsRepository } from "../state/logs.js";
 
 export interface ErrorLogEntry {
   readonly timestamp: string;
@@ -139,6 +141,8 @@ export class ErrorLogSidecar implements Sidecar {
   }) => void;
   private readonly writers = new Map<string, BufferedWriter>();
   private readonly degraded: DegradedStore<ErrorLogEntry>;
+  private readonly stateDriver: StateSqliteDriver;
+  private readonly logsRepository: LogsRepository;
 
   constructor(opts: ErrorLogSidecarOpts) {
     this.errorsDir = join(opts.projectDir, "errors");
@@ -148,6 +152,12 @@ export class ErrorLogSidecar implements Sidecar {
     this.degraded = new DegradedStore<ErrorLogEntry>({
       flushFn: async (events) => this.replayDegraded(events),
     });
+    this.stateDriver = new StateSqliteDriver({
+      projectDir: opts.projectDir,
+      stateDbPath: join(opts.projectDir, "agenc-state_1.sqlite"),
+      logsDbPath: join(opts.projectDir, "agenc-logs_1.sqlite"),
+    });
+    this.logsRepository = new LogsRepository(this.stateDriver);
   }
 
   async start(): Promise<void> {
@@ -170,6 +180,7 @@ export class ErrorLogSidecar implements Sidecar {
       writer.dispose();
     }
     this.writers.clear();
+    this.stateDriver.close();
     this.degraded.stop();
   }
 
@@ -216,6 +227,15 @@ export class ErrorLogSidecar implements Sidecar {
     const writer = this.getWriter(path);
     try {
       writer.write(`${JSON.stringify(entry)}\n`);
+      this.logsRepository.tryAppend({
+        timestamp: entry.timestamp,
+        level: entry.level,
+        scope: entry.server ? "mcp" : "runtime",
+        threadId: entry.sessionId,
+        eventType: entry.cause,
+        message: entry.message,
+        payload: entry,
+      });
     } catch (err) {
       if (isDegradedErrno(err)) {
         this.degraded.enterDegraded(

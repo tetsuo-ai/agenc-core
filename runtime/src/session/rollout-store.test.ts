@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentMetadata } from "../agents/registry.js";
 import { RolloutStore } from "./rollout-store.js";
-import { getSessionDir } from "./session-store.js";
+import { getProjectDir, getSessionDir } from "./session-store.js";
 
 let agencHome = "";
 let originalAgencHome = "";
@@ -292,11 +292,12 @@ describe("RolloutStore thread-spawn edges", () => {
     const store = openStore({ cwd, sessionId, resume: true });
     try {
       expect(store.listThreadSpawnChildren("root-1")).toEqual([]);
-      const backups = readdirSync(sessionDir).filter((entry) =>
-        entry.startsWith("thread-spawn-edges.json.corrupt-"),
+      const corruptDir = join(getProjectDir(cwd), "state-corrupt");
+      const backups = readdirSync(corruptDir).filter((entry) =>
+        entry.startsWith("thread-spawn-edges-") && entry.endsWith(".json"),
       );
       expect(backups).toHaveLength(1);
-      expect(existsSync(snapshotPath)).toBe(false);
+      expect(existsSync(snapshotPath)).toBe(true);
 
       store.upsertThreadSpawnEdge({
         parentThreadId: "root-1",
