@@ -78,9 +78,6 @@ import {
   formatTieredInstructionWarnings,
 } from "../prompts/agenc-md.js";
 import {
-  loadMemoryPrompt,
-} from "../prompts/memory/index.js";
-import {
   expandFileMentions,
   extractMentionAllowedRoots,
   formatFileMentionRejection,
@@ -91,7 +88,6 @@ import {
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
-import type { MemoryEntry } from "../prompts/memory/types.js";
 import { enableConfigs } from "./_deps/config-init.js";
 import {
   resolveLatestSessionId,
@@ -100,13 +96,9 @@ import {
 
 export {
   bootstrapLocalRuntimeSession,
-  buildExtractMemoriesViaSubagent,
-  EXTRACT_MEMORIES_TIMEOUT_MS,
   PROVIDER_MODEL_CATALOG,
-  parseExtractedMemoryCandidates,
   resolveModelOrExit,
   sessionConfigurationFromAgenCConfig,
-  TurnStateAccumulator,
 } from "./bootstrap.js";
 
 function hasArgFlag(argv: readonly string[], flag: string): boolean {
@@ -543,7 +535,7 @@ export interface RunSingleTurnOpts {
   /** Legacy direct inputs retained for focused unit tests. */
   readonly projectInstructions?: string;
   readonly memoryPromptText?: string;
-  readonly allMemories?: readonly MemoryEntry[];
+  readonly allMemories?: readonly [];
   /** Tool registry + MCP inputs that shape the system prompt. */
   readonly enabledToolNames?: ReadonlySet<string>;
   readonly mcpServers?: readonly McpServerInstructionsInput[];
@@ -630,7 +622,7 @@ export async function* runSingleTurn(
 export interface PreparedTurnRuntimeInputs {
   readonly projectInstructions: string;
   readonly memoryPromptText: string;
-  readonly allMemories: readonly MemoryEntry[];
+  readonly allMemories: readonly [];
   readonly enabledToolNames: ReadonlySet<string>;
   readonly mcpServers: readonly McpServerInstructionsInput[];
 }
@@ -684,13 +676,9 @@ export async function prepareTurnRuntimeInputs(params: {
     warningSink.projectMemoryWarnings = [...projectMemoryWarnings];
   }
 
-  const loadedMemory = await loadMemoryPrompt({
-    memoryDir: params.memoryDir,
-    memoryMdPath: params.memoryMdPath,
-  });
   return {
     projectInstructions: assembledProjectInstructions,
-    memoryPromptText: loadedMemory.text,
+    memoryPromptText: "",
     allMemories: [],
     enabledToolNames: new Set(params.registry.tools.map((tool) => tool.name)),
     mcpServers: await loadSessionMcpServerInstructions(params.session, currentConfig),
