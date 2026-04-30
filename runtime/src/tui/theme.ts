@@ -113,11 +113,11 @@ const DEFAULT_THEME: Theme = Object.freeze({
   }) as Theme["spacing"],
   modeIndicatorChar: Object.freeze({
     default: "›",
-    acceptEdits: "»",
-    plan: "◆",
-    bypassPermissions: "⚠",
-    dontAsk: "…",
-    auto: "∞",
+    acceptEdits: "⏵⏵",
+    plan: "⏸",
+    bypassPermissions: "⏵⏵",
+    dontAsk: "⏵⏵",
+    auto: "⏵⏵",
     bubble: "·",
   }) as Readonly<Record<PermissionMode, string>>,
 }) as Theme;
@@ -142,9 +142,8 @@ export interface ModeValueColorContext {
 
 /**
  * Single source of truth for "what color should this surface show for the
- * given mode". The StatusLine and Composer leading-glyph render sites
- * consume the same helper so the `◆`/`⚠`/`›` glyph never drifts in color
- * across the UI.
+ * given mode". Mode-aware surfaces consume the same helper so permission
+ * state never drifts in color across the UI.
  *
  * Color precedence (highest first):
  *   1. `pendingRequestCount > 0`      → `warning`        (approval pending)

@@ -9,8 +9,14 @@ import {
 import type { PromptInputMode } from "./inputModes.js";
 import { isVimModeEnabled } from "./promptInput-utils.js";
 import type { PermissionMode } from "../../permissions/types.js";
+import {
+  isDefaultMode,
+  permissionModeDisplayColor,
+  permissionModeSymbol,
+  permissionModeTitle,
+} from "../../permissions/mode-display.js";
 import type { Color } from "../ink/styles.js";
-import { modeValueColor, theme } from "../theme.js";
+import { theme } from "../theme.js";
 
 export type VimMode = "INSERT" | "NORMAL";
 
@@ -122,17 +128,13 @@ function ModeIndicator({
   ).toLowerCase();
 
   const modePart =
-    permissionMode !== "default" ? (
+    !isDefaultMode(permissionMode) ? (
       <Box flexShrink={0}>
         <Text
           key="permission-mode"
-          color={modeValueColor(permissionMode, {
-            colors: theme.colors,
-            pendingRequestCount,
-            isStreaming: isLoading,
-          }) as Color}
+          color={footerModeColor(permissionMode, pendingRequestCount) as Color}
         >
-          {theme.modeIndicatorChar[permissionMode]}{" "}
+          {permissionModeSymbol(permissionMode)}{" "}
           {permissionModeTitle(permissionMode).toLowerCase()} on
           {showHint && !isLoading ? (
             <Text dimColor>
@@ -156,7 +158,7 @@ function ModeIndicator({
       </Text>,
     );
   }
-  if (showHint && !isLoading && permissionMode === "default") {
+  if (showHint && !isLoading && isDefaultMode(permissionMode)) {
     parts.push(
       <Text dimColor>? for shortcuts</Text>
     );
@@ -179,20 +181,24 @@ function ModeIndicator({
   );
 }
 
-function permissionModeTitle(mode: PermissionMode): string {
-  switch (mode) {
-    case "acceptEdits":
-      return "Accept edits";
-    case "bypassPermissions":
-      return "Bypass Permissions";
-    case "dontAsk":
-      return "Don't Ask";
-    case "auto":
-      return "Auto mode";
-    case "bubble":
-      return "Bubble";
-    case "default":
-    case "plan":
-      return mode === "plan" ? "Plan Mode" : "Default";
+function footerModeColor(
+  mode: PermissionMode,
+  pendingRequestCount: number,
+): Color {
+  if (pendingRequestCount > 0) return theme.colors.warning as Color;
+  switch (permissionModeDisplayColor(mode)) {
+    case "planMode":
+      return theme.colors.modePlan as Color;
+    case "autoAccept":
+      return theme.colors.modeAcceptEdits as Color;
+    case "error":
+      return theme.colors.modeBypass as Color;
+    case "warning":
+      return theme.colors.warning as Color;
+    case "permission":
+      return theme.colors.accent as Color;
+    case "text":
+    default:
+      return theme.colors.ink as Color;
   }
 }

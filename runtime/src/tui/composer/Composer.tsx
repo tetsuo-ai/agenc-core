@@ -300,6 +300,7 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const mode = appState?.mode ?? "default";
   const isStreaming = appState?.isStreaming ?? false;
+  const inputMode = getModeFromInput(state.value) as PromptInputMode;
   const pendingRequestCount = appState?.pendingRequests.length ?? 0;
   const hasPendingAskUserQuestion =
     appState?.pendingRequests.some(
@@ -1095,12 +1096,9 @@ export const Composer: React.FC<ComposerProps> = ({
   const rejected = mentions.filter((m) => !m.validation.ok);
   const colors = theme.colors;
   const promptGlyph =
-    theme.modeIndicatorChar[
-      mode as keyof typeof theme.modeIndicatorChar
-    ] ?? theme.modeIndicatorChar.default;
+    inputMode === "bash" ? "!" : theme.modeIndicatorChar.default;
   const promptPrefix = `${promptGlyph} `;
-  // Keep the prompt glyph and footer mode indicator on the same color rule.
-  const accentColor = modeValueColor(mode as PermissionMode, {
+  const accentColor = modeValueColor("default", {
     colors,
     pendingRequestCount: genericPendingRequestCount,
     isStreaming,
@@ -1348,7 +1346,6 @@ export const Composer: React.FC<ComposerProps> = ({
     vimMode,
   ]);
   const footerStatus = activityLine ?? statusLine;
-  const inputMode = getModeFromInput(state.value) as PromptInputMode;
   const placeholderText =
     state.value.length === 0 && !helpOpen
       ? "Ask AgenC to do anything"

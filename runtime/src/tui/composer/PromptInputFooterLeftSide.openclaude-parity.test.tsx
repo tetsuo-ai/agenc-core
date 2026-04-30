@@ -115,4 +115,21 @@ describe("PromptInputFooterLeftSide OpenClaude parity", () => {
     expect(text).toContain("auto");
     expect(text).toContain("interrupt");
   });
+
+  test("renders bypass permissions with the upstream mode label and no warning glyph", async () => {
+    const text = await renderText(
+      <PromptInputFooterLeftSide
+        exitMessage={{ show: false }}
+        mode="prompt"
+        permissionMode="bypassPermissions"
+        suppressHint={false}
+        isLoading={false}
+      />,
+    );
+
+    expect(text).toContain("⏵⏵ bypass permissions on");
+    expect(text).not.toContain("⚠");
+    expect(text).not.toContain("bypassPermissions");
+    expect(text).not.toContain("bypass on");
+  });
 });

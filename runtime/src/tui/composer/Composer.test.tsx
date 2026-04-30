@@ -475,6 +475,8 @@ describe("Composer", () => {
     expect(frame).toContain("Working (");
     expect(frame).toContain("esc to interrupt");
     expect(frame).toContain("Ask AgenC to do anything");
+    expect(frame).toContain("⏵⏵ bypass permissions on");
+    expect(frame).not.toContain("⚠");
     expect(frame).not.toContain("bypass on");
     unmount();
   });
