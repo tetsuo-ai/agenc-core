@@ -22,6 +22,7 @@ import {
 import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
 import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";
 import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
+import { pastedContentsToLLMMessage } from "../../agenc/adapters/upstream-attachments.js";
 import type { Command } from "../../agenc/upstream/commands.js";
 import type { AgentDefinition } from "../../agenc/upstream/tools/AgentTool/loadAgentsDir.js";
 import type { OpenClaudeTuiProps } from "./session-types.js";
@@ -159,6 +160,12 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
       if (text.length === 0 && !hasAttachments) return;
       setSubmitCount((count) => count + 1);
       setInput("");
+      if (hasAttachments) {
+        const attachmentsMessage = pastedContentsToLLMMessage(pastedContents);
+        if (attachmentsMessage !== null) {
+          props.session.enqueueIdleInput?.(attachmentsMessage);
+        }
+      }
       setPastedContents({});
       await props.session.submit?.(value);
     },
