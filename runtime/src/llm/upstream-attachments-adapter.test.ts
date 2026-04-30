@@ -75,4 +75,38 @@ describe("pastedContentsToLLMMessage (TUI attachments → multipart user message
     };
     expect(pastedContentsToLLMMessage(record)?.role).toBe("user");
   });
+
+  it("silently skips entries whose type is neither 'text' nor 'image'", () => {
+    const record: Record<number, PastedContent> = {
+      1: { id: 1, type: "text", content: "kept" },
+      2: {
+        id: 2,
+        type: "file" as PastedContent["type"],
+        content: "should-be-skipped",
+      },
+      3: { id: 3, type: "text", content: "also kept" },
+    };
+    const got = pastedContentsToLLMMessage(record);
+    expect(got?.content.length).toBe(2);
+    const texts = (got?.content ?? []).map(
+      (p) => (p as { type: "text"; text: string }).text,
+    );
+    expect(texts).toEqual(["kept", "also kept"]);
+  });
+
+  it("returns null when every entry has an unrecognized type", () => {
+    const record: Record<number, PastedContent> = {
+      1: {
+        id: 1,
+        type: "file" as PastedContent["type"],
+        content: "x",
+      },
+      2: {
+        id: 2,
+        type: "video" as PastedContent["type"],
+        content: "y",
+      },
+    };
+    expect(pastedContentsToLLMMessage(record)).toBeNull();
+  });
 });

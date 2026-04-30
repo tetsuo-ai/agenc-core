@@ -57,6 +57,30 @@ describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
     }
   });
 
+  it("preserves an empty allowlist as tools: [] — distinct from a missing allowlist (which omits the field)", async () => {
+    const { registerAgentRole, _resetAgentRolesForTesting } = await import(
+      "./role.js"
+    );
+    _resetAgentRolesForTesting();
+    registerAgentRole({
+      name: "empty-allowlist-role",
+      config: {
+        description: "role with explicit empty allowlist",
+        allowlist: [],
+      },
+    });
+    registerAgentRole({
+      name: "no-allowlist-role",
+      config: { description: "role with no allowlist at all" },
+    });
+    const list = loadUpstreamAgentList();
+    const empty = list.find((d) => d.agentType === "empty-allowlist-role");
+    const missing = list.find((d) => d.agentType === "no-allowlist-role");
+    expect(empty?.tools).toEqual([]);
+    expect(missing?.tools).toBeUndefined();
+    _resetAgentRolesForTesting();
+  });
+
   it("getSystemPrompt returns the role's systemPrompt or empty string", () => {
     const list = loadUpstreamAgentList();
     const roles = listAgentRoles();

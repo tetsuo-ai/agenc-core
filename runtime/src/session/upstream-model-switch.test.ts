@@ -40,4 +40,12 @@ describe("buildPendingProviderSwitch (TUI model picker → runtime switch)", () 
     const got = buildPendingProviderSwitch(session, "gpt-5-codex");
     expect(got?.model).toBe("gpt-5-codex");
   });
+
+  it("passes an empty provider slug through verbatim — runtime is the validator", () => {
+    const session = {
+      sessionConfiguration: { provider: { slug: "" } },
+    };
+    const got = buildPendingProviderSwitch(session, "any-model");
+    expect(got).toEqual({ provider: "", model: "any-model" });
+  });
 });
