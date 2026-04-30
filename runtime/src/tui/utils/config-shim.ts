@@ -7,8 +7,9 @@
 
 export interface AgenCGlobalConfigShim {
   readonly copyOnSelect: boolean;
+  readonly editorMode: "emacs" | "vim";
 }
 
 export function getGlobalConfig(): AgenCGlobalConfigShim {
-  return { copyOnSelect: true };
+  return { copyOnSelect: true, editorMode: "emacs" };
 }

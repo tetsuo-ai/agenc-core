@@ -31,3 +31,12 @@ export async function* makeHistoryReader(): AsyncGenerator<HistoryEntry> {
   // Empty by default. Same wiring story as getTimestampedHistory.
   return;
 }
+
+// Cherry-picked from openclaude src/history.ts.
+// Counts the number of \n in a placeholder string used by the
+// composer's truncate-paste flow. AgenC consumers wire the real
+// pasted-text store later if/when AgenC introduces one.
+export function getPastedTextRefNumLines(placeholderContent: string): number {
+  if (!placeholderContent) return 0;
+  return placeholderContent.split("\n").length;
+}
