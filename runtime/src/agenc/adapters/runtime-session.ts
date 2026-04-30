@@ -6,7 +6,10 @@ import type {
   Terminal,
   TurnState,
 } from "../../session/turn-state.js";
-import { buildAgenCToolUseContext } from "./tool-use-context.js";
+import {
+  buildAgenCToolUseContext,
+  type AgenCToolUseContext,
+} from "./tool-use-context.js";
 import { toAgenCModelContext } from "./model-context.js";
 import {
   buildCompactedRolloutPayload,
@@ -20,30 +23,24 @@ import {
   loadContextNonInteractiveCommand,
   loadContextCollapseModule,
   enableUpstreamConfigGate,
+  loadMessageUtilityModule,
   loadManualCompactCommand,
+  loadMicroCompactModule,
+  loadPromptContextModules,
+  loadToolResultStorageModule,
 } from "./dynamic-loaders.js";
+import { recordContentReplacement } from "../../phases/_deps/session-storage.js";
 
 const AGENC_COMPACT_BOUNDARY = "<compact>";
 const PREPARED_TERMINAL = Symbol("agenc_prepared_terminal");
 const RECOVERY_PASS: AgenCOverflowRecoveryResult = { kind: "pass" };
 const UPSTREAM_CONTEXT_GUARD_ENV = [
-  [
-    68, 73, 83, 65, 66, 76, 69, 95, 65, 71, 69, 78, 67, 95, 83, 77, 95, 67,
-    79, 77, 80, 65, 67, 84,
-  ],
-  [
-    65, 71, 69, 78, 67, 95, 68, 73, 83, 65, 66, 76, 69, 95, 65, 71, 69, 78,
-    67, 95, 77, 68, 83,
-  ],
-  [
-    68, 73, 83, 65, 66, 76, 69, 95, 67, 76, 65, 85, 68, 69, 95, 67, 79, 68,
-    69, 95, 83, 77, 95, 67, 79, 77, 80, 65, 67, 84,
-  ],
-  [
-    67, 76, 65, 85, 68, 69, 95, 67, 79, 68, 69, 95, 68, 73, 83, 65, 66, 76,
-    69, 95, 67, 76, 65, 85, 68, 69, 95, 77, 68, 83,
-  ],
-].map((codes) => String.fromCharCode(...codes));
+  "AGENC_USE_OPENAI",
+  "OPENAI_MODEL",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_KEY",
+  "AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW",
+] as const;
 
 export interface AgenCPreparedTerminal {
   readonly terminal: Terminal;
@@ -79,7 +76,11 @@ export type AgenCOverflowRecoveryResult =
   | { readonly kind: "pass" }
   | { readonly kind: "surface"; readonly reason: string };
 
-type AgenCRuntimeMessage = Partial<AgenCMessage> & {
+type AgenCRuntimeMessage = {
+  readonly role?: AgenCMessage["role"];
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly phase?: string;
   readonly type?: string;
   readonly message?: {
     readonly role?: string;
@@ -111,6 +112,8 @@ type AgenCCacheSafeParams = {
   readonly forkContextMessages: readonly AgenCRuntimeMessage[];
 };
 
+type UpstreamGuardEnv = Partial<Record<(typeof UPSTREAM_CONTEXT_GUARD_ENV)[number], string>>;
+
 export async function prepareAgenCTurnContext(
   state: TurnState,
   ctx: TurnContext,
@@ -121,24 +124,19 @@ export async function prepareAgenCTurnContext(
   if (signal?.aborted) return;
   toAgenCModelContext(ctx);
   const messages = messagesAfterAgenCBoundary(state.messages);
-  if (!isAgenCContextCollapseRequested()) {
-    state.messagesForQuery = messages;
-    return;
-  }
   const toolUseContext = buildAgenCToolUseContext(session, ctx, {
     querySource: "repl_main_thread",
   });
-  const projected = await withUpstreamContextGuards(async () => {
-    const { applyCollapsesIfNeeded } = await loadContextCollapseModule();
-    return applyCollapsesIfNeeded(
-      toAgenCRuntimeMessages(messages),
-      toolUseContext,
-    );
+  const prepared = await prepareAgenCQueryMessages({
+    messages,
+    toolUseContext,
+    contentReplacementState: state.contentReplacementState,
+    querySource: "repl_main_thread",
+    applyContextCollapse: isAgenCContextCollapseRequested(),
   });
-  state.messagesForQuery = fromAgenCRuntimeMessages(
-    projected.messages as AgenCRuntimeMessage[],
-  );
-  if (projected.committed > 0) {
+  state.messagesForQuery = prepared.messages;
+  state.snipTokensFreed = prepared.snipTokensFreed;
+  if (prepared.committed) {
     state.messages = [...state.messagesForQuery];
   }
 }
@@ -172,7 +170,7 @@ export async function runAgenCAutoCompact(params: {
     params.ctx,
     { querySource: params.querySource },
   );
-  const cacheSafeParams = buildCacheSafeParams(toolUseContext, messages);
+  const cacheSafeParams = await buildCacheSafeParams(toolUseContext, messages);
   const result = await withUpstreamContextGuards(async () => {
     const { autoCompactIfNeeded } = await loadAutoCompactModule();
     return autoCompactIfNeeded(
@@ -183,10 +181,11 @@ export async function runAgenCAutoCompact(params: {
       state.autoCompactTracking,
       state.snipTokensFreed ?? 0,
     );
-  });
+  }, envForToolUseContext(toolUseContext));
   if (!result.wasCompacted || !result.compactionResult) {
     return compactionNotRun(result.consecutiveFailures);
   }
+  params.session.clearProviderResponseId();
   return {
     wasCompacted: true,
     compactionResult: await toAgenCCompactionResult(
@@ -236,17 +235,26 @@ export async function runAgenCManualCompact(params: {
   const result = await withUpstreamContextGuards(async () => {
     const { call } = await loadManualCompactCommand();
     return call(params.customInstructions ?? "", commandContext as never);
-  });
+  }, envForToolUseContext(toolUseContext));
   if (result.type !== "compact") {
     throw new Error("Compact command did not return a compaction result");
   }
+  const compactionResultWithSlashMessages =
+    await addManualCompactSlashMessages(
+      result.compactionResult as AgenCCompactionResult,
+      params.customInstructions ?? "",
+      typeof result.displayText === "string" ? result.displayText : undefined,
+    );
+  await resetAgenCMicrocompactState(toolUseContext);
   const compactionResult = await toAgenCCompactionResult(
-    result.compactionResult as AgenCCompactionResult,
+    compactionResultWithSlashMessages,
+    toolUseContext,
   );
   const compacted = compactionResult.replacementHistory.map(cloneLLMMessage);
   await params.session.state.with((sessionState) => {
     sessionState.history = compacted.map(cloneLLMMessage);
   });
+  params.session.clearProviderResponseId();
   params.session.rolloutStore?.appendRollout(
     {
       type: "compacted",
@@ -286,7 +294,7 @@ export async function runAgenCContextUsage(params: {
   const result = await withUpstreamContextGuards(async () => {
     const { call } = await loadContextNonInteractiveCommand();
     return call(params.args ?? "", commandContext as never);
-  });
+  }, envForToolUseContext(toolUseContext));
   return { text: result.value };
 }
 
@@ -295,7 +303,6 @@ export async function runAgenCContextCollapseOverflowRecovery(params: {
   readonly state: TurnState;
   readonly lastMessage?: AssistantMessage;
 }): Promise<AgenCOverflowRecoveryResult> {
-  if (!isAgenCContextCollapseRequested()) return passRecovery();
   const recovered = await withUpstreamContextGuards(async () => {
     const { recoverFromOverflow } = await loadContextCollapseModule();
     return recoverFromOverflow(
@@ -344,27 +351,119 @@ function messagesAfterAgenCBoundary(
 }
 
 function buildCacheSafeParams(
-  toolUseContext: ReturnType<typeof buildAgenCToolUseContext>,
+  toolUseContext: AgenCToolUseContext,
   forkContextMessages: readonly AgenCRuntimeMessage[],
-): AgenCCacheSafeParams {
-  return {
-    systemPrompt: [],
-    userContext: {},
-    systemContext: {},
-    toolUseContext,
-    forkContextMessages,
-  };
+): Promise<AgenCCacheSafeParams> {
+  return withUpstreamContextGuards(async () => {
+    const {
+      buildEffectiveSystemPrompt,
+      getSystemContext,
+      getSystemPrompt,
+      getUserContext,
+    } = await loadPromptContextModules();
+    const appState = toolUseContext.getAppState() as {
+      toolPermissionContext?: {
+        additionalWorkingDirectories?: Map<string, unknown>;
+      };
+    };
+    const additionalWorkingDirectories = Array.from(
+      appState.toolPermissionContext?.additionalWorkingDirectories?.keys?.() ?? [],
+    );
+    const defaultSystemPrompt = await getSystemPrompt(
+      toolUseContext.options.tools,
+      toolUseContext.options.mainLoopModel,
+      additionalWorkingDirectories,
+      toolUseContext.options.mcpClients,
+    );
+    const [userContext, systemContext] = await Promise.all([
+      getUserContext(),
+      getSystemContext(),
+    ]);
+    const systemPrompt = buildEffectiveSystemPrompt({
+      mainThreadAgentDefinition: undefined,
+      toolUseContext,
+      customSystemPrompt: undefined,
+      defaultSystemPrompt,
+      appendSystemPrompt: undefined,
+    });
+    return {
+      systemPrompt,
+      userContext,
+      systemContext,
+      toolUseContext,
+      forkContextMessages,
+    };
+  }, envForToolUseContext(toolUseContext));
+}
+
+async function prepareAgenCQueryMessages(params: {
+  readonly messages: readonly LLMMessage[];
+  readonly toolUseContext: AgenCToolUseContext;
+  readonly contentReplacementState: TurnState["contentReplacementState"];
+  readonly querySource: string;
+  readonly applyContextCollapse: boolean;
+}): Promise<{
+  readonly messages: LLMMessage[];
+  readonly snipTokensFreed: number;
+  readonly committed: boolean;
+}> {
+  return await withUpstreamContextGuards(async () => {
+    let messages = toAgenCRuntimeMessages(params.messages);
+    const { applyToolResultBudget } = await loadToolResultStorageModule();
+    const persistReplacements =
+      params.querySource.startsWith("agent:") ||
+      params.querySource.startsWith("repl_main_thread");
+    const budgeted = await applyToolResultBudget(
+      messages,
+      params.contentReplacementState,
+      persistReplacements
+        ? (records: never) => {
+            void recordContentReplacement(records);
+          }
+        : undefined,
+      new Set(
+        params.toolUseContext.options.tools
+          .filter((tool) => !Number.isFinite(tool.maxResultSizeChars))
+          .map((tool) => tool.name),
+      ),
+    );
+    messages = budgeted.messages as AgenCRuntimeMessage[];
+    const { microcompactMessages } = await loadMicroCompactModule();
+    const microcompactResult = await microcompactMessages(
+      messages,
+      params.toolUseContext,
+      params.querySource,
+    );
+    messages = microcompactResult.messages as AgenCRuntimeMessage[];
+    let committed = false;
+    if (params.applyContextCollapse) {
+      const { applyCollapsesIfNeeded } = await loadContextCollapseModule();
+      const projected = await applyCollapsesIfNeeded(
+        messages,
+        params.toolUseContext,
+        params.querySource,
+      );
+      messages = projected.messages as AgenCRuntimeMessage[];
+      committed = projected.committed > 0;
+    }
+    return {
+      messages: fromAgenCRuntimeMessages(messages),
+      snipTokensFreed: 0,
+      committed,
+    };
+  }, envForToolUseContext(params.toolUseContext));
 }
 
 async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
+  toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
   const replacementHistory = await withUpstreamContextGuards(async () => {
     const { buildPostCompactMessages } = await loadCompactModule();
     return fromAgenCRuntimeMessages(
       buildPostCompactMessages(result) as AgenCRuntimeMessage[],
     );
-  });
+  }, toolUseContext ? envForToolUseContext(toolUseContext) : undefined);
   const postCompactTokens =
     result.truePostCompactTokenCount ?? result.postCompactTokenCount;
   return {
@@ -380,16 +479,59 @@ async function toAgenCCompactionResult(
   };
 }
 
+async function addManualCompactSlashMessages(
+  result: AgenCCompactionResult,
+  args: string,
+  displayText: string | undefined,
+): Promise<AgenCCompactionResult> {
+  const {
+    createSyntheticUserCaveatMessage,
+    createUserMessage,
+    formatCommandInputTags,
+  } = await loadMessageUtilityModule();
+  const slashMessages: AgenCRuntimeMessage[] = [
+    createSyntheticUserCaveatMessage(),
+    createUserMessage({
+      content: formatCommandInputTags("compact", args),
+    }),
+    ...(displayText
+      ? [
+        createUserMessage({
+          content: `<local-command-stdout>${displayText}</local-command-stdout>`,
+          timestamp: new Date(Date.now() + 100).toISOString(),
+        }),
+      ]
+      : []),
+  ] as AgenCRuntimeMessage[];
+  return {
+    ...result,
+    messagesToKeep: [
+      ...(result.messagesToKeep ?? []),
+      ...slashMessages,
+    ],
+  };
+}
+
+async function resetAgenCMicrocompactState(
+  toolUseContext: AgenCToolUseContext,
+): Promise<void> {
+  await withUpstreamContextGuards(async () => {
+    const { resetMicrocompactState } = await loadMicroCompactModule();
+    resetMicrocompactState();
+  }, envForToolUseContext(toolUseContext));
+}
+
 function toAgenCRuntimeMessages(
   messages: readonly LLMMessage[],
 ): AgenCRuntimeMessage[] {
   return messages.map((message, index) => {
     const converted = toAgenCMessage(message);
+    const upstreamContent = toUpstreamMessageContent(message.content);
     if (message.role === "system") {
       return {
         ...converted,
         type: "system",
-        content: cloneContent(message.content),
+        content: upstreamContent,
         uuid: `agenc-system-${index}`,
         timestamp: new Date(0).toISOString(),
       };
@@ -397,11 +539,12 @@ function toAgenCRuntimeMessages(
     const role = message.role === "tool" ? "user" : message.role;
     return {
       ...converted,
+      content: upstreamContent,
       role,
       type: role,
       message: {
         role,
-        content: cloneContent(message.content),
+        content: upstreamContent,
       },
       uuid: `agenc-${role}-${index}`,
       timestamp: new Date(0).toISOString(),
@@ -495,6 +638,32 @@ function cloneContent(content: unknown): LLMMessage["content"] {
   return "";
 }
 
+function toUpstreamMessageContent(content: unknown): unknown {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return [];
+  return content.map((item) => {
+    if (!item || typeof item !== "object") return { type: "text", text: "" };
+    if (
+      "type" in item &&
+      item.type === "image_url" &&
+      "image_url" in item &&
+      item.image_url &&
+      typeof item.image_url === "object" &&
+      "url" in item.image_url &&
+      typeof item.image_url.url === "string"
+    ) {
+      return {
+        type: "image",
+        source: { type: "url", url: item.image_url.url },
+      };
+    }
+    if ("text" in item && typeof item.text === "string") {
+      return { type: "text", text: item.text };
+    }
+    return { ...item };
+  });
+}
+
 function compactionNotRun(
   consecutiveFailures?: number,
 ): AgenCAutoCompactResult {
@@ -517,11 +686,17 @@ function passRecovery(): AgenCOverflowRecoveryResult {
 
 async function withUpstreamContextGuards<T>(
   fn: () => Promise<T>,
+  env: UpstreamGuardEnv = {},
 ): Promise<T> {
   const previous = new Map<string, string | undefined>();
-  for (const key of UPSTREAM_CONTEXT_GUARD_ENV) {
+  for (const key of Object.keys(env) as Array<keyof UpstreamGuardEnv>) {
     previous.set(key, process.env[key]);
-    process.env[key] = "1";
+    const value = env[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
   }
   try {
     await enableUpstreamConfigGate();
@@ -537,7 +712,21 @@ async function withUpstreamContextGuards<T>(
   }
 }
 
+function envForToolUseContext(
+  toolUseContext: AgenCToolUseContext,
+): UpstreamGuardEnv {
+  const providerOverride = toolUseContext.options.providerOverride;
+  if (!providerOverride) return {};
+  return {
+    AGENC_USE_OPENAI: "1",
+    OPENAI_MODEL: providerOverride.model,
+    OPENAI_BASE_URL: providerOverride.baseURL,
+    OPENAI_API_KEY: providerOverride.apiKey,
+    AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
+      toolUseContext.options.contextWindowTokens.toString(),
+  };
+}
+
 function isAgenCContextCollapseRequested(): boolean {
-  const raw = process.env.AGENC_CONTEXT_COLLAPSE;
-  return raw !== undefined && raw !== "0" && raw !== "false";
+  return true;
 }

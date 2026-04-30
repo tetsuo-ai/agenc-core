@@ -48,6 +48,10 @@ function readTarget(id: string): string {
   return read(targetPath(row(id)));
 }
 
+function readRelative(relativePath: string): string {
+  return read(path.join(repoRoot, relativePath));
+}
+
 function expectExports(id: string, names: readonly string[]): void {
   const target = readTarget(id);
   for (const name of names) {
@@ -140,6 +144,7 @@ describe('copied upstream compact/context code', () => {
       'services/compact/apiMicrocompact.ts',
       'services/compact/autoCompact.ts',
       'services/compact/cachedMicrocompact.ts',
+      'services/compact/cachedMCConfig.ts',
       'services/compact/compact.ts',
       'services/compact/compactWarningState.ts',
       'services/compact/grouping.ts',
@@ -150,6 +155,14 @@ describe('copied upstream compact/context code', () => {
       'services/compact/snipCompact.ts',
       'services/compact/timeBasedMCConfig.ts',
       'services/contextCollapse/index.ts',
+      'services/contextCollapse/operations.ts',
+      'services/contextCollapse/persist.ts',
+      'tools/CtxInspectTool/CtxInspectTool.ts',
+      'utils/permissions/yolo-classifier-prompts/auto_mode_system_prompt.txt',
+      'utils/permissions/yolo-classifier-prompts/permissions_external.txt',
+      'utils/permissions/yolo-classifier-prompts/permissions_anthropic.txt',
+      'commands/fork/index.ts',
+      'tools/VerifyPlanExecutionTool/constants.ts',
       'utils/context.ts',
       'utils/contextAnalysis.ts',
       'utils/model/contextWindowUpgradeCheck.ts',
@@ -280,6 +293,294 @@ describe('AgenC runtime integration', () => {
     expect(guardIndex).toBeGreaterThanOrEqual(0);
     expect(target.slice(guardIndex)).toContain('await enableUpstreamConfigGate();');
     expect(target).not.toContain('../upstream/utils/config');
+  });
+
+  it('defines copied runtime build constants during bundling', () => {
+    const target = readTarget('upstream-build-constants');
+
+    expect(target).toContain("'MACRO.VERSION'");
+    expect(target).toContain("'MACRO.DISPLAY_VERSION'");
+    expect(target).toContain("'MACRO.BUILD_TIME'");
+    expect(target).toContain("'MACRO.ISSUES_EXPLAINER'");
+    expect(target).toContain("'MACRO.FEEDBACK_CHANNEL'");
+    expect(target).toContain("'MACRO.PACKAGE_URL'");
+    expect(target).toContain("'MACRO.NATIVE_PACKAGE_URL'");
+    expect(target).toContain("'MACRO.VERSION_CHANGELOG'");
+    expect(target).toContain('@tetsuo-ai/runtime');
+  });
+
+  it('matches the open-build feature map for compaction and memory gates', () => {
+    const target = readTarget('upstream-feature-flags');
+
+    for (const flag of [
+      'CACHED_MICROCOMPACT',
+      'EXTRACT_MEMORIES',
+      'TEAMMEM',
+      'PROMPT_CACHE_BREAK_DETECTION',
+      'HOOK_PROMPTS',
+      'TRANSCRIPT_CLASSIFIER',
+      'CONTEXT_COLLAPSE',
+    ]) {
+      expect(target).toContain(`${flag}: true`);
+    }
+    for (const flag of [
+      'REACTIVE_COMPACT',
+      'KAIROS',
+      'DAEMON',
+      'FORK_SUBAGENT',
+    ]) {
+      expect(target).toContain(`${flag}: false`);
+    }
+  });
+
+  it('resolves local config defaults without remote feature calls', () => {
+    const target = readTarget('upstream-config-defaults');
+
+    expect(target).toContain('openBuildDefaults');
+    expect(target).toContain('tengu_passport_quail: true');
+    expect(target).toContain('tengu_coral_fern: true');
+    expect(target).toContain('tengu_session_memory: false');
+    expect(target).toContain('tengu_sm_compact: false');
+    expect(target).toContain('AGENC_FEATURE_FLAGS_FILE');
+    expect(target).toContain("'.agenc'");
+    expect(target).toContain('getOpenBuildFeatureValue');
+  });
+
+  it('passes the active provider to copied compact requests', () => {
+    const target = readTarget('provider-model-bridge');
+    const runtimeSession = readTarget('adapter-runtime-session');
+    const copiedCompact = readRelative(
+      'runtime/src/agenc/upstream/services/compact/compact.ts',
+    );
+
+    expect(target).toContain('readProviderFactoryOptions');
+    expect(target).toContain('providerOverride');
+    expect(target).toContain('baseURL');
+    expect(target).toContain('apiKey');
+    expect(runtimeSession).toContain('envForToolUseContext');
+    expect(runtimeSession).toContain('AGENC_USE_OPENAI');
+    expect(runtimeSession).toContain('OPENAI_MODEL');
+    expect(runtimeSession).toContain('AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW');
+    expect(copiedCompact).toContain(
+      'providerOverride: context.options.providerOverride',
+    );
+  });
+
+  it('runs copied preflight steps before sampling', () => {
+    const target = readTarget('adapter-runtime-session');
+    const toolContext = readTarget('adapter-tool-use-context');
+    const turnLoop = readTarget('query-loop-context-pipeline');
+    const prepareIndex = turnLoop.indexOf('await prepareAgenCTurnContext');
+    const attachmentsIndex = turnLoop.indexOf('getAttachments({', prepareIndex);
+
+    expect(target).toContain('prepareAgenCQueryMessages');
+    expect(target).toContain('contentReplacementState: state.contentReplacementState');
+    expect(target).toContain('loadToolResultStorageModule');
+    expect(target).toContain('applyToolResultBudget');
+    expect(target).toContain('recordContentReplacement');
+    expect(target).toContain('toUpstreamMessageContent');
+    expect(target).toContain('type: "text", text: content');
+    expect(target).toContain('loadMicroCompactModule');
+    expect(target).toContain('microcompactMessages');
+    expect(toolContext).toContain('DEFAULT_MAX_RESULT_SIZE_CHARS');
+    expect(toolContext).toContain('maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS');
+    expect(target.indexOf('applyToolResultBudget')).toBeLessThan(
+      target.indexOf('microcompactMessages'),
+    );
+    expect(prepareIndex).toBeGreaterThanOrEqual(0);
+    expect(attachmentsIndex).toBeGreaterThanOrEqual(0);
+    expect(prepareIndex).toBeLessThan(attachmentsIndex);
+  });
+
+  it('does not suppress copied auto-compact when the model has a context window', () => {
+    const target = readTarget('auto-compact-reachability');
+
+    expect(target).toContain('getAutoCompactTokenLimit(ctx)');
+    expect(target).toContain('if (autoCompactLimit !== undefined)');
+    expect(target).not.toContain(
+      'autoCompactTokenLimit ?? Number.POSITIVE_INFINITY',
+    );
+  });
+
+  it('mirrors manual compact slash-command replacement semantics', () => {
+    const target = readTarget('manual-compact-slash-semantics');
+
+    expect(target).toContain('addManualCompactSlashMessages');
+    expect(target).toContain('formatCommandInputTags("compact", args)');
+    expect(target).toContain('resetAgenCMicrocompactState');
+    expect(target).toContain('messagesToKeep');
+    expect(target).toContain('buildPostCompactMessages');
+    expect(target).toContain('clearProviderResponseId');
+  });
+
+  it('builds cache-safe params from live prompt and context inputs', () => {
+    const target = readTarget('compact-cache-params');
+    const cachedConfig = readTarget('cached-microcompact-config-source');
+    const prompts = readRelative('runtime/src/agenc/upstream/constants/prompts.ts');
+
+    expect(target).toContain('loadPromptContextModules');
+    expect(target).toContain('getSystemPrompt');
+    expect(target).toContain('getUserContext');
+    expect(target).toContain('getSystemContext');
+    expect(target).toContain('buildEffectiveSystemPrompt');
+    expect(target).not.toContain('systemPrompt: []');
+    expect(cachedConfig).toContain('getCachedMCConfig');
+    expect(prompts).toContain('getCachedMCConfigForFRCSource');
+    expect(prompts).toContain('getAntModelOverrideConfig');
+    expect(prompts).toContain("../utils/model/antModels.js");
+    expect(prompts).not.toContain(
+      "require('../services/compact/cachedMCConfig.js')",
+    );
+  });
+
+  it('routes context analysis through the same model bridge and message view', () => {
+    const runtimeSession = readTarget('adapter-runtime-session');
+    const slash = readRelative('runtime/src/agenc/adapters/slash-commands.ts');
+
+    expect(slash).toContain('runAgenCContextUsage');
+    expect(runtimeSession).toContain('messagesAfterAgenCBoundary');
+    expect(runtimeSession).toContain('loadContextNonInteractiveCommand');
+    expect(runtimeSession).toContain('envForToolUseContext');
+  });
+
+  it('keeps memory context active around compacted history projection', () => {
+    const runtimeSession = readTarget('adapter-runtime-session');
+    const memoryIndex = readRelative('runtime/src/prompts/memory/index.ts');
+    const orchestrator = readRelative(
+      'runtime/src/prompts/attachments/orchestrator.ts',
+    );
+    const relevantMemory = readRelative(
+      'runtime/src/prompts/attachments/relevant-memory.ts',
+    );
+
+    expect(runtimeSession).toContain('getUserContext');
+    expect(runtimeSession).not.toContain('DISABLE_AGENC_SM_COMPACT');
+    expect(runtimeSession).not.toContain('AGENC_DISABLE_AGENC_MDS');
+    expect(memoryIndex).toContain('maybeAutoSaveMemory');
+    expect(memoryIndex).toContain('selectRelevantMemoriesForTurn');
+    expect(orchestrator).toContain('relevantMemoryProducer');
+    expect(relevantMemory).toContain('relevant_memories');
+  });
+
+  it('resets provider continuation after compact replacement', () => {
+    const target = readTarget('post-compact-cleanup-continuation');
+
+    expect(target).toContain('clearProviderResponseId');
+    expect(target).toContain('sessionState.history = compacted');
+    expect(target).toContain('buildAgenCCompactedRolloutItem');
+  });
+
+  it('wires live context-collapse source through the adapter', () => {
+    const target = readTarget('context-collapse-live-source');
+    const operations = readTarget('context-collapse-operations-source');
+    const persist = readTarget('context-collapse-persist-source');
+    const inspectTool = readTarget('context-collapse-inspection-tool');
+    const runtimeSession = readTarget('adapter-runtime-session');
+    const upstreamTools = readRelative('runtime/src/agenc/upstream/tools.ts');
+
+    expect(target).toContain('isContextCollapseEnabled');
+    expect(target).toContain('applyCollapsesIfNeeded');
+    expect(target).toContain('recoverFromOverflow');
+    expect(target).toContain('resetContextCollapse');
+    expect(target).toContain('getContextCollapseSnapshot');
+    expect(target).toContain('restoreContextCollapseState');
+    expect(target).toContain('AGENC_CONTEXT_COLLAPSE');
+    expect(target).not.toContain(`${sourceProductUpper}_CONTEXT_COLLAPSE`);
+    expect(target).not.toContain(
+      'export function isContextCollapseEnabled(): boolean {\n  return false',
+    );
+    expect(operations).toContain('getContextVisualizationData');
+    expect(operations).toContain('resetContextCollapse');
+    expect(persist).toContain('restoreContextCollapseState');
+    expect(persist).toContain('getContextCollapseCommits');
+    expect(inspectTool).toContain('getContextVisualizationData');
+    expect(inspectTool).toContain('getContextCollapseSnapshot');
+    expect(inspectTool).toContain('getContextCollapseCommits');
+    expect(inspectTool).toContain("name: 'CtxInspect'");
+    expect(upstreamTools).toContain('ContextCollapseInspectTool');
+    expect(upstreamTools).toContain('? ContextCollapseInspectTool');
+    expect(upstreamTools).not.toContain(
+      "require('./tools/CtxInspectTool/CtxInspectTool.js')",
+    );
+    expect(runtimeSession).toContain('function isAgenCContextCollapseRequested');
+    expect(runtimeSession).toContain('return true;');
+    expect(runtimeSession).not.toContain(
+      'if (!isAgenCContextCollapseRequested()) return passRecovery();',
+    );
+  });
+
+  it('stores upstream classifier prompt payloads as local AgenC-branded source', () => {
+    const promptDir = targetPath(row('classifier-prompt-assets'));
+    const verifyPlanConstant = readTarget('classifier-verify-plan-constant');
+    const basePrompt = read(path.join(promptDir, 'auto_mode_system_prompt.txt'));
+    const externalPrompt = read(path.join(promptDir, 'permissions_external.txt'));
+    const antPrompt = read(path.join(promptDir, 'permissions_anthropic.txt'));
+    const yoloClassifier = readRelative(
+      'runtime/src/agenc/upstream/utils/permissions/yoloClassifier.ts',
+    );
+
+    expect(basePrompt.length).toBeGreaterThan(10_000);
+    expect(externalPrompt.length).toBeGreaterThan(10_000);
+    expect(antPrompt).toBe('');
+    expect(basePrompt).toContain('<permissions_template>');
+    expect(basePrompt).toContain('classify_result');
+    expect(basePrompt).toContain('CLASSIFIER BYPASS');
+    expect(externalPrompt).toContain('<user_allow_rules_to_replace>');
+    expect(externalPrompt).toContain('<user_deny_rules_to_replace>');
+    expect(externalPrompt).toContain('AGENTS.md');
+    expect(externalPrompt).toContain('~/.agenc/projects/*/memory/');
+    expect(`${basePrompt}\n${externalPrompt}`).not.toContain(`~/.${sourceProductName}`);
+    expect(`${basePrompt}\n${externalPrompt}`).not.toContain(`.${sourceProductName}/`);
+    expect(`${basePrompt}\n${externalPrompt}`).not.toContain(`${sourceProductUpper}.md`);
+    expect(yoloClassifier).toContain(
+      "require('./yolo-classifier-prompts/auto_mode_system_prompt.txt')",
+    );
+    expect(yoloClassifier).toContain(
+      "require('./yolo-classifier-prompts/permissions_external.txt')",
+    );
+    expect(yoloClassifier).toContain('<user_agenc_md>');
+    expect(verifyPlanConstant).toContain('VERIFY_PLAN_EXECUTION_TOOL_NAME');
+    expect(verifyPlanConstant).toContain('VerifyPlanExecution');
+    const classifierDecision = readRelative(
+      'runtime/src/agenc/upstream/utils/permissions/classifierDecision.ts',
+    );
+    expect(classifierDecision).toContain('VERIFY_PLAN_EXECUTION_TOOL_NAME_SOURCE');
+    expect(classifierDecision).not.toContain(
+      "require('../../tools/VerifyPlanExecutionTool/constants.js')",
+    );
+  });
+
+  it('resolves ant model helper users through local imports', () => {
+    const helper = readTarget('ant-model-override-symbol-imports');
+
+    expect(helper).toContain('resolveAntModel');
+    for (const file of [
+      'runtime/src/agenc/upstream/utils/context.ts',
+      'runtime/src/agenc/upstream/utils/effort.ts',
+      'runtime/src/agenc/upstream/utils/model/model.ts',
+      'runtime/src/agenc/upstream/utils/thinking.ts',
+    ]) {
+      const content = readRelative(file);
+      expect(content, file).toContain('resolveAntModel');
+      expect(content, file).toContain('antModels.js');
+    }
+  });
+
+  it('has local Qwen context metadata for compaction budgeting', () => {
+    const contextWindows = readTarget('qwen-local-context-window');
+
+    expect(contextWindows).toContain('qwen3.6-35b-a3b-fp8');
+    expect(contextWindows).toContain('262_144');
+    expect(contextWindows).toContain('65_536');
+  });
+
+  it('keeps conditional fork command imports local while the incomplete flag is off', () => {
+    const command = readTarget('fork-command-conditional-source');
+    const flags = readTarget('upstream-feature-flags');
+
+    expect(command).toContain('name: "fork"');
+    expect(command).toContain('AgenC source tree');
+    expect(flags).toContain('FORK_SUBAGENT: false');
   });
 
   it('keeps adapter modules as typed integration glue', () => {

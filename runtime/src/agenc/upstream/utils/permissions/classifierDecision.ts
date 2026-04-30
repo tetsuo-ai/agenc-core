@@ -19,6 +19,7 @@ import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from '../../tools/TodoWriteTool/constants.js'
 import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/prompt.js'
+import { VERIFY_PLAN_EXECUTION_TOOL_NAME as VERIFY_PLAN_EXECUTION_TOOL_NAME_SOURCE } from '../../tools/VerifyPlanExecutionTool/constants.js'
 import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifier.js'
 
 // Ant-only tool names: conditional require so Bun can DCE these in external builds.
@@ -36,9 +37,7 @@ const OVERFLOW_TEST_TOOL_NAME = feature('OVERFLOW_TEST_TOOL')
   : null
 const VERIFY_PLAN_EXECUTION_TOOL_NAME =
   process.env.USER_TYPE === 'ant'
-    ? (
-        require('../../tools/VerifyPlanExecutionTool/constants.js') as typeof import('../../tools/VerifyPlanExecutionTool/constants.js')
-      ).VERIFY_PLAN_EXECUTION_TOOL_NAME
+    ? VERIFY_PLAN_EXECUTION_TOOL_NAME_SOURCE
     : null
 const WORKFLOW_TOOL_NAME = feature('WORKFLOW_SCRIPTS')
   ? (

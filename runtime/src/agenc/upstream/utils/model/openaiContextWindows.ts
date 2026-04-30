@@ -229,6 +229,7 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'qwen3-coder-next':         262_144,
   'qwen3-max':                262_144,
   'qwen3-max-2026-01-23':     262_144,
+  'qwen3.6-35b-a3b-fp8':      262_144,
   'kimi-k2.5':                262_144,
   'glm-5':                    202_752,
   'glm-4.7':                  202_752,
@@ -432,6 +433,7 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'qwen3-coder-next':          65_536,
   'qwen3-max':                 32_768,
   'qwen3-max-2026-01-23':      32_768,
+  'qwen3.6-35b-a3b-fp8':       65_536,
   'kimi-k2.5':                 32_768,
   // GLM models — lowercase aliases stay on conservative DashScope-style
   // limits; Z.AI Coding Plan's exact uppercase GLM-* IDs use higher limits.

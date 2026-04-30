@@ -533,8 +533,7 @@ export async function maybeRunPreviousModelInlineCompact(
     return false;
   }
   const newAutoCompactLimit =
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-      .autoCompactTokenLimit ?? Number.POSITIVE_INFINITY;
+    getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
   const totalUsageTokens = _totalUsageTokens;
   const shouldRun =
     totalUsageTokens > newAutoCompactLimit &&
@@ -572,11 +571,8 @@ async function runPreSamplingCompact(
     totalUsageTokensBefore,
     state,
   );
-  const totalUsageTokens = getTotalTokenUsage(session);
-  const autoCompactLimit =
-    (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-      .autoCompactTokenLimit ?? Number.POSITIVE_INFINITY;
-  if (totalUsageTokens >= autoCompactLimit) {
+  const autoCompactLimit = getAutoCompactTokenLimit(ctx);
+  if (autoCompactLimit !== undefined) {
     const contextLimitCompacted = await runAutoCompact(
       session,
       ctx,
@@ -1904,8 +1900,7 @@ async function* runTurnKernelInner(
     const hasPendingInput = session.hasPendingInput();
     const needsFollowUpForCompact = modelNeedsFollowUp || hasPendingInput;
     const autoCompactLimit =
-      (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
-        .autoCompactTokenLimit ?? Number.POSITIVE_INFINITY;
+      getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
     const totalUsageTokens = getTotalTokenUsage(session);
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
