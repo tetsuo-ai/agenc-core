@@ -35,8 +35,6 @@ import { outputStyleProducer } from "./output-style.js";
 import { planModeProducer } from "./plan-mode.js";
 import { verifyPlanReminderProducer } from "./verify-plan-reminder.js";
 import { changedFilesProducer } from "./changed-files.js";
-import { nestedMemoryProducer } from "./nested-memory.js";
-import { relevantMemoryProducer } from "./relevant-memory.js";
 import { agentMentionsProducer } from "./agent-mentions.js";
 import { skillListingProducer } from "./skill-listing.js";
 import type { Attachment } from "./types.js";
@@ -147,8 +145,6 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   //
   // Phase 5 — Memory + file injections:
   changedFilesProducer,
-  nestedMemoryProducer,
-  relevantMemoryProducer,
   agentMentionsProducer,
   skillListingProducer,
 ];

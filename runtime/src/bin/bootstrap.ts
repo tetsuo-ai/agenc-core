@@ -15,11 +15,6 @@ import {
   shouldProbeCapabilityEntry,
 } from "../llm/capabilities.js";
 import { MCPManager } from "../mcp-client/manager.js";
-import {
-  registerAutoSaveSidecar,
-  type TurnState as MemoryTurnState,
-} from "../prompts/memory/index.js";
-import { getSessionMemoryMode } from "../prompts/memory/index.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
@@ -102,19 +97,9 @@ export type {
   StartupSelection,
 } from "./startup-selection.js";
 import {
-  buildExtractMemoriesViaSubagent,
-  TurnStateAccumulator,
-} from "./memory-bootstrap.js";
-import {
   buildBootstrapSessionServices,
   type BootstrapSessionServicesHandle,
 } from "./bootstrap-services.js";
-export {
-  EXTRACT_MEMORIES_TIMEOUT_MS,
-  buildExtractMemoriesViaSubagent,
-  parseExtractedMemoryCandidates,
-  TurnStateAccumulator,
-} from "./memory-bootstrap.js";
 
 type StartupInternalEvent = {
   readonly payload: Record<string, unknown>;
@@ -781,7 +766,6 @@ export async function bootstrapLocalRuntimeSession(
   const memoryDir = join(agencHome, "memory");
   const memoryMdPath = join(memoryDir, "MEMORY.md");
   let sidecarManager: SidecarManager | null = null;
-  let turnStateAccumulator: TurnStateAccumulator | null = null;
   let shutdownStarted = false;
   // Lifecycle slots filled by the bootstrapSession hooks. The shutdown
   // closure closes over these `let` bindings so it is safe to call at
@@ -819,7 +803,6 @@ export async function bootstrapLocalRuntimeSession(
   const shutdown = async (): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    turnStateAccumulator?.detach();
     if (sessionForShutdown !== null) {
       clearCurrentRuntimeSession(sessionForShutdown);
     }
@@ -1080,35 +1063,6 @@ export async function bootstrapLocalRuntimeSession(
           costSidecar;
         sidecarManager.register(costSidecar);
 
-        const extractMemoriesFn = buildExtractMemoriesViaSubagent({
-          session: () => (shutdownStarted ? null : s),
-          memoryDir,
-        });
-        turnStateAccumulator = new TurnStateAccumulator();
-        turnStateAccumulator.subscribe(s.eventLog);
-        const getTurnState = (): MemoryTurnState | null =>
-          turnStateAccumulator?.snapshot() ?? null;
-        sidecarManager.register(
-          registerAutoSaveSidecar({
-            session: { memoryDir, memoryMdPath },
-            extractor: extractMemoriesFn,
-            getTurnState,
-            getMemoryMode: () => getSessionMemoryMode(s),
-            emitWarning: (message: string) => {
-              if (shutdownStarted) return;
-              s.emit({
-                id: s.nextInternalSubId(),
-                msg: {
-                  type: "warning",
-                  payload: {
-                    cause: "memory_write_contention",
-                    message,
-                  },
-                },
-              });
-            },
-          }),
-        );
 
         ctxForReturn = buildTurnContext({
           conversationId,

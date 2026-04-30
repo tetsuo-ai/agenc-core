@@ -51,6 +51,7 @@
     "test:openclaude-footer-live-parity": "npm run test:openclaude-tui-replacement",
     "validate:openclaude-footer-live-parity": "npm run validate:openclaude-tui-replacement",
     "test:tui-yolo-openclaude-parity": "vitest run src/bin/agenc.tui-yolo-openclaude-parity.test.ts src/session/DiagnosticsSurface.openclaude-parity.test.ts src/tui/openclaude/message-adapter.test.ts",
+    "test:agenc-memory-parity": "vitest run src/memdir/memory.contract.test.ts src/services/SessionMemory/session-memory.contract.test.ts src/commands/memory/memory.contract.test.tsx src/components/memory/memory-components.contract.test.tsx src/tools/AgentTool/agent-memory.contract.test.ts src/utils/memory/memory-utils.contract.test.ts src/utils/attachments-memory.contract.test.ts src/memory-wiring.contract.test.ts",
     "test": "vitest run",
     "validate:required": "npm run validate:codex-v2-agent-contract && npm run typecheck && npm run test && npm run check:openclaude-tui-replacement",
     "prepublishOnly": "npm run build"

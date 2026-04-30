@@ -44,7 +44,7 @@ import providerCommand from "./provider.js";
 import copyCommand from "./copy.js";
 import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
-import memoryCommand from "./memory.js";
+import memoryCommand from "./memory/index.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
 import {
