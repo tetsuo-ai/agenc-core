@@ -384,10 +384,10 @@ export function transitionPermissionMode(
     };
   }
 
-  // Bypass-mode enter under a gated transition: pin the workspace onto
-  // the session-scoped accepted-in list so follow-up transitions in the
-  // same session pass the gate without another prompt. The list is
-  // deduped; the caller owns persistence to the config store.
+  // Bypass-mode entry under a gated transition: pin the workspace onto
+  // the session-scoped accepted-in list so later transitions in the same
+  // session pass the gate without another prompt. The list is deduped;
+  // the caller owns persistence to the config store.
   if (
     toMode === "bypassPermissions" &&
     bypassConsentAlreadyPresent &&
@@ -445,9 +445,6 @@ export function prepareContextForPlanMode(
  * scripting escape hatch). Subset of AgenC's
  * `CROSS_PLATFORM_CODE_EXEC` + `DANGEROUS_BASH_PATTERNS` — the entries most
  * commonly seen as broad allowlist prefixes in operator configs.
- *
- * TODO: If this list outgrows inline maintenance, extract it to
- * `./dangerous-patterns.ts` with the PowerShell list alongside.
  */
 const DANGEROUS_BASH_PATTERNS: readonly string[] = Object.freeze([
   // Interpreters

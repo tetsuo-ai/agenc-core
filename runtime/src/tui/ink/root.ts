@@ -4,6 +4,7 @@ import { Stream } from 'stream'
 import type { FrameEvent } from './frame.js'
 import Ink, { type Options as InkOptions } from './ink.js'
 import instances from './instances.js'
+import { resetTerminalFocusState } from './terminal-focus-state.js'
 
 export type RenderOptions = {
   /**
@@ -144,6 +145,7 @@ export async function createRoot({
     patchConsole,
     onFrame,
   })
+  resetTerminalFocusState()
 
   // Register in the instances map so that code that looks up the Ink
   // instance by stdout (e.g. external editor pause/resume) can find it.

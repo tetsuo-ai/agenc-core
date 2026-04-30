@@ -135,6 +135,14 @@ export class TerminalQuerier {
 
   constructor(private stdout: NodeJS.WriteStream) {}
 
+  private canWrite(): boolean {
+    const stream = this.stdout as NodeJS.WriteStream & {
+      readonly writableEnded?: boolean
+      readonly destroyed?: boolean
+    }
+    return stream.writableEnded !== true && stream.destroyed !== true
+  }
+
   /**
    * Send a query and wait for its response.
    *
@@ -149,12 +157,21 @@ export class TerminalQuerier {
     query: TerminalQuery<T>,
   ): Promise<T | undefined> {
     return new Promise(resolve => {
+      if (!this.canWrite()) {
+        resolve(undefined)
+        return
+      }
       this.queue.push({
         kind: 'query',
         match: query.match,
         resolve: r => resolve(r as T | undefined),
       })
-      this.stdout.write(query.request)
+      try {
+        this.stdout.write(query.request)
+      } catch {
+        this.queue.pop()
+        resolve(undefined)
+      }
     })
   }
 
@@ -169,8 +186,17 @@ export class TerminalQuerier {
    */
   flush(): Promise<void> {
     return new Promise(resolve => {
+      if (!this.canWrite()) {
+        resolve()
+        return
+      }
       this.queue.push({ kind: 'sentinel', resolve })
-      this.stdout.write(SENTINEL)
+      try {
+        this.stdout.write(SENTINEL)
+      } catch {
+        this.queue.pop()
+        resolve()
+      }
     })
   }
 

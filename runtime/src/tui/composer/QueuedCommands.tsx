@@ -1,7 +1,7 @@
 /**
  * Queued-command notice shown below the composer while a turn is
- * streaming and the user has typed (and submitted) one or more
- * follow-up prompts that will run after the active turn drains.
+ * streaming and the user has submitted one or more queued prompts that
+ * will run after the active turn drains.
  *
  * Ported from upstream's `PromptInputQueuedCommands`. The upstream
  * widget renders the full queued message previews via its own

@@ -90,6 +90,7 @@ describe("DEFAULT_BINDINGS", () => {
       DEFAULT_BINDINGS.chat,
       DEFAULT_BINDINGS.modal,
       DEFAULT_BINDINGS.transcript,
+      DEFAULT_BINDINGS.Scroll,
     ]) {
       for (const command of Object.values(map)) {
         seen.add(command);

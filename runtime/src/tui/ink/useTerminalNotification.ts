@@ -5,9 +5,16 @@ import { ITERM2, OSC, osc, PROGRESS, wrapForMultiplexer } from './termio/osc.js'
 
 type WriteRaw = (data: string) => void
 
+export type TerminalInkInstance = {
+  setAltScreenActive(active: boolean, mouseTracking?: boolean): void
+  clearTextSelection(): void
+}
+
 export const TerminalWriteContext = createContext<WriteRaw | null>(null)
+export const TerminalInkContext = createContext<TerminalInkInstance | null>(null)
 
 export const TerminalWriteProvider = TerminalWriteContext.Provider
+export const TerminalInkProvider = TerminalInkContext.Provider
 
 export type TerminalNotification = {
   notifyITerm2: (opts: { message: string; title?: string }) => void

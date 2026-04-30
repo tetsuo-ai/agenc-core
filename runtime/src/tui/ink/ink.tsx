@@ -37,7 +37,9 @@ import { shouldSkipMainScreenSyncMarkers, shouldUseMainScreenRewrite, SYNC_OUTPU
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
-import { TerminalWriteProvider } from './useTerminalNotification.js';
+import { TerminalInkProvider, TerminalWriteProvider } from './useTerminalNotification.js';
+
+export { FRAME_INTERVAL_MS } from './constants.js';
 
 // Alt-screen: renderer.ts sets cursor.visible = !isTTY || screen.height===0,
 // which is always false in alt-screen (TTY + content fills screen).
@@ -1467,9 +1469,11 @@ export default class Ink {
     logForDebugging('[Ink:render] start');
     this.currentNode = node;
     const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
-        <TerminalWriteProvider value={this.writeRaw}>
-          {node}
-        </TerminalWriteProvider>
+        <TerminalInkProvider value={this}>
+          <TerminalWriteProvider value={this.writeRaw}>
+            {node}
+          </TerminalWriteProvider>
+        </TerminalInkProvider>
       </App>;
 
     // @ts-ignore updateContainerSync exists in react-reconciler but not in @types/react-reconciler

@@ -70,20 +70,22 @@ export function formatToken(
         .join(EOL)
     }
     case 'code': {
+      const language = token.lang?.trim() || 'text'
+      const header = `code · ${language}${EOL}`
       if (!highlight) {
-        return token.text + EOL
+        return header + token.text + EOL
       }
-      let language = 'plaintext'
+      let highlightLanguage = 'plaintext'
       if (token.lang) {
         if (highlight.supportsLanguage(token.lang)) {
-          language = token.lang
+          highlightLanguage = token.lang
         } else {
           logForDebugging(
             `Language not supported while highlighting code, falling back to plaintext: ${token.lang}`,
           )
         }
       }
-      return highlight.highlight(token.text, { language }) + EOL
+      return header + highlight.highlight(token.text, { language: highlightLanguage }) + EOL
     }
     case 'codespan': {
       // inline code — openclaude uses their 'permission' color; AgenC's
@@ -204,7 +206,7 @@ export function formatToken(
         // Tokens.Generic which don't carry a `tokens` array. Cast to
         // Tokens.Text where it does.
         const textToken = token as Tokens.Text
-        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${textToken.tokens ? textToken.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
+        return `${orderedListNumber === null ? '•' : getListNumber(listDepth, orderedListNumber) + '.'} ${textToken.tokens ? textToken.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
       }
       return linkifyIssueReferences(token.text)
     case 'table': {

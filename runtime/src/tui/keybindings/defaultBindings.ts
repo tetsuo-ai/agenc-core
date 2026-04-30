@@ -255,7 +255,8 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
   Scroll: {
     // Selection-area context shared with the wholesale-ported
     // ScrollKeybindingHandler. Defaults match openclaude's bindings.
-    [normalizeKeySequence("ctrl+c")]: "selection:copy",
+    [normalizeKeySequence("ctrl+shift+c")]: "selection:copy",
+    [normalizeKeySequence("cmd+c")]: "selection:copy",
   },
 };
 

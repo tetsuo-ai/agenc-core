@@ -91,7 +91,7 @@
     {
       "id": "markdown-rendering-pipeline",
       "source": "src/components/Markdown.tsx",
-      "target": "runtime/src/tui/transcript/MarkdownBlock.tsx",
+      "target": "runtime/src/tui/components/Markdown.tsx",
       "requiredBehaviors": [
         "preserve marked-token markdown parsing behavior",
         "preserve markdown token caching",
@@ -100,7 +100,7 @@
         "preserve StreamingMarkdown stable-prefix behavior"
       ],
       "tests": [
-        "runtime/src/tui/transcript/MarkdownBlock.openclaude-parity.test.tsx"
+        "runtime/src/tui/components/Markdown.openclaude-parity.test.tsx"
       ],
       "status": "required"
     },

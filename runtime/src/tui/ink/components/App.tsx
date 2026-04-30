@@ -187,8 +187,10 @@ export default class App extends PureComponent<Props, State> {
     if (this.props.stdout.isTTY && !isEnvTruthy(process.env.AGENC_ACCESSIBILITY)) {
       this.props.stdout.write(HIDE_CURSOR);
     }
+    process.on('SIGCONT', this.handleProcessResume);
   }
   override componentWillUnmount() {
+    process.off('SIGCONT', this.handleProcessResume);
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR);
     }
@@ -207,6 +209,24 @@ export default class App extends PureComponent<Props, State> {
       this.handleSetRawMode(false);
     }
   }
+  handleProcessResume = (): void => {
+    if (!this.isRawModeSupported() || this.rawModeEnabledCount <= 0) {
+      return;
+    }
+    const stdin = this.props.stdin as NodeJS.ReadStream & { isRaw?: boolean };
+    if (stdin.isRaw !== true) {
+      stdin.setRawMode(true);
+    }
+    if (this.stdinMode === 'data' && this.props.stdin.listenerCount('data') === 0) {
+      this.props.stdin.addListener('data', this.handleDataChunk);
+    }
+    if (this.stdinMode === 'readable' && this.props.stdin.listenerCount('readable') === 0) {
+      this.props.stdin.addListener('readable', this.handleReadable);
+    }
+    this.props.stdin.resume();
+    this.props.stdout.write(EBP);
+    this.props.stdout.write(EFE);
+  };
   override componentDidCatch(error: Error) {
     logError(error);
     this.handleExit(error);

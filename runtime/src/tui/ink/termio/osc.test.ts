@@ -1,29 +1,30 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { join } from 'node:path'
 
 const originalEnv = { ...process.env }
 const originalPlatform = process.platform
 const mockedClipboardPath = join(process.cwd(), 'agenc-clipboard.txt')
 
-const generateTempFilePathMock = mock(() => mockedClipboardPath)
+const generateTempFilePathMock = vi.fn(() => mockedClipboardPath)
 
-const execFileNoThrowMock = mock(
+const execFileNoThrowMock = vi.fn(
   async () => ({ code: 0, stdout: '', stderr: '' }),
 )
 
 function installOscMocks(): void {
-  mock.module('../vendored/execFileNoThrow.js', () => ({
+  vi.resetModules()
+  vi.doMock('../vendored/execFileNoThrow.js', () => ({
     execFileNoThrow: execFileNoThrowMock,
     execFileNoThrowWithCwd: execFileNoThrowMock,
   }))
 
-  mock.module('../vendored/tempfile.js', () => ({
+  vi.doMock('../vendored/tempfile.js', () => ({
     generateTempFilePath: generateTempFilePathMock,
   }))
 }
 
 async function importFreshOscModule() {
-  return import(`./osc.ts?ts=${Date.now()}-${Math.random()}`)
+  return import('./osc.ts')
 }
 
 async function flushClipboardCopy(): Promise<void> {
@@ -59,6 +60,8 @@ describe('Windows clipboard fallback', () => {
   afterEach(() => {
     process.env = { ...originalEnv }
     Object.defineProperty(process, 'platform', { value: originalPlatform })
+    vi.doUnmock('../vendored/execFileNoThrow.js')
+    vi.doUnmock('../vendored/tempfile.js')
   })
 
   test('uses PowerShell instead of clip.exe for local Windows copy', async () => {
@@ -108,6 +111,8 @@ describe('clipboard path behavior remains stable', () => {
   afterEach(() => {
     process.env = { ...originalEnv }
     Object.defineProperty(process, 'platform', { value: originalPlatform })
+    vi.doUnmock('../vendored/execFileNoThrow.js')
+    vi.doUnmock('../vendored/tempfile.js')
   })
 
   test('getClipboardPath stays native on local macOS', async () => {

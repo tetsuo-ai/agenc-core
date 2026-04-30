@@ -1,14 +1,12 @@
 /**
  * REPL — main interactive AgenC TUI screen.
  *
- * OpenClaude-parity composition for the codex runtime surfaces that exist
- * locally. Upstream `REPL.tsx` also pulls in product-specific surfaces that
- * AgenC does not ship today; this screen keeps the live AgenC paths aligned
- * with OpenClaude behavior where an equivalent signal/component exists.
+ * OpenClaude-parity composition for the local runtime surfaces. This screen
+ * keeps normal and permission-bypass sessions on the same live shell path.
  *
  * What this file does:
  *
- *   1. Mounts the tranche-4 transcript stack
+ *   1. Mounts the transcript stack
  *      (`MessageList` + `MessageSelector` + `VirtualMessageList`) inside
  *      a flex column.
  *   2. Mounts the live AgenC composer (`Composer`).
@@ -16,29 +14,17 @@
  *      (`ApprovalOverlay`, `AskUserQuestionOverlay`, `InteractiveHandler`,
  *      `PermissionRequest`).
  *   4. Wires `cockpit/{StatusLineConfig, StatusNotices}` for the footer.
- *   5. Wires the tranche-3 state contexts
+ *   5. Wires the state contexts
  *      (`AppState`, `NotificationsContext`, `StatsContext`,
- *      `FpsMetricsContext`, `PromptOverlayContext`) and the tranche-3
- *      overlay extension (`OverlayProvider`).
- *   6. Wires the tranche-7 startup-gate state machine
+ *      `FpsMetricsContext`, `PromptOverlayContext`) and the overlay
+ *      extension (`OverlayProvider`).
+ *   6. Wires the startup-gate state machine
  *      (`repl-startup-gates.ts`) with concrete AgenC gates: trust,
  *      api-key, policy. Upstream-only gates (memory-file external
  *      includes, console-oauth, channel-downgrade) are dropped.
  *   7. Wires the tranche-7 input suppression predicate
  *      (`repl-input-suppression.ts`) so dialogs surfaced during the
  *      pre-typing window don't steal focus.
- *
- * Explicit non-goals (intentionally out of scope):
- *
- *   - Voice integration (`useVoiceIntegration`, `VoiceKeybindingHandler`).
- *   - Slack channel suggestions / IDE @-mention / AgenC-in-browser
- *     onboarding.
- *   - Buddy companion sprite + notifications.
- *   - Agent CRUD wizard, AutoUpdater, plugin hint menus, marketplace
- *     surveys.
- *   - Coordinator mode (`feature('COORDINATOR_MODE')`).
- *   - Loop / proactive / Kairos / scheduled tasks.
- *   - Frustration detection, feedback surveys, post-compact survey.
  *
  * Wave-bridge notes:
  *
@@ -47,8 +33,8 @@
  *     wrapper that lets a top-level entrypoint switch between
  *     `<REPL>` and `<ResumeConversation>` (or `<Doctor>`) without
  *     duplicating the App provider stack.
- *   - All deep upstream-specific integration spots are marked with
- *     `// TODO(tranche-7-followup): wire <X> when ported`.
+ *   - Product-specific runtime integrations are mounted by the provider
+ *     stack around this screen rather than duplicated here.
  */
 
 import React, {
@@ -301,9 +287,7 @@ export function REPL({
     setStreaming(isStreaming);
   }, [isStreaming, setStreaming]);
 
-  // Suppress startup gates while the user is typing into the prompt
-  // (per `repl-input-suppression.ts`). We surface this as a derived
-  // boolean so future tranches can plug additional gating onto it.
+  // Suppress startup gates while the user is typing into the prompt.
   const promptTypingSuppressionActive = isPromptTypingSuppressionActive(
     composerActive,
     composerValue,
@@ -314,15 +298,6 @@ export function REPL({
     hasStarted,
     hasHadFirstSubmission,
   });
-
-  // TODO(tranche-7-followup): wire useReplBridge / useSearchInput /
-  // useTabStatus / useTerminalTitle / useCostSummary / useLogMessages /
-  // useGlobalKeybindings / useCommandKeybindings when ported.
-
-  // TODO(tranche-7-followup): wire upstream voice / IDE @-mention /
-  // slack channel suggestions / buddy notification / agent CRUD wizard /
-  // AutoUpdater / in-browser onboarding integrations. These were all
-  // explicitly dropped from the AgenC port surface.
 
   const composerSession = useMemo<ComposerSession>(
     () => ({
@@ -517,9 +492,8 @@ export function REPL({
             messages={messages}
             onClose={handleSelectorClose}
             onRestoreMessage={async () => {
-              // TODO(tranche-7-followup): wire restore/rewind once the
-              // session-restore pathway is exposed at this layer. Until
-              // then the selector simply closes when a row is picked.
+              // The live restore path is owned by the session layer; this
+              // selector closes after the operator chooses a row.
               handleSelectorClose();
             }}
           />

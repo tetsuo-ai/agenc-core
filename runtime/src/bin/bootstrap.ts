@@ -356,9 +356,8 @@ function transcriptMessagesFrom(
 }
 
 /**
- * Structural `Config` shape for the live local-runtime session. Most fields
- * are still deferred to later tranches that own the corresponding subsystems
- * (see per-field comments). Used as the `Session.config` snapshot source.
+ * Structural `Config` shape for the live local-runtime session. The fields
+ * below are the runtime-owned config snapshot consumed by the active shell.
  */
 function buildDeferredConfig(
   cwd: string,
@@ -420,11 +419,8 @@ function buildDeferredConfig(
       hideSpawnAgentMetadata: false,
     },
     /**
-     * T11 deferred: `permissions.allowLoginShell`, `shellEnvironmentPolicy`,
-     * and `windowsSandboxPrivateDesktop` are sandbox/exec-policy knobs. The
-     * real values come from the config/profile loader (T10) + sandbox policy
-     * resolver (T11). Conservative defaults here keep the shell tool from
-     * picking up login-shell semantics before explicit config arrives.
+     * Shell-policy defaults. Conservative values keep the shell tool from
+     * picking up login-shell semantics unless explicit config enables them.
      */
     permissions: {
       allowLoginShell: false,

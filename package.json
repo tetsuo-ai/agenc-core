@@ -18,6 +18,8 @@
     "validate:codex-v2-agent-contract": "npm run validate:codex-v2-agent-contract --workspace=@tetsuo-ai/runtime",
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
     "validate:tui-openclaude-core-parity": "npm run validate:tui-openclaude-core-parity --workspace=@tetsuo-ai/runtime",
+    "check:tui-yolo-openclaude-parity": "node scripts/check-tui-yolo-openclaude-parity.mjs --require-source-snapshot",
+    "validate:tui-yolo-openclaude-parity": "node scripts/check-tui-yolo-openclaude-parity.mjs --require-source-snapshot --require-commands --run-commands --command-timeout-ms 180000",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
   },

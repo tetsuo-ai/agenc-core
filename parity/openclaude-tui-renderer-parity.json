@@ -2,7 +2,7 @@
   "contractName": "openclaude-tui-renderer-parity",
   "scope": "AgenC TUI renderer (runtime/src/tui/ink/) ↔ openclaude src/ink/ strict parity for the differential-repaint, reconciler, and frame-production layer. Removes AgenC-only divergences — the patches were rationalized in source comments but produce visible artifacts and reduced smoothness. yoga-layout is intentionally NOT in scope: both projects already use the same pure-TypeScript port (openclaude src/native-ts/yoga-layout vs AgenC runtime/src/tui/ink/vendored/yoga-layout), so there is no swap to perform.",
   "sourceRoot": "/home/tetsuo/git/openclaude",
-  "targetRoot": "/home/tetsuo/git/agenc-core-tui-openclaude-parity",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "render-border-floor-yoga-sizes",

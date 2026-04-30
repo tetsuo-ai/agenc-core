@@ -3,15 +3,13 @@
  * empty. Reminds the user of the input mode triggers (`!`, `/`, `@`,
  * `&`, `/btw`) and the most common chat / app shortcuts.
  *
- * Ported from upstream. Shortcut text uses static defaults; AgenC does
- * not yet have a `useShortcutDisplay` hook tied to live keybindings,
- * so the menu always displays the canonical shortcut for each action.
- * When AgenC ships per-action shortcut lookup, this widget can pick up
- * the live binding without changing its layout.
+ * Ported from upstream. Shortcut text is resolved through the active
+ * keybinding display helper so the menu follows user binding overrides.
  */
 import * as React from "react";
 
 import { Box, Text } from "../ink-public.js";
+import { useShortcutDisplay } from "../keybindings/useShortcutDisplay.js";
 
 interface Props {
   readonly dimColor?: boolean;
@@ -25,21 +23,40 @@ const isWindows =
 
 const newlineInstructions = "\\ followed by enter for newline";
 
-const transcriptShortcut = "ctrl + o";
-const todosShortcut = "ctrl + t";
-const undoShortcut = "ctrl + _";
-const stashShortcut = "ctrl + s";
-const cycleModeShortcut = "shift + tab";
-const modelPickerShortcut = "alt + p";
-const externalEditorShortcut = "ctrl + g";
-const imagePasteShortcut = "ctrl + v";
-
 export function PromptInputHelpMenu({
   dimColor,
   fixedWidth,
   gap,
   paddingX,
 }: Props): React.ReactElement {
+  const transcriptShortcut = useShortcutDisplay(
+    "app:toggleTranscript",
+    "global",
+    "Ctrl+O",
+  );
+  const todosShortcut = useShortcutDisplay(
+    "app:toggleTasks",
+    "global",
+    "Ctrl+T",
+  );
+  const cycleModeShortcut = useShortcutDisplay(
+    "chat:cycleMode",
+    "chat",
+    "Shift+Tab",
+  );
+  const externalEditorShortcut = useShortcutDisplay(
+    "chat:externalEditor",
+    "chat",
+    "Ctrl+G",
+  );
+  const imagePasteShortcut = useShortcutDisplay(
+    "chat:imagePaste",
+    "chat",
+    "Ctrl+V",
+  );
+  const undoShortcut = "Ctrl+_";
+  const stashShortcut = "Ctrl+S";
+  const modelPickerShortcut = "Alt+P";
   const triggersWidth = fixedWidth ? 24 : undefined;
   const modesWidth = fixedWidth ? 35 : undefined;
 

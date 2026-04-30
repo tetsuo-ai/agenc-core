@@ -166,8 +166,8 @@ export interface AppProps {
  * Shape we expect on a `PendingPermissionRequest` once the evaluator is
  * wired. The evaluator attaches a `resolveOnce` slot so the TUI can
  * deliver the user's decision back to the awaiter. The shape is checked
- * at runtime because T11's frozen `PendingPermissionRequest` interface
- * does not yet declare the slot.
+ * at runtime because the persisted queue interface is intentionally
+ * narrower than the live evaluator request.
  */
 interface EvaluatorLinkedRequest extends PendingPermissionRequest {
   readonly resolveOnce?: InteractiveResolver;
