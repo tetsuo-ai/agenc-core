@@ -1,8 +1,10 @@
 import type { LLMTool } from "../../llm/types.js";
+import { readProviderFactoryOptions } from "../../llm/provider.js";
 import type { Session } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
 import { createEmptyToolPermissionContext } from "../../permissions/types.js";
 import { toAgenCModelContext } from "./model-context.js";
+import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../upstream/constants/toolLimits.js";
 
 export interface AgenCToolUseContext {
   readonly abortController: AbortController;
@@ -10,10 +12,15 @@ export interface AgenCToolUseContext {
   readonly sessionId: string;
   readonly options: {
     readonly mainLoopModel: string;
-    readonly tools: readonly LLMTool[];
+    readonly tools: readonly AgenCUpstreamTool[];
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
+    readonly providerOverride?: {
+      readonly model: string;
+      readonly baseURL: string;
+      readonly apiKey: string;
+    };
     readonly querySource?: string;
     readonly agentDefinitions: { readonly activeAgents: readonly unknown[] };
     readonly isNonInteractiveSession: boolean;
@@ -43,12 +50,21 @@ export interface AgenCToolUseContext {
   readonly cwd?: string;
 }
 
+export type AgenCUpstreamTool = LLMTool & {
+  readonly name: string;
+  readonly description: string;
+  readonly inputJSONSchema: Record<string, unknown>;
+  readonly isMcp: boolean;
+  readonly maxResultSizeChars: number;
+};
+
 export function buildAgenCToolUseContext(
   session: Session,
   ctx: TurnContext,
   opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
 ): AgenCToolUseContext {
   const model = toAgenCModelContext(ctx);
+  const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
   const agentDefinitions = {
     activeAgents: Array.isArray(surface.agentDefinitions?.activeAgents)
@@ -61,12 +77,13 @@ export function buildAgenCToolUseContext(
     sessionId: session.conversationId,
     options: {
       mainLoopModel: model.model,
-      tools: session.services.registry.toLLMTools(),
+      tools: toAgenCUpstreamTools(session.services.registry.toLLMTools()),
       mcpClients: Array.isArray(surface.mcpClients) ? surface.mcpClients : [],
       contextWindowTokens: model.contextWindowTokens,
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
+      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
       agentDefinitions,
       isNonInteractiveSession: false,
@@ -110,6 +127,45 @@ export function buildAgenCToolUseContext(
       : {}),
     cwd,
   };
+}
+
+function toAgenCUpstreamTools(tools: readonly LLMTool[]): AgenCUpstreamTool[] {
+  return tools.map((tool) => {
+    const name = tool.function.name;
+    return {
+      ...tool,
+      name,
+      description: tool.function.description,
+      inputJSONSchema: tool.function.parameters,
+      isMcp: name.startsWith("mcp__"),
+      maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
+    };
+  });
+}
+
+function buildProviderOverride(
+  session: Session,
+  fallbackModel: string,
+): AgenCToolUseContext["options"]["providerOverride"] | undefined {
+  const provider = session.services.provider;
+  const options = readProviderFactoryOptions(provider);
+  const model = firstNonEmpty(options.model, fallbackModel);
+  const baseURL = firstNonEmpty(options.baseURL);
+  if (!model || !baseURL) return undefined;
+  return {
+    model,
+    baseURL,
+    apiKey: options.apiKey ?? "",
+  };
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 type SessionSurface = {

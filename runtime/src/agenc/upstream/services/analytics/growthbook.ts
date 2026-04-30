@@ -1,5 +1,8 @@
 import { GrowthBook } from '@growthbook/growthbook'
 import { isEqual, memoize } from 'lodash-es'
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import {
   getIsNonInteractiveSession,
   getSessionTrustAccepted,
@@ -92,6 +95,54 @@ const loggedExposures = new Set<string>()
 // When GrowthBook is re-initializing (e.g., after auth change), security gate checks
 // should wait for init to complete to avoid returning stale values
 let reinitializingPromise: Promise<unknown> | null = null
+
+const openBuildDefaults: Record<string, unknown> = {
+  tengu_sedge_lantern: true,
+  tengu_hive_evidence: true,
+  tengu_passport_quail: true,
+  tengu_coral_fern: true,
+  tengu_session_memory: false,
+  tengu_sm_compact: false,
+  tengu_sm_config: {},
+  tengu_sm_compact_config: {},
+}
+
+let localFeatureFlags: Record<string, unknown> | null | undefined
+
+function getLocalFeatureFlags(): Record<string, unknown> | null {
+  if (localFeatureFlags !== undefined) return localFeatureFlags
+  const featureFlagsPath =
+    process.env.AGENC_FEATURE_FLAGS_FILE ??
+    join(homedir(), '.agenc', 'feature-flags.json')
+  try {
+    if (!existsSync(featureFlagsPath)) {
+      localFeatureFlags = null
+      return localFeatureFlags
+    }
+    const parsed = JSON.parse(readFileSync(featureFlagsPath, 'utf8')) as unknown
+    localFeatureFlags =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null
+  } catch {
+    localFeatureFlags = null
+  }
+  return localFeatureFlags
+}
+
+function getOpenBuildFeatureValue<T>(
+  feature: string,
+  defaultValue: T,
+): T {
+  const local = getLocalFeatureFlags()
+  if (local && Object.hasOwn(local, feature)) {
+    return local[feature] as T
+  }
+  if (Object.hasOwn(openBuildDefaults, feature)) {
+    return openBuildDefaults[feature] as T
+  }
+  return defaultValue
+}
 
 // Listeners notified when GrowthBook feature values refresh (initial init or
 // periodic refresh). Use for systems that bake feature values into long-lived
@@ -198,7 +249,9 @@ function getEnvOverrides(): Record<string, unknown> | null {
  */
 export function hasGrowthBookEnvOverride(feature: string): boolean {
   const overrides = getEnvOverrides()
-  return overrides !== null && feature in overrides
+  if (overrides !== null && feature in overrides) return true
+  const local = getLocalFeatureFlags()
+  return local !== null && feature in local
 }
 
 /**
@@ -677,18 +730,22 @@ async function getFeatureValueInternal<T>(
   if (overrides && feature in overrides) {
     return overrides[feature] as T
   }
+  const local = getLocalFeatureFlags()
+  if (local && feature in local) {
+    return local[feature] as T
+  }
   const configOverrides = getConfigOverrides()
   if (configOverrides && feature in configOverrides) {
     return configOverrides[feature] as T
   }
 
   if (!isGrowthBookEnabled()) {
-    return defaultValue
+    return getOpenBuildFeatureValue(feature, defaultValue)
   }
 
   const growthBookClient = await initializeGrowthBook()
   if (!growthBookClient) {
-    return defaultValue
+    return getOpenBuildFeatureValue(feature, defaultValue)
   }
 
   // Use cached remote eval values if available (workaround for SDK bug)
@@ -740,13 +797,17 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
   if (overrides && feature in overrides) {
     return overrides[feature] as T
   }
+  const local = getLocalFeatureFlags()
+  if (local && feature in local) {
+    return local[feature] as T
+  }
   const configOverrides = getConfigOverrides()
   if (configOverrides && feature in configOverrides) {
     return configOverrides[feature] as T
   }
 
   if (!isGrowthBookEnabled()) {
-    return defaultValue
+    return getOpenBuildFeatureValue(feature, defaultValue)
   }
 
   // Log experiment exposure if data is available, otherwise defer until after init
@@ -768,9 +829,11 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
   // Fall back to disk cache (survives across process restarts)
   try {
     const cached = getGlobalConfig().cachedGrowthBookFeatures?.[feature]
-    return cached !== undefined ? (cached as T) : defaultValue
+    return cached !== undefined
+      ? (cached as T)
+      : getOpenBuildFeatureValue(feature, defaultValue)
   } catch {
-    return defaultValue
+    return getOpenBuildFeatureValue(feature, defaultValue)
   }
 }
 
@@ -809,13 +872,17 @@ export function checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
   if (overrides && gate in overrides) {
     return Boolean(overrides[gate])
   }
+  const local = getLocalFeatureFlags()
+  if (local && gate in local) {
+    return Boolean(local[gate])
+  }
   const configOverrides = getConfigOverrides()
   if (configOverrides && gate in configOverrides) {
     return Boolean(configOverrides[gate])
   }
 
   if (!isGrowthBookEnabled()) {
-    return false
+    return Boolean(getOpenBuildFeatureValue(gate, false))
   }
 
   // Log experiment exposure if data is available, otherwise defer until after init
@@ -855,6 +922,10 @@ export async function checkSecurityRestrictionGate(
   const overrides = getEnvOverrides()
   if (overrides && gate in overrides) {
     return Boolean(overrides[gate])
+  }
+  const local = getLocalFeatureFlags()
+  if (local && gate in local) {
+    return Boolean(local[gate])
   }
   const configOverrides = getConfigOverrides()
   if (configOverrides && gate in configOverrides) {
@@ -909,13 +980,17 @@ export async function checkGate_CACHED_OR_BLOCKING(
   if (overrides && gate in overrides) {
     return Boolean(overrides[gate])
   }
+  const local = getLocalFeatureFlags()
+  if (local && gate in local) {
+    return Boolean(local[gate])
+  }
   const configOverrides = getConfigOverrides()
   if (configOverrides && gate in configOverrides) {
     return Boolean(configOverrides[gate])
   }
 
   if (!isGrowthBookEnabled()) {
-    return false
+    return Boolean(getOpenBuildFeatureValue(gate, false))
   }
 
   // Fast path: disk cache already says true — trust it

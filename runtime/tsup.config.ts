@@ -1,5 +1,5 @@
 import { defineConfig } from 'tsup';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 const entry = [
@@ -12,6 +12,10 @@ const agencRoot = resolve(__dirname, 'src/agenc');
 const agencUpstreamRoot = resolve(agencRoot, 'upstream');
 const runtimeSourceRoot = resolve(__dirname, 'src');
 const upstreamProduct = String.fromCharCode(99, 108, 97, 117, 100, 101);
+const runtimePackage = JSON.parse(
+  readFileSync(resolve(__dirname, 'package.json'), 'utf8'),
+) as { version?: string };
+const displayVersion = runtimePackage.version ?? '0.0.0';
 
 function existingSourceFile(base: string): string | null {
   const candidates = [
@@ -161,6 +165,21 @@ export default defineConfig({
   external,
   esbuildPlugins: [agencBareSrcAlias, agencOptionalExternal],
   esbuildOptions(options) {
+    options.define = {
+      ...(options.define ?? {}),
+      'MACRO.VERSION': JSON.stringify('99.0.0'),
+      'MACRO.DISPLAY_VERSION': JSON.stringify(displayVersion),
+      'MACRO.BUILD_TIME': JSON.stringify(new Date().toISOString()),
+      'MACRO.ISSUES_EXPLAINER': JSON.stringify(
+        'report the issue at https://github.com/tetsuo-ai/agenc-core/issues',
+      ),
+      'MACRO.FEEDBACK_CHANNEL': JSON.stringify(
+        'https://github.com/tetsuo-ai/agenc-core/issues',
+      ),
+      'MACRO.PACKAGE_URL': JSON.stringify('@tetsuo-ai/runtime'),
+      'MACRO.NATIVE_PACKAGE_URL': 'undefined',
+      'MACRO.VERSION_CHANGELOG': 'undefined',
+    };
     options.banner = {
       ...(options.banner ?? {}),
       js: [

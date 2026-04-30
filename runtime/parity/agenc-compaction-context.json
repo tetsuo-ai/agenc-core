@@ -1,8 +1,77 @@
 {
   "contractName": "agenc-compaction-context",
   "scope": "AgenC compaction/context integration using a local AgenC-branded copy of the compact/context dependency tree with a separate adapter boundary.",
-  "sourceRoot": "../..",
+  "generatedAt": "2026-04-29T00:00:00.000-06:00",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
   "targetRoot": "../..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "targetBaseCommit": "9cbe98c725d786a8a85edb51a32a571b8e64c5d3",
+  "sourceFiles": [
+    "scripts/build.ts",
+    "scripts/no-telemetry-plugin.ts",
+    "src/query.ts",
+    "src/query/deps.ts",
+    "src/commands/compact/compact.ts",
+    "src/commands/context/context-noninteractive.ts",
+    "src/services/compact/autoCompact.ts",
+    "src/services/compact/compact.ts",
+    "src/services/compact/microCompact.ts",
+    "src/services/compact/postCompactCleanup.ts",
+    "src/services/compact/sessionMemoryCompact.ts",
+    "src/services/contextCollapse/index.ts",
+    "/home/tetsuo/git/claude/src/services/contextCollapse/index.ts",
+    "/home/tetsuo/git/claude/src/services/contextCollapse/operations.ts",
+    "/home/tetsuo/git/claude/src/services/contextCollapse/persist.ts",
+    "/home/tetsuo/git/claude/src/tools.ts",
+    "/home/tetsuo/git/claude/src/tools/VerifyPlanExecutionTool/constants.ts",
+    "/home/tetsuo/git/claude/src/services/compact/cachedMCConfig.ts",
+    "src/constants/prompts.ts",
+    "src/utils/context.ts",
+    "src/utils/effort.ts",
+    "src/utils/thinking.ts",
+    "src/utils/model/model.ts",
+    "src/utils/model/antModels.ts",
+    "/home/tetsuo/git/claude/src/commands/fork/index.ts",
+    "runtime/parity/agenc-compaction-context.upstream-prompts.md",
+    "src/services/SessionMemory/sessionMemory.ts",
+    "src/services/api/client.ts",
+    "src/services/api/claude.ts",
+    "src/services/api/openaiShim.ts",
+    "src/utils/processUserInput/processSlashCommand.tsx"
+  ],
+  "targetFiles": [
+    "runtime/tsup.config.ts",
+    "runtime/src/build/feature.ts",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/agenc/adapters/runtime-session.ts",
+    "runtime/src/agenc/adapters/tool-use-context.ts",
+    "runtime/src/agenc/adapters/dynamic-loaders.js",
+    "runtime/src/agenc/adapters/message-rollout.ts",
+    "runtime/src/commands/registry.ts",
+    "runtime/src/agenc/adapters/slash-commands.ts",
+    "runtime/src/agenc/upstream/services/contextCollapse/index.ts",
+    "runtime/src/agenc/upstream/services/contextCollapse/operations.ts",
+    "runtime/src/agenc/upstream/services/contextCollapse/persist.ts",
+    "runtime/src/agenc/upstream/tools/CtxInspectTool/CtxInspectTool.ts",
+    "runtime/src/agenc/upstream/tools/VerifyPlanExecutionTool/constants.ts",
+    "runtime/src/agenc/upstream/services/compact/cachedMCConfig.ts",
+    "runtime/src/agenc/upstream/constants/prompts.ts",
+    "runtime/src/agenc/upstream/utils/context.ts",
+    "runtime/src/agenc/upstream/utils/effort.ts",
+    "runtime/src/agenc/upstream/utils/thinking.ts",
+    "runtime/src/agenc/upstream/utils/model/model.ts",
+    "runtime/src/agenc/upstream/utils/model/antModels.ts",
+    "runtime/src/agenc/upstream/utils/model/openaiContextWindows.ts",
+    "runtime/src/agenc/upstream/utils/permissions/yolo-classifier-prompts",
+    "runtime/src/agenc/upstream/commands/fork/index.ts",
+    "runtime/src/prompts/attachments/orchestrator.ts",
+    "runtime/src/prompts/attachments/relevant-memory.ts",
+    "runtime/src/prompts/memory",
+    "runtime/src/agenc/upstream/services/analytics/growthbook.ts"
+  ],
+  "testFiles": [
+    "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+  ],
   "removalTargets": [
     "runtime/src/llm/compact",
     "runtime/src/phases/prepare-context.ts",
@@ -82,6 +151,7 @@
     {
       "id": "query-loop-context-pipeline",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/session/run-turn.ts",
       "requiredBehaviors": [
         "session turns invoke the AgenC adapter boundary before every model request",
@@ -96,6 +166,7 @@
     {
       "id": "compact-boundary-ui",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/tui/messages/CompactBoundaryMessage.tsx",
       "requiredBehaviors": [
         "persisted compact boundary records still render in the transcript",
@@ -110,11 +181,12 @@
     {
       "id": "adapter-runtime-session",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/agenc/adapters/runtime-session.ts",
       "requiredBehaviors": [
         "adapter exposes the runtime session shape needed by the live turn pipeline",
         "adapter normalizes message history before handing it to copied upstream compact/context code",
-        "adapter disables upstream memory and session-memory file reads while copied compact/context code runs",
+        "adapter controls upstream memory and session-memory paths through AgenC-branded gates",
         "adapter preserves persisted compacted rollout data without reimplementing compact policy"
       ],
       "tests": [
@@ -125,6 +197,7 @@
     {
       "id": "adapter-dynamic-loaders",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/agenc/adapters/dynamic-loaders.js",
       "status": "required",
       "requiredBehaviors": [
@@ -139,6 +212,7 @@
     {
       "id": "local-upstream-source-tree",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/agenc/upstream/services/compact/compact.ts",
       "requiredBehaviors": [
         "copied compact/context modules and their source dependencies live under runtime/src/agenc/upstream",
@@ -153,6 +227,7 @@
     {
       "id": "adapter-message-rollout",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/agenc/adapters/message-rollout.ts",
       "requiredBehaviors": [
         "adapter maps runtime messages to AgenC rollout items",
@@ -167,6 +242,7 @@
     {
       "id": "adapter-tool-use-context",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/agenc/adapters/tool-use-context.ts",
       "requiredBehaviors": [
         "adapter exposes runtime tools through the AgenC tool-use context contract",
@@ -181,14 +257,415 @@
     {
       "id": "adapter-model-context",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
       "target": "runtime/src/agenc/adapters/model-context.ts",
       "requiredBehaviors": [
         "adapter maps runtime provider model metadata into the AgenC context-window shape",
         "adapter rejects missing or ambiguous model context data",
-        "adapter avoids copied upstream threshold decisions"
+        "adapter passes enough model context for copied upstream threshold decisions"
       ],
       "tests": [
         "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "upstream-build-constants",
+      "source": "scripts/build.ts",
+      "target": "runtime/tsup.config.ts",
+      "requiredBehaviors": [
+        "copied upstream modules receive the OpenClaude MACRO constants before runtime import",
+        "the package and display version constants use AgenC branding without changing upstream compatibility checks",
+        "built output cannot contain unbound MACRO member references from copied compact and context modules"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run check:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "upstream-feature-flags",
+      "source": "scripts/build.ts",
+      "target": "runtime/src/build/feature.ts",
+      "requiredBehaviors": [
+        "copied upstream feature calls resolve to the OpenClaude open-build compaction and memory values",
+        "CACHED_MICROCOMPACT, EXTRACT_MEMORIES, TEAMMEM, PROMPT_CACHE_BREAK_DETECTION, HOOK_PROMPTS, TRANSCRIPT_CLASSIFIER, and CONTEXT_COLLAPSE are enabled for the copied tree",
+        "REACTIVE_COMPACT, KAIROS, DAEMON, FORK_SUBAGENT, and remote-only surfaces remain disabled for the copied tree"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "upstream-config-defaults",
+      "source": "scripts/no-telemetry-plugin.ts",
+      "target": "runtime/src/agenc/upstream/services/analytics/growthbook.ts",
+      "requiredBehaviors": [
+        "compact and memory-context GrowthBook lookups return OpenClaude open-build defaults without remote feature calls",
+        "dynamic config for session-memory compact thresholds falls back to local defaults",
+        "analytics and telemetry calls remain local inert operations for the copied compaction path"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "provider-model-bridge",
+      "source": "src/services/api/client.ts",
+      "target": "runtime/src/agenc/adapters/tool-use-context.ts",
+      "requiredBehaviors": [
+        "copied compact and context requests inherit the active AgenC provider model",
+        "local OpenAI-compatible base URLs and API keys are passed through providerOverride for Qwen and other local backends",
+        "context window and max output token metadata stay aligned with the active turn context"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "query-preflight-order",
+      "source": "src/query.ts",
+      "target": "runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "each model request starts from the post-boundary message projection",
+        "tool-result budget, microcompact, context projection, and auto-compact run before model sampling",
+        "snip token savings and auto-compact tracking flow into the compact decision"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "upstream-message-content-shape",
+      "source": "src/query.ts",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "requiredBehaviors": [
+        "adapter converts AgenC string message content into upstream text-block arrays before compact and microcompact code runs",
+        "tool and multimodal message content keeps a block-array shape for copied upstream message processing",
+        "post-compact runtime history still converts copied upstream messages back through the AgenC message adapter"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "auto-compact-reachability",
+      "source": "src/services/compact/autoCompact.ts",
+      "target": "runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "pre-turn auto-compact reaches upstream shouldAutoCompact when a context window is known",
+        "mid-turn auto-compact uses the same effective limit fallback as pre-turn compaction",
+        "missing local autoCompactTokenLimit cannot suppress upstream threshold logic"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "manual-compact-slash-semantics",
+      "source": "src/utils/processUserInput/processSlashCommand.tsx",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "requiredBehaviors": [
+        "manual compact appends slash-command input and stdout messages to the kept segment",
+        "manual compact resets microcompact state after full history replacement",
+        "manual compact writes the replacement history to session state and durable rollout data"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "compact-cache-params",
+      "source": "src/commands/compact/compact.ts",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "requiredBehaviors": [
+        "manual and automatic compaction build cache-safe params with effective system prompt, user context, system context, tool-use context, and fork messages",
+        "AgenC project instructions and memory context are available to compact summaries through AgenC-branded paths",
+        "config access is enabled before copied compact modules read upstream config"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "context-command-analysis",
+      "source": "src/commands/context/context-noninteractive.ts",
+      "target": "runtime/src/agenc/adapters/slash-commands.ts",
+      "requiredBehaviors": [
+        "/context runs against the same post-boundary message view as /compact",
+        "/context reaches copied upstream microcompact before analysis",
+        "/context uses the active AgenC model and context window metadata"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "memory-context-layer",
+      "source": "src/services/SessionMemory/sessionMemory.ts",
+      "target": "runtime/src/prompts/memory",
+      "requiredBehaviors": [
+        "durable memory extraction and relevant-memory recall remain active around compaction",
+        "relevant memory attachments are inserted after compacted history projection and before sampling",
+        "upstream session-memory compaction follows OpenClaude open-build gates and AgenC-branded storage paths"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "post-compact-cleanup-continuation",
+      "source": "src/services/compact/postCompactCleanup.ts",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "requiredBehaviors": [
+        "manual and automatic compaction clear native provider continuation state",
+        "prompt-cache and warning baselines are reset after successful compaction",
+        "rollout resume metadata remains recoverable after repeated compaction"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "context-collapse-live-source",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/services/contextCollapse/index.ts",
+      "target": "runtime/src/agenc/upstream/services/contextCollapse/index.ts",
+      "requiredBehaviors": [
+        "context-collapse imports expose live projection, overflow recovery, reset, stats, snapshot, and restore functions",
+        "context-collapse uses the AgenC environment gate AGENC_CONTEXT_COLLAPSE and AgenC settings strategy",
+        "prompt-too-long recovery paths can drain committed collapse spans through the copied implementation"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "context-collapse-operations-source",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/services/contextCollapse/operations.ts",
+      "target": "runtime/src/agenc/upstream/services/contextCollapse/operations.ts",
+      "requiredBehaviors": [
+        "context command operations can inspect live context-collapse stats and visualization data",
+        "context command operations can reset in-memory context-collapse state",
+        "operations import the local AgenC context-collapse implementation"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "context-collapse-persist-source",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/services/contextCollapse/persist.ts",
+      "target": "runtime/src/agenc/upstream/services/contextCollapse/persist.ts",
+      "requiredBehaviors": [
+        "resume paths restore context-collapse commits and snapshots through the copied persistence adapter",
+        "persist entries expose committed collapses and the latest snapshot for transcript recovery",
+        "persistence imports the local AgenC context-collapse implementation"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "context-collapse-inspection-tool",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/tools.ts",
+      "target": "runtime/src/agenc/upstream/tools/CtxInspectTool/CtxInspectTool.ts",
+      "requiredBehaviors": [
+        "the context-collapse base-tool import resolves to local AgenC source when CONTEXT_COLLAPSE is enabled",
+        "the inspection tool reports live context-collapse stats, visualization data, snapshots, and commits",
+        "tool registration uses the local static import instead of a runtime sibling-checkout require"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "classifier-verify-plan-constant",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/tools/VerifyPlanExecutionTool/constants.ts",
+      "target": "runtime/src/agenc/upstream/tools/VerifyPlanExecutionTool/constants.ts",
+      "requiredBehaviors": [
+        "the auto-mode classifier allowlist resolves the verify-plan tool constant from local AgenC source",
+        "the copied classifier no longer performs a runtime require for the verify-plan constants file",
+        "the local constant preserves upstream tool-name compatibility"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "classifier-prompt-assets",
+      "sourceRoot": "../..",
+      "source": "runtime/parity/agenc-compaction-context.upstream-prompts.md",
+      "target": "runtime/src/agenc/upstream/utils/permissions/yolo-classifier-prompts",
+      "requiredBehaviors": [
+        "auto-mode classifier prompt text is stored as local source assets loaded by the copied yolo classifier",
+        "prompt assets are branded for AgenC paths and project instruction files",
+        "the build consumes source prompt assets instead of generated output files"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "cached-microcompact-config-source",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/services/compact/cachedMCConfig.ts",
+      "target": "runtime/src/agenc/upstream/services/compact/cachedMCConfig.ts",
+      "requiredBehaviors": [
+        "the feature-enabled cached microcompact prompt path resolves a local AgenC source module",
+        "constants/prompts imports cached microcompact config from local source instead of runtime-requiring a missing sibling module",
+        "the local config preserves upstream cached microcompact behavior"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ant-model-override-prompt-import",
+      "source": "src/constants/prompts.ts",
+      "target": "runtime/src/agenc/upstream/constants/prompts.ts",
+      "requiredBehaviors": [
+        "the USER_TYPE=ant prompt path resolves ant model override config from local AgenC source",
+        "system prompt generation cannot fail with an unbound getAntModelOverrideConfig reference",
+        "ant model override lookup keeps the upstream local feature-config behavior"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ant-model-override-symbol-imports",
+      "source": "src/utils/model/antModels.ts",
+      "target": "runtime/src/agenc/upstream/utils/model/antModels.ts",
+      "requiredBehaviors": [
+        "copied USER_TYPE=ant model helpers resolve through local antModels source imports",
+        "context, effort, model, and thinking helpers cannot fail with unbound resolveAntModel references",
+        "ant model override config remains backed by local feature-config defaults"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "qwen-local-context-window",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "sourceRoot": "../..",
+      "target": "runtime/src/agenc/upstream/utils/model/openaiContextWindows.ts",
+      "requiredBehaviors": [
+        "local qwen3.6-35b-a3b-fp8 compaction uses the observed 262144-token context window",
+        "manual and automatic compaction avoid the unknown-model 128k fallback for the local Qwen endpoint",
+        "Qwen compact calls use a conservative 65536-token output cap"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "fork-command-conditional-source",
+      "sourceRoot": "/home/tetsuo/git/claude",
+      "source": "src/commands/fork/index.ts",
+      "target": "runtime/src/agenc/upstream/commands/fork/index.ts",
+      "requiredBehaviors": [
+        "the conditional fork command import resolves to a local AgenC-branded source file",
+        "FORK_SUBAGENT remains off unless a complete command implementation is present",
+        "copied command source never requires a sibling checkout at runtime"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "commands": [
+        "npm run test:contract:agenc-compaction-context"
       ],
       "status": "required"
     }
@@ -196,7 +673,6 @@
   "brandingScopes": [
     "runtime/src/agenc/adapters",
     "runtime/tests/agenc-compaction-context",
-    "runtime/parity/agenc-compaction-context.json",
     "runtime/parity/agenc-compaction-context.requirements.md",
     "runtime/scripts/check-agenc-compaction-context-contract.mjs",
     "runtime/scripts/run-agenc-compaction-context-contract-tests.mjs",

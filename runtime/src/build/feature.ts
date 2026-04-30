@@ -1,16 +1,48 @@
-/**
- * `bun:bundle` feature-flag stub.
- *
- * Aliased by both `tsconfig.json` and `vitest.config.ts` so runtime source
- * can write `feature('FLAG_NAME')` without pulling in the real bundler
- * plugin. At test-time every flag resolves to `false`, which is the
- * safe-default for every call site (they all guard experimental branches
- * behind these predicates).
- *
- * Tests that need a flag turned on use `vi.mock('bun:bundle', ...)` to
- * override this stub, matching the existing pattern in
- * the row-level contract tests.
- */
-export function feature(_flag: string): boolean {
-  return false;
+const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
+  VOICE_MODE: false,
+  PROACTIVE: false,
+  KAIROS: false,
+  BRIDGE_MODE: false,
+  DAEMON: false,
+  AGENT_TRIGGERS: false,
+  ABLATION_BASELINE: false,
+  CONTEXT_COLLAPSE: true,
+  COMMIT_ATTRIBUTION: false,
+  UDS_INBOX: false,
+  BG_SESSIONS: false,
+  WEB_BROWSER_TOOL: false,
+  CHICAGO_MCP: false,
+  COWORKER_TYPE_TELEMETRY: false,
+  MCP_SKILLS: false,
+  REACTIVE_COMPACT: false,
+  HISTORY_SNIP: false,
+
+  COORDINATOR_MODE: true,
+  BUILTIN_EXPLORE_PLAN_AGENTS: true,
+  BUDDY: true,
+  MONITOR_TOOL: true,
+  TEAMMEM: true,
+  MESSAGE_ACTIONS: true,
+  DUMP_SYSTEM_PROMPT: true,
+  CACHED_MICROCOMPACT: true,
+  AWAY_SUMMARY: true,
+  TRANSCRIPT_CLASSIFIER: true,
+  ULTRATHINK: true,
+  TOKEN_BUDGET: true,
+  HISTORY_PICKER: true,
+  QUICK_SEARCH: true,
+  SHOT_STATS: true,
+  EXTRACT_MEMORIES: true,
+  FORK_SUBAGENT: false,
+  VERIFICATION_AGENT: true,
+  PROMPT_CACHE_BREAK_DETECTION: true,
+  HOOK_PROMPTS: true,
+};
+
+export function feature(flag: string): boolean {
+  return copiedTreeFeatureFlags[flag] ?? false;
+}
+
+export function getCopiedTreeFeatureFlags(): Readonly<Record<string, boolean>> {
+  return copiedTreeFeatureFlags;
 }

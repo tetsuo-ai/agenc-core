@@ -1324,6 +1324,7 @@ async function streamCompactSummary({
           agents: context.options.agentDefinitions.activeAgents,
           mcpTools: [],
           effortValue: appState.effortValue,
+          providerOverride: context.options.providerOverride,
         },
       })
       const streamIter = streamingGen[Symbol.asyncIterator]()

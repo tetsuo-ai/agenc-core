@@ -56,7 +56,7 @@ const BASE_PROMPT: string = feature('TRANSCRIPT_CLASSIFIER')
   : ''
 
 // External template is loaded separately so it's available for
-// `claude auto-mode defaults` even in ant builds. Ant builds use
+// `agenc auto-mode defaults` even in ant builds. Ant builds use
 // permissions_anthropic.txt at runtime but should dump external defaults.
 const EXTERNAL_PERMISSIONS_TEMPLATE: string = feature('TRANSCRIPT_CLASSIFIER')
   ? txtRequire(require('./yolo-classifier-prompts/permissions_external.txt'))
@@ -97,7 +97,7 @@ export type AutoModeRules = {
  * <user_*_to_replace> tags (user settings REPLACE these defaults), so the
  * captured tag contents ARE the defaults. Bullet items are single-line in the
  * template; each line starting with `- ` becomes one array entry.
- * Used by `claude auto-mode defaults`. Always returns external defaults,
+ * Used by `agenc auto-mode defaults`. Always returns external defaults,
  * never the internal-only template.
  */
 export function getDefaultExternalAutoModeRules(): AutoModeRules {
@@ -122,7 +122,7 @@ function extractTaggedBullets(tagName: string): string[] {
 
 /**
  * Returns the full external classifier system prompt with default rules (no user
- * overrides). Used by `claude auto-mode critique` to show the model how the
+ * overrides). Used by `agenc auto-mode critique` to show the model how the
  * classifier sees its instructions.
  */
 export function buildDefaultExternalSystemPrompt(): string {
@@ -150,7 +150,7 @@ function getAutoModeDumpDir(): string {
 
 /**
  * Dump the auto mode classifier request and response bodies to the per-user
- * claude temp directory when AGENC_DUMP_AUTO_MODE is set. Files are
+ * AgenC temp directory when AGENC_DUMP_AUTO_MODE is set. Files are
  * named by unix timestamp: {timestamp}[.{suffix}].req.json and .res.json
  */
 async function maybeDumpAutoMode(
@@ -208,7 +208,7 @@ export function getAutoModeClassifierTranscript(): string | null {
 
 /**
  * Dump classifier input prompts + context-comparison diagnostics on API error.
- * Written to a session-scoped file in the claude temp dir so /share can collect
+ * Written to a session-scoped file in the AgenC temp dir so /share can collect
  * it (replaces the old Desktop dump). Includes context numbers to help diagnose
  * projection divergence (classifier tokens >> main loop tokens).
  * Returns the dump path on success, null on failure.
@@ -570,7 +570,7 @@ export function buildTranscriptForClassifier(
  * stable cache prefix across classifier calls.
  *
  * Reads from bootstrap/state.ts cache (populated by context.ts) instead of
- * importing claudemd.ts directly — claudemd → permissions/filesystem →
+ * importing AgenC instruction loading directly would create a cycle through permissions/filesystem →
  * permissions → yoloClassifier is a cycle. context.ts already gates on
  * AGENC_DISABLE_AGENC_MDS and normalizes '' to null before caching.
  * If the cache is unpopulated (tests, or an entrypoint that never calls
@@ -578,8 +578,8 @@ export function buildTranscriptForClassifier(
  * pre-PR behavior.
  */
 function buildAgenCMdMessage(): Anthropic.MessageParam | null {
-  const claudeMd = getCachedAgenCMdContent()
-  if (claudeMd === null) return null
+  const agencMd = getCachedAgenCMdContent()
+  if (agencMd === null) return null
   return {
     role: 'user',
     content: [
@@ -589,7 +589,7 @@ function buildAgenCMdMessage(): Anthropic.MessageParam | null {
           `The following is the user's AGENC.md configuration. These are ` +
           `instructions the user provided to the agent and should be treated ` +
           `as part of the user's intent when evaluating actions.\n\n` +
-          `<user_claude_md>\n${claudeMd}\n</user_claude_md>`,
+          `<user_agenc_md>\n${agencMd}\n</user_agenc_md>`,
         cache_control: getCacheControl({ querySource: 'auto_mode' }),
       },
     ],
@@ -1156,9 +1156,9 @@ export async function classifyYoloAction(
     tools,
     transcriptBudget,
   )
-  const claudeMdMessage = buildAgenCMdMessage()
-  const prefixMessages: Anthropic.MessageParam[] = claudeMdMessage
-    ? [claudeMdMessage]
+  const agencMdMessage = buildAgenCMdMessage()
+  const prefixMessages: Anthropic.MessageParam[] = agencMdMessage
+    ? [agencMdMessage]
     : []
 
   const toolCallsLength =
