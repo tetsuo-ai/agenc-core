@@ -80,22 +80,39 @@ export class InvalidAgentPathError extends Error {
  */
 export class SpawnReservation {
   private released = false;
+  private reservedAgentPath: AgentPath | undefined;
+
   constructor(
     private readonly registry: AgentRegistry,
     private readonly maxThreads: number | undefined,
     public readonly cancellationToken: AbortController,
   ) {}
 
+  reserveAgentPath(path: AgentPath): void {
+    if (this.released) return;
+    this.registry.reserveAgentPathForReservation(path);
+    this.reservedAgentPath = path;
+  }
+
+  ownsAgentPath(path: AgentPath): boolean {
+    return this.reservedAgentPath === path;
+  }
+
   /** Finalize the reservation — caller promises the agent is alive. */
   finalize(metadata: AgentMetadata): void {
     if (this.released) return;
     this.registry.finalizeSpawnReservation(metadata, this);
+    this.reservedAgentPath = undefined;
     this.released = true;
   }
 
   /** Rollback — release the slot without registering metadata. */
   release(): void {
     if (this.released) return;
+    if (this.reservedAgentPath !== undefined) {
+      this.registry.releaseReservedAgentPath(this.reservedAgentPath);
+      this.reservedAgentPath = undefined;
+    }
     this.registry.rollbackSpawnReservation(this.maxThreads);
     this.released = true;
   }
@@ -168,11 +185,14 @@ export class AgentRegistry {
    */
   finalizeSpawnReservation(
     metadata: AgentMetadata,
-    _reservation: SpawnReservation,
+    reservation: SpawnReservation,
   ): void {
     if (metadata.agentPath) {
       assertValidAgentPath(metadata.agentPath);
-      if (this.byPath.has(metadata.agentPath)) {
+      if (
+        this.byPath.has(metadata.agentPath) &&
+        !reservation.ownsAgentPath(metadata.agentPath)
+      ) {
         throw new AgentPathExistsError(metadata.agentPath);
       }
       this.byPath.set(metadata.agentPath, metadata);
@@ -231,14 +251,23 @@ export class AgentRegistry {
     this.byPath.set(path, { ...prev, lastTaskMessage: message });
   }
 
-  /**
-   * I-37: reserve an agentPath. Throws AgentPathExistsError on
-   * collision. Called by control.ts before spawn finalize.
-   */
-  reserveAgentPath(path: AgentPath): void {
+  /** Reserve an agentPath before child startup. */
+  reserveAgentPathForReservation(path: AgentPath): void {
     assertValidAgentPath(path);
     if (this.byPath.has(path)) {
       throw new AgentPathExistsError(path);
+    }
+    this.byPath.set(path, {
+      agentPath: path,
+      depth: depthOfAgentPath(path),
+    });
+  }
+
+  /** Remove an uncommitted path reservation. */
+  releaseReservedAgentPath(path: AgentPath): void {
+    const metadata = this.byPath.get(path);
+    if (metadata?.agentId === undefined) {
+      this.byPath.delete(path);
     }
   }
 

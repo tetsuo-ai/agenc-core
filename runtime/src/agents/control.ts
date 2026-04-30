@@ -55,6 +55,7 @@ import {
 import {
   allocateNickname,
   applyRoleToConfig,
+  requireAgentRole,
   resolveAgentRole,
   type AgentRole,
   type RoleShapedConfig,
@@ -327,6 +328,14 @@ export class AgentControl {
   }): Promise<LiveAgent> {
     const parentDepth = depthOfAgentPath(opts.parentPath);
     const childDepth = parentDepth + 1;
+    const role = requireAgentRole(opts.roleName);
+    const baseChildConfig = getChildBaseConfig(this.session) ?? {};
+    void applyRoleToConfig(role, baseChildConfig);
+    const explicitAgentPath =
+      opts.agentPath ??
+      (opts.agentName !== undefined
+        ? joinAgentPath(opts.parentPath, opts.agentName)
+        : undefined);
 
     if (childDepth > this.maxDepth) {
       emitError(this.session.eventLog, this.session.nextInternalSubId(), {
@@ -352,40 +361,43 @@ export class AgentControl {
       throw err;
     }
 
-    const role = resolveAgentRole(opts.roleName);
-    const baseChildConfig = getChildBaseConfig(this.session) ?? {};
-    void applyRoleToConfig(role, baseChildConfig);
-    const nickname = opts.preferredNickname ?? allocateNickname(role, this.registry);
-    const threadId = opts.threadId ?? crypto.randomUUID();
-    const metadata: AgentMetadata = buildChildMetadata({
-      agentId: threadId,
-      parentPath: opts.parentPath,
-      role,
-      nickname,
-      depth: childDepth,
-      ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
-      ...(opts.agentPath !== undefined ? { agentPath: opts.agentPath } : {}),
-    });
-
-    // I-32: check cancellation before finalize. If the parent was
-    // interrupted while we were allocating, roll back + throw. Also
-    // synthesize a `parent_interrupt` message to the (about-to-be-
-    // born) child so the caller can route it appropriately.
-    const parentToken = this.parentTokens.get(opts.parentPath);
-    if (parentToken?.signal.aborted) {
-      reservation.release();
-      emitWarning(
-        this.session.eventLog,
-        this.session.nextInternalSubId(),
-        "spawn_race_aborted",
-        `parent ${opts.parentPath} interrupted mid-spawn`,
-      );
-      throw new SpawnRaceAbortedError(opts.parentPath);
-    }
-
-    // I-37: path collision check + finalize. finalize() throws
-    // AgentPathExistsError on dup.
+    let nickname!: string;
+    let threadId!: ThreadId;
+    let metadata!: AgentMetadata;
     try {
+      if (explicitAgentPath !== undefined) {
+        reservation.reserveAgentPath(explicitAgentPath);
+      }
+      nickname = opts.preferredNickname ?? allocateNickname(role, this.registry);
+      threadId = opts.threadId ?? crypto.randomUUID();
+      metadata = buildChildMetadata({
+        agentId: threadId,
+        parentPath: opts.parentPath,
+        role,
+        nickname,
+        depth: childDepth,
+        ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
+        ...(explicitAgentPath !== undefined ? { agentPath: explicitAgentPath } : {}),
+      });
+      if (explicitAgentPath === undefined && metadata.agentPath !== undefined) {
+        reservation.reserveAgentPath(metadata.agentPath);
+      }
+
+      // I-32: check cancellation before finalize. If the parent was
+      // interrupted while we were allocating, roll back + throw.
+      const parentToken = this.parentTokens.get(opts.parentPath);
+      if (parentToken?.signal.aborted) {
+        emitWarning(
+          this.session.eventLog,
+          this.session.nextInternalSubId(),
+          "spawn_race_aborted",
+          `parent ${opts.parentPath} interrupted mid-spawn`,
+        );
+        throw new SpawnRaceAbortedError(opts.parentPath);
+      }
+
+      // I-37: reserved path ownership check + finalize. finalize() throws
+      // AgentPathExistsError on a path owned by another live/reserved agent.
       reservation.finalize(metadata);
     } catch (err) {
       reservation.release();
@@ -1274,7 +1286,7 @@ export class AgentControl {
     readonly roleName?: string;
     readonly preferredNickname?: string;
   }): { readonly metadata: AgentMetadata; readonly role: AgentRole } {
-    const role = resolveAgentRole(opts.roleName);
+    const role = requireAgentRole(opts.roleName);
     const nickname =
       opts.preferredNickname ?? allocateNickname(role, this.registry);
     const depth = depthOfAgentPath(opts.parentPath) + 1;

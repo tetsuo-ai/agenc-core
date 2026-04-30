@@ -16,6 +16,7 @@ import {
   loadRoleLayerToml,
   registerAgentRole,
   releaseNickname,
+  requireAgentRole,
   resolveAgentRole,
   tryResolveRoleConfig,
 } from "./role.js";
@@ -37,6 +38,13 @@ describe("role registry", () => {
 
   it("falls back to default for unknown role names", () => {
     expect(resolveAgentRole("unknown-role").name).toBe("default");
+  });
+
+  it("strict spawn role lookup rejects unrecognized agent_type", () => {
+    expect(() => requireAgentRole("missing-role")).toThrow(
+      "unknown agent_type 'missing-role'",
+    );
+    expect(requireAgentRole("runner").name).toBe("worker");
   });
 
   it("lists all built-in roles", () => {

@@ -1,8 +1,8 @@
 {
   "contractName": "codex-role-parity",
   "scope": "AgenC agents/role.ts + role-presentation.ts ↔ codex codex-rs/core/src/agent/role.rs + builtins/*.toml strict parity",
-  "sourceRoot": "/home/tetsuo/git/codex",
-  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "agent-role-config-shape",
@@ -54,7 +54,8 @@
       "requiredBehaviors": [
         "resolveAgentRole returns the named built-in or the default role on miss (matches codex's role-not-found fallback)",
         "tryResolveRoleConfig reads the embedded TOML for the role's configFile and folds it into the role's config",
-        "config-layer precedence keeps role overrides without clobbering caller-supplied profile / provider unless the role explicitly sets them"
+        "config-layer precedence keeps role overrides without clobbering caller-supplied profile / provider unless the role explicitly sets them",
+        "spawn-time role lookup uses the strict config path so an unrecognized agent_type is rejected instead of falling back"
       ],
       "tests": [
         "runtime/src/agents/role.test.ts"
@@ -102,6 +103,20 @@
         "runtime/src/agents/role.test.ts"
       ],
       "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/role.test.ts",
+        "runtime/src/agents/role.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
     }
   ]
 }

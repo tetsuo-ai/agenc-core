@@ -1,8 +1,8 @@
 {
   "contractName": "codex-registry-parity",
   "scope": "AgenC agents/registry.ts ↔ codex codex-rs/core/src/agent/registry.rs + protocol/src/agent_path.rs strict parity",
-  "sourceRoot": "/home/tetsuo/git/codex",
-  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "agent-registry-struct",
@@ -99,7 +99,7 @@
       "requiredBehaviors": [
         "decrements totalCount and removes the path entry on agent shutdown/completion",
         "matches codex's release_spawned_thread: nickname stays reserved (intentionally sticky)",
-        "idempotent for unknown threadIds"
+        "idempotent for unrecognized threadIds"
       ],
       "tests": [
         "runtime/src/agents/registry.test.ts"
@@ -126,7 +126,7 @@
       "target": "runtime/src/agents/registry.ts",
       "requiredBehaviors": [
         "returns ThreadId by canonical AgentPath",
-        "undefined for unknown paths",
+        "undefined for unrecognized paths",
         "consistent with byPath snapshot at the call site"
       ],
       "tests": [
@@ -140,7 +140,7 @@
       "target": "runtime/src/agents/registry.ts",
       "requiredBehaviors": [
         "returns AgentMetadata by ThreadId",
-        "undefined for unknown thread",
+        "undefined for an unrecognized thread",
         "exposes a frozen snapshot that callers cannot mutate"
       ],
       "tests": [
@@ -168,7 +168,7 @@
       "target": "runtime/src/agents/registry.ts",
       "requiredBehaviors": [
         "patches AgentMetadata.lastTaskMessage in place by threadId",
-        "no-op for unknown threadIds (does not throw)",
+        "no-op for unrecognized threadIds (does not throw)",
         "callers (sendInput / appendMessage) feed renderInputPreview output"
       ],
       "tests": [
@@ -183,7 +183,8 @@
       "requiredBehaviors": [
         "validates the agent path with assertValidAgentPath",
         "throws InvalidAgentPathError when the path fails validation",
-        "called by control.spawn before finalize so collisions surface before slot commit"
+        "writes a reservation marker before child startup so same-path concurrent spawns cannot both proceed",
+        "release removes only an uncommitted reservation marker and finalize replaces its own marker with live metadata"
       ],
       "tests": [
         "runtime/src/agents/registry.test.ts"

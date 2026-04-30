@@ -37,12 +37,15 @@
     "check:codex-thread-parity": "node ../scripts/check-codex-thread-parity.mjs",
     "check:codex-run-agent-parity": "node ../scripts/check-codex-run-agent-parity.mjs",
     "check:codex-agents-parity": "npm run check:codex-control-parity && npm run check:codex-registry-parity && npm run check:codex-mailbox-parity && npm run check:codex-status-parity && npm run check:codex-role-parity && npm run check:codex-thread-manager-parity && npm run check:codex-fork-context-parity && npm run check:codex-thread-parity && npm run check:codex-run-agent-parity",
+    "check:codex-v2-agent-contract": "node ../scripts/verify-codex-v2-agent-contract.mjs",
+    "test:codex-v2-agent-contract": "vitest run src/agents src/tasks src/bin/model-facing-tools.test.ts",
+    "validate:codex-v2-agent-contract": "npm run check:codex-v2-agent-contract && npm run check:codex-agents-parity && npm run test:codex-v2-agent-contract",
     "check:tui-openclaude-core-parity": "node scripts/check-openclaude-tui-core-parity.mjs",
     "check:openclaude-tui-renderer-parity": "node ../scripts/check-openclaude-tui-renderer-parity.mjs",
     "test:tui-openclaude-core-parity": "vitest run src/tui/transcript/VirtualMessageList.openclaude-parity.test.tsx src/tui/transcript/MessageList.openclaude-parity.test.tsx src/tui/transcript/Message.openclaude-parity.test.tsx src/tui/state/events-to-messages.openclaude-parity.test.ts src/tui/design-system/StructuredDiff.openclaude-parity.test.tsx src/tui/transcript/MarkdownBlock.openclaude-parity.test.tsx src/tui/ink/openclaude-incremental-renderer-parity.test.tsx",
     "validate:tui-openclaude-core-parity": "npm run check:tui-openclaude-core-parity && npm run test:tui-openclaude-core-parity",
     "test": "vitest run",
-    "validate:required": "npm run typecheck && npm run test && npm run check:codex-agents-parity && npm run check:openclaude-tui-renderer-parity",
+    "validate:required": "npm run validate:codex-v2-agent-contract && npm run typecheck && npm run test && npm run check:openclaude-tui-renderer-parity",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

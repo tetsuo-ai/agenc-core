@@ -27,6 +27,7 @@ import {
   canonicalAgentRoleName,
   formatAgentRoleLabel,
 } from "../agents/role-presentation.js";
+import { requireAgentRole } from "../agents/role.js";
 import type { ForkMode } from "../agents/fork-context.js";
 import type { AgentThread } from "../agents/thread.js";
 import {
@@ -562,7 +563,7 @@ function waitTimeoutMs(
 ): ToolResult | number {
   const supplied = numberValue(args.timeout_ms) ?? numberValue(args.timeoutMs);
   if (supplied !== undefined && supplied <= 0) {
-    return json({ error: "timeout_ms must be greater than 0" }, true);
+    return json({ error: "timeout_ms must be greater than zero" }, true);
   }
   const configuredMin = session.config?.multiAgentV2?.minWaitTimeoutMs;
   const minTimeoutMs = Math.min(
@@ -700,6 +701,14 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           error:
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
         },
+        true,
+      );
+    }
+    try {
+      if (role !== undefined) requireAgentRole(role);
+    } catch (error) {
+      return json(
+        { error: error instanceof Error ? error.message : String(error) },
         true,
       );
     }
@@ -991,6 +1000,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         prompt: message,
       },
     });
+    let deliveryError: unknown;
     try {
       await control.sendInterAgentCommunication(agentId, {
         author: current.agentPath,
@@ -999,11 +1009,9 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         triggerTurn: optsForSend.triggerTurn,
       });
     } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
-      );
+      deliveryError = error;
     }
+    const status = await control.getStatus(agentId);
     emit(sessionOrError, {
       type: "collab_agent_interaction_end",
       payload: {
@@ -1020,9 +1028,20 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           ? { receiverAgentRoleDisplayName: formatAgentRoleLabel(live.role.name) }
           : {}),
         prompt: message,
-        status: await control.getStatus(agentId),
+        status,
       },
     });
+    if (deliveryError !== undefined) {
+      return json(
+        {
+          error:
+            deliveryError instanceof Error
+              ? deliveryError.message
+              : String(deliveryError),
+        },
+        true,
+      );
+    }
     return { content: "" };
   };
 
@@ -1275,7 +1294,6 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
       model: { type: "string" },
       reasoning_effort: { type: "string" },
       fork_turns: { type: "string" },
-      fork_context: { type: "boolean" },
     },
     required: ["message", "task_name"],
     additionalProperties: false,
@@ -1305,7 +1323,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         properties: {
           timeout_ms: {
             type: "number",
-            description: `Optional timeout in milliseconds. Defaults to ${DEFAULT_WAIT_TIMEOUT_MS}, min ${MIN_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}. Prefer longer waits (minutes) to avoid busy polling.`,
+            description: `Optional timeout in milliseconds. Defaults to ${DEFAULT_WAIT_TIMEOUT_MS}, min ${MIN_WAIT_TIMEOUT_MS}, max ${MAX_WAIT_TIMEOUT_MS}.`,
           },
         },
         additionalProperties: false,
@@ -1373,7 +1391,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "list_agents",
       description:
-        "List live agents known to the current session. Optionally scope results with path_prefix.",
+        "List live agents in the current root thread tree. Optionally filter by task-path prefix.",
       metadata: toolMetadata("agent", { keywords: ["agent", "list", "status"] }),
       isReadOnly: true,
       inputSchema: {

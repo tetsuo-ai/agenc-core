@@ -1,8 +1,8 @@
 {
   "contractName": "codex-status-parity",
   "scope": "AgenC agents/status.ts ↔ codex codex-rs/core/src/agent/status.rs + protocol/src/protocol.rs::AgentStatus strict parity",
-  "sourceRoot": "/home/tetsuo/git/codex",
-  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "agent-status-enum",
@@ -81,6 +81,19 @@
         "runtime/src/agents/status.test.ts"
       ],
       "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/status.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
     }
   ]
 }
