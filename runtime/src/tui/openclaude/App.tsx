@@ -17,6 +17,7 @@ import { createBridgeTools } from "./tool-stubs.js";
 import { useSessionTranscript } from "./use-session-transcript.js";
 import {
   OpenClaudePermissionOverlay,
+  buildToolUseConfirmQueue,
   usePermissionBridge,
 } from "./permission-bridge.js";
 import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
@@ -196,6 +197,10 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
     () => props.session.listMcpClients?.() ?? [],
     [props.session],
   );
+  const toolUseConfirmQueue = useMemo(
+    () => buildToolUseConfirmQueue(permissionRequests, tools),
+    [permissionRequests, tools],
+  );
 
   return (
     <Box flexDirection="column" width="100%">
@@ -205,7 +210,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         commands={commands as unknown as Command[]}
         verbose={false}
         toolJSX={null}
-        toolUseConfirmQueue={[]}
+        toolUseConfirmQueue={toolUseConfirmQueue as never[]}
         inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
         isMessageSelectorVisible={false}
         conversationId={"agenc"}

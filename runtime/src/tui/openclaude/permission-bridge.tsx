@@ -3,22 +3,15 @@ import { useEffect, useMemo, useState } from "react";
 import { PermissionRequest } from "../../agenc/upstream/components/permissions/PermissionRequest.js";
 import type { ApprovalCtx } from "../../tools/orchestrator.js";
 import type { ReviewDecision } from "../../permissions/review-decision.js";
+import { ABORT } from "../../permissions/review-decision.js";
 import {
-  ABORT,
-  APPROVED,
-  APPROVED_FOR_SESSION,
-  DENIED,
-} from "../../permissions/review-decision.js";
-import { makeToolUseMessage } from "./message-adapter.js";
+  buildToolUseConfirm,
+  buildToolUseConfirmQueue,
+  type PendingRequest,
+} from "../../agenc/adapters/permission-bridge-projection.js";
 import type { OpenClaudeBridgeSession } from "./session-types.js";
 
-interface PendingRequest {
-  readonly id: string;
-  readonly ctx: ApprovalCtx;
-  readonly input: Record<string, unknown>;
-  readonly description: string;
-  resolve(decision: ReviewDecision): void;
-}
+export { buildToolUseConfirmQueue, type PendingRequest };
 
 function parseJsonObject(raw: string | undefined): Record<string, unknown> {
   if (raw === undefined || raw.trim().length === 0) return {};
@@ -124,46 +117,11 @@ export function OpenClaudePermissionOverlay({
 }) {
   return useMemo(() => {
     if (!request) return null;
-    const tool =
-      tools.find((candidate) => candidate.name === request.ctx.toolName) ?? tools[0];
-    if (!tool) return null;
-    const assistantMessage = makeToolUseMessage(
-      request.ctx.callId,
-      request.ctx.toolName,
-      request.input,
-    );
-    const toolUseConfirm = {
-      assistantMessage,
-      tool,
-      description: request.description,
-      input: request.input,
-      toolUseContext: {},
-      toolUseID: request.ctx.callId,
-      permissionResult: {
-        behavior: "ask",
-        message: request.description,
-      },
-      permissionPromptStartTimeMs: Date.now(),
-      onUserInteraction() {},
-      onAbort() {
-        request.resolve(ABORT);
-      },
-      onAllow(
-        _updatedInput: unknown,
-        permissionUpdates: readonly unknown[] = [],
-      ) {
-        request.resolve(
-          permissionUpdates.length > 0 ? APPROVED_FOR_SESSION : APPROVED,
-        );
-      },
-      onReject() {
-        request.resolve(DENIED);
-      },
-      async recheckPermission() {},
-    };
+    const toolUseConfirm = buildToolUseConfirm(request, tools);
+    if (toolUseConfirm === null) return null;
     return (
       <PermissionRequest
-        toolUseConfirm={toolUseConfirm}
+        toolUseConfirm={toolUseConfirm as never}
         toolUseContext={{} as any}
         onDone={() => {}}
         onReject={() => {}}
