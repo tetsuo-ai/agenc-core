@@ -13,7 +13,7 @@
  *   3. Wires the existing AgenC permission overlays
  *      (`ApprovalOverlay`, `AskUserQuestionOverlay`, `InteractiveHandler`,
  *      `PermissionRequest`).
- *   4. Wires `cockpit/{StatusLineConfig, StatusNotices}` for the footer.
+ *   4. Wires cockpit status notices above the footer.
  *   5. Wires the state contexts
  *      (`AppState`, `NotificationsContext`, `StatsContext`,
  *      `FpsMetricsContext`, `PromptOverlayContext`) and the overlay
@@ -81,9 +81,6 @@ import { ApprovalOverlay as _ApprovalOverlay } from "../permissions/ApprovalOver
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { AskUserQuestionOverlay as _AskUserQuestionOverlay } from "../permissions/AskUserQuestionOverlay.js";
 
-import {
-  DEFAULT_STATUS_LINE_ITEMS,
-} from "../cockpit/StatusLineConfig.js";
 import {
   readRuntimeStatusNoticeWarnings,
   StatusNotices,
@@ -278,8 +275,6 @@ export function REPL({
   );
 
   const tuiConfigView = useTuiConfigView(configStore);
-  const statusLineItems =
-    tuiConfigView.statusLineItems ?? DEFAULT_STATUS_LINE_ITEMS;
   const composerAttachmentsConfig = tuiConfigView.composerAttachmentsConfig;
 
   useEffect(() => {
@@ -521,11 +516,6 @@ export function REPL({
                 ...(composerAttachmentsConfig !== undefined
                   ? { attachments: composerAttachmentsConfig }
                   : {}),
-                statusLine: {
-                  items: statusLineItems,
-                  session: statusLineSession,
-                  cwd: composerSession.cwd,
-                },
               }}
               onSubmit={(value) => {
                 // Submission ends the vulnerable pre-interaction window.

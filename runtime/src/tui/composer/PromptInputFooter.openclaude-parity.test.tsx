@@ -63,7 +63,7 @@ async function renderText(element: React.ReactElement): Promise<string> {
 }
 
 describe("PromptInputFooter OpenClaude parity", () => {
-  test("owns the configurable status line inside the footer", async () => {
+  test("does not render the old AgenC status footer", async () => {
     const text = await renderText(
       <PromptInputFooter
         exitMessage={{ show: false }}
@@ -75,21 +75,13 @@ describe("PromptInputFooter OpenClaude parity", () => {
         suppressHint={false}
         isLoading={false}
         isSearching={false}
-        statusLineItems={["model", "mode", "cwd"]}
-        statusLineSession={{
-          model: "grok-code-fast-1",
-          mode: "default",
-        }}
-        statusLineCwd="/tmp/agenc-footer"
       />,
     );
 
-    expect(text).toContain("model");
-    expect(text).toContain("grok-code-fast-1");
-    expect(text).toContain("mode");
-    expect(text).toContain("default");
-    expect(text).toContain("cwd");
-    expect(text).toContain("agenc-footer");
+    expect(text).toContain("? for shortcuts");
+    expect(text).not.toContain("model");
+    expect(text).not.toContain("mode");
+    expect(text).not.toContain("cwd");
     expect(text).not.toContain("Type prompt. / commands.");
   });
 
@@ -111,14 +103,12 @@ describe("PromptInputFooter OpenClaude parity", () => {
         suppressHint={false}
         isLoading={false}
         isSearching={false}
-        statusLineItems={["model"]}
-        statusLineSession={{ model: "should-not-render" }}
       />,
     );
 
     expect(text).toContain("src/index.ts");
     expect(text).toContain("entrypoint");
-    expect(text).not.toContain("should-not-render");
+    expect(text).not.toContain("? for shortcuts");
   });
 
   test("help menu is rendered by the footer", async () => {

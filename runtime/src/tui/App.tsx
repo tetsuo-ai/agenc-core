@@ -74,9 +74,6 @@ import { TasksPanel } from "./components/TasksPanel.js";
 import { LiveAgentStatusPanel } from "./components/LiveAgentStatusPanel.js";
 import type { TaskStoreOptions } from "../bin/task-store.js";
 import {
-  DEFAULT_STATUS_LINE_ITEMS,
-} from "./cockpit/StatusLineConfig.js";
-import {
   readRuntimeStatusNoticeWarnings,
   StatusNotices,
 } from "./cockpit/StatusNotices.js";
@@ -370,8 +367,6 @@ function TUIRoot({
       ? { workspaceRoot: cwd, agencHome: explicitAgencHome }
       : { workspaceRoot: cwd };
   }, [session]);
-  const statusLineItems =
-    tuiConfigView.statusLineItems ?? DEFAULT_STATUS_LINE_ITEMS;
   const composerAttachmentsConfig = tuiConfigView.composerAttachmentsConfig;
   const layoutConfig = tuiConfigView.tuiLayout;
   const multiPane =
@@ -749,11 +744,6 @@ function TUIRoot({
                 ...(tuiConfigView.editorMode !== undefined
                   ? { editorMode: tuiConfigView.editorMode }
                   : {}),
-                statusLine: {
-                  items: statusLineItems,
-                  session: statusLineSession,
-                  cwd: composerSession.cwd,
-                },
               }}
               onSubmit={handleSubmit}
               onCancel={handleCancel}

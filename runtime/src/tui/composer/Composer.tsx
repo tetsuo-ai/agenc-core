@@ -99,7 +99,6 @@ import PromptInputFooter from "./PromptInputFooter.js";
 import { getModeFromInput, type PromptInputMode } from "./inputModes.js";
 import type { EditorMode } from "../../config/schema.js";
 import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
-import type { SessionLike as StatusLineSessionLike } from "../cockpit/StatusLineConfig.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public types
@@ -133,11 +132,6 @@ export interface ComposerAttachmentsConfig {
 export interface ComposerConfig {
   readonly attachments?: ComposerAttachmentsConfig;
   readonly editorMode?: EditorMode;
-  readonly statusLine?: {
-    readonly items: readonly string[];
-    readonly session: StatusLineSessionLike;
-    readonly cwd?: string;
-  };
 }
 
 export interface ComposerProps {
@@ -1105,12 +1099,7 @@ export const Composer: React.FC<ComposerProps> = ({
       mode as keyof typeof theme.modeIndicatorChar
     ] ?? theme.modeIndicatorChar.default;
   const promptPrefix = `${promptGlyph} `;
-  // Single source of truth — same helper StatusLineConfig consumes — so
-  // the `◆`/`⚠` mode glyph never drifts in color across the UI. Default
-  // mode keeps its activity tint (ember while streaming, warning when an
-  // approval is pending); non-default modes always show their canonical
-  // mode color, with `warning` overriding only when there's a pending
-  // approval to draw the eye to.
+  // Keep the prompt glyph and footer mode indicator on the same color rule.
   const accentColor = modeValueColor(mode as PermissionMode, {
     colors,
     pendingRequestCount: genericPendingRequestCount,
@@ -1513,9 +1502,6 @@ export const Composer: React.FC<ComposerProps> = ({
           isSearching={state.historySearch !== null}
           status={footerStatus}
           pendingRequestCount={genericPendingRequestCount}
-          statusLineItems={config?.statusLine?.items}
-          statusLineSession={config?.statusLine?.session}
-          statusLineCwd={config?.statusLine?.cwd}
         />
       </Box>
     </Box>

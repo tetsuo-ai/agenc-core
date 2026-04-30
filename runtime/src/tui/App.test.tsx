@@ -656,7 +656,7 @@ describe("App", () => {
     unmount();
   });
 
-  test("renders AgenC-style prompt chrome with configurable status line", async () => {
+  test("renders prompt chrome without the old configurable status footer", async () => {
     const session = {
       ...createFakeSession("plan"),
       conversationId: "conv-1234567890",
@@ -673,17 +673,16 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("model");
-    expect(text).toContain("grok-code-fast-1");
-    expect(text).toContain("mode");
-    expect(text).toContain("plan");
-    expect(text).toContain("session");
-    expect(text).toContain("34567890");
+    expect(text).toContain("Ask AgenC to do anything");
+    expect(text).toContain("plan mode on");
+    expect(text).not.toContain("model");
+    expect(text).not.toContain("grok-code-fast-1");
+    expect(text).not.toContain("session");
     expect(text).not.toContain("AgenC cockpit");
     unmount();
   });
 
-  test("subscribes to live ConfigStore updates for footer status-line items", async () => {
+  test("ignores live status-line item updates in the footer", async () => {
     const session = {
       ...createFakeSession("default"),
       conversationId: "conv-footer-live",
@@ -700,14 +699,15 @@ describe("App", () => {
     await new Promise((r) => setTimeout(r, 20));
 
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("session");
-    expect(text).toContain("ter-live");
+    expect(text).toContain("? for shortcuts");
+    expect(text).not.toContain("session");
+    expect(text).not.toContain("ter-live");
 
     unmount();
     expect(configStore.subscriberCount()).toBe(0);
   });
 
-  test("renders the configurable status line beneath the composer chrome", async () => {
+  test("does not render the configurable status line beneath the composer chrome", async () => {
     const session = {
       ...createFakeSession("default"),
       conversationId: "conv-footer-order",
@@ -720,7 +720,8 @@ describe("App", () => {
     );
 
     const text = collectText(getRoot(stdout));
-    expect(text.indexOf("commands.")).toBeLessThan(text.indexOf("session"));
+    expect(text).toContain("? for shortcuts");
+    expect(text).not.toContain("session");
     unmount();
   });
 
@@ -737,7 +738,7 @@ describe("App", () => {
       <App session={session} configStore={configStore} />,
     );
 
-    expect(collectText(getRoot(stdout))).toContain("session");
+    expect(collectText(getRoot(stdout))).not.toContain("session");
     expect(configStore.subscriberCount()).toBe(1);
 
     configStore.setConfig({});
@@ -780,7 +781,7 @@ describe("App", () => {
     unmount();
   });
 
-  test("renders default model/mode/cwd status when config does not override it", async () => {
+  test("does not render default model/mode/cwd status when config does not override it", async () => {
     const session = {
       ...createFakeSession("default"),
       model: "session-model-live",
@@ -791,10 +792,11 @@ describe("App", () => {
 
     await new Promise((r) => setTimeout(r, 60));
     const text = collectText(getRoot(stdout));
-    expect(text).toContain("model");
-    expect(text).toContain("session-model-live");
-    expect(text).toContain("mode");
-    expect(text).toContain("cwd");
+    expect(text).toContain("? for shortcuts");
+    expect(text).not.toContain("model");
+    expect(text).not.toContain("session-model-live");
+    expect(text).not.toContain("mode");
+    expect(text).not.toContain("cwd");
     expect(text).not.toContain("session ");
     unmount();
   });

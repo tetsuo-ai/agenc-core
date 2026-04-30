@@ -65,7 +65,7 @@
       "requiredBehaviors": [
         "render footer suggestions as the footer body when suggestions exist outside fullscreen overlay mode",
         "render the help menu from the footer when help is open",
-        "render the status line inside the footer left column before the footer-left-side row",
+        "do not render AgenC's old model/mode/cwd status footer inside the OpenClaude-shaped footer",
         "render footer notifications in the right column instead of leaving an empty AgenC-only slot",
         "keep narrow-terminal column layout and wide-terminal row layout"
       ],
@@ -119,7 +119,7 @@
       "source": "src/components/PromptInput/PromptInputFooter.tsx",
       "target": "runtime/src/tui/App.tsx",
       "requiredBehaviors": [
-        "App passes status-line configuration into Composer footer props",
+        "App does not pass AgenC status-line configuration into Composer footer props",
         "App no longer renders StatusLineConfig as a separate sibling below Composer",
         "App keeps StatusNotices outside the composer footer"
       ],
@@ -136,7 +136,7 @@
       "source": "src/components/PromptInput/PromptInputFooter.tsx",
       "target": "runtime/src/tui/screens/REPL.tsx",
       "requiredBehaviors": [
-        "REPL passes status-line configuration into Composer footer props",
+        "REPL does not pass AgenC status-line configuration into Composer footer props",
         "REPL no longer renders StatusLineConfig as a separate sibling below Composer",
         "REPL keeps StatusNotices outside the composer footer"
       ],

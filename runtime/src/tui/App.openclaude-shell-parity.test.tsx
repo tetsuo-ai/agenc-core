@@ -15,16 +15,16 @@ describe("App OpenClaude shell parity", () => {
     expect(app).toMatch(/from "\.\/cockpit\/StatusNotices\.js"/u);
     expect(app).toMatch(/<MessageList/u);
     expect(app).toMatch(/<Composer/u);
-    expect(app).toMatch(/statusLine:\s*\{/u);
+    expect(app).not.toMatch(/statusLine:\s*\{/u);
     expect(app).not.toMatch(/<StatusLineConfig/u);
     expect(app).not.toMatch(/import\s+\{[^}]*StatusLineConfig/u);
   });
 
-  test("the REPL shell also routes status-line data through Composer", () => {
+  test("the REPL shell also avoids the old status footer route", () => {
     const repl = source("screens/REPL.tsx");
 
     expect(repl).toMatch(/<Composer/u);
-    expect(repl).toMatch(/statusLine:\s*\{/u);
+    expect(repl).not.toMatch(/statusLine:\s*\{/u);
     expect(repl).not.toMatch(/<StatusLineConfig/u);
     expect(repl).not.toMatch(/import\s+\{[^}]*StatusLineConfig/u);
   });

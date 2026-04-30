@@ -3,10 +3,6 @@ import { memo, type ReactNode } from "react";
 
 import { Box } from "../ink-public.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
-import {
-  StatusLineConfig,
-  type SessionLike as StatusLineSessionLike,
-} from "../cockpit/StatusLineConfig.js";
 import { Notifications, type ApiKeyStatus } from "./Notifications.js";
 import {
   PromptInputFooterLeftSide,
@@ -40,9 +36,6 @@ type Props = {
   readonly isSearching: boolean;
   readonly status?: { readonly color: Color; readonly text: string } | null;
   readonly pendingRequestCount?: number;
-  readonly statusLineItems?: readonly string[];
-  readonly statusLineSession?: StatusLineSessionLike;
-  readonly statusLineCwd?: string;
 };
 
 function PromptInputFooter({
@@ -63,14 +56,9 @@ function PromptInputFooter({
   isSearching,
   status,
   pendingRequestCount = 0,
-  statusLineItems = [],
-  statusLineSession,
-  statusLineCwd,
 }: Props): ReactNode {
   const { columns } = useTerminalSize();
   const isNarrow = columns < 80;
-  const hasStatusLine =
-    statusLineItems.length > 0 && statusLineSession !== undefined;
 
   // Forward suggestion data to the floating overlay so a fullscreen
   // shell can render it above the composer instead of inline. AgenC's
@@ -98,13 +86,6 @@ function PromptInputFooter({
       flexShrink={0}
       width="100%"
     >
-      {hasStatusLine ? (
-        <StatusLineConfig
-          items={statusLineItems}
-          session={statusLineSession}
-          cwd={statusLineCwd}
-        />
-      ) : null}
       <Box
       flexDirection={isNarrow ? "column" : "row"}
       justifyContent={isNarrow ? "flex-start" : "space-between"}
@@ -117,7 +98,7 @@ function PromptInputFooter({
             vimMode={vimMode}
             mode={mode}
             permissionMode={permissionMode}
-            suppressHint={suppressHint || hasStatusLine || isSearching}
+            suppressHint={suppressHint || isSearching}
             isLoading={isLoading}
             isPasting={isPasting}
             isSearching={isSearching}
