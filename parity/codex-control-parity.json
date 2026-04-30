@@ -427,5 +427,8 @@
       ],
       "reason": "Allows Codex followup_task identifiers and child continuation-turn assertions; not completion-deferral language."
     }
-  ]
+  ],
+  "sourceCommit": "d92c909ee46a2c96354458cdea73c16efa60128a",
+  "sourceCommitDescribe": "d92c909ee4 Fix migrated hook path rewriting (#20144)",
+  "generatedAt": "2026-04-30T07:51:45.000Z"
 }

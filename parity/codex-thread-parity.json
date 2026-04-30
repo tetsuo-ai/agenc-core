@@ -103,5 +103,8 @@
       ],
       "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
     }
-  ]
+  ],
+  "sourceCommit": "d92c909ee46a2c96354458cdea73c16efa60128a",
+  "sourceCommitDescribe": "d92c909ee4 Fix migrated hook path rewriting (#20144)",
+  "generatedAt": "2026-04-30T07:51:45.000Z"
 }

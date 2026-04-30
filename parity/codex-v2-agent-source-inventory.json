@@ -1,6 +1,10 @@
 {
   "contractName": "codex-v2-agent-source-inventory",
-  "sourceRoot": "/home/tetsuo/git/codex",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
+  "sourceCommit": "d92c909ee46a2c96354458cdea73c16efa60128a",
+  "sourceCommitDescribe": "d92c909ee4 Fix migrated hook path rewriting (#20144)",
+  "generatedAt": "2026-04-30T07:51:45.000Z",
   "codexCommit": "d92c909ee46a2c96354458cdea73c16efa60128a",
   "generatedBy": "scripts/verify-codex-v2-agent-contract.mjs --update-inventory",
   "sourceFiles": [
