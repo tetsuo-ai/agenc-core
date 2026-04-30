@@ -75,7 +75,6 @@ import { LiveAgentStatusPanel } from "./components/LiveAgentStatusPanel.js";
 import type { TaskStoreOptions } from "../bin/task-store.js";
 import {
   DEFAULT_STATUS_LINE_ITEMS,
-  StatusLineConfig,
 } from "./cockpit/StatusLineConfig.js";
 import {
   readRuntimeStatusNoticeWarnings,
@@ -750,15 +749,15 @@ function TUIRoot({
                 ...(tuiConfigView.editorMode !== undefined
                   ? { editorMode: tuiConfigView.editorMode }
                   : {}),
+                statusLine: {
+                  items: statusLineItems,
+                  session: statusLineSession,
+                  cwd: composerSession.cwd,
+                },
               }}
               onSubmit={handleSubmit}
               onCancel={handleCancel}
               initialValue={initialComposerText}
-            />
-            <StatusLineConfig
-              items={statusLineItems}
-              session={statusLineSession}
-              cwd={composerSession.cwd}
             />
             {updateNotice !== null ? (
               <Text dim>{updateNotice}</Text>

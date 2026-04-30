@@ -1,24 +1,3 @@
-/**
- * Left-hand status row rendered beneath the composer input.
- *
- * AgenC's surface is significantly slimmer than upstream's — there's
- * no swarm, no remote-session pill, no voice indicator, no PR badge,
- * no fast-mode picker, no proactive countdown. What ports cleanly:
- *
- *   - Exit warning ("Press Ctrl+D again to exit") when the keybinding
- *     provider has surfaced a double-press warning.
- *   - "Pasting text…" hint while a bracketed paste is mid-stream.
- *   - History-search input — placeholder until tranche 5B ports
- *     `HistorySearchInput`. Until then the composer's own
- *     `status-line.ts` already covers the active history-search row,
- *     so this widget just no-ops when `isSearching` is true.
- *   - Mode hint ("? for shortcuts" / shift+tab cycles modes / esc to
- *     interrupt).
- *
- * Bash mode replaces the mode hint with a static "! for bash mode"
- * pill, mirroring upstream.
- */
-
 import * as React from "react";
 
 import { Box, Text } from "../ink-public.js";
@@ -29,6 +8,9 @@ import {
 } from "../keybindings/shortcutFormat.js";
 import type { PromptInputMode } from "./inputModes.js";
 import { isVimModeEnabled } from "./promptInput-utils.js";
+import type { PermissionMode } from "../../permissions/types.js";
+import type { Color } from "../ink/styles.js";
+import { modeValueColor, theme } from "../theme.js";
 
 export type VimMode = "INSERT" | "NORMAL";
 
@@ -36,20 +18,26 @@ type Props = {
   readonly exitMessage: { readonly show: boolean; readonly key?: string };
   readonly vimMode?: VimMode;
   readonly mode: PromptInputMode;
+  readonly permissionMode: PermissionMode;
   readonly suppressHint: boolean;
   readonly isLoading: boolean;
   readonly isPasting?: boolean;
   readonly isSearching?: boolean;
+  readonly status?: { readonly color: Color; readonly text: string } | null;
+  readonly pendingRequestCount?: number;
 };
 
 export function PromptInputFooterLeftSide({
   exitMessage,
   vimMode,
   mode,
+  permissionMode,
   suppressHint,
   isLoading,
   isPasting,
   isSearching,
+  status,
+  pendingRequestCount = 0,
 }: Props): React.ReactNode {
   if (exitMessage.show) {
     return (
@@ -61,38 +49,64 @@ export function PromptInputFooterLeftSide({
     return <Text dimColor>Pasting text…</Text>;
   }
 
-  if (isSearching === true) {
-    // History search rendering is owned by `status-line.ts` for now;
-    // tranche 5B will introduce a dedicated `HistorySearchInput` here.
-    return null;
-  }
-
   const showVim =
-    isVimModeEnabled() && vimMode === "INSERT";
+    isVimModeEnabled() && vimMode === "INSERT" && isSearching !== true;
   const vimNode = showVim ? (
     <Text dimColor>-- INSERT --</Text>
   ) : null;
 
   const showHint = !suppressHint && !showVim;
+  const statusNode =
+    status !== null && status !== undefined ? (
+      <Text color={status.color} wrap="truncate">
+        {status.text}
+      </Text>
+    ) : null;
+
+  const modeIndicator = (
+    <ModeIndicator
+      mode={mode}
+      permissionMode={permissionMode}
+      showHint={showHint}
+      isLoading={isLoading}
+      pendingRequestCount={pendingRequestCount}
+    />
+  );
+
+  if (statusNode !== null) {
+    return (
+      <Box flexDirection="column">
+        {statusNode}
+        <Box justifyContent="flex-start" gap={1}>
+          {vimNode}
+          {modeIndicator}
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box justifyContent="flex-start" gap={1}>
       {vimNode}
-      <ModeIndicator mode={mode} showHint={showHint} isLoading={isLoading} />
+      {modeIndicator}
     </Box>
   );
 }
 
 type ModeIndicatorProps = {
   readonly mode: PromptInputMode;
+  readonly permissionMode: PermissionMode;
   readonly showHint: boolean;
   readonly isLoading: boolean;
+  readonly pendingRequestCount: number;
 };
 
 function ModeIndicator({
   mode,
+  permissionMode,
   showHint,
   isLoading,
+  pendingRequestCount,
 }: ModeIndicatorProps): React.ReactNode {
   if (mode === "bash") {
     return <Text color="accent">! for bash mode</Text>;
@@ -101,46 +115,84 @@ function ModeIndicator({
     return <Text color="warning"># appends to AGENC.md</Text>;
   }
 
-  if (!showHint) return null;
-
   const modeCycleShortcut =
     getDisplayForCommand("chat:cycleMode", "chat") ?? "Shift+Tab";
   const escShortcut = (
     getDisplayForCommand("chat:cancel", "chat") ?? "Esc"
   ).toLowerCase();
 
+  const modePart =
+    permissionMode !== "default" ? (
+      <Box flexShrink={0}>
+        <Text
+          key="permission-mode"
+          color={modeValueColor(permissionMode, {
+            colors: theme.colors,
+            pendingRequestCount,
+            isStreaming: isLoading,
+          }) as Color}
+        >
+          {theme.modeIndicatorChar[permissionMode]}{" "}
+          {permissionModeTitle(permissionMode).toLowerCase()} on
+          {showHint && !isLoading ? (
+            <Text dimColor>
+              {" "}
+              <KeyboardShortcutHint
+                shortcut={modeCycleShortcut}
+                action="cycle"
+                parens
+              />
+            </Text>
+          ) : null}
+        </Text>
+      </Box>
+    ) : null;
+
   const parts: React.ReactElement[] = [];
   if (isLoading) {
     parts.push(
-      <React.Fragment key="esc">
-        <Text dimColor>
-          <KeyboardShortcutHint shortcut={escShortcut} action="interrupt" />
-        </Text>
-      </React.Fragment>,
+      <Text dimColor key="esc">
+        <KeyboardShortcutHint shortcut={escShortcut} action="interrupt" />
+      </Text>,
     );
   }
-  parts.push(
-    <React.Fragment key="mode-cycle">
-      <Text dimColor>
-        <KeyboardShortcutHint
-          shortcut={modeCycleShortcut}
-          action="cycle mode"
-          parens
-        />
-      </Text>
-    </React.Fragment>,
-  );
-  parts.push(
-    <React.Fragment key="shortcuts-hint">
+  if (showHint && !isLoading && permissionMode === "default") {
+    parts.push(
       <Text dimColor>? for shortcuts</Text>
-    </React.Fragment>,
-  );
+    );
+  }
+
+  if (parts.length === 0 && modePart === null) {
+    return <Text> </Text>;
+  }
 
   return (
     <Box height={1} overflow="hidden">
-      <Text wrap="truncate">
-        <Byline>{parts}</Byline>
-      </Text>
+      {modePart}
+      {modePart !== null && parts.length > 0 ? <Text dimColor>{" · "}</Text> : null}
+      {parts.length > 0 ? (
+        <Text wrap="truncate">
+          <Byline>{parts}</Byline>
+        </Text>
+      ) : null}
     </Box>
   );
+}
+
+function permissionModeTitle(mode: PermissionMode): string {
+  switch (mode) {
+    case "acceptEdits":
+      return "Accept edits";
+    case "bypassPermissions":
+      return "Bypass Permissions";
+    case "dontAsk":
+      return "Don't Ask";
+    case "auto":
+      return "Auto mode";
+    case "bubble":
+      return "Bubble";
+    case "default":
+    case "plan":
+      return mode === "plan" ? "Plan Mode" : "Default";
+  }
 }

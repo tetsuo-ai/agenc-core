@@ -53,7 +53,6 @@ import {
 } from "../keybindings/KeybindingContext.js";
 import {
   getDisplayForCommand,
-  getDisplaysForCommand,
 } from "../keybindings/shortcutFormat.js";
 import { slashCommandOpensPicker } from "../picker-intents.js";
 import { useAgenCAppState } from "../state/AppState.js";
@@ -96,8 +95,11 @@ import {
 } from "./drafts.js";
 import { buildHistorySearchStatusLine } from "./status-line.js";
 import { isVimModeEnabled } from "./promptInput-utils.js";
+import PromptInputFooter from "./PromptInputFooter.js";
+import { getModeFromInput, type PromptInputMode } from "./inputModes.js";
 import type { EditorMode } from "../../config/schema.js";
 import type { LLMContentPart, LLMMessage } from "../../llm/types.js";
+import type { SessionLike as StatusLineSessionLike } from "../cockpit/StatusLineConfig.js";
 
 // ────────────────────────────────────────────────────────────────────────
 // Public types
@@ -131,6 +133,11 @@ export interface ComposerAttachmentsConfig {
 export interface ComposerConfig {
   readonly attachments?: ComposerAttachmentsConfig;
   readonly editorMode?: EditorMode;
+  readonly statusLine?: {
+    readonly items: readonly string[];
+    readonly session: StatusLineSessionLike;
+    readonly cwd?: string;
+  };
 }
 
 export interface ComposerProps {
@@ -269,6 +276,7 @@ export const Composer: React.FC<ComposerProps> = ({
     config?.editorMode !== undefined ? { editorMode: config.editorMode } : null,
   );
   const [vimMode, setVimMode] = useState<"INSERT" | "NORMAL">("INSERT");
+  const [helpOpen, setHelpOpen] = useState(false);
 
   // Seed history asynchronously. The reducer owns merging so prompts
   // submitted before the disk read resolves remain newer than loaded
@@ -576,6 +584,10 @@ export const Composer: React.FC<ComposerProps> = ({
       if (activeKeybindingContext === "modal") {
         return;
       }
+      if (helpOpen && (event.key.escape || isPrintableInputEvent(event))) {
+        setHelpOpen(false);
+        if (event.key.escape) return;
+      }
       if (vimEnabled && event.key.escape) {
         clearPendingPlainChar();
         setVimMode("NORMAL");
@@ -666,6 +678,17 @@ export const Composer: React.FC<ComposerProps> = ({
         (isFromBracketedPaste ||
           store.isInFlight() ||
           event.input.length > PASTE_THRESHOLD);
+      if (
+        isPrintableInputEvent(event) &&
+        event.input === "?" &&
+        state.value.length === 0 &&
+        state.remoteImages.length === 0 &&
+        state.localImages.length === 0
+      ) {
+        flushPendingPlainChar();
+        setHelpOpen(true);
+        return;
+      }
       if (shouldTreatAsPaste) {
         beginPasteBurst(event.input);
         return;
@@ -745,10 +768,13 @@ export const Composer: React.FC<ComposerProps> = ({
     clearPendingPlainChar,
     dispatch,
     flushPendingPlainChar,
+    helpOpen,
     inputLocked,
     state.historySearch,
+    state.localImages.length,
     state.remoteImages.length,
     state.selectedRemoteImageIndex,
+    state.value.length,
     stdin,
     store,
     vimEnabled,
@@ -851,6 +877,10 @@ export const Composer: React.FC<ComposerProps> = ({
 
   const handleCancel = useCallback((): void => {
     if (inputLocked) return;
+    if (helpOpen) {
+      setHelpOpen(false);
+      return;
+    }
     if (vimEnabled && vimMode === "INSERT") {
       flushPendingPlainChar();
       setVimMode("NORMAL");
@@ -876,6 +906,7 @@ export const Composer: React.FC<ComposerProps> = ({
   }, [
     dispatch,
     hasPendingTurn,
+    helpOpen,
     inputLocked,
     onCancel,
     showMentionPalette,
@@ -1088,9 +1119,6 @@ export const Composer: React.FC<ComposerProps> = ({
   const submitKey = getDisplayForCommand("chat:submit", "chat") ?? "Enter";
   const acceptSuggestionKey =
     getDisplayForCommand("chat:acceptSuggestion", "chat") ?? "Tab";
-  const newlineKeys = getDisplaysForCommand("chat:newline", "chat");
-  const formattedNewlineKeys =
-    newlineKeys.length > 0 ? newlineKeys.join(" or ") : "Shift+Enter or Ctrl+J";
   const approvalDecisionKeys = [
     getDisplayForCommand("modal:yes", "modal") ?? "Y",
     getDisplayForCommand("modal:no", "modal") ?? "N",
@@ -1187,7 +1215,7 @@ export const Composer: React.FC<ComposerProps> = ({
     if (isStreaming) {
       return {
         color: colors.muted,
-        text: `Working (${formatElapsedDuration(activeTurnElapsedMs)} · ${cancelKey.toLowerCase()} to interrupt)`,
+        text: `Working (${formatElapsedDuration(activeTurnElapsedMs)})`,
       };
     }
     return null;
@@ -1306,14 +1334,10 @@ export const Composer: React.FC<ComposerProps> = ({
           `Invoke ${skillPreviewItem.label} for this prompt.`,
       };
     }
-    return {
-      color: colors.dim,
-      text: `Type prompt. / commands. @ files. $ skills. ${formattedNewlineKeys} newline.`,
-    };
+    return null;
   }, [
     acceptSuggestionKey,
     cancelKey,
-    formattedNewlineKeys,
     mentionDraft,
     mentionPreviewItem,
     session.appsManager,
@@ -1334,18 +1358,10 @@ export const Composer: React.FC<ComposerProps> = ({
     vimEnabled,
     vimMode,
   ]);
-  const showInstructionLine =
-    state.historySearch !== null ||
-    state.localImages.length > 0 ||
-    state.remoteImages.length > 0 ||
-    state.pasteInFlight ||
-    slashConflict ||
-    slashDraft !== null ||
-    mentionDraft !== null ||
-    skillDraft !== null ||
-    (vimEnabled && vimMode === "NORMAL");
+  const footerStatus = activityLine ?? statusLine;
+  const inputMode = getModeFromInput(state.value) as PromptInputMode;
   const placeholderText =
-    state.value.length === 0 && !showInstructionLine
+    state.value.length === 0 && !helpOpen
       ? "Ask AgenC to do anything"
       : "";
 
@@ -1404,25 +1420,6 @@ export const Composer: React.FC<ComposerProps> = ({
         overflowX="hidden"
         width="100%"
       >
-        {activityLine !== null ? (
-          <Box
-            flexDirection="row"
-            overflowX="hidden"
-            width="100%"
-            height={1}
-            backgroundColor={colors.surface as Color}
-          >
-            <Text>{"  "}</Text>
-            <Text color={activityLine.color as Color} bold>
-              {"• "}
-            </Text>
-            <Box flexGrow={1} flexShrink={1} overflowX="hidden">
-              <Text color={activityLine.color as Color} wrap="truncate">
-                {activityLine.text}
-              </Text>
-            </Box>
-          </Box>
-        ) : null}
         {state.remoteImages.map((image, index) => {
           const selected = state.selectedRemoteImageIndex === index;
           return (
@@ -1475,22 +1472,6 @@ export const Composer: React.FC<ComposerProps> = ({
             />
           </Box>
         </Box>
-        {showInstructionLine ? (
-          <Box
-            flexDirection="row"
-            overflowX="hidden"
-            width="100%"
-            height={1}
-            backgroundColor={colors.surface as Color}
-          >
-            <Text>{"  "}</Text>
-            <Box flexGrow={1} flexShrink={1} overflowX="hidden">
-              <Text color={statusLine.color as Color} wrap="truncate">
-                {statusLine.text}
-              </Text>
-            </Box>
-          </Box>
-        ) : null}
         {rejected.map((m) => (
           <Box
             key={m.raw}
@@ -1518,6 +1499,24 @@ export const Composer: React.FC<ComposerProps> = ({
             </Box>
           </Box>
         ) : null}
+        <PromptInputFooter
+          exitMessage={{ show: false }}
+          vimMode={vimMode}
+          mode={inputMode}
+          permissionMode={mode as PermissionMode}
+          suggestions={[]}
+          selectedSuggestion={0}
+          helpOpen={helpOpen}
+          suppressHint={state.value.length > 0}
+          isLoading={hasPendingTurn}
+          isPasting={state.pasteInFlight}
+          isSearching={state.historySearch !== null}
+          status={footerStatus}
+          pendingRequestCount={genericPendingRequestCount}
+          statusLineItems={config?.statusLine?.items}
+          statusLineSession={config?.statusLine?.session}
+          statusLineCwd={config?.statusLine?.cwd}
+        />
       </Box>
     </Box>
   );

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -70,7 +70,20 @@ afterEach(() => {
   delete process.env.AGENC_HOME;
 });
 
+function source(path: string): string {
+  return readFileSync(new URL(path, import.meta.url), "utf8");
+}
+
 describe("Composer OpenClaude prompt parity", () => {
+  test("live composer renders the OpenClaude-shaped footer component", () => {
+    const composer = source("Composer.tsx");
+
+    expect(composer).toMatch(/import PromptInputFooter from "\.\/PromptInputFooter\.js"/u);
+    expect(composer).toMatch(/<PromptInputFooter/u);
+    expect(composer).not.toContain("Type prompt. / commands. @ files. $ skills");
+    expect(composer).not.toMatch(/showInstructionLine/u);
+  });
+
   test("help menu shortcut hints follow the active keybinding map", async () => {
     const home = mkdtempSync(join(tmpdir(), "agenc-keybindings-"));
     try {

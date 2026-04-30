@@ -879,7 +879,7 @@ describe("Composer", () => {
 
     const frame = latestFrameText(stdout);
     expect(frame).toContain("it's not empty at all");
-    expect(frame).not.toContain("Paste in progress");
+    expect(frame).not.toContain("Pasting text");
     unmount();
   });
 
@@ -902,7 +902,7 @@ describe("Composer", () => {
       makeKeyEvent({ sequence: "alpha\nbeta", isPasted: true }),
     );
     await new Promise((r) => setTimeout(r, 25));
-    expect(latestFrameText(stdout)).toContain("Paste in progress");
+    expect(latestFrameText(stdout)).toContain("Pasting text");
 
     await new Promise((r) => setTimeout(r, 650));
     await new Promise((r) => setTimeout(r, 25));
@@ -910,7 +910,7 @@ describe("Composer", () => {
     const frame = latestFrameText(stdout);
     expect(frame).toContain("alpha");
     expect(frame).toContain("beta");
-    expect(frame).not.toContain("Paste in progress");
+    expect(frame).not.toContain("Pasting text");
     expect(onSubmit).not.toHaveBeenCalled();
     unmount();
   });
@@ -1139,7 +1139,7 @@ describe("Composer", () => {
     emitter.emit("input", makeKeyEvent({ name: "a", sequence: "a" }));
     emitter.emit("input", makeKeyEvent({ name: "b", sequence: "b" }));
     await sleep(25);
-    expect(latestFrameText(stdout)).toContain("Paste in progress");
+    expect(latestFrameText(stdout)).toContain("Pasting text");
 
     await sleep(650);
     expect(latestFrameText(stdout)).toContain("ab");

@@ -83,7 +83,6 @@ import { AskUserQuestionOverlay as _AskUserQuestionOverlay } from "../permission
 
 import {
   DEFAULT_STATUS_LINE_ITEMS,
-  StatusLineConfig,
 } from "../cockpit/StatusLineConfig.js";
 import {
   readRuntimeStatusNoticeWarnings,
@@ -518,11 +517,16 @@ export function REPL({
             <QueuedCommands session={session} isStreaming={isStreaming} />
             <Composer
               session={composerSession}
-              config={
-                composerAttachmentsConfig !== undefined
+              config={{
+                ...(composerAttachmentsConfig !== undefined
                   ? { attachments: composerAttachmentsConfig }
-                  : undefined
-              }
+                  : {}),
+                statusLine: {
+                  items: statusLineItems,
+                  session: statusLineSession,
+                  cwd: composerSession.cwd,
+                },
+              }}
               onSubmit={(value) => {
                 // Submission ends the vulnerable pre-interaction window.
                 // Keep the suppression signal clear here so startup gates can
@@ -536,11 +540,6 @@ export function REPL({
                 handleInterrupt();
               }}
               initialValue={initialComposerText}
-            />
-            <StatusLineConfig
-              items={statusLineItems}
-              session={statusLineSession}
-              cwd={composerSession.cwd}
             />
           </>
         )}
