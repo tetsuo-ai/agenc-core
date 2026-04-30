@@ -135,6 +135,34 @@ function applyApiAdapters(src, rel) {
     return hash(b, hash(a)).toString()
   }`,
     );
+    // AgenC bundles as ESM via tsup; CommonJS \`require('crypto')\` fails
+    // at runtime with "Dynamic require of 'crypto' is not supported".
+    // Switch to a top-level node:crypto import + named createHash. Both
+    // openclaude hashContent + hashPair share this fix.
+    if (!/import \{ createHash \} from 'node:crypto'/.test(out)) {
+      out = out.replace(
+        /^(\/\*\*[\s\S]*?\*\/\n)?(export function djb2Hash)/m,
+        `// AgenC bundles the runtime as ESM via tsup; \`require('crypto')\` is a
+// CommonJS dynamic-require that ESM rejects with "Dynamic require of
+// 'crypto' is not supported". Switch to a top-level node: import so
+// the ESM build resolves it statically.
+import { createHash } from 'node:crypto'
+
+$1$2`,
+      );
+    }
+    out = out.replace(
+      /  \/\/ eslint-disable-next-line @typescript-eslint\/no-require-imports\n  const crypto = require\('crypto'\) as typeof import\('crypto'\)\n  return crypto\.createHash\('sha256'\)\.update\(content\)\.digest\('hex'\)/,
+      `  return createHash('sha256').update(content).digest('hex')`,
+    );
+    out = out.replace(
+      /  \/\/ eslint-disable-next-line @typescript-eslint\/no-require-imports\n  const crypto = require\('crypto'\) as typeof import\('crypto'\)\n  return crypto\n    \.createHash\('sha256'\)\n    \.update\(a\)\n    \.update\('\\0'\)\n    \.update\(b\)\n    \.digest\('hex'\)/,
+      `  return createHash('sha256')
+    .update(a)
+    .update('\\0')
+    .update(b)
+    .digest('hex')`,
+    );
   }
 
   return out;

@@ -1,3 +1,9 @@
+// AgenC bundles the runtime as ESM via tsup; `require('crypto')` is a
+// CommonJS dynamic-require that ESM rejects with "Dynamic require of
+// 'crypto' is not supported". Switch to a top-level node: import so
+// the ESM build resolves it statically.
+import { createHash } from 'node:crypto'
+
 /**
  * djb2 string hash — fast non-cryptographic hash returning a signed 32-bit int.
  * Deterministic across runtimes (unlike Bun.hash which uses wyhash). Use as a
@@ -20,9 +26,7 @@ export function hashContent(content: string): string {
   if (typeof Bun !== 'undefined' && Bun.hash) {
     return Bun.hash(content).toString()
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require('crypto') as typeof import('crypto')
-  return crypto.createHash('sha256').update(content).digest('hex')
+  return createHash('sha256').update(content).digest('hex')
 }
 
 /**
@@ -36,10 +40,7 @@ export function hashPair(a: string, b: string): string {
     const hash = Bun.hash
     return hash(b, hash(a)).toString()
   }
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const crypto = require('crypto') as typeof import('crypto')
-  return crypto
-    .createHash('sha256')
+  return createHash('sha256')
     .update(a)
     .update('\0')
     .update(b)
