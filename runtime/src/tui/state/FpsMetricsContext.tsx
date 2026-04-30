@@ -37,9 +37,17 @@ import React, {
   type ReactNode,
 } from "react";
 
-import type { FpsMetrics } from "../diagnostics/frame-monitor.js";
-
-export type { FpsMetrics };
+// Local FpsMetrics shape (was previously imported from
+// diagnostics/frame-monitor.ts; that AgenC-only file was deleted as
+// part of the openclaude diagnostics wholesale-port). The context now
+// declares its own shape and downstream consumers continue to read it.
+export interface FpsMetrics {
+  readonly fps: number;
+  readonly p95FrameMs: number;
+  readonly droppedFrames: number;
+  readonly sampleWindowMs: number;
+  readonly samplesInWindow: number;
+}
 
 type FpsMetricsGetter = () => FpsMetrics | undefined;
 
