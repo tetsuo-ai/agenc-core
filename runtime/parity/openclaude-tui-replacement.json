@@ -1,0 +1,96 @@
+{
+  "contractName": "openclaude-tui-replacement",
+  "scope": "Replace the live AgenC TUI with the copied upstream OpenClaude TUI shell and AgenC runtime bridge",
+  "generatedAt": "2026-04-30T00:00:00.000Z",
+  "sourceRoot": "../../openclaude",
+  "targetRoot": ".",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "sourceFiles": [
+    "src/components",
+    "src/context",
+    "src/hooks",
+    "src/ink",
+    "src/keybindings",
+    "src/screens",
+    "src/state"
+  ],
+  "targetFiles": [
+    "src/agenc/upstream",
+    "src/tui/main.tsx",
+    "src/tui/openclaude/App.tsx",
+    "src/tui/openclaude/message-adapter.ts",
+    "src/tui/openclaude/permission-bridge.tsx",
+    "src/tui/openclaude/tool-stubs.tsx",
+    "src/tui/openclaude/use-session-transcript.ts"
+  ],
+  "testFiles": [
+    "src/tui/openclaude/message-adapter.test.ts",
+    "scripts/check-openclaude-tui-replacement.mjs"
+  ],
+  "rows": [
+    {
+      "id": "source-snapshot-inventory",
+      "source": "src/components, src/context, src/hooks, src/ink, src/keybindings, src/screens, src/state",
+      "target": "src/agenc/upstream",
+      "requiredBehaviors": [
+        "copied upstream source snapshot is present",
+        "source snapshot commit is verified",
+        "OpenClaude TUI inventory count matches the copied source snapshot with recorded AgenC brand filename substitutions"
+      ],
+      "tests": ["scripts/check-openclaude-tui-replacement.mjs"],
+      "commands": ["node scripts/check-openclaude-tui-replacement.mjs"],
+      "status": "required"
+    },
+    {
+      "id": "old-agenc-tui-removed",
+      "source": "src/tui",
+      "target": "src/tui",
+      "requiredBehaviors": [
+        "old AgenC composer, transcript, ink, state, permission, keybinding, and screen implementations are absent",
+        "live TUI entrypoint no longer imports the deleted AgenC App shell"
+      ],
+      "tests": ["scripts/check-openclaude-tui-replacement.mjs"],
+      "commands": ["node scripts/check-openclaude-tui-replacement.mjs"],
+      "status": "required"
+    },
+    {
+      "id": "upstream-shell-live-boot",
+      "source": "src/components/App.tsx, src/components/Messages.tsx, src/components/PromptInput/PromptInput.tsx, src/ink.ts",
+      "target": "src/tui/main.tsx, src/tui/openclaude/App.tsx",
+      "requiredBehaviors": [
+        "bootTUI renders through upstream Ink",
+        "the live shell uses upstream App providers, Messages, PromptInput, prompt overlay, and keybinding setup",
+        "AgenC model, startup prompt, startup attachments, and terminal restoration remain wired"
+      ],
+      "tests": ["scripts/check-openclaude-tui-replacement.mjs"],
+      "commands": ["npm run build"],
+      "status": "required"
+    },
+    {
+      "id": "runtime-transcript-bridge",
+      "source": "src/components/Messages.tsx",
+      "target": "src/tui/openclaude/message-adapter.ts, src/tui/openclaude/use-session-transcript.ts",
+      "requiredBehaviors": [
+        "AgenC event-log and phase events are converted into upstream message objects",
+        "streaming assistant deltas render through upstream streamingText",
+        "tool calls and tool results render as upstream tool-use rows"
+      ],
+      "tests": ["src/tui/openclaude/message-adapter.test.ts"],
+      "commands": ["vitest run src/tui/openclaude/message-adapter.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "permission-and-agent-bridge",
+      "source": "src/components/permissions/PermissionRequest.tsx, src/tools/AgentTool",
+      "target": "src/tui/openclaude/permission-bridge.tsx, src/tui/openclaude/tool-stubs.tsx, src/tui/openclaude/message-adapter.ts",
+      "requiredBehaviors": [
+        "runtime approval requests resolve through the upstream permission dialog",
+        "AgenC tool calls receive upstream-compatible tool definitions",
+        "codex-style collaboration agent lifecycle events are represented as upstream Task tool rows"
+      ],
+      "tests": ["src/tui/openclaude/message-adapter.test.ts"],
+      "commands": ["vitest run src/tui/openclaude/message-adapter.test.ts"],
+      "status": "required"
+    }
+  ]
+}

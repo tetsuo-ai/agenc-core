@@ -10,7 +10,11 @@
     "noImplicitReturns": false,
     "noImplicitAny": false,
     "strictNullChecks": true,
-    "types": []
+    "types": [],
+    "paths": {
+      "bun:bundle": ["./src/build/feature.ts"],
+      "src/*": ["./src/agenc/upstream/*", "./src/*"]
+    }
   },
   "include": ["src/tui/**/*"],
   "exclude": ["src/tui/**/*.test.ts", "src/tui/**/*.test.tsx"]

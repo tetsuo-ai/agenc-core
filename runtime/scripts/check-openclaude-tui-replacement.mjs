@@ -1,0 +1,211 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const runtimeRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const repoRoot = resolve(runtimeRoot, "..");
+const matrixPath = join(runtimeRoot, "parity/openclaude-tui-replacement.json");
+const matrix = JSON.parse(readFileSync(matrixPath, "utf8"));
+const openClaudeRoot = resolve(repoRoot, matrix.sourceRoot);
+const copiedRoot = join(runtimeRoot, "src/agenc/upstream");
+const liveTuiRoot = join(runtimeRoot, "src/tui");
+
+function fail(message) {
+  throw new Error(`[openclaude-tui-replacement] ${message}`);
+}
+
+function git(args, cwd) {
+  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function walk(root) {
+  const out = [];
+  const visit = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      const stat = statSync(path);
+      if (stat.isDirectory()) {
+        visit(path);
+      } else if (stat.isFile()) {
+        out.push(relative(root, path).replaceAll("\\", "/"));
+      }
+    }
+  };
+  visit(root);
+  return out.sort();
+}
+
+function scopedFiles(root, dirs) {
+  return dirs.flatMap((dir) =>
+    walk(join(root, dir)).map((file) => `${dir}/${file}`),
+  ).sort();
+}
+
+function assertMatrix() {
+  for (const field of [
+    "contractName",
+    "sourceRoot",
+    "targetRoot",
+    "sourceCommit",
+    "sourceFiles",
+    "targetFiles",
+    "testFiles",
+    "rows",
+  ]) {
+    if (!(field in matrix)) fail(`matrix missing ${field}`);
+  }
+  for (const row of matrix.rows) {
+    for (const field of [
+      "id",
+      "source",
+      "target",
+      "requiredBehaviors",
+      "tests",
+      "commands",
+      "status",
+    ]) {
+      if (!(field in row)) fail(`row ${row.id ?? "(missing id)"} missing ${field}`);
+    }
+    if (row.status !== "required") fail(`row ${row.id} is not required`);
+    if (row.tests.length === 0) fail(`row ${row.id} has no tests`);
+    if (row.commands.length === 0) fail(`row ${row.id} has no commands`);
+  }
+}
+
+function assertSourceSnapshot() {
+  if (!existsSync(openClaudeRoot)) fail(`source root missing: ${openClaudeRoot}`);
+  const actualCommit = git(["rev-parse", "HEAD"], openClaudeRoot);
+  if (actualCommit !== matrix.sourceCommit) {
+    fail(`source commit mismatch: expected ${matrix.sourceCommit}, got ${actualCommit}`);
+  }
+  if (!existsSync(copiedRoot)) fail("copied source root missing");
+  const dirs = [
+    "src/components",
+    "src/context",
+    "src/hooks",
+    "src/ink",
+    "src/keybindings",
+    "src/screens",
+    "src/state",
+  ];
+  const sourceFiles = scopedFiles(openClaudeRoot, dirs);
+  const copiedFiles = scopedFiles(copiedRoot, dirs.map((dir) => dir.slice("src/".length)));
+  const normalizedCopied = copiedFiles.map((file) => `src/${file}`);
+  const substitutions = new Map([
+    [
+      "src/components/ClaudeCodeHint/PluginHintMenu.tsx",
+      "src/components/AgenCCodeHint/PluginHintMenu.tsx",
+    ],
+    [
+      "src/components/ClaudeInChromeOnboarding.tsx",
+      "src/components/AgenCInChromeOnboarding.tsx",
+    ],
+    [
+      "src/components/ClaudeMdExternalIncludesDialog.tsx",
+      "src/components/AgenCMdExternalIncludesDialog.tsx",
+    ],
+    [
+      "src/hooks/useClaudeCodeHintRecommendation.tsx",
+      "src/hooks/useAgenCCodeHintRecommendation.tsx",
+    ],
+    [
+      "src/hooks/usePromptsFromClaudeInChrome.tsx",
+      "src/hooks/usePromptsFromAgenCInChrome.tsx",
+    ],
+  ]);
+  const expected = sourceFiles.map((file) => substitutions.get(file) ?? file).sort();
+  const actualFiles = normalizedCopied.sort();
+  const missing = expected.filter((file) => !actualFiles.includes(file));
+  const extra = actualFiles.filter((file) => !expected.includes(file));
+  if (missing.length > 0 || extra.length > 0) {
+    fail(
+      `copied TUI inventory mismatch: missing=${missing.slice(0, 10).join(", ")} extra=${extra.slice(0, 10).join(", ")}`,
+    );
+  }
+}
+
+function assertOldTuiRemoved() {
+  const allowed = new Set([
+    "main.tsx",
+    "openclaude/App.tsx",
+    "openclaude/message-adapter.ts",
+    "openclaude/message-adapter.test.ts",
+    "openclaude/permission-bridge.tsx",
+    "openclaude/session-types.ts",
+    "openclaude/tool-stubs.tsx",
+    "openclaude/use-session-transcript.ts",
+  ]);
+  const liveFiles = walk(liveTuiRoot);
+  for (const file of liveFiles) {
+    if (!allowed.has(file)) fail(`unexpected live TUI file remains: ${file}`);
+  }
+  for (const dir of [
+    "composer",
+    "transcript",
+    "ink",
+    "permissions",
+    "keybindings",
+    "state",
+    "screens",
+    "components",
+  ]) {
+    if (existsSync(join(liveTuiRoot, dir))) fail(`old TUI directory remains: ${dir}`);
+  }
+}
+
+function assertLiveWiring() {
+  const main = readFileSync(join(liveTuiRoot, "main.tsx"), "utf8");
+  const app = readFileSync(join(liveTuiRoot, "openclaude/App.tsx"), "utf8");
+  if (!main.includes("../agenc/upstream/ink.js")) {
+    fail("main.tsx does not render through upstream Ink");
+  }
+  if (!main.includes("OpenClaudeTuiApp")) {
+    fail("main.tsx does not mount OpenClaudeTuiApp");
+  }
+  for (const forbidden of [
+    "from \"./App.js\"",
+    "from './App.js'",
+    "tui/composer",
+    "tui/transcript",
+  ]) {
+    if (main.includes(forbidden) || app.includes(forbidden)) {
+      fail(`forbidden old TUI import remains: ${forbidden}`);
+    }
+  }
+  for (const required of [
+    "components/Messages.js",
+    "components/PromptInput/PromptInput.js",
+    "keybindings/KeybindingProviderSetup.js",
+    "context/promptOverlayContext.js",
+    "components/permissions/PermissionRequest.js",
+  ]) {
+    if (!app.includes(required) && !readFileSync(join(liveTuiRoot, "openclaude/permission-bridge.tsx"), "utf8").includes(required)) {
+      fail(`upstream live import missing: ${required}`);
+    }
+  }
+  const allLive = walk(liveTuiRoot)
+    .map((file) => readFileSync(join(liveTuiRoot, file), "utf8"))
+    .join("\n");
+  if (allLive.includes("⚠")) fail("forbidden warning glyph remains in live TUI");
+}
+
+function assertPackageScripts() {
+  const pkg = JSON.parse(readFileSync(join(runtimeRoot, "package.json"), "utf8"));
+  for (const script of [
+    "check:openclaude-tui-replacement",
+    "test:openclaude-tui-replacement",
+    "validate:openclaude-tui-replacement",
+  ]) {
+    if (typeof pkg.scripts?.[script] !== "string") {
+      fail(`package script missing: ${script}`);
+    }
+  }
+}
+
+assertMatrix();
+assertSourceSnapshot();
+assertOldTuiRemoved();
+assertLiveWiring();
+assertPackageScripts();
+console.log("[openclaude-tui-replacement] contract verified");

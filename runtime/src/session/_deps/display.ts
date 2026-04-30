@@ -5,12 +5,10 @@
  *
  * Wired to the real gut subsystems:
  *
- *   - `getShortcutDisplay` -> `src/tui/keybindings/shortcutFormat.ts`,
- *     which reverse-looks-up the gut `BindingCommand` registry and
- *     pretty-prints the configured key sequence. Upstream-only action
- *     labels (e.g. `app:toggleTranscript`, which the gut TUI does not
- *     implement today) cleanly fall back to the caller-supplied
- *     hardcoded display string.
+ *   - `getShortcutDisplay` -> a non-React fallback for runtime-only
+ *     call sites. The interactive TUI uses the upstream keybinding
+ *     provider directly; this helper keeps background/session text from
+ *     importing TUI implementation files.
  *
  *   - `getUpgradeMessage` -> `src/llm/context-window-upgrade.ts`,
  *     which inspects the live `ModelsManager` snapshot registered by
@@ -21,5 +19,12 @@
  *     never wired the snapshot.
  */
 
-export { getShortcutDisplay } from "../../tui/keybindings/shortcutFormat.js";
 export { getUpgradeMessage } from "../../llm/context-window-upgrade.js";
+
+export function getShortcutDisplay(
+  _action: string,
+  _context: string,
+  fallback: string,
+): string {
+  return fallback;
+}
