@@ -210,6 +210,12 @@ describe("model-facing tools", () => {
       additionalProperties: false,
     });
     expect(
+      (
+        registry.tools.find((tool) => tool.name === "spawn_agent")
+          ?.inputSchema as { properties?: Record<string, unknown> } | undefined
+      )?.properties,
+    ).not.toHaveProperty("fork_context");
+    expect(
       registry.tools.find((tool) => tool.name === "TaskCreate")?.inputSchema,
     ).toMatchObject({
       required: ["subject", "description"],
@@ -661,6 +667,24 @@ describe("model-facing tools", () => {
       "fork_context is not supported",
     );
 
+    const wait = tools.find((tool) => tool.name === "wait_agent")!;
+    const zeroTimeout = await wait.execute({ timeout_ms: 0 });
+    expect(zeroTimeout.isError).toBe(true);
+    expect(JSON.parse(zeroTimeout.content).error).toBe(
+      "timeout_ms must be greater than zero",
+    );
+
+    const invalidRole = await spawnAgent.execute({
+      message: "inspect",
+      task_name: "task_1",
+      agent_type: "missing-role",
+      fork_turns: "none",
+    });
+    expect(invalidRole.isError).toBe(true);
+    expect(JSON.parse(invalidRole.content).error).toBe(
+      "unknown agent_type 'missing-role'",
+    );
+
     const forkTurns = await spawnAgent.execute({
       message: "inspect",
       task_name: "task_1",
@@ -876,6 +900,73 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toContain(
       "agent reference cannot be resolved",
     );
+  });
+
+  it("send_message emits the interaction end event after delivery failure", async () => {
+    const session = fakeSession();
+    const emitted: unknown[] = [];
+    (session as unknown as { emit: typeof session.emit }).emit = (event) => {
+      emitted.push(event);
+    };
+    const control = {
+      getLive: vi.fn((threadId: string) =>
+        threadId === "agent-1"
+          ? {
+              agentId: "agent-1",
+              agentPath: "/root/task_1",
+              nickname: "TaskOne",
+              role: { name: "worker" },
+              metadata: {
+                agentId: "agent-1",
+                agentPath: "/root/task_1",
+                agentNickname: "TaskOne",
+                agentRole: "worker",
+              },
+            }
+          : undefined,
+      ),
+      getAgentMetadata: vi.fn(() => ({
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentNickname: "TaskOne",
+        agentRole: "worker",
+      })),
+      resolveAgentReference: vi.fn(() => "agent-1"),
+      sendInterAgentCommunication: vi.fn(async () => {
+        throw new Error("agent with id agent-1 is closed");
+      }),
+      getStatus: vi.fn(async () => ({ status: "shutdown" as const })),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      });
+      const result = await tools.find((tool) => tool.name === "send_message")!.execute({
+        target: "/root/task_1",
+        message: "hello",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toBe(
+        "agent with id agent-1 is closed",
+      );
+      expect(
+        emitted.map((event) => (event as { msg: { type: string } }).msg.type),
+      ).toEqual([
+        "collab_agent_interaction_begin",
+        "collab_agent_interaction_end",
+      ]);
+      expect(
+        (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload.status,
+      ).toEqual({ status: "shutdown" });
+    } finally {
+      _clearAgentControlCacheForTesting();
+    }
   });
 
   it("list_agents returns Codex V2 snake_case entries only", async () => {

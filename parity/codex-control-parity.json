@@ -1,8 +1,8 @@
 {
   "contractName": "codex-control-parity",
   "scope": "AgenC agents/control.ts ↔ codex codex-rs/core/src/agent/control.rs strict parity",
-  "sourceRoot": "/home/tetsuo/git/codex",
-  "targetRoot": "/home/tetsuo/git/AgenC/agenc-core",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "spawn-agent-fork-mode-enum",
@@ -81,11 +81,12 @@
       "requiredBehaviors": [
         "I-1 depth cap: rejects when childDepth > maxDepth with MaxDepthExceededError",
         "I-32 atomic slot reservation: reserveSpawnSlot before allocating; release on parent-interrupt race",
-        "I-37 path collision: finalizeSpawnReservation throws AgentPathExistsError on duplicate agentPath",
+        "I-37 path collision: explicit agentPath is reserved before nickname allocation and finalize replaces the reservation with live metadata",
         "I-63 cooperative atomicity: post-await tail through finalize is synchronous",
         "AgentLimitReachedError surfaces from registry; emits agent_limit_reached warning",
         "creates upInbox + downInbox mailboxes wired with backpressure warnings",
-        "registers parent token for spawn-race detection"
+        "registers parent token for spawn-race detection",
+        "rejects unrecognized roleName before live agent metadata is registered"
       ],
       "tests": [
         "runtime/src/agents/control.test.ts",
@@ -174,10 +175,12 @@
       "requiredBehaviors": [
         "delivers an InterAgentCommunication to a child mailbox with author/recipient/content",
         "trigger_turn flag controls whether recipient wakes immediately",
-        "matches codex's InterAgentCommunication shape (no metadata field on the wire)"
+        "matches codex's InterAgentCommunication shape (no metadata field on the wire)",
+        "model-facing interaction end event is emitted after delivery attempt with current receiver status"
       ],
       "tests": [
-        "runtime/src/agents/control.test.ts"
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/bin/model-facing-tools.test.ts"
       ],
       "status": "required"
     },
@@ -232,7 +235,7 @@
       "source": "codex-rs/core/src/agent/control.rs",
       "target": "runtime/src/agents/control.ts",
       "requiredBehaviors": [
-        "returns AgentStatus for known agentId; not_found for unknown",
+        "returns AgentStatus for known agentId; not_found for an unrecognized agentId",
         "no idle variant emitted (B.3: idle removed)",
         "delegates to LiveAgent.status.value for live agents"
       ],
@@ -262,7 +265,7 @@
       "target": "runtime/src/agents/control.ts",
       "requiredBehaviors": [
         "returns AgentMetadata snapshot by threadId from registry",
-        "undefined for unknown agent",
+        "undefined for an unrecognized agent",
         "metadata reflects the snapshot taken at spawn time"
       ],
       "tests": [
@@ -290,7 +293,7 @@
       "target": "runtime/src/agents/control.ts",
       "requiredBehaviors": [
         "returns the LiveAgent.configSnapshot recorded at spawn time",
-        "undefined for unknown agent",
+        "undefined for an unrecognized agent",
         "snapshot is read-only and reflects spawn-time config"
       ],
       "tests": [
@@ -397,6 +400,32 @@
         "runtime/src/agents/control.test.ts"
       ],
       "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/control.test.ts",
+        "runtime/src/agents/control.ts",
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
+    },
+    {
+      "id": "codex-followup-task-term",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bfollow-?up\\b",
+      "files": [
+        "runtime/src/bin/model-facing-tools.test.ts"
+      ],
+      "reason": "Allows Codex followup_task identifiers and child continuation-turn assertions; not completion-deferral language."
     }
   ]
 }

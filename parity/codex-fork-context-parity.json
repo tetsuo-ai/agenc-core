@@ -1,8 +1,8 @@
 {
   "contractName": "codex-fork-context-parity",
-  "scope": "AgenC agents/fork-context.ts ↔ codex codex-rs/core/src/agent/control.rs spawn_subagent fork-mode subset. Locks the codex-aligned subset of fork-context.ts: ForkMode shape, last_n_turns slicing, None-mode semantic, and the I-36 parent-rollout flush before fork. The directive-prompt builder is AgenC composition (AgenC subagent guardrail text); it is NOT a codex parity surface and is intentionally out of scope for this contract.",
-  "sourceRoot": "/home/tetsuo/git/codex",
-  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "scope": "AgenC agents/fork-context.ts ↔ Codex V2 control.rs spawn_subagent fork-mode behavior. Locks ForkMode shape, last_n_turns slicing, None-mode semantics, and the I-36 parent-rollout flush before fork. AgenC directive-prompt composition is presentation text and must not alter fork-context behavior.",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "fork-mode-union-shape",
@@ -74,6 +74,20 @@
         "runtime/src/agents/fork-context.test.ts"
       ],
       "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/fork-context.test.ts",
+        "runtime/src/agents/thread-rollout-truncation.test.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
     }
   ]
 }

@@ -9,7 +9,10 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=@tetsuo-ai/runtime",
+    "check:codex-v2-agent-contract": "npm run check:codex-v2-agent-contract --workspace=@tetsuo-ai/runtime",
+    "install:codex-v2-agent-contract-hook": "bash scripts/install-codex-v2-agent-contract-hook.sh",
     "install:tui-openclaude-core-parity-hook": "bash scripts/install-tui-openclaude-parity-hook.sh",
+    "validate:codex-v2-agent-contract": "npm run validate:codex-v2-agent-contract --workspace=@tetsuo-ai/runtime",
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
     "validate:tui-openclaude-core-parity": "npm run validate:tui-openclaude-core-parity --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",

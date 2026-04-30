@@ -1,8 +1,8 @@
 {
   "contractName": "codex-thread-parity",
-  "scope": "AgenC agents/thread.ts ↔ codex codex-rs/core/src/codex_thread.rs strict parity for the codex-aligned subset. AgenC's AgentThread is a high-level wrapper around a single LiveAgent handle (which itself is the codex parity port). The lifecycle delegation, fork-mode passthrough, and isFinal-driven join semantic are codex parity surfaces and locked here. The OpenClaude AgentTool-shaped public surface (taskPrompt, worktreePath, worktreeBranch, messages, metadata, memory accessors and the spawn/fork method names) is intentional UX adaptation and explicitly out of scope for codex parity.",
-  "sourceRoot": "/home/tetsuo/git/codex",
-  "targetRoot": "/home/tetsuo/git/agenc-core-codex-agents-parity",
+  "scope": "AgenC agents/thread.ts ↔ Codex V2 agent thread behavior. AgenC's AgentThread is a high-level wrapper around a single LiveAgent handle. Lifecycle delegation, fork-mode passthrough, and isFinal-driven join semantics are Codex parity surfaces and locked here. OpenClaude-shaped public conveniences are separate presentation/API compatibility surfaces and must not alter the Codex V2 behavior rows.",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
   "rows": [
     {
       "id": "agent-thread-wraps-single-live-handle",
@@ -89,6 +89,19 @@
         "runtime/src/agents/thread.test.ts"
       ],
       "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/thread.test.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
     }
   ]
 }

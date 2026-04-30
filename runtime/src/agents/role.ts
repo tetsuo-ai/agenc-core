@@ -285,6 +285,20 @@ export function getDefaultAgentRole(): AgentRole {
   return DEFAULT_ROLE;
 }
 
+export class AgentRoleNotFoundError extends Error {
+  constructor(public readonly roleName: string) {
+    super(`unknown agent_type '${roleName}'`);
+    this.name = "AgentRoleNotFoundError";
+  }
+}
+
+export function requireAgentRole(name: string | undefined): AgentRole {
+  if (!name) return DEFAULT_ROLE;
+  const role = getAgentRole(name);
+  if (!role) throw new AgentRoleNotFoundError(name);
+  return role;
+}
+
 export function listAgentRoles(): ReadonlyArray<AgentRole> {
   return Array.from(registry.values());
 }

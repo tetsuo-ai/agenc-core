@@ -130,6 +130,17 @@ describe("AgentControl", () => {
     ).rejects.toBeInstanceOf(MaxDepthExceededError);
   });
 
+  it("spawn() rejects unrecognized role names without charging a live slot", async () => {
+    const session = stubSession();
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+
+    await expect(
+      control.spawn({ parentPath: "/root", roleName: "missing-role" }),
+    ).rejects.toThrow("unknown agent_type 'missing-role'");
+    expect(registry.activeCount).toBe(0);
+  });
+
   it("AgentControlOpts.maxDepth override is honored", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();

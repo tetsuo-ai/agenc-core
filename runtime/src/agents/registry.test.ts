@@ -48,9 +48,30 @@ describe("AgentRegistry", () => {
     expect(reg.hasNickname(nickname)).toBe(true);
   });
 
-  it("I-37: reserveAgentPath throws AgentPathExistsError on collision", async () => {
+  it("I-37: path reservation rejects same-path concurrent spawns", async () => {
+    const reg = new AgentRegistry();
+    const first = await reg.reserveSpawnSlot();
+    first.reserveAgentPath("/root/alpha");
+
+    const second = await reg.reserveSpawnSlot();
+    expect(() => second.reserveAgentPath("/root/alpha")).toThrow(
+      AgentPathExistsError,
+    );
+    second.release();
+    expect(reg.activeCount).toBe(1);
+
+    first.release();
+    expect(reg.activeCount).toBe(0);
+
+    const third = await reg.reserveSpawnSlot();
+    expect(() => third.reserveAgentPath("/root/alpha")).not.toThrow();
+    third.release();
+  });
+
+  it("I-37: finalize replaces its own path reservation", async () => {
     const reg = new AgentRegistry();
     const r = await reg.reserveSpawnSlot();
+    r.reserveAgentPath("/root/alpha");
     const meta = buildChildMetadata({
       agentId: "t1",
       parentPath: "/root",
@@ -59,14 +80,19 @@ describe("AgentRegistry", () => {
       depth: 1,
     });
     r.finalize(meta);
-    expect(() => reg.reserveAgentPath("/root/alpha")).toThrow(
+    expect(reg.agentIdForPath("/root/alpha")).toBe("t1");
+
+    const colliding = await reg.reserveSpawnSlot();
+    expect(() => colliding.reserveAgentPath("/root/alpha")).toThrow(
       AgentPathExistsError,
     );
+    colliding.release();
   });
 
   it("finalizeSpawnReservation indexes by path + nickname", async () => {
     const reg = new AgentRegistry();
     const r = await reg.reserveSpawnSlot();
+    r.reserveAgentPath("/root/beta");
     const meta = buildChildMetadata({
       agentId: "t2",
       parentPath: "/root",
