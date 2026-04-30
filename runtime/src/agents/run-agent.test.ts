@@ -6,8 +6,8 @@ import { dirname, join } from "node:path";
  *
  * Covers T9 gaps #112 and #113: the single-turn provider drive in
  * runAgent and the MCP-readiness polling branches of
- * initMcpForAgent. Uses a lightweight session stub (see
- * control.test.ts) and a provider stubbed with `vi.fn()`.
+ * initMcpForAgent. Uses a lightweight session fake (see
+ * control.test.ts) and a provider wired up via `vi.fn()`.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,7 +58,7 @@ function mkFeatures(): ManagedFeatures {
 
 function mkConfig(): Config {
   return {
-    model: "stub-model",
+    model: "fake-model",
     cwd: "/tmp",
     features: mkFeatures(),
     multiAgentV2: {
@@ -81,7 +81,7 @@ function mkConfig(): Config {
 
 function mkModelInfo(): ModelInfo {
   return {
-    slug: "stub-model",
+    slug: "fake-model",
     effectiveContextWindowPercent: 100,
     contextWindow: 1024,
     supportedReasoningLevels: [],
@@ -92,7 +92,7 @@ function mkModelInfo(): ModelInfo {
 }
 
 function mkSessionConfiguration(
-  overrides?: Partial<SessionConfiguration>,
+  overrides?: { readonly [K in keyof SessionConfiguration]?: SessionConfiguration[K] },
 ): SessionConfiguration {
   const base: SessionConfiguration = {
     cwd: "/tmp",
@@ -110,7 +110,7 @@ function mkSessionConfiguration(
       allowManagedDomainsOnly: false,
     },
     windowsSandboxLevel: "none",
-    collaborationMode: { model: "stub-model" },
+    collaborationMode: { model: "fake-model" },
     dynamicTools: [],
     sessionSource: "cli_main",
   };
@@ -133,7 +133,7 @@ function mkRegistry(): ToolRegistry {
 }
 
 function makeStubSession(opts: {
-  services?: Partial<SessionServices>;
+  services?: { readonly [K in keyof SessionServices]?: SessionServices[K] };
   sessionConfiguration?: SessionConfiguration;
   config?: Config;
   modelInfo?: ModelInfo;
@@ -142,7 +142,7 @@ function makeStubSession(opts: {
     sessionConfiguration:
       opts.sessionConfiguration ??
       mkSessionConfiguration({
-        provider: { slug: "stub-provider" } as unknown as SessionConfiguration["provider"],
+        provider: { slug: "fake-provider" } as unknown as SessionConfiguration["provider"],
       }),
     history: [],
   };
@@ -176,16 +176,16 @@ function makeStubSession(opts: {
 }
 
 function makeProvider(
-  responses: Array<Partial<LLMResponse>>,
+  responses: Array<{ readonly [K in keyof LLMResponse]?: LLMResponse[K] }>,
 ): LLMProvider {
   const queue = [...responses];
   return {
-    name: "stub",
+    name: "fake",
     chat: vi.fn(async () => ({
       content: "",
       toolCalls: [],
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      model: "stub-model",
+      model: "fake-model",
       finishReason: "stop",
       ...(queue.shift() ?? {}),
     })),
@@ -197,7 +197,7 @@ function makeProvider(
         content: "",
         toolCalls: [],
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        model: "stub-model",
+        model: "fake-model",
         finishReason: "stop",
         ...(queue.shift() ?? {}),
       }),
@@ -740,7 +740,7 @@ describe("runAgent", () => {
 
   it("marks errored when the provider rejects", async () => {
     const provider: LLMProvider = {
-      name: "stub",
+      name: "fake",
       chat: vi.fn(),
       chatStream: vi.fn().mockRejectedValue(new Error("provider_boom")),
       healthCheck: vi.fn().mockResolvedValue(true),
@@ -777,7 +777,7 @@ describe("runAgent", () => {
         }),
     );
     const provider: LLMProvider = {
-      name: "stub",
+      name: "fake",
       chat: vi.fn(),
       chatStream,
       healthCheck: vi.fn().mockResolvedValue(true),

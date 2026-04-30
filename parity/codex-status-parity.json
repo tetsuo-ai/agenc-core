@@ -1,0 +1,99 @@
+{
+  "contractName": "codex-status-parity",
+  "scope": "AgenC agents/status.ts ↔ codex codex-rs/core/src/agent/status.rs + protocol/src/protocol.rs::AgentStatus strict parity",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
+  "rows": [
+    {
+      "id": "agent-status-enum",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/status.ts",
+      "requiredBehaviors": [
+        "union covers exactly: pending_init, running, interrupted, completed, errored, shutdown, not_found",
+        "no idle variant (B.3 removed; codex has no idle either)",
+        "running carries turnId + startedAtMs (richer than codex's bare Running; doesn't surface to model JSON)",
+        "completed carries turnId + endedAtMs + optional lastMessage",
+        "errored carries turnId + endedAtMs + error string",
+        "interrupted carries turnId + endedAtMs + reason"
+      ],
+      "tests": [
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agent-status-json-encoder",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/status.ts",
+      "requiredBehaviors": [
+        "toAgentStatusJson maps each variant to codex's exact wire shape",
+        "bare strings for pending_init|running|interrupted|shutdown|not_found",
+        "object form for { completed: string|null } and { errored: string }",
+        "no idle arm (post-B.3)"
+      ],
+      "tests": [
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "is-final-policy",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/status.ts",
+      "requiredBehaviors": [
+        "completed/errored/shutdown/not_found are final",
+        "pending_init/running/interrupted are non-final (matches codex is_final exactly)",
+        "interrupted intentionally non-final so completion watchers loop past an interrupt"
+      ],
+      "tests": [
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agent-status-from-event",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/status.ts",
+      "requiredBehaviors": [
+        "turn_started -> running with turnId + startedAtMs",
+        "turn_complete -> completed with optional lastMessage + endedAtMs",
+        "turn_aborted (Interrupted/BudgetLimited reasons) -> interrupted",
+        "turn_aborted (other reasons) -> errored",
+        "error event -> errored with payload message",
+        "unrelated event types -> undefined (no transition)"
+      ],
+      "tests": [
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agent-status-tracker",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/status.ts",
+      "requiredBehaviors": [
+        "tracker initializes at pending_init",
+        "subscribe replays current value to new subscribers (BehaviorSubject; matches codex tokio::watch)",
+        "terminal state stickiness: final state cannot be overwritten except per documented codex transitions",
+        "interrupt-then-running transition allowed (interrupted is non-final)"
+      ],
+      "tests": [
+        "runtime/src/agents/status.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/status.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
+    }
+  ]
+}

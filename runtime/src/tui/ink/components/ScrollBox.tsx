@@ -210,7 +210,6 @@ function ScrollBox({
   // Overflow.Scroll prevents the viewport from growing to fit the content.
   // The renderer computes scrollHeight from the content box and culls
   // content's children based on scrollTop.
-  //
   // stickyScroll is passed as a DOM attribute (via ink-box directly) so it's
   // available on the first render — ref callbacks fire after the initial
   // commit, which is too late for the first frame.

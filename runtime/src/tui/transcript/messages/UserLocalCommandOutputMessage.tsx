@@ -17,7 +17,7 @@ import * as React from 'react'
 
 import { Box, Text } from '../../ink-public.js'
 
-import MarkdownBlock from '../MarkdownBlock.js'
+import { Markdown } from '../../components/Markdown.js'
 import FullWidthRow from '../../design-system/FullWidthRow.js'
 
 import {
@@ -74,7 +74,7 @@ function IndentedContent({
     <FullWidthRow>
       <Text dimColor>{'  ⎿  '}</Text>
       <Box flexDirection="column" flexGrow={1}>
-        <MarkdownBlock content={children} isComplete />
+        <Markdown>{children}</Markdown>
       </Box>
     </FullWidthRow>
   )

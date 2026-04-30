@@ -140,7 +140,7 @@ export class Mailbox {
    * A closed mailbox throws `MailboxClosedError`. In every other case
    * the message is accepted — either into the main queue or into
    * the overflow slot — so `send()` never returns `'dropped'` today;
-   * any drop is deferred until the timer fires or a later overflow
+   * any drop happens later when the timer fires or a later overflow
    * displaces the earlier one.
    */
   send(msg: Omit<InterAgentCommunication, "seq">): SendResult {

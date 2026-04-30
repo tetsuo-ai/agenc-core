@@ -5,12 +5,8 @@
  *
  * Goals
  * -----
- * Provide the upstream API surface so the lead can wire this as a
- * drop-in replacement for the existing `MessageList`'s body in a follow-up
- * commit. The component itself is a pure windowed renderer plus a search
- * highlight integration; sticky-scroll-to-bottom remains the
- * caller's responsibility (the existing `MessageList` keeps that policy
- * inside the same file).
+ * Provide the upstream API surface for transcript virtualization,
+ * search, row expansion, sticky prompt tracking, and cursor navigation.
  *
  * AgenC adaptations
  * -----------------
@@ -19,15 +15,15 @@
  *     so `JumpHandle` methods can move to offscreen rows instead of
  *     silently no-oping.
  *   - `useSearchHighlight` from `tui/ink/hooks/use-search-highlight.js`
- *     is wired for the screen-buffer overlay path so a future search box
- *     can call `setSearchQuery` and have all visible matches inverted.
+ *     is wired for the screen-buffer overlay path so search queries
+ *     invert visible matches while row navigation follows the match list.
  *   - Each item is wrapped in `OffscreenFreeze` to match the existing
  *     transcript's offscreen-perf strategy.
  *
  * @module
  */
 
-import type { RefObject } from "react";
+import type { RefObject, Ref } from "react";
 import React, {
   useCallback,
   useImperativeHandle,
@@ -38,6 +34,8 @@ import React, {
 
 import Box from "../ink/components/Box.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
+import type { DOMElement } from "../ink/dom.js";
+import type { MatchPosition } from "../ink/render-to-screen.js";
 import { useSearchHighlight } from "../ink/hooks/use-search-highlight.js";
 import type { TranscriptMessage } from "./MessageList.js";
 import { OffscreenFreeze } from "./OffscreenFreeze.js";
@@ -48,13 +46,11 @@ const HEADROOM_ROWS = 3;
 /**
  * Imperative handle for transcript navigation.
  *
- * Search/jump navigation mirrors upstream's high-level contract:
- * `setSearchQuery` builds a message-index match list, `nextMatch` and
- * `prevMatch` cycle through it, and `jumpToIndex` delegates to the
- * virtual-scroll hook so offscreen rows are mounted before the next paint.
- * AgenC's reduced renderer does not yet scan per-cell match coordinates,
- * so the screen-buffer overlay still highlights visible text by query while
- * navigation lands at the matched message row.
+ * Search/jump navigation mirrors upstream's high-level contract. Query
+ * updates build a message-index match list, visible rows are scanned for
+ * match coordinates when the renderer provides a scanner, and navigation
+ * delegates to the virtual-scroll hook so offscreen rows mount before the
+ * next paint.
  */
 export interface JumpHandle {
   readonly jumpToIndex: (index: number) => void;
@@ -64,6 +60,17 @@ export interface JumpHandle {
   readonly setAnchor: () => void;
   readonly disarmSearch: () => void;
   readonly warmSearchIndex: () => Promise<number>;
+}
+
+export interface MessageActionsState {
+  readonly index: number;
+  readonly id: string;
+}
+
+export interface MessageActionsNav {
+  readonly moveBy: (delta: number) => void;
+  readonly moveTo: (index: number) => void;
+  readonly activate: () => void;
 }
 
 export interface VirtualMessageListProps {
@@ -94,6 +101,24 @@ export interface VirtualMessageListProps {
   readonly jumpRef?: RefObject<JumpHandle | null>;
   /** When `true`, every row is wrapped in `OffscreenFreeze`. */
   readonly freezeOffscreen?: boolean;
+  readonly onItemClick?: (message: TranscriptMessage) => void;
+  readonly isItemClickable?: (message: TranscriptMessage) => boolean;
+  readonly isItemExpanded?: (message: TranscriptMessage) => boolean;
+  readonly trackStickyPrompt?: boolean;
+  readonly onStickyPromptChange?: (
+    prompt: { readonly text: string; readonly scrollTo: () => void } | null,
+  ) => void;
+  readonly selectedIndex?: number;
+  readonly cursorNavRef?: Ref<MessageActionsNav>;
+  readonly setCursor?: (cursor: MessageActionsState | null) => void;
+  readonly scanElement?: (element: DOMElement) => MatchPosition[];
+  readonly setPositions?: (
+    state: {
+      readonly positions: MatchPosition[];
+      readonly rowOffset: number;
+      readonly currentIdx: number;
+    } | null,
+  ) => void;
 }
 
 const fallbackLowerCache = new WeakMap<TranscriptMessage, string>();
@@ -105,11 +130,28 @@ function defaultExtractSearchText(message: TranscriptMessage): string {
   return lowered;
 }
 
+function smallHash(input: string): string {
+  let hash = 5381;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ input.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 function rowFreezeKey(message: TranscriptMessage): string {
+  let groupedToolsKey = "";
+  if (message.groupedTools && message.groupedTools.length > 0) {
+    try {
+      groupedToolsKey = smallHash(JSON.stringify(message.groupedTools));
+    } catch {
+      groupedToolsKey = "grouped-tools";
+    }
+  }
   return [
     message.id,
     message.timestamp,
     message.content?.length ?? 0,
+    groupedToolsKey,
     message.toolResultContent?.length ?? 0,
     message.execStdout?.length ?? 0,
     message.execStderr?.length ?? 0,
@@ -128,6 +170,16 @@ export function VirtualMessageList({
   onSearchMatchesChange,
   jumpRef,
   freezeOffscreen = true,
+  onItemClick,
+  isItemClickable = () => false,
+  isItemExpanded = () => false,
+  trackStickyPrompt = false,
+  onStickyPromptChange,
+  selectedIndex,
+  cursorNavRef,
+  setCursor,
+  scanElement,
+  setPositions,
 }: VirtualMessageListProps): React.ReactElement {
   // Stable per-message keys. Rebuild on prefix mismatch (compaction /
   // /clear / itemKey identity change), append on streaming growth.
@@ -156,6 +208,8 @@ export function VirtualMessageList({
     () => messages.slice(start, end),
     [messages, start, end],
   );
+  const rowElementsRef = useRef(new Map<string, DOMElement>());
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
 
   // Search highlight integration. Calls into Ink's screen-buffer overlay
   // so all visible matches across the transcript get inverted.
@@ -205,6 +259,33 @@ export function VirtualMessageList({
     [onSearchMatchesChange],
   );
 
+  const updateVisibleMatchPositions = useCallback(
+    (matches: readonly number[], ptr: number): void => {
+      if (!scanElement || !setPositions || matches.length === 0) {
+        setPositions?.(null);
+        return;
+      }
+      const currentMessageIndex = matches[ptr];
+      if (currentMessageIndex === undefined) {
+        setPositions(null);
+        return;
+      }
+      const key = keys[currentMessageIndex];
+      const element = key ? rowElementsRef.current.get(key) : undefined;
+      if (!element) {
+        setPositions(null);
+        return;
+      }
+      const positions = scanElement(element);
+      setPositions({
+        positions,
+        rowOffset: element.yogaNode?.getComputedTop?.() ?? 0,
+        currentIdx: 0,
+      });
+    },
+    [keys, scanElement, setPositions],
+  );
+
   const setSearchQuery = useCallback(
     (query: string): void => {
       lastQueryRef.current = query;
@@ -213,13 +294,21 @@ export function VirtualMessageList({
       matchIndicesRef.current = matches;
       matchPtrRef.current = 0;
       publishMatchPosition(matches, 0);
+      updateVisibleMatchPositions(matches, 0);
       if (matches.length > 0) {
         jumpToIndex(matches[0]!);
       } else if (searchAnchorRef.current >= 0) {
         scrollRef.current?.scrollTo(searchAnchorRef.current);
       }
     },
-    [highlight, jumpToIndex, publishMatchPosition, recomputeMatches, scrollRef],
+    [
+      highlight,
+      jumpToIndex,
+      publishMatchPosition,
+      recomputeMatches,
+      scrollRef,
+      updateVisibleMatchPositions,
+    ],
   );
 
   const setAnchor = useCallback((): void => {
@@ -229,7 +318,8 @@ export function VirtualMessageList({
 
   const disarmSearch = useCallback((): void => {
     highlight.setPositions(null);
-  }, [highlight]);
+    setPositions?.(null);
+  }, [highlight, setPositions]);
 
   // Index warming is cheap for AgenC's bounded transcripts. Yields once
   // so the caller can paint an "indexing…" status if it wants to.
@@ -252,8 +342,9 @@ export function VirtualMessageList({
     const ptr = (matchPtrRef.current + 1) % matches.length;
     matchPtrRef.current = ptr;
     publishMatchPosition(matches, ptr);
+    updateVisibleMatchPositions(matches, ptr);
     jumpToIndex(matches[ptr]!);
-  }, [jumpToIndex, publishMatchPosition]);
+  }, [jumpToIndex, publishMatchPosition, updateVisibleMatchPositions]);
 
   const prevMatch = useCallback((): void => {
     const matches = matchIndicesRef.current;
@@ -261,8 +352,72 @@ export function VirtualMessageList({
     const ptr = (matchPtrRef.current - 1 + matches.length) % matches.length;
     matchPtrRef.current = ptr;
     publishMatchPosition(matches, ptr);
+    updateVisibleMatchPositions(matches, ptr);
     jumpToIndex(matches[ptr]!);
-  }, [jumpToIndex, publishMatchPosition]);
+  }, [jumpToIndex, publishMatchPosition, updateVisibleMatchPositions]);
+
+  useImperativeHandle(
+    cursorNavRef,
+    (): MessageActionsNav => ({
+      moveBy(delta: number): void {
+        const current = selectedIndex ?? -1;
+        const next = Math.max(
+          0,
+          Math.min(messages.length - 1, current < 0 ? 0 : current + delta),
+        );
+        const message = messages[next];
+        if (message) {
+          setCursor?.({ index: next, id: message.id });
+          jumpToIndex(next);
+        }
+      },
+      moveTo(index: number): void {
+        const next = Math.max(0, Math.min(messages.length - 1, index));
+        const message = messages[next];
+        if (message) {
+          setCursor?.({ index: next, id: message.id });
+          jumpToIndex(next);
+        }
+      },
+      activate(): void {
+        const message =
+          selectedIndex !== undefined ? messages[selectedIndex] : undefined;
+        if (message && isItemClickable(message)) onItemClick?.(message);
+      },
+    }),
+    [
+      isItemClickable,
+      jumpToIndex,
+      messages,
+      onItemClick,
+      selectedIndex,
+      setCursor,
+    ],
+  );
+
+  React.useEffect(() => {
+    if (!trackStickyPrompt || !onStickyPromptChange) return;
+    for (let index = start; index < end; index += 1) {
+      const message = messages[index];
+      if (!message || message.kind !== "user") continue;
+      const text = extractSearchText(message).trim();
+      if (!text || text.startsWith("<")) continue;
+      onStickyPromptChange({
+        text: text.slice(0, 500),
+        scrollTo: () => jumpToIndex(index),
+      });
+      return;
+    }
+    onStickyPromptChange(null);
+  }, [
+    end,
+    extractSearchText,
+    jumpToIndex,
+    messages,
+    onStickyPromptChange,
+    start,
+    trackStickyPrompt,
+  ]);
 
   useImperativeHandle(
     jumpRef,
@@ -301,11 +456,33 @@ export function VirtualMessageList({
         const freezable =
           freezeOffscreen && (isItemFreezable?.(message) ?? true);
         const body = renderItem(message, virtualIndex);
+        const clickable = isItemClickable(message);
+        const expanded = isItemExpanded(message);
+        const selected = selectedIndex === virtualIndex;
         return (
           <Box
             key={key}
-            ref={window.measureRef(key)}
+            ref={(element) => {
+              window.measureRef(key)(element);
+              if (element) rowElementsRef.current.set(key, element);
+              else rowElementsRef.current.delete(key);
+            }}
             flexDirection="column"
+            backgroundColor={
+              expanded || selected
+                ? "ansi256(236)"
+                : hoveredKey === key && clickable
+                  ? "ansi256(234)"
+                  : undefined
+            }
+            paddingBottom={expanded ? 1 : undefined}
+            onClick={clickable ? () => onItemClick?.(message) : undefined}
+            onMouseEnter={clickable ? () => setHoveredKey(key) : undefined}
+            onMouseLeave={
+              clickable
+                ? () => setHoveredKey((current) => (current === key ? null : current))
+                : undefined
+            }
           >
             {freezable ? (
               <OffscreenFreeze

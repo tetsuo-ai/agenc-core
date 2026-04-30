@@ -207,7 +207,6 @@ function isZeroWidth(codePoint: number): boolean {
 // consonants). Bun.stringWidth=2 matches terminal cell allocation, which is what
 // we need for cursor positioning — the JS fallback's grapheme-cluster width of 1
 // would desync Ink's layout from the terminal.
-//
 // Bun.stringWidth is resolved once at module scope rather than checked on every
 // call — typeof guards deopt property access and this is a hot path (~100k calls/frame).
 const bunStringWidth =

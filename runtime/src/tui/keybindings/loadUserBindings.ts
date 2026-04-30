@@ -84,6 +84,7 @@ function cloneDefaultBindings(): Record<BindingContext, BindingMap> {
     chat: { ...DEFAULT_BINDINGS.chat },
     modal: { ...DEFAULT_BINDINGS.modal },
     transcript: { ...DEFAULT_BINDINGS.transcript },
+    Scroll: { ...DEFAULT_BINDINGS.Scroll },
   };
 }
 
@@ -238,6 +239,8 @@ function validationContextFor(context: BindingContext): string {
       return "Modal";
     case "transcript":
       return "Transcript";
+    case "Scroll":
+      return "Scroll";
   }
 }
 

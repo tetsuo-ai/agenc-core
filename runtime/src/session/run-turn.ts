@@ -1627,7 +1627,15 @@ async function* runTurnKernelInner(
       msg: {
         type: "user_message",
         payload: {
-          message: opts.displayUserMessage ?? userContentDisplayText(userContent),
+          message: opts.displayUserMessage ?? userContent,
+          displayText: opts.displayUserMessage ?? userContentDisplayText(userContent),
+          ...(Array.isArray(userContent)
+            ? {
+                images: userContent
+                  .filter((part) => part.type === "image_url")
+                  .map((part) => part.image_url.url),
+              }
+            : {}),
         },
       },
     });

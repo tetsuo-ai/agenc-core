@@ -203,7 +203,6 @@
     "runtime/tsconfig.json",
     "runtime/tsup.config.ts",
     "runtime/vitest.config.ts",
-    "package.json",
     "runtime/src/session/run-turn.ts",
     "runtime/src/phases/post-sample-recovery.ts",
     "runtime/src/commands/registry.ts",

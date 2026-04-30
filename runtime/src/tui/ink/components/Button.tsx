@@ -36,7 +36,7 @@ export type Props = Except<Styles, 'textWrap'> & {
    */
   children: ((state: ButtonState) => React.ReactNode) | React.ReactNode;
 };
-function Button(t0) {
+function Button(t0: any) {
   const $ = _c(30);
   let autoFocus;
   let children;

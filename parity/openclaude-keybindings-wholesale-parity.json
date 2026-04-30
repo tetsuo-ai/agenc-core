@@ -1,0 +1,50 @@
+{
+  "contractName": "openclaude-keybindings-wholesale-parity",
+  "scope": "AgenC keybindings ↔ openclaude src/keybindings/* partial wholesale port. The 3 OC-only files (KeybindingProviderSetup.tsx, template.ts, useKeybinding.ts) are 1:1 wholesale-copied into AgenC; the in-both files (defaultBindings.ts, KeybindingContext.tsx, loadUserBindings.ts, match.ts, parser.ts, reservedShortcuts.ts, resolver.ts, schema.ts, shortcutFormat.ts, validate.ts) define AgenC's binding vocabulary (chat:cycleMode, app:toggleTasks, etc., distinct from openclaude's app:toggleTodos vocabulary) — replacing them would break every AgenC consumer of those bindings. AgenC-only types.ts + useKeybindings.ts (plural-name aggregate hook) preserved.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/agenc-core-tui-ink-wholesale",
+  "transformationRules": [
+    "import-rewire: '../ink.js' → '../ink-public.js'; '../components/design-system/<m>' → '../design-system/<m>'; '../context/notifications.js' → '../state/NotificationsContext.js'",
+    "drop: openclaude analytics imports + logEvent calls",
+    "extension-normalization, env-vars, brand-scrub, react-compiler-args, ts-expect-error: same family",
+    "@ts-nocheck prepend: openclaude tsconfig is looser; AgenC strictness mismatches dodged via top-of-file directive"
+  ],
+  "rows": [
+    {
+      "id": "keybinding-provider-setup-port",
+      "source": "src/keybindings/KeybindingProviderSetup.tsx",
+      "target": "runtime/src/tui/keybindings/KeybindingProviderSetup.tsx",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform"],
+      "tests": ["runtime/src/tui/keybindings/KeybindingProviderSetup.test.tsx"],
+      "status": "required"
+    },
+    {
+      "id": "template-port",
+      "source": "src/keybindings/template.ts",
+      "target": "runtime/src/tui/keybindings/template.ts",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform"],
+      "tests": ["runtime/src/tui/keybindings/template.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "use-keybinding-singular-port",
+      "source": "src/keybindings/useKeybinding.ts",
+      "target": "runtime/src/tui/keybindings/useKeybinding.ts",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform; AgenC's prior aggregate useKeybindings.ts re-exports useKeybinding for back-compat with consumers using the openclaude per-action signature"],
+      "tests": ["runtime/src/tui/keybindings/useKeybinding.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "agenc-vocabulary-preserved",
+      "source": "src/keybindings/defaultBindings.ts",
+      "target": "runtime/src/tui/keybindings/defaultBindings.ts",
+      "requiredBehaviors": [
+        "AgenC keeps its existing defaultBindings + BindingCommand vocabulary (chat:cycleMode, app:toggleTasks, scroll:*, transcript:*, modal:*, history:*, selection:copy, app:toggleTranscript, app:redraw, app:exit, app:interrupt). openclaude's vocabulary is different (app:toggleTodos etc.) and would orphan AgenC's binding consumers if wholesale-replaced.",
+        "Same applies to KeybindingContext.tsx, loadUserBindings.ts, match.ts, parser.ts, reservedShortcuts.ts, resolver.ts, schema.ts, shortcutFormat.ts, validate.ts — kept AgenC-side; their behavior is locked separately by openclaude-tui-core-matrix",
+        "AgenC-only types.ts + useKeybindings.ts (plural aggregate hook) preserved"
+      ],
+      "tests": ["runtime/src/tui/keybindings/defaultBindings.test.ts"],
+      "status": "required"
+    }
+  ]
+}

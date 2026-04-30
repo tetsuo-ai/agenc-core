@@ -143,6 +143,12 @@ export interface Tool {
   /** I-9 per-tool timeout override (ms). Falls back to
    *  `DEFAULT_TOOL_TIMEOUT_MS=30_000` when absent. */
   readonly timeoutMs?: number;
+  /**
+   * Timeout ownership. `executor` means the generic tool executor
+   * enforces `timeoutMs`; `tool` means the tool handler has its own
+   * timeout semantics and the executor should only preserve aborts.
+   */
+  readonly timeoutBehavior?: "executor" | "tool";
   /** I-15 per-tool result size cap (bytes). Falls back to
    *  `DEFAULT_MAX_TOOL_RESULT_BYTES=400_000` when absent. */
   readonly maxResultBytes?: number;

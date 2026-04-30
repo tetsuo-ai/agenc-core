@@ -19,7 +19,7 @@
  * @module
  */
 
-import type { LLMMessage, LLMUsage } from "../llm/types.js";
+import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus } from "../agents/status.js";
 import type {
   CollaborationMode,
@@ -105,7 +105,8 @@ export interface AgentMessageEvent {
 }
 
 export interface UserMessageEvent {
-  readonly message: string;
+  readonly message: string | readonly LLMContentPart[];
+  readonly displayText?: string;
   readonly images?: ReadonlyArray<string>;
 }
 
@@ -916,7 +917,17 @@ export function llmMessageToEvent(message: LLMMessage): EventMsg | null {
   if (message.role === "user") {
     return {
       type: "user_message",
-      payload: { message: contentString },
+      payload: {
+        message: message.content,
+        displayText: contentString,
+        ...(Array.isArray(message.content)
+          ? {
+              images: message.content
+                .filter((part) => part.type === "image_url")
+                .map((part) => part.image_url.url),
+            }
+          : {}),
+      },
     };
   }
   if (message.role === "assistant") {

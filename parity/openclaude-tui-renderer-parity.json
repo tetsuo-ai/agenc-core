@@ -1,0 +1,109 @@
+{
+  "contractName": "openclaude-tui-renderer-parity",
+  "scope": "AgenC TUI renderer (runtime/src/tui/ink/) ↔ openclaude src/ink/ strict parity for the differential-repaint, reconciler, and frame-production layer. Removes AgenC-only divergences — the patches were rationalized in source comments but produce visible artifacts and reduced smoothness. yoga-layout is intentionally NOT in scope: both projects already use the same pure-TypeScript port (openclaude src/native-ts/yoga-layout vs AgenC runtime/src/tui/ink/vendored/yoga-layout), so there is no swap to perform.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/agenc-core-tui-openclaude-parity",
+  "rows": [
+    {
+      "id": "render-border-floor-yoga-sizes",
+      "source": "src/ink/render-border.ts",
+      "target": "runtime/src/tui/ink/render-border.ts",
+      "requiredBehaviors": [
+        "renderBorder reads node.yogaNode!.getComputedWidth() and getComputedHeight() through Math.floor (matches openclaude src/ink/render-border.ts:89-90)",
+        "no Math.round on Yoga computed sizes — round-then-render misaligns border vs child clear/fill rounding causing every-other-frame phantom rows/columns on bordered widgets",
+        "the AgenC-only comment claiming Math.floor 'leaves the right/bottom border one cell short' is removed: the comment was added in commit 880e07f8 'Revert merge local openclaude watch parity' and reflects a regression rationalization, not a real bug"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/openclaude-incremental-renderer-parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "log-update-no-frame-head-sgr-reset",
+      "source": "src/ink/log-update.ts",
+      "target": "runtime/src/tui/ink/log-update.ts",
+      "requiredBehaviors": [
+        "TTY frame diff does NOT prepend an unconditional { type: 'styleStr', str: '\\x1b[0m' } at the head — matches openclaude src/ink/log-update.ts which trusts stylePool.transition() to compute correct per-cell SGR transitions",
+        "every diff frame's first wire byte is governed by the same per-cell stylePool transition path as every subsequent cell — no head reset bypassing the optimizer's empty-transition skip",
+        "the AgenC-only commentary about 'random cells showing up styled' is removed alongside the SGR-0 push: the optimizer/stylePool path is the source of truth"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/log-update.test.ts",
+        "runtime/src/tui/ink/openclaude-incremental-renderer-parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ink-no-force-full-repaint-next-frame",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "no forceFullRepaintNextFrame field on the Ink class — matches openclaude src/ink/ink.tsx (only prevFrameContaminated and didLayoutShift drive full-damage diffs)",
+        "resize handler does NOT set a forced-full-repaint sentinel; it relies on the same prevFrameContaminated/didLayoutShift propagation openclaude uses",
+        "log-update render() signature does not carry a forceFullRepaint argument — full-damage decisions are owned inside log-update from screen.damage flags",
+        "no double full-screen repaint on layout shift: the post-shift frame is incremental in both repos"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/openclaude-incremental-renderer-parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ink-no-mid-pass-resize-restart",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "onRender does NOT snapshot terminal dimensions, drop a finished diff, and reschedule via microtask when the terminal resizes mid-pass — matches openclaude which trusts the throttled scheduler",
+        "no AgenC I-66 mid-pass-resize-restart code path: the next SIGWINCH naturally schedules a fresh render with the updated dimensions",
+        "render-node-to-output.i66.test.ts is removed alongside the restart code — that test defends the removed AgenC behavior"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/lifecycle-regressions.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ink-selection-change-immediate-notify",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "notifySelectionChange calls onRender() synchronously on every selection update — matches openclaude src/ink/ink.tsx: no scheduled-mode parameter, no sameSelectionEndpoints/sameSelectionSpan endpoint-equality short-circuit",
+        "selection drag highlights repaint on the same tick as the input event — no leading-edge frame interval latency",
+        "tui-stress-regressions.test.tsx selection-drag tests are updated to reflect the immediate-notify path (drag coalescing is intentionally removed for parity)"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/tui-stress-regressions.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ink-reassert-terminal-modes-kitty-keyboard",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "reassertTerminalModes pops-and-pushes the Kitty keyboard stack (DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS) when supportsExtendedKeys() — matches openclaude src/ink/ink.tsx:933-939",
+        "the pop-before-push pattern keeps Kitty stack depth at 1 instead of accumulating on each call",
+        "guard runs BEFORE the altScreenActive early-return so non-alt-screen sessions still reassert keyboard modes",
+        "kitty reassert is gated by isPaused and isTTY checks in the same order openclaude uses"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/lifecycle-regressions.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ink-no-input-activity-callback-prop-drift",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "App component receives the same prop set openclaude passes — no AgenC-only onInputActivity prop threaded through ink.tsx tree → App",
+        "if AgenC needs an input-activity hook, it lives outside the React render path so memoized parents are not invalidated by an extra prop",
+        "root.ts onInputActivity field removed alongside ink.tsx tree wiring"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/tui-stress-regressions.test.tsx"
+      ],
+      "status": "required"
+    }
+  ]
+}

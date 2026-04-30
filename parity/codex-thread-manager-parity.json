@@ -1,0 +1,91 @@
+{
+  "contractName": "codex-thread-manager-parity",
+  "scope": "AgenC agents/thread-manager.ts ↔ codex codex-rs/core/src/thread_manager.rs strict parity",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
+  "rows": [
+    {
+      "id": "thread-manager-state",
+      "source": "codex-rs/core/src/thread_manager.rs",
+      "target": "runtime/src/agents/thread-manager.ts",
+      "requiredBehaviors": [
+        "ThreadManager holds the live registry of managed threads keyed by ThreadId",
+        "tracks rootSession and routes session-scoped operations through it",
+        "exposes registerSpawnedThread / removeManagedThread for AgentControl spawn/release callbacks",
+        "owns the unbounded shutdown queue used by shutdownAll"
+      ],
+      "tests": [
+        "runtime/src/agents/thread-manager.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "managed-thread-shape",
+      "source": "codex-rs/core/src/thread_manager.rs",
+      "target": "runtime/src/agents/thread-manager.ts",
+      "requiredBehaviors": [
+        "ManagedThread interface exposes the Session handle, status BehaviorSubject, mailbox handles, and cancellation surface used by AgentControl",
+        "AgenCThread implements ManagedThread for the live runtime; tests can supply their own implementation"
+      ],
+      "tests": [
+        "runtime/src/agents/thread-manager.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "register-and-route",
+      "source": "codex-rs/core/src/thread_manager.rs",
+      "target": "runtime/src/agents/thread-manager.ts",
+      "requiredBehaviors": [
+        "registerSpawnedThread admits a new ManagedThread under its ThreadId",
+        "ThreadManagerOp dispatch matches codex's Op set: SendInput, AppendMessage, Interrupt, Shutdown, Status",
+        "unmanaged threadId surfaces ThreadNotManagedError"
+      ],
+      "tests": [
+        "runtime/src/agents/thread-manager.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "thread-removal-and-shutdown",
+      "source": "codex-rs/core/src/thread_manager.rs",
+      "target": "runtime/src/agents/thread-manager.ts",
+      "requiredBehaviors": [
+        "removeManagedThread closes session lifecycle in correct order (shutdown -> close mailboxes -> remove from registry)",
+        "shutdownAll iterates current managed set with a bounded timeout per thread",
+        "ThreadShutdownReport returned summarizes per-thread outcome; matches codex's structured shutdown report"
+      ],
+      "tests": [
+        "runtime/src/agents/thread-manager.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "thread-created-listener",
+      "source": "codex-rs/core/src/thread_manager.rs",
+      "target": "runtime/src/agents/thread-manager.ts",
+      "requiredBehaviors": [
+        "subscribers can register a ThreadCreatedListener invoked synchronously after a new ManagedThread is registered",
+        "matches codex's hook surface for runtime observers of new spawns",
+        "unsubscribe handle returned"
+      ],
+      "tests": [
+        "runtime/src/agents/thread-manager.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/thread-manager.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
+    }
+  ]
+}

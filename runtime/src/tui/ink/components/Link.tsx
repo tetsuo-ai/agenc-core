@@ -8,7 +8,7 @@ export type Props = {
   readonly url: string;
   readonly fallback?: ReactNode;
 };
-export default function Link(t0) {
+export default function Link(t0: any) {
   const $ = _c(5);
   const {
     children,

@@ -230,7 +230,7 @@ type BaseTextStyleProps = {
 };
 
 // Wrapper component that handles bold/dim mutual exclusivity for Text
-function StyledText(t0) {
+function StyledText(t0: any) {
   const $ = _c(14);
   let bold;
   let children;

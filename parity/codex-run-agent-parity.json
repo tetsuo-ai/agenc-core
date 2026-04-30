@@ -1,0 +1,177 @@
+{
+  "contractName": "codex-run-agent-parity",
+  "scope": "AgenC agents/run-agent.ts ↔ codex codex-rs/core/src/agent/control.rs spawn_subagent + codex-rs/core/src/codex.rs run-turn loop, locked for the codex-aligned subset only. AgenC's run-agent.ts is broader than any single codex file: it bundles MCP init, child Session bootstrap, run-turn driving, and parent mailbox relay into one orchestrator. The behaviors locked here are the codex-aligned slices (cwd injection, child config building, status emission via agentStatusFromEvent, mailbox direction routing, run-turn loop termination on isFinal). The OpenClaude-shaped progress/iterator surface and AgenC-only THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES exclusion set are intentional adaptations called out explicitly.",
+  "sourceRoot": "../../codex",
+  "targetRoot": "..",
+  "rows": [
+    {
+      "id": "child-cwd-inject-from-worktree",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "injectChildToolArgs sets cwd from opts.worktree.path when toolName is 'system.bash' or 'exec_command' AND caller did not pass an explicit cwd string",
+        "matches codex spawn_subagent's worktree-cwd injection: when a subagent is spawned with an isolated worktree, codex's child config inherits that worktree path as the working directory for shell-shaped tools",
+        "AgenC covers both tool names because the codex-v2 shell tool was renamed from system.bash to exec_command (Phase A.1); both must continue to inherit cwd until system.bash is fully retired",
+        "write_stdin and other non-shell tools are intentionally NOT cwd-injected (write_stdin has no cwd arg in unified-exec/types.ts)"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "build-child-session-from-parent",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "buildChildSession constructs a fresh Session with the parent's provider/model identity, the role-resolved AgentRoleConfig, and the parent's MCP/permissions wiring",
+        "matches codex spawn_subagent's child Codex bootstrap: child shares parent's session_source/provider but gets its own conversation/rollout state",
+        "buildChildConfig overrides cwd to worktree.path when present, then base.cwd otherwise (codex parity: child config takes the worktree as its working directory)",
+        "buildChildModelInfo carries reasoning effort + model name through to the child's first turn so role-supplied reasoning_effort survives"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "child-rollout-store-on-parent-path",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "createChildRolloutStore writes the child's rollout under the parent rollout's directory, namespaced by child threadId",
+        "matches codex spawn_subagent at agent/control.rs:383-385 reading parent rollout via codex_home + thread-id resolution; AgenC writes child rollouts at the same directory level so a sibling 'find_thread_path_by_id_str' style lookup works",
+        "rollout is opt-in: when parent has no rolloutStore the child starts with an in-memory store (codex equivalent: when parent's RolloutRecorder is absent, fork falls back to in-memory parentMessages — fork-context.ts I-36 row covers this)"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "mcp-init-timeout-30s-cancellable",
+      "source": "codex-rs/core/src/session/mcp.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "initMcpForAgent runs with MCP_INIT_TIMEOUT_MS=30_000 by default (I-50)",
+        "an abort signal cancels the init wait so a parent shutdown does not block on a hung MCP server",
+        "matches codex's session-bootstrap timeout on MCP server discovery: codex bounds initial connect attempts so a misbehaving MCP server cannot deadlock the run-turn loop",
+        "init failures emit a warning via emitWarning rather than throwing; the child still starts, with a degraded MCP surface"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "status-emission-via-agentstatusfromevent",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "run-turn loop emits AgentStatus updates by feeding session events through agentStatusFromEvent before pushing them onto live.status",
+        "matches codex's pattern of mapping turn_started/turn_complete/turn_aborted/error events to AgentStatus variants at the agent boundary (locked separately by codex-status-parity#agent-status-from-event)",
+        "no AgenC-only status transitions are emitted from this file: every variant pushed onto live.status comes from agentStatusFromEvent or one of its named constructors",
+        "terminal status flips upInbox into the agent_exited sentinel emit window"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "parent-mailbox-relay-up-direction",
+      "source": "codex-rs/core/src/agent/mailbox.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "relayToParentMailbox sends every child→parent communication with direction: 'up'",
+        "drainChildMailbox processes inbound parent→child messages with direction: 'down' and translates them into child-side input ops",
+        "matches codex mailbox.rs author/recipient routing at codex-rs/core/src/agent/mailbox.rs (the bidirectional direction tag is AgenC's adaptation; locked separately by codex-mailbox-parity#inter-agent-communication-shape)",
+        "MailboxClosedError on a parent send is caught and surfaced as an emitWarning so a closed parent mailbox does not abort the child's turn"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "subagent-notification-format",
+      "source": "codex-rs/core/src/agent/status.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "sendSubagentNotificationToParent emits the formatted status update via formatSubagentNotification",
+        "matches the formatSubagentNotification source-of-truth (locked by codex-status-parity)",
+        "called only on terminal transitions so the parent's run-turn loop sees one closing event per child"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "thread-spawn-disabled-tools-resolver",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "resolveThreadSpawnDisabledTools returns the set of tool names children must NOT see",
+        "AgenC-specific guard: blocks AgenC-only tools (TaskCreate, SendUserMessage, EnterPlanMode and similar) that codex has no equivalent for — documented strict-parity exception called out in the closing section of the codex-v2 plan",
+        "this exception is required for runtime correctness: codex has no analogous constraint only because codex has no analogous tools",
+        "buildFilteredRegistry then strips disabled tools from the child registry and wraps remaining tools via wrapToolForChild so they pick up the cwd injection above"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "max-agent-depth-cap-from-config",
+      "source": "codex-rs/core/src/agent/control.rs",
+      "target": "runtime/src/agents/run-agent.ts",
+      "requiredBehaviors": [
+        "resolveSessionMaxAgentDepth reads max-depth from session config and falls back to a positive integer default",
+        "matches codex's depth cap on agent spawn (codex spawn_subagent rejects spawns past max_agent_depth; AgenC covers the same intent at the run-agent boundary)",
+        "depth is enforced before child Session construction so a too-deep child is rejected before bootstrap"
+      ],
+      "tests": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "approvedExceptions": [
+    {
+      "id": "typescript-top-type-and-not-recognized-agent-terms",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agents/run-agent.test.ts",
+        "runtime/src/agents/run-agent.ts"
+      ],
+      "reason": "Allows TypeScript top-type annotations and Codex not-recognized error assertions; behavior rows remain required."
+    },
+    {
+      "id": "codex-followup-task-term",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bfollow-?up\\b",
+      "files": [
+        "runtime/src/agents/run-agent.test.ts",
+        "runtime/src/agents/run-agent.ts"
+      ],
+      "reason": "Allows Codex followup_task identifiers and child continuation-turn assertions; not completion-deferral language."
+    },
+    {
+      "id": "access-control-denied-term",
+      "type": "forbidden-language",
+      "approvedBy": "codex-v2-agent-parity-contract",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "pattern": "\\bblocked\\b",
+      "files": [
+        "runtime/src/agents/run-agent.test.ts"
+      ],
+      "reason": "Allows access-control assertions that a tool remains denied; not work-stoppage language."
+    }
+  ]
+}
