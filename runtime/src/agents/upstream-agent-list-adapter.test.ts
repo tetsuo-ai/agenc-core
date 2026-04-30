@@ -1,0 +1,73 @@
+import { describe, it, expect } from "vitest";
+
+import { listAgentRoles } from "./role.js";
+import { loadUpstreamAgentList } from "../agenc/adapters/upstream-agent-list.js";
+
+describe("loadUpstreamAgentList (TUI agent picker wiring)", () => {
+  it("returns one entry per registered agent role", () => {
+    const roleCount = listAgentRoles().length;
+    const list = loadUpstreamAgentList();
+    expect(list.length).toBe(roleCount);
+    expect(list.length).toBeGreaterThan(0);
+  });
+
+  it("every entry is shaped as a BuiltInAgentDefinition", () => {
+    const list = loadUpstreamAgentList();
+    for (const def of list) {
+      expect(typeof def.agentType).toBe("string");
+      expect(def.agentType.length).toBeGreaterThan(0);
+      expect(typeof def.whenToUse).toBe("string");
+      expect(def.whenToUse.length).toBeGreaterThan(0);
+      expect((def as { source: string }).source).toBe("built-in");
+      expect((def as { baseDir: string }).baseDir).toBe("built-in");
+      expect(typeof (def as { getSystemPrompt: () => string }).getSystemPrompt).toBe(
+        "function",
+      );
+    }
+  });
+
+  it("agentType matches the AgentRole.name", () => {
+    const roleNames = listAgentRoles().map((r) => r.name);
+    const got = loadUpstreamAgentList().map((d) => d.agentType);
+    expect(got).toEqual(roleNames);
+  });
+
+  it("whenToUse falls back to role name when description is absent", () => {
+    const list = loadUpstreamAgentList();
+    const roles = listAgentRoles();
+    for (const role of roles) {
+      const projected = list.find((d) => d.agentType === role.name);
+      expect(projected).toBeDefined();
+      const expected = role.config.description ?? role.name;
+      expect(projected?.whenToUse).toBe(expected);
+    }
+  });
+
+  it("tools are populated only when the role has an allowlist", () => {
+    const list = loadUpstreamAgentList();
+    const roles = listAgentRoles();
+    for (const role of roles) {
+      const projected = list.find((d) => d.agentType === role.name);
+      expect(projected).toBeDefined();
+      if (role.config.allowlist && role.config.allowlist.length > 0) {
+        expect(projected?.tools).toEqual([...role.config.allowlist]);
+      } else {
+        expect(projected?.tools).toBeUndefined();
+      }
+    }
+  });
+
+  it("getSystemPrompt returns the role's systemPrompt or empty string", () => {
+    const list = loadUpstreamAgentList();
+    const roles = listAgentRoles();
+    for (const role of roles) {
+      const projected = list.find((d) => d.agentType === role.name);
+      expect(projected).toBeDefined();
+      const expected = role.config.systemPrompt ?? "";
+      const builtIn = projected as { getSystemPrompt: (params: unknown) => string };
+      expect(builtIn.getSystemPrompt({ toolUseContext: { options: {} } })).toBe(
+        expected,
+      );
+    }
+  });
+});
