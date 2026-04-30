@@ -4,6 +4,14 @@
  */
 
 let graphemeSegmenter: Intl.Segmenter | null = null
+let wordSegmenter: Intl.Segmenter | null = null
+
+export function getWordSegmenter(): Intl.Segmenter {
+  if (!wordSegmenter) {
+    wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' })
+  }
+  return wordSegmenter
+}
 
 export function getGraphemeSegmenter(): Intl.Segmenter {
   if (!graphemeSegmenter) {

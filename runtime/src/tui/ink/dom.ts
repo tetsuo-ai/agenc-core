@@ -360,7 +360,6 @@ const measureTextNode = function (
   // For text with embedded newlines (pre-wrapped content), avoid re-wrapping
   // at measurement width when layout is asking for intrinsic size (Undefined mode).
   // This prevents height inflation during min/max size checks.
-  //
   // However, when layout provides an actual constraint (Exactly or AtMost mode),
   // we must respect it and measure at that width. Otherwise, if the actual
   // rendering width is smaller than the natural width, the text will wrap to

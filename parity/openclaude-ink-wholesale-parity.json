@@ -1,0 +1,241 @@
+{
+  "contractName": "openclaude-ink-wholesale-parity",
+  "scope": "AgenC runtime/src/tui/ink/ ↔ openclaude src/ink/ wholesale-copy parity. Every common file is openclaude byte-equivalent after the transformation rules below; every AgenC-only file has an explicit row justifying why it exists. No other deviations are allowed; the gate fails on any unjustified drift.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/agenc-core-tui-ink-wholesale",
+  "transformationRules": [
+    "import-rewire: 'src/bootstrap/<m>.js' → './vendored/<m>.js' (top) or '../vendored/<m>.js' (subdir)",
+    "import-rewire: 'src/utils/<m>.js' / 'src/native-ts/yoga-layout/<m>.js' → vendored/* analogous",
+    "import-rewire: '../utils/<m>.js' (top) / '../../utils/<m>.js' (subdir) → vendored/* analogous, only for modules listed in vendored/ (debug, earlyInput, env, envUtils, execFileNoThrow, fullscreen, intl, log, semver, sliceAnsi, state, tempfile)",
+    "import-rewire: '../bootstrap/<m>.js' / '../../bootstrap/<m>.js' → vendored/* analogous",
+    "extension-normalization: relative imports with .ts / .tsx → .js (AgenC ESM convention); .d.ts preserved",
+    "test-framework: 'bun:test' → 'vitest'",
+    "env-var-rebrand: CLAUDE_CODE_<X> → AGENC_<X>; OPENCLAUDE_<X> → AGENC_<X>",
+    "brand-scrub: 'Claude Code' / 'Open Claude' / 'OpenClaude' → 'AgenC'; 'claude' (word, not before -) → 'agenc'; '~/.claude/' → '~/.agenc/'; 'openclaude-clipboard' → 'agenc-clipboard'; internal Anthropic Slack URLs → '(internal reference)'; 'rgb(215,119,87) (AgenC)' → 'rgb(215,119,87)'",
+    "react-compiler-args: 'function <Cap>(<Cap>(t0)' → '(t0: any)' for AgenC's noImplicitAny",
+    "ts-expect-error-relaxation: '@ts-expect-error' → '@ts-ignore' (openclaude's tsconfig is looser; AgenC's strict checks make many directives 'unused')",
+    "logForDebugging-import: when a file uses logForDebugging without importing it (openclaude bug pattern), AgenC adds the import from vendored/debug.js"
+  ],
+  "rows": [
+    {
+      "id": "vendored-shims",
+      "source": "src/utils/debug.ts",
+      "target": "runtime/src/tui/ink/vendored/debug.ts",
+      "requiredBehaviors": [
+        "AgenC vendored/* directory provides shims for openclaude's outside-tree imports (src/bootstrap/state, src/utils/{debug,earlyInput,env,envUtils,execFileNoThrow,fullscreen,intl,log,semver,sliceAnsi,tempfile}, src/native-ts/yoga-layout)",
+        "vendored/yoga-layout/{enums,index}.ts is the same pure-TypeScript Yoga port openclaude itself ships at src/native-ts/yoga-layout (both projects use this port; no WASM swap)",
+        "every transformed openclaude-side import targeting one of those modules resolves to runtime/src/tui/ink/vendored/<module>.js",
+        "vendored/* files are AgenC-side build glue and intentionally do NOT mirror an openclaude src/ink/ file"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/layout/yoga-layout-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "ambient-d-ts-preserved",
+      "source": "src/utils/debug.ts",
+      "target": "runtime/src/tui/ink/ambient.d.ts",
+      "requiredBehaviors": [
+        "AgenC ambient.d.ts contains TS ambient declarations for the vendored runtime deps (react-reconciler, bidi-js, Bun) that openclaude resolves via @types or its own bundler config",
+        "this file is intentionally AgenC-only with no openclaude equivalent; required by AgenC's stricter typecheck",
+        "compiler-only — not imported at runtime"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "global-d-ts-preserved",
+      "source": "src/utils/debug.ts",
+      "target": "runtime/src/tui/ink/global.d.ts",
+      "requiredBehaviors": [
+        "AgenC global.d.ts declares ink-link, ink-progress, ink-raw-ansi intrinsic JSX elements that openclaude's slimmer global.d.ts omits — required by Link.tsx, RawAnsi.tsx, and any caller above ink/ that renders these elements",
+        "AgenC also declares the React 19 module form (declare module 'react' { namespace JSX { ... } }) so jsx-runtime resolves intrinsics on both legacy and React 19 paths",
+        "wholesale-port leaves this file untouched (KEEP_AGENC_VERSION list in /tmp/wholesale-port.mjs)"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "missing-upstream-event-types",
+      "source": "src/ink/events/event-handlers.ts",
+      "target": "runtime/src/tui/ink/events/paste-event.ts",
+      "requiredBehaviors": [
+        "openclaude src/ink/events/event-handlers.ts imports type { PasteEvent } from './paste-event.js' and type { ResizeEvent } from './resize-event.js' but openclaude does NOT ship those files in src/ink/events/",
+        "AgenC supplies events/paste-event.ts and events/resize-event.ts as the missing type definitions so the (otherwise wholesale-copied) event-handlers.ts compiles",
+        "this is missing-upstream-file adaptation, not AgenC divergence — events/resize-event.ts has the same justification (locked by row missing-upstream-event-types-resize)"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "missing-upstream-event-types-resize",
+      "source": "src/ink/events/event-handlers.ts",
+      "target": "runtime/src/tui/ink/events/resize-event.ts",
+      "requiredBehaviors": [
+        "AgenC supplies events/resize-event.ts as the missing ResizeEvent type referenced by openclaude's wholesale-copied event-handlers.ts (paired with paste-event.ts; see missing-upstream-event-types row)"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "missing-upstream-termio-types",
+      "source": "src/ink/termio/parser.ts",
+      "target": "runtime/src/tui/ink/termio/types.ts",
+      "requiredBehaviors": [
+        "openclaude src/ink/termio/{parser,sgr,esc,osc}.ts import './types.js' and './tokenize.js' but openclaude does NOT ship those files",
+        "AgenC supplies termio/types.ts (shared termio enums/interfaces) and termio/tokenize.ts (SGR/parameter tokenization helpers) so the (wholesale-copied) parser/sgr/esc/osc compile",
+        "missing-upstream-file adaptation; locks the AgenC-supplied type and tokenize modules"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/termio/osc.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "missing-upstream-cursor-type",
+      "source": "src/ink/frame.ts",
+      "target": "runtime/src/tui/ink/cursor.ts",
+      "requiredBehaviors": [
+        "openclaude src/ink/frame.ts imports type { Cursor } from './cursor.js' but openclaude does NOT ship that file",
+        "AgenC supplies cursor.ts as the missing Cursor type definition; module is type-only and emits no runtime code",
+        "missing-upstream-file adaptation"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "missing-upstream-stdout-context",
+      "source": "src/ink/components/App.tsx",
+      "target": "runtime/src/tui/ink/components/StdoutContext.ts",
+      "requiredBehaviors": [
+        "AgenC StdoutContext provides the React context object the wholesale-ported components consume to read the active stdout stream — needed by AgenC consumers above ink/ (transcript, cockpit) that mount Ink-rendered subtrees and need to inject a non-process.stdout writer",
+        "if openclaude's components/App.tsx imports a stdout context it lives outside src/ink/components/; AgenC pulls the equivalent into ink/components/ to keep the renderer self-contained",
+        "AgenC-extension adaptation; verified: callers exist in runtime/src/tui/cockpit/ and runtime/src/tui/transcript/"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "console-patch-extracted",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/console-patch.ts",
+      "requiredBehaviors": [
+        "openclaude inlines patchConsoleForInk + patchStderrForInk inside ink.tsx (~lines 1601-1675); AgenC extracts them into a sibling console-patch.ts module that ink.tsx imports",
+        "the extracted module is byte-equivalent to openclaude's inline implementation (after transformation rules) — code is identical, only the file boundary differs",
+        "extraction is documented refactor; no behavioral change",
+        "alternative: fold the logic back inline and delete console-patch.ts — open-question for future cleanup, not required here"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/log-update.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agenc-only-test-lifecycle-regressions",
+      "source": "src/ink/reconciler.test.ts",
+      "target": "runtime/src/tui/ink/lifecycle-regressions.test.tsx",
+      "requiredBehaviors": [
+        "AgenC-only test defending four real Ink-renderer concerns that survive the wholesale port: declared-cursor cleared on unmount, stale terminal-focus reset before fresh mount, alt-screen scroll mode bracketing on alt-screen lifecycle, raw/input mode reassert on SIGCONT",
+        "tests are AgenC-extension safety nets sitting on top of openclaude's test set; openclaude does not have an equivalent file"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/lifecycle-regressions.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agenc-only-test-stress-regressions",
+      "source": "src/ink/reconciler.test.ts",
+      "target": "runtime/src/tui/ink/tui-stress-regressions.test.tsx",
+      "requiredBehaviors": [
+        "AgenC-only stress test defending long-transcript-history stability under combined streaming+overlay+resize+selection+scroll load",
+        "the original AgenC-only selection-drag-coalescing and onInputActivity sub-tests were already removed (defended now-removed AgenC-only behavior); the file's remaining tests cover behaviors that survive the wholesale port"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/tui-stress-regressions.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agenc-only-test-incremental-renderer-parity",
+      "source": "src/ink/log-update.test.ts",
+      "target": "runtime/src/tui/ink/openclaude-incremental-renderer-parity.test.tsx",
+      "requiredBehaviors": [
+        "AgenC-only test guarding the incremental-diff path against accidental full-reset emission — locks behavior of the openclaude renderer that AgenC depends on, expressed at the AgenC integration boundary",
+        "openclaude has no equivalent test file at this scope"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/openclaude-incremental-renderer-parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agenc-only-test-i70",
+      "source": "src/ink/reconciler.test.ts",
+      "target": "runtime/src/tui/ink/ink.i70.test.ts",
+      "requiredBehaviors": [
+        "AgenC-only test defending the I-70 invariant the file is named after",
+        "openclaude does not have an equivalent file; the test sits at the AgenC integration boundary"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/ink.i70.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agenc-only-test-yoga-layout-contract",
+      "source": "src/native-ts/yoga-layout/index.ts",
+      "target": "runtime/src/tui/ink/layout/yoga-layout-contract.test.ts",
+      "requiredBehaviors": [
+        "AgenC-only test exercising the vendored yoga-layout port (runtime/src/tui/ink/vendored/yoga-layout/) at the contract level — locks layout primitives the renderer depends on",
+        "openclaude does not ship an equivalent test, but its yoga-port is the same source-of-truth and benefits indirectly"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/layout/yoga-layout-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "type-narrowing-strictness-fixes",
+      "source": "src/ink/ink.tsx",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "openclaude tsconfig is looser than AgenC's. Four discrete strictness mismatches require explicit fixes after the wholesale copy: (a) Button.tsx useRef(null) → useRef<ReturnType<typeof setTimeout>|null>(null), (b) ink.tsx 'production' === 'development' → ('production' as string) === 'development' to silence TS2367, (c) ink.tsx stderr-intercept callback signature widened from Error|undefined to Error|null|undefined to match Node.js types, (d) render-node-to-output.ts (candidate.nodeName as string) !== '#text' to silence TS2367",
+        "each fix is a pure type annotation; no runtime behavior change",
+        "fixes are scripted in /tmp/wholesale-port.mjs (Button.tsx useRef pattern) or applied by hand (the three remaining)"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "wholesale-port-script-source-of-truth",
+      "source": "src/utils/debug.ts",
+      "target": "runtime/src/tui/ink/ink.tsx",
+      "requiredBehaviors": [
+        "/tmp/wholesale-port.mjs is the canonical port script that applies the transformation rules above",
+        "running the script against openclaude src/ink/ and writing into runtime/src/tui/ink/ must be IDEMPOTENT — re-running on already-ported code produces the same result (no double-rewriting)",
+        "the script's KEEP_AGENC_VERSION list documents files the script does not overwrite (currently global.d.ts only)",
+        "the matrix gate (scripts/check-openclaude-ink-wholesale-parity.mjs) verifies post-transform parity between openclaude and AgenC for every file not on KEEP_AGENC_VERSION list"
+      ],
+      "tests": [
+        "runtime/src/tui/ink/reconciler.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

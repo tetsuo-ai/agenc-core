@@ -35,7 +35,7 @@ import {
 } from "../keybindings/KeybindingContext.js";
 import { getDisplayForCommand } from "../keybindings/shortcutFormat.js";
 import type { PendingPermissionRequest } from "../../permissions/context.js";
-import { MarkdownBlock } from "../transcript/MarkdownBlock.js";
+import { Markdown } from "../components/Markdown.js";
 import {
   permissionComponentForTool,
   permissionSurfaceForTool,
@@ -483,7 +483,7 @@ export const PlanApprovalRequest: React.FC<{ args: unknown }> = ({ args }) => {
         </Box>
       ) : null}
       <Box borderStyle="round" paddingX={1} flexDirection="column" marginTop={1}>
-        <MarkdownBlock content={preview} isComplete />
+        <Markdown>{preview}</Markdown>
       </Box>
     </Box>
   );

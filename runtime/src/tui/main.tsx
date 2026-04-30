@@ -31,11 +31,6 @@ import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
 } from "./ink/termio/csi.js";
-import {
-  createTuiFrameMonitor,
-  frameMonitorOptionsFromEnv,
-} from "./diagnostics/frame-monitor.js";
-
 import { App, type AppProps } from "./App.js";
 import type { Event } from "../session/event-log.js";
 import type { ConfigStoreLike, SessionLike } from "./state/AppState.js";
@@ -314,9 +309,6 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   stdin.once("error", onStdinLoss);
 
   let instance: Awaited<ReturnType<typeof renderInk>>;
-  const frameMonitor = createTuiFrameMonitor(
-    frameMonitorOptionsFromEnv(process.env),
-  );
   try {
     instance = await renderInk(
       <App
@@ -334,11 +326,6 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         stderr,
         patchConsole: true,
         exitOnCtrlC: false,
-        ...(frameMonitor
-          ? {
-              onFrame: frameMonitor.onFrame,
-            }
-          : {}),
       },
     );
   } catch (err) {

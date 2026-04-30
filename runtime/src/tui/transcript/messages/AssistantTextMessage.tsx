@@ -23,7 +23,7 @@ import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../../theme.js";
-import { MarkdownBlock } from "../MarkdownBlock.js";
+import { Markdown } from "../../components/Markdown.js";
 import { StreamingMessage } from "../StreamingMessage.js";
 
 const BLACK_CIRCLE = process.platform === "darwin" ? "⏺" : "●";
@@ -64,7 +64,7 @@ export function AssistantTextMessage({
 
   const body = isComplete ? (
     <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-      <MarkdownBlock content={text} isComplete />
+      <Markdown>{text}</Markdown>
     </Box>
   ) : (
     <Box flexDirection="column" flexGrow={1} flexShrink={1}>

@@ -8,7 +8,7 @@ import * as React from 'react'
 
 import { Box, Text } from '../../ink-public.js'
 
-import MarkdownBlock from '../MarkdownBlock.js'
+import { Markdown } from '../../components/Markdown.js'
 
 export interface UserPlanMessageProps {
   readonly addMargin: boolean
@@ -32,7 +32,7 @@ export function UserPlanMessage({
           Plan to implement
         </Text>
       </Box>
-      <MarkdownBlock content={planContent} isComplete />
+      <Markdown>{planContent}</Markdown>
     </Box>
   )
 }

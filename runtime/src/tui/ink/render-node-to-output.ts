@@ -544,7 +544,6 @@ function renderNodeToOutput(
     // write to the same row; if the sibling's content is shorter, this node's
     // tail chars ghost (e.g. "false" + "true" = "truee"). The clear above
     // already handled the visible→squeezed transition.
-    //
     // The sibling-overlap check is load-bearing: Yoga's pixel-grid rounding
     // can give a box h=0 while still leaving a row for it (next sibling at
     // y+1, not y). HelpV2's third shortcuts column hits this — skipping
@@ -653,7 +652,6 @@ function renderNodeToOutput(
       // clean (the op is emitted on both the dirty-render path here
       // AND on the blit fast-path at line ~235 since blitRegion copies
       // the noSelect bitmap alongside cells).
-      //
       // 'from-left-edge' extends the exclusion from col 0 so any
       // upstream indentation (tool prefix, tree lines) is covered too
       // — a multi-row drag over a diff gutter shouldn't pick up the
@@ -906,14 +904,12 @@ function renderNodeToOutput(
           // that spans edge+stable still renders but stable cells are
           // clipped, preserving the blit. Avoids re-rendering every visible
           // child (expensive for long syntax-highlighted transcripts).
-          //
           // When content.dirty (e.g. streaming text at the bottom of the
           // scroll), we still use the fast path — the dirty child is almost
           // always in the edge rows (the bottom, where new content appears).
           // After edge rendering, any dirty children in stable rows are
           // re-rendered in a second pass to avoid showing stale blitted
           // content.
-          //
           // Guard: the fast path only handles pure scroll or bottom-append.
           // Child removal/insertion changes the content height in a way that
           // doesn't match the scroll delta — fall back to the full path so
@@ -1128,11 +1124,9 @@ function renderNodeToOutput(
             }
           } else {
             // Full path. Two sub-cases:
-            //
             // Scrolled without a usable hint (big jump, container moved):
             // child positions in prevScreen are stale. Clear the viewport
             // and disable blit so children don't restore shifted content.
-            //
             // No scroll (spinner tick, content edit): child positions in
             // prevScreen are still valid. Skip the viewport clear and pass
             // prevScreen so unchanged children blit. Dirty children already
@@ -1257,16 +1251,13 @@ function renderNodeToOutput(
 // passing prevScreen only benefits its subtree.
 // For removed children we don't know their original position, so
 // conservatively disable blit for all.
-//
 // Clipped children (overflow hidden/scroll on both axes) cannot overflow
 // onto later siblings — their content is confined to their layout bounds.
 // Skip the contamination guard for them so later siblings can still blit.
 // Without this, a spinner inside a ScrollBox dirties the wrapper on every
 // tick and the bottom prompt section never blits → 100% writes every frame.
-//
 // Exception: absolute-positioned clipped children may have layout bounds
 // that overlap arbitrary siblings, so the clipping does not help.
-//
 // Overlap contamination (seenDirtyClipped): a later ABSOLUTE sibling whose
 // rect sits inside a dirty clipped child's bounds would blit stale cells
 // from prevScreen — the clipped child just rewrote those cells this frame.

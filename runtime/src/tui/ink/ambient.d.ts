@@ -73,4 +73,7 @@ declare const Bun:
         order: (a: string, b: string) => -1 | 0 | 1
         satisfies: (version: string, range: string) => boolean
       }
+      hash?: ((input: string, seed?: number | bigint) => bigint) & {
+        wyhash?: (input: string, seed?: number | bigint) => bigint
+      }
     }

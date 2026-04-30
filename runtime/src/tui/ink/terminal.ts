@@ -1,10 +1,11 @@
+import { coerce } from 'semver'
 import type { Writable } from 'stream'
 import { env } from './vendored/env.js'
-import { coerce, gte } from './vendored/semver.js'
+import { gte } from './vendored/semver.js'
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
 import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
-import { AUTOWRAP_OFF, AUTOWRAP_ON, BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
+import { BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
 import { link } from './termio/osc.js'
 
 export type Progress = {
@@ -117,9 +118,8 @@ export function isSynchronizedOutputSupported(): boolean {
 }
 
 // -- XTVERSION-detected terminal name (populated async at startup) --
-//
 // TERM_PROGRAM is not forwarded over SSH by default, so env-based detection
-// fails when AgenC runs remotely inside a VS Code integrated terminal.
+// fails when agenc runs remotely inside a VS Code integrated terminal.
 // XTVERSION (CSI > 0 q → DCS > | name ST) goes through the pty — the query
 // reaches the *client* terminal and the reply comes back through stdin.
 // App.tsx fires the query when raw mode enables; setXtversionName() is called
@@ -185,9 +185,9 @@ const EXTENDED_KEYS_TERMINALS = [
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
-  // Default this off because some real terminals render the UI but stop
-  // delivering normal typing once kitty/modifyOtherKeys negotiation is
-  // enabled. Power users can opt back in explicitly.
+  // AgenC defaults this off because some real terminals render the UI
+  // but stop delivering normal typing once kitty/modifyOtherKeys negotiation
+  // is enabled. Power users can opt back in explicitly.
   if (process.env.AGENC_ENABLE_EXTENDED_KEYS !== '1') {
     return false
   }
@@ -228,19 +228,8 @@ export function writeDiffToTerminal(
   // DEC 2026 (e.g. tmux) AND the cost matters (high-frequency alt-screen).
   const useSync = !skipSyncMarkers
 
-  // Disable DECAWM (autowrap) for the duration of the frame write. Writing
-  // a character to the terminal's last column normally puts the cursor in
-  // a "pending wrap" state — the next non-cursor-move write wraps to the
-  // next line, scrolls the viewport, or leaves edge residue depending on
-  // the terminal. Borders of full-width popups land exactly on that last
-  // column, so any cell we emit afterwards (BSU end, cursor restore,
-  // selection overlay) can corrupt the right edge. Disabling autowrap
-  // around our atomic frame write means cursor advancement past the last
-  // column stays at the last column — no wraparound, no scroll, no
-  // residue. Restored at end of the buffer so unrelated stdout writers
-  // (subprocess output, console.log) still see normal autowrap behavior.
   // Buffer all writes into a single string to avoid multiple write calls
-  let buffer = (useSync ? BSU : '') + AUTOWRAP_OFF
+  let buffer = useSync ? BSU : ''
 
   for (const patch of diff) {
     switch (patch.type) {
@@ -279,11 +268,6 @@ export function writeDiffToTerminal(
     }
   }
 
-  // Re-enable autowrap before closing the synchronized update. Any
-  // unrelated stdout writer (subprocess output, console.log) running
-  // outside our renderer expects DECAWM=on; leaving it off would break
-  // shell output and other tools that share the terminal.
-  buffer += AUTOWRAP_ON
   // Add synchronized update end and flush buffer
   if (useSync) buffer += ESU
   terminal.stdout.write(buffer)

@@ -67,19 +67,8 @@ export class LogUpdate {
     const lines: string[] = []
     let currentStyles: AnsiCode[] = []
     let currentHyperlink: Hyperlink = undefined
-    // Erase-In-Line (CSI K, default mode 0) clears from cursor to end of
-    // line. Prepending it to every row guarantees the terminal's existing
-    // row contents are wiped before we paint — without this, an empty row
-    // (cells all char=' ') would `trimEnd` to an empty string and the
-    // terminal would keep whatever was there from a previous frame. That
-    // was the leak behind the visible "doubled composer" / "stale
-    // placeholder row" symptom users saw after the layout shifted from
-    // empty-buffer (placeholder visible) to typed-buffer (placeholder
-    // gone): the row that USED to hold the placeholder no longer had any
-    // content from the React tree, so the full-paint never overwrote it.
-    const ERASE_LINE = '\x1b[2K'
     for (let y = 0; y < screen.height; y++) {
-      let line = ERASE_LINE
+      let line = ''
       for (let x = 0; x < screen.width; x++) {
         const cell = cellAt(screen, x, y)
         if (cell && cell.width !== CellWidth.SpacerTail) {
@@ -173,13 +162,13 @@ export class LogUpdate {
     // about to become backFrame (reused next render) so mutation is safe.
     // CURSOR_HOME after RESET_SCROLL_REGION is defensive — DECSTBM reset
     // homes cursor per spec but terminal implementations vary.
-    //
     // decstbmSafe: caller passes false when the DECSTBM→diff sequence
     // can't be made atomic (no DEC 2026 / BSU/ESU). Without atomicity the
-    // outer terminal can render the intermediate scroll-region state.
-    // Falling through to the diff loop writes all shifted rows: more bytes,
-    // no intermediate state. next.screen from render-node-to-output's
-    // blit+shift is correct either way.
+    // outer terminal renders the intermediate state — region scrolled,
+    // edge rows not yet painted — a visible vertical jump on every frame
+    // where scrollTop moves. Falling through to the diff loop writes all
+    // shifted rows: more bytes, no intermediate state. next.screen from
+    // render-node-to-output's blit+shift is correct either way.
     let scrollPatch: Diff = []
     if (altScreen && next.scrollHint && decstbmSafe) {
       const { top, bottom, delta } = next.scrollHint
@@ -204,13 +193,11 @@ export class LogUpdate {
 
     // We have to use purely relative operations to manipulate the cursor since
     // we don't know its starting point.
-    //
     // When content height >= viewport height AND cursor is at the bottom,
     // the cursor restore at the end of the previous frame caused terminal scroll.
     // viewportY tells us how many rows are in scrollback from content overflow.
     // Additionally, the cursor-restore scroll pushes 1 more row into scrollback.
     // We need fullReset if any changes are to rows that are now in scrollback.
-    //
     // This early full-reset check only applies in "steady state" (not growing).
     // For growing, the viewportY calculation below (with cursorRestoreScroll)
     // catches unreachable scrollback rows in the diff loop instead.
@@ -434,7 +421,6 @@ export class LogUpdate {
     // relative moves, and in alt-screen the next frame always begins with
     // CSI H (see ink.tsx onRender) which resets to (0,0) regardless. This
     // saves a CR + cursorMove round-trip (~6-10 bytes) every frame.
-    //
     // Main screen: if cursor needs to be past the last line of content
     // (typical: cursor.y = screen.height), emit \n to create that line
     // since cursor movement can't create new lines.

@@ -298,7 +298,6 @@ export class YogaLayoutNode implements LayoutNode {
 
 // --
 // Instance management
-//
 // The TS yoga-layout port is synchronous — no WASM loading, no linear memory
 // growth, so no preload/swap/reset machinery is needed. The Yoga instance is
 // just a plain JS object available at import time.

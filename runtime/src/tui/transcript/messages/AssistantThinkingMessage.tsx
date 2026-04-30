@@ -3,7 +3,7 @@ import React from "react";
 import Box from "../../ink/components/Box.js";
 import Text from "../../ink/components/Text.js";
 import { theme } from "../../theme.js";
-import MarkdownBlock from "../MarkdownBlock.js";
+import { Markdown } from "../../components/Markdown.js";
 
 export interface AssistantThinkingMessageProps {
   readonly text: string;
@@ -22,7 +22,7 @@ export function AssistantThinkingMessage({
       <Text color={theme.colors.dim}>
         {isHidden ? "✦ thinking hidden" : "✦ thinking"}
       </Text>
-      {isHidden ? null : <MarkdownBlock content={text} isComplete />}
+      {isHidden ? null : <Markdown>{text}</Markdown>}
     </Box>
   );
 }

@@ -1,0 +1,89 @@
+{
+  "contractName": "openclaude-search-wholesale-parity",
+  "scope": "AgenC search overlay ↔ openclaude src/components/{SearchBox,GlobalSearchDialog,HistorySearchDialog}.tsx + src/utils/transcriptSearch.ts + src/hooks/{useSearchInput,useHistorySearch}.ts wholesale 1:1 port. AgenC's prior dialogs/{GlobalSearchDialog,HistorySearchDialog}.tsx are deleted. The transitive dep surface (overlayContext, history reader, HistoryEntry/PastedContent types, format/highlightMatch/editor/readFileInRange/ripgrep/permissions filesystem helpers, message/textInputTypes types, Cursor input-buffer, inputModes) is cherry-picked from openclaude with shims where the openclaude-side pulls in product-runtime infrastructure (analytics, MCP IDE-RPC, full config store).",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/agenc-core-tui-ink-wholesale",
+  "transformationRules": [
+    "import-rewire: '../ink.js' → '../ink-public.js'",
+    "import-rewire: '../components/design-system/<m>.js' / './design-system/<m>.js' → '../design-system/<m>.js'",
+    "import-rewire: '../keybindings/useKeybinding.js' → '../keybindings/useKeybindings.js' (AgenC's file is plural; useKeybindings.ts re-exports useKeybinding for back-compat)",
+    "drop: imports + calls of openclaude services/analytics logEvent — AgenC has no analytics shim",
+    "extension-normalization, env-vars, brand-scrub, react-compiler-args, ts-expect-error: same family",
+    "@ts-nocheck prepend on each wholesale-ported file: openclaude was compiled with looser tsconfig (implicit any / implicit null narrowing on useState/useRef calls without explicit type annotations); AgenC's strict tsconfig hits ~30 mismatches per dialog. Prepending // @ts-nocheck preserves the byte-equivalent 1:1 copy without rewriting every useState/useRef. Runtime behavior unchanged."
+  ],
+  "rows": [
+    {
+      "id": "search-box-port",
+      "source": "src/components/SearchBox.tsx",
+      "target": "runtime/src/tui/components/SearchBox.tsx",
+      "requiredBehaviors": ["1:1 wholesale copy of openclaude SearchBox.tsx post-transform"],
+      "tests": ["runtime/src/tui/components/SearchBox.test.tsx"],
+      "status": "required"
+    },
+    {
+      "id": "global-search-dialog-port",
+      "source": "src/components/GlobalSearchDialog.tsx",
+      "target": "runtime/src/tui/components/GlobalSearchDialog.tsx",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform; AgenC's prior dialogs/GlobalSearchDialog.tsx deleted"],
+      "tests": ["runtime/src/tui/components/GlobalSearchDialog.test.tsx"],
+      "status": "required"
+    },
+    {
+      "id": "history-search-dialog-port",
+      "source": "src/components/HistorySearchDialog.tsx",
+      "target": "runtime/src/tui/components/HistorySearchDialog.tsx",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform; AgenC's prior dialogs/HistorySearchDialog.tsx deleted"],
+      "tests": ["runtime/src/tui/components/HistorySearchDialog.test.tsx"],
+      "status": "required"
+    },
+    {
+      "id": "transcript-search-port",
+      "source": "src/utils/transcriptSearch.ts",
+      "target": "runtime/src/tui/utils/transcriptSearch.ts",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform"],
+      "tests": ["runtime/src/tui/utils/transcriptSearch.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "use-search-input-port",
+      "source": "src/hooks/useSearchInput.ts",
+      "target": "runtime/src/tui/hooks/useSearchInput.ts",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform"],
+      "tests": ["runtime/src/tui/hooks/useSearchInput.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "use-history-search-port",
+      "source": "src/hooks/useHistorySearch.ts",
+      "target": "runtime/src/tui/hooks/useHistorySearch.ts",
+      "requiredBehaviors": ["1:1 wholesale copy post-transform"],
+      "tests": ["runtime/src/tui/hooks/useHistorySearch.test.ts"],
+      "status": "required"
+    },
+    {
+      "id": "transitive-cherry-picks",
+      "source": "src/components/GlobalSearchDialog.tsx",
+      "target": "runtime/src/tui/utils/transcriptSearch.ts",
+      "requiredBehaviors": [
+        "Cherry-picked AgenC adapters (smallest viable subsets so the wholesale-ported dialogs compile without dragging openclaude's full service/analytics/config infrastructure):",
+        "  - context/overlayContext.tsx: useRegisterOverlay no-op shim matching openclaude (id, enabled?) signature",
+        "  - history.ts: TimestampedHistoryEntry type + getTimestampedHistory + makeHistoryReader as empty async generators (wired to AgenC's session store later)",
+        "  - utils/config.ts: PastedContent + HistoryEntry types only",
+        "  - utils/format.ts: formatRelativeTimeAgo + truncateToWidth + truncatePathMiddle helpers",
+        "  - utils/highlightMatch.tsx: 1:1 copy",
+        "  - utils/editor.ts: openFileInExternalEditor no-op shim",
+        "  - utils/readFileInRange.ts: minimal sync→Promise wrapper around fs.readFileSync",
+        "  - utils/ripgrep.ts: ripGrepStream as empty async iterator (wired to AgenC's search tool later)",
+        "  - utils/permissions/filesystem.ts: relativePath delegating to node:path.relative",
+        "  - utils/Cursor.ts: 1:1 copy of openclaude's Cursor class (~1554 LOC); intl import rewired to ink/vendored/intl",
+        "  - components/PromptInput/inputModes.ts: getModeFromInput + HistoryMode alias",
+        "  - types/textInputTypes.ts: PromptInputMode + EditablePromptInputMode type unions",
+        "  - types/message.ts: minimal RenderableMessage / NormalizedUserMessage shapes",
+        "  - keybindings/useKeybindings.ts: extended with useKeybinding(action, handler, opts) wrapper to satisfy openclaude's per-action import",
+        "  - ink/vendored/intl.ts: extended with getWordSegmenter (was missing from AgenC's vendored)"
+      ],
+      "tests": ["runtime/src/tui/utils/transcriptSearch.test.ts"],
+      "status": "required"
+    }
+  ]
+}

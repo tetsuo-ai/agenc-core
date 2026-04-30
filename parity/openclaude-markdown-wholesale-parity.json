@@ -1,0 +1,173 @@
+{
+  "contractName": "openclaude-markdown-wholesale-parity",
+  "scope": "AgenC markdown rendering pipeline ↔ openclaude src/components/{Markdown,MarkdownTable}.tsx + src/utils/{markdown,markdownConfigLoader,cliHighlight,hash,hyperlink}.ts wholesale 1:1 port. AgenC's previous transcript/MarkdownBlock.tsx and design-system/MarkdownTable.tsx are deleted; consumers above (transcript message renderers, permissions overlays) are rewired to the new entry points.",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/agenc-core-tui-ink-wholesale",
+  "transformationRules": [
+    "import-rewire: '../ink.js' (openclaude barrel) → '../ink-public.js' (AgenC barrel of the same shape)",
+    "import-rewire: '../hooks/useSettings.js' → '../hooks/useSettings.js' (AgenC ships a settings shim returning defaults)",
+    "cherry-pick: stripPromptXMLTags from openclaude src/utils/messages.ts → AgenC runtime/src/tui/utils/messages.ts (function + STRIPPED_TAGS_RE only; the rest of messages.ts pulls Anthropic SDK and OpenClaude tooling that don't apply to AgenC)",
+    "cherry-pick: ThemeName type alias from openclaude src/utils/theme.ts → AgenC runtime/src/tui/utils/theme.ts (type only; the runtime chalk/env code in theme.ts is OpenClaude-runtime-only)",
+    "stub: bun:bundle.feature() in markdownConfigLoader.ts → constant `() => false` (AgenC runs on Node; bun:bundle features default off)",
+    "extension-normalization: relative imports with .ts / .tsx → .js (AgenC ESM convention); .d.ts preserved",
+    "test-framework: 'bun:test' → 'vitest'",
+    "env-var-rebrand: CLAUDE_CODE_<X> → AGENC_<X>; OPENCLAUDE_<X> → AGENC_<X>",
+    "brand-scrub: 'Claude Code' / 'Open Claude' / 'OpenClaude' → 'AgenC'; 'claude' (word, not before -) → 'agenc'; '~/.claude/' → '~/.agenc/'; internal Anthropic Slack URLs stripped",
+    "react-compiler-args: 'function <Cap>(t0)' → '(t0: any)' for AgenC's noImplicitAny",
+    "ts-expect-error-relaxation: '@ts-expect-error' → '@ts-ignore'"
+  ],
+  "rows": [
+    {
+      "id": "markdown-component-port",
+      "source": "src/components/Markdown.tsx",
+      "target": "runtime/src/tui/components/Markdown.tsx",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/components/Markdown.tsx is openclaude src/components/Markdown.tsx after the transformation rules — byte-equivalent post-transform",
+        "AgenC's prior transcript/MarkdownBlock.tsx is deleted; consumers in transcript/messages/ and permissions/ are rewired to import { Markdown } from '../components/Markdown.js'",
+        "the existing MarkdownBlock.openclaude-parity.test.tsx defends an AgenC-named component that no longer exists; it is deleted"
+      ],
+      "tests": [
+        "runtime/src/tui/components/Markdown.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "markdown-table-port",
+      "source": "src/components/MarkdownTable.tsx",
+      "target": "runtime/src/tui/components/MarkdownTable.tsx",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/components/MarkdownTable.tsx is openclaude src/components/MarkdownTable.tsx post-transform",
+        "AgenC's prior design-system/MarkdownTable.tsx is deleted; the new table component is the single source of truth",
+        "uses the openclaude-port pattern for layout (string-width measurement via wrapAnsi + stringWidth from the wholesale-ported ink/ tree)"
+      ],
+      "tests": [
+        "runtime/src/tui/components/Markdown.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "markdown-utility-port",
+      "source": "src/utils/markdown.ts",
+      "target": "runtime/src/tui/utils/markdown.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/markdown.ts is openclaude src/utils/markdown.ts post-transform — configureMarked, formatToken, padAligned and helpers ported byte-equivalent post-transform",
+        "imports: ./theme.js, ./cliHighlight.js, ./hash.js, ./hyperlink.js, ./messages.js (cherry-pick), ./debug.js (vendored shim used elsewhere — wired to runtime/src/tui/ink/vendored/debug.js or local equivalent)",
+        "openclaude-side imports of '../components/design-system/color.js' resolve to AgenC's runtime/src/tui/design-system/color.js",
+        "openclaude-side imports of '../ink/...' resolve to AgenC's runtime/src/tui/ink/..."
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "markdown-config-loader-port",
+      "source": "src/utils/markdownConfigLoader.ts",
+      "target": "runtime/src/tui/utils/markdownConfigLoader.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/markdownConfigLoader.ts is openclaude src/utils/markdownConfigLoader.ts post-transform",
+        "the bun:bundle.feature import is stubbed to a constant () => false; AgenC runs on Node and does not consume bun:bundle build-time features",
+        "config-discovery semantics (XDG home + walk-up to git root) preserved"
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "cli-highlight-utility-port",
+      "source": "src/utils/cliHighlight.ts",
+      "target": "runtime/src/tui/utils/cliHighlight.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/cliHighlight.ts is openclaude src/utils/cliHighlight.ts post-transform — single shared lazy-load promise for cli-highlight + highlight.js",
+        "depends on the cli-highlight npm package which AgenC already declares in runtime/package.json"
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "hash-utility-port",
+      "source": "src/utils/hash.ts",
+      "target": "runtime/src/tui/utils/hash.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/hash.ts is openclaude src/utils/hash.ts post-transform — djb2Hash + hashContent + hashPair ported byte-equivalent",
+        "Bun.hash branch preserved with Node SHA-256 fallback so AgenC (Node-only) gets the SHA-256 path"
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "hyperlink-utility-port",
+      "source": "src/utils/hyperlink.ts",
+      "target": "runtime/src/tui/utils/hyperlink.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/hyperlink.ts is openclaude src/utils/hyperlink.ts post-transform — createHyperlink emits OSC 8 sequences when supportsHyperlinks() returns true",
+        "openclaude-side imports of '../ink/supports-hyperlinks.js' resolve to AgenC's runtime/src/tui/ink/supports-hyperlinks.js (already wholesale-ported)"
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "messages-cherry-pick",
+      "source": "src/utils/messages.ts",
+      "target": "runtime/src/tui/utils/messages.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/messages.ts cherry-picks ONLY the stripPromptXMLTags function + STRIPPED_TAGS_RE constant from openclaude src/utils/messages.ts",
+        "rationale: the rest of openclaude messages.ts pulls Anthropic SDK message types, OpenClaude buddy/memdir/Tool/connectorText/advisor — AgenC-irrelevant transitive surface that doesn't belong in AgenC's TUI tree",
+        "byte-equivalent at the function level: the regex constant + function body match openclaude verbatim"
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "theme-name-cherry-pick",
+      "source": "src/utils/theme.ts",
+      "target": "runtime/src/tui/utils/theme.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/utils/theme.ts cherry-picks ONLY the ThemeName type alias from openclaude src/utils/theme.ts",
+        "rationale: openclaude theme.ts pulls chalk + env runtime code that is product-runtime-specific; AgenC's runtime theme lives in runtime/src/tui/theme.ts and is owned by AgenC",
+        "the type alias matches openclaude verbatim so the markdown utility's ThemeName-typed parameters resolve at the boundary"
+      ],
+      "tests": [
+        "runtime/src/tui/utils/markdown.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "useSettings-shim",
+      "source": "src/hooks/useSettings.ts",
+      "target": "runtime/src/tui/hooks/useSettings.ts",
+      "requiredBehaviors": [
+        "AgenC ships a small useSettings hook returning { syntaxHighlightingDisabled: false } as a stable default — the only setting Markdown.tsx reads from settings",
+        "rationale: openclaude useSettings reads from their per-user settings store (Anthropic-product-specific); AgenC has its own settings layer, but markdown rendering doesn't need any AgenC-side toggles today",
+        "future work can wire the hook into AgenC's actual settings if AgenC introduces a syntax-highlight toggle"
+      ],
+      "tests": [
+        "runtime/src/tui/components/Markdown.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "consumer-import-rewire",
+      "source": "src/components/Markdown.tsx",
+      "target": "runtime/src/tui/transcript/messages/AssistantTextMessage.tsx",
+      "requiredBehaviors": [
+        "Every AgenC-side consumer of the now-deleted MarkdownBlock is rewired to the new Markdown export. Consumers: transcript/StreamingMessage.tsx, transcript/messages/{AssistantTextMessage,AssistantThinkingMessage,UserPlanMessage,UserLocalCommandOutputMessage}.tsx, permissions/{PlanApprovalOverlay,ApprovalOverlay}.tsx",
+        "import path: 'import { Markdown } from \"../../components/Markdown.js\"' from transcript/messages/, '../../components/Markdown.js' from permissions/, '../components/Markdown.js' from transcript/",
+        "no AgenC-side caller still references './MarkdownBlock.js' or '../transcript/MarkdownBlock.js' after this contract"
+      ],
+      "tests": [
+        "runtime/src/tui/components/Markdown.test.tsx"
+      ],
+      "status": "required"
+    }
+  ]
+}
