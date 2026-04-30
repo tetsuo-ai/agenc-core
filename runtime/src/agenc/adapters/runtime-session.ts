@@ -19,6 +19,7 @@ import {
   loadCompactModule,
   loadContextNonInteractiveCommand,
   loadContextCollapseModule,
+  enableUpstreamConfigGate,
   loadManualCompactCommand,
 } from "./dynamic-loaders.js";
 
@@ -127,11 +128,13 @@ export async function prepareAgenCTurnContext(
   const toolUseContext = buildAgenCToolUseContext(session, ctx, {
     querySource: "repl_main_thread",
   });
-  const { applyCollapsesIfNeeded } = await loadContextCollapseModule();
-  const projected = await applyCollapsesIfNeeded(
-    toAgenCRuntimeMessages(messages),
-    toolUseContext,
-  );
+  const projected = await withUpstreamContextGuards(async () => {
+    const { applyCollapsesIfNeeded } = await loadContextCollapseModule();
+    return applyCollapsesIfNeeded(
+      toAgenCRuntimeMessages(messages),
+      toolUseContext,
+    );
+  });
   state.messagesForQuery = fromAgenCRuntimeMessages(
     projected.messages as AgenCRuntimeMessage[],
   );
@@ -170,17 +173,17 @@ export async function runAgenCAutoCompact(params: {
     { querySource: params.querySource },
   );
   const cacheSafeParams = buildCacheSafeParams(toolUseContext, messages);
-  const { autoCompactIfNeeded } = await loadAutoCompactModule();
-  const result = await withUpstreamContextGuards(() =>
-    autoCompactIfNeeded(
+  const result = await withUpstreamContextGuards(async () => {
+    const { autoCompactIfNeeded } = await loadAutoCompactModule();
+    return autoCompactIfNeeded(
       messages,
       toolUseContext,
       cacheSafeParams,
       params.querySource,
       state.autoCompactTracking,
       state.snipTokensFreed ?? 0,
-    ),
-  );
+    );
+  });
   if (!result.wasCompacted || !result.compactionResult) {
     return compactionNotRun(result.consecutiveFailures);
   }
@@ -230,10 +233,10 @@ export async function runAgenCManualCompact(params: {
       theme: "dark",
     },
   };
-  const { call } = await loadManualCompactCommand();
-  const result = await withUpstreamContextGuards(() =>
-    call(params.customInstructions ?? "", commandContext as never),
-  );
+  const result = await withUpstreamContextGuards(async () => {
+    const { call } = await loadManualCompactCommand();
+    return call(params.customInstructions ?? "", commandContext as never);
+  });
   if (result.type !== "compact") {
     throw new Error("Compact command did not return a compaction result");
   }
@@ -280,10 +283,10 @@ export async function runAgenCContextUsage(params: {
       appendSystemPrompt: undefined,
     },
   };
-  const { call } = await loadContextNonInteractiveCommand();
-  const result = await withUpstreamContextGuards(() =>
-    call(params.args ?? "", commandContext as never),
-  );
+  const result = await withUpstreamContextGuards(async () => {
+    const { call } = await loadContextNonInteractiveCommand();
+    return call(params.args ?? "", commandContext as never);
+  });
   return { text: result.value };
 }
 
@@ -293,10 +296,12 @@ export async function runAgenCContextCollapseOverflowRecovery(params: {
   readonly lastMessage?: AssistantMessage;
 }): Promise<AgenCOverflowRecoveryResult> {
   if (!isAgenCContextCollapseRequested()) return passRecovery();
-  const { recoverFromOverflow } = await loadContextCollapseModule();
-  const recovered = recoverFromOverflow(
-    toAgenCRuntimeMessages(params.state.messagesForQuery),
-  );
+  const recovered = await withUpstreamContextGuards(async () => {
+    const { recoverFromOverflow } = await loadContextCollapseModule();
+    return recoverFromOverflow(
+      toAgenCRuntimeMessages(params.state.messagesForQuery),
+    );
+  });
   if (recovered.committed <= 0) return passRecovery();
   params.state.messagesForQuery = fromAgenCRuntimeMessages(
     recovered.messages as AgenCRuntimeMessage[],
@@ -354,10 +359,12 @@ function buildCacheSafeParams(
 async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
-  const { buildPostCompactMessages } = await loadCompactModule();
-  const replacementHistory = fromAgenCRuntimeMessages(
-    buildPostCompactMessages(result) as AgenCRuntimeMessage[],
-  );
+  const replacementHistory = await withUpstreamContextGuards(async () => {
+    const { buildPostCompactMessages } = await loadCompactModule();
+    return fromAgenCRuntimeMessages(
+      buildPostCompactMessages(result) as AgenCRuntimeMessage[],
+    );
+  });
   const postCompactTokens =
     result.truePostCompactTokenCount ?? result.postCompactTokenCount;
   return {
@@ -517,6 +524,7 @@ async function withUpstreamContextGuards<T>(
     process.env[key] = "1";
   }
   try {
+    await enableUpstreamConfigGate();
     return await fn();
   } finally {
     for (const [key, value] of previous) {

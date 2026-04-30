@@ -269,6 +269,19 @@ describe('AgenC runtime integration', () => {
     expect(target).not.toContain('return { kind: "pass" };');
   });
 
+  it('opens the copied upstream config gate inside the compact/context guard', () => {
+    const target = readTarget('adapter-runtime-session');
+    const loaders = readTarget('adapter-dynamic-loaders');
+    const guardIndex = target.indexOf('async function withUpstreamContextGuards');
+
+    expect(loaders).toContain('enableUpstreamConfigGate');
+    expect(loaders).toContain('../upstream/utils/config');
+    expect(loaders).toContain('enableConfigs()');
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(target.slice(guardIndex)).toContain('await enableUpstreamConfigGate();');
+    expect(target).not.toContain('../upstream/utils/config');
+  });
+
   it('keeps adapter modules as typed integration glue', () => {
     expectExports('adapter-message-rollout', [
       'toAgenCMessage',

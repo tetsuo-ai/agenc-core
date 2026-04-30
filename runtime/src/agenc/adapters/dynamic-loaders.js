@@ -1,3 +1,8 @@
+export async function enableUpstreamConfigGate() {
+  const module = await import("../upstream/utils/config.js");
+  module.enableConfigs();
+}
+
 export async function loadContextCollapseModule() {
   const module = await import("../upstream/services/contextCollapse/index.js");
   return {

@@ -1,3 +1,5 @@
+export function enableUpstreamConfigGate(): Promise<void>;
+
 export function loadContextCollapseModule(): Promise<{
   applyCollapsesIfNeeded: (
     messages: unknown[],
