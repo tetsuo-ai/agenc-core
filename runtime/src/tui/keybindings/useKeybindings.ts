@@ -17,7 +17,33 @@ import type {
   BindingCommand,
   BindingContext,
 } from './defaultBindings.js'
-import { useKeybinding } from './KeybindingContext.js'
+import { useKeybinding as useKeybindingInternal } from './KeybindingContext.js'
+
+// Re-export so wholesale-ported openclaude code that imports
+// `{ useKeybinding } from '../keybindings/useKeybinding.js'` resolves
+// here (the AgenC port path is keybindings/useKeybindings.js).
+//
+// openclaude signature: useKeybinding(action: string, handler, opts?)
+// AgenC signature:      useKeybinding(command: BindingCommand, handler, context?: BindingContext)
+//
+// Adapt by accepting openclaude's options bag and forwarding the
+// context (defaulting to 'chat' to match useKeybindings's default).
+export function useKeybinding(
+  action: string,
+  handler: () => void | false | Promise<void>,
+  options: { context?: BindingContext; isActive?: boolean } = {},
+): void {
+  const context: BindingContext = options.context ?? 'chat'
+  const isActive = options.isActive ?? true
+  useKeybindingInternal(
+    action as BindingCommand,
+    () => {
+      if (!isActive) return
+      void handler()
+    },
+    context,
+  )
+}
 
 type Handlers = Partial<Record<BindingCommand, () => void>>
 
@@ -55,6 +81,6 @@ export function useKeybindings(handlers: Handlers, options?: Options): void {
       handler?.()
     }
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    useKeybinding(command, wrapped, context)
+    useKeybindingInternal(command, wrapped, context)
   }
 }
