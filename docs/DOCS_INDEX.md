@@ -9,6 +9,7 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - [./COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md) - local validation and release-sensitive commands
 - [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md) - runtime module navigation guide
 - [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md) - MARKET/TOOLS split and runtime marketplace routing
+- [../runtime/docs/marketplace-mainnet-canary-runbook.md](../runtime/docs/marketplace-mainnet-canary-runbook.md) - constrained low-value mainnet canary launch procedure and rollback plan
 - [../runtime/docs/compiled-job-phase1-launch-readiness.md](../runtime/docs/compiled-job-phase1-launch-readiness.md) - compiled marketplace Phase 1 runbook, retention posture, and launch checklist
 - [./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md) - supported public-wrapper devnet marketplace rehearsal path
 - [./architecture/README.md](./architecture/README.md) - architecture-focused reading path
@@ -43,6 +44,7 @@ This is the repo-level developer-documentation entrypoint for `agenc-core`.
 - I need the repo layout: [CODEBASE_MAP.md](./CODEBASE_MAP.md)
 - I need runtime module ownership: [../runtime/docs/MODULE_MAP.md](../runtime/docs/MODULE_MAP.md)
 - I need the MARKET/TOOLS split or terminal marketplace commands: [../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md](../runtime/docs/MARKETPLACE_OPERATOR_SURFACE.md)
+- I need to run the constrained mainnet marketplace canary: [../runtime/docs/marketplace-mainnet-canary-runbook.md](../runtime/docs/marketplace-mainnet-canary-runbook.md)
 - I need the compiled marketplace Phase 1 launch gates and runbook: [../runtime/docs/compiled-job-phase1-launch-readiness.md](../runtime/docs/compiled-job-phase1-launch-readiness.md)
 - I need the public wrapper devnet rehearsal path: [architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md](./architecture/guides/public-wrapper-devnet-marketplace-rehearsal.md)
 - I need build or CI commands: [COMMANDS_AND_VALIDATION.md](./COMMANDS_AND_VALIDATION.md)

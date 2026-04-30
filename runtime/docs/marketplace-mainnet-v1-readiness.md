@@ -5,6 +5,9 @@ core protocol, runtime, SDK, CLI, TUI, and explorer visibility.
 
 Tracking issue: <https://github.com/tetsuo-ai/agenc-core/issues/549>
 
+For the constrained low-value mainnet canary launch procedure, use
+[Marketplace Mainnet Canary Runbook](./marketplace-mainnet-canary-runbook.md).
+
 ## Scope
 
 Included in mainnet v1:
