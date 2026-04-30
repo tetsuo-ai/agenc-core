@@ -208,7 +208,6 @@ function tokenize(
         // Terminals that ignore DECSET 1006 but honor 1000/1002 emit this
         // legacy encoding; without this branch the 3 payload bytes leak
         // through as text (`` `rK `` / `arK` garbage in the prompt).
-        //
         // Gated on x10Mouse — `\x1b[M` is also CSI DL (Delete Lines) and
         // blindly consuming 3 chars corrupts output rendering (Parser/Ansi)
         // and fragments bracketed-paste PASTE_END. Only stdin enables this.
@@ -217,7 +216,6 @@ function tokenize(
         // any slot means this is CSI DL adjacent to another sequence, not a
         // mouse event. Checking all three slots prevents PASTE_END's ESC
         // from being consumed when paste content ends in `\x1b[M`+0-2 chars.
-        //
         // Known limitation: this counts JS string chars, but X10 is byte-
         // oriented and stdin uses utf8 encoding (App.tsx). At col 162-191 ×
         // row 96-159 the two coord bytes (0xC2-0xDF, 0x80-0xBF) form a valid

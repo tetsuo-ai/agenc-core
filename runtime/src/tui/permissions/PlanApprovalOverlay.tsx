@@ -21,7 +21,7 @@ import Text from "../ink/components/Text.js";
 import type { InputEvent } from "../ink/events/input-event.js";
 import { theme } from "../theme.js";
 import { useSetKeybindingContext } from "../keybindings/KeybindingContext.js";
-import { MarkdownBlock } from "../transcript/MarkdownBlock.js";
+import { Markdown } from "../components/Markdown.js";
 import type { ApprovalDecision } from "./ApprovalOverlay.js";
 
 export interface PlanApprovalOverlayProps {
@@ -291,7 +291,7 @@ export const PlanApprovalOverlay: React.FC<PlanApprovalOverlayProps> = ({
         </Box>
       ) : null}
       <Box marginTop={1} borderStyle="round" paddingX={1} flexDirection="column">
-        <MarkdownBlock content={preview} isComplete />
+        <Markdown>{preview}</Markdown>
       </Box>
       {status ? <Text color={theme.colors.secondary as never}>{status}</Text> : null}
       {capturingFeedback ? (

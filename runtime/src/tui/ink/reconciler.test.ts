@@ -54,7 +54,7 @@ async function waitForCondition(
       return
     }
 
-    await new Promise(resolve => setTimeout(resolve, 10))
+    await Bun.sleep(10)
   }
 
   throw new Error(errorMessage)
@@ -143,7 +143,7 @@ async function createHarness(): Promise<{
       root.unmount()
       stdin.end()
       stdout.end()
-      await new Promise(resolve => setTimeout(resolve, 25))
+      await Bun.sleep(25)
     },
   }
 }
@@ -167,7 +167,7 @@ test('raw ink-box updates keyboard handlers and attributes in place across reren
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const firstBox = requireElement(harness.stdout, 'ink-box')
     expect(firstBox.attributes.tabIndex).toBe(0)
@@ -185,7 +185,7 @@ test('raw ink-box updates keyboard handlers and attributes in place across reren
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const secondBox = requireElement(harness.stdout, 'ink-box')
     expect(secondBox).toBe(firstBox)
@@ -232,7 +232,7 @@ test('raw ink-text updates textStyles in place across rerenders', async () => {
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const firstText = requireElement(harness.stdout, 'ink-text')
     expect(firstText.textStyles).toEqual({ color: 'ansi:red' })
@@ -248,7 +248,7 @@ test('raw ink-text updates textStyles in place across rerenders', async () => {
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const secondText = requireElement(harness.stdout, 'ink-text')
     expect(secondText).toBe(firstText)
@@ -276,7 +276,7 @@ test('raw ink-box removes event handler when set to undefined', async () => {
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const box = requireElement(harness.stdout, 'ink-box')
     expect(box._eventHandlers?.onKeyDown).toBe(handler)
@@ -293,7 +293,7 @@ test('raw ink-box removes event handler when set to undefined', async () => {
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const sameBox = requireElement(harness.stdout, 'ink-box')
     expect(sameBox).toBe(box)
@@ -314,7 +314,7 @@ test('raw ink-box removes event handler when set to undefined', async () => {
       isPasted: false,
     })
 
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await Bun.sleep(50)
     expect(calls).toEqual([])
   } finally {
     await harness.dispose()
@@ -335,7 +335,7 @@ test('raw ink-box updates layout style in place across rerenders', async () => {
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const box = requireElement(harness.stdout, 'ink-box')
     expect(box.style.flexDirection).toBe('row')
@@ -351,7 +351,7 @@ test('raw ink-box updates layout style in place across rerenders', async () => {
       ),
     )
 
-    await new Promise(resolve => setTimeout(resolve, 25))
+    await Bun.sleep(25)
 
     const sameBox = requireElement(harness.stdout, 'ink-box')
     expect(sameBox).toBe(box)

@@ -3,8 +3,8 @@ import { updateLastInteractionTime } from '../vendored/state.js';
 import { stopCapturingEarlyInput } from '../vendored/earlyInput.js';
 import { isEnvTruthy } from '../vendored/envUtils.js';
 import { isMouseClicksDisabled } from '../vendored/fullscreen.js';
-import { logError } from '../vendored/log.js';
 import { logForDebugging } from '../vendored/debug.js';
+import { logError } from '../vendored/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
@@ -12,27 +12,26 @@ import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, pars
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
 import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
-import { getTerminalFocused, resetTerminalFocusState, setTerminalFocused } from '../terminal-focus-state.js';
+import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js';
 import { TerminalQuerier, xtversion } from '../terminal-querier.js';
 import { DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, FOCUS_IN, FOCUS_OUT } from '../termio/csi.js';
-import { DBP, DFE, DISABLE_ALTERNATE_SCROLL, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js';
+import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js';
 import AppContext from './AppContext.js';
 import { ClockProvider } from './ClockContext.js';
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js';
 import ErrorOverview from './ErrorOverview.js';
 import StdinContext from './StdinContext.js';
-import StdoutContext from './StdoutContext.js';
 import { TerminalFocusProvider } from './TerminalFocusContext.js';
 import { TerminalSizeContext } from './TerminalSizeContext.js';
 
 // Platforms that support Unix-style process suspension (SIGSTOP/SIGCONT)
 const SUPPORTS_SUSPEND = process.platform !== 'win32';
 
-// After this many milliseconds of stdin silence, the next chunk re-asserts
-// raw/input modes. Catches tmux detach→attach, ssh reconnect, and laptop
-// wake — the terminal resets private modes but no signal reaches us. 5s is
-// well above normal inter-keystroke gaps but short enough that the first
-// keypress/scroll after reattach lands in a healthy terminal state.
+// After this many milliseconds of stdin silence, the next chunk triggers
+// a terminal mode re-assert (mouse tracking). Catches tmux detach→attach,
+// ssh reconnect, and laptop wake — the terminal resets DEC private modes
+// but no signal reaches us. 5s is well above normal inter-keystroke gaps
+// but short enough that the first scroll after reattach works.
 const STDIN_RESUME_GAP_MS = 5000;
 type Props = {
   readonly children: ReactNode;
@@ -73,9 +72,10 @@ type Props = {
   // exact cell; word/line mode snaps to word/line boundaries. Needs
   // screen-buffer access (word boundaries) so lives on Ink, not here.
   readonly onSelectionDrag: (col: number, row: number) => void;
-  // Called after App has re-asserted raw/input modes following a long stdin
-  // gap. Ink handles the output-side state (alt-screen, mouse tracking,
-  // alternate scroll) that lives outside App's ownership.
+  // Called when stdin data arrives after a >STDIN_RESUME_GAP_MS gap.
+  // Ink re-asserts terminal modes: extended key reporting, and (when in
+  // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
+  // terminal side. Optional so testing.tsx doesn't need to stub it.
   readonly onStdinResume?: () => void;
   // Receives the declared native-cursor position from useDeclaredCursor
   // so ink.tsx can park the terminal cursor there after each frame.
@@ -105,12 +105,6 @@ export default class App extends PureComponent<Props, State> {
       error
     };
   }
-  constructor(props: Props) {
-    super(props);
-    // Terminal focus is module-global, so clear any stale blurred state
-    // before this mount's first render reads from the external store.
-    resetTerminalFocusState();
-  }
   override state = {
     error: undefined
   };
@@ -129,7 +123,6 @@ export default class App extends PureComponent<Props, State> {
   // Timeout durations for incomplete sequences (ms)
   readonly NORMAL_TIMEOUT = 50; // Short timeout for regular esc sequences
   readonly PASTE_TIMEOUT = 500; // Longer timeout for paste operations
-  xtversionProbeHandle: NodeJS.Immediate | null = null;
 
   // Terminal query/response dispatch. Responses arrive on stdin (parsed
   // out by parse-keypress) and are routed to pending promise resolvers.
@@ -158,116 +151,6 @@ export default class App extends PureComponent<Props, State> {
   // Initialized to now so startup doesn't false-trigger.
   lastStdinTime = Date.now();
 
-  private getActiveInputListener(): {
-    event: 'readable' | 'data';
-    listener: (...args: unknown[]) => void;
-  } {
-    return this.stdinMode === 'data' ? {
-      event: 'data',
-      listener: this.handleDataChunk as (...args: unknown[]) => void
-    } : {
-      event: 'readable',
-      listener: this.handleReadable as (...args: unknown[]) => void
-    };
-  }
-
-  private hasActiveInputListener(): boolean {
-    const {
-      stdin
-    } = this.props;
-    const {
-      event,
-      listener
-    } = this.getActiveInputListener();
-    return stdin.listeners(event).includes(listener as (...args: unknown[]) => void);
-  }
-
-  private attachInputListener(): void {
-    const {
-      stdin
-    } = this.props;
-    const {
-      event,
-      listener
-    } = this.getActiveInputListener();
-    if (!this.hasActiveInputListener()) {
-      stdin.addListener(event, listener);
-    }
-  }
-
-  private detachInputListeners(): void {
-    const {
-      stdin
-    } = this.props;
-    stdin.removeListener('readable', this.handleReadable);
-    stdin.removeListener('data', this.handleDataChunk);
-  }
-
-  private enableTerminalInputModes(probeXtversion = false): void {
-    this.props.stdout.write(EBP);
-    this.props.stdout.write(EFE);
-    if (supportsExtendedKeys()) {
-      // Pop-before-push keeps the kitty keyboard stack at depth 1 across
-      // boot, suspend/resume, and terminal reconnects.
-      this.props.stdout.write(DISABLE_KITTY_KEYBOARD);
-      this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
-      this.props.stdout.write(ENABLE_KITTY_KEYBOARD);
-      this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS);
-    }
-    if (!probeXtversion || this.xtversionProbeHandle) {
-      return;
-    }
-    // Probe terminal identity once raw mode is live. Deferred so the
-    // synchronous mode writes finish before the query hits the pty.
-    this.xtversionProbeHandle = setImmediate(() => {
-      this.xtversionProbeHandle = null;
-      void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
-        if (r) {
-          setXtversionName(r.name);
-          logForDebugging(`XTVERSION: terminal identified as "${r.name}"`);
-        } else {
-          logForDebugging('XTVERSION: no reply (terminal ignored query)');
-        }
-      });
-    });
-  }
-
-  private disableTerminalInputModes(): void {
-    this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
-    this.props.stdout.write(DISABLE_KITTY_KEYBOARD);
-    this.props.stdout.write(DFE);
-    this.props.stdout.write(DBP);
-  }
-
-  private reassertInputModes(): void {
-    const {
-      stdin
-    } = this.props;
-    if (!this.isRawModeSupported() || this.rawModeEnabledCount === 0) {
-      return;
-    }
-    stdin.setEncoding('utf8');
-    const stdinWithRaw = stdin as NodeJS.ReadStream & {
-      isRaw?: boolean;
-      setRawMode?: (mode: boolean) => void;
-    };
-    if (!stdinWithRaw.isRaw && stdinWithRaw.setRawMode) {
-      stdinWithRaw.setRawMode(true);
-    }
-    this.attachInputListener();
-    stdin.resume();
-    stdin.ref();
-    this.enableTerminalInputModes(false);
-  }
-
-  handleProcessResume = (): void => {
-    if (!this.hasActiveInputListener()) {
-      return;
-    }
-    this.reassertInputModes();
-    this.lastStdinTime = Date.now();
-  };
-
   // Determines if TTY is supported on the provided stdin
   isRawModeSupported(): boolean {
     return this.props.stdin.isTTY;
@@ -280,7 +163,6 @@ export default class App extends PureComponent<Props, State> {
         <AppContext.Provider value={{
         exit: this.handleExit
       }}>
-          <StdoutContext.Provider value={this.props.stdout}>
           <StdinContext.Provider value={{
           stdin: this.props.stdin,
           setRawMode: this.handleSetRawMode,
@@ -297,20 +179,16 @@ export default class App extends PureComponent<Props, State> {
               </ClockProvider>
             </TerminalFocusProvider>
           </StdinContext.Provider>
-          </StdoutContext.Provider>
         </AppContext.Provider>
       </TerminalSizeContext.Provider>;
   }
   override componentDidMount() {
-    // The TUI renders its input cursor in-band. Keep the native terminal
-    // cursor hidden while mounted so it cannot drift over footer text.
-    if (this.props.stdout.isTTY) {
+    // In accessibility mode, keep the native cursor visible for screen magnifiers and other tools
+    if (this.props.stdout.isTTY && !isEnvTruthy(process.env.AGENC_ACCESSIBILITY)) {
       this.props.stdout.write(HIDE_CURSOR);
     }
-    process.on('SIGCONT', this.handleProcessResume);
   }
   override componentWillUnmount() {
-    process.removeListener('SIGCONT', this.handleProcessResume);
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR);
     }
@@ -323,10 +201,6 @@ export default class App extends PureComponent<Props, State> {
     if (this.pendingHyperlinkTimer) {
       clearTimeout(this.pendingHyperlinkTimer);
       this.pendingHyperlinkTimer = null;
-    }
-    if (this.xtversionProbeHandle) {
-      clearImmediate(this.xtversionProbeHandle);
-      this.xtversionProbeHandle = null;
     }
     // ignore calling setRawMode on an handle stdin it cannot be called
     if (this.isRawModeSupported()) {
@@ -359,9 +233,43 @@ export default class App extends PureComponent<Props, State> {
         stopCapturingEarlyInput();
         stdin.ref();
         stdin.setRawMode(true);
-        this.attachInputListener();
+        if (this.stdinMode === 'data') {
+          stdin.addListener('data', this.handleDataChunk);
+        } else {
+          stdin.addListener('readable', this.handleReadable);
+        }
         stdin.resume();
-        this.enableTerminalInputModes(true);
+        // Enable bracketed paste mode
+        this.props.stdout.write(EBP);
+        // Enable terminal focus reporting (DECSET 1004)
+        this.props.stdout.write(EFE);
+        // Enable extended key reporting so ctrl+shift+<letter> is
+        // distinguishable from ctrl+<letter>. We write both the kitty stack
+        // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
+        // terminals honor whichever they implement (tmux only accepts the
+        // latter).
+        if (supportsExtendedKeys()) {
+          this.props.stdout.write(ENABLE_KITTY_KEYBOARD);
+          this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS);
+        }
+        // Probe terminal identity. XTVERSION survives SSH (query/reply goes
+        // through the pty), unlike TERM_PROGRAM. Used for wheel-scroll base
+        // detection when env vars are absent. Fire-and-forget: the DA1
+        // sentinel bounds the round-trip, and if the terminal ignores the
+        // query, flush() still resolves and name stays undefined.
+        // Deferred to next tick so it fires AFTER the current synchronous
+        // init sequence completes — avoids interleaving with alt-screen/mouse
+        // tracking enable writes that may happen in the same render cycle.
+        setImmediate(() => {
+          void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
+            if (r) {
+              setXtversionName(r.name);
+              logForDebugging(`XTVERSION: terminal identified as "${r.name}"`);
+            } else {
+              logForDebugging('XTVERSION: no reply (terminal ignored query)');
+            }
+          });
+        });
       }
       this.rawModeEnabledCount++;
       return;
@@ -369,9 +277,15 @@ export default class App extends PureComponent<Props, State> {
 
     // Disable raw mode only when no components left that are using it
     if (--this.rawModeEnabledCount === 0) {
-      this.disableTerminalInputModes();
+      this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
+      this.props.stdout.write(DISABLE_KITTY_KEYBOARD);
+      // Disable terminal focus reporting (DECSET 1004)
+      this.props.stdout.write(DFE);
+      // Disable bracketed paste mode
+      this.props.stdout.write(DBP);
       stdin.setRawMode(false);
-      this.detachInputListeners();
+      stdin.removeListener('readable', this.handleReadable);
+      stdin.removeListener('data', this.handleDataChunk);
       stdin.pause();
       stdin.unref();
     }
@@ -434,7 +348,6 @@ export default class App extends PureComponent<Props, State> {
     // all chunks in this readable event.
     const now = Date.now();
     if (now - this.lastStdinTime > STDIN_RESUME_GAP_MS) {
-      this.reassertInputModes();
       this.props.onStdinResume?.();
     }
     this.lastStdinTime = now;
@@ -468,7 +381,6 @@ export default class App extends PureComponent<Props, State> {
   handleDataChunk = (chunk: string | Buffer): void => {
     const now = Date.now();
     if (now - this.lastStdinTime > STDIN_RESUME_GAP_MS) {
-      this.reassertInputModes();
       this.props.onStdinResume?.();
     }
     this.lastStdinTime = now;
@@ -527,7 +439,7 @@ export default class App extends PureComponent<Props, State> {
     // it, SGR mouse sequences would appear as garbled text at the
     // shell prompt while suspended.
     if (this.props.stdout.isTTY) {
-      this.props.stdout.write(SHOW_CURSOR + DFE + DBP + DISABLE_MOUSE_TRACKING + DISABLE_ALTERNATE_SCROLL);
+      this.props.stdout.write(SHOW_CURSOR + DFE + DISABLE_MOUSE_TRACKING);
     }
 
     // Emit suspend event for AgenC to handle. Mostly just has a notification
@@ -542,10 +454,13 @@ export default class App extends PureComponent<Props, State> {
         }
       }
 
-      // The visual cursor is rendered by the composer; hide the native
-      // cursor again after resuming from the shell.
+      // Hide cursor (unless in accessibility mode) and re-enable focus reporting after resuming
       if (this.props.stdout.isTTY) {
-        this.props.stdout.write(HIDE_CURSOR);
+        if (!isEnvTruthy(process.env.AGENC_ACCESSIBILITY)) {
+          this.props.stdout.write(HIDE_CURSOR);
+        }
+        // Re-enable focus reporting to restore terminal state
+        this.props.stdout.write(EFE);
       }
 
       // Emit resume event for AgenC to handle

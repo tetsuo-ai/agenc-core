@@ -1,33 +1,29 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'vitest'
 import { join } from 'node:path'
-
-const mockedClipboardPath = join(process.cwd(), 'agenc-ink-clipboard.txt')
-
-const execFileNoThrowMock = vi.fn(async () => ({
-  code: 0,
-  signal: null,
-  stdout: '',
-  stderr: '',
-  error: null,
-}))
-
-const generateTempFilePathMock = vi.fn(() => mockedClipboardPath)
-
-vi.mock('../vendored/execFileNoThrow.js', () => ({
-  execFileNoThrow: execFileNoThrowMock,
-  execFileNoThrowWithCwd: execFileNoThrowMock,
-}))
-
-vi.mock('../vendored/tempfile.js', () => ({
-  generateTempFilePath: generateTempFilePathMock,
-}))
 
 const originalEnv = { ...process.env }
 const originalPlatform = process.platform
+const mockedClipboardPath = join(process.cwd(), 'agenc-clipboard.txt')
+
+const generateTempFilePathMock = mock(() => mockedClipboardPath)
+
+const execFileNoThrowMock = mock(
+  async () => ({ code: 0, stdout: '', stderr: '' }),
+)
+
+function installOscMocks(): void {
+  mock.module('../vendored/execFileNoThrow.js', () => ({
+    execFileNoThrow: execFileNoThrowMock,
+    execFileNoThrowWithCwd: execFileNoThrowMock,
+  }))
+
+  mock.module('../vendored/tempfile.js', () => ({
+    generateTempFilePath: generateTempFilePathMock,
+  }))
+}
 
 async function importFreshOscModule() {
-  vi.resetModules()
-  return import('./osc.js')
+  return import(`./osc.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
 async function flushClipboardCopy(): Promise<void> {
@@ -51,6 +47,7 @@ async function waitForExecCall(
 
 describe('Windows clipboard fallback', () => {
   beforeEach(() => {
+    installOscMocks()
     execFileNoThrowMock.mockClear()
     generateTempFilePathMock.mockClear()
     process.env = { ...originalEnv }
@@ -68,16 +65,12 @@ describe('Windows clipboard fallback', () => {
     const { setClipboard } = await importFreshOscModule()
 
     await setClipboard('Привет мир')
-    // Wait for the async writeFile + execFileNoThrow chain to fire (the
-    // OSC 52 path uses a void IIFE so it needs polling, not a single tick).
-    await waitForExecCall('powershell')
+    const windowsCall = await waitForExecCall('powershell')
 
     expect(execFileNoThrowMock.mock.calls.some(([cmd]) => cmd === 'clip')).toBe(
       false,
     )
-    expect(
-      execFileNoThrowMock.mock.calls.some(([cmd]) => cmd === 'powershell'),
-    ).toBe(true)
+    expect(windowsCall).toBeDefined()
   })
 
   test('passes Windows clipboard text through a UTF-8 temp file instead of stdin', async () => {
@@ -92,6 +85,11 @@ describe('Windows clipboard fallback', () => {
       stdin: 'ignore',
     })
     expect(windowsCall?.[2]).not.toMatchObject({ input: 'Привет мир' })
+    expect(windowsCall?.[2]).not.toMatchObject({
+      env: expect.objectContaining({
+        AGENC_CLIPBOARD_TEXT_B64: expect.any(String),
+      }),
+    })
     expect(windowsCall?.[1]).toContain(
       `$text = [System.IO.File]::ReadAllText('${mockedClipboardPath.replace(/'/g, "''")}', [System.Text.Encoding]::UTF8); Set-Clipboard -Value $text`,
     )
@@ -100,6 +98,7 @@ describe('Windows clipboard fallback', () => {
 
 describe('clipboard path behavior remains stable', () => {
   beforeEach(() => {
+    installOscMocks()
     execFileNoThrowMock.mockClear()
     process.env = { ...originalEnv }
     delete process.env['SSH_CONNECTION']

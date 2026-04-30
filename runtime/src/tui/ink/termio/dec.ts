@@ -11,11 +11,9 @@ import { csi } from './csi.js'
  * DEC private mode numbers
  */
 export const DEC = {
-  AUTOWRAP: 7,
   CURSOR_VISIBLE: 25,
   ALT_SCREEN: 47,
   ALT_SCREEN_CLEAR: 1049,
-  ALT_SCROLL: 1007,
   MOUSE_NORMAL: 1000,
   MOUSE_BUTTON: 1002,
   MOUSE_ANY: 1003,
@@ -38,12 +36,6 @@ export function decreset(mode: number): string {
 // Pre-generated sequences for common modes
 export const BSU = decset(DEC.SYNCHRONIZED_UPDATE)
 export const ESU = decreset(DEC.SYNCHRONIZED_UPDATE)
-// DECAWM: cursor stays at the last column instead of wrapping to the next
-// line on the next write. Disabling autowrap during a frame write means
-// border cells at the right edge can't trigger a wrap → scroll → edge
-// residue chain. See terminal.ts:writeDiffToTerminal for the wrap.
-export const AUTOWRAP_OFF = decreset(DEC.AUTOWRAP)
-export const AUTOWRAP_ON = decset(DEC.AUTOWRAP)
 export const EBP = decset(DEC.BRACKETED_PASTE)
 export const DBP = decreset(DEC.BRACKETED_PASTE)
 export const EFE = decset(DEC.FOCUS_EVENTS)
@@ -52,8 +44,6 @@ export const SHOW_CURSOR = decset(DEC.CURSOR_VISIBLE)
 export const HIDE_CURSOR = decreset(DEC.CURSOR_VISIBLE)
 export const ENTER_ALT_SCREEN = decset(DEC.ALT_SCREEN_CLEAR)
 export const EXIT_ALT_SCREEN = decreset(DEC.ALT_SCREEN_CLEAR)
-export const ENABLE_ALTERNATE_SCROLL = decset(DEC.ALT_SCROLL)
-export const DISABLE_ALTERNATE_SCROLL = decreset(DEC.ALT_SCROLL)
 // Mouse tracking: 1000 reports button press/release/wheel, 1002 adds drag
 // events (button-motion), 1003 adds all-motion (no button held — for
 // hover), 1006 uses SGR format (CSI < btn;col;row M/m) instead of legacy

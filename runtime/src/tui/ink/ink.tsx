@@ -10,13 +10,11 @@ import { flushInteractionTime } from './vendored/state.js';
 import { getYogaCounters } from './vendored/yoga-layout/index.js';
 import { logForDebugging } from './vendored/debug.js';
 import { logError } from './vendored/log.js';
+import { format } from 'util';
 import { colorize } from './colorize.js';
-import { patchConsoleForInk, patchStderrForInk } from './console-patch.js';
 import App from './components/App.js';
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js';
 import { FRAME_INTERVAL_MS } from './constants.js';
-
-export { FRAME_INTERVAL_MS } from './constants.js';
 import * as dom from './dom.js';
 import { KeyboardEvent } from './events/keyboard-event.js';
 import { FocusManager } from './focus.js';
@@ -37,7 +35,7 @@ import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
 import { shouldSkipMainScreenSyncMarkers, shouldUseMainScreenRewrite, SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
-import { DBP, DFE, DISABLE_ALTERNATE_SCROLL, DISABLE_MOUSE_TRACKING, EBP, EFE, ENABLE_ALTERNATE_SCROLL, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
+import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
 import { TerminalWriteProvider } from './useTerminalNotification.js';
 
@@ -75,7 +73,6 @@ export type Options = {
   waitUntilExit?: () => Promise<void>;
   onFrame?: (event: FrameEvent) => void;
 };
-
 export default class Ink {
   private readonly log: LogUpdate;
   private readonly terminal: Terminal;
@@ -226,11 +223,10 @@ export default class Ink {
     // Test env uses onImmediateRender (direct onRender, no throttle) so
     // existing synchronous lastFrame() tests are unaffected.
     const deferredRender = (): void => queueMicrotask(this.onRender);
-    const throttledRender = throttle(deferredRender, FRAME_INTERVAL_MS, {
+    this.scheduleRender = throttle(deferredRender, FRAME_INTERVAL_MS, {
       leading: true,
-      trailing: true,
+      trailing: true
     });
-    this.scheduleRender = throttledRender as typeof this.scheduleRender;
 
     // Ignore last render after unmounting a tree to prevent empty output before exit
     this.isUnmounted = false;
@@ -297,7 +293,7 @@ export default class Ink {
         this.reportRenderError('recoverable', error);
       }, // onDefaultTransitionIndicator
     );
-    if (process.env.NODE_ENV === 'development') {
+    if (("production" as string) === 'development') {
       reconciler.injectIntoDevTools({
         bundleType: 0,
         // Reporting React DOM's version, not Ink's
@@ -358,7 +354,9 @@ export default class Ink {
     // doesn't exit alt-screen. Do NOT write ERASE_SCREEN: render() below
     // can take ~80ms; erasing first leaves the screen blank that whole time.
     if (this.altScreenActive && !this.isPaused && this.options.stdout.isTTY) {
-      this.options.stdout.write(ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
+      if (this.altScreenMouseTracking) {
+        this.options.stdout.write(ENABLE_MOUSE_TRACKING);
+      }
       this.resetFramesForAltScreen();
       this.needsEraseBeforePaint = true;
     }
@@ -389,10 +387,12 @@ export default class Ink {
     // Disable extended key reporting first — editors that don't speak
     // CSI-u (e.g. nano) show "Unknown sequence" for every Ctrl-<key> if
     // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
-    DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + DBP + DFE + DISABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
+    DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
     // disable mouse (no-op if off)
     this.altScreenActive ? '' : '\x1b[?1049h') +
     // enter alt (already in alt if fullscreen)
+    '\x1b[?1004l' +
+    // disable focus reporting
     '\x1b[0m' +
     // reset attributes
     '\x1b[?25h' +
@@ -422,13 +422,12 @@ export default class Ink {
     // clear screen (now alt if fullscreen)
     '\x1b[H' + (
     // cursor home
-    this.altScreenActive ? ENABLE_ALTERNATE_SCROLL : '') + (
     this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') + (
+    // re-enable mouse (skip if AGENC_DISABLE_MOUSE)
     this.altScreenActive ? '' : '\x1b[?1049l') +
     // exit alt (non-fullscreen only)
     '\x1b[?25l' // hide cursor (Ink manages)
     );
-    this.options.stdout.write(EBP + EFE + (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''));
     this.resumeStdin();
     if (this.altScreenActive) {
       this.resetFramesForAltScreen();
@@ -436,6 +435,13 @@ export default class Ink {
       this.repaint();
     }
     this.resume();
+    // Re-enable focus reporting and extended key reporting — terminal
+    // editors (vim, nano, etc.) write their own modifyOtherKeys level on
+    // entry and reset it on exit, leaving us unable to distinguish
+    // ctrl+shift+<letter> from ctrl+<letter>. Pop-before-push keeps the
+    // Kitty stack balanced (a well-behaved editor restores our entry, so
+    // without the pop we'd accumulate depth on each editor round-trip).
+    this.options.stdout.write('\x1b[?1004h' + (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''));
   }
   onRender() {
     if (this.isUnmounted || this.isPaused) {
@@ -535,7 +541,6 @@ export default class Ink {
     // Selection overlay: invert cell styles in the screen buffer itself,
     // so the diff picks up selection as ordinary cell changes and
     // LogUpdate remains a pure diff engine.
-    //
     // Full-screen damage (PR #20120) is a correctness backstop for the
     // sibling-resize bleed: when flexbox siblings resize between frames
     // (spinner appears → bottom grows → scrollbox shrinks), the
@@ -546,7 +551,6 @@ export default class Ink {
     // removed). Steady-state frames (spinner rotate, clock tick, text
     // stream into fixed-height box) don't shift layout, so normal damage
     // bounds are correct and diffEach only compares the damaged region.
-    //
     // Selection also requires full damage: overlay writes via setCellStyleId
     // which doesn't track damage, and prev-frame overlay cells need to be
     // compared when selection moves/clears. prevFrameContaminated covers
@@ -571,6 +575,20 @@ export default class Ink {
       }
     }
 
+    // Full-damage backstop: applies on BOTH alt-screen and main-screen.
+    // Layout shifts (spinner appears, status line resizes) can leave stale
+    // cells at sibling boundaries that per-node damage tracking misses.
+    // Selection/highlight overlays write via setCellStyleId which doesn't
+    // track damage. prevFrameContaminated covers the cleanup frame.
+    if (didLayoutShift() || selActive || hlActive || this.prevFrameContaminated) {
+      frame.screen.damage = {
+        x: 0,
+        y: 0,
+        width: frame.screen.width,
+        height: frame.screen.height
+      };
+    }
+
     // Alt-screen: anchor the physical cursor to (0,0) before every diff.
     // All cursor moves in log-update are RELATIVE to prev.cursor; if tmux
     // (or any emulator) perturbs the physical cursor out-of-band (status
@@ -590,28 +608,6 @@ export default class Ink {
     }
     const tDiff = performance.now();
     const rewriteMainScreen = !this.altScreenActive && shouldUseMainScreenRewrite();
-    // Force a full-screen repaint when our model of the previous frame
-    // can't be trusted to match what the terminal actually shows. The diff
-    // path skips cells where prev === next; if those cells drifted on the
-    // physical terminal (overlay leftovers, external writes, focus changes
-    // re-painting), the drift survives any number of incremental frames.
-    // Triggers handled here:
-    //   - prevFrameContaminated: selection/highlight overlay was applied
-    //     to the prev buffer post-render, OR the buffer was reset/blanked.
-    //   - selActive || hlActive: overlay active this frame, so the next
-    //     frame after this one will need a clean re-paint anyway — paint
-    //     this one fully too so the terminal's physical state matches the
-    //     overlay we just applied.
-    //   - didLayoutShift(): a sibling resize/spinner toggle moved cells
-    //     around; per-node damage tracking can miss the trailing edge.
-    if (didLayoutShift() || selActive || hlActive || this.prevFrameContaminated) {
-      frame.screen.damage = {
-        x: 0,
-        y: 0,
-        width: frame.screen.width,
-        height: frame.screen.height,
-      };
-    }
     const diff = this.log.render(prevFrame, frame, this.altScreenActive,
     // DECSTBM needs BSU/ESU atomicity — without it the outer terminal
     // renders the scrolled-but-not-yet-repainted intermediate state.
@@ -661,7 +657,6 @@ export default class Ink {
       // BSU/ESU protects content atomicity but iTerm2's guide tracks cursor
       // position independently. Parking at bottom (not 0,0) keeps the guide
       // where the user's attention is.
-      //
       // After resize, prepend ERASE_SCREEN too. The diff only writes cells
       // that changed; cells where new=blank and prev-buffer=blank get skipped
       // — but the physical terminal still has stale content there (shorter
@@ -780,7 +775,6 @@ export default class Ink {
     // apart → jank. Use a plain timeout. If a wheel event arrives first,
     // its scheduleRender path fires a render which clears this timer at
     // the top of onRender — no double.
-    //
     // Drain frames are cheap (DECSTBM + ~10 patches, ~200 bytes) so run at
     // quarter interval (~250fps, setTimeout practical floor) for max scroll
     // speed. Regular renders stay at FRAME_INTERVAL_MS via the throttle.
@@ -908,11 +902,20 @@ export default class Ink {
    * sleep/wake — none of which send SIGCONT. The terminal may reset DEC
    * private modes on reconnect; this method restores them.
    *
-   * Re-asserts the output-side modes that App.tsx does not own:
-   * alternate-scroll and, when enabled, mouse tracking. The alt-screen
-   * re-entry (ERASE_SCREEN + frame reset) is destructive, so it's opt-in
-   * via includeAltScreen. The stdin-gap caller fires on ordinary idle +
-   * keypress and must not erase; explicit resume/stall recovery can opt in.
+   * Always re-asserts extended key reporting and mouse tracking. Mouse
+   * tracking is idempotent (DEC private mode set-when-set is a no-op). The
+   * Kitty keyboard protocol is NOT — CSI >1u is a stack push, so we pop
+   * first to keep depth balanced (pop on empty stack is a no-op per spec,
+   * so after a terminal reset this still restores depth 0→1). Without the
+   * pop, each >5s idle gap adds a stack entry, and the single pop on exit
+   * or suspend can't drain them — the shell is left in CSI u mode where
+   * Ctrl+C/Ctrl+D leak as escape sequences. The alt-screen
+   * re-entry (ERASE_SCREEN + frame reset) is NOT idempotent — it blanks the
+   * screen — so it's opt-in via includeAltScreen. The stdin-gap caller fires
+   * on ordinary >5s idle + keypress and must not erase; the event-loop stall
+   * detector fires on genuine sleep/wake and opts in. tmux attach / ssh
+   * reconnect typically send a resize, which already covers alt-screen via
+   * handleResize.
    */
   reassertTerminalModes = (includeAltScreen = false): void => {
     if (!this.options.stdout.isTTY) return;
@@ -983,7 +986,7 @@ export default class Ink {
    * stays true. ENTER_ALT_SCREEN is a terminal-side no-op if already in alt.
    */
   private reenterAltScreen(): void {
-    this.options.stdout.write(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + ENABLE_ALTERNATE_SCROLL + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
+    this.options.stdout.write(ENTER_ALT_SCREEN + ERASE_SCREEN + CURSOR_HOME + (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : ''));
     this.resetFramesForAltScreen();
   }
 
@@ -1390,28 +1393,18 @@ export default class Ink {
       return;
     }
 
-    // Store and remove all stdin listeners temporarily.
+    // Store and remove all 'readable' event listeners temporarily
     // This prevents Ink from consuming stdin while the editor is active
     const readableListeners = stdin.listeners('readable');
-    const dataListeners = stdin.listeners('data');
-    logForDebugging(`[stdin] suspendStdin: removing ${readableListeners.length} readable listener(s), ${dataListeners.length} data listener(s), wasRawMode=${(stdin as NodeJS.ReadStream & {
+    logForDebugging(`[stdin] suspendStdin: removing ${readableListeners.length} readable listener(s), wasRawMode=${(stdin as NodeJS.ReadStream & {
       isRaw?: boolean;
     }).isRaw ?? false}`);
-    [...readableListeners.map(listener => ({
-      event: 'readable',
-      listener
-    })), ...dataListeners.map(listener => ({
-      event: 'data',
-      listener
-    }))].forEach(({
-      event,
-      listener
-    }) => {
+    readableListeners.forEach(listener => {
       this.stdinListeners.push({
-        event,
+        event: 'readable',
         listener: listener as (...args: unknown[]) => void
       });
-      stdin.removeListener(event, listener as (...args: unknown[]) => void);
+      stdin.removeListener('readable', listener as (...args: unknown[]) => void);
     });
 
     // If raw mode is enabled, disable it temporarily
@@ -1423,7 +1416,6 @@ export default class Ink {
       stdinWithRaw.setRawMode(false);
       this.wasRawMode = true;
     }
-    stdin.pause();
   }
   resumeStdin(): void {
     const stdin = this.options.stdin;
@@ -1456,7 +1448,6 @@ export default class Ink {
       }
       this.wasRawMode = false;
     }
-    stdin.resume();
   }
 
   // Stable identity for TerminalWriteContext. An inline arrow here would
@@ -1516,9 +1507,7 @@ export default class Ink {
       if (this.altScreenActive) {
         // <AlternateScreen>'s unmount effect won't run during signal-exit.
         // Exit alt screen FIRST so other cleanup sequences go to the main screen.
-        writeSync(1, DISABLE_ALTERNATE_SCROLL + EXIT_ALT_SCREEN);
-      } else {
-        writeSync(1, DISABLE_ALTERNATE_SCROLL);
+        writeSync(1, EXIT_ALT_SCREEN);
       }
       // Disable mouse tracking — unconditional because altScreenActive can be
       // stale if AlternateScreen's unmount (which flips the flag) raced a
@@ -1606,7 +1595,24 @@ export default class Ink {
     this.backFrame.screen.hyperlinkPool = this.hyperlinkPool;
   }
   patchConsole(): () => void {
-    return patchConsoleForInk();
+    // biome-ignore lint/suspicious/noConsole: intentionally patching global console
+    const con = console;
+    const originals: Partial<Record<keyof Console, Console[keyof Console]>> = {};
+    const toDebug = (...args: unknown[]) => logForDebugging(`console.log: ${format(...args)}`);
+    const toError = (...args: unknown[]) => logError(new Error(`console.error: ${format(...args)}`));
+    for (const m of CONSOLE_STDOUT_METHODS) {
+      originals[m] = con[m];
+      con[m] = toDebug;
+    }
+    for (const m of CONSOLE_STDERR_METHODS) {
+      originals[m] = con[m];
+      con[m] = toError;
+    }
+    originals.assert = con.assert;
+    con.assert = (condition: unknown, ...args: unknown[]) => {
+      if (!condition) toError(...args);
+    };
+    return () => Object.assign(con, originals);
   }
 
   /**
@@ -1622,15 +1628,40 @@ export default class Ink {
    * process.stdout — Ink itself writes there.
    */
   private patchStderr(): () => void {
-    return patchStderrForInk({
-      isAltScreenActive: () => this.altScreenActive,
-      isUnmounted: () => this.isUnmounted,
-      isPaused: () => this.isPaused,
-      markContaminated: () => {
-        this.prevFrameContaminated = true;
-      },
-      scheduleRender: () => this.scheduleRender(),
-    });
+    const stderr = process.stderr;
+    const originalWrite = stderr.write;
+    let reentered = false;
+    const intercept = (chunk: Uint8Array | string, encodingOrCb?: BufferEncoding | ((err?: Error | null) => void), cb?: (err?: Error | null) => void): boolean => {
+      const callback = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
+      // Reentrancy guard: logForDebugging → writeToStderr → here. Pass
+      // through to the original so --debug-to-stderr still works and we
+      // don't stack-overflow.
+      if (reentered) {
+        const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : undefined;
+        return originalWrite.call(stderr, chunk, encoding, callback);
+      }
+      reentered = true;
+      try {
+        const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+        logForDebugging(`[stderr] ${text}`, {
+          level: 'warn'
+        });
+        if (this.altScreenActive && !this.isUnmounted && !this.isPaused) {
+          this.prevFrameContaminated = true;
+          this.scheduleRender();
+        }
+      } finally {
+        reentered = false;
+        callback?.();
+      }
+      return true;
+    };
+    stderr.write = intercept;
+    return () => {
+      if (stderr.write === intercept) {
+        stderr.write = originalWrite;
+      }
+    };
   }
 }
 
@@ -1712,3 +1743,6 @@ export function drainStdin(stdin: NodeJS.ReadStream = process.stdin): void {
   }
 }
 /* eslint-enable custom-rules/no-sync-fs */
+
+const CONSOLE_STDOUT_METHODS = ['log', 'info', 'debug', 'dir', 'dirxml', 'count', 'countReset', 'group', 'groupCollapsed', 'groupEnd', 'table', 'time', 'timeEnd', 'timeLog'] as const;
+const CONSOLE_STDERR_METHODS = ['warn', 'error', 'trace'] as const;

@@ -29,7 +29,7 @@ import React, { useEffect, useMemo, useRef } from "react";
 
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
-import { MarkdownBlock } from "./MarkdownBlock.js";
+import { Markdown, StreamingMarkdown } from "../components/Markdown.js";
 import { neutralizeControlCharsForDisplay } from "./sanitize.js";
 
 /* ────────────────────────────────────────────────────────────────────── */
@@ -303,7 +303,11 @@ export const StreamingMessage: React.FC<StreamingMessageProps> = ({
   if (!scan.hasSpoof) {
     return (
       <Box flexDirection="column">
-        <MarkdownBlock content={content} isComplete={isComplete} />
+        {isComplete ? (
+          <Markdown>{content}</Markdown>
+        ) : (
+          <StreamingMarkdown>{content}</StreamingMarkdown>
+        )}
         {showStreamingMarker ? <Text dim>{"\u2026"}</Text> : null}
       </Box>
     );

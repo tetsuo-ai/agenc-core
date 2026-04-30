@@ -507,10 +507,7 @@ export function resetScreen(
   warn.ifNotInteger(width, 'resetScreen width')
   warn.ifNotInteger(height, 'resetScreen height')
 
-  // Coerce to a valid integer so a NaN/Infinity/negative input doesn't
-  // silently propagate into cells64 sizing as `size = NaN * height` and
-  // produce a buffer that never gets touched. The previous form had an
-  // empty if-block, which left bad widths uncoerced.
+  // Ensure width and height are valid integers to prevent crashes
   if (!Number.isInteger(width) || width < 0) {
     width = Math.max(0, Math.floor(width) || 0)
   }
@@ -703,14 +700,6 @@ export function setCellAt(
   const ci = (y * screen.width + x) << 1
   const cells = screen.cells
 
-  // Track the X-range of every cell this call mutates. Final damage update
-  // covers [damageMinX..damageMaxX] so the diff scans every column we
-  // touched — including the orphan-spacer repairs that previously mutated
-  // x+1 / x+2 without expanding damage, which left ghost cells visible on
-  // the terminal because diffEach never visited them.
-  let damageMinX = x
-  let damageMaxX = x
-
   // When a Wide char is overwritten by a Narrow char, its SpacerTail remains
   // as a ghost cell that the diff/render pipeline skips, causing stale content
   // to leak through from previous frames.
@@ -726,11 +715,11 @@ export function setCellAt(
           0,
           CellWidth.Narrow,
         )
-        if (spacerX > damageMaxX) damageMaxX = spacerX
       }
     }
   }
   // Track cleared Wide position for damage expansion below
+  let clearedWideX = -1
   if (
     prevWidth === CellWidth.SpacerTail &&
     cell.width !== CellWidth.SpacerTail
@@ -743,7 +732,7 @@ export function setCellAt(
       if ((cells[wideCI + 1]! & WIDTH_MASK) === CellWidth.Wide) {
         cells[wideCI] = EMPTY_CHAR_INDEX
         cells[wideCI + 1] = packWord1(screen.emptyStyleId, 0, CellWidth.Narrow)
-        if (x - 1 < damageMinX) damageMinX = x - 1
+        clearedWideX = x - 1
       }
     }
   }
@@ -755,6 +744,29 @@ export function setCellAt(
     internHyperlink(screen, cell.hyperlink),
     cell.width,
   )
+
+  // Track damage - expand bounds in place instead of allocating new objects
+  // Include the main cell position and any cleared orphan cells
+  const minX = clearedWideX >= 0 ? Math.min(x, clearedWideX) : x
+  const damage = screen.damage
+  if (damage) {
+    const right = damage.x + damage.width
+    const bottom = damage.y + damage.height
+    if (minX < damage.x) {
+      damage.width += damage.x - minX
+      damage.x = minX
+    } else if (x >= right) {
+      damage.width = x - damage.x + 1
+    }
+    if (y < damage.y) {
+      damage.height += damage.y - y
+      damage.y = y
+    } else if (y >= bottom) {
+      damage.height = y - damage.y + 1
+    }
+  } else {
+    screen.damage = { x: minX, y, width: x - minX + 1, height: 1 }
+  }
 
   // If this is a wide character, create a spacer in the next column
   if (cell.width === CellWidth.Wide) {
@@ -779,7 +791,6 @@ export function setCellAt(
             0,
             CellWidth.Narrow,
           )
-          if (spacerX + 1 > damageMaxX) damageMaxX = spacerX + 1
         }
       }
       cells[spacerCI] = SPACER_CHAR_INDEX
@@ -788,37 +799,12 @@ export function setCellAt(
         0,
         CellWidth.SpacerTail,
       )
-      if (spacerX > damageMaxX) damageMaxX = spacerX
-    }
-  }
 
-  // Single damage update covering every column this call mutated. Earlier
-  // versions updated damage piecemeal at each mutation site and missed the
-  // x+1 / x+2 spacer-clear writes — those cells were modified in the
-  // buffer but never visited by diff, so the terminal kept stale glyphs.
-  const damage = screen.damage
-  if (damage) {
-    const right = damage.x + damage.width
-    const bottom = damage.y + damage.height
-    if (damageMinX < damage.x) {
-      damage.width += damage.x - damageMinX
-      damage.x = damageMinX
-    }
-    if (damageMaxX >= right) {
-      damage.width = damageMaxX - damage.x + 1
-    }
-    if (y < damage.y) {
-      damage.height += damage.y - y
-      damage.y = y
-    } else if (y >= bottom) {
-      damage.height = y - damage.y + 1
-    }
-  } else {
-    screen.damage = {
-      x: damageMinX,
-      y,
-      width: damageMaxX - damageMinX + 1,
-      height: 1,
+      // Expand damage to include SpacerTail so diff() scans it
+      const d = screen.damage
+      if (d && spacerX >= d.x + d.width) {
+        d.width = spacerX - d.x + 1
+      }
     }
   }
 }

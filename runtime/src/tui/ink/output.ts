@@ -277,7 +277,6 @@ export default class Output {
     // Pass 1: expand damage to cover clear regions. The buffer is freshly
     // zeroed by resetScreen, so this pass only marks damage so diff()
     // checks these regions against the previous frame.
-    //
     // Also collect clears from absolute-positioned nodes. An absolute
     // node overlays normal-flow siblings; when it shrinks, its clear is
     // pushed AFTER those siblings' clean-subtree blits (DOM order). The
@@ -591,7 +590,6 @@ function flushBuffer(
 ): void {
   // Compute styleId + hyperlink ONCE for the whole style run.
   // Every grapheme in this buffer shares the same styles.
-  //
   // Extract and track hyperlinks separately, filter from styles.
   // Always check for OSC 8 codes to filter, not just when a URL is
   // extracted. The tokenizer treats OSC 8 close codes (empty URL) as

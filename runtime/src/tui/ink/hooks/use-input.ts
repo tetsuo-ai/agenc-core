@@ -21,16 +21,8 @@ type Options = {
  * The callback you pass to `useInput` is called for each character when user enters any input.
  * However, if user pastes text and it's more than one character, the callback will be called only once and the whole string will be passed as `input`.
  *
- * Coexists with AgenC's `KeybindingProvider`: both subscribe to the same
- * `StdinContext` event emitter. Listener order is registration order; for the
- * `chat` keybinding context, useInput consumers fire before the keybinding
- * router, so a useInput handler that calls `event.stopImmediatePropagation()`
- * will preempt routed keybindings. The keybinding provider self-suspends
- * the chat map when overlays push themselves into modal context, so use
- * `event.stopImmediatePropagation()` rather than relying on suspension.
- *
  * ```
- * import { useInput } from 'agenc-runtime/tui/ink'
+ * import {useInput} from 'ink';
  *
  * const UserInput = () => {
  *   useInput((input, key) => {
@@ -41,10 +33,10 @@ type Options = {
  *     if (key.leftArrow) {
  *       // Left arrow key pressed
  *     }
- *   })
+ *   });
  *
  *   return …
- * }
+ * };
  * ```
  */
 const useInput = (inputHandler: Handler, options: Options = {}) => {
