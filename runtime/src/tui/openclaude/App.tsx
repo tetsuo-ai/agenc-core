@@ -19,6 +19,8 @@ import {
   OpenClaudePermissionOverlay,
   usePermissionBridge,
 } from "./permission-bridge.js";
+import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
+import type { Command } from "../../agenc/upstream/commands.js";
 import type { OpenClaudeTuiProps } from "./session-types.js";
 
 function initialPermissionContext(
@@ -174,12 +176,14 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
     [props.session.abortController, toolPermissionContext, tools],
   );
 
+  const commands = useMemo(() => loadUpstreamCommandList(), []);
+
   return (
     <Box flexDirection="column" width="100%">
       <Messages
         messages={transcript.messages as any[]}
         tools={tools as any}
-        commands={[]}
+        commands={commands as unknown as Command[]}
         verbose={false}
         toolJSX={null}
         toolUseConfirmQueue={[]}
@@ -202,7 +206,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         toolPermissionContext={toolPermissionContext as any}
         setToolPermissionContext={setToolPermissionContext as any}
         apiKeyStatus={"valid" as any}
-        commands={[]}
+        commands={commands as unknown as Command[]}
         agents={[]}
         isLoading={transcript.isStreaming}
         verbose={false}
