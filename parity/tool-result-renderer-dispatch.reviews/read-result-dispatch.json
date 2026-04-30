@@ -1,0 +1,73 @@
+{
+  "rowId": "read-result-dispatch",
+  "contractName": "tool-result-renderer-dispatch",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-04-30T18:10:00.000Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "createBridgeTool('FileRead') routes to FileReadView when content carries the <read-content> envelope; createBridgeTool('Read') (the legacy wrong pre-seed name) does NOT route — exact-case + correct-name dispatch",
+      "FileReadView renders the file path bolded, optionally with a [startLine-endLine] range, followed by the file content body",
+      "If the content is empty, FileReadView renders an (empty file) indicator instead of an empty Box",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='FileRead' produces the <read-file>/<read-lines>/<read-content> envelope shape FileReadView consumes",
+      "Pre-seeded createBridgeTools list now contains 'FileRead' (canonical live name), removing the previously wrong 'Read' pre-seed"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "FileRead result with content longer than 8KB is truncated to ~8KB with a [N chars truncated] marker (no megabyte-scale renders)",
+      "FileRead result missing the path field (slice-only result) renders the body without a header instead of throwing",
+      "FileRead result missing the content field (zero-length read) renders the (empty file) indicator",
+      "FileRead with the legacy single-string content shape (no envelope) falls through to the generic Text renderer without crashing",
+      "FileRead with non-string startLine/endLine falls back to omitting the line range header instead of emitting <read-lines> with non-numeric values",
+      "createBridgeTool('Read') (the wrong pre-seed name) does NOT route to FileReadView even with the correct envelope content"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [
+    {
+      "severity": "medium",
+      "category": "test-quality",
+      "message": "FileReadView reuses BASH_OUTPUT_TRUNCATION_LIMIT (named for Bash) at runtime/src/tui/openclaude/tool-stubs.tsx:123. The 8KB cap is correct but the constant name implies Bash ownership. If FileRead's truncation budget should diverge from Bash's later, the shared constant will silently couple them. Consider a FILE_READ_TRUNCATION_LIMIT alias even if the value stays the same. Not a blocker — soft naming/coupling smell, consistent with how the bash row was accepted."
+    },
+    {
+      "severity": "medium",
+      "category": "edge-case",
+      "message": "extractBridgeTag uses indexOf for the closing tag, which means a body containing the literal string `</read-content>` will be truncated at that point. For FileRead, this is not theoretical — a user reading a TSX/HTML file containing `</read-content>` would see partial content silently. Consider documenting this as a known limitation or escaping the body. Not a blocker — Bash and Edit have the same property and were accepted at this severity."
+    }
+  ],
+  "auditDetails": {
+    "behaviorEvidence": {
+      "createBridgeTool('FileRead') routes to FileReadView when content carries the <read-content> envelope; createBridgeTool('Read') (the legacy wrong pre-seed name) does NOT route — exact-case + correct-name dispatch": "Implemented at runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:81-86 (file-read-view branch keyed on FILE_READ_TOOL_NAME_FOR_DISPATCH = 'FileRead' AND joinedContent.includes('<read-content>')) plus runtime/src/tui/openclaude/tool-stubs.tsx:412-413 (case 'file-read-view' returns <FileReadView />). Positive routing asserted at runtime/src/tools/upstream-tool-result-dispatch.test.ts:86-90; negative routing for 'Read' asserted at runtime/src/tools/upstream-tool-result-dispatch.test.ts:92-96. End-to-end positive dispatch at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:62-71 (expect node.type === FileReadView), end-to-end negative for 'Read' at lines 73-81 (expect node.type !== FileReadView). Cross-routing guards (FileRead + <bash-stdout> -> generic) at runtime/src/tools/upstream-tool-result-dispatch.test.ts:152-162.",
+      "FileReadView renders the file path bolded, optionally with a [startLine-endLine] range, followed by the file content body": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:115-136 (extracts <read-file>, <read-lines>, <read-content>; headerText = lines.length > 0 ? `${file} [${lines}]` : file; renders <Text bold>{headerText}</Text> then <Text>{truncatedBody}</Text>). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:83-97 — content `<read-file>src/foo.ts</read-file>\\n<read-lines>5-10</read-lines>\\n<read-content>function hello() {}</read-content>`, header.props.bold true, header.props.children 'src/foo.ts [5-10]', body Text child has children 'function hello() {}'. Wire-shape-lock at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:457-478 confirms the formatStructuredToolResult output is consumed by FileReadView with header 'src/foo.ts [1-3]'.",
+      "If the content is empty, FileReadView renders an (empty file) indicator instead of an empty Box": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:131-133 (`{truncatedBody.length > 0 ? <Text>{truncatedBody}</Text> : <Text dimColor>(empty file)</Text>}`). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:99-108 — content `<read-file>x</read-file>\\n<read-content></read-content>` produces a child with props.children === '(empty file)' and props.dimColor === true.",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='FileRead' produces the <read-file>/<read-lines>/<read-content> envelope shape FileReadView consumes": "Implemented at runtime/src/tui/openclaude/message-adapter.ts:375-404 (FileRead branch: emits <read-file> when path is a string, <read-lines>{startLine}-{endLine}</read-lines> when both are numbers, then <read-content>{content}</read-content>). Envelope shape asserted at runtime/src/tui/openclaude/message-adapter.test.ts:240-255 (3-block sequence: `<read-file>src/foo.ts</read-file>`, `<read-lines>10-20</read-lines>`, `<read-content>function hello() { return 42; }</read-content>`). Round-trip consumption by FileReadView asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:457-478.",
+      "Pre-seeded createBridgeTools list now contains 'FileRead' (canonical live name), removing the previously wrong 'Read' pre-seed": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:471-484 (the unique Set contains 'Bash', 'Edit', 'FileRead', 'Write', 'Grep', 'Glob' and does NOT contain 'Read'). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:53-59 — `mod.createBridgeTools([])` returns a list whose `.name` set contains 'FileRead' and does NOT contain 'Read'. Single-tool variant asserted at lines 48-51 (createBridgeTool('FileRead').name === 'FileRead')."
+    },
+    "edgeCaseEvidence": {
+      "FileRead result with content longer than 8KB is truncated to ~8KB with a [N chars truncated] marker (no megabyte-scale renders)": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:123 (`truncateForDisplay(body, BASH_OUTPUT_TRUNCATION_LIMIT)` with limit = 8 * 1024). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:129-143 — `huge = 'x'.repeat(50_000)` is rendered, body Text child's children string contains 'chars truncated' AND has length < 10_000.",
+      "FileRead result missing the path field (slice-only result) renders the body without a header instead of throwing": "Implementation guard at runtime/src/tui/openclaude/tool-stubs.tsx:128 (`{file.length > 0 ? <Text bold>{headerText}</Text> : null}`). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:110-117 — `FileReadView({ content: '<read-content>just body</read-content>' })` produces no child with props.bold === true and a Text child carries body 'just body'.",
+      "FileRead result missing the content field (zero-length read) renders the (empty file) indicator": "Implemented at runtime/src/tui/openclaude/tool-stubs.tsx:131-133. Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:99-108 with content `<read-file>x</read-file>\\n<read-content></read-content>`.",
+      "FileRead with the legacy single-string content shape (no envelope) falls through to the generic Text renderer without crashing": "Dispatch logic at runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:81-86 returns 'generic' when <read-content> is absent. Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:119-127 — `createBridgeTool('FileRead').renderToolResultMessage('raw legacy string content', [], { verbose: false })` produces a node whose .type is NOT FileReadView. Symmetric dispatch-level coverage exists for Bash at runtime/src/tools/upstream-tool-result-dispatch.test.ts:25-28.",
+      "FileRead with non-string startLine/endLine falls back to omitting the line range header instead of emitting <read-lines> with non-numeric values": "Implementation guard at runtime/src/tui/openclaude/message-adapter.ts:392-397 (`if (typeof r.startLine === 'number' && typeof r.endLine === 'number')` only emits <read-lines> when both are numeric). Asserted at runtime/src/tui/openclaude/message-adapter.test.ts:257-276 — both string-typed startLine/endLine and partial-numeric (one number + one string) produce no block whose text contains '<read-lines>'.",
+      "createBridgeTool('Read') (the wrong pre-seed name) does NOT route to FileReadView even with the correct envelope content": "Implemented at runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:81-86 (exact-case check FILE_READ_TOOL_NAME_FOR_DISPATCH === 'FileRead'). Asserted at runtime/src/tools/upstream-tool-result-dispatch.test.ts:92-96 (pickToolResultDispatch('Read', '<read-content>body</read-content>') === 'generic') AND at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:73-81 (createBridgeTool('Read').renderToolResultMessage with `<read-content>x</read-content>` returns a node whose .type is NOT FileReadView)."
+    }
+  },
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.reviews/read-result-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/upstream/tools/FileReadTool/UI.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-extra-bridge.test.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.test.ts"
+    ],
+    "testsExecuted": [
+      "cd /home/tetsuo/git/agenc-core-tool-result-dispatch/runtime && node_modules/.bin/vitest run --root . src/tools/upstream-tool-result-dispatch.test.ts src/tools/tool-stubs-extra-bridge.test.tsx src/tui/openclaude/message-adapter.test.ts (122/122 passing)"
+    ]
+  }
+}

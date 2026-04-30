@@ -1,0 +1,63 @@
+{
+  "rowId": "grep-result-dispatch",
+  "contractName": "tool-result-renderer-dispatch",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-04-30T22:55:00.000Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "createBridgeTool('Grep') routes to GrepMatchesView when content carries the <grep-matches> envelope",
+      "GrepMatchesView renders the bold pattern header with a (N matches) count and one Text child per match line",
+      "If matches are empty, GrepMatchesView renders a (no matches) indicator with the pattern header preserved",
+      "Large match lists are truncated to 200 visible matches plus a dim '… N more matches truncated' marker",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='Grep' walks result.matches OR result.results, projects each {file, line, content} entry as 'file:line:content', and produces the <grep-pattern>/<grep-matches> envelope"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Grep result with matches as an array of strings (already pre-formatted) preserves them verbatim",
+      "Grep result with matches as objects produces 'file:line:content' lines",
+      "Grep result with the alternate `text` field (instead of `content`) on each match still resolves the line content",
+      "Grep result with empty matches array produces (no matches) indicator",
+      "Grep result with > 200 matches truncates with N-more-truncated marker",
+      "Grep result missing the pattern field omits the header but still renders match lines"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "auditDetails": {
+    "behaviorEvidence": {
+      "createBridgeTool('Grep') routes to GrepMatchesView when content carries the <grep-matches> envelope": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:386-428 (renderToolResultMessage dispatch switch, 'grep-matches-view' branch returns <GrepMatchesView content={joined} /> at lines 416-417). Pure-decision logic: runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:93-98 (exact-case 'Grep' + presence of '<grep-matches>' tag → 'grep-matches-view'). End-to-end dispatch asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:188-196 (`expect((node as { type: unknown }).type).toBe(GrepMatchesView)`); routing-decision asserted at runtime/src/tools/upstream-tool-result-dispatch.test.ts:104-108. Cross-routing negative tests at upstream-tool-result-dispatch.test.ts:144 (lowercase 'grep' → generic) and 152-162 (other tools with <grep-matches> → generic).",
+      "GrepMatchesView renders the bold pattern header with a (N matches) count and one Text child per match line": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:162-199 (header at 182-187 with `Grep: ${pattern} (${matchLines.length} ${matchLines.length === 1 ? 'match' : 'matches'})`, body lines mapped at 191-193). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:198-213 (`toContain('Grep: TODO')` + `toContain('3 matches')` on the bold header, plus 3+ Text children with ':'-containing content); wire-shape lock at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:494-511.",
+      "If matches are empty, GrepMatchesView renders a (no matches) indicator with the pattern header preserved": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:170-178 (when `matchLines.length === 0`, header is `Grep: ${pattern}` if pattern is non-empty, else null). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:215-228 with explicit `expect(header).toBeDefined()` after `children.find((c) => c.props.bold === true && c.props.children === 'Grep: X')`; both the (no matches) indicator and the bold 'Grep: X' header preservation are locked.",
+      "Large match lists are truncated to 200 visible matches plus a dim '… N more matches truncated' marker": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:179-181 (TRUNCATE_AT = 200, `visible = matchLines.slice(0, 200)`) and 194-196 (`'… N more matches truncated'` rendered when `truncatedCount > 0`). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:252-264 (350 generated match lines → expect a Text child whose children string contains 'more matches truncated').",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='Grep' walks result.matches OR result.results, projects each {file, line, content} entry as 'file:line:content', and produces the <grep-pattern>/<grep-matches> envelope": "Implementation: runtime/src/tui/openclaude/message-adapter.ts:441-498 (matches/results OR-branch at 453-457; per-entry projection at 462-483 covering string-passthrough, content field, and text-alternate; envelope assembly at 485-496). Both branches asserted: result.matches at message-adapter.test.ts:365-380, result.results at message-adapter.test.ts:303-312; pre-formatted string matches at message-adapter.test.ts:314-325; alternate `text` field at message-adapter.test.ts:327-335."
+    },
+    "edgeCaseEvidence": {
+      "Grep result with matches as an array of strings (already pre-formatted) preserves them verbatim": "Implementation: runtime/src/tui/openclaude/message-adapter.ts:460-461 (`if (typeof match === 'string') { lines.push(match); }`). Asserted at runtime/src/tui/openclaude/message-adapter.test.ts:314-325 with `matches: ['preformatted line 1', 'preformatted line 2']` expecting `<grep-matches>preformatted line 1\\npreformatted line 2</grep-matches>` verbatim (no shape transformation applied to string elements).",
+      "Grep result with matches as objects produces 'file:line:content' lines": "Implementation: runtime/src/tui/openclaude/message-adapter.ts:462-483 (object branch projects file/line/content into a single colon-joined string at line 482). Asserted at runtime/src/tui/openclaude/message-adapter.test.ts:365-380 with two object-shaped matches `{file: 'a.ts', line: 5, content: '// TODO: refactor'}` etc., expecting `<grep-matches>a.ts:5:// TODO: refactor\\nb.ts:12:// TODO: test</grep-matches>`.",
+      "Grep result with the alternate `text` field (instead of `content`) on each match still resolves the line content": "Implementation: runtime/src/tui/openclaude/message-adapter.ts:476-481 (`typeof m.content === 'string' ? m.content : typeof m.text === 'string' ? m.text : ''`). Asserted at runtime/src/tui/openclaude/message-adapter.test.ts:327-335 with `matches: [{ file: 'a.ts', line: 1, text: 'via text field' }]` expecting the `<grep-matches>` body to contain `via text field`.",
+      "Grep result with empty matches array produces (no matches) indicator": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:170-178 (matchLines.length === 0 branch renders `<Text dimColor>(no matches)</Text>`). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:215-228 with `<grep-matches></grep-matches>` content → child with children === '(no matches)' and dimColor === true, AND header preservation `Grep: X` asserted in the same test.",
+      "Grep result with > 200 matches truncates with N-more-truncated marker": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:179-181, 194-196. Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:252-264 (350 generated match lines → expect a Text child whose children string contains 'more matches truncated').",
+      "Grep result missing the pattern field omits the header but still renders match lines": "Implementation: runtime/src/tui/openclaude/tool-stubs.tsx:182-187 (when `pattern.length === 0`, headerText is null and the bold header child is not emitted) and 191-193 (match lines render unconditionally). Asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:239-250 with content `<grep-matches>a.ts:1:hit</grep-matches>` (no <grep-pattern> tag) → `expect(header).toBeUndefined()` AND `expect(matchLine).toBeDefined()` on `a.ts:1:hit`."
+    },
+    "singularLabelNote": "The singular-label test at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:230-237 asserts `header.props.children).toBe('Grep: X (1 match)')` exactly, locking the singular form. Mirrors the analogous Glob singular test at tool-stubs-extra-bridge.test.tsx:310-317. Singular branch at tool-stubs.tsx:184-186 (`matchLines.length === 1 ? 'match' : 'matches'`) is exercised."
+  },
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.reviews/grep-result-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-extra-bridge.test.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.test.ts"
+    ],
+    "testsExecuted": [
+      "cd /home/tetsuo/git/agenc-core-tool-result-dispatch/runtime && node_modules/.bin/vitest run --root . src/tools/upstream-tool-result-dispatch.test.ts src/tools/tool-stubs-extra-bridge.test.tsx src/tui/openclaude/message-adapter.test.ts  # 122/122 passing per implementer report; all five required behaviors and all six declared edge cases have both implementation evidence and asserting test cases."
+    ]
+  }
+}

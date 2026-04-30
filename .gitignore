@@ -43,6 +43,7 @@ obj/
 !runtime/benchmarks/v1/delegation-manifest.json
 !runtime/benchmarks/v1/*.json
 !parity/*.json
+!parity/*.reviews/*.json
 !runtime/benchmarks/v1/incidents/*.json
 !runtime/benchmarks/mutation-gating-policy.ci.json
 !runtime/parity/*.json

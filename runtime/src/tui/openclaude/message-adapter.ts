@@ -320,16 +320,22 @@ export function formatStructuredToolResult(
       typeof payload.exitCode === "number" ? payload.exitCode : null;
     const durationMs =
       typeof payload.durationMs === "number" ? payload.durationMs : null;
+    // Wrap in upstream's `<bash-stdout>...</bash-stdout>` /
+    // `<bash-stderr>...</bash-stderr>` envelope so the bridge Bash tool
+    // can hand the joined text directly to the upstream
+    // `UserBashOutputMessage` component, which extracts these tags via
+    // `extractTag(content, "bash-stdout")`. The exit_code / duration_ms
+    // metadata block is appended outside the tags so it remains
+    // human-readable in fallback paths.
     const blocks: { type: "text"; text: string }[] = [];
-    if (stdout.length > 0) blocks.push({ type: "text", text: `[stdout]\n${stdout}` });
-    if (stderr.length > 0) blocks.push({ type: "text", text: `[stderr]\n${stderr}` });
+    blocks.push({ type: "text", text: `<bash-stdout>${stdout}</bash-stdout>` });
+    if (stderr.length > 0) {
+      blocks.push({ type: "text", text: `<bash-stderr>${stderr}</bash-stderr>` });
+    }
     const meta: string[] = [];
     if (exitCode !== null) meta.push(`exit_code=${exitCode}`);
     if (durationMs !== null) meta.push(`duration_ms=${durationMs}`);
     if (meta.length > 0) blocks.push({ type: "text", text: `[${meta.join(" ")}]` });
-    if (blocks.length === 0) {
-      blocks.push({ type: "text", text: "[no output]" });
-    }
     return blocks;
   }
 
@@ -353,14 +359,209 @@ export function formatStructuredToolResult(
         typeof (result as { readonly path?: unknown }).path === "string"
           ? (result as { readonly path: string }).path
           : null;
+      // Tagged envelope (same pattern as `<bash-stdout>...</bash-stdout>`)
+      // so the bridge tool's `EditDiffView` can pull file path and diff
+      // body out of the joined content via `extractBridgeTag`. Keeps
+      // Bash and Edit on the same wire-shape pattern.
       const blocks: { type: "text"; text: string }[] = [];
-      if (path !== null) blocks.push({ type: "text", text: `[file]\n${path}` });
-      blocks.push({ type: "text", text: `[diff]\n${diff}` });
+      if (path !== null) {
+        blocks.push({ type: "text", text: `<edit-file>${path}</edit-file>` });
+      }
+      blocks.push({ type: "text", text: `<edit-diff>${diff}</edit-diff>` });
+      return blocks;
+    }
+  }
+
+  if (toolName === "FileRead") {
+    if (
+      result &&
+      typeof result === "object" &&
+      "content" in (result as Record<string, unknown>) &&
+      typeof (result as { readonly content?: unknown }).content === "string"
+    ) {
+      const r = result as {
+        readonly content: string;
+        readonly path?: unknown;
+        readonly startLine?: unknown;
+        readonly endLine?: unknown;
+      };
+      const blocks: { type: "text"; text: string }[] = [];
+      if (typeof r.path === "string") {
+        blocks.push({ type: "text", text: `<read-file>${r.path}</read-file>` });
+      }
+      if (typeof r.startLine === "number" && typeof r.endLine === "number") {
+        blocks.push({
+          type: "text",
+          text: `<read-lines>${r.startLine}-${r.endLine}</read-lines>`,
+        });
+      }
+      blocks.push({
+        type: "text",
+        text: `<read-content>${r.content}</read-content>`,
+      });
+      return blocks;
+    }
+  }
+
+  if (toolName === "Write") {
+    if (
+      result &&
+      typeof result === "object" &&
+      ("path" in (result as Record<string, unknown>) ||
+        "content" in (result as Record<string, unknown>))
+    ) {
+      const r = result as {
+        readonly path?: unknown;
+        readonly content?: unknown;
+        readonly bytesWritten?: unknown;
+      };
+      const path = typeof r.path === "string" ? r.path : null;
+      const bytes =
+        typeof r.bytesWritten === "number"
+          ? r.bytesWritten
+          : typeof r.content === "string"
+            ? r.content.length
+            : null;
+      const blocks: { type: "text"; text: string }[] = [];
+      if (path !== null) {
+        blocks.push({ type: "text", text: `<write-file>${path}</write-file>` });
+      }
+      const summary =
+        bytes !== null
+          ? `Wrote ${bytes} ${bytes === 1 ? "byte" : "bytes"}${path ? ` to ${path}` : ""}`
+          : `Wrote file${path ? ` ${path}` : ""}`;
+      blocks.push({
+        type: "text",
+        text: `<write-summary>${summary}</write-summary>`,
+      });
+      return blocks;
+    }
+  }
+
+  if (toolName === "Grep") {
+    if (
+      result &&
+      typeof result === "object" &&
+      ("matches" in (result as Record<string, unknown>) ||
+        "results" in (result as Record<string, unknown>))
+    ) {
+      const r = result as {
+        readonly matches?: unknown;
+        readonly results?: unknown;
+        readonly pattern?: unknown;
+      };
+      const list = Array.isArray(r.matches)
+        ? r.matches
+        : Array.isArray(r.results)
+          ? r.results
+          : [];
+      const lines: string[] = [];
+      for (const match of list) {
+        if (typeof match === "string") {
+          lines.push(match);
+        } else if (match && typeof match === "object") {
+          const m = match as {
+            readonly file?: unknown;
+            readonly line?: unknown;
+            readonly content?: unknown;
+            readonly text?: unknown;
+          };
+          const file = typeof m.file === "string" ? m.file : "";
+          const line =
+            typeof m.line === "number"
+              ? m.line
+              : typeof m.line === "string"
+                ? m.line
+                : "";
+          const text =
+            typeof m.content === "string"
+              ? m.content
+              : typeof m.text === "string"
+                ? m.text
+                : "";
+          lines.push(`${file}:${line}:${text}`);
+        }
+      }
+      const blocks: { type: "text"; text: string }[] = [];
+      if (typeof r.pattern === "string") {
+        blocks.push({
+          type: "text",
+          text: `<grep-pattern>${r.pattern}</grep-pattern>`,
+        });
+      }
+      blocks.push({
+        type: "text",
+        text: `<grep-matches>${lines.join("\n")}</grep-matches>`,
+      });
+      return blocks;
+    }
+  }
+
+  if (toolName === "Glob") {
+    if (
+      result &&
+      typeof result === "object" &&
+      ("paths" in (result as Record<string, unknown>) ||
+        "files" in (result as Record<string, unknown>) ||
+        Array.isArray(result))
+    ) {
+      const r = result as {
+        readonly paths?: unknown;
+        readonly files?: unknown;
+        readonly pattern?: unknown;
+      };
+      const list = Array.isArray(result)
+        ? result
+        : Array.isArray(r.paths)
+          ? r.paths
+          : Array.isArray(r.files)
+            ? r.files
+            : [];
+      const paths = list.filter(
+        (item): item is string => typeof item === "string",
+      );
+      const blocks: { type: "text"; text: string }[] = [];
+      if (typeof r.pattern === "string") {
+        blocks.push({
+          type: "text",
+          text: `<glob-pattern>${r.pattern}</glob-pattern>`,
+        });
+      }
+      blocks.push({
+        type: "text",
+        text: `<glob-paths>${paths.join("\n")}</glob-paths>`,
+      });
       return blocks;
     }
   }
 
   return [{ type: "text", text: stringResult(result) }];
+}
+
+/**
+ * Tool-error content formatter. Wraps an error message and an
+ * optional tool name in a `<tool-error>` envelope so the bridge's
+ * cross-cutting error renderer can dispatch on it regardless of
+ * which tool emitted the error. The bridge's `pickToolResultDispatch`
+ * checks for this envelope BEFORE per-tool routing, so any tool that
+ * surfaces a result through the error channel renders consistently.
+ */
+export function formatStructuredToolError(
+  toolName: string,
+  message: string,
+): readonly { readonly type: "text"; readonly text: string }[] {
+  const blocks: { type: "text"; text: string }[] = [];
+  if (toolName.length > 0) {
+    blocks.push({
+      type: "text",
+      text: `<tool-error-name>${toolName}</tool-error-name>`,
+    });
+  }
+  blocks.push({
+    type: "text",
+    text: `<tool-error>${message}</tool-error>`,
+  });
+  return blocks;
 }
 
 export function adaptTranscriptEvents(

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   adaptTranscriptEvents,
+  formatStructuredToolError,
   formatStructuredToolResult,
 } from "./message-adapter.js";
 
@@ -183,7 +184,7 @@ describe("OpenClaude TUI transcript bridge", () => {
     expect(after.inProgressToolUseIDs.size).toBe(0);
   });
 
-  test("formatStructuredToolResult preserves Bash stdout/stderr/exit_code as separate text blocks", () => {
+  test("formatStructuredToolResult wraps Bash stdout/stderr in upstream <bash-stdout>/<bash-stderr> tags so UserBashOutputMessage's extractTag can consume the joined content", () => {
     const blocks = formatStructuredToolResult("Bash", "exec_command_end", {
       stdout: "hello world",
       stderr: "warn",
@@ -191,26 +192,30 @@ describe("OpenClaude TUI transcript bridge", () => {
       durationMs: 42,
     });
     expect(blocks.length).toBe(3);
-    expect(blocks[0]?.text).toBe("[stdout]\nhello world");
-    expect(blocks[1]?.text).toBe("[stderr]\nwarn");
+    expect(blocks[0]?.text).toBe("<bash-stdout>hello world</bash-stdout>");
+    expect(blocks[1]?.text).toBe("<bash-stderr>warn</bash-stderr>");
     expect(blocks[2]?.text).toBe("[exit_code=0 duration_ms=42]");
   });
 
-  test("formatStructuredToolResult emits only the metadata block when stdout/stderr are both empty (avoids confusing [no output] when an exit code is present)", () => {
+  test("formatStructuredToolResult always emits an empty <bash-stdout></bash-stdout> envelope so upstream extractTag never returns null for a present-but-silent Bash command", () => {
     const blocks = formatStructuredToolResult("Bash", "exec_command_end", {
       stdout: "",
       stderr: "",
       exitCode: 0,
     });
-    expect(blocks.map((b) => b.text)).toEqual(["[exit_code=0]"]);
+    expect(blocks[0]?.text).toBe("<bash-stdout></bash-stdout>");
+    expect(blocks.map((b) => b.text)).toContain("[exit_code=0]");
   });
 
-  test("formatStructuredToolResult emits a [no output] block when nothing — no stdio, no exit code, no duration — is present", () => {
-    const blocks = formatStructuredToolResult("Bash", "exec_command_end", {});
-    expect(blocks.map((b) => b.text)).toEqual(["[no output]"]);
+  test("formatStructuredToolResult omits the <bash-stderr> tag entirely when stderr is empty so the renderer can hide the stderr block instead of showing an empty box", () => {
+    const blocks = formatStructuredToolResult("Bash", "exec_command_end", {
+      stdout: "ok",
+      stderr: "",
+    });
+    expect(blocks.some((b) => b.text.startsWith("<bash-stderr>"))).toBe(false);
   });
 
-  test("formatStructuredToolResult preserves the live FILE_EDIT_TOOL_NAME (\"Edit\") diff payload as path + diff blocks", () => {
+  test("formatStructuredToolResult wraps live FILE_EDIT_TOOL_NAME (\"Edit\") diff payload in <edit-file>/<edit-diff> tags so the bridge EditDiffView can extract file path and diff body separately", () => {
     const blocks = formatStructuredToolResult("Edit", "tool_call_completed", {
       result: {
         path: "src/foo.ts",
@@ -218,8 +223,234 @@ describe("OpenClaude TUI transcript bridge", () => {
       },
     });
     expect(blocks.length).toBe(2);
-    expect(blocks[0]?.text).toBe("[file]\nsrc/foo.ts");
-    expect(blocks[1]?.text).toContain("[diff]\n--- a");
+    expect(blocks[0]?.text).toBe("<edit-file>src/foo.ts</edit-file>");
+    expect(blocks[1]?.text).toBe(
+      "<edit-diff>--- a\n+++ b\n@@ ... @@\n-old\n+new</edit-diff>",
+    );
+  });
+
+  test("formatStructuredToolResult Edit envelope omits <edit-file> when path is missing (defensive — diff still goes through tagged)", () => {
+    const blocks = formatStructuredToolResult("Edit", "tool_call_completed", {
+      result: { diff: "minimal" },
+    });
+    expect(blocks.length).toBe(1);
+    expect(blocks[0]?.text).toBe("<edit-diff>minimal</edit-diff>");
+  });
+
+  test("formatStructuredToolResult FileRead wraps content in <read-content> envelope plus optional <read-file> and <read-lines> tags", () => {
+    const blocks = formatStructuredToolResult("FileRead", "tool_call_completed", {
+      result: {
+        path: "src/foo.ts",
+        startLine: 10,
+        endLine: 20,
+        content: "function hello() { return 42; }",
+      },
+    });
+    expect(blocks.length).toBe(3);
+    expect(blocks[0]?.text).toBe("<read-file>src/foo.ts</read-file>");
+    expect(blocks[1]?.text).toBe("<read-lines>10-20</read-lines>");
+    expect(blocks[2]?.text).toBe(
+      "<read-content>function hello() { return 42; }</read-content>",
+    );
+  });
+
+  test("formatStructuredToolResult FileRead with non-numeric startLine/endLine omits the <read-lines> tag (line range header) instead of emitting <read-lines>NaN-NaN</read-lines>", () => {
+    const stringLines = formatStructuredToolResult("FileRead", "tool_call_completed", {
+      result: {
+        path: "x",
+        startLine: "five",
+        endLine: "ten",
+        content: "body",
+      },
+    });
+    expect(stringLines.some((b) => b.text.includes("<read-lines>"))).toBe(false);
+    const oneNumeric = formatStructuredToolResult("FileRead", "tool_call_completed", {
+      result: {
+        path: "x",
+        startLine: 1,
+        endLine: "ten",
+        content: "body",
+      },
+    });
+    expect(oneNumeric.some((b) => b.text.includes("<read-lines>"))).toBe(false);
+  });
+
+  test("formatStructuredToolResult Write singular form: bytesWritten=1 produces 'Wrote 1 byte' (not 'Wrote 1 bytes')", () => {
+    const blocks = formatStructuredToolResult("Write", "tool_call_completed", {
+      result: { path: "x", bytesWritten: 1 },
+    });
+    const summary = blocks.find((b) => b.text.startsWith("<write-summary>"));
+    expect(summary?.text).toBe("<write-summary>Wrote 1 byte to x</write-summary>");
+  });
+
+  test("formatStructuredToolResult Write bytesWritten takes precedence over content.length when both are present", () => {
+    const blocks = formatStructuredToolResult("Write", "tool_call_completed", {
+      result: { path: "x", content: "1234567890", bytesWritten: 999 },
+    });
+    const summary = blocks.find((b) => b.text.startsWith("<write-summary>"));
+    expect(summary?.text).toContain("999 bytes");
+    expect(summary?.text).not.toContain("10 bytes");
+  });
+
+  test("formatStructuredToolResult Write with no bytesWritten and no content falls back to 'Wrote file' summary (no byte count)", () => {
+    const blocks = formatStructuredToolResult("Write", "tool_call_completed", {
+      result: { path: "x" },
+    });
+    const summary = blocks.find((b) => b.text.startsWith("<write-summary>"));
+    expect(summary?.text).toBe("<write-summary>Wrote file x</write-summary>");
+  });
+
+  test("formatStructuredToolResult Grep walks result.results alternate field name (not just result.matches)", () => {
+    const blocks = formatStructuredToolResult("Grep", "tool_call_completed", {
+      result: {
+        pattern: "X",
+        results: [{ file: "a.ts", line: 1, content: "foo" }],
+      },
+    });
+    const matches = blocks.find((b) => b.text.startsWith("<grep-matches>"));
+    expect(matches?.text).toContain("a.ts:1:foo");
+  });
+
+  test("formatStructuredToolResult Grep accepts pre-formatted string matches verbatim", () => {
+    const blocks = formatStructuredToolResult("Grep", "tool_call_completed", {
+      result: {
+        pattern: "X",
+        matches: ["preformatted line 1", "preformatted line 2"],
+      },
+    });
+    const matches = blocks.find((b) => b.text.startsWith("<grep-matches>"));
+    expect(matches?.text).toBe(
+      "<grep-matches>preformatted line 1\npreformatted line 2</grep-matches>",
+    );
+  });
+
+  test("formatStructuredToolResult Grep with `text` field on matches (alternate to `content`) still resolves the line content", () => {
+    const blocks = formatStructuredToolResult("Grep", "tool_call_completed", {
+      result: {
+        matches: [{ file: "a.ts", line: 1, text: "via text field" }],
+      },
+    });
+    const matches = blocks.find((b) => b.text.startsWith("<grep-matches>"));
+    expect(matches?.text).toContain("via text field");
+  });
+
+  test("formatStructuredToolResult Glob walks result.files alternate field name", () => {
+    const blocks = formatStructuredToolResult("Glob", "tool_call_completed", {
+      result: { files: ["a", "b"] },
+    });
+    const paths = blocks.find((b) => b.text.startsWith("<glob-paths>"));
+    expect(paths?.text).toBe("<glob-paths>a\nb</glob-paths>");
+  });
+
+  test("formatStructuredToolResult Write produces a <write-summary> with byte count when bytesWritten or content is present", () => {
+    const withBytes = formatStructuredToolResult("Write", "tool_call_completed", {
+      result: { path: "src/out.ts", bytesWritten: 256 },
+    });
+    expect(withBytes.length).toBe(2);
+    expect(withBytes[0]?.text).toBe("<write-file>src/out.ts</write-file>");
+    expect(withBytes[1]?.text).toBe(
+      "<write-summary>Wrote 256 bytes to src/out.ts</write-summary>",
+    );
+
+    const withContent = formatStructuredToolResult(
+      "Write",
+      "tool_call_completed",
+      { result: { path: "x", content: "hi" } },
+    );
+    expect(withContent[1]?.text).toBe(
+      "<write-summary>Wrote 2 bytes to x</write-summary>",
+    );
+  });
+
+  test("formatStructuredToolResult Grep wraps a matches array as line-per-match in <grep-matches> envelope", () => {
+    const blocks = formatStructuredToolResult("Grep", "tool_call_completed", {
+      result: {
+        pattern: "TODO",
+        matches: [
+          { file: "a.ts", line: 5, content: "// TODO: refactor" },
+          { file: "b.ts", line: 12, content: "// TODO: test" },
+        ],
+      },
+    });
+    expect(blocks.length).toBe(2);
+    expect(blocks[0]?.text).toBe("<grep-pattern>TODO</grep-pattern>");
+    expect(blocks[1]?.text).toBe(
+      "<grep-matches>a.ts:5:// TODO: refactor\nb.ts:12:// TODO: test</grep-matches>",
+    );
+  });
+
+  test("formatStructuredToolResult Glob wraps a paths array in <glob-paths> envelope", () => {
+    const blocks = formatStructuredToolResult("Glob", "tool_call_completed", {
+      result: {
+        pattern: "src/**/*.ts",
+        paths: ["src/foo.ts", "src/bar.ts", "src/baz.ts"],
+      },
+    });
+    expect(blocks.length).toBe(2);
+    expect(blocks[0]?.text).toBe("<glob-pattern>src/**/*.ts</glob-pattern>");
+    expect(blocks[1]?.text).toBe(
+      "<glob-paths>src/foo.ts\nsrc/bar.ts\nsrc/baz.ts</glob-paths>",
+    );
+  });
+
+  test("formatStructuredToolResult Glob accepts a bare array result (no paths/files key)", () => {
+    const blocks = formatStructuredToolResult("Glob", "tool_call_completed", {
+      result: ["a", "b"],
+    });
+    expect(blocks[blocks.length - 1]?.text).toBe(
+      "<glob-paths>a\nb</glob-paths>",
+    );
+  });
+
+  test("formatStructuredToolResult Edit envelope omits <edit-file> when path is non-string (number/null/object), still emits <edit-diff>", () => {
+    const numericPath = formatStructuredToolResult("Edit", "tool_call_completed", {
+      result: { path: 123, diff: "minimal" },
+    });
+    expect(numericPath.length).toBe(1);
+    expect(numericPath[0]?.text).toBe("<edit-diff>minimal</edit-diff>");
+    const nullPath = formatStructuredToolResult("Edit", "tool_call_completed", {
+      result: { path: null, diff: "x" },
+    });
+    expect(nullPath.length).toBe(1);
+    expect(nullPath[0]?.text).toBe("<edit-diff>x</edit-diff>");
+    const objectPath = formatStructuredToolResult("Edit", "tool_call_completed", {
+      result: { path: { nested: "obj" }, diff: "y" },
+    });
+    expect(objectPath.length).toBe(1);
+    expect(objectPath[0]?.text).toBe("<edit-diff>y</edit-diff>");
+  });
+
+  test("formatStructuredToolResult Edit falls back to stringResult when the result has no diff field (e.g. error-path payload)", () => {
+    const blocks = formatStructuredToolResult("Edit", "tool_call_completed", {
+      result: { error: "permission denied" },
+    });
+    expect(blocks.length).toBe(1);
+    expect(blocks[0]?.text).not.toContain("<edit-diff>");
+    expect(blocks[0]?.text).toContain("permission denied");
+  });
+
+  test("formatStructuredToolError wraps a tool name + message in <tool-error-name>/<tool-error> envelope (cross-cutting error channel)", () => {
+    const blocks = formatStructuredToolError("FileRead", "ENOENT: no such file");
+    expect(blocks.length).toBe(2);
+    expect(blocks[0]?.text).toBe(
+      "<tool-error-name>FileRead</tool-error-name>",
+    );
+    expect(blocks[1]?.text).toBe(
+      "<tool-error>ENOENT: no such file</tool-error>",
+    );
+  });
+
+  test("formatStructuredToolError omits <tool-error-name> when toolName is empty", () => {
+    const blocks = formatStructuredToolError("", "boom");
+    expect(blocks.length).toBe(1);
+    expect(blocks[0]?.text).toBe("<tool-error>boom</tool-error>");
+  });
+
+  test("formatStructuredToolError with an empty message string still produces a well-formed envelope (the <tool-error> tag is always emitted)", () => {
+    const blocks = formatStructuredToolError("Bash", "");
+    expect(blocks.length).toBe(2);
+    expect(blocks[0]?.text).toBe("<tool-error-name>Bash</tool-error-name>");
+    expect(blocks[1]?.text).toBe("<tool-error></tool-error>");
   });
 
   test("formatStructuredToolResult falls back to a single text block for unknown tools", () => {

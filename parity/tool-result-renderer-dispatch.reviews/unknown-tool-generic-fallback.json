@@ -1,0 +1,56 @@
+{
+  "rowId": "unknown-tool-generic-fallback",
+  "contractName": "tool-result-renderer-dispatch",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-04-30T23:51:28.000Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "createBridgeTool(<any unrouted name>) returns a tool whose renderToolResultMessage produces the generic <Box><Text>{joined}</Text></Box> output (no routing to BashOutputView or EditDiffView)",
+      "Generic fallback handles string content, object content, and array content via the resultTextForBridgeTool helper",
+      "Generic fallback never throws on null or undefined content",
+      "The dispatch table is name-keyed exact-case; unrouted names do NOT accidentally match a registered renderer (no prefix or substring match across tool names)",
+      "Bash and Edit envelope tags do not cross-route — Bash tool name with <edit-diff> content stays generic, Edit tool name with <bash-stdout> stays generic"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "createBridgeTool('XYZUnknown') receives a structured-content array (from formatStructuredToolResult) and renders by joining the .text fields — does not throw on the unexpected shape",
+      "createBridgeTool('') (empty string name) does not throw and renders the generic fallback",
+      "createBridgeTool('bash') (lowercase) does NOT route to BashOutputView — name dispatch is exact-case",
+      "createBridgeTool('edit') (lowercase) does NOT route to EditDiffView — name dispatch is exact-case",
+      "renderToolResultMessage receives null content and renders without throwing",
+      "Unrouted tool name with content that contains a <bash-stdout> envelope does NOT route to BashOutputView (envelope-only matching does not bypass the tool-name gate)",
+      "Bash tool name with <edit-diff> envelope (cross-routing attempt) stays generic — envelope tag must match tool name"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [
+    {
+      "severity": "medium",
+      "category": "test-quality",
+      "message": "Edge case 'createBridgeTool(\"XYZUnknown\") receives a structured-content array' is decomposed across two assertions rather than asserted as one end-to-end case: resultTextForBridgeTool array-flattening is verified at runtime/src/tools/upstream-tool-result-dispatch.test.ts:96-104 with anonymous block input, and createBridgeTool('XYZUnknown') -> renderToolResultMessage -> generic-fallback is verified with a plain string at runtime/src/tools/tool-stubs-bash-bridge.test.tsx:69-77. The compound case (unknown bridge tool + structured-content array shape, asserting no throw and generic render type) is not asserted in a single test. Behavior is covered by transitive composition; a direct compound assertion would close this gap. Non-blocking."
+    },
+    {
+      "severity": "medium",
+      "category": "test-quality",
+      "message": "Edge case 'createBridgeTool(\"\") (empty string name) does not throw and renders the generic fallback' is asserted only at the dispatch-helper level (runtime/src/tools/upstream-tool-result-dispatch.test.ts:51-54 covers pickToolResultDispatch(\"\", ...) -> generic). There is no end-to-end assertion that createBridgeTool(\"\") + renderToolResultMessage() does not throw and returns a generic element. Underlying logic is sound (createBridgeTool accepts any string; dispatch returns generic for any non-Bash/Edit name), so the behavior holds, but a direct end-to-end empty-name assertion would harden the row. Non-blocking."
+    }
+  ],
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-bash-bridge.test.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-edit-bridge.test.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-extra-bridge.test.tsx",
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md"
+    ],
+    "testsExecuted": [
+      "node_modules/.bin/vitest run --root . src/tools/upstream-tool-result-dispatch.test.ts src/tools/tool-stubs-bash-bridge.test.tsx src/tools/tool-stubs-edit-bridge.test.tsx src/tools/tool-stubs-extra-bridge.test.tsx (4 test files, 94 tests passed)"
+    ]
+  }
+}

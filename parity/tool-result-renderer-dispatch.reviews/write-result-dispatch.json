@@ -1,0 +1,63 @@
+{
+  "rowId": "write-result-dispatch",
+  "contractName": "tool-result-renderer-dispatch",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-04-30T23:10:00.000Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "createBridgeTool('Write') routes to FileWriteView when content carries the <write-summary> envelope",
+      "FileWriteView renders the file path bolded plus a green summary line with the byte count when present",
+      "If only the path or only the byte count is available, FileWriteView still produces a coherent summary (e.g. 'Wrote file' fallback)",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='Write' computes a byte count from result.bytesWritten OR result.content.length and produces the <write-file>/<write-summary> envelope"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Write result with bytesWritten present takes precedence over content.length for the byte count",
+      "Write result with content but no bytesWritten falls back to content.length",
+      "Write result missing both bytesWritten and content produces a 'Wrote file' summary without a byte count",
+      "Write result missing the path field still renders the green summary line (no header)",
+      "Write with the legacy single-string content shape falls through to generic Text without crashing",
+      "Write result with bytesWritten=1 produces 'Wrote 1 byte' (singular), not 'Wrote 1 bytes'"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [],
+  "auditDetails": {
+    "behaviorEvidence": {
+      "createBridgeTool('Write') routes to FileWriteView when content carries the <write-summary> envelope": "Dispatcher at runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:87-92 (exact-case 'Write' + presence of '<write-summary>' tag → 'file-write-view'); switch-case in renderToolResultMessage at runtime/src/tui/openclaude/tool-stubs.tsx:414-415 returns <FileWriteView/>; pre-seed in createBridgeTools at runtime/src/tui/openclaude/tool-stubs.tsx:478. Tests: runtime/src/tools/upstream-tool-result-dispatch.test.ts:98-102 ('Write' + '<write-summary>' → 'file-write-view'); runtime/src/tools/tool-stubs-extra-bridge.test.tsx:147-155 (end-to-end: tool.renderToolResultMessage returns a node whose .type === FileWriteView); runtime/src/tools/upstream-tool-result-dispatch.test.ts:137-149 (lowercase 'write' falls through to 'generic' — exact-case enforcement).",
+      "FileWriteView renders the file path bolded plus a green summary line with the byte count when present": "Implementation at runtime/src/tui/openclaude/tool-stubs.tsx:142-155: extracts <write-file> at line 147 and renders <Text bold> at line 151 when path length > 0; renders <Text color=\"green\"> at line 152 with the extracted <write-summary>. Tests: runtime/src/tools/tool-stubs-extra-bridge.test.tsx:157-167 (asserts header.props.children === 'src/out.ts' with bold === true; summary.props.color === 'green' with children === 'Wrote 42 bytes').",
+      "If only the path or only the byte count is available, FileWriteView still produces a coherent summary (e.g. 'Wrote file' fallback)": "Implementation at runtime/src/tui/openclaude/tool-stubs.tsx:148: `extractBridgeTag(content, 'write-summary') ?? 'Wrote file'` defaults to literal 'Wrote file' when no <write-summary> tag is present. Tests: runtime/src/tools/tool-stubs-extra-bridge.test.tsx:179-184 (FileWriteView called with content === '' → green summary child whose text is 'Wrote file'). Adapter-level analog at runtime/src/tui/openclaude/message-adapter.test.ts:295-301 (formatStructuredToolResult Write with `{ result: { path: 'x' } }` produces '<write-summary>Wrote file x</write-summary>').",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='Write' computes a byte count from result.bytesWritten OR result.content.length and produces the <write-file>/<write-summary> envelope": "Implementation at runtime/src/tui/openclaude/message-adapter.ts:406-439: gate at 406-411 requires toolName==='Write' and ('path' in result || 'content' in result); ternary at 419-424 picks bytesWritten first, falls back to content.length, else null; envelope assembled at 425-437 with optional <write-file> only when path is a string. Tests: runtime/src/tui/openclaude/message-adapter.test.ts:345-363 (bytesWritten=256 path='src/out.ts' → '<write-summary>Wrote 256 bytes to src/out.ts</write-summary>'; content='hi' path='x' (no bytesWritten) → '<write-summary>Wrote 2 bytes to x</write-summary>'); precedence locked at runtime/src/tui/openclaude/message-adapter.test.ts:286-293 (bytesWritten=999 + content.length=10 → summary contains '999 bytes' and NOT '10 bytes'); singular form locked at runtime/src/tui/openclaude/message-adapter.test.ts:278-284; wire-shape lock test at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:480-492 (formatStructuredToolResult Write output piped through FileWriteView produces a green summary containing '100 bytes')."
+    },
+    "edgeCaseEvidence": {
+      "Write result with bytesWritten present takes precedence over content.length for the byte count": "Implementation at runtime/src/tui/openclaude/message-adapter.ts:419-424 (ternary picks `r.bytesWritten` first); asserted at runtime/src/tui/openclaude/message-adapter.test.ts:286-293 (`{ result: { path: 'x', content: '1234567890', bytesWritten: 999 } }` → summary contains '999 bytes' AND NOT '10 bytes'). Both directions of the ternary are now locked — swapping the order would fail this test.",
+      "Write result with content but no bytesWritten falls back to content.length": "Implementation at runtime/src/tui/openclaude/message-adapter.ts:419-424 (ternary chain falls to `r.content.length` when bytesWritten is not a number); asserted at runtime/src/tui/openclaude/message-adapter.test.ts:355-362 (`{ result: { path: 'x', content: 'hi' } }` → '<write-summary>Wrote 2 bytes to x</write-summary>').",
+      "Write result missing both bytesWritten and content produces a 'Wrote file' summary without a byte count": "Adapter-level implementation at runtime/src/tui/openclaude/message-adapter.ts:432 (`Wrote file${path ? ` ${path}` : ''}`); asserted at runtime/src/tui/openclaude/message-adapter.test.ts:295-301 (`{ result: { path: 'x' } }` → '<write-summary>Wrote file x</write-summary>'). Renderer-level fallback (no envelope at all → 'Wrote file') is also asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:179-184.",
+      "Write result missing the path field still renders the green summary line (no header)": "Implementation at runtime/src/tui/openclaude/tool-stubs.tsx:151 (renders bold header only when `file.length > 0`); asserted at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:179-184 (FileWriteView called with content === '' → green summary child found, no bold header child).",
+      "Write with the legacy single-string content shape falls through to generic Text without crashing": "Implementation at runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:87-92 (presence of '<write-summary>' substring required); end-to-end assertion at runtime/src/tools/tool-stubs-extra-bridge.test.tsx:169-177 (createBridgeTool('Write').renderToolResultMessage('raw legacy string', ...) returns a node whose .type !== FileWriteView, i.e. the generic fallback path).",
+      "Write result with bytesWritten=1 produces 'Wrote 1 byte' (singular), not 'Wrote 1 bytes'": "Implementation at runtime/src/tui/openclaude/message-adapter.ts:431 (`${bytes === 1 ? 'byte' : 'bytes'}`); asserted at runtime/src/tui/openclaude/message-adapter.test.ts:278-284 (`{ result: { path: 'x', bytesWritten: 1 } }` → exact match '<write-summary>Wrote 1 byte to x</write-summary>'). Dropping the singular ternary to a bare 'bytes' constant would now fail this test."
+    },
+    "summary": "Re-audit: re-keyed behaviorsAudited and edgeCasesAudited to the matrix's verbatim strings (contract checker uses exact-string Set membership). Substantive review remains APPROVED. Tests 122/122 passing. All four required behaviors have implementation + assertion evidence; all six declared edge cases have assertion evidence. No critical or high issues."
+  },
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/.claude/skills/implementation-contract/agents/row-reviewer.md",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.reviews/write-result-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/upstream/tools/FileWriteTool/UI.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/system/file-write.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-extra-bridge.test.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.test.ts"
+    ],
+    "testsExecuted": [
+      "cd /home/tetsuo/git/agenc-core-tool-result-dispatch/runtime && node_modules/.bin/vitest run --root . src/tools/upstream-tool-result-dispatch.test.ts src/tools/tool-stubs-extra-bridge.test.tsx src/tui/openclaude/message-adapter.test.ts  # exit 0, 122/122 tests passing"
+    ]
+  }
+}

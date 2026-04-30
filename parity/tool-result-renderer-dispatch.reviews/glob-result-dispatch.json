@@ -1,0 +1,69 @@
+{
+  "rowId": "glob-result-dispatch",
+  "contractName": "tool-result-renderer-dispatch",
+  "reviewer": "row-reviewer",
+  "reviewedAt": "2026-04-30T17:42:00.000Z",
+  "verdict": "APPROVED",
+  "behaviorCoverage": {
+    "behaviorsAudited": [
+      "createBridgeTool('Glob') routes to GlobPathsView when content carries the <glob-paths> envelope",
+      "GlobPathsView renders the bold pattern header with a (N paths) count and one Text child per path",
+      "If paths are empty, GlobPathsView renders a (no paths) indicator with the pattern header preserved",
+      "Large path lists are truncated to 200 visible paths plus a dim '… N more paths truncated' marker",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='Glob' accepts result.paths OR result.files OR a bare array result, and produces the <glob-pattern>/<glob-paths> envelope"
+    ],
+    "missingBehaviors": []
+  },
+  "edgeCaseCoverage": {
+    "edgeCasesAudited": [
+      "Glob result with paths as an array directly (no { paths } wrapper) still produces the envelope",
+      "Glob result with paths as { files: [...] } (alternate field name) still resolves",
+      "Glob result with empty paths array produces (no paths) indicator",
+      "Glob result with > 200 paths truncates with N-more-truncated marker",
+      "Glob result missing the pattern field omits the header but still renders path lines",
+      "Glob result with a single path produces 'path' (singular), not 'paths', in the header"
+    ],
+    "missingEdgeCases": []
+  },
+  "issues": [
+    {
+      "severity": "medium",
+      "category": "edge-case",
+      "message": "Discovered (not blocking): runtime/src/tui/openclaude/message-adapter.ts:520-522 silently filters out non-string entries from the paths/files list via list.filter((item): item is string => typeof item === 'string'). No test exercises a paths array containing mixed-type entries (e.g. [{ name: 'a.ts' }, 'b.ts'] or [1, 'a.ts']) to confirm non-strings are dropped rather than crashing or being JSON-stringified into the envelope. This is defensive code currently unreachable from the live runtime/src/tools/system/glob.ts (which returns { content: string, metadata }), so it stays out of scope for this row, but it is the kind of forward-compatibility branch that benefits from a one-line assertion test if the matrix ever expands. Not flagged as missingEdgeCase because the matrix did not declare it; recording here so the contract owner can decide whether to add it on a future revision."
+    }
+  ],
+  "auditDetails": {
+    "behaviorEvidence": {
+      "createBridgeTool('Glob') routes to GlobPathsView when content carries the <glob-paths> envelope": "implementation: runtime/src/tui/openclaude/tool-stubs.tsx:418-419 (switch case 'glob-paths-view'), dispatch logic: runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts:99-104. Tests: runtime/src/tools/upstream-tool-result-dispatch.test.ts:110-114 (asserts pickToolResultDispatch('Glob', '<glob-paths>...') === 'glob-paths-view') and runtime/src/tools/tool-stubs-extra-bridge.test.tsx:268-276 (asserts node.type === GlobPathsView).",
+      "GlobPathsView renders the bold pattern header with a (N paths) count and one Text child per path": "implementation: runtime/src/tui/openclaude/tool-stubs.tsx:225-236 (header text 'Glob: <pattern> (N paths)' + visible.map). Test: runtime/src/tools/tool-stubs-extra-bridge.test.tsx:278-293 (asserts header contains 'Glob: src/**/*.ts' and '2 paths', plus per-path Text children).",
+      "If paths are empty, GlobPathsView renders a (no paths) indicator with the pattern header preserved": "implementation: runtime/src/tui/openclaude/tool-stubs.tsx:213-220 (emptyHeader from pattern + '(no paths)' dim text). Test: runtime/src/tools/tool-stubs-extra-bridge.test.tsx:295-308 asserts BOTH the bold 'Glob: X' header (line 300-303) and the (no paths) dim marker (line 304-307).",
+      "Large path lists are truncated to 200 visible paths plus a dim '… N more paths truncated' marker": "implementation: runtime/src/tui/openclaude/tool-stubs.tsx:222-239 (TRUNCATE_AT=200, visible.slice, truncatedCount marker). Test: runtime/src/tools/tool-stubs-extra-bridge.test.tsx:331-343 (250 paths input, asserts a child whose text includes 'more paths truncated').",
+      "message-adapter.formatStructuredToolResult for tool_call_completed with toolName='Glob' accepts result.paths OR result.files OR a bare array result, and produces the <glob-pattern>/<glob-paths> envelope": "implementation: runtime/src/tui/openclaude/message-adapter.ts:500-535 (Array.isArray(result), then r.paths, then r.files). All three branches have tests in runtime/src/tui/openclaude/message-adapter.test.ts: result.paths at 382-394 (full assertion of <glob-pattern> + <glob-paths> blocks), bare-array at 396-403, result.files at 337-343 (asserts blocks contain '<glob-paths>a\\nb</glob-paths>')."
+    },
+    "edgeCaseEvidence": {
+      "Glob result with paths as an array directly (no { paths } wrapper) still produces the envelope": "runtime/src/tui/openclaude/message-adapter.test.ts:396-403 asserts blocks[blocks.length - 1].text === '<glob-paths>a\\nb</glob-paths>' for input { result: ['a', 'b'] }.",
+      "Glob result with paths as { files: [...] } (alternate field name) still resolves": "runtime/src/tui/openclaude/message-adapter.test.ts:337-343 asserts the <glob-paths> block resolves to '<glob-paths>a\\nb</glob-paths>' for input { result: { files: ['a', 'b'] } }. This hits the previously-untested r.files branch at message-adapter.ts:516-518.",
+      "Glob result with empty paths array produces (no paths) indicator": "runtime/src/tools/tool-stubs-extra-bridge.test.tsx:295-308 supplies '<glob-pattern>X</glob-pattern>\\n<glob-paths></glob-paths>' and asserts a (no paths) dim child. Header preservation is also locked.",
+      "Glob result with > 200 paths truncates with N-more-truncated marker": "runtime/src/tools/tool-stubs-extra-bridge.test.tsx:331-343 supplies 250 generated paths and asserts a child whose text includes 'more paths truncated'.",
+      "Glob result missing the pattern field omits the header but still renders path lines": "runtime/src/tools/tool-stubs-extra-bridge.test.tsx:319-329 supplies '<glob-paths>a.ts\\nb.ts</glob-paths>' (no <glob-pattern>) and asserts no element with bold === true exists, while a child with children === 'a.ts' is present.",
+      "Glob result with a single path produces 'path' (singular), not 'paths', in the header": "runtime/src/tools/tool-stubs-extra-bridge.test.tsx:310-317 supplies '<glob-paths>only.ts</glob-paths>' with pattern X and asserts header.props.children === 'Glob: X (1 path)' (exact string, locking both 'path' singular and the leading count)."
+    }
+  },
+  "evidence": {
+    "filesRead": [
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/parity/tool-result-renderer-dispatch.reviews/glob-result-dispatch.json",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/upstream/tools/GlobTool/UI.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/tool-stubs.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/agenc/adapters/upstream-tool-result-dispatch.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/system/glob.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/upstream-tool-result-dispatch.test.ts",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tools/tool-stubs-extra-bridge.test.tsx",
+      "/home/tetsuo/git/agenc-core-tool-result-dispatch/runtime/src/tui/openclaude/message-adapter.test.ts"
+    ],
+    "testsExecuted": [
+      "node_modules/.bin/vitest run --root . src/tools/upstream-tool-result-dispatch.test.ts src/tools/tool-stubs-extra-bridge.test.tsx src/tui/openclaude/message-adapter.test.ts (3 test files passed, 122/122 tests passed, 0 failed)"
+    ]
+  }
+}
