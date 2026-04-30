@@ -455,22 +455,19 @@ describe('AgenC runtime integration', () => {
 
   it('keeps durable memory separate from compacted history projection', () => {
     const runtimeSession = readTarget('adapter-runtime-session');
-    const memoryIndex = readRelative('runtime/src/prompts/memory/index.ts');
+    const attachments = readRelative('runtime/src/utils/attachments.ts');
     const orchestrator = readRelative(
       'runtime/src/prompts/attachments/orchestrator.ts',
-    );
-    const relevantMemory = readRelative(
-      'runtime/src/prompts/attachments/relevant-memory.ts',
     );
 
     expect(runtimeSession).not.toContain('getUserContext');
     expect(runtimeSession).not.toContain('loadPromptContextModules');
     expect(runtimeSession).not.toContain('DISABLE_AGENC_SM_COMPACT');
     expect(runtimeSession).not.toContain('AGENC_DISABLE_AGENC_MDS');
-    expect(memoryIndex).toContain('maybeAutoSaveMemory');
-    expect(memoryIndex).toContain('selectRelevantMemoriesForTurn');
-    expect(orchestrator).toContain('relevantMemoryProducer');
-    expect(relevantMemory).toContain('relevant_memories');
+    expect(attachments).toContain('getRelevantMemoryAttachments');
+    expect(attachments).toContain('startRelevantMemoryPrefetch');
+    expect(attachments).toContain('relevant_memories');
+    expect(orchestrator).toContain('Memory + file injections');
   });
 
   it('resets provider continuation after compact replacement', () => {

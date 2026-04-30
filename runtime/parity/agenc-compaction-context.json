@@ -67,7 +67,7 @@
     "runtime/src/agenc/upstream/commands/fork/index.ts",
     "runtime/src/prompts/attachments/orchestrator.ts",
     "runtime/src/prompts/attachments/relevant-memory.ts",
-    "runtime/src/prompts/memory",
+    "runtime/src/utils/attachments.ts",
     "runtime/src/agenc/upstream/services/analytics/growthbook.ts"
   ],
   "testFiles": [
@@ -443,11 +443,11 @@
     {
       "id": "memory-context-layer",
       "source": "src/services/SessionMemory/sessionMemory.ts",
-      "target": "runtime/src/prompts/memory",
+      "target": "runtime/src/utils/attachments.ts",
       "requiredBehaviors": [
-        "durable memory extraction and relevant-memory recall remain active around compaction",
-        "relevant memory attachments are inserted after compacted history projection and before sampling",
-        "upstream session-memory compaction follows OpenClaude open-build gates and AgenC-branded storage paths"
+        "durable memory and relevant-memory recall stay outside the active-history compaction adapter",
+        "relevant memory attachments are owned by the normal attachment layer after compacted history projection",
+        "session-memory compact remains a compaction optimization path, not a /memory implementation dependency"
       ],
       "tests": [
         "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
@@ -683,7 +683,6 @@
     "runtime/src/session/run-turn.ts",
     "runtime/src/phases/post-sample-recovery.ts",
     "runtime/src/commands/registry.ts",
-    "runtime/src/tui/dialogs/CompactSummary.tsx",
     "runtime/src/llm/messages.ts",
     "runtime/src/llm/grok/adapter.ts",
     "runtime/src/llm/grok/incremental.ts"
