@@ -127,17 +127,22 @@ export async function prepareAgenCTurnContext(
   const toolUseContext = buildAgenCToolUseContext(session, ctx, {
     querySource: "repl_main_thread",
   });
-  const prepared = await prepareAgenCQueryMessages({
-    messages,
-    toolUseContext,
-    contentReplacementState: state.contentReplacementState,
-    querySource: "repl_main_thread",
-    applyContextCollapse: isAgenCContextCollapseRequested(),
-  });
-  state.messagesForQuery = prepared.messages;
-  state.snipTokensFreed = prepared.snipTokensFreed;
-  if (prepared.committed) {
-    state.messages = [...state.messagesForQuery];
+  try {
+    const prepared = await prepareAgenCQueryMessages({
+      messages,
+      toolUseContext,
+      contentReplacementState: state.contentReplacementState,
+      querySource: "repl_main_thread",
+      applyContextCollapse: isAgenCContextCollapseRequested(),
+    });
+    state.messagesForQuery = prepared.messages;
+    state.snipTokensFreed = prepared.snipTokensFreed;
+    if (prepared.committed) {
+      state.messages = [...state.messagesForQuery];
+    }
+  } catch {
+    state.messagesForQuery = messages.map(cloneLLMMessage);
+    state.snipTokensFreed = 0;
   }
 }
 

@@ -18,9 +18,6 @@ import {
   AGENC_SONNET_4_CONFIG,
 } from './model/configs.js'
 import {
-  firstPartyNameToCanonical,
-  getCanonicalName,
-  getDefaultMainLoopModelSetting,
   type ModelShortName,
 } from './model/model.js'
 
@@ -89,6 +86,30 @@ export const COST_HAIKU_45 = {
 
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
+function firstPartyNameToCanonicalForCost(name: string): ModelShortName {
+  const normalized = name.toLowerCase()
+  if (normalized.includes('claude-opus-4-7')) return 'claude-opus-4-7'
+  if (normalized.includes('claude-opus-4-6')) return 'claude-opus-4-6'
+  if (normalized.includes('claude-opus-4-5')) return 'claude-opus-4-5'
+  if (normalized.includes('claude-opus-4-1')) return 'claude-opus-4-1'
+  if (normalized.includes('claude-opus-4')) return 'claude-opus-4'
+  if (normalized.includes('claude-sonnet-4-6')) return 'claude-sonnet-4-6'
+  if (normalized.includes('claude-sonnet-4-5')) return 'claude-sonnet-4-5'
+  if (normalized.includes('claude-sonnet-4')) return 'claude-sonnet-4'
+  if (normalized.includes('claude-haiku-4-5')) return 'claude-haiku-4-5'
+  if (normalized.includes('claude-3-7-sonnet')) return 'claude-3-7-sonnet'
+  if (normalized.includes('claude-3-5-sonnet')) return 'claude-3-5-sonnet'
+  if (normalized.includes('claude-3-5-haiku')) return 'claude-3-5-haiku'
+  if (normalized.includes('claude-3-opus')) return 'claude-3-opus'
+  if (normalized.includes('claude-3-sonnet')) return 'claude-3-sonnet'
+  if (normalized.includes('claude-3-haiku')) return 'claude-3-haiku'
+  return normalized.match(/(claude-(\d+-\d+-)?\w+)/)?.[1] ?? normalized
+}
+
+function getCanonicalNameForCost(model: string): ModelShortName {
+  return firstPartyNameToCanonicalForCost(model)
+}
+
 /**
  * Get the cost tier for Opus 4.6 based on fast mode.
  */
@@ -103,28 +124,28 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
 // Costs from https://platform.agenc.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
-  [firstPartyNameToCanonical(AGENC_3_5_HAIKU_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_3_5_HAIKU_CONFIG.firstParty)]:
     COST_HAIKU_35,
-  [firstPartyNameToCanonical(AGENC_HAIKU_4_5_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_HAIKU_4_5_CONFIG.firstParty)]:
     COST_HAIKU_45,
-  [firstPartyNameToCanonical(AGENC_3_5_V2_SONNET_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_3_5_V2_SONNET_CONFIG.firstParty)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(AGENC_3_7_SONNET_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_3_7_SONNET_CONFIG.firstParty)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(AGENC_SONNET_4_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_SONNET_4_CONFIG.firstParty)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(AGENC_SONNET_4_5_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_SONNET_4_5_CONFIG.firstParty)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(AGENC_SONNET_4_6_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_SONNET_4_6_CONFIG.firstParty)]:
     COST_TIER_3_15,
-  [firstPartyNameToCanonical(AGENC_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
-  [firstPartyNameToCanonical(AGENC_OPUS_4_1_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_1_CONFIG.firstParty)]:
     COST_TIER_15_75,
-  [firstPartyNameToCanonical(AGENC_OPUS_4_5_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
-  [firstPartyNameToCanonical(AGENC_OPUS_4_6_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_6_CONFIG.firstParty)]:
     COST_TIER_5_25,
-  [firstPartyNameToCanonical(AGENC_OPUS_4_7_CONFIG.firstParty)]:
+  [firstPartyNameToCanonicalForCost(AGENC_OPUS_4_7_CONFIG.firstParty)]:
     COST_TIER_5_25,
 }
 
@@ -145,11 +166,11 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 }
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
-  const shortName = getCanonicalName(model)
+  const shortName = getCanonicalNameForCost(model)
 
   // Check if this is an Opus 4.6 model with fast mode active.
   if (
-    shortName === firstPartyNameToCanonical(AGENC_OPUS_4_6_CONFIG.firstParty)
+    shortName === firstPartyNameToCanonicalForCost(AGENC_OPUS_4_6_CONFIG.firstParty)
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)
@@ -158,10 +179,7 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   const costs = MODEL_COSTS[shortName]
   if (!costs) {
     trackUnknownModelCost(model, shortName)
-    return (
-      MODEL_COSTS[getCanonicalName(getDefaultMainLoopModelSetting())] ??
-      DEFAULT_UNKNOWN_MODEL_COST
-    )
+    return DEFAULT_UNKNOWN_MODEL_COST
   }
   return costs
 }
@@ -227,7 +245,7 @@ export function formatModelPricing(costs: ModelCosts): string {
  * Returns undefined if model is not found
  */
 export function getModelPricingString(model: string): string | undefined {
-  const shortName = getCanonicalName(model)
+  const shortName = getCanonicalNameForCost(model)
   const costs = MODEL_COSTS[shortName]
   if (!costs) return undefined
   return formatModelPricing(costs)

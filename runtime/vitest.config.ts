@@ -18,18 +18,27 @@ function existingSourceFile(base: string): string | null {
 }
 
 function sourceRootForImporter(importer: string): string | null {
-  const absoluteImporter = isAbsolute(importer) ? importer : resolve(__dirname, importer);
+  const cleanImporter = importer.split('?')[0] ?? importer;
+  const absoluteImporter = isAbsolute(cleanImporter)
+    ? cleanImporter
+    : resolve(__dirname, cleanImporter);
   const rel = relative(agencUpstreamRoot, absoluteImporter);
   return rel !== '' && !rel.startsWith('..') ? agencUpstreamRoot : null;
 }
 
-function resolveAgenCBareSrc(source: string): string {
+function resolveAgenCBareSrc(source: string, importer?: string): string {
   const sourceRelative = source.slice('src/'.length);
-  for (const root of [agencUpstreamRoot, runtimeSourceRoot]) {
+  const importerSourceRoot =
+    importer === undefined ? null : sourceRootForImporter(importer);
+  const roots =
+    importerSourceRoot === agencUpstreamRoot
+      ? [agencUpstreamRoot, runtimeSourceRoot]
+      : [runtimeSourceRoot, agencUpstreamRoot];
+  for (const root of roots) {
     const found = existingSourceFile(resolve(root, sourceRelative));
     if (found) return found;
   }
-  return resolve(runtimeSourceRoot, sourceRelative);
+  return resolve(roots[0]!, sourceRelative);
 }
 
 function resolveRelativeAgenCSource(importer: string, source: string): string | null {
@@ -48,13 +57,8 @@ export default defineConfig({
       name: 'agenc-bare-src-alias',
       enforce: 'pre',
       resolveId(source, importer) {
-        if (
-          source.startsWith('src/') &&
-          importer !== undefined &&
-          (importer.includes('/src/agenc/') ||
-            sourceRootForImporter(importer) !== null)
-        ) {
-          return resolveAgenCBareSrc(source);
+        if (source.startsWith('src/')) {
+          return resolveAgenCBareSrc(source, importer);
         }
         if (
           (source.startsWith('./') || source.startsWith('../')) &&
@@ -71,9 +75,6 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: 'bun:bundle', replacement: resolve(__dirname, 'src/build/feature.ts') },
-      // Mirror the tsconfig `paths` mapping `src/*` to the runtime `src/` tree
-      // so AgenC-style absolute imports resolve both under tsc and vitest.
-      { find: /^src\/(.*)$/, replacement: resolve(__dirname, 'src/$1') },
     ],
   },
   test: {

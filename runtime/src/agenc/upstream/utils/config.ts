@@ -46,6 +46,11 @@ import type { ImageDimensions } from './imageResizer.js'
 import type { ModelOption } from './model/modelOptions.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 
+// Flag to track if config reading is allowed. Keep this above feature-gated
+// top-level requires because some copied modules can re-enter getGlobalConfig()
+// during module initialization.
+var configReadingAllowed = false
+
 // Re-entrancy guard: prevents getConfig → logEvent → getGlobalConfig → getConfig
 // infinite recursion when the config file is corrupted. logEvent's sampling check
 // reads GrowthBook features from the global config, which calls getConfig again.
@@ -1394,9 +1399,6 @@ function saveConfigWithLock<A extends object>(
     }
   }
 }
-
-// Flag to track if config reading is allowed
-let configReadingAllowed = false
 
 export function enableConfigs(): void {
   if (configReadingAllowed) {

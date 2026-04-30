@@ -167,7 +167,7 @@
       "id": "compact-boundary-ui",
       "source": "runtime/parity/agenc-compaction-context.requirements.md",
       "sourceRoot": "../..",
-      "target": "runtime/src/tui/messages/CompactBoundaryMessage.tsx",
+      "target": "runtime/src/agenc/upstream/components/messages/CompactBoundaryMessage.tsx",
       "requiredBehaviors": [
         "persisted compact boundary records still render in the transcript",
         "compact boundary rendering is independent of copied upstream services",
@@ -682,7 +682,6 @@
     "runtime/src/session/run-turn.ts",
     "runtime/src/phases/post-sample-recovery.ts",
     "runtime/src/commands/registry.ts",
-    "runtime/src/tui/messages/CompactBoundaryMessage.tsx",
     "runtime/src/tui/dialogs/CompactSummary.tsx",
     "runtime/src/llm/messages.ts",
     "runtime/src/llm/grok/adapter.ts",

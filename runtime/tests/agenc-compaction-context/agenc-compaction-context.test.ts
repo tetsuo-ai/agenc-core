@@ -251,7 +251,7 @@ describe('AgenC runtime integration', () => {
     const target = readTarget('compact-boundary-ui');
 
     expect(target).toContain('Conversation compacted');
-    expect(target).toContain('getShortcutDisplay');
+    expect(target).toContain('useShortcutDisplay');
     expect(target).toContain('app:toggleTranscript');
   });
 
