@@ -1,0 +1,60 @@
+{
+  "contractName": "openclaude-selection-wholesale-parity",
+  "scope": "AgenC selection / hit-testing orchestration above the renderer ↔ openclaude src/hooks/useCopyOnSelect.ts + src/components/ScrollKeybindingHandler.tsx wholesale 1:1 port. AgenC currently has no equivalent files above ink/; this contract introduces them. The underlying ink/hooks/use-selection + ink/selection are already wholesale-ported (locked by openclaude-ink-wholesale-parity).",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/agenc-core-tui-ink-wholesale",
+  "transformationRules": [
+    "import-rewire: '../components/design-system/<m>.js' → '../design-system/<m>.js'",
+    "import-rewire: '../utils/theme.js' (openclaude getTheme) → '../theme.js' (AgenC getTheme)",
+    "import-rewire: '../utils/config.js' (getGlobalConfig) → '../utils/config-shim.js' (AgenC stub returning { copyOnSelect: true } default)",
+    "import-rewire: '../context/notifications.js' → '../state/NotificationsContext.js' (AgenC location of the same useNotifications API)",
+    "import-rewire: '../keybindings/useKeybinding.js' → '../keybindings/useKeybindings.js' (AgenC's file is plural)",
+    "import-rewire: '../utils/debug.js' → '../utils/debug.js' (AgenC shim added by markdown port)",
+    "import-rewire: '../ink.js' → '../ink-public.js'",
+    "extension-normalization, test-framework, env-vars, brand-scrub, react-compiler-args, ts-expect-error: same family as openclaude-markdown-wholesale"
+  ],
+  "rows": [
+    {
+      "id": "use-copy-on-select-port",
+      "source": "src/hooks/useCopyOnSelect.ts",
+      "target": "runtime/src/tui/hooks/useCopyOnSelect.ts",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/hooks/useCopyOnSelect.ts is openclaude src/hooks/useCopyOnSelect.ts post-transform — byte-equivalent",
+        "exposes useCopyOnSelect + useSelectionBgColor; consumes ink/hooks/use-selection from the wholesale-ported ink/ tree",
+        "wired to AgenC's getTheme (from runtime/src/tui/theme.ts) + a config-shim returning copyOnSelect=true default (no AgenC config flag for this today)"
+      ],
+      "tests": [
+        "runtime/src/tui/hooks/useCopyOnSelect.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "scroll-keybinding-handler-port",
+      "source": "src/components/ScrollKeybindingHandler.tsx",
+      "target": "runtime/src/tui/components/ScrollKeybindingHandler.tsx",
+      "requiredBehaviors": [
+        "AgenC runtime/src/tui/components/ScrollKeybindingHandler.tsx is openclaude src/components/ScrollKeybindingHandler.tsx post-transform — byte-equivalent",
+        "wires keybindings → ScrollBox scroll commands + selection focus moves",
+        "consumes useCopyOnSelect/useSelectionBgColor from the sibling hook port + AgenC's NotificationsContext + AgenC's keybindings layer"
+      ],
+      "tests": [
+        "runtime/src/tui/components/ScrollKeybindingHandler.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "config-shim-adapter",
+      "source": "src/hooks/useCopyOnSelect.ts",
+      "target": "runtime/src/tui/utils/config-shim.ts",
+      "requiredBehaviors": [
+        "AgenC ships a small getGlobalConfig() shim returning { copyOnSelect: true } as the stable default — the only flag the wholesale-ported useCopyOnSelect reads",
+        "rationale: openclaude getGlobalConfig() reads from their global config store; AgenC has its own config layer but no copyOnSelect toggle today",
+        "future work can wire this to AgenC's actual config when a copyOnSelect setting is introduced"
+      ],
+      "tests": [
+        "runtime/src/tui/hooks/useCopyOnSelect.test.tsx"
+      ],
+      "status": "required"
+    }
+  ]
+}

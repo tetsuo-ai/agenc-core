@@ -17,7 +17,12 @@
  *     plain Win32 terminals without VT mode support).
  */
 
-export type BindingContext = "global" | "chat" | "modal" | "transcript";
+export type BindingContext =
+  | "global"
+  | "chat"
+  | "modal"
+  | "transcript"
+  | "Scroll";
 
 export type BindingCommand =
   | "app:interrupt"
@@ -55,7 +60,8 @@ export type BindingCommand =
   | "modal:allowSession"
   | "modal:deny"
   | "transcript:toggleShowAll"
-  | "transcript:exit";
+  | "transcript:exit"
+  | "selection:copy";
 
 export interface BindingMap {
   [keySequence: string]: BindingCommand;
@@ -246,6 +252,11 @@ export const DEFAULT_BINDINGS: Record<BindingContext, BindingMap> = {
     [normalizeKeySequence("g")]: "scroll:top",
     [normalizeKeySequence("shift+g")]: "scroll:bottom",
   },
+  Scroll: {
+    // Selection-area context shared with the wholesale-ported
+    // ScrollKeybindingHandler. Defaults match openclaude's bindings.
+    [normalizeKeySequence("ctrl+c")]: "selection:copy",
+  },
 };
 
 /**
@@ -290,6 +301,7 @@ export const ALL_BINDING_COMMANDS: readonly BindingCommand[] = [
   "modal:deny",
   "transcript:toggleShowAll",
   "transcript:exit",
+  "selection:copy",
 ];
 
 /**

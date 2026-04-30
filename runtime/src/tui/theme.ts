@@ -40,6 +40,8 @@ export type Theme = {
     readonly modePlan: Color;
     readonly modeBypass: Color;
     readonly modeAuto: Color;
+    readonly suggestion: Color;
+    readonly selectionBg: Color;
   };
   readonly border: {
     readonly soft: string;
@@ -97,6 +99,8 @@ const DEFAULT_THEME: Theme = Object.freeze({
     modePlan: AGENC_BRAND.fuchsia,
     modeBypass: AGENC_BRAND.crimson,
     modeAuto: AGENC_BRAND.rose,
+    suggestion: AGENC_BRAND.frost,
+    selectionBg: "rgb(180, 213, 255)",
   }) as Theme["colors"],
   border: Object.freeze({
     soft: "single",
@@ -322,6 +326,8 @@ function buildTheme(primitives: WatchPrimitivesModule | null): Theme {
         color["agencRose"],
         DEFAULT_THEME.colors.modeAuto,
       ),
+      suggestion: DEFAULT_THEME.colors.suggestion,
+      selectionBg: DEFAULT_THEME.colors.selectionBg,
     }) as Theme["colors"],
     border: DEFAULT_THEME.border,
     spacing: DEFAULT_THEME.spacing,
