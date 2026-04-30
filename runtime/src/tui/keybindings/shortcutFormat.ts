@@ -19,7 +19,7 @@
  *      display string.
  *
  * The helper is sync-only because it has to be callable from non-React
- * paths like `manual-compact.ts::buildDisplayText`. Bindings are read
+ * paths like OpenClaude compact display text. Bindings are read
  * directly from `DEFAULT_BINDINGS`; user overrides from
  * `~/.agenc/keybindings.json` are merged through `loadUserBindingsSync()`
  * so shortcut hints follow the same binding map as the live provider.

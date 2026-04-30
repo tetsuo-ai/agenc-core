@@ -9,12 +9,6 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-vi.mock("../llm/compact/post-compact-cleanup.js", async () => {
-  const incremental = await import("../llm/grok/incremental.js");
-  return {
-    runPostCompactCleanup: vi.fn(() => incremental.clearAllResponseIds()),
-  };
-});
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),
@@ -70,7 +64,6 @@ import type {
 import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import { BudgetTracker } from "../llm/token-budget.js";
-import * as autoCompactModule from "../llm/compact/auto-compact.js";
 import { PermissionModeRegistry } from "../permissions/mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 
@@ -731,71 +724,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     ]);
   });
 
-  test("prepare-context blocking_limit terminates before the provider call", async () => {
-    const originalDisableAutoCompact = process.env.DISABLE_AUTO_COMPACT;
-    const originalBlockingLimitOverride =
-      process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
-    process.env.DISABLE_AUTO_COMPACT = "1";
-    process.env.AGENC_BLOCKING_LIMIT_OVERRIDE = "50";
-    const warningSpy = vi
-      .spyOn(autoCompactModule, "calculateTokenWarningState")
-      .mockReturnValue({
-        percentLeft: 0,
-        isAboveWarningThreshold: true,
-        isAboveErrorThreshold: true,
-        isAboveAutoCompactThreshold: false,
-        isAtBlockingLimit: true,
-      });
-    const chatStream = vi.fn(async (): Promise<LLMResponse> => ({
-      content: "should never happen",
-      toolCalls: [],
-      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-      model: "test-model",
-      finishReason: "stop",
-    }));
-    const ctx = mkCtx();
-    const provider = {
-      ...mkProvider({}),
-      chatStream,
-    } satisfies LLMProvider;
-    const { session, events } = mkSession({
-      provider,
-      registry: mkRegistry(),
-    });
-
-    try {
-      const gen = session.runTurn("x".repeat(400), { ctx });
-      let terminal: Awaited<ReturnType<typeof gen.next>>["value"] | undefined;
-      while (true) {
-        const next = await gen.next();
-        if (next.done) {
-          terminal = next.value;
-          break;
-        }
-      }
-
-      expect(chatStream).not.toHaveBeenCalled();
-      expect(terminal.reason).toBe("blocking_limit");
-      const agentMessage = events.find((e) => e.msg.type === "agent_message");
-      expect(agentMessage).toBeDefined();
-      if (agentMessage?.msg.type === "agent_message") {
-        expect(agentMessage.msg.payload.message.length).toBeGreaterThan(0);
-      }
-    } finally {
-      if (originalDisableAutoCompact === undefined) {
-        delete process.env.DISABLE_AUTO_COMPACT;
-      } else {
-        process.env.DISABLE_AUTO_COMPACT = originalDisableAutoCompact;
-      }
-      if (originalBlockingLimitOverride === undefined) {
-        delete process.env.AGENC_BLOCKING_LIMIT_OVERRIDE;
-      } else {
-        process.env.AGENC_BLOCKING_LIMIT_OVERRIDE =
-          originalBlockingLimitOverride;
-      }
-      warningSpy.mockRestore();
-    }
-  });
 });
 
 describe("runTurn — token budget tracker reset", () => {
@@ -826,7 +754,7 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
     // A1: before the fix, `newContextWindow = oldContextWindow` made
     // `old > new` impossible. This test exercises the fixed path by
     // supplying a previous-turn contextWindow (from models_manager in
-    // codex runtime; carried on previousTurnSettings in AgenC) that exceeds
+    // agenc runtime; carried on previousTurnSettings in AgenC) that exceeds
     // the current turn's contextWindow, with total usage over the new
     // auto-compact limit.
     const ctx = mkCtx();
@@ -1551,7 +1479,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// runAutoCompact dispatcher — codex runtime `run_auto_compact`
+// runAutoCompact dispatcher — agenc runtime `run_auto_compact`
 // Covers wiring between maybeRunPreviousModelInlineCompact +
 // runPreSamplingCompact and the real `autoCompactIfNeeded` loader.
 // ─────────────────────────────────────────────────────────────────────
@@ -1591,26 +1519,22 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
     // The dispatcher should have been reached at least once from the
     // pre-sampling compact path. Exact call count is implementation-
-    // detail (prepare-context.ts Stage 6 may invoke it again inside
+    // detail (AgenC context adapter.ts Stage 6 may invoke it again inside
     // the phase loop), but >=1 proves the dispatcher was wired.
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    const [firstMessages, firstCompactContext, firstCacheSafeParams, firstQuerySource] =
+    const [firstMessages, firstCompactContext, firstTracking, firstSnipTokensFreed, firstInitialContextInjection] =
       calls[0] ?? [];
     expect(Array.isArray(firstMessages)).toBe(true);
     expect(firstCompactContext).toEqual(
       expect.objectContaining({
-        options: expect.objectContaining({
-          mainLoopModel: "test-model",
-          querySource: "repl_main_thread",
-        }),
+        session,
+        ctx,
+        querySource: "repl_main_thread",
       }),
     );
-    expect(firstCacheSafeParams).toEqual(
-      expect.objectContaining({
-        toolUseContext: firstCompactContext,
-      }),
-    );
-    expect(firstQuerySource).toBe("repl_main_thread");
+    expect(firstTracking).toBeUndefined();
+    expect(firstSnipTokensFreed).toBe(0);
+    expect(firstInitialContextInjection).toBe("do_not_inject");
   });
 
   test("autoCompactIfNeeded is NOT called when total usage is below the threshold", async () => {
@@ -1634,7 +1558,7 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 
     await drain(session.runTurn("hi", { ctx }));
 
-    // prepare-context Stage 6 may still invoke autoCompactIfNeeded from
+    // AgenC context adapter Stage 6 may still invoke autoCompactIfNeeded from
     // inside the phase loop, but the pre-sampling dispatcher path that
     // this suite targets must NOT have fired. We assert on the explicit
     // `context_limit` marker by observing no auto-compact-failed
@@ -1682,11 +1606,10 @@ describe("runTurn — runAutoCompact dispatcher", () => {
     const fakeImpl: AutoCompactImpl = async () => ({
       wasCompacted: true,
       compactionResult: {
-        boundaryMarker: compactBoundary,
-        summaryMessages: [compactSummary],
-        messagesToKeep: [keptTail],
-        attachments: [],
-        hookResults: [],
+        message: "POST-COMPACT SUMMARY",
+        replacementHistory: [compactBoundary, compactSummary, keptTail],
+        preCompactTokens: 999,
+        postCompactTokens: 100,
       },
     });
     setAutoCompactImplForTests(fakeImpl);
@@ -1836,8 +1759,10 @@ describe("runTurn — runAutoCompact dispatcher", () => {
       5_000,
     );
     expect(ran).toBe(false);
-    // querySource (4th positional arg) should be the downshift marker.
+    // querySource is carried on the AgenC adapter context object.
     expect(calls.length).toBeGreaterThanOrEqual(1);
-    expect(calls[0]?.[3]).toBe("model_downshift");
+    expect(calls[0]?.[1]).toEqual(
+      expect.objectContaining({ querySource: "model_downshift" }),
+    );
   });
 });

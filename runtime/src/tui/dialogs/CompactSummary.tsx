@@ -6,11 +6,8 @@
  * plus, in transcript mode, the full text content of the summarizer's
  * output.
  *
- * Compaction-result shape mirrors `runtime/src/llm/compact/compact.ts`'s
- * `CompactionResult` (`messagesToKeep`, `summaryMessages`,
- * `userDisplayMessage`). The host passes already-extracted display
- * fields rather than the full result so this widget stays purely
- * presentational.
+ * The host passes already-extracted display fields rather than the full
+ * AgenC result so this widget stays purely presentational.
  */
 
 import React from 'react'

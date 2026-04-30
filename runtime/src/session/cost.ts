@@ -1,7 +1,7 @@
 /**
  * Cost sidecar — session cost tracking + formatting.
  *
- * Hand-port of openclaude `cost-tracker.ts` (327 LOC) + `costHook.ts`
+ * Hand-port of agenc `cost-tracker.ts` (327 LOC) + `costHook.ts`
  * (22 LOC) + relevant `utils/tokens.ts` (261 LOC) bits, restructured
  * to live as a SidecarManager-compatible Sidecar rather than the
  * AgenC bootstrap-state global.
@@ -11,7 +11,7 @@
  *     input/output/cached/reasoning tokens per model.
  *   - Maintain a model cost registry (USD/1K input + USD/1K output
  *     + USD/1K cached). Ships sensible defaults for grok-4-*, gpt-*,
- *     claude-*, and local providers; callers can override the registry.
+ *     agenc-*, and local providers; callers can override the registry.
  *   - Format cumulative cost for `/status` and status-line display.
  *   - Emit `token_budget_exceeded` warnings via the session-level
  *     BudgetTracker (integrates with llm/token-budget.ts per I-22).
@@ -59,8 +59,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     },
     "gpt-4o": { inputUsdPer1K: 0.0025, outputUsdPer1K: 0.01 },
     "gpt-4o-mini": { inputUsdPer1K: 0.00015, outputUsdPer1K: 0.0006 },
-    "claude-3-5-sonnet": { inputUsdPer1K: 0.003, outputUsdPer1K: 0.015 },
-    "claude-3-5-haiku": { inputUsdPer1K: 0.001, outputUsdPer1K: 0.005 },
+    "agenc-3-5-sonnet": { inputUsdPer1K: 0.003, outputUsdPer1K: 0.015 },
+    "agenc-3-5-haiku": { inputUsdPer1K: 0.001, outputUsdPer1K: 0.005 },
     ollama: { inputUsdPer1K: 0, outputUsdPer1K: 0, label: "local" },
     lmstudio: { inputUsdPer1K: 0, outputUsdPer1K: 0, label: "local" },
   });
@@ -123,8 +123,8 @@ function canonicalModel(model: string): string {
   if (model.startsWith("grok-4")) return "grok-4.20-0309-reasoning";
   if (model.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
   if (model.startsWith("gpt-4o")) return "gpt-4o";
-  if (model.startsWith("claude-3-5-haiku")) return "claude-3-5-haiku";
-  if (model.startsWith("claude-3-5-sonnet")) return "claude-3-5-sonnet";
+  if (model.startsWith("agenc-3-5-haiku")) return "agenc-3-5-haiku";
+  if (model.startsWith("agenc-3-5-sonnet")) return "agenc-3-5-sonnet";
   if (model.startsWith("ollama:")) return "ollama";
   if (model.startsWith("lmstudio:")) return "lmstudio";
   return model;

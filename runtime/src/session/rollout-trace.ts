@@ -1,7 +1,7 @@
 /**
  * RolloutTraceRecorder — best-effort, opt-in hot-path trace recorder.
  *
- * Hand-port of upstream codex runtime `codex-rs/rollout-trace/src/recorder.rs`
+ * Hand-port of upstream agenc runtime `agenc-rs/rollout-trace/src/recorder.rs`
  * (core handle) plus the narrow slice of `writer.rs`, `raw_event.rs`,
  * `bundle.rs`, and `payload.rs` required to land the lifecycle surface.
  *
@@ -18,7 +18,7 @@
  *   - `createRootOrDisabled(threadId)`          → reads env, returns root or disabled
  *   - `createInRootForTest(root, threadId)`     → creates bundle at known root
  *   - `recordThreadStarted(metadata)`           → emits ThreadStarted lifecycle
- *   - `recordcodex runtimeTurnStarted(threadId, turnId)`→ emits codex runtimeTurnStarted lifecycle
+ *   - `recordagenc runtimeTurnStarted(threadId, turnId)`→ emits agenc runtimeTurnStarted lifecycle
  *   - File-backed `TraceWriter` (manifest.json + trace.jsonl + payloads/*.json)
  *   - Raw event envelope + schema versioning
  *
@@ -31,7 +31,7 @@
  *     projection lives in a separate tranche.
  *
  * Not ported (honest INCOMPLETE flags):
- *   - Upstream emits `RolloutEnded`, `ThreadEnded`, and `codex runtimeTurnEnded` raw
+ *   - Upstream emits `RolloutEnded`, `ThreadEnded`, and `agenc runtimeTurnEnded` raw
  *     events from context-destruction and reducer paths, not from standalone
  *     `record_*` methods on the recorder.
  *
@@ -85,7 +85,7 @@ const PAYLOADS_DIR_NAME = "payloads";
 /** Upstream `AgentThreadId`. Kept as a bare string here. */
 export type AgentThreadId = string;
 
-/** Upstream `codex runtimeTurnId`. Kept as a bare string here. */
+/** Upstream `agenc runtimeTurnId`. Kept as a bare string here. */
 export type AgenCTurnId = string;
 
 /** Upstream `CompactionId`. Kept as a bare string here. */
@@ -641,7 +641,7 @@ export class RolloutTraceRecorder {
   /**
    * Emits a turn-start lifecycle event.
    *
-   * Mirrors upstream `record_codex runtime_turn_started`. Most production turn
+   * Mirrors upstream `record_agenc runtime_turn_started`. Most production turn
    * lifecycle wiring lives in higher-level session code; this explicit hook
    * lets trace-focused integration tests produce valid reducer inputs
    * without exercising the full session loop.

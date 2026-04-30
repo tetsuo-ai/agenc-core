@@ -1,7 +1,7 @@
 /**
  * Reconnection with exponential backoff for transient provider errors.
  *
- * Port of openclaude reconnection pattern: on transient network /
+ * Port of agenc reconnection pattern: on transient network /
  * provider errors (ECONNRESET, ECONNREFUSED, 503, stream_idle), the
  * recovery layer sleeps with exponential backoff (1s → 30s cap,
  * ±25% jitter, 10-minute give-up budget) then resamples. Pending

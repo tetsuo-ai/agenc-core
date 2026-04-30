@@ -9,7 +9,7 @@
  *   <agencHome>/projects/<slug>/tasks/.lock         // proper-lockfile
  *   <agencHome>/projects/<slug>/tasks/.highwatermark
  *
- * Locking model mirrors openclaude `src/utils/tasks.ts`: every mutation
+ * Locking model mirrors agenc `src/utils/tasks.ts`: every mutation
  * acquires `proper-lockfile.lock(.lock, retries…)` for the whole list,
  * does its read+write+auto-mirror, then releases. Reads do not lock.
  *
@@ -76,7 +76,7 @@ const LOCK_FILE = ".lock";
 const ID_RE = /^\d+$/;
 
 // Lock options sized for ~10+ concurrent agents under list-level
-// serialization (mirrors openclaude `src/utils/tasks.ts:LOCK_OPTIONS`).
+// serialization (mirrors agenc `src/utils/tasks.ts:LOCK_OPTIONS`).
 // Each critical section does readdir + N×readFile + writeFile (~50-100ms
 // on slow disks); 30 retries × 5–100ms backoff gives ~2.6s total wait
 // for the last caller in a 10-way race.
@@ -89,7 +89,7 @@ const LOCK_OPTIONS = {
 };
 
 // Pure event signal so TUI consumers can re-read tasks immediately
-// after a mutation in the same process. Mirrors openclaude
+// after a mutation in the same process. Mirrors agenc
 // `tasksUpdated` in `src/utils/tasks.ts`.
 const tasksUpdated = createSignal();
 export const onTasksUpdated = tasksUpdated.subscribe;
@@ -380,7 +380,7 @@ async function applyFieldUpdates(
  * Mutates both endpoint files atomically: from.blocks += to and
  * to.blockedBy += from. Idempotent — if the edge already exists, no-op.
  *
- * Mirrors openclaude `blockTask` (`src/utils/tasks.ts:458`).
+ * Mirrors agenc `blockTask` (`src/utils/tasks.ts:458`).
  */
 async function blockTaskNoLock(
   opts: TaskStoreOptions,

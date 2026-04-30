@@ -5,7 +5,7 @@
  * The run-turn kernel already clears and reads the breaker; this module
  * owns the approval-time review that records denial/non-denial outcomes.
  *
- * Semantics follow upstream codex runtime `guardian/review.rs`:
+ * Semantics follow upstream agenc runtime `guardian/review.rs`:
  *   - only approval requests explicitly routed to the guardian are counted;
  *   - completed deny assessments increment the breaker;
  *   - allow/timeout/abort reset the consecutive-denial counter;

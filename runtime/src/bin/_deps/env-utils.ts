@@ -7,7 +7,7 @@
  *   - `getAgenCConfigHomeDir()`
  *
  * The bootstrap path uses these to locate transcript candidates under
- * AgenC config homes for context-collapse rehydration.
+ * AgenC config homes.
  * Carved as a local `_deps/` to keep bootstrap self-contained.
  */
 

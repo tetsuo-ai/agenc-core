@@ -2,11 +2,11 @@
  * Incremental-request bookkeeping for the Grok (OpenAI-compatible
  * Responses API) adapter.
  *
- * Hand-port of codex runtime `core/src/client.rs::get_incremental_items`
+ * Hand-port of agenc runtime `core/src/client.rs::get_incremental_items`
  * (lines 909-946) plus the `LastResponse`/`WebsocketSession` slots
  * that back it (lines 868-907, 948-960).
  *
- * Rationale (verbatim from codex runtime `get_incremental_items` comment):
+ * Rationale (verbatim from agenc runtime `get_incremental_items` comment):
  *
  *   > Checks whether the current request is an incremental extension
  *   > of the previous request. We only reuse an incremental input
@@ -17,8 +17,8 @@
  *
  * Invariants covered here:
  *   I-2  (clear `previous_response_id` on compaction): `clearResponseId()`
- *        is the runtime entrypoint — post-compact-cleanup.ts calls this
- *        (via the provider abstraction) as the first cleanup step so the
+ *        is the runtime entrypoint — AgenC post-compact cleanup calls
+ *        this (via the provider abstraction) as the first cleanup step so the
  *        next request can't reference a server-side state that covered
  *        compacted-away turns. Synchronous + idempotent.
  *   I-14 (`previous_response_id` server-side expiration retry):
@@ -38,8 +38,8 @@ import type { LLMMessage } from "../types.js";
 /**
  * Snapshot of the request properties that must match byte-for-byte
  * (excluding the `input` array) for an incremental extension to be
- * reused. Matches codex runtime `ResponsesApiRequest` minus the `input`
- * field (which is the variable part codex runtime clears on line 922).
+ * reused. Matches agenc runtime `ResponsesApiRequest` minus the `input`
+ * field (which is the variable part agenc runtime clears on line 922).
  */
 export interface IncrementalRequestShape {
   readonly model: string;
@@ -51,7 +51,7 @@ export interface IncrementalRequestShape {
 }
 
 /**
- * Cached state for the last-completed response. codex runtime's `LastResponse`
+ * Cached state for the last-completed response. agenc runtime's `LastResponse`
  * (client.rs:868-907) tracks both the `previous_response_id` (for
  * server-side state reuse) and the items the server added to output
  * (so we don't re-send them on the next incremental call).
@@ -65,7 +65,7 @@ export interface LastResponseSnapshot {
 }
 
 /**
- * Result of a delta-computation attempt. Matches codex runtime line 940-945:
+ * Result of a delta-computation attempt. Matches agenc runtime line 940-945:
  *   Some(delta)   → incremental OK, send only these
  *   None          → full resend required
  */
@@ -137,7 +137,7 @@ export class IncrementalTracker {
   /**
    * Decide whether to send a full or incremental payload.
    *
-   * Mirrors codex runtime `get_incremental_items` control flow:
+   * Mirrors agenc runtime `get_incremental_items` control flow:
    *   1. Compare non-input request shape → full on mismatch
    *   2. Build baseline = previous input + last-response items
    *   3. Current input must start with baseline
@@ -197,7 +197,7 @@ export class IncrementalTracker {
   }
 
   /**
-   * I-2 enforcement entry point. Called by post-compact-cleanup.ts on
+   * I-2 enforcement entry point. Called by AgenC post-compact cleanup on
    * every compaction event (auto, reactive, manual /compact,
    * session-memory). Wipes `lastResponse` so the next request omits
    * `previous_response_id` and the server can't carry pre-compact

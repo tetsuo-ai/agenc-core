@@ -11,8 +11,8 @@
  * Steps in order:
  *   1. Strip "virtual" / boundary system messages whose content starts
  *      with `[snip]`, `[microcompact]`, `[context-collapse]`, `[autocompact]`,
- *      `[reactive-compact]`, or `[boundary]`, and drop non-leading system
- *      messages. OpenClaude keeps system prompt blocks out of the conversation
+ *      `[reactive recovery]`, or `[boundary]`, and drop non-leading system
+ *      messages. AgenC keeps system prompt blocks out of the conversation
  *      list; AgenC may carry the single leading prompt as a message before
  *      provider wiring, but mid-conversation system messages are runtime
  *      signals and must not reach providers.
@@ -41,7 +41,7 @@ const BOUNDARY_PREFIXES = [
   "[microcompact]",
   "[context-collapse]",
   "[autocompact]",
-  "[reactive-compact]",
+  "[reactive recovery]",
   "[boundary]",
 ];
 

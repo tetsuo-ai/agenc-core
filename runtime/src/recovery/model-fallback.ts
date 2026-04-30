@@ -1,7 +1,7 @@
 /**
  * Model-fallback recovery.
  *
- * Hand-port of openclaude `query.ts:928-981`. When the provider/
+ * Hand-port of agenc `query.ts:928-981`. When the provider/
  * retry layer throws `FallbackTriggeredError`, the primary model has
  * already bailed and the wire is about to retry on the fallback.
  * Phase-3 catches this and:

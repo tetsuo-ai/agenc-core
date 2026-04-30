@@ -12,7 +12,7 @@
  *
  * @module
  */
-import type { HookResultMessage } from "../compact/_deps/types-message.js";
+import type { HookResultMessage } from "../../types/message.js";
 
 export type LifecycleHookEvent = "PreCompact" | "PostCompact" | "SessionStart";
 

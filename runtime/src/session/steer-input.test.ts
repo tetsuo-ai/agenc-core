@@ -1,7 +1,7 @@
 /**
  * Tests for the steer-input subsystem (`Session.steerInput` +
- * `SteerInputError` + `isSteerable`). Mirrors upstream codex runtime
- * `codex-rs/core/src/session/mod.rs::steer_input` (line 2938) and the
+ * `SteerInputError` + `isSteerable`). Mirrors upstream agenc runtime
+ * `agenc-rs/core/src/session/mod.rs::steer_input` (line 2938) and the
  * `SteerInputError` taxonomy at `session/mod.rs:213`.
  *
  * Coverage (per task brief):

@@ -38,8 +38,8 @@ describe("web-fetch-preapproved", () => {
     expect(isPreapprovedUrl("")).toBe(false);
   });
 
-  it("preapproved set covers the openclaude baseline domain count", () => {
-    // Sanity: catch accidental deletions during merges. The openclaude
+  it("preapproved set covers the agenc baseline domain count", () => {
+    // Sanity: catch accidental deletions during merges. The agenc
     // baseline at port time was ~85 entries; allow some flex.
     expect(PREAPPROVED_HOSTS.size).toBeGreaterThanOrEqual(70);
   });

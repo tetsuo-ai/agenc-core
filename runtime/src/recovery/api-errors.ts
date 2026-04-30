@@ -1,7 +1,7 @@
 /**
  * API-error classification primitives used by the recovery ladder.
  *
- * Port of openclaude `services/api/errors.ts` subset + the
+ * Port of agenc `services/api/errors.ts` subset + the
  * `FallbackTriggeredError` from `services/api/withRetry.ts`.
  *
  * Every classifier here is a pure predicate — no I/O. The recovery
@@ -61,7 +61,7 @@ function assistantText(msg: AssistantMessage): string {
 }
 
 /**
- * Port of openclaude `isPromptTooLongMessage`. Matches an assistant
+ * Port of agenc `isPromptTooLongMessage`. Matches an assistant
  * message whose text begins with the sentinel PTL error phrase.
  */
 export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
@@ -109,7 +109,7 @@ export function getPromptTooLongTokenGap(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of openclaude `isMediaSizeError`. Detects image / PDF upload
+ * Port of agenc `isMediaSizeError`. Detects image / PDF upload
  * failures that `stripImagesFromMessages` can recover from.
  */
 export function isMediaSizeError(raw: string): boolean {

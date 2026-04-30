@@ -1079,7 +1079,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
     const agentMaxThreads =
       session.config?.multiAgentV2?.maxConcurrentThreadsPerSession;
     if (agentMaxThreads === 0) {
-      // Mirrors codex `spawn_agents_on_csv` early reject at
+      // Mirrors agenc `spawn_agents_on_csv` early reject at
       // agent_jobs.rs:537 when the session forbids any concurrent
       // worker threads.
       return json(
@@ -1118,7 +1118,7 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           runInBackground: true,
         });
         if (outcome.kind === "rejected") {
-          // Codex's `CodexErr::AgentLimitReached` arm at
+          // AgenC's `AgenCErr::AgentLimitReached` arm at
           // agent_jobs.rs:658 surfaces as the AgenC
           // `AgentLimitReachedError` ("agent limit reached (max=N)")
           // re-thrown by `delegate` -> rejected outcome.
@@ -1130,12 +1130,12 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
           );
         }
         const thread = outcome.thread;
-        // Codex `agent_jobs.rs:704` subscribes to thread status to detect
+        // AgenC `agent_jobs.rs:704` subscribes to thread status to detect
         // a worker that terminates without calling `report_agent_job_result`
         // (handled by `finalize_finished_item`). AgenC mirrors this by
         // resolving `threadFinished` when `thread.join()` completes; the
         // orchestrator's finalize guard then converts a still-pending item
-        // into a failed one with codex's exact error message.
+        // into a failed one with agenc's exact error message.
         const threadFinished = thread
           .join()
           .then(() => undefined)
@@ -1146,17 +1146,17 @@ function createAgentTools(opts: ModelFacingToolOptions): readonly Tool[] {
         // In-memory orchestrator: workers self-terminate when they
         // observe a stop=true report. Outstanding agents will be
         // bounded by `max_runtime_seconds`. Hard-cancel via the
-        // control plane is deferred (codex SQLite-backed lifecycle
+        // control plane is deferred (agenc SQLite-backed lifecycle
         // not ported).
       },
     };
 
     const repository = getCsvAgentJobsRepository(opts.workspaceRoot);
     const callId = callIdFromArgs(args, "agent_job");
-    // Mirror codex `notify_background_event(turn, "agent_job_progress:{json}")`
+    // Mirror agenc `notify_background_event(turn, "agent_job_progress:{json}")`
     // (agent_jobs.rs:172-174) by emitting a `tool_progress` event whose
-    // chunk is the codex line verbatim. Operators wired to the AgenC
-    // event bus see the same payload codex prints.
+    // chunk is the agenc line verbatim. Operators wired to the AgenC
+    // event bus see the same payload agenc prints.
     const progressEmitter: AgentJobProgressEmitter = (update) => {
       const payload = {
         job_id: update.jobId,

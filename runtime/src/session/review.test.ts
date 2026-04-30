@@ -9,7 +9,7 @@
  *   - `session.onTaskFinished(subId)` drains the review from the
  *     registry the same way it drains a regular turn.
  *   - Review tasks are NOT steerable — `isTaskKindSteerable("review")`
- *     returns `false`, matching upstream codex runtime behavior (Item 6
+ *     returns `false`, matching upstream agenc runtime behavior (Item 6
  *     steer_input gate port will consume this classifier directly).
  *   - `ReviewManager` tracks spawned reviews by subId and shuts them
  *     down cleanly (upstream `GuardianReviewSessionManager::shutdown`).
@@ -854,7 +854,7 @@ describe("ReviewManager + session abort integration", () => {
     // Documents the current contract: the manager registry is separate
     // from Session's task registry. Callers who register a review with
     // a manager are responsible for calling manager.take(subId) or
-    // manager.shutdown() to release it. This matches upstream codex runtime
+    // manager.shutdown() to release it. This matches upstream agenc runtime
     // where `on_task_finished` does not reach into the
     // `GuardianReviewSessionManager` state.
     const session = mkSession();
@@ -1009,7 +1009,7 @@ describe("renderReviewExitSuccess edge cases", () => {
   });
 
   it("escapes no characters in results (matches upstream — callers must sanitize)", () => {
-    // Upstream codex runtime template engine substitutes literally; any escaping
+    // Upstream agenc runtime template engine substitutes literally; any escaping
     // is the caller's responsibility. This test pins the behavior.
     const results = "a<b>c&d\"e'f";
     const rendered = renderReviewExitSuccess(results);

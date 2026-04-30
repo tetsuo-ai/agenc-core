@@ -1,7 +1,7 @@
 /**
  * I-88 best-effort transcript-write hook.
  *
- * Port of codex `utils/sessionStorage.ts::recordContentReplacement`
+ * Port of agenc `utils/sessionStorage.ts::recordContentReplacement`
  * adapted to gut's runtime boundaries. Upstream writes a
  * `ContentReplacementEntry` line to the project transcript so resume
  * reconstructs the same replacement Map and prompt-cache prefix stays
@@ -44,8 +44,8 @@ const RECORDED_REPLACEMENTS_CAP = 1024;
 /**
  * Persist a batch of newly-decided replacement records.
  *
- * Mirrors openclaude `recordContentReplacement(replacements, agentId?)`
- * call shape — the prepare-context closure passes `(records)` only.
+ * Mirrors agenc `recordContentReplacement(replacements, agentId?)`
+ * call shape — the AgenC context adapter passes `(records)` only.
  *
  * Behavior:
  *   1. Append each record to the bounded in-memory buffer (drops

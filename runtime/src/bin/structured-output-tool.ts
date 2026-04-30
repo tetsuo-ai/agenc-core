@@ -1,7 +1,7 @@
 /**
  * `StructuredOutput` model-facing tool.
  *
- * Port of openclaude `src/tools/SyntheticOutputTool/SyntheticOutputTool.ts`,
+ * Port of agenc `src/tools/SyntheticOutputTool/SyntheticOutputTool.ts`,
  * translated to AgenC's flat `Tool` adapter (no `buildTool`,
  * `lazySchema`, or `isOpenWorld`).
  *
@@ -16,7 +16,7 @@
  *     AJV-compiled validator. Cached by schema-object identity via
  *     `WeakMap` so workflow scripts that pass the same schema object
  *     dozens of times don't pay JIT recompile cost on every call
- *     (mirrors openclaude's identity cache).
+ *     (mirrors agenc's identity cache).
  *
  * @module
  */
@@ -88,7 +88,7 @@ export type StructuredOutputToolBuildResult =
 
 // AJV runtime validator factory; lazy-initialized so the dep cost is
 // only paid by callers that actually compile a schema. Mirrors
-// openclaude's per-call construction but cached at module scope.
+// agenc's per-call construction but cached at module scope.
 let cachedAjv: Ajv | undefined;
 function getAjv(): Ajv {
   if (cachedAjv) return cachedAjv;
@@ -99,7 +99,7 @@ function getAjv(): Ajv {
 // WeakMap keyed on the caller's schema object reference. Workflow
 // callers that pass the same `BUGS_SCHEMA` literal dozens of times
 // reuse the compiled validator and the built tool entry. Mirrors
-// openclaude `toolCache` in `SyntheticOutputTool.ts:109`.
+// agenc `toolCache` in `SyntheticOutputTool.ts:109`.
 const toolCache = new WeakMap<object, StructuredOutputToolBuildResult>();
 
 /**

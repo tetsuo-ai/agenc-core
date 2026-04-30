@@ -1,10 +1,10 @@
 /**
  * RolloutItem — the per-line wrapper written to the JSONL rollout
- * file. Port of codex runtime `protocol/src/protocol.rs` (line 2855) + the
- * 6-variant set listed in `docs/plan/codex runtime-inventory.md §4`.
+ * file. Port of agenc runtime `protocol/src/protocol.rs` (line 2855) + the
+ * 6-variant set listed in `docs/plan/agenc runtime-inventory.md §4`.
  *
  * Serialization: JSONL with `{ "type": "snake_case", "payload": ... }`
- * discriminant (matching codex runtime's serde `tag="type" content="payload"`
+ * discriminant (matching agenc runtime's serde `tag="type" content="payload"`
  * shape). One RolloutItem per line.
  *
  * On-disk legacy aliases accepted for backward compatibility:
@@ -21,12 +21,12 @@ import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 // Per-variant payloads
 // ─────────────────────────────────────────────────────────────────────
 
-/** codex runtime `SessionStateUpdate` — session-scoped mutable slots. */
+/** agenc runtime `SessionStateUpdate` — session-scoped mutable slots. */
 export interface SessionStateUpdate {
   readonly agentTask?: SessionAgentTask;
 }
 
-/** Port of codex runtime `ResponseItem` subset used in rollout. Every history
+/** Port of agenc runtime `ResponseItem` subset used in rollout. Every history
  *  message the model sent/received lives here. */
 export interface ResponseItem {
   readonly role: "system" | "user" | "assistant" | "tool";
@@ -38,7 +38,7 @@ export interface ResponseItem {
   readonly phase?: string;
 }
 
-/** codex runtime `CompactedItem` — when the conversation was compacted, this
+/** agenc runtime `CompactedItem` — when the conversation was compacted, this
  *  captures the summary + (optional) the replacement history that
  *  rebuilds the conversation up to the compaction boundary. The
  *  reconstruction algorithm uses `replacementHistory` as a snapshot
@@ -123,7 +123,7 @@ export const KNOWN_ROLLOUT_TYPES = Object.freeze(
 
 /**
  * Legacy-alias remapping read on deserialization so older rollouts
- * from earlier AgenC versions still parse. codex runtime retained `task_*`
+ * from earlier AgenC versions still parse. agenc runtime retained `task_*`
  * aliases for the same reason.
  */
 export const ROLLOUT_LEGACY_TYPE_ALIASES: Readonly<Record<string, string>> =

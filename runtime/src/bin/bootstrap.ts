@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -57,14 +56,9 @@ import { SidecarManager } from "../session/sidecar.js";
 import { FileHistory, FileHistorySidecar } from "../session/file-history.js";
 import { ErrorLogSidecar } from "../session/error-log.js";
 import { CostSidecar } from "../session/cost.js";
-import { UsageNoticeSidecar } from "../session/usage-notices.js";
 import { shutdownSessionLifecycle } from "../session/lifecycle.js";
 import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
-import type {
-  ContextCollapseCommitEntry,
-  ContextCollapseSnapshotEntry,
-} from "./_deps/types-logs.js";
 import { AgentControl } from "../agents/control.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
@@ -82,16 +76,8 @@ import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "./_deps/current-session.js";
-import {
-  getAgenCConfigHomeDir,
-  resolveAgenCConfigHomeDir,
-} from "./_deps/env-utils.js";
-import {
-  loadTranscriptFile,
-} from "./_deps/session-storage.js";
 import { resolveTransportMode } from "../transport/fallback-ladder.js";
 import { toInfraSessionId } from "./_deps/session-id-compat.js";
-import { restoreFromEntries } from "./_deps/context-collapse.js";
 import {
   ConfigStore,
   resolveAgencHome as resolveAgencHomeFromEnv,
@@ -142,64 +128,6 @@ type StartupInternalEventPage = {
   }>;
   readonly next_cursor?: string;
 };
-
-async function loadPersistedContextCollapseState(params: {
-  readonly configHomes: readonly string[];
-  readonly workspaceRoot: string;
-  readonly conversationId: string;
-  readonly projectRootMarkers?: readonly string[];
-}): Promise<{
-  readonly contextCollapseCommits: ContextCollapseCommitEntry[];
-  readonly contextCollapseSnapshot?: ContextCollapseSnapshotEntry;
-} | null> {
-  const candidates = new Set<string>([
-    join(
-      getProjectDir(params.workspaceRoot, params.projectRootMarkers),
-      `${params.conversationId}.jsonl`,
-    ),
-  ]);
-
-  for (const configHome of params.configHomes) {
-    try {
-      const projectRoots = await readdir(join(configHome, "projects"), {
-        withFileTypes: true,
-      });
-      for (const entry of projectRoots) {
-        if (!entry.isDirectory()) continue;
-        candidates.add(
-          join(
-            configHome,
-            "projects",
-            entry.name,
-            `${params.conversationId}.jsonl`,
-          ),
-        );
-      }
-    } catch {
-      // No projects directory yet for this config-home candidate.
-    }
-  }
-
-  let firstTranscript: Awaited<ReturnType<typeof loadTranscriptFile>> | null =
-    null;
-  for (const transcriptPath of candidates) {
-    try {
-      const transcript = await loadTranscriptFile(transcriptPath);
-      if (
-        (transcript.contextCollapseCommits?.length ?? 0) > 0 ||
-        transcript.contextCollapseSnapshot !== undefined
-      ) {
-        return transcript;
-      }
-      firstTranscript ??= transcript;
-    } catch {
-      // Best-effort candidate probing. Caller emits a warning only if no
-      // candidate with valid transcript data can be restored.
-    }
-  }
-
-  return firstTranscript;
-}
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
@@ -500,7 +428,7 @@ function buildDeferredConfig(
       },
       windowsSandboxPrivateDesktop: false,
     },
-    /** T-future: ghost-snapshot state machine (codex runtime workspace restore). */
+    /** T-future: ghost-snapshot state machine (agenc runtime workspace restore). */
     ghostSnapshot: { enabled: false },
     /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
     agentRoles: listAgentRoles().map((role) => ({
@@ -641,12 +569,6 @@ export async function bootstrapLocalRuntimeSession(
   const env = options.env ?? process.env;
   const argv = options.argv ?? process.argv;
   const agencHome = resolveAgencHomeFromEnv(env);
-  const transcriptConfigHome = resolveAgenCConfigHomeDir({
-    configDirEnv: env.AGENC_CONFIG_DIR,
-    agencHomeEnv: env.AGENC_HOME,
-    homeDir: env.HOME,
-  });
-  const processConfigHome = getAgenCConfigHomeDir();
   const configStore = new ConfigStore({
     home: agencHome,
     env,
@@ -924,7 +846,7 @@ export async function bootstrapLocalRuntimeSession(
     // reconstruction, sidecar register, buildTurnContext, sidecar
     // start, MCP start) is threaded in via `onBeforeSessionConfigured`
     // / `onAfterSessionConfigured`. The bin path intentionally does
-    // NOT pass `mcp` to `bootstrapSession` because upstream codex runtime
+    // NOT pass `mcp` to `bootstrapSession` because upstream agenc runtime
     // starts the live MCP connection manager AFTER SessionConfigured
     // (session.rs:856-908); the `onAfterSessionConfigured` hook does
     // that work instead.
@@ -985,50 +907,6 @@ export async function bootstrapLocalRuntimeSession(
           env,
           conversationId,
         });
-
-        // Context-collapse runtime state is process-global. Clear it
-        // on every bootstrap, then restore persisted commit/snapshot
-        // metadata for explicit resume sessions before the first live
-        // query can run.
-        restoreFromEntries([], undefined);
-        if (options.conversationId !== undefined) {
-          try {
-            const transcriptLog = await loadPersistedContextCollapseState({
-              configHomes: Array.from(
-                new Set([transcriptConfigHome, processConfigHome]),
-              ),
-              workspaceRoot,
-              conversationId,
-              projectRootMarkers: sessionProjectRootMarkers,
-            });
-            if (transcriptLog !== null) {
-              restoreFromEntries(
-                transcriptLog.contextCollapseCommits ?? [],
-                transcriptLog.contextCollapseSnapshot,
-              );
-            }
-          } catch (err) {
-            if (
-              !(
-                err &&
-                typeof err === "object" &&
-                "code" in err &&
-                err.code === "ENOENT"
-              )
-            ) {
-              s.emit({
-                id: s.nextInternalSubId(),
-                msg: {
-                  type: "warning",
-                  payload: {
-                    cause: "context_collapse_restore_failed",
-                    message: err instanceof Error ? err.message : String(err),
-                  },
-                },
-              });
-            }
-          }
-        }
 
         const rolloutStore = new RolloutStore({
           cwd: workspaceRoot,
@@ -1107,7 +985,7 @@ export async function bootstrapLocalRuntimeSession(
                 }
               }
             }
-            // Port of codex runtime `Session::record_initial_history` resume
+            // Port of agenc runtime `Session::record_initial_history` resume
             // branch (session/mod.rs:1150-1236): restore persisted
             // agent task, emit a model-change warning when the
             // rollout's last turn ran on a different model, and seed
@@ -1198,11 +1076,6 @@ export async function bootstrapLocalRuntimeSession(
           costSidecar;
         sidecarManager.register(costSidecar);
 
-        const usageNoticeSidecar = new UsageNoticeSidecar();
-        (s.services as { usageNoticeSidecar?: UsageNoticeSidecar })
-          .usageNoticeSidecar = usageNoticeSidecar;
-        sidecarManager.register(usageNoticeSidecar);
-
         const extractMemoriesFn = buildExtractMemoriesViaSubagent({
           session: () => (shutdownStarted ? null : s),
           memoryDir,
@@ -1266,7 +1139,7 @@ export async function bootstrapLocalRuntimeSession(
         ]);
 
         // Start sidecars AFTER session_configured so they cannot emit
-        // earlier events. Mirrors codex runtime `session.rs:750-751`: "Start
+        // earlier events. Mirrors agenc runtime `session.rs:750-751`: "Start
         // the watcher after SessionConfigured so it cannot emit
         // earlier events."
         if (sidecarManager !== null) {
@@ -1274,9 +1147,9 @@ export async function bootstrapLocalRuntimeSession(
         }
 
         // Start the MCP connection manager AFTER session_configured
-        // has been emitted + persisted to rollout. Mirrors codex runtime
+        // has been emitted + persisted to rollout. Mirrors agenc runtime
         // ordering at
-        // `codex-rs/core/src/session/session.rs:717-748, 766` where
+        // `agenc-rs/core/src/session/session.rs:717-748, 766` where
         // the SessionConfiguredEvent is dispatched before
         // McpConnectionManager::new.
         await s.startMcpManager(mcpManager, {

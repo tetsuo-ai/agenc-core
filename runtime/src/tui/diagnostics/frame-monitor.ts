@@ -78,6 +78,7 @@ export function createFpsTracker(options: {
 }
 
 export interface FrameMonitorEnv {
+  readonly [key: string]: string | undefined;
   readonly AGENC_TUI_FRAME_DEBUG?: string;
   readonly AGENC_TUI_FRAME_BUDGET_MS?: string;
   readonly AGENC_TUI_INPUT_BUDGET_MS?: string;

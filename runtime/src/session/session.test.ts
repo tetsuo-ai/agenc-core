@@ -55,10 +55,6 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
-import {
-  contextCollapseService,
-  resetContextCollapse,
-} from "./_deps/context-collapse.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture helpers
@@ -233,10 +229,6 @@ async function withEnv<T>(
   }
 }
 
-afterEach(() => {
-  resetContextCollapse();
-});
-
 // ─────────────────────────────────────────────────────────────────────
 // SessionServices.permissionModeRegistry bootstrap
 // ─────────────────────────────────────────────────────────────────────
@@ -251,10 +243,9 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
     expect(registry.current().mode).toBe("default");
   });
 
-  it("populates the live context-collapse service and default querySource when omitted", () => {
+  it("populates the default querySource when omitted", () => {
     const session = buildSession();
 
-    expect(session.services.contextCollapse).toBe(contextCollapseService);
     expect(session.services.querySource).toBe("repl_main_thread");
   });
 

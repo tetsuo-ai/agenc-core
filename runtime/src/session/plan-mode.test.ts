@@ -12,12 +12,6 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
-vi.mock("../llm/compact/post-compact-cleanup.js", async () => {
-  const incremental = await import("../llm/grok/incremental.js");
-  return {
-    runPostCompactCleanup: vi.fn(() => incremental.clearAllResponseIds()),
-  };
-});
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),
@@ -651,7 +645,7 @@ describe("runSamplingRequest — reconnectWithBackoff wiring", () => {
     const { isRetryableStreamError } = await import("./run-turn.js");
     const { isTransientProviderError } = await import("../recovery/api-errors.js");
 
-    // Typed path (covers the codex runtime 5xx branch that was previously a
+    // Typed path (covers the agenc runtime 5xx branch that was previously a
     // brittle substring match).
     const { StreamModelError } = await import("../phases/stream-model.js");
     const { LLMServerError } = await import("../llm/errors.js");

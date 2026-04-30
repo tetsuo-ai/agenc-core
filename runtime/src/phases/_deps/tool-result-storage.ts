@@ -1,7 +1,7 @@
 /**
  * I-88 — per-turn tool-result byte budget enforcement.
  *
- * Port of codex `utils/toolResultStorage.ts::applyToolResultBudget`
+ * Port of agenc `utils/toolResultStorage.ts::applyToolResultBudget`
  * adapted to gut's flat `LLMMessage` shape (tool messages are
  * `role: "tool"` with `toolCallId`, not `tool_result` blocks inside
  * user `Message.message.content`).
@@ -9,14 +9,14 @@
  * What this enforces:
  *   - Walk the message list once, splitting tool-role messages into
  *     per-API-round groups (a maximal run of tool messages between
- *     assistant messages). Mirrors openclaude's `collectCandidatesByMessage`
+ *     assistant messages). Mirrors agenc's `collectCandidatesByMessage`
  *     which groups by adjacent user messages between assistants.
  *   - For each group, partition by prior decision: must-reapply (cached
  *     replacement), frozen (seen unreplaced — prefix already cached),
- *     fresh (new). Mirrors openclaude `partitionByPriorDecision`.
+ *     fresh (new). Mirrors agenc `partitionByPriorDecision`.
  *   - Sum the group's bytes. If over `MAX_TOOL_RESULTS_PER_MESSAGE_CHARS`,
  *     pick the largest fresh candidates and replace until under budget
- *     (or fresh is exhausted). Mirrors openclaude `selectFreshToReplace`.
+ *     (or fresh is exhausted). Mirrors agenc `selectFreshToReplace`.
  *   - Replacement content is a `<persisted-output>` marker carrying the
  *     original size + `[Old tool result content cleared]` body. The tag
  *     is the detection sentinel so subsequent passes do not re-process
@@ -32,15 +32,13 @@
  * not need the per-turn byte index for in-memory enforcement — every
  * tool message's bytes are measured directly off `content`. The
  * RolloutStore index already exists at `session/rollout-store.ts:118`
- * (`getToolResultBytes`/`getToolResultBytesIndexSnapshot`) and is
- * consumed by the compact prompt-build path
- * (`llm/compact/compact.ts::filterLargeToolResultsForCompact`). The
- * complementary in-flight enforcement here is what was previously
- * stubbed and is now ported.
+ * (`getToolResultBytes`/`getToolResultBytesIndexSnapshot`) for future
+ * compact prompt builders. The complementary in-flight enforcement here
+ * keeps tool-result pressure bounded before any summarization layer runs.
  *
  * Skip semantics: `skipToolNames` carries tools whose
  * `maxResultBytes` is `Infinity` (e.g. file readers whose own maxTokens
- * is the bound). Mirrors openclaude's per-tool-`Infinity` opt-out.
+ * is the bound). Mirrors agenc's per-tool-`Infinity` opt-out.
  *
  * @module
  */
@@ -52,7 +50,7 @@ import type {
 } from "../../session/_deps/tool-result-storage.js";
 
 // ─────────────────────────────────────────────────────────────────────
-// Constants — mirror openclaude `constants/toolLimits.ts`.
+// Constants — mirror agenc `constants/toolLimits.ts`.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -70,7 +68,7 @@ const DEFAULT_PER_MESSAGE_BUDGET_CHARS = 200_000;
  * Marker tags used to wrap a replaced tool result. The opening tag is
  * the detection sentinel — once a content string starts with it, the
  * block is treated as already-compacted and skipped on subsequent
- * passes. Mirrors openclaude `PERSISTED_OUTPUT_TAG`.
+ * passes. Mirrors agenc `PERSISTED_OUTPUT_TAG`.
  */
 const PERSISTED_OUTPUT_TAG = "<persisted-output>";
 const PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>";
@@ -163,7 +161,7 @@ function messageContentBytes(message: LLMMessage): number {
     }
     // image_url / other parts intentionally not counted — they are not
     // text payloads and the caller's compaction policy treats them
-    // separately (mirrors openclaude `hasImageBlock` skip).
+    // separately (mirrors agenc `hasImageBlock` skip).
   }
   return total;
 }
@@ -183,7 +181,7 @@ function hasImageContent(message: LLMMessage): boolean {
 
 /**
  * Build the human-readable replacement string the model sees in place
- * of an over-budget tool result. Mirrors openclaude
+ * of an over-budget tool result. Mirrors agenc
  * `buildLargeToolResultMessage` shape (PERSISTED_OUTPUT_TAG ...
  * PERSISTED_OUTPUT_CLOSING_TAG) but without on-disk persistence —
  * gut does not maintain the per-result file store yet, so the body
@@ -263,7 +261,7 @@ function partitionByPriorDecision(
 /**
  * Greedy: pick largest fresh candidates until the model-visible total
  * (frozen + remaining fresh) is at or under budget, or fresh exhausted.
- * Mirrors openclaude `selectFreshToReplace`.
+ * Mirrors agenc `selectFreshToReplace`.
  */
 function selectFreshToReplace(
   fresh: ReadonlyArray<ToolCandidate>,
@@ -309,7 +307,7 @@ function selectFreshToReplace(
  * input array by reference.
  *
  * Generic `T` matches the call-site `as never` cast in
- * `prepare-context.ts`. Internally we treat `messages` as
+ * the AgenC context adapter. Internally we treat `messages` as
  * `ReadonlyArray<LLMMessage>`.
  */
 export async function applyToolResultBudget<T>(

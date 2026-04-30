@@ -50,10 +50,10 @@ import {
 import type { RegisteredAgentTask } from "../session/agent-task-lifecycle.js";
 import { BehaviorSubject } from "../utils/behavior-subject.js";
 import {
-  executePostCompactHooks,
-  executePreCompactHooks,
-  processSessionStartHooks,
-} from "../llm/compact/_deps/hooks.js";
+  dispatchPostCompact,
+  dispatchPreCompact,
+  dispatchSessionStart,
+} from "../llm/hooks/index.js";
 import {
   registerPostCompactHook,
   registerPreCompactHook,
@@ -344,8 +344,8 @@ function createHooksService(): Hooks & {
   ): void;
   clearConfiguredLifecycleHooks(): void;
   processSessionStart(
-    ...args: Parameters<typeof processSessionStartHooks>
-  ): ReturnType<typeof processSessionStartHooks>;
+    ...args: Parameters<typeof dispatchSessionStart>
+  ): ReturnType<typeof dispatchSessionStart>;
 } {
   const stopHooks: StopHookHandler[] = [];
   const stopFailureHooks: StopHookHandler[] = [];
@@ -379,27 +379,29 @@ function createHooksService(): Hooks & {
     startupWarnings: () => [],
     executePreCompact: async (...args: unknown[]) => {
       const first = recordOrEmpty(args[0]);
-      return executePreCompactHooks(
+      return dispatchPreCompact(
         {
+          hook_event_name: "PreCompact",
           trigger: compactTrigger(first.trigger),
-          customInstructions:
+          custom_instructions:
             stringOrNull(first.customInstructions) ??
             stringOrNull(first.custom_instructions),
         },
-        abortSignalOrUndefined(args[1]),
+        { signal: abortSignalOrUndefined(args[1]) },
       );
     },
     executePostCompact: async (...args: unknown[]) => {
       const first = recordOrEmpty(args[0]);
-      return executePostCompactHooks(
+      return dispatchPostCompact(
         {
+          hook_event_name: "PostCompact",
           trigger: compactTrigger(first.trigger),
-          compactSummary:
+          compact_summary:
             stringOrNull(first.compactSummary) ??
             stringOrNull(first.compact_summary) ??
             "",
         },
-        abortSignalOrUndefined(args[1]),
+        { signal: abortSignalOrUndefined(args[1]) },
       );
     },
     executeStop: async (...args: unknown[]) => {
@@ -422,7 +424,7 @@ function createHooksService(): Hooks & {
         );
       }
     },
-    processSessionStart: (...args) => processSessionStartHooks(...args),
+    processSessionStart: (...args) => dispatchSessionStart(...args),
   };
 }
 
@@ -495,7 +497,10 @@ export function buildBootstrapSessionServices(
   const skillsServices = createLocalSkillsServices({
     agencHome: opts.agencHome,
     workspaceRoot: opts.workspaceRoot,
-    env: opts.env,
+    env: {
+      HOME: opts.env.HOME,
+      AGENC_MANAGED_HOME: opts.env.AGENC_MANAGED_HOME,
+    },
   });
   const analyticsEventsClient = new BootstrapAnalyticsEventsClient();
   const execPolicy = new BootstrapExecPolicyManager(

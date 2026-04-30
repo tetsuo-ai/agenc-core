@@ -1,7 +1,7 @@
 /**
  * Phase 6 — Commit.
  *
- * Mirrors openclaude `query.ts:1192-1465` (iteration tail) + 1643-1836
+ * Mirrors agenc `query.ts:1192-1465` (iteration tail) + 1643-1836
  * (terminal commit). Responsibilities per TODO.MD T5-B line 974:
  *
  *   1. **Append history** — ensure all iteration outputs (assistant
@@ -98,7 +98,7 @@ export async function commit(
 
   // ── 2. Compaction boundary — if this iteration's tracking state
   //      records a successful compact (compacted=true, turnCounter=0
-  //      was reset at auto-compact.ts:531), emit a typed boundary
+  //      was reset by the AgenC compact adapter), emit a typed boundary
   //      marker so the rollout sidecar (T6) can stamp it.
   const tracking = state.autoCompactTracking;
   if (tracking && tracking.compacted && tracking.turnCounter === 0) {
@@ -114,7 +114,7 @@ export async function commit(
     // T6 I-24b: re-append session metadata so --resume readers that
     // scan the last 16KB of the rollout still find the session
     // header even after many compacts have pushed it out of range.
-    // Port of openclaude sessionStorage.ts::reAppendSessionMetadata.
+    // Port of agenc sessionStorage.ts::reAppendSessionMetadata.
     session.rolloutStore?.store.reAppendSessionMetadata();
     // Mark the boundary as consumed so subsequent iterations don't
     // re-emit until the next successful compact mutates the turnId.

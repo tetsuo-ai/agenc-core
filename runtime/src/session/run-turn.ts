@@ -1,12 +1,12 @@
 /**
  * run-turn — orchestration for one user turn.
  *
- * Port of codex runtime `core/src/session/turn.rs` (2,230 LOC). The outer
- * orchestration shape follows codex runtime `run_turn` line-for-line; the
+ * Port of agenc runtime `core/src/session/turn.rs` (2,230 LOC). The outer
+ * orchestration shape follows agenc runtime `run_turn` line-for-line; the
  * per-iteration body delegates to AgenC's 6-phase machine
  * (`runtime/src/phases/`) which in turn ports AgenC's query.ts.
  *
- * codex runtime → AgenC call-graph mapping:
+ * agenc runtime → AgenC call-graph mapping:
  *
  *   run_turn()                         → runTurn()
  *   run_pre_sampling_compact()         → runPreSamplingCompact()
@@ -65,19 +65,16 @@ import { continuationNudge } from "../phases/continuation-nudge.js";
 import type { PhaseEvent } from "../phases/events.js";
 import { executeTools } from "../phases/execute-tools.js";
 import { postSampleRecovery } from "../phases/post-sample-recovery.js";
-import {
-  getPrepareContextTerminal,
-  prepareContext,
-} from "../phases/prepare-context.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
 import {
-  buildCompactedRolloutItem,
-  buildPostCompactMessages,
-} from "../llm/compact/compact.js";
-import {
-  tokenCountWithEstimation,
-} from "../llm/compact/_deps/token-counts.js";
+  buildAgenCCompactedRolloutItem,
+  buildAgenCPostCompactMessages,
+  getAgenCPreparedTerminal,
+  prepareAgenCTurnContext,
+  runAgenCAutoCompact,
+  type AgenCAutoCompactResult,
+} from "../agenc/adapters/runtime-session.js";
 import {
   streamModel,
   StreamModelError,
@@ -87,10 +84,6 @@ import { isTransientProviderError } from "../recovery/api-errors.js";
 import { reconnectWithBackoff } from "../recovery/reconnection.js";
 import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
 import * as planModeHelpers from "./plan-mode.js";
-import {
-  buildCompactCacheSafeParams,
-  createSessionBackedCompactContext,
-} from "./compact-runtime-context.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { Session } from "./session.js";
 import {
@@ -139,7 +132,7 @@ class RegularTurnTask implements SessionTask {
     // task body is driven by `runTurnKernelInner` below. The task
     // object still owns the lifecycle metadata and abort hook so
     // `Session.handleTaskAbort` can dispatch through the same concrete
-    // task interface as codex runtime.
+    // task interface as agenc runtime.
     return null;
   }
 
@@ -301,37 +294,6 @@ function isAutoCompactEnabledForNotices(): boolean {
   return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
 
-function getMaxBudgetUsd(session: Session): number | undefined {
-  return finitePositive(
-    session.services.configStore?.current().max_budget_usd,
-  );
-}
-
-function buildUsageSnapshotForAttachments(
-  session: Session,
-  ctx: TurnContext,
-  messages: readonly LLMMessage[],
-) {
-  const sidecar = session.services.usageNoticeSidecar;
-  if (sidecar === undefined) return undefined;
-
-  const contextWindow = modelContextWindow(ctx) ?? ctx.modelInfo.contextWindow;
-  const autoCompactTokenLimit = getAutoCompactTokenLimit(ctx);
-  const maxBudgetUsd = getMaxBudgetUsd(session);
-  return sidecar.snapshot({
-    contextTokenEstimate: tokenCountWithEstimation(messages),
-    ...(contextWindow !== undefined ? { contextWindowTokens: contextWindow } : {}),
-    ...(autoCompactTokenLimit !== undefined ? { autoCompactTokenLimit } : {}),
-    ...(session.budgetTracker !== undefined
-      ? { budgetTracker: session.budgetTracker }
-      : {}),
-    ...(session.services.costSidecar !== undefined
-      ? { costSidecar: session.services.costSidecar }
-      : {}),
-    ...(maxBudgetUsd !== undefined ? { maxBudgetUsd } : {}),
-  });
-}
-
 function toResponseItem(message: LLMMessage): ResponseItem {
   return {
     role: message.role,
@@ -359,40 +321,33 @@ function terminalToStopReason(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// codex runtime port: compaction helpers
+// agenc runtime port: compaction helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/** Reason passed to runAutoCompact. Port of codex runtime `CompactionReason`. */
+/** Reason passed to runAutoCompact. Port of agenc runtime `CompactionReason`. */
 export type CompactionReason =
   | "context_limit"
   | "model_downshift"
   | "manual"
   | "reactive_recovery";
 
-/** Phase passed to runAutoCompact. Port of codex runtime `CompactionPhase`. */
+/** Phase passed to runAutoCompact. Port of agenc runtime `CompactionPhase`. */
 export type CompactionPhase = "pre_turn" | "in_turn" | "post_turn";
 
 /** Whether to inject the initial context on post-compact. Port of
- *  codex runtime `InitialContextInjection`. */
+ *  agenc runtime `InitialContextInjection`. */
 export type InitialContextInjection =
   | "before_last_user_message"
   | "do_not_inject";
 
 /**
- * Structural shape of the resolved `autoCompactIfNeeded` export. Mirrors
- * `src/llm/compact/auto-compact.ts::autoCompactIfNeeded` and the loose
- * shape used in `prepare-context.ts` Stage 6 so both call sites share
- * one type. Compact module lives under a typecheck-excluded tree (its
- * external deps are not all ported yet), so the parameter list stays
- * loose (`unknown[]`).
+ * Structural shape of the resolved AgenC auto-compact export.
+ * Kept loose so tests can inject a compact dispatcher without depending
+ * on the full provider request graph.
  */
 export interface AutoCompactResult {
   readonly wasCompacted: boolean;
-  readonly compactionResult?: {
-    summaryMessages?: LLMMessage[];
-    attachments?: LLMMessage[];
-    hookResults?: LLMMessage[];
-  };
+  readonly compactionResult?: AgenCAutoCompactResult["compactionResult"];
   readonly consecutiveFailures?: number;
 }
 export type AutoCompactImpl = (
@@ -400,9 +355,9 @@ export type AutoCompactImpl = (
 ) => Promise<AutoCompactResult>;
 
 // Test-only override — when set, `runAutoCompact` calls this instead of
-// dynamic-require'ing the real `auto-compact.js`. Lets unit tests assert
-// the dispatcher was reached with the expected arguments without
-// spinning up the full compact subsystem. Clear via
+// the AgenC adapter. Lets unit tests assert the dispatcher was
+// reached with the expected arguments without spinning up the full
+// AgenC compact subsystem. Clear via
 // `setAutoCompactImplForTests(null)` between tests.
 let autoCompactImplOverride: AutoCompactImpl | null = null;
 
@@ -412,37 +367,20 @@ export function setAutoCompactImplForTests(
   autoCompactImplOverride = impl;
 }
 
-function resolveAutoCompactImpl(): AutoCompactImpl | null {
-  if (autoCompactImplOverride) return autoCompactImplOverride;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require("../llm/compact/auto-compact.js") as {
-      autoCompactIfNeeded?: AutoCompactImpl;
-    };
-    return mod?.autoCompactIfNeeded ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Port of codex runtime `run_auto_compact` (turn.rs:790-818). Dispatcher that
+ * Port of agenc runtime `run_auto_compact` (turn.rs:790-818). Dispatcher that
  * picks between inline and remote compact task based on provider info.
- * AgenC has only the inline path today; T13 adds the remote-compact
- * path for providers that expose a server-side compact endpoint.
+ * AgenC routes the inline path through the AgenC adapter.
  *
  * Behavior:
- *   - Resolves `autoCompactIfNeeded` (real module or test override).
- *     When nothing is wired yet (external deps not ported), returns
- *     false and the caller proceeds with uncompacted state — same
- *     feature-off fallback used by `prepare-context.ts` Stage 6.
- *   - Calls `autoCompactIfNeeded` with the session's current messages
- *     plus per-turn context. Threshold/circuit-breaker logic lives
- *     inside the compact module; the dispatcher is a thin wrapper.
+ *   - Resolves the AgenC adapter or test override.
+ *   - Calls the adapter with the session's current messages plus
+ *     per-turn context. Threshold/circuit-breaker logic lives inside
+ *     AgenC; the dispatcher is a thin wrapper.
  *   - When `state` is provided and compaction ran, splices the post-
  *     compact messages back into `state.messages` / `state.messagesForQuery`
  *     and stamps `state.autoCompactTracking` so the next phase sees the
- *     compacted view. (codex runtime's pre-sampling compact runs before the
+ *     compacted view. (agenc runtime's pre-sampling compact runs before the
  *     first phase iteration; mutating state here is how we guarantee
  *     `prepareContext` reads the compacted view.)
  *   - Never swallows errors silently — emits `warning:auto_compact_failed`
@@ -458,9 +396,6 @@ async function runAutoCompact(
   phase: CompactionPhase,
   state?: TurnState,
 ): Promise<boolean> {
-  const impl = resolveAutoCompactImpl();
-  if (!impl) return false;
-
   // Source-of-truth for the message set depends on when the dispatcher
   // is called. Pre-sampling compact runs before the phase loop, so
   // `state.messages` holds the seed history. Inline compact (T13)
@@ -472,27 +407,24 @@ async function runAutoCompact(
       : (state?.messages ?? []);
   const querySource =
     reason === "model_downshift" ? "model_downshift" : "repl_main_thread";
-  const compactContext = createSessionBackedCompactContext(session, {
-    turnContext: ctx,
-    querySource,
-    isNonInteractiveSession: false,
-    verbose: false,
-  });
-
   try {
-    const cacheSafeParams = await buildCompactCacheSafeParams(
-      compactContext,
-      messages as never,
-    );
-    const result = await impl(
-      messages,
-      compactContext,
-      cacheSafeParams,
-      querySource,
-      state?.autoCompactTracking,
-      state?.snipTokensFreed ?? 0,
-      initialContextInjection,
-    );
+    const result = autoCompactImplOverride
+      ? await autoCompactImplOverride(
+        messages,
+        { session, ctx, querySource },
+        state?.autoCompactTracking,
+        state?.snipTokensFreed ?? 0,
+        initialContextInjection,
+      )
+      : await runAgenCAutoCompact({
+        session,
+        ctx,
+        state,
+        querySource,
+        reason,
+        phase,
+        initialContextInjection,
+      });
 
     if (result.wasCompacted && state) {
       if (!result.compactionResult) {
@@ -500,34 +432,17 @@ async function runAutoCompact(
           "autoCompactIfNeeded reported success without a compactionResult",
         );
       }
-      const cr = result.compactionResult as
-        | {
-            boundaryMarker?: unknown;
-            summaryMessages?: LLMMessage[];
-            attachments?: LLMMessage[];
-            hookResults?: LLMMessage[];
-            messagesToKeep?: unknown[];
-            preCompactTokenCount?: number;
-            postCompactTokenCount?: number;
-          }
-        | undefined;
+      const cr = result.compactionResult;
       if (cr) {
         session.rolloutStore?.appendRollout(
           {
             type: "compacted",
-            payload: buildCompactedRolloutItem({
-              ...cr,
-              summaryMessages: cr.summaryMessages ?? [],
-              attachments: cr.attachments ?? [],
-              hookResults: cr.hookResults ?? [],
-            }),
+            payload: buildAgenCCompactedRolloutItem(cr),
           },
           { durable: true },
         );
       }
-      const compacted = buildPostCompactMessages(
-        cr as Parameters<typeof buildPostCompactMessages>[0],
-      ) as unknown as LLMMessage[];
+      const compacted = buildAgenCPostCompactMessages(cr);
       // Replace both the full history view and the per-iteration
       // projection so `prepareContext` (next phase) sees the same
       // post-compact replacement history the rollout recorded.
@@ -576,7 +491,7 @@ async function runAutoCompact(
 }
 
 /**
- * Port of codex runtime `maybe_run_previous_model_inline_compact` (turn.rs:749-788).
+ * Port of agenc runtime `maybe_run_previous_model_inline_compact` (turn.rs:749-788).
  * When the user switches to a model with a smaller context window and
  * total token usage exceeds the new auto-compact limit, compact
  * against the PREVIOUS model's context before continuing.
@@ -589,7 +504,7 @@ export async function maybeRunPreviousModelInlineCompact(
   _totalUsageTokens: number,
   state?: TurnState,
 ): Promise<boolean> {
-  // A1 fix: codex runtime resolves the previous model's TurnContext via
+  // A1 fix: agenc runtime resolves the previous model's TurnContext via
   // `turn_context.with_model(previous_turn_settings.model, models_manager)`
   // and reads its context_window. AgenC has no models_manager yet, so
   // we accept an optional pre-resolved `contextWindow` (and/or
@@ -638,7 +553,7 @@ export async function maybeRunPreviousModelInlineCompact(
 }
 
 /**
- * Port of codex runtime `run_pre_sampling_compact` (turn.rs:712-741). Runs
+ * Port of agenc runtime `run_pre_sampling_compact` (turn.rs:712-741). Runs
  * (a) previous-model inline compact on model downshift and
  * (b) auto-compact when total-usage-tokens exceeds the current
  * model's auto-compact limit.
@@ -687,7 +602,7 @@ function getTotalTokenUsage(session: Session): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// codex runtime port: prompt + tool building
+// agenc runtime port: prompt + tool building
 // ─────────────────────────────────────────────────────────────────────
 
 export interface BuiltPrompt {
@@ -700,9 +615,9 @@ export interface BuiltPrompt {
 }
 
 /**
- * Port of codex runtime `build_prompt` (turn.rs:946-976). Builds the per-
+ * Port of agenc runtime `build_prompt` (turn.rs:946-976). Builds the per-
  * request prompt shape. `dynamicTools[].deferLoading` filters out
- * deferred tools per codex runtime 952-966.
+ * deferred tools per agenc runtime 952-966.
  */
 export function buildPrompt(
   input: ReadonlyArray<LLMMessage>,
@@ -736,7 +651,7 @@ export function buildPrompt(
 
 /**
  * Insert runtime context/attachment messages without moving the stable
- * system-prompt prefix into the middle of the API transcript. OpenClaude keeps
+ * system-prompt prefix into the middle of the API transcript. AgenC keeps
  * the system prompt separate from conversation messages; in AgenC the prompt
  * is represented as leading `role: "system"` messages before provider wiring,
  * so user-channel context belongs immediately after that leading prefix.
@@ -758,8 +673,8 @@ export function insertContextMessagesAfterLeadingSystem(
 }
 
 /**
- * Port of codex runtime `built_tools` (turn.rs:1130-1268). Assembles the
- * tool list visible to the model. codex runtime threads through connectors,
+ * Port of agenc runtime `built_tools` (turn.rs:1130-1268). Assembles the
+ * tool list visible to the model. agenc runtime threads through connectors,
  * MCP tools, skill injections, plan-mode restrictions, etc. AgenC's
  * T5 version reads the static tool registry; T7 + T9 + T10 add the
  * dynamic filters as their subsystems land.
@@ -867,7 +782,7 @@ function enforcePlanModeToolBoundary(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// codex runtime port: sampling request orchestration
+// agenc runtime port: sampling request orchestration
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SamplingRequestResult {
@@ -879,8 +794,8 @@ export interface SamplingRequestResult {
 }
 
 /**
- * Port of codex runtime `try_run_sampling_request` (turn.rs:1828-2222). In
- * codex runtime this is the single-attempt stream consumer: it builds the
+ * Port of agenc runtime `try_run_sampling_request` (turn.rs:1828-2222). In
+ * agenc runtime this is the single-attempt stream consumer: it builds the
  * request, streams events, dispatches tool calls via the
  * ToolCallRuntime, and returns a SamplingRequestResult when the
  * stream completes or an Err on retryable failure.
@@ -903,8 +818,8 @@ async function tryRunSamplingRequest(
   events: PhaseEvent[],
 ): Promise<SamplingRequestResult> {
   // Phase 1: prepare context.
-  await prepareContext(state, ctx, session, signal);
-  const prepareTerminal = getPrepareContextTerminal(state);
+  await prepareAgenCTurnContext(state, ctx, session, signal);
+  const prepareTerminal = getAgenCPreparedTerminal(state);
   if (prepareTerminal) {
     const assistantText = prepareTerminal.assistantMessage.text ?? "";
     if (assistantText.length > 0) {
@@ -934,7 +849,7 @@ async function tryRunSamplingRequest(
       terminal: prepareTerminal.terminal,
     };
   }
-  // Per-turn attachments orchestrator (openclaude `getAttachments()`
+  // Per-turn attachments orchestrator (agenc `getAttachments()`
   // parity, ported into AgenC). Runs after `prepareContext` projects
   // the post-compaction history onto `state.messagesForQuery` and
   // before `buildSamplingRequestContract` snapshots it for the model
@@ -945,11 +860,6 @@ async function tryRunSamplingRequest(
   // request through the existing build path. Producer registry lives
   // in `runtime/src/prompts/attachments/orchestrator.ts`.
   const agencHome = session.services.configStore?.agencHome;
-  const usageSnapshot = buildUsageSnapshotForAttachments(
-    session,
-    ctx,
-    state.messagesForQuery,
-  );
   const attachments = await getAttachments({
     sessionKey: session,
     userInput: extractLastUserText(state.messagesForQuery),
@@ -962,7 +872,6 @@ async function tryRunSamplingRequest(
     cwd: ctx.cwd,
     subagentDepth: ctx.depth,
     signal,
-    ...(usageSnapshot !== undefined ? { usageSnapshot } : {}),
     ...(typeof agencHome === "string" && agencHome.length > 0
       ? { agencHome }
       : {}),
@@ -1088,7 +997,7 @@ async function tryRunSamplingRequest(
 }
 
 /**
- * Port of codex runtime `run_sampling_request` (turn.rs:987-1129). Applies the
+ * Port of agenc runtime `run_sampling_request` (turn.rs:987-1129). Applies the
  * per-provider retry policy around `tryRunSamplingRequest`.
  *
  * T8: retries route through `reconnectWithBackoff` from
@@ -1152,7 +1061,7 @@ async function runSamplingRequest(
 }
 
 /**
- * codex runtime `is_retryable()` on codex runtimeErr. AgenC classifies via typed
+ * agenc runtime `is_retryable()` on agenc runtimeErr. AgenC classifies via typed
  * error discrimination on the underlying cause rather than substring
  * matching against `error.message`, which is fragile: a
  * `LLMContextWindowExceededError` whose provider message happens to
@@ -1217,7 +1126,7 @@ export function isRetryableStreamError(error: unknown): boolean {
 }
 
 /**
- * D1 fix: resolve the outer-loop iteration cap. codex runtime terminates on
+ * D1 fix: resolve the outer-loop iteration cap. agenc runtime terminates on
  * the model's stop-signal, not on an iteration count; AgenC keeps the
  * cap as a safety net so a buggy provider can't spin forever. The
  * default is raised from 100 to 1000 (deep agent plans routinely cross
@@ -1239,7 +1148,7 @@ function resolveMaxTurns(ctx: TurnContext): number {
 }
 
 /**
- * Port of codex runtime `drain_in_flight` (turn.rs:1794-1818). On abort/error,
+ * Port of agenc runtime `drain_in_flight` (turn.rs:1794-1818). On abort/error,
  * drain any still-in-flight tool futures so their side effects record
  * into conversation state.
  *
@@ -1345,7 +1254,7 @@ export async function drainInFlight(
 }
 
 /**
- * Port of codex runtime `get_last_assistant_message_from_turn` (turn.rs:2223-2230).
+ * Port of agenc runtime `get_last_assistant_message_from_turn` (turn.rs:2223-2230).
  * Scans the response history for the most recent assistant message
  * and returns its text content.
  */
@@ -1361,13 +1270,13 @@ export function getLastAssistantMessageFromTurn(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Top-level runTurn kernel — codex runtime `run_turn` (turn.rs:130-665).
+// Top-level runTurn kernel — agenc runtime `run_turn` (turn.rs:130-665).
 // Session owns the live entrypoint; the exported free function below is
 // a compatibility adapter that delegates back into Session.
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Port of codex runtime `run_turn` (turn.rs:130). Drives one user turn from
+ * Port of agenc runtime `run_turn` (turn.rs:130). Drives one user turn from
  * pre-sampling compact through N sampling-request iterations until
  * the turn terminates (no tool calls, no transition, stop-gate
  * allowed) or maxTurns is exceeded.
@@ -1457,7 +1366,7 @@ export async function* runTurnKernel(
     pendingInputMessages,
   );
 
-  // codex runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
+  // agenc runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
   // turn. Callers that want to force work must enqueue pending input or
   // pass a non-empty user message.
@@ -1465,7 +1374,7 @@ export async function* runTurnKernel(
     return { reason: "completed" };
   }
 
-  // Upstream codex runtime `tasks/mod.rs::spawn_task` — register this turn with
+  // Upstream agenc runtime `tasks/mod.rs::spawn_task` — register this turn with
   // the session's task dispatcher BEFORE any state-mutation work runs.
   // This takes the `activeTurn` lock and aborts any prior in-flight
   // turn with `TurnAbortReason::Replaced`, then installs the new
@@ -1572,7 +1481,7 @@ export async function* runTurnKernel(
     );
   } finally {
     codeModeTurnWorker.dispose();
-    // Upstream codex runtime emits `on_task_finished` uniformly from the spawn
+    // Upstream agenc runtime emits `on_task_finished` uniformly from the spawn
     // site so every task-kind shares the same lifecycle. In gut the
     // kernel BOTH runs the task body AND owns its finish emit.
     await session.onTaskFinished(ctx.subId);
@@ -1583,7 +1492,7 @@ export async function* runTurnKernel(
  * Inner body of `runTurnKernel` extracted so the outer generator can
  * wrap it in a try/finally that funnels every exit path through
  * `session.onTaskFinished`. The outer wrapper also owns the
- * `session.spawnTask` call (see upstream codex runtime `tasks/mod.rs::spawn_task`
+ * `session.spawnTask` call (see upstream agenc runtime `tasks/mod.rs::spawn_task`
  * → `start_task` → task body → `on_task_finished` sequence).
  */
 interface RunTurnKernelCommons {
@@ -1615,7 +1524,7 @@ async function* runTurnKernelInner(
 
   // Seed the initial TurnState BEFORE pre-sampling compact so the
   // dispatcher can splice post-compact messages back into state and the
-  // first `prepareContext` call reads the compacted view. codex runtime's
+  // first `prepareContext` call reads the compacted view. agenc runtime's
   // equivalent operates on the session-held conversation directly;
   // AgenC's phase machine reads `state.messages`, so the compact result
   // has to land there.
@@ -1695,9 +1604,9 @@ async function* runTurnKernelInner(
     });
   };
 
-  // Upstream codex runtime resets per-turn guardian-denial counters at the top
+  // Upstream agenc runtime resets per-turn guardian-denial counters at the top
   // of every new turn (see `GuardianRejectionCircuitBreaker::clear_turn`
-  // usage around task start in `codex-rs/core/src/guardian/review.rs`).
+  // usage around task start in `agenc-rs/core/src/guardian/review.rs`).
   // We run it here — after `spawnTask` installed the new `ActiveTurn`
   // for `ctx.subId` and before any phase work that could record a
   // denial — so a previous turn's leftover counters or interrupt flag
@@ -1725,9 +1634,9 @@ async function* runTurnKernelInner(
   }
   persistNewResponseItems();
 
-  // codex runtime: run_pre_sampling_compact before any phase runs. Returns
+  // agenc runtime: run_pre_sampling_compact before any phase runs. Returns
   // whether compaction happened; if yes and we had a prewarmed
-  // client session, reset it (codex runtime 155-157 — AgenC has no prewarm
+  // client session, reset it (agenc runtime 155-157 — AgenC has no prewarm
   // today).
   try {
     await runPreSamplingCompact(session, ctx, state);
@@ -1742,7 +1651,7 @@ async function* runTurnKernelInner(
         },
       },
     });
-    // codex runtime: "return None" on pre-compact failure.
+    // agenc runtime: "return None" on pre-compact failure.
     await syncSessionState();
     emitTurnComplete("");
     const terminal: Terminal = { reason: "completed" };
@@ -1757,7 +1666,7 @@ async function* runTurnKernelInner(
   }
 
   // Merge external opts.signal, the session-level abort, and the
-  // task-local abort from `spawnTask`. Upstream codex runtime `start_task`
+  // task-local abort from `spawnTask`. Upstream agenc runtime `start_task`
   // constructs a child `CancellationToken` for the running task
   // (see `tasks/mod.rs` line 269) whose cancellation is triggered
   // by `abort_all_tasks`. The merged signal here is the gut
@@ -1776,7 +1685,7 @@ async function* runTurnKernelInner(
 
   yield { type: "turn_start", turnIndex: 0 };
 
-  // The phase loop — codex runtime's "while streaming & tools" outer loop.
+  // The phase loop — agenc runtime's "while streaming & tools" outer loop.
   while (true) {
     if (signal.aborted) {
       await drainInFlight(state, ctx, session);
@@ -1796,7 +1705,7 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    // Guardian-rejection circuit-breaker interrupt (upstream codex runtime
+    // Guardian-rejection circuit-breaker interrupt (upstream agenc runtime
     // `guardian/review.rs::record_guardian_denial` → `session.abort_turn_if_active(turn_id, Interrupted)`).
     // Detection-site writers call `recordDenial(turnId)` on the breaker
     // when a guardian review rejects an approval; the first crossing of
@@ -1860,10 +1769,10 @@ async function* runTurnKernelInner(
 
     resetIterationFields(state);
 
-    // codex runtime run_sampling_request — phases 1-4.
+    // agenc runtime run_sampling_request — phases 1-4.
     const pending: PhaseEvent[] = [];
     // Hoisted so the mid-turn compaction check after the try/catch can
-    // read the just-returned model_needs_follow_up signal. codex runtime reads
+    // read the just-returned model_needs_follow_up signal. agenc runtime reads
     // this from `SamplingRequestResult` at turn.rs:468-476 right before
     // the `token_limit_reached && needs_follow_up` arm at turn.rs:493.
     let modelNeedsFollowUp = false;
@@ -1946,14 +1855,14 @@ async function* runTurnKernelInner(
       continue;
     }
 
-    // Mid-turn compaction — port of codex runtime `turn.rs:493-508`. When the
+    // Mid-turn compaction — port of agenc runtime `turn.rs:493-508`. When the
     // just-finished sampling step pushed total token usage at or past
     // the current model's auto-compact limit AND a follow-up is still
     // required (tool calls pending or mailbox has queued user input),
     // compact before the next sampling request instead of letting the
     // next prepareContext stage blow through the window.
     //
-    // codex runtime contract reconstructed here:
+    // agenc runtime contract reconstructed here:
     //   token_limit_reached = total_usage_tokens >= auto_compact_limit
     //   needs_follow_up     = model_needs_follow_up || has_pending_input
     //   if both: run_auto_compact(MidTurn) -> reset_websocket_session -> continue
@@ -1966,17 +1875,17 @@ async function* runTurnKernelInner(
     //   total_usage_tokens    ← `getTotalTokenUsage(session)` reads the
     //     cross-turn cumulative `SessionState.totalTokenUsage` maintained
     //     by the stream-model writer (phases/stream-model.ts) after every
-    //     provider response, mirroring codex runtime
+    //     provider response, mirroring agenc runtime
     //     `TokenUsageInfo::append_last_usage` (protocol.rs:2294-2297).
     //   auto_compact_limit    ← `ctx.modelInfo.autoCompactTokenLimit`.
     //
-    // Provider continuity reset (codex runtime `client_session.reset_websocket_session()`):
+    // Provider continuity reset (agenc runtime `client_session.reset_websocket_session()`):
     //   `runAutoCompact` → `autoCompactIfNeeded` → `runPostCompactCleanup`
     //   → `context.clearProviderResponseId()` wires through
     //   `session.clearProviderResponseId()`, which is AgenC's equivalent.
     //   That covers the reset when compaction actually runs; we add an
     //   explicit `session.bindProviderConversation()` rebind after
-    //   compaction to mirror codex runtime's "the next sampling request must
+    //   compaction to mirror agenc runtime's "the next sampling request must
     //   look like a fresh conversation" guarantee.
     //
     // AgenC behavior: mid-turn compaction must re-inject the current
@@ -2004,7 +1913,7 @@ async function* runTurnKernelInner(
           state,
         );
       } catch (error) {
-        // codex runtime returns None on mid-turn compact failure. AgenC's
+        // agenc runtime returns None on mid-turn compact failure. AgenC's
         // analogue is to terminate the turn cleanly with an error
         // event so rollout reducers see a closed turn boundary.
         // Matches the failure handling pattern used by
@@ -2036,13 +1945,13 @@ async function* runTurnKernelInner(
       }
 
       if (!midTurnCompacted) {
-        // codex runtime's `is_err()` arm fires only on dispatcher failure. If
+        // agenc runtime's `is_err()` arm fires only on dispatcher failure. If
         // the dispatcher ran but reported `wasCompacted=false` (circuit
         // breaker tripped, feature disabled, or threshold logic inside
         // the compact module disagreed with our outer check), we do NOT
         // loop — that would spin forever with unchanged state. Surface
         // the token-limit condition as a terminal error matching the
-        // semantics of codex runtime's `return None`.
+        // semantics of agenc runtime's `return None`.
         await drainInFlight(state, ctx, session);
         const reasonText = `mid_turn_compact_skipped: tokens=${totalUsageTokens} limit=${autoCompactLimit}`;
         session.emit({
@@ -2069,15 +1978,15 @@ async function* runTurnKernelInner(
         return terminal;
       }
 
-      // codex runtime `client_session.reset_websocket_session()` parity.
+      // agenc runtime `client_session.reset_websocket_session()` parity.
       // `runAutoCompact` → `runPostCompactCleanup` already called
       // `session.clearProviderResponseId()` via the compact context;
       // rebind the provider HTTP client to the current conversation
       // so the next request opens a fresh continuation under the same
-      // conversationId (codex runtime's websocket session is keyed per
+      // conversationId (agenc runtime's websocket session is keyed per
       // conversation the same way).
       session.bindProviderConversation();
-      // codex runtime sets `can_drain_pending_input = !model_needs_follow_up;`
+      // agenc runtime sets `can_drain_pending_input = !model_needs_follow_up;`
       // to gate mailbox drain on the outer loop's next iteration. AgenC
       // does not yet surface a matching gate (the phase machine drains
       // pending input whenever `prepareContext` decides), so there is
@@ -2195,7 +2104,7 @@ export function runTurn(
 export type { Continue, Terminal };
 
 // ─────────────────────────────────────────────────────────────────────
-// Plan-mode helpers — port of codex runtime turn.rs:1537-1793. Exported from
+// Plan-mode helpers — port of agenc runtime turn.rs:1537-1793. Exported from
 // run-turn.ts so existing call sites can tree-shake them. The
 // implementations live in `./plan-mode.ts` because they're pure helpers
 // with no dependency on the outer turn loop.

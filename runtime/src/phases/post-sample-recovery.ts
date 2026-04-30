@@ -2,7 +2,7 @@
  * Phase 3 — Post-Sample Recovery.
  *
  * Evaluates the 7-strategy recovery ladder after the model stream
- * completes. Mirrors openclaude `query.ts:1082-1299`. Routes through
+ * completes. Mirrors agenc `query.ts:1082-1299`. Routes through
  * the ordered trigger priority (I-10) under the recovery-in-flight
  * exclusive lock (I-62) with the per-turn re-entry cap (I-42).
  *
@@ -15,7 +15,6 @@
  *   I-22 (token-budget mid-stream) — checked in stream-model, recovery
  *        here acts on the `pendingBudgetDecision` state slot.
  *   I-39 (stop-hook throw guard) — enforced in stop-hooks.ts.
- *   I-40 (reactive-compact throw guard) — enforced in reactive-compact.ts.
  *   I-42 (recovery re-entry cap) — RecoveryLadder owns the counter.
  *   I-62 (recovery-trigger evaluation exclusive) — RecoveryLadder
  *        acquires `session.recoveryInFlight` lock.
@@ -34,18 +33,17 @@ import {
 } from "../recovery/api-errors.js";
 import { RecoveryLadder } from "../recovery/fallback-ladder.js";
 import { reserveRecoveryReentry } from "../recovery/fallback-ladder.js";
-import {
-  resetCollapseDrainAttempted,
-  runCollapseDrain,
-} from "../recovery/collapse-drain.js";
-import { runReactiveCompact } from "../recovery/reactive-compact.js";
 import { runMaxOutputTokensRecovery } from "../recovery/max-output-tokens.js";
 import { runModelFallback } from "../recovery/model-fallback.js";
 import { escalatedMaxOutputTokensForModel } from "../llm/model-metadata.js";
 import {
   evaluateWithholdCascade,
-  isMediaWithholdRoute,
+  markContextCollapseAttempted,
+  resetContextCollapseAttempted,
 } from "../recovery/withhold-cascading.js";
+import {
+  runAgenCContextCollapseOverflowRecovery,
+} from "../agenc/adapters/runtime-session.js";
 import type { StreamingToolExecutor } from "./_deps/orchestrator-types.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
@@ -65,14 +63,6 @@ export async function postSampleRecovery(
   session: Session,
   signal?: AbortSignal,
 ): Promise<TurnState> {
-  const taskBudgetTotal =
-    (ctx as TurnContext & { taskBudget?: { total?: number } }).taskBudget
-      ?.total ??
-    (
-      session as Session & {
-        services?: { taskBudget?: { total?: number } };
-      }
-    ).services?.taskBudget?.total;
   if (signal?.aborted) return state;
 
   // I-22: if stream-model stashed a budget-exceeded decision on the
@@ -88,7 +78,7 @@ export async function postSampleRecovery(
       return state;
     }
     const continuationMessage = state.pendingBudgetDecision.reason;
-    resetCollapseDrainAttempted(state);
+    resetContextCollapseAttempted(state);
     emitWarning(
       session.eventLog,
       session.nextInternalSubId(),
@@ -114,7 +104,7 @@ export async function postSampleRecovery(
 
   const lastMessage = state.assistantMessages.at(-1);
   if (!lastMessage || !isWithheld413Message(lastMessage)) {
-    resetCollapseDrainAttempted(state);
+    resetContextCollapseAttempted(state);
   }
   // StreamModelError may have been stashed on the budget decision
   // slot or surfaced by the caller as a thrown error. Phase-3 sees
@@ -130,24 +120,14 @@ export async function postSampleRecovery(
       async on413(c) {
         const gate = evaluateWithholdCascade(c.state, c.lastMessage);
         if (gate.kind === "route_to_collapse_drain") {
-          const drain = await runCollapseDrain(c.state, { session: c.session });
-          if (drain.kind === "drained") {
-            return { kind: "applied", reason: `collapse_drain(${drain.committed})` };
-          }
-          // Fall through to reactive-compact on no-op or skipped-guard.
-        }
-        if (c.lastMessage) {
-          const rc = await runReactiveCompact({
+          markContextCollapseAttempted(c.state);
+          const drain = await runAgenCContextCollapseOverflowRecovery({
             session: c.session,
             state: c.state,
-            lastMessage: c.lastMessage,
-            taskBudgetTotal,
+            ...(c.lastMessage !== undefined ? { lastMessage: c.lastMessage } : {}),
           });
-          if (rc.kind === "compacted") {
-            return { kind: "applied", reason: "reactive_compact" };
-          }
-          if (rc.kind === "threw") {
-            return { kind: "surface", reason: "reactive_compact_threw" };
+          if (drain.kind === "applied") {
+            return drain;
           }
         }
         emitError(c.session.eventLog, c.session.nextInternalSubId(), {
@@ -159,18 +139,6 @@ export async function postSampleRecovery(
       },
 
       async onMedia(c) {
-        if (!c.lastMessage || !isMediaWithholdRoute(c.lastMessage)) {
-          return { kind: "pass" };
-        }
-        const rc = await runReactiveCompact({
-          session: c.session,
-          state: c.state,
-          lastMessage: c.lastMessage,
-          taskBudgetTotal,
-        });
-        if (rc.kind === "compacted") {
-          return { kind: "applied", reason: "media_reactive_compact" };
-        }
         emitError(c.session.eventLog, c.session.nextInternalSubId(), {
           cause: "image_error",
           message: "media-size recovery exhausted",

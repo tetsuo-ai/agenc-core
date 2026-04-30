@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  appendFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -19,14 +18,7 @@ import { defaultConfig, mergeConfigs } from "../config/index.js";
 import type { Tool } from "../tools/types.js";
 import { Session } from "../session/session.js";
 import { SidecarManager } from "../session/sidecar.js";
-import { getProjectDir } from "../session/session-store.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
-import {
-  getContextCollapseCommits,
-  getContextCollapseSnapshot,
-  resetContextCollapse,
-  restoreContextCollapseState,
-} from "../session/_deps/context-collapse.js";
 
 describe("resolveStartupSelection", () => {
   it("applies CLI provider/model/profile ahead of env and config", () => {
@@ -35,7 +27,7 @@ describe("resolveStartupSelection", () => {
       model_provider: "grok",
       profiles: {
         strict: {
-          model: "claude-opus-4-7",
+          model: "agenc-opus-4-7",
           model_provider: "anthropic",
           approval_policy: "never",
         },
@@ -51,7 +43,7 @@ describe("resolveStartupSelection", () => {
       config,
       env: {
         AGENC_PROVIDER: "anthropic",
-        AGENC_MODEL: "claude-opus-4-7",
+        AGENC_MODEL: "agenc-opus-4-7",
         AGENC_PROFILE: "strict",
         OPENAI_API_KEY: "openai-env-key",
       },
@@ -159,7 +151,6 @@ describe("readStartupCliFlags", () => {
 describe("bootstrapLocalRuntimeSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-    resetContextCollapse();
   });
 
   it("builds the shared local bootstrap contract and forwards registry customizations", async () => {
@@ -627,291 +618,6 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  // The "hydrates reconstructed history and seeded transcript events when
-  // resuming" test was removed alongside the AgenC implementation gut. The
-  // resume path now sits on top of `_deps/session-storage.loadTranscriptFile`
-  // which is a no-op stub (always throws ENOENT), so JSONL-backed transcript
-  // hydration + marble-origami context-collapse rehydration can no longer
-  // run. The in-memory context-collapse subsystem itself is now real
-  // (`session/_deps/context-collapse.ts`) and is covered by the
-  // "clears stale context-collapse state" test below plus the
-  // dedicated tests in `recovery/collapse-drain.test.ts` and
-  // `phases/post-sample-recovery.test.ts`. Restore this test once
-  // `loadTranscriptFile` ports over the JSONL parse path.
-  it.skip("hydrates reconstructed history and seeded transcript events when resuming (deleted with AgenC implementation gut)", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-
-    const providerMod = await import("../llm/provider.js");
-    vi.spyOn(providerMod, "createProvider").mockImplementation(
-      () =>
-        ({
-          name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: {
-              promptTokens: 1,
-              completionTokens: 1,
-              totalTokens: 2,
-            },
-          }),
-        }) as never,
-    );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    let firstShutdown: (() => Promise<void>) | null = null;
-    let secondShutdown: (() => Promise<void>) | null = null;
-    try {
-      const first = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        conversationId: "conv-resume-hydrated",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-        },
-      });
-      firstShutdown = first.shutdown;
-
-      first.rolloutStore.appendRollout({
-        type: "response_item",
-        payload: { role: "user", content: "hello" },
-      });
-      first.rolloutStore.appendRollout({
-        type: "response_item",
-        payload: { role: "assistant", content: "hi" },
-      });
-      first.rolloutStore.appendRollout({
-        type: "turn_context",
-        payload: {
-          turnId: "turn-resume",
-          cwd: workspace,
-          approvalPolicy: "never",
-          sandboxPolicy: "read_only",
-          model: "grok-4-fast",
-          realtimeActive: true,
-        },
-      });
-      first.session.emit({
-        id: first.session.nextInternalSubId(),
-        msg: { type: "user_message", payload: { message: "hello" } },
-      });
-      first.session.emit({
-        id: first.session.nextInternalSubId(),
-        msg: { type: "agent_message", payload: { message: "hi" } },
-      });
-      first.rolloutStore.flushDurable();
-      await first.shutdown();
-      firstShutdown = null;
-
-      const transcriptPath = join(
-        getProjectDir(workspace),
-        "conv-resume-hydrated.jsonl",
-      );
-      await mkdir(getProjectDir(workspace), { recursive: true });
-      await appendFile(
-        transcriptPath,
-        [
-          JSON.stringify({
-            type: "marble-origami-commit",
-            sessionId: "conv-resume-hydrated",
-            collapseId: "0000000000000007",
-            summaryUuid: "resume-summary-uuid",
-            summaryContent:
-              '<collapsed id="0000000000000007">Earlier conversation collapsed.</collapsed>',
-            summary: "Earlier conversation collapsed.",
-            firstArchivedUuid: "resume-first-archived",
-            lastArchivedUuid: "resume-last-archived",
-          }),
-          JSON.stringify({
-            type: "marble-origami-snapshot",
-            sessionId: "conv-resume-hydrated",
-            staged: [],
-            armed: true,
-            lastSpawnTokens: 42,
-          }),
-        ].join("\n") + "\n",
-        "utf8",
-      );
-
-      restoreContextCollapseState(
-        [
-          {
-            type: "marble-origami-commit",
-            sessionId: "stale-session" as never,
-            collapseId: "0000000000009999",
-            summaryUuid: "stale-summary-uuid",
-            summaryContent:
-              '<collapsed id="0000000000009999">stale in-memory state</collapsed>',
-            summary: "stale in-memory state",
-            firstArchivedUuid: "stale-first",
-            lastArchivedUuid: "stale-last",
-          },
-        ],
-        {
-          type: "marble-origami-snapshot",
-          sessionId: "stale-session" as never,
-          staged: [],
-          armed: false,
-          lastSpawnTokens: 7,
-        },
-      );
-
-      const resumed = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        conversationId: "conv-resume-hydrated",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-        },
-      });
-      secondShutdown = resumed.shutdown;
-
-      expect(resumed.initialState.history).toEqual([
-        { role: "user", content: "hello" },
-        { role: "assistant", content: "hi" },
-      ]);
-      expect(resumed.initialState.previousTurnSettings).toEqual({
-        model: "grok-4-fast",
-        realtimeActive: true,
-      });
-      expect(resumed.initialState.referenceContextItem).toEqual(
-        expect.objectContaining({
-          turnId: "turn-resume",
-          model: "grok-4-fast",
-          realtimeActive: true,
-        }),
-      );
-      expect(
-        (resumed.session as unknown as {
-          getInitialTranscriptEvents(): Array<{ type: string; payload: unknown }>;
-        }).getInitialTranscriptEvents(),
-      ).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "session_configured",
-            payload: expect.objectContaining({
-              sessionId: resumed.conversationId,
-            }),
-          }),
-          expect.objectContaining({
-            type: "user_message",
-            payload: expect.objectContaining({ message: "hello" }),
-          }),
-          expect.objectContaining({
-            type: "agent_message",
-            payload: expect.objectContaining({ message: "hi" }),
-          }),
-        ]),
-      );
-      resumed.rolloutStore.flushDurable();
-      expect(
-        resumed.rolloutStore.readAll().some(
-          (item) =>
-            item.type === "event_msg" &&
-            item.payload.msg.type === "session_configured" &&
-            item.payload.msg.payload.initialMessages.length >= 2,
-        ),
-      ).toBe(true);
-      expect(getContextCollapseCommits()).toEqual([
-        expect.objectContaining({
-          collapseId: "0000000000000007",
-          summaryUuid: "resume-summary-uuid",
-          firstArchivedUuid: "resume-first-archived",
-          lastArchivedUuid: "resume-last-archived",
-        }),
-      ]);
-      expect(getContextCollapseSnapshot()).toEqual(
-        expect.objectContaining({
-          armed: true,
-          lastSpawnTokens: 42,
-        }),
-      );
-    } finally {
-      await secondShutdown?.().catch(() => {
-        /* best effort */
-      });
-      await firstShutdown?.().catch(() => {
-        /* best effort */
-      });
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("clears stale context-collapse state on fresh bootstrap without resume", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-
-    const providerMod = await import("../llm/provider.js");
-    vi.spyOn(providerMod, "createProvider").mockImplementation(
-      () =>
-        ({
-          name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: {
-              promptTokens: 1,
-              completionTokens: 1,
-              totalTokens: 2,
-            },
-          }),
-        }) as never,
-    );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    restoreContextCollapseState(
-      [
-        {
-          type: "marble-origami-commit",
-          sessionId: "stale-session" as never,
-          collapseId: "0000000000009999",
-          summaryUuid: "stale-summary-uuid",
-          summaryContent:
-            '<collapsed id="0000000000009999">stale in-memory state</collapsed>',
-          summary: "stale in-memory state",
-          firstArchivedUuid: "stale-first",
-          lastArchivedUuid: "stale-last",
-        },
-      ],
-      {
-        type: "marble-origami-snapshot",
-        sessionId: "stale-session" as never,
-        staged: [],
-        armed: true,
-        lastSpawnTokens: 11,
-      },
-    );
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(getContextCollapseCommits()).toEqual([]);
-      expect(getContextCollapseSnapshot()).toBeUndefined();
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
   it("hydrates the live MCP manager from AGENC_MCP_SERVERS before session startup", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -1127,7 +833,6 @@ required = true
           "file-history",
           "error-log",
           "cost",
-          "usage-notices",
           "memory-auto-save",
         ]),
       );
@@ -1324,7 +1029,7 @@ required = true
 
   it("enforces the runtime bootstrap step ordering invariant", async () => {
     // Asserts the concrete step order the bin bootstrap is required to
-    // follow, mirroring upstream codex runtime
+    // follow, mirroring upstream agenc runtime
     // `core/src/session/session.rs:814-908, 931-942`:
     //
     //   1. Session construction (Session instance exists).
@@ -1448,7 +1153,7 @@ required = true
 
       const idx = (label: string): number => ordering.indexOf(label);
 
-      // The recorded step order must match the upstream codex runtime
+      // The recorded step order must match the upstream agenc runtime
       // contract: each step happens strictly before the next. Every
       // label must have been recorded (index >= 0).
       const mountIdx = idx("rollout_store_mounted");

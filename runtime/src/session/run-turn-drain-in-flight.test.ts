@@ -12,9 +12,6 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
-vi.mock("../llm/compact/post-compact-cleanup.js", () => ({
-  runPostCompactCleanup: vi.fn(),
-}));
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),

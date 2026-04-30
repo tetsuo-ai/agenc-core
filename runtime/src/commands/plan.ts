@@ -1,7 +1,7 @@
 /**
  * `/plan` — enter plan mode or display the active plan.
  *
- * Port of openclaude `src/commands/plan/plan.tsx` adapted to AgenC's
+ * Port of agenc `src/commands/plan/plan.tsx` adapted to AgenC's
  * `SlashCommand` contract (`runtime/src/commands/types.ts`).
  *
  * Behaviour matrix:

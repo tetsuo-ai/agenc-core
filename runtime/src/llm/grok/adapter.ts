@@ -625,7 +625,7 @@ export class GrokProvider implements LLMProvider {
 
   private client: unknown | null = null;
   private readonly config: GrokProviderConfig;
-  /** I-2 / I-14 tracker — zeroed by post-compact-cleanup.ts via
+  /** I-2 / I-14 tracker — zeroed by AgenC post-compact cleanup via
    *  clearAllResponseIds(); used to send delta input with
    *  previous_response_id when the request shape is unchanged. */
   private readonly incrementalTracker = new IncrementalTracker();
@@ -699,7 +699,7 @@ export class GrokProvider implements LLMProvider {
         (sum, definition) => sum + definition.schemaChars,
         0,
       );
-    // I-2: register the tracker so post-compact-cleanup can zero it.
+    // I-2: register the tracker so AgenC post-compact cleanup can zero it.
     this.unregisterIncrementalTracker = registerIncrementalTracker(
       this.incrementalTracker,
     );
@@ -722,7 +722,7 @@ export class GrokProvider implements LLMProvider {
   /**
    * I-2 / I-14 incremental-tracker integration for chat path.
    * Records the pre-flight request shape + post-response snapshot so
-   * `clearAllResponseIds()` (called from post-compact-cleanup.ts) can
+   * `clearAllResponseIds()` (called from AgenC post-compact cleanup) can
    * zero the cached previous_response_id. Matching follow-up turns reuse
    * the cached response ID and send only the delta input.
    */
@@ -901,7 +901,7 @@ export class GrokProvider implements LLMProvider {
     try {
       // I-2 / I-14: record the outbound request shape for the
       // incremental tracker before the HTTP call. clearAllResponseIds
-      // (called from post-compact-cleanup) zeros this on every
+      // (called from AgenC post-compact cleanup) zeros this on every
       // compaction.
       this.noteIncrementalRequest(
         plan.requestMessages ?? messages,

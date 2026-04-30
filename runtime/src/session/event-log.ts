@@ -2,8 +2,8 @@
  * Event log — the discriminated union that every state change in
  * AgenC flows through.
  *
- * Hand-port of codex runtime `protocol/src/protocol.rs` EventMsg (78 variants)
- * reduced to the 18-variant AgenC subset per `docs/plan/codex runtime-inventory.md §4`.
+ * Hand-port of agenc runtime `protocol/src/protocol.rs` EventMsg (78 variants)
+ * reduced to the 18-variant AgenC subset per `docs/plan/agenc runtime-inventory.md §4`.
  *
  * Invariants wired here:
  *   I-8  (every error site emits a typed event) — `emitError()` helper
@@ -384,7 +384,7 @@ export interface CollabResumeEndEvent {
  * TurnContextItem — emitted once per real user turn after computing
  * that turn's model-visible context updates (and again after
  * mid-turn compaction) so resume/fork replay recovers the latest
- * durable baseline. Port of codex runtime `TurnContextItem` (protocol.rs:2896).
+ * durable baseline. Port of agenc runtime `TurnContextItem` (protocol.rs:2896).
  *
  * Full-parity shape: every field populated by `toTurnContextItem` in
  * `turn-context.ts` is declared here so downstream readers (notably
@@ -419,7 +419,7 @@ export interface TurnContextItem {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * codex runtime `SessionConfigured` payload. Emitted once at session open.
+ * agenc runtime `SessionConfigured` payload. Emitted once at session open.
  * Kept in the canonical union so session.ts can rely on event-log.ts
  * as the single source of truth for event types.
  */
@@ -864,7 +864,7 @@ export function emitError(
  * I-8: warning helper. Warnings surface to telemetry but don't abort
  * the turn. The existing known-warning sites (from the invariant
  * matrix) include: MCP soft startup failure, mode-race abort, config
- * reload request, stop-hook throw, reactive-compact throw, etc.
+ * reload request, stop-hook throw, reactive recovery throw, etc.
  */
 export function emitWarning(
   log: EventLog,

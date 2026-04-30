@@ -4,7 +4,7 @@
  *
  * Mirrors the AgenC implementation `runtime/src/utils/sessionStorage.ts`
  * surface the bootstrap path consumes:
- *   - `loadTranscriptFile(path)` — used during context-collapse rehydration
+ *   - `loadTranscriptFile(path)` — used during transcript rehydration
  *   - `setRemoteIngressUrl(url)` — used by `registerStartupSessionIngress`
  *   - `setInternalEventReader(...)` / `setInternalEventWriter(...)` —
  *     used by the same path

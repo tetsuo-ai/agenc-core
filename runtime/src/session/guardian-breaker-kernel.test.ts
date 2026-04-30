@@ -3,7 +3,7 @@
  * turn kernel.
  *
  * Covers the two responsibilities the kernel owns on behalf of the
- * breaker (upstream codex runtime `guardian/review.rs` + `session::run_turn`):
+ * breaker (upstream agenc runtime `guardian/review.rs` + `session::run_turn`):
  *
  *   1. `clearTurn(turnId)` at the top of each new turn so a leftover
  *      interrupt flag from a previous turn sharing the same sub-id
@@ -25,12 +25,6 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-vi.mock("../llm/compact/post-compact-cleanup.js", async () => {
-  const incremental = await import("../llm/grok/incremental.js");
-  return {
-    runPostCompactCleanup: vi.fn(() => incremental.clearAllResponseIds()),
-  };
-});
 vi.mock("axios", () => {
   const axiosLike = {
     create: vi.fn(() => axiosLike),
@@ -569,7 +563,7 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
 
 // ---------------------------------------------------------------------------
 // Detection-layer scenarios (breaker-only, without kernel) — matches the
-// patterns upstream codex runtime tests exercise in codex-rs/core/src/guardian/tests.rs
+// patterns upstream agenc runtime tests exercise in agenc-rs/core/src/guardian/tests.rs
 // but extended to cover the detection surface contract: interleaved
 // non-denial calls, total-threshold precedence, turn-boundary clear.
 // ---------------------------------------------------------------------------
@@ -597,7 +591,7 @@ describe("GuardianRejectionCircuitBreaker — detection-layer scenarios", () => 
     const turnId = "turn-detection-total";
     // 9 deny/non-deny pairs keep consecutive at 1 (reset every pair)
     // while total climbs to 9. The 10th denial pushes total to 10,
-    // crossing MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN (codex-rs `ten`).
+    // crossing MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN (agenc-rs `ten`).
     for (let i = 0; i < MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN - 1; i += 1) {
       expect(breaker.recordDenial(turnId).kind).toBe("continue");
       breaker.recordNonDenial(turnId);

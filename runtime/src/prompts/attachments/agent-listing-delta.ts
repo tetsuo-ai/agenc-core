@@ -18,7 +18,7 @@
  * STATUS — agent definition surface gap:
  *
  * AgenC's runtime exposes `session.agentDefinitions.activeAgents` as
- * `unknown[]` (see `runtime/src/session/compact-runtime-context.ts:29`).
+ * `unknown[]` on the OpenClaude adapter boundary.
  * No typed `AgentDefinition` shape with `{agentType, whenToUse, tools}`
  * is published for the model-facing listing yet — `AgentControl.listAgents()`
  * returns *running* agent metadata, not the *available agent type catalog*

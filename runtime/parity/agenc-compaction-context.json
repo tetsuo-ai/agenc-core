@@ -1,0 +1,216 @@
+{
+  "contractName": "agenc-compaction-context",
+  "scope": "AgenC compaction/context integration using a local AgenC-branded copy of the compact/context dependency tree with a separate adapter boundary.",
+  "sourceRoot": "../..",
+  "targetRoot": "../..",
+  "removalTargets": [
+    "runtime/src/llm/compact",
+    "runtime/src/phases/prepare-context.ts",
+    "runtime/src/phases/prepare-context.test.ts",
+    "runtime/src/commands/compact.ts",
+    "runtime/src/commands/compact.test.ts",
+    "runtime/src/commands/context.ts",
+    "runtime/src/commands/context.test.ts",
+    "runtime/src/recovery/reactive-compact.ts",
+    "runtime/src/recovery/reactive-compact.test.ts",
+    "runtime/src/recovery/collapse-drain.ts",
+    "runtime/src/recovery/collapse-drain.test.ts",
+    "runtime/src/bin/_deps/context-collapse.ts",
+    "runtime/src/session/_deps/context-collapse.ts",
+    "runtime/src/session/compact-runtime-context.ts",
+    "runtime/src/session/compact-runtime-context.test.ts",
+    "runtime/src/session/manual-compact.ts",
+    "runtime/src/session/manual-compact.test.ts",
+    "runtime/src/session/manual-compact-runner.test.ts",
+    "runtime/src/session/manual-compact-t4-integration.test.ts",
+    "runtime/src/session/usage-notices.ts",
+    "runtime/src/session/usage-notices.test.ts",
+    "runtime/src/prompts/attachments/usage-notices.ts",
+    "runtime/src/prompts/attachments/usage-notices.test.ts"
+  ],
+  "forbiddenRuntimePatterns": [
+    {
+      "id": "no-old-compact-imports",
+      "pattern": "runtime/src/llm/compact"
+    },
+    {
+      "id": "no-old-relative-compact-imports",
+      "pattern": "../llm/compact"
+    },
+    {
+      "id": "no-old-compact-path-comments",
+      "pattern": "llm/compact/"
+    },
+    {
+      "id": "no-old-post-compact-cleanup-path",
+      "pattern": "post-compact-cleanup"
+    },
+    {
+      "id": "no-old-prepare-context-phase",
+      "pattern": "prepare-context"
+    },
+    {
+      "id": "no-old-manual-compact-session",
+      "pattern": "manual-compact"
+    },
+    {
+      "id": "no-old-reactive-compact-recovery",
+      "pattern": "reactive-compact"
+    },
+    {
+      "id": "no-old-collapse-drain",
+      "pattern": "collapse-drain"
+    },
+    {
+      "id": "no-old-context-collapse-dep",
+      "pattern": "_deps/context-collapse"
+    },
+    {
+      "id": "no-old-compact-runtime-context",
+      "pattern": "compact-runtime-context"
+    },
+    {
+      "id": "no-old-usage-notice-sidecar",
+      "pattern": "usageNoticeSidecar"
+    },
+    {
+      "id": "no-old-usage-notices-module",
+      "pattern": "usage-notices"
+    }
+  ],
+  "rows": [
+    {
+      "id": "query-loop-context-pipeline",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/session/run-turn.ts",
+      "requiredBehaviors": [
+        "session turns invoke the AgenC adapter boundary before every model request",
+        "upstream compaction modules provide live auto-compact behavior through the adapter loaders",
+        "compaction boundaries are persisted into the rollout stream"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "compact-boundary-ui",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/tui/messages/CompactBoundaryMessage.tsx",
+      "requiredBehaviors": [
+        "persisted compact boundary records still render in the transcript",
+        "compact boundary rendering is independent of copied upstream services",
+        "TUI output remains stable for existing compacted rollout data"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "adapter-runtime-session",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "requiredBehaviors": [
+        "adapter exposes the runtime session shape needed by the live turn pipeline",
+        "adapter normalizes message history before handing it to copied upstream compact/context code",
+        "adapter disables upstream memory and session-memory file reads while copied compact/context code runs",
+        "adapter preserves persisted compacted rollout data without reimplementing compact policy"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "adapter-dynamic-loaders",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/agenc/adapters/dynamic-loaders.js",
+      "status": "required",
+      "requiredBehaviors": [
+        "runtime loader resolves copied upstream compact, context, context-collapse, auto-compact, and post-compact message builders",
+        "literal copied module imports stay isolated from TypeScript compile scope",
+        "adapter tests prove live compaction decisions are loaded from copied upstream modules"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ]
+    },
+    {
+      "id": "local-upstream-source-tree",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/agenc/upstream/services/compact/compact.ts",
+      "requiredBehaviors": [
+        "copied compact/context modules and their source dependencies live under runtime/src/agenc/upstream",
+        "build and test config resolve copied modules from the local tree without probing sibling source checkouts",
+        "copied user-facing source terms use AgenC branding while required package and model identifiers remain importable"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "adapter-message-rollout",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/agenc/adapters/message-rollout.ts",
+      "requiredBehaviors": [
+        "adapter maps runtime messages to AgenC rollout items",
+        "adapter maps AgenC rollout items back to runtime messages for resume and persisted compaction records",
+        "adapter preserves compact boundary metadata without adding local policy"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "adapter-tool-use-context",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/agenc/adapters/tool-use-context.ts",
+      "requiredBehaviors": [
+        "adapter exposes runtime tools through the AgenC tool-use context contract",
+        "tool schemas are read from the live runtime registry",
+        "adapter uses inert callback surfaces for removed compaction progress hooks"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "adapter-model-context",
+      "source": "runtime/parity/agenc-compaction-context.requirements.md",
+      "target": "runtime/src/agenc/adapters/model-context.ts",
+      "requiredBehaviors": [
+        "adapter maps runtime provider model metadata into the AgenC context-window shape",
+        "adapter rejects missing or ambiguous model context data",
+        "adapter avoids copied upstream threshold decisions"
+      ],
+      "tests": [
+        "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "brandingScopes": [
+    "runtime/src/agenc/adapters",
+    "runtime/tests/agenc-compaction-context",
+    "runtime/parity/agenc-compaction-context.json",
+    "runtime/parity/agenc-compaction-context.requirements.md",
+    "runtime/scripts/check-agenc-compaction-context-contract.mjs",
+    "runtime/scripts/run-agenc-compaction-context-contract-tests.mjs",
+    "runtime/tsconfig.json",
+    "runtime/tsup.config.ts",
+    "runtime/vitest.config.ts",
+    "package.json",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/phases/post-sample-recovery.ts",
+    "runtime/src/commands/registry.ts",
+    "runtime/src/tui/messages/CompactBoundaryMessage.tsx",
+    "runtime/src/tui/dialogs/CompactSummary.tsx",
+    "runtime/src/llm/messages.ts",
+    "runtime/src/llm/grok/adapter.ts",
+    "runtime/src/llm/grok/incremental.ts"
+  ]
+}

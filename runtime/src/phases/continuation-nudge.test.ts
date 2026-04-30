@@ -52,7 +52,7 @@ function mkState(): TurnState {
 }
 
 describe("continuationNudge", () => {
-  test("resets recovery-shared state before re-entering prepare-context", async () => {
+  test("resets recovery-shared state before re-entering AgenC context adapter", async () => {
     const state = mkState();
 
     await continuationNudge(state, mkCtx(), mkSession());

@@ -22,7 +22,7 @@
  *
  * @module
  */
-import type { HookResultMessage } from "../compact/_deps/types-message.js";
+import type { HookResultMessage } from "../../types/message.js";
 import {
   getLifecycleHookRegistry,
   type LifecycleHookRegistry,
@@ -46,7 +46,7 @@ const POST_COMPACT_LABEL = "PostCompact";
 export const HOOK_EXECUTION_TIMEOUT_MS = 60_000;
 
 interface DispatchOpts<H> {
-  readonly hooks: ReadonlyArray<H>;
+  readonly hooks?: ReadonlyArray<H>;
   readonly signal?: AbortSignal;
 }
 
@@ -87,9 +87,9 @@ export async function dispatchPreCompact(
       | Promise<HookResult | undefined>
       | HookResult
       | undefined
-  > = { hooks: getRegistryHooks("PreCompact") },
+  > = {},
 ): Promise<PreCompactDispatchResult> {
-  const hooks = opts.hooks;
+  const hooks = opts.hooks ?? getRegistryHooks("PreCompact");
   if (hooks.length === 0) return {};
 
   const results: HookResult[] = [];
@@ -132,9 +132,9 @@ export async function dispatchPostCompact(
       | Promise<HookResult | undefined>
       | HookResult
       | undefined
-  > = { hooks: getRegistryHooks("PostCompact") },
+  > = {},
 ): Promise<PostCompactDispatchResult> {
-  const hooks = opts.hooks;
+  const hooks = opts.hooks ?? getRegistryHooks("PostCompact");
   if (hooks.length === 0) return {};
 
   const results: HookResult[] = [];
@@ -158,9 +158,9 @@ export async function dispatchSessionStart(
       | Promise<HookResult | undefined>
       | HookResult
       | undefined
-  > = { hooks: getRegistryHooks("SessionStart") },
+  > = {},
 ): Promise<HookResultMessage[]> {
-  const hooks = opts.hooks;
+  const hooks = opts.hooks ?? getRegistryHooks("SessionStart");
   if (hooks.length === 0) return [];
 
   const out: HookResultMessage[] = [];

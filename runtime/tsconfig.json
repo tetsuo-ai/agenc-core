@@ -32,6 +32,7 @@
     "dist",
     "**/*.test.ts",
     "**/*.test.tsx",
+    "src/agenc/**/*",
     "src/tui/**/*"
   ]
 }

@@ -1,8 +1,8 @@
 /**
  * `bootstrapSession` tests.
  *
- * Covers the bootstrap sequencing contract ported from upstream codex runtime
- * `Session::new` (codex-rs/core/src/session/session.rs:258-967):
+ * Covers the bootstrap sequencing contract ported from upstream agenc runtime
+ * `Session::new` (agenc-rs/core/src/session/session.rs:258-967):
  *
  *   1. Happy path — real discovered shell, `SessionConfigured` emitted
  *      exactly once, `activeTurn` is clean.
@@ -44,7 +44,6 @@ import type {
   ModelInfo,
   SessionConfiguration,
 } from "./turn-context.js";
-import { resetContextCollapse } from "./_deps/context-collapse.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { RolloutItem } from "./rollout-item.js";
 
@@ -248,10 +247,6 @@ function mkStubMcpManager(
   };
   return stub as unknown as MCPManager;
 }
-
-afterEach(() => {
-  resetContextCollapse();
-});
 
 // ─────────────────────────────────────────────────────────────────────
 // Tests

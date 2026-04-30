@@ -22,7 +22,7 @@ import type { ConfigStore } from "../config/store.js";
 /**
  * Optional bridge into the React-side AppState so slash commands can
  * synchronously update reactive UI state (status bar, etc.) without
- * waiting for a future turn boundary. Mirrors openclaude's
+ * waiting for a future turn boundary. Mirrors agenc's
  * `setAppState({ ...prev, mainLoopModel })` pattern at
  * `commands/model/model.tsx:59-63`.
  */

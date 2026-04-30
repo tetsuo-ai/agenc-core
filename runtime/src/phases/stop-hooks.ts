@@ -1,8 +1,8 @@
 /**
  * Phase 3b — Stop hooks.
  *
- * Port of codex runtime `hooks/src/events/stop.rs` (547 LOC, AgenC subset
- * ~250 LOC) + openclaude `query.ts:1313-1341` stop-hook ladder.
+ * Port of agenc runtime `hooks/src/events/stop.rs` (547 LOC, AgenC subset
+ * ~250 LOC) + agenc `query.ts:1313-1341` stop-hook ladder.
  *
  * Stop hooks fire at turn-end and can:
  *   - declare that the stop is legitimate (no-op; turn completes)
@@ -42,16 +42,16 @@ import type {
 // ─────────────────────────────────────────────────────────────────────
 
 /** I-17 recursion cap is AgenC's additional guard over both sources.
- *  codex runtime has no cap — its stop-hook loop relies on timeouts +
- *  cancellation (see `codex-rs/hooks/src/events/stop.rs` and
- *  `codex-rs/core/src/session/turn.rs`, neither defines a
+ *  agenc runtime has no cap — its stop-hook loop relies on timeouts +
+ *  cancellation (see `agenc-rs/hooks/src/events/stop.rs` and
+ *  `agenc-rs/core/src/session/turn.rs`, neither defines a
  *  `MAX_STOP_HOOK_RECURSION_DEPTH` constant). AgenC caps at
  *  `MAX_STOP_HOOK_BLOCKS` in `query.ts`; we mirror that name + value
  *  here. */
 export const MAX_STOP_HOOK_BLOCKS = 3;
 
 // ─────────────────────────────────────────────────────────────────────
-// Stop-hook types (port of codex runtime StopOutcome subset)
+// Stop-hook types (port of agenc runtime StopOutcome subset)
 // ─────────────────────────────────────────────────────────────────────
 
 export interface StopRequest {
@@ -63,7 +63,7 @@ export interface StopRequest {
   readonly stopHookActive: boolean;
   readonly lastAssistantMessage?: string;
   /** Whether the last assistant message was itself an API error —
-   *  openclaude `isApiErrorMessage` flag (query.ts:1297-1299). */
+   *  agenc `isApiErrorMessage` flag (query.ts:1297-1299). */
   readonly lastIsApiErrorMessage: boolean;
 }
 
@@ -176,7 +176,7 @@ export async function evaluateStopHooks(
     }
 
     if (outcome.shouldBlock) {
-      // codex runtime `stop.rs:185-193` rejects `decision:block` without a
+      // agenc runtime `stop.rs:185-193` rejects `decision:block` without a
       // non-empty reason. Mirror that: blank/whitespace-only
       // blockReason is a typed hook failure; we skip this hook's
       // block contribution entirely.
@@ -207,10 +207,10 @@ export async function evaluateStopHooks(
   }
   void aggregate;
 
-  // codex runtime `stop.rs:271` precedence: `should_block = !should_stop &&
+  // agenc runtime `stop.rs:271` precedence: `should_block = !should_stop &&
   // any(should_block)`. A hook that returned `shouldStop: true` wins
   // over any concurrent `shouldBlock: true`, even across hooks.
-  // Asserted by codex runtime test `continue_false_overrides_block_decision`
+  // Asserted by agenc runtime test `continue_false_overrides_block_decision`
   // (stop.rs:378-400).
   if (anyShouldStop) {
     return {

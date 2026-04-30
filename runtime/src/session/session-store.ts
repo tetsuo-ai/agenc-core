@@ -3,7 +3,7 @@
  * guarantees, flock acquisition, atomic write-then-rename, and the
  * per-turn `toolResultBytes` index used by compaction.
  *
- * On-disk layout (per `docs/plan/codex runtime-inventory.md §8`):
+ * On-disk layout (per `docs/plan/agenc runtime-inventory.md §8`):
  *
  *   ~/.agenc/projects/<slug>/
  *     sessions/<sessionId>/
@@ -594,7 +594,7 @@ function processIsAlive(pid: number): boolean {
  *      durable. On ext4 (and most journalled Linux filesystems) a
  *      file fsync does NOT imply directory-entry durability — the
  *      rename is a directory operation and needs its own fsync on
- *      the parent. See codex runtime pattern in
+ *      the parent. See agenc runtime pattern in
  *      `runtime/src/session/rollout-store.ts:238-251`
  *      (`persistThreadSpawnEdgesSnapshot`) which follows the same
  *      sequence for the thread-spawn-edges snapshot.
@@ -1353,12 +1353,12 @@ export class SessionStore {
 
   /**
    * Re-append the session_meta line to the rollout tail. Called by
-   * the compaction boundary (auto-compact.ts in phase 1) so
+   * the AgenC compaction boundary so
    * `--resume` metadata readers that scan the last 16KB of the
    * rollout find the session metadata even after many compacts have
    * pushed the original header out of that window.
    *
-   * Port of codex `sessionStorage.ts::reAppendSessionMetadata`.
+   * Port of agenc `sessionStorage.ts::reAppendSessionMetadata`.
    * Idempotent; safe to call multiple times. No-op if no session_meta
    * has been written yet (shouldn't happen post-open).
    *

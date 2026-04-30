@@ -1,7 +1,7 @@
 /**
  * `/exit-worktree` — user-facing worktree teardown.
  *
- * Port of openclaude `tools/ExitWorktreeTool/ExitWorktreeTool.ts`
+ * Port of agenc `tools/ExitWorktreeTool/ExitWorktreeTool.ts`
  * (329 LOC). The AgenC subset drops the module-level session state
  * (getCurrentWorktreeSession/tmux/analytics) and exposes a pure
  * function: the caller supplies the handle + baseCommit, this
@@ -33,7 +33,7 @@ export interface ExitWorktreeOpts {
   readonly action: ExitWorktreeAction;
   /**
    * Must be true to force-remove a worktree with uncommitted files
-   * or unmerged commits. Mirrors openclaude `discard_changes`.
+   * or unmerged commits. Mirrors agenc `discard_changes`.
    */
   readonly discardChanges?: boolean;
 }

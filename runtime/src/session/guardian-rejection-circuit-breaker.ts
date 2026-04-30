@@ -2,13 +2,13 @@
  * GuardianRejectionCircuitBreaker — prevents runaway guardian-reject loops
  * within a single turn.
  *
- * Ported from upstream codex runtime `codex-rs/core/src/guardian/mod.rs`:
+ * Ported from upstream agenc runtime `agenc-rs/core/src/guardian/mod.rs`:
  *   - `struct GuardianRejectionCircuitBreaker`
  *   - `enum GuardianRejectionCircuitBreakerAction`
  *   - `const MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN: u32 = 3`
  *   - `const MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN: u32 = 10`
  *
- * Semantic contract (verbatim from codex runtime):
+ * Semantic contract (verbatim from agenc runtime):
  *   - State is keyed by `turn_id` (string). Each turn has its own counters.
  *   - `recordDenial(turnId)` bumps both `consecutiveDenials` and
  *     `totalDenials`. If either threshold is hit AND `interruptTriggered` is
@@ -24,7 +24,7 @@
  *     `interruptTriggered` flag.
  *
  * NOTE on "window": the task spec mentioned a time-window reset. Upstream
- * codex runtime does NOT use a wall-clock window. The scope is exclusively
+ * agenc runtime does NOT use a wall-clock window. The scope is exclusively
  * per-turn (turn_id), reset by `clearTurn`. This port matches upstream
  * exactly rather than inventing a window that upstream does not have.
  *
@@ -33,13 +33,13 @@
 
 /**
  * Upstream: `MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN: u32 = 3`.
- * See codex-rs/core/src/guardian/mod.rs:46.
+ * See agenc-rs/core/src/guardian/mod.rs:46.
  */
 export const MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN = 3;
 
 /**
  * Upstream: `MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN: u32 = 10`.
- * See codex-rs/core/src/guardian/mod.rs:47.
+ * See agenc-rs/core/src/guardian/mod.rs:47.
  */
 export const MAX_TOTAL_GUARDIAN_DENIALS_PER_TURN = 10;
 
@@ -65,7 +65,7 @@ interface GuardianRejectionCircuitBreakerTurn {
 }
 
 /**
- * Construction options. Thresholds default to upstream codex runtime constants.
+ * Construction options. Thresholds default to upstream agenc runtime constants.
  */
 export interface GuardianRejectionCircuitBreakerOptions {
   /** Defaults to {@link MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN}. */

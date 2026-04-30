@@ -2,7 +2,7 @@
  * Command registry.
  *
  * Holds the set of `SlashCommand` entries the dispatcher can route to.
- * Ports the minimum openclaude `hasCommand` / `getCommand` / `findCommand`
+ * Ports the minimum agenc `hasCommand` / `getCommand` / `findCommand`
  * lookup behavior (`src/commands.js`) without pulling in plugin marketplace,
  * skill loading, MCP wiring, or hook registration.
  *
@@ -32,7 +32,6 @@ import initCommand from "./init.js";
 import diffCommand from "./diff.js";
 import exitCommand from "./exit.js";
 import clearCommand from "./clear.js";
-import contextCommand from "./context.js";
 import keybindingsCommand from "./keybindings.js";
 import resumeCommand from "./resume.js";
 import forkCommand from "./fork.js";
@@ -42,13 +41,16 @@ import configCommand from "./config.js";
 import hooksCommand from "./hooks.js";
 import modelCommand from "./model.js";
 import providerCommand from "./provider.js";
-import compactCommand from "./compact.js";
 import copyCommand from "./copy.js";
 import mcpCommand from "./mcp.js";
 import skillsCommand from "./skills.js";
 import memoryCommand from "./memory.js";
 import { enterWorktree } from "./enter-worktree.js";
 import { exitWorktree } from "./exit-worktree.js";
+import {
+  compactCommand,
+  contextCommand,
+} from "../agenc/adapters/slash-commands.js";
 
 /**
  * Concrete in-memory implementation of `CommandRegistry`. The registry

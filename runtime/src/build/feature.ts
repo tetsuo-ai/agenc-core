@@ -9,7 +9,7 @@
  *
  * Tests that need a flag turned on use `vi.mock('bun:bundle', ...)` to
  * override this stub, matching the existing pattern in
- * `runtime/src/llm/compact/micro-compact-cleanup.test.ts`.
+ * the row-level contract tests.
  */
 export function feature(_flag: string): boolean {
   return false;

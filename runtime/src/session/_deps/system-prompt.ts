@@ -1,31 +1,30 @@
 /**
- * System-prompt and user/system-context surface for compact's
- * `buildCompactCacheSafeParams`.
+ * System-prompt and user/system-context surface for AgenC compact
+ * request state.
  *
- * Ports the codex `constants/prompts.ts::getSystemPrompt`,
+ * Ports the agenc `constants/prompts.ts::getSystemPrompt`,
  * `context.ts::getUserContext` / `getSystemContext`, and
  * `utils/systemPrompt.ts::buildEffectiveSystemPrompt` shapes onto gut
  * primitives so the compact summarizer call inherits a real system
  * prompt, real project memory/instructions, and real git status —
- * matching the cache-safe contract the upstream `forkedAgent` honors
- * (see `runtime/src/llm/compact/_deps/fork-agent.ts`).
+ * matching the cache-safe contract the upstream `forkedAgent` honors.
  *
  * Why this lives in `_deps/` instead of leaning on
  * `prompts/system-prompt.ts::assembleSystemPrompt`:
  *   - `assembleSystemPrompt` requires a live `Session` + `TurnContext`.
- *     compact's cache-safe builder is invoked from `manual-compact.ts`
- *     and `run-turn.ts` with only a `CompactRuntimeContext` (no
+ *     AgenC compact request state is built from the turn loop with
+ *     only an adapter context (no
  *     turn-context handle for the new turn we're summarizing FOR), so
  *     we cannot satisfy `assembleSystemPrompt`'s shape from here.
  *   - The lower-level section helpers in `prompts/system-prompt.ts`
  *     are pure functions and safe to call directly. We compose them
- *     here against the compact-runtime inputs (tools list, model,
+ *     here against the AgenC adapter inputs (tools list, model,
  *     additional dirs, MCP clients).
  *
  * Cross-cuts that we deliberately do NOT carry:
  *   - Output style: the gut runtime has no output-style subsystem.
  *   - Skill listings: the gut runtime has no skill registry.
- *   - Agent listings: `compact-runtime-context.ts` always passes
+ *   - Agent listings: the AgenC adapter always passes
  *     `mainThreadAgentDefinition: undefined`, so the agent-prompt
  *     branch in `buildEffectiveSystemPrompt` is a no-op for compact.
  *   - `growthbook`/feature-flag gated sections: gut runtime has no
@@ -76,7 +75,7 @@ export function asSystemPrompt(
 // ─────────────────────────────────────────────────────────────────────
 // memoize() — local replacement for lodash-es/memoize so this file has
 // no extra dep and so we can attach `.cache.clear()` matching the shape
-// the post-compact-cleanup paths call.
+// AgenC post-compact cleanup calls.
 // ─────────────────────────────────────────────────────────────────────
 
 interface MemoizedAsync<T> {
@@ -117,7 +116,7 @@ function memoizeAsync<T>(fn: () => Promise<T>): MemoizedAsync<T> {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// getSystemPrompt — port of codex `constants/prompts::getSystemPrompt`
+// getSystemPrompt — port of agenc `constants/prompts::getSystemPrompt`
 // ─────────────────────────────────────────────────────────────────────
 
 interface ToolLike {
@@ -179,7 +178,7 @@ function buildMcpServerInstructions(
 
 /**
  * Build the cache-safe default system prompt for compact's summarizer
- * fork. Mirrors the openclaude `getSystemPrompt(tools, model, addDirs,
+ * fork. Mirrors the agenc `getSystemPrompt(tools, model, addDirs,
  * mcpClients)` shape: returns an ordered list of section strings. The
  * upstream consumer (`buildEffectiveSystemPrompt`) wraps this list with
  * `customSystemPrompt` / `appendSystemPrompt` overrides.

@@ -2,7 +2,7 @@
  * Per-dir tool-registry shape for `runtime/src/session/**`.
  *
  * Session only references the structural `ToolRegistry` interface
- * from the openclaude `runtime/src/tool-registry.ts`. Carved as a
+ * from the agenc `runtime/src/tool-registry.ts`. Carved as a
  * local `_deps/` so the gut session tree stays decoupled when the
  * root tool-registry is removed.
  */

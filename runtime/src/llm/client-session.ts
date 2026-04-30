@@ -568,7 +568,9 @@ function materializeTransportError(
 }
 
 async function readWithAbort(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reader: {
+    read: () => Promise<{ done: boolean; value?: Uint8Array }>;
+  },
   signal: AbortSignal | undefined,
 ): Promise<{ done: boolean; value?: Uint8Array }> {
   if (!signal) return await reader.read();

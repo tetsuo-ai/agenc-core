@@ -1,7 +1,7 @@
 /**
  * Per-session attachment-tracking state.
  *
- * Hand-port of openclaude `bootstrap/state.ts:1622-1626 + :1333-1346`,
+ * Hand-port of agenc `bootstrap/state.ts:1622-1626 + :1333-1346`,
  * scoped to the AgenC session via WeakMap. Matches the existing AgenC
  * pattern in `runtime/src/prompts/memory/attachments.ts:47` (sessionBudgets)
  * and `runtime/src/prompts/memory/auto-save.ts:114`.
@@ -131,18 +131,6 @@ export interface AttachmentTrackingState {
     readonly note: string;
     readonly rolloutIds: readonly string[];
   }>;
-  /**
-   * Last context-usage threshold bucket announced by usage notices.
-   * Cleared when usage drops below the first threshold, e.g. after
-   * compaction.
-   */
-  lastTokenUsageNoticeBucket?: number;
-  /**
-   * Last auto-compaction-threshold bucket announced by usage notices.
-   * Cleared when usage drops below the first threshold, e.g. after
-   * compaction.
-   */
-  lastCompactionNoticeBucket?: number;
 }
 
 const sessionAttachmentState = new WeakMap<object, AttachmentTrackingState>();

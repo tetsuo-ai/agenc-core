@@ -6,14 +6,14 @@
  * error + streaming fallback), the ladder evaluates in a fixed
  * documented order:
  *
- *   1. isWithheld413         → prompt-too-long (collapse-drain / reactive-compact)
- *   2. isWithheldMedia       → media size error (reactive-compact skips collapse)
+ *   1. isWithheld413         → prompt-too-long (AgenC collapse / reactive recovery)
+ *   2. isWithheldMedia       → media size error (reactive recovery skips collapse)
  *   3. isWithheldMaxOutputTokens → max-output-tokens escalate/continuation
  *   4. stopHookBlocking      → stop-hook inject + re-enter
  *   5. streamingFallbackOccured → streaming fallback tombstone + recreate
  *   6. FallbackTriggeredError → model fallback swap
  *
- * Hand-port of openclaude `query.ts:1101, 1115, 854, 1335, 928`
+ * Hand-port of agenc `query.ts:1101, 1115, 854, 1335, 928`
  * order. Codifying the list makes the order testable +
  * refactoring-safe (test asserts the array matches the documented
  * order so future edits can't silently reorder).
@@ -66,9 +66,9 @@ export interface RecoveryTrigger {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface TriggerActions {
-  /** PTL gate → collapse-drain vs reactive-compact routing. */
+  /** PTL gate → AgenC collapse vs reactive recovery routing. */
   on413(ctx: TriggerContext): Promise<TriggerOutcome>;
-  /** Media-size gate → direct reactive-compact. */
+  /** Media-size gate → direct reactive recovery. */
   onMedia(ctx: TriggerContext): Promise<TriggerOutcome>;
   /** Max-output-tokens → escalate or continuation. */
   onMaxOutputTokens(ctx: TriggerContext): Promise<TriggerOutcome>;

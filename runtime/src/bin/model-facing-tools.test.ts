@@ -864,7 +864,7 @@ describe("model-facing tools", () => {
     );
   });
 
-  it("list_agents returns Codex V2 snake_case entries only", async () => {
+  it("list_agents returns AgenC V2 snake_case entries only", async () => {
     const session = fakeSession();
     const control = {
       listAgents: vi.fn(() => [

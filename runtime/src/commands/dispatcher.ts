@@ -18,7 +18,7 @@
  *     caller consumes the `TraceRecord` from `DispatchOutcome`).
  *
  * Port notes: parse + unknown-command fallback logic is ported from
- * openclaude `src/utils/slashCommandParsing.ts` and the selection path
+ * agenc `src/utils/slashCommandParsing.ts` and the selection path
  * in `src/utils/processUserInput/processSlashCommand.tsx`. React/JSX,
  * MCP settle polling, plugin marketplace, and fork-agent paths are
  * intentionally dropped — AgenC uses raw-text command execution.

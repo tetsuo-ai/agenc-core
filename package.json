@@ -9,6 +9,9 @@
   ],
   "scripts": {
     "build": "npm run build --workspace=@tetsuo-ai/runtime",
+    "check:contract:agenc-compaction-context": "node runtime/scripts/check-agenc-compaction-context-contract.mjs",
+    "test:contract:agenc-compaction-context": "node runtime/scripts/run-agenc-compaction-context-contract-tests.mjs",
+    "validate:contract:agenc-compaction-context": "npm run check:contract:agenc-compaction-context && npm run test:contract:agenc-compaction-context",
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
     "test": "npm run validate:runtime",
     "typecheck": "npm run typecheck --workspace=@tetsuo-ai/runtime"
