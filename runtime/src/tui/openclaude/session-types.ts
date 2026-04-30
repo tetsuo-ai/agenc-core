@@ -63,6 +63,14 @@ export interface OpenClaudeBridgeSession {
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
+  /**
+   * Snapshot of configured MCP server connections for the composer's
+   * MCP picker / inspection surface. Optional so test fixtures may
+   * omit it; the production bridge wires this to
+   * `projectMcpManagerToConnections` over the live runtime
+   * `MCPManager`.
+   */
+  listMcpClients?(): readonly import("../../agenc/upstream/services/mcp/types.js").MCPServerConnection[];
 }
 
 export interface ConfigStoreLike {

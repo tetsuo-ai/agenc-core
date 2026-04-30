@@ -40,6 +40,7 @@ import {
   monotonicMs,
 } from "./_deps/utils.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
+import { projectMcpManagerToConnections } from "../agenc/adapters/upstream-mcp-clients.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
 import type { LLMMessage } from "../llm/types.js";
@@ -1104,6 +1105,37 @@ export class Session {
 
   setProjectMemoryWarnings(warnings: readonly string[]): void {
     this.projectMemoryWarnings = [...warnings];
+  }
+
+  /**
+   * Bridge accessor for the TUI composer's MCP picker. Walks the live
+   * MCP manager and projects each configured server into the upstream
+   * `MCPServerConnection` shape so `<PromptInput mcpClients={...}>`
+   * can render the configured server list without leaking the full
+   * SDK Client into the bridge contract. All entries are emitted as
+   * `type: 'pending'` today; upgrading to `'connected'` requires a
+   * runtime `MCPManager.getClient(name)` accessor (see
+   * `agenc/adapters/upstream-mcp-clients.ts` for rationale). Returns
+   * an empty array if the manager is not a class shape that exposes
+   * `getConfiguredServers` / `isConnected` (e.g. a compatibility shim
+   * is installed).
+   */
+  listMcpClients(): readonly import(
+    "../agenc/upstream/services/mcp/types.js"
+  ).MCPServerConnection[] {
+    const manager = this.services.mcpManager as unknown as
+      | import("../agenc/adapters/upstream-mcp-clients.js").McpManagerLike
+      | null
+      | undefined;
+    if (
+      manager === null ||
+      manager === undefined ||
+      typeof manager.getConfiguredServers !== "function" ||
+      typeof manager.isConnected !== "function"
+    ) {
+      return [];
+    }
+    return projectMcpManagerToConnections(manager);
   }
 
   /**

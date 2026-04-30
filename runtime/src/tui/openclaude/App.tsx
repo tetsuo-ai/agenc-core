@@ -192,6 +192,10 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
 
   const commands = useMemo(() => loadUpstreamCommandList(), []);
   const agents = useMemo(() => loadUpstreamAgentList(), []);
+  const mcpClients = useMemo(
+    () => props.session.listMcpClients?.() ?? [],
+    [props.session],
+  );
 
   return (
     <Box flexDirection="column" width="100%">
@@ -236,7 +240,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         setStashedPrompt={setStashedPrompt}
         submitCount={submitCount}
         onShowMessageSelector={() => {}}
-        mcpClients={[]}
+        mcpClients={mcpClients as never}
         pastedContents={pastedContents}
         setPastedContents={setPastedContents}
         vimMode={vimMode}
