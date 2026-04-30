@@ -50,6 +50,19 @@ export interface OpenClaudeBridgeSession {
     setModel?: (next: string) => void;
     setExpandedView?: (next: "none" | "tasks") => void;
   };
+  /**
+   * Stage a provider/model switch for the next turn. Mirrors
+   * `Session.setPendingProviderSwitch` on the runtime — the staged
+   * switch is applied at the start of the next turn so the model
+   * picker in the TUI actually changes what runs.
+   *
+   * Bridge implementations that wrap the live `Session` class get this
+   * for free since `Session` already exposes the method; a no-op
+   * implementation is fine for test fixtures that don't drive turns.
+   */
+  setPendingProviderSwitch?(
+    pending: { provider: string; model: string; profile?: string } | null,
+  ): void;
 }
 
 export interface ConfigStoreLike {

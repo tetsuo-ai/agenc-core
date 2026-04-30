@@ -21,6 +21,7 @@ import {
 } from "./permission-bridge.js";
 import { loadUpstreamCommandList } from "../../agenc/adapters/upstream-commands.js";
 import { loadUpstreamAgentList } from "../../agenc/adapters/upstream-agent-list.js";
+import { buildPendingProviderSwitch } from "../../agenc/adapters/upstream-model-switch.js";
 import type { Command } from "../../agenc/upstream/commands.js";
 import type { AgentDefinition } from "../../agenc/upstream/tools/AgentTool/loadAgentsDir.js";
 import type { OpenClaudeTuiProps } from "./session-types.js";
@@ -122,8 +123,12 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         mainLoopModel: next,
         mainLoopModelForSession: next,
       }));
+      const switchSpec = buildPendingProviderSwitch(props.session, next);
+      if (switchSpec !== null) {
+        props.session.setPendingProviderSwitch?.(switchSpec);
+      }
     },
-    [setAppState],
+    [setAppState, props.session],
   );
   const setExpandedView = useCallback(
     (next: "none" | "tasks") => {
