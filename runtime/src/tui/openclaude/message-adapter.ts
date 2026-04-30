@@ -3,9 +3,27 @@ import { randomUUID } from "node:crypto";
 import type { LLMMessage } from "../../llm/types.js";
 import type { Event } from "../../session/event-log.js";
 
+/**
+ * Hardcoded copy of `FILE_EDIT_TOOL_NAME` from
+ * `runtime/src/tools/system/file-edit.ts`. Kept in sync by hand
+ * because importing the live constant pulls `tools/system/file-edit.ts`
+ * → `tools/result-metadata.ts` → the `diff` npm package into this
+ * module's resolution chain, which breaks transcript-bridge tests
+ * that should not depend on the diff library. If the live constant
+ * ever changes, update this value in lockstep.
+ */
+const FILE_EDIT_TOOL_NAME = "Edit";
+
 type BridgeEvent =
   | Event
   | { readonly type: string; readonly payload?: unknown; readonly [key: string]: unknown };
+
+export interface RunningToolProgress {
+  readonly toolName: string;
+  readonly latestChunk: string;
+  readonly chunkCount: number;
+  readonly stream: "stdout" | "stderr" | "status" | undefined;
+}
 
 export interface AdaptedTranscript {
   readonly messages: readonly any[];
@@ -14,6 +32,14 @@ export interface AdaptedTranscript {
   readonly toolNames: ReadonlySet<string>;
   readonly isStreaming: boolean;
   readonly currentTurnId: string | null;
+  /**
+   * Per-call accumulated `tool_progress` chunks for tools that are
+   * currently mid-execution. Populated by `tool_progress` events,
+   * cleared when the matching `tool_call_completed` /
+   * `exec_command_end` / `mcp_tool_call_end` arrives. Surfaced so the
+   * TUI composer can show a live "tool running" indicator.
+   */
+  readonly runningToolProgress: ReadonlyMap<string, RunningToolProgress>;
 }
 
 const SYNTHETIC_MODEL = "agenc";
@@ -59,6 +85,24 @@ function safeJson(raw: string | undefined): unknown {
   } catch {
     return { input: raw };
   }
+}
+
+function isStructuredContentBlocks(
+  value: unknown,
+): value is readonly { readonly type: "text"; readonly text: string }[] {
+  if (!Array.isArray(value)) return false;
+  if (value.length === 0) return false;
+  for (const item of value) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      (item as { type?: unknown }).type !== "text" ||
+      typeof (item as { text?: unknown }).text !== "string"
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function stringResult(value: unknown): string {
@@ -134,7 +178,9 @@ export function makeToolResultMessage(
   content: unknown,
   isError = false,
 ): any {
-  const text = stringResult(content);
+  const resultContent = isStructuredContentBlocks(content)
+    ? content
+    : stringResult(content);
   return {
     type: "user",
     message: {
@@ -143,7 +189,7 @@ export function makeToolResultMessage(
         {
           type: "tool_result",
           tool_use_id: toolUseID,
-          content: text,
+          content: resultContent,
           is_error: isError,
         },
       ],
@@ -151,7 +197,9 @@ export function makeToolResultMessage(
     isMeta: true,
     uuid: randomUUID(),
     timestamp: timestamp(),
-    toolUseResult: text,
+    toolUseResult: typeof resultContent === "string"
+      ? resultContent
+      : resultContent.map((b) => b.text).join("\n"),
   };
 }
 
@@ -251,6 +299,70 @@ function formatAgentStatus(status: unknown): string {
   return stringResult(status);
 }
 
+/**
+ * Tool-result content formatter. Replaces the previous fallback of
+ * always running everything through `stringResult` so that callers
+ * who want structured rendering (Bash stdout/stderr, FileEdit diffs)
+ * can preserve shape. Returns an array of Anthropic-style content
+ * blocks the upstream renderer can dispatch on; falls back to a
+ * single `{type:'text', text:stringResult(...)}` block for tools we
+ * do not have a structured projection for.
+ */
+export function formatStructuredToolResult(
+  toolName: string,
+  eventType: string,
+  payload: Record<string, unknown>,
+): readonly { readonly type: "text"; readonly text: string }[] {
+  if (eventType === "exec_command_end") {
+    const stdout = typeof payload.stdout === "string" ? payload.stdout : "";
+    const stderr = typeof payload.stderr === "string" ? payload.stderr : "";
+    const exitCode =
+      typeof payload.exitCode === "number" ? payload.exitCode : null;
+    const durationMs =
+      typeof payload.durationMs === "number" ? payload.durationMs : null;
+    const blocks: { type: "text"; text: string }[] = [];
+    if (stdout.length > 0) blocks.push({ type: "text", text: `[stdout]\n${stdout}` });
+    if (stderr.length > 0) blocks.push({ type: "text", text: `[stderr]\n${stderr}` });
+    const meta: string[] = [];
+    if (exitCode !== null) meta.push(`exit_code=${exitCode}`);
+    if (durationMs !== null) meta.push(`duration_ms=${durationMs}`);
+    if (meta.length > 0) blocks.push({ type: "text", text: `[${meta.join(" ")}]` });
+    if (blocks.length === 0) {
+      blocks.push({ type: "text", text: "[no output]" });
+    }
+    return blocks;
+  }
+
+  if (eventType === "mcp_tool_call_end") {
+    const result = payload.result;
+    const text = stringResult(result);
+    return [{ type: "text", text }];
+  }
+
+  // tool_call_completed
+  const result = payload.result;
+  if (toolName === FILE_EDIT_TOOL_NAME) {
+    if (
+      result &&
+      typeof result === "object" &&
+      "diff" in (result as Record<string, unknown>) &&
+      typeof (result as { readonly diff?: unknown }).diff === "string"
+    ) {
+      const diff = (result as { readonly diff: string }).diff;
+      const path =
+        typeof (result as { readonly path?: unknown }).path === "string"
+          ? (result as { readonly path: string }).path
+          : null;
+      const blocks: { type: "text"; text: string }[] = [];
+      if (path !== null) blocks.push({ type: "text", text: `[file]\n${path}` });
+      blocks.push({ type: "text", text: `[diff]\n${diff}` });
+      return blocks;
+    }
+  }
+
+  return [{ type: "text", text: stringResult(result) }];
+}
+
 export function adaptTranscriptEvents(
   events: readonly BridgeEvent[],
   startupMessages: readonly LLMMessage[] = [],
@@ -259,6 +371,8 @@ export function adaptTranscriptEvents(
   const seen = new Set<string>();
   const openTools = new Set<string>();
   const toolNames = new Set<string>();
+  const runningToolNames = new Map<string, string>();
+  const runningToolProgress = new Map<string, RunningToolProgress>();
   let streamingText = "";
   let currentTurnId: string | null = null;
   let lastAssistantText = "";
@@ -367,6 +481,34 @@ export function adaptTranscriptEvents(
               ? "Bash"
               : "MCP";
         pushToolUse(out, openTools, toolNames, callId, toolName, toolInput(payload));
+        runningToolNames.set(callId, toolName);
+        break;
+      }
+      case "tool_progress": {
+        const callId =
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
+        const toolName =
+          typeof payload.toolName === "string"
+            ? payload.toolName
+            : (runningToolNames.get(callId) ?? "tool");
+        const chunk =
+          typeof payload.chunk === "string"
+            ? payload.chunk
+            : stringResult(payload.chunk);
+        const stream =
+          payload.stream === "stdout" ||
+          payload.stream === "stderr" ||
+          payload.stream === "status"
+            ? payload.stream
+            : undefined;
+        const previous = runningToolProgress.get(callId);
+        runningToolProgress.set(callId, {
+          toolName,
+          latestChunk: chunk,
+          chunkCount: (previous?.chunkCount ?? 0) + 1,
+          stream,
+        });
         break;
       }
       case "tool_call_completed":
@@ -378,16 +520,17 @@ export function adaptTranscriptEvents(
           typeof payload.isError === "boolean"
             ? payload.isError
             : typeof payload.exitCode === "number" && payload.exitCode !== 0;
-        const result =
-          event.type === "exec_command_end"
-            ? [
-                typeof payload.stdout === "string" ? payload.stdout : "",
-                typeof payload.stderr === "string" ? payload.stderr : "",
-              ]
-                .filter(Boolean)
-                .join("\n")
-            : payload.result;
+        const toolName =
+          runningToolNames.get(callId) ??
+          (event.type === "exec_command_end"
+            ? "Bash"
+            : event.type === "mcp_tool_call_end"
+              ? "MCP"
+              : "tool");
+        const result = formatStructuredToolResult(toolName, event.type, payload);
         pushToolResult(out, openTools, callId, result, isError);
+        runningToolNames.delete(callId);
+        runningToolProgress.delete(callId);
         break;
       }
       case "context_compacted":
@@ -450,5 +593,6 @@ export function adaptTranscriptEvents(
     toolNames,
     isStreaming,
     currentTurnId,
+    runningToolProgress,
   };
 }
