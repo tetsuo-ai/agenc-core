@@ -20,10 +20,7 @@
  *
  * Anthropic native bypasses both shims, so it is unaffected by this module.
  */
-import { getEffectiveContextWindowSize } from '../compact/autoCompact.js'
-import { isCompactableTool } from '../compact/microCompact.js'
-import { TOOL_RESULT_CLEARED_MESSAGE } from '../../utils/toolResultStorage.js'
-import { getGlobalConfig } from '../../utils/config.js'
+const TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]'
 
 // Mid-tier truncation budget. 2k chars ≈ 500 tokens, enough to preserve the
 // shape of most tool outputs (file headers, command stderr, top grep hits)
@@ -34,6 +31,23 @@ const MID_MAX_CHARS = 2_000
 // (file paths, short commands, small queries). Long inputs are rare and clamping
 // here keeps the stub size bounded even when callers pass oversized arguments.
 const STUB_ARGS_MAX_CHARS = 200
+const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
+const AUTOCOMPACT_BUFFER_TOKENS = 13_000
+const DEFAULT_CONTEXT_WINDOW = 128_000
+const DEFAULT_MAX_OUTPUT_TOKENS = 8_000
+const MCP_TOOL_PREFIX = 'mcp__'
+
+const COMPACTABLE_TOOLS = new Set<string>([
+  'Read',
+  'Bash',
+  'PowerShell',
+  'Grep',
+  'Glob',
+  'WebSearch',
+  'WebFetch',
+  'Edit',
+  'Write',
+])
 
 type AnyMessage = {
   role?: string
@@ -56,6 +70,49 @@ type ToolUseBlock = {
 }
 
 type Tiers = { recent: number; mid: number }
+
+function isTruthyEnv(value: string | undefined): boolean {
+  if (value === undefined) return false
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+}
+
+function positiveIntegerEnv(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function contextWindowForModel(model: string): number {
+  const envWindow = positiveIntegerEnv(process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW)
+  if (envWindow !== undefined) return envWindow
+
+  const name = model.toLowerCase()
+  if (name.includes('[1m]')) return 1_000_000
+  if (name.includes('gpt-4.1') || name.includes('gpt-5')) return 1_000_000
+  if (name.includes('gemini-1.5-pro') || name.includes('gemini-2.5')) return 1_000_000
+  if (name.includes('claude') && name.includes('sonnet-4')) return 200_000
+  if (name.includes('gpt-4o') || name.includes('gpt-4')) return 128_000
+  if (name.includes('mistral') || name.includes('mixtral')) return 128_000
+  return DEFAULT_CONTEXT_WINDOW
+}
+
+export function getEffectiveContextWindowSize(model: string): number {
+  const reservedTokensForSummary = Math.min(
+    positiveIntegerEnv(process.env.AGENC_MAX_OUTPUT_TOKENS) ??
+      DEFAULT_MAX_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS_FOR_SUMMARY,
+  )
+  const contextWindow = contextWindowForModel(model)
+  const effectiveContext = contextWindow - reservedTokensForSummary
+  return Math.max(
+    effectiveContext,
+    reservedTokensForSummary + AUTOCOMPACT_BUFFER_TOKENS,
+  )
+}
+
+function isCompactableTool(name: string): boolean {
+  return COMPACTABLE_TOOLS.has(name) || name.startsWith(MCP_TOOL_PREFIX)
+}
 
 // Tier sizes scale with effective window. Targets roughly:
 // - recent tier stays under ~25% of available window (full fidelity kept)
@@ -212,7 +269,12 @@ export function compressToolHistory<T extends AnyMessage>(
 ): T[] {
   // Master kill-switch. Returns the original reference so callers skip a
   // defensive copy when the feature is disabled.
-  if (!getGlobalConfig().toolHistoryCompressionEnabled) return messages
+  if (
+    isTruthyEnv(process.env.DISABLE_TOOL_HISTORY_COMPRESSION) ||
+    isTruthyEnv(process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION)
+  ) {
+    return messages
+  }
 
   const tiers = getTiers(getEffectiveContextWindowSize(model))
 

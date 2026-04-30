@@ -13,7 +13,6 @@ import {
 import { toAgenCModelContext } from "./model-context.js";
 import {
   buildCompactedRolloutPayload,
-  fromAgenCMessage,
   toAgenCMessage,
   type AgenCMessage,
 } from "./message-rollout.js";
@@ -22,11 +21,9 @@ import {
   loadCompactModule,
   loadContextNonInteractiveCommand,
   loadContextCollapseModule,
-  enableUpstreamConfigGate,
   loadMessageUtilityModule,
   loadManualCompactCommand,
   loadMicroCompactModule,
-  loadPromptContextModules,
   loadToolResultStorageModule,
 } from "./dynamic-loaders.js";
 import { recordContentReplacement } from "../../phases/_deps/session-storage.js";
@@ -78,8 +75,10 @@ export type AgenCOverflowRecoveryResult =
 
 type AgenCRuntimeMessage = {
   readonly role?: AgenCMessage["role"];
+  readonly originalRole?: AgenCMessage["role"];
   readonly toolCallId?: string;
   readonly toolName?: string;
+  readonly toolCalls?: readonly { readonly id: string; readonly name: string }[];
   readonly phase?: string;
   readonly type?: string;
   readonly message?: {
@@ -102,14 +101,6 @@ type AgenCCompactionResult = {
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
   readonly truePostCompactTokenCount?: number;
-};
-
-type AgenCCacheSafeParams = {
-  readonly systemPrompt: readonly unknown[];
-  readonly userContext: Record<string, string>;
-  readonly systemContext: Record<string, string>;
-  readonly toolUseContext: ReturnType<typeof buildAgenCToolUseContext>;
-  readonly forkContextMessages: readonly AgenCRuntimeMessage[];
 };
 
 type UpstreamGuardEnv = Partial<Record<(typeof UPSTREAM_CONTEXT_GUARD_ENV)[number], string>>;
@@ -175,7 +166,13 @@ export async function runAgenCAutoCompact(params: {
     params.ctx,
     { querySource: params.querySource },
   );
-  const cacheSafeParams = await buildCacheSafeParams(toolUseContext, messages);
+  const cacheSafeParams = {
+    systemPrompt: [],
+    userContext: {},
+    systemContext: {},
+    toolUseContext,
+    forkContextMessages: messages,
+  };
   const result = await withUpstreamContextGuards(async () => {
     const { autoCompactIfNeeded } = await loadAutoCompactModule();
     return autoCompactIfNeeded(
@@ -355,52 +352,6 @@ function messagesAfterAgenCBoundary(
   return messages.map((item) => ({ ...item }));
 }
 
-function buildCacheSafeParams(
-  toolUseContext: AgenCToolUseContext,
-  forkContextMessages: readonly AgenCRuntimeMessage[],
-): Promise<AgenCCacheSafeParams> {
-  return withUpstreamContextGuards(async () => {
-    const {
-      buildEffectiveSystemPrompt,
-      getSystemContext,
-      getSystemPrompt,
-      getUserContext,
-    } = await loadPromptContextModules();
-    const appState = toolUseContext.getAppState() as {
-      toolPermissionContext?: {
-        additionalWorkingDirectories?: Map<string, unknown>;
-      };
-    };
-    const additionalWorkingDirectories = Array.from(
-      appState.toolPermissionContext?.additionalWorkingDirectories?.keys?.() ?? [],
-    );
-    const defaultSystemPrompt = await getSystemPrompt(
-      toolUseContext.options.tools,
-      toolUseContext.options.mainLoopModel,
-      additionalWorkingDirectories,
-      toolUseContext.options.mcpClients,
-    );
-    const [userContext, systemContext] = await Promise.all([
-      getUserContext(),
-      getSystemContext(),
-    ]);
-    const systemPrompt = buildEffectiveSystemPrompt({
-      mainThreadAgentDefinition: undefined,
-      toolUseContext,
-      customSystemPrompt: undefined,
-      defaultSystemPrompt,
-      appendSystemPrompt: undefined,
-    });
-    return {
-      systemPrompt,
-      userContext,
-      systemContext,
-      toolUseContext,
-      forkContextMessages,
-    };
-  }, envForToolUseContext(toolUseContext));
-}
-
 async function prepareAgenCQueryMessages(params: {
   readonly messages: readonly LLMMessage[];
   readonly toolUseContext: AgenCToolUseContext;
@@ -546,6 +497,7 @@ function toAgenCRuntimeMessages(
       ...converted,
       content: upstreamContent,
       role,
+      ...(message.role !== role ? { originalRole: message.role } : {}),
       type: role,
       message: {
         role,
@@ -553,6 +505,14 @@ function toAgenCRuntimeMessages(
       },
       uuid: `agenc-${role}-${index}`,
       timestamp: new Date(0).toISOString(),
+      ...(message.toolCalls !== undefined
+        ? {
+            toolCalls: message.toolCalls.map((call) => ({
+              id: call.id,
+              name: call.name,
+            })),
+          }
+        : {}),
       ...(message.role === "tool" ? { isMeta: true } : {}),
     };
   });
@@ -570,13 +530,22 @@ function fromAgenCRuntimeMessage(
   message: AgenCRuntimeMessage,
 ): LLMMessage | null {
   if (message.role && message.content !== undefined) {
-    return fromAgenCMessage(message as AgenCMessage);
+    const role = message.originalRole ?? message.role;
+    return {
+      role,
+      content: fromUpstreamMessageContent(message.content),
+      ...(message.toolCallId !== undefined ? { toolCallId: message.toolCallId } : {}),
+      ...(message.toolName !== undefined ? { toolName: message.toolName } : {}),
+      ...(message.phase === "commentary" || message.phase === "final_answer"
+        ? { phase: message.phase }
+        : {}),
+    };
   }
   const role = normalizeRole(message.message?.role ?? message.type);
   if (!role) return null;
   return {
     role,
-    content: cloneContent(readContent(message)),
+    content: fromUpstreamMessageContent(readContent(message)),
   };
 }
 
@@ -669,6 +638,55 @@ function toUpstreamMessageContent(content: unknown): unknown {
   });
 }
 
+function fromUpstreamMessageContent(content: unknown): LLMMessage["content"] {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: LLMContentPart[] = [];
+  let textOnly = true;
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    if (
+      "type" in item &&
+      item.type === "image" &&
+      "source" in item &&
+      item.source &&
+      typeof item.source === "object" &&
+      "url" in item.source &&
+      typeof item.source.url === "string"
+    ) {
+      textOnly = false;
+      parts.push({
+        type: "image_url",
+        image_url: { url: item.source.url },
+      });
+      continue;
+    }
+    if (
+      "type" in item &&
+      item.type === "image_url" &&
+      "image_url" in item &&
+      item.image_url &&
+      typeof item.image_url === "object" &&
+      "url" in item.image_url &&
+      typeof item.image_url.url === "string"
+    ) {
+      textOnly = false;
+      parts.push({
+        type: "image_url",
+        image_url: { url: item.image_url.url },
+      });
+      continue;
+    }
+    if ("text" in item && typeof item.text === "string") {
+      parts.push({ type: "text", text: item.text });
+    }
+  }
+  if (textOnly) {
+    return parts.map((part) => part.type === "text" ? part.text : "").join("\n");
+  }
+  return parts;
+}
+
 function compactionNotRun(
   consecutiveFailures?: number,
 ): AgenCAutoCompactResult {
@@ -704,7 +722,6 @@ async function withUpstreamContextGuards<T>(
     }
   }
   try {
-    await enableUpstreamConfigGate();
     return await fn();
   } finally {
     for (const [key, value] of previous) {

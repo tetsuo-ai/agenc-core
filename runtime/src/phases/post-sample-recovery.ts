@@ -127,6 +127,7 @@ export async function postSampleRecovery(
             ...(c.lastMessage !== undefined ? { lastMessage: c.lastMessage } : {}),
           });
           if (drain.kind === "applied") {
+            c.state.transition = { reason: "collapse_drain_retry" };
             return drain;
           }
         }

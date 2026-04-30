@@ -46,6 +46,7 @@
     "runtime/src/agenc/adapters/runtime-session.ts",
     "runtime/src/agenc/adapters/tool-use-context.ts",
     "runtime/src/agenc/adapters/dynamic-loaders.js",
+    "runtime/src/agenc/adapters/compact-runtime.ts",
     "runtime/src/agenc/adapters/message-rollout.ts",
     "runtime/src/commands/registry.ts",
     "runtime/src/agenc/adapters/slash-commands.ts",
@@ -185,9 +186,9 @@
       "target": "runtime/src/agenc/adapters/runtime-session.ts",
       "requiredBehaviors": [
         "adapter exposes the runtime session shape needed by the live turn pipeline",
-        "adapter normalizes message history before handing it to copied upstream compact/context code",
-        "adapter controls upstream memory and session-memory paths through AgenC-branded gates",
-        "adapter preserves persisted compacted rollout data without reimplementing compact policy"
+        "adapter normalizes message history before handing it to the upstream-derived compact/context runtime",
+        "adapter keeps durable memory ownership separate from active-history compaction",
+        "adapter preserves persisted compacted rollout data without importing the copied upstream prompt/UI graph"
       ],
       "tests": [
         "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
@@ -201,9 +202,9 @@
       "target": "runtime/src/agenc/adapters/dynamic-loaders.js",
       "status": "required",
       "requiredBehaviors": [
-        "runtime loader resolves copied upstream compact, context, context-collapse, auto-compact, and post-compact message builders",
-        "literal copied module imports stay isolated from TypeScript compile scope",
-        "adapter tests prove live compaction decisions are loaded from copied upstream modules"
+        "runtime loader resolves the upstream-derived compact runtime for compact, context, context-collapse, auto-compact, and post-compact message builders",
+        "literal copied module imports stay isolated from the live Node runtime and TypeScript compile scope",
+        "adapter tests prove live compaction decisions are loaded without probing sibling source checkouts"
       ],
       "tests": [
         "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"
@@ -410,9 +411,9 @@
       "source": "src/commands/compact/compact.ts",
       "target": "runtime/src/agenc/adapters/runtime-session.ts",
       "requiredBehaviors": [
-        "manual and automatic compaction build cache-safe params with effective system prompt, user context, system context, tool-use context, and fork messages",
-        "AgenC project instructions and memory context are available to compact summaries through AgenC-branded paths",
-        "config access is enabled before copied compact modules read upstream config"
+        "manual and automatic compaction build cache-safe params with tool-use context and fork messages while avoiding durable memory imports",
+        "AgenC project instructions and relevant-memory attachments remain available through the normal per-turn prompt path after compacted history projection",
+        "compact runtime avoids copied upstream config imports in the live Node adapter path"
       ],
       "tests": [
         "runtime/tests/agenc-compaction-context/agenc-compaction-context.test.ts"

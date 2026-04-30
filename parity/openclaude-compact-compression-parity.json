@@ -1,0 +1,391 @@
+{
+  "contractName": "openclaude-compact-compression-parity",
+  "scope": "Repair AgenC live compact/compression behavior against upstream OpenClaude while leaving /memory implementation ownership to the separate memory worktree.",
+  "generatedAt": "2026-04-30T07:00:00.000Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "approvedExceptions": [
+    {
+      "id": "typescript-unknown-keyword",
+      "type": "forbidden-language",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/agenc/adapters/runtime-session.ts",
+        "runtime/src/agenc/adapters/slash-commands.ts",
+        "runtime/src/session/run-turn.ts",
+        "runtime/src/phases/post-sample-recovery.ts",
+        "runtime/src/recovery/api-errors.ts",
+        "runtime/src/agenc/upstream/services/compact/microCompact.ts",
+        "runtime/src/agenc/upstream/services/contextCollapse/index.ts",
+        "runtime/src/agenc/upstream/services/api/compressToolHistory.ts",
+        "runtime/src/agenc/upstream/services/api/openaiShim.ts",
+        "runtime/src/agenc/upstream/services/api/codexShim.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts"
+      ],
+      "approvedBy": "contract-scope",
+      "approvedAt": "2026-04-30T07:00:00.000Z",
+      "reason": "These files use TypeScript unknown annotations or provider fallback strings; this is not an incomplete-work marker."
+    },
+    {
+      "id": "compression-stub-domain-term",
+      "type": "forbidden-language",
+      "pattern": "\\bstub(?:bed)?\\b",
+      "files": [
+        "runtime/src/agenc/upstream/services/compact/cachedMicrocompact.ts",
+        "runtime/src/agenc/upstream/services/api/compressToolHistory.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts"
+      ],
+      "approvedBy": "contract-scope",
+      "approvedAt": "2026-04-30T07:00:00.000Z",
+      "reason": "Tool-history compression uses stub to describe an intentional compacted replacement payload."
+    },
+    {
+      "id": "compression-partial-domain-term",
+      "type": "forbidden-language",
+      "pattern": "\\bpartial\\b",
+      "files": [
+        "runtime/src/agenc/adapters/runtime-session.ts",
+        "runtime/src/agenc/upstream/services/compact/sessionMemoryCompact.ts",
+        "runtime/src/agenc/upstream/services/api/compressToolHistory.ts",
+        "runtime/src/phases/post-sample-recovery.ts",
+        "runtime/src/commands/registry.ts",
+        "runtime/src/agenc/upstream/services/api/openaiShim.ts",
+        "runtime/src/agenc/upstream/services/api/codexShim.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts"
+      ],
+      "approvedBy": "contract-scope",
+      "approvedAt": "2026-04-30T07:00:00.000Z",
+      "reason": "These occurrences describe protocol fragments or transactional registration semantics, not partial implementation."
+    },
+    {
+      "id": "command-skip-result-kind",
+      "type": "forbidden-language",
+      "pattern": "\\bskip(?:ped)?\\b",
+      "files": [
+        "runtime/src/commands/registry.ts",
+        "runtime/src/agenc/upstream/services/compact/microCompact.ts",
+        "runtime/src/agenc/upstream/services/compact/sessionMemoryCompact.ts",
+        "runtime/src/agenc/upstream/services/api/compressToolHistory.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts",
+        "runtime/src/agenc/upstream/services/api/openaiShim.ts"
+      ],
+      "approvedBy": "contract-scope",
+      "approvedAt": "2026-04-30T07:00:00.000Z",
+      "reason": "Slash-command dispatch and compression code use skip as a runtime branch/result name."
+    },
+    {
+      "id": "provider-safety-blocked-text",
+      "type": "forbidden-language",
+      "pattern": "\\bblocked\\b",
+      "files": [
+        "runtime/src/agenc/upstream/services/api/openaiShim.ts",
+        "runtime/tests/tool-history-compression.contract.test.ts"
+      ],
+      "approvedBy": "contract-scope",
+      "approvedAt": "2026-04-30T07:00:00.000Z",
+      "reason": "The provider shim surfaces provider safety-filter messages; the term is part of user-visible error classification."
+    },
+    {
+      "id": "run-turn-existing-terms",
+      "type": "forbidden-language",
+      "pattern": "\\b(?:placeholder|deferred|follow-?up)\\b|not yet",
+      "files": [
+        "runtime/src/agenc/upstream/services/compact/microCompact.ts",
+        "runtime/src/session/run-turn.ts"
+      ],
+      "approvedBy": "contract-scope",
+      "approvedAt": "2026-04-30T07:00:00.000Z",
+      "reason": "Existing run-turn comments describe service interfaces and delayed tool loading outside this compact/compression repair."
+    }
+  ],
+  "rows": [
+    {
+      "id": "node-live-upstream-loader",
+      "source": "scripts/build.ts",
+      "target": "runtime/src/agenc/adapters/dynamic-loaders.js",
+      "sourceFiles": [
+        "scripts/no-telemetry-plugin.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/build/feature.ts",
+        "runtime/vitest.config.ts",
+        "runtime/tsup.config.ts"
+      ],
+      "requiredBehaviors": [
+        "Node, Vitest, and built runtime imports of copied OpenClaude modules resolve feature calls without reaching the bun namespace",
+        "copied compact and context modules load from the local runtime source tree",
+        "feature values used by copied compact and compression modules match the intended AgenC open-build gates"
+      ],
+      "tests": [
+        "runtime/tests/openclaude-compact-loader.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/openclaude-compact-loader.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "slash-compact-command",
+      "source": "src/commands/compact/compact.ts",
+      "target": "runtime/src/agenc/adapters/slash-commands.ts",
+      "sourceFiles": [
+        "src/utils/processUserInput/processSlashCommand.tsx"
+      ],
+      "targetFiles": [
+        "runtime/src/commands/registry.ts",
+        "runtime/src/agenc/adapters/runtime-session.ts"
+      ],
+      "requiredBehaviors": [
+        "slash /compact dispatches through the registered command surface",
+        "manual compact refuses active-turn mutation and succeeds when the session is idle",
+        "manual compact writes replacement history to session state and durable rollout data"
+      ],
+      "tests": [
+        "runtime/tests/slash-compact.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/slash-compact.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "manual-compact-adapter",
+      "source": "src/services/compact/compact.ts",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "sourceFiles": [
+        "src/services/compact/prompt.ts",
+        "src/services/compact/postCompactCleanup.ts",
+        "src/services/compact/microCompact.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/agenc/adapters/message-rollout.ts"
+      ],
+      "requiredBehaviors": [
+        "adapter converts AgenC history into OpenClaude text-block content before compact calls",
+        "adapter converts OpenClaude post-compact messages back into AgenC runtime history",
+        "post-compact cleanup clears provider continuation and microcompact state after a successful manual compact"
+      ],
+      "tests": [
+        "runtime/tests/runtime-session.compact-contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/runtime-session.compact-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "auto-compact-pre-turn",
+      "source": "src/services/compact/autoCompact.ts",
+      "target": "runtime/src/session/run-turn.ts",
+      "sourceFiles": [
+        "src/query.ts",
+        "src/query/deps.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/agenc/adapters/runtime-session.ts"
+      ],
+      "requiredBehaviors": [
+        "ordinary turns reach model sampling when the context is under the compact threshold",
+        "pre-turn auto-compact reaches OpenClaude threshold logic when the context exceeds the effective window",
+        "successful auto-compact rehydrates the full replacement history before the next model request"
+      ],
+      "tests": [
+        "runtime/src/session/run-turn.compact-contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/run-turn.compact-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "auto-compact-mid-turn",
+      "source": "src/query.ts",
+      "target": "runtime/src/session/run-turn.ts",
+      "sourceFiles": [
+        "src/services/compact/autoCompact.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/agenc/adapters/runtime-session.ts"
+      ],
+      "requiredBehaviors": [
+        "mid-turn compact runs before a continuation request when token usage reaches the effective compact limit",
+        "mid-turn compact rebases provider continuation before the next sampling request",
+        "mid-turn compact surfaces a terminal error only when the compact attempt itself fails"
+      ],
+      "tests": [
+        "runtime/src/session/run-turn.compact-contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/session/run-turn.compact-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "microcompact-live-preflight",
+      "source": "src/services/compact/microCompact.ts",
+      "target": "runtime/src/agenc/adapters/runtime-session.ts",
+      "sourceFiles": [
+        "src/services/compact/timeBasedMCConfig.ts",
+        "src/services/compact/cachedMicrocompact.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/agenc/upstream/services/compact/microCompact.ts",
+        "runtime/src/agenc/upstream/services/compact/timeBasedMCConfig.ts",
+        "runtime/src/agenc/upstream/services/compact/cachedMicrocompact.ts"
+      ],
+      "requiredBehaviors": [
+        "preflight microcompact clears old compactable tool results before model sampling",
+        "time-based microcompact uses query source and cache state consistently with OpenClaude",
+        "microcompact boundary messages stay runtime-only and do not reach providers"
+      ],
+      "tests": [
+        "runtime/tests/runtime-session.compact-contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/runtime-session.compact-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "session-memory-compact-path",
+      "source": "src/services/compact/sessionMemoryCompact.ts",
+      "target": "runtime/src/agenc/upstream/services/compact/sessionMemoryCompact.ts",
+      "targetFiles": [
+        "runtime/src/agenc/adapters/runtime-session.ts"
+      ],
+      "requiredBehaviors": [
+        "session-memory compact remains a compaction optimization path",
+        "session-memory compact can decline and fall back to normal compact without mutating /memory implementation files",
+        "adapter tests prove this worktree does not edit runtime/src/prompts/memory"
+      ],
+      "tests": [
+        "runtime/tests/runtime-session.compact-contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/runtime-session.compact-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "context-collapse-overflow-recovery",
+      "source": "src/services/contextCollapse/index.ts",
+      "target": "runtime/src/phases/post-sample-recovery.ts",
+      "targetFiles": [
+        "runtime/src/recovery/withhold-cascading.ts",
+        "runtime/src/recovery/api-errors.ts",
+        "runtime/src/agenc/adapters/runtime-session.ts",
+        "runtime/src/agenc/upstream/services/contextCollapse/index.ts"
+      ],
+      "requiredBehaviors": [
+        "withheld prompt-too-long errors route through context-collapse recovery before surfacing",
+        "context-collapse recovery updates messagesForQuery and history from the copied OpenClaude recovery result",
+        "the recovery gate prevents repeated collapse attempts for the same withheld prompt-too-long response"
+      ],
+      "tests": [
+        "runtime/src/phases/post-sample-recovery.compact-contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- src/phases/post-sample-recovery.compact-contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-history-compression-core",
+      "source": "src/services/api/compressToolHistory.ts",
+      "target": "runtime/src/agenc/upstream/services/api/compressToolHistory.ts",
+      "sourceFiles": [
+        "src/services/compact/microCompact.ts"
+      ],
+      "requiredBehaviors": [
+        "old compactable tool-result bulk is replaced with bounded structured summaries",
+        "conversation role order and tool identifiers are preserved after compression",
+        "blocks already cleared by microcompact are not compressed again"
+      ],
+      "tests": [
+        "runtime/tests/tool-history-compression.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/tool-history-compression.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tool-history-compression-provider-wiring",
+      "source": "src/services/api/openaiShim.ts",
+      "target": "runtime/src/agenc/upstream/services/api/openaiShim.ts",
+      "sourceFiles": [
+        "src/services/api/codexShim.ts",
+        "src/services/api/compressToolHistory.ts"
+      ],
+      "targetFiles": [
+        "runtime/src/agenc/upstream/services/api/codexShim.ts"
+      ],
+      "requiredBehaviors": [
+        "OpenAI-compatible stateless requests pass messages through tool-history compression before request serialization",
+        "Codex-compatible request serialization uses the same compression behavior as OpenAI-compatible serialization",
+        "provider compression tests cover both request body shrinkage and preserved tool-call structure"
+      ],
+      "tests": [
+        "runtime/tests/tool-history-compression.contract.test.ts"
+      ],
+      "commands": [
+        "npm run test --workspace=@tetsuo-ai/runtime -- tests/tool-history-compression.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "sourceFiles": [
+    "scripts/build.ts",
+    "scripts/no-telemetry-plugin.ts",
+    "src/commands/compact/compact.ts",
+    "src/utils/processUserInput/processSlashCommand.tsx",
+    "src/services/compact/compact.ts",
+    "src/services/compact/prompt.ts",
+    "src/services/compact/postCompactCleanup.ts",
+    "src/services/compact/microCompact.ts",
+    "src/services/compact/autoCompact.ts",
+    "src/query.ts",
+    "src/query/deps.ts",
+    "src/services/compact/timeBasedMCConfig.ts",
+    "src/services/compact/cachedMicrocompact.ts",
+    "src/services/compact/sessionMemoryCompact.ts",
+    "src/services/contextCollapse/index.ts",
+    "src/services/api/compressToolHistory.ts",
+    "src/services/api/openaiShim.ts",
+    "src/services/api/codexShim.ts"
+  ],
+  "targetFiles": [
+    "runtime/src/agenc/adapters/dynamic-loaders.js",
+    "runtime/src/build/feature.ts",
+    "runtime/vitest.config.ts",
+    "runtime/tsup.config.ts",
+    "runtime/src/agenc/adapters/slash-commands.ts",
+    "runtime/src/commands/registry.ts",
+    "runtime/src/agenc/adapters/runtime-session.ts",
+    "runtime/src/agenc/adapters/message-rollout.ts",
+    "runtime/src/session/run-turn.ts",
+    "runtime/src/agenc/upstream/services/compact/microCompact.ts",
+    "runtime/src/agenc/upstream/services/compact/timeBasedMCConfig.ts",
+    "runtime/src/agenc/upstream/services/compact/cachedMicrocompact.ts",
+    "runtime/src/agenc/upstream/services/compact/sessionMemoryCompact.ts",
+    "runtime/src/phases/post-sample-recovery.ts",
+    "runtime/src/recovery/withhold-cascading.ts",
+    "runtime/src/recovery/api-errors.ts",
+    "runtime/src/agenc/upstream/services/contextCollapse/index.ts",
+    "runtime/src/agenc/upstream/services/api/compressToolHistory.ts",
+    "runtime/src/agenc/upstream/services/api/openaiShim.ts",
+    "runtime/src/agenc/upstream/services/api/codexShim.ts"
+  ],
+  "testFiles": [
+    "runtime/tests/openclaude-compact-loader.contract.test.ts",
+    "runtime/tests/slash-compact.contract.test.ts",
+    "runtime/tests/runtime-session.compact-contract.test.ts",
+    "runtime/src/session/run-turn.compact-contract.test.ts",
+    "runtime/src/phases/post-sample-recovery.compact-contract.test.ts",
+    "runtime/tests/tool-history-compression.contract.test.ts"
+  ]
+}
