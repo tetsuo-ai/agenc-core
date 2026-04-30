@@ -3,7 +3,7 @@ import {
   applyEdits,
   modify,
   parse as parseJsonc,
-} from 'jsonc-parser/lib/esm/main.js'
+} from 'jsonc-parser'
 import { stripBOM } from './jsonRead.js'
 import { logError } from './log.js'
 import { memoizeWithLRU } from './memoize.js'

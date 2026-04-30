@@ -95,9 +95,6 @@ const agencOptionalExternal = {
       if (args.path.startsWith('src/')) {
         return null;
       }
-      if (upstreamRoot !== null) {
-        return null;
-      }
       return { path: args.path, external: true };
     });
   },
