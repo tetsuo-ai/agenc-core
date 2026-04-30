@@ -593,8 +593,11 @@ function getTotalTokenUsage(session: Session): number {
     };
   }).unsafePeek?.();
   const field = peek?.totalTokenUsage;
-  if (typeof field === "number") return field;
-  return field?.totalTokens ?? 0;
+  if (typeof field === "number") return Number.isFinite(field) ? field : 0;
+  const totalTokens = field?.totalTokens;
+  return typeof totalTokens === "number" && Number.isFinite(totalTokens)
+    ? totalTokens
+    : 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1898,10 +1901,26 @@ async function* runTurnKernelInner(
     // carried by `before_last_user_message` through runAutoCompact →
     // autoCompactIfNeeded → compactConversation/session-memory compact.
     const hasPendingInput = session.hasPendingInput();
-    const needsFollowUpForCompact = modelNeedsFollowUp || hasPendingInput;
+    const pendingAssistantToolCalls =
+      state.assistantMessages.at(-1)?.toolCalls.length ?? 0;
+    const needsFollowUpForCompact =
+      modelNeedsFollowUp ||
+      state.toolUseBlocks.length > 0 ||
+      pendingAssistantToolCalls > 0 ||
+      hasPendingInput;
+    const explicitAutoCompactLimit = finitePositive(
+      (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
+        .autoCompactTokenLimit,
+    );
     const autoCompactLimit =
-      getAutoCompactTokenLimit(ctx) ?? Number.POSITIVE_INFINITY;
-    const totalUsageTokens = getTotalTokenUsage(session);
+      explicitAutoCompactLimit ??
+      getAutoCompactTokenLimit(ctx) ??
+      Number.POSITIVE_INFINITY;
+    const totalUsageTokens = Math.max(
+      getTotalTokenUsage(session),
+      usage.totalTokens,
+      state.lastResponseUsage?.totalTokens ?? 0,
+    );
     const tokenLimitReached = totalUsageTokens >= autoCompactLimit;
 
     if (tokenLimitReached && needsFollowUpForCompact) {
@@ -2046,6 +2065,38 @@ async function* runTurnKernelInner(
             isError: false,
           },
         };
+      }
+    }
+
+    const postToolExplicitAutoCompactLimit = finitePositive(
+      (ctx.modelInfo as unknown as { autoCompactTokenLimit?: number })
+        .autoCompactTokenLimit,
+    );
+    const postToolAutoCompactLimit =
+      postToolExplicitAutoCompactLimit ??
+      getAutoCompactTokenLimit(ctx) ??
+      Number.POSITIVE_INFINITY;
+    const postToolTokenLimitReached =
+      Math.max(
+        getTotalTokenUsage(session),
+        usage.totalTokens,
+        state.lastResponseUsage?.totalTokens ?? 0,
+      ) >= postToolAutoCompactLimit;
+    if (
+      postToolTokenLimitReached &&
+      (state.needsFollowUp || state.toolResults.length > 0)
+    ) {
+      const midTurnCompacted = await runAutoCompact(
+        session,
+        ctx,
+        "before_last_user_message",
+        "context_limit",
+        "in_turn",
+        state,
+      );
+      if (midTurnCompacted) {
+        session.bindProviderConversation();
+        continue;
       }
     }
 

@@ -19,6 +19,8 @@
     "validate:runtime": "npm run validate:required --workspace=@tetsuo-ai/runtime",
     "validate:tui-openclaude-core-parity": "npm run validate:tui-openclaude-core-parity --workspace=@tetsuo-ai/runtime",
     "validate:openclaude-footer-live-parity": "npm run validate:openclaude-footer-live-parity --workspace=@tetsuo-ai/runtime",
+    "check:openclaude-compact-compression-parity": "node scripts/check-openclaude-compact-compression-parity.mjs --require-source-snapshot --require-commands",
+    "validate:openclaude-compact-compression-parity": "node scripts/check-openclaude-compact-compression-parity.mjs --require-source-snapshot --require-commands --run-commands --command-timeout-ms 180000",
     "check:tui-yolo-openclaude-parity": "node scripts/check-tui-yolo-openclaude-parity.mjs --require-source-snapshot",
     "validate:tui-yolo-openclaude-parity": "node scripts/check-tui-yolo-openclaude-parity.mjs --require-source-snapshot --require-commands --run-commands --command-timeout-ms 180000",
     "test": "npm run validate:runtime",

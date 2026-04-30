@@ -545,13 +545,22 @@ export async function streamModel(
     const reasoning = (last as { reasoningOutputTokens?: number })
       .reasoningOutputTokens ?? 0;
     await session.state.with((s) => {
-      const prev = s.totalTokenUsage ?? {
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        cachedInputTokens: 0,
-        reasoningOutputTokens: 0,
-      };
+      const current = s.totalTokenUsage;
+      const prev = typeof current === "number"
+        ? {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: current,
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+          }
+        : current ?? {
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            cachedInputTokens: 0,
+            reasoningOutputTokens: 0,
+          };
       s.totalTokenUsage = {
         promptTokens: prev.promptTokens + last.promptTokens,
         completionTokens: prev.completionTokens + last.completionTokens,

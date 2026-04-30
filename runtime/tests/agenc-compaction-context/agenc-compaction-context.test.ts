@@ -258,6 +258,9 @@ describe('AgenC runtime integration', () => {
   it('exposes runtime-session adapter hooks backed by upstream compaction modules', () => {
     const target = readTarget('adapter-runtime-session');
     const loaders = readTarget('adapter-dynamic-loaders');
+    const compactRuntime = readRelative(
+      'runtime/src/agenc/adapters/compact-runtime.ts',
+    );
 
     expectExports('adapter-runtime-session', [
       'prepareAgenCTurnContext',
@@ -275,23 +278,28 @@ describe('AgenC runtime integration', () => {
     expect(loaders).toContain('applyCollapsesIfNeeded');
     expect(loaders).toContain('autoCompactIfNeeded');
     expect(loaders).toContain('recoverFromOverflow');
-    expect(loaders).toContain('../upstream/services/compact');
-    expect(loaders).toContain('../upstream/services/contextCollapse');
-    expect(loaders).toContain('../upstream/commands/compact');
-    expect(loaders).toContain('../upstream/commands/context');
+    expect(loaders).toContain('./compact-runtime.js');
+    expect(loaders).not.toContain('../upstream/services/compact');
+    expect(loaders).not.toContain('../upstream/services/contextCollapse');
+    expect(loaders).not.toContain('../upstream/commands/compact');
+    expect(loaders).not.toContain('../upstream/commands/context');
+    expect(compactRuntime).toContain('autoCompactIfNeeded');
+    expect(compactRuntime).toContain('manualCompactCall');
+    expect(compactRuntime).toContain('contextUsageCall');
+    expect(compactRuntime).toContain('microcompactMessages');
     expect(target).not.toContain('return { kind: "pass" };');
   });
 
-  it('opens the copied upstream config gate inside the compact/context guard', () => {
+  it('keeps compact/context guards independent from copied upstream config imports', () => {
     const target = readTarget('adapter-runtime-session');
     const loaders = readTarget('adapter-dynamic-loaders');
     const guardIndex = target.indexOf('async function withUpstreamContextGuards');
 
-    expect(loaders).toContain('enableUpstreamConfigGate');
-    expect(loaders).toContain('../upstream/utils/config');
-    expect(loaders).toContain('enableConfigs()');
     expect(guardIndex).toBeGreaterThanOrEqual(0);
-    expect(target.slice(guardIndex)).toContain('await enableUpstreamConfigGate();');
+    expect(target.slice(guardIndex)).toContain('process.env[key] = value;');
+    expect(loaders).not.toContain('enableUpstreamConfigGate');
+    expect(loaders).not.toContain('../upstream/utils/config');
+    expect(loaders).not.toContain('enableConfigs()');
     expect(target).not.toContain('../upstream/utils/config');
   });
 
@@ -413,17 +421,19 @@ describe('AgenC runtime integration', () => {
     expect(target).toContain('clearProviderResponseId');
   });
 
-  it('builds cache-safe params from live prompt and context inputs', () => {
+  it('keeps cache-safe compact params isolated from durable prompt and memory inputs', () => {
     const target = readTarget('compact-cache-params');
     const cachedConfig = readTarget('cached-microcompact-config-source');
     const prompts = readRelative('runtime/src/agenc/upstream/constants/prompts.ts');
 
-    expect(target).toContain('loadPromptContextModules');
-    expect(target).toContain('getSystemPrompt');
-    expect(target).toContain('getUserContext');
-    expect(target).toContain('getSystemContext');
-    expect(target).toContain('buildEffectiveSystemPrompt');
-    expect(target).not.toContain('systemPrompt: []');
+    expect(target).not.toContain('loadPromptContextModules');
+    expect(target).not.toContain('getSystemPrompt');
+    expect(target).not.toContain('getUserContext');
+    expect(target).not.toContain('getSystemContext');
+    expect(target).not.toContain('buildEffectiveSystemPrompt');
+    expect(target).toContain('systemPrompt: []');
+    expect(target).toContain('userContext: {}');
+    expect(target).toContain('systemContext: {}');
     expect(cachedConfig).toContain('getCachedMCConfig');
     expect(prompts).toContain('getCachedMCConfigForFRCSource');
     expect(prompts).toContain('getAntModelOverrideConfig');
@@ -443,7 +453,7 @@ describe('AgenC runtime integration', () => {
     expect(runtimeSession).toContain('envForToolUseContext');
   });
 
-  it('keeps memory context active around compacted history projection', () => {
+  it('keeps durable memory separate from compacted history projection', () => {
     const runtimeSession = readTarget('adapter-runtime-session');
     const memoryIndex = readRelative('runtime/src/prompts/memory/index.ts');
     const orchestrator = readRelative(
@@ -453,7 +463,8 @@ describe('AgenC runtime integration', () => {
       'runtime/src/prompts/attachments/relevant-memory.ts',
     );
 
-    expect(runtimeSession).toContain('getUserContext');
+    expect(runtimeSession).not.toContain('getUserContext');
+    expect(runtimeSession).not.toContain('loadPromptContextModules');
     expect(runtimeSession).not.toContain('DISABLE_AGENC_SM_COMPACT');
     expect(runtimeSession).not.toContain('AGENC_DISABLE_AGENC_MDS');
     expect(memoryIndex).toContain('maybeAutoSaveMemory');

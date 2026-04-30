@@ -1,5 +1,3 @@
-export function enableUpstreamConfigGate(): Promise<void>;
-
 export function loadContextCollapseModule(): Promise<{
   applyCollapsesIfNeeded: (
     messages: unknown[],
@@ -46,24 +44,6 @@ export function loadToolResultStorageModule(): Promise<{
     writeToTranscript?: unknown,
     skipToolNames?: ReadonlySet<string>,
   ) => Promise<{ messages: unknown[]; newlyReplaced: unknown[] }>;
-}>;
-
-export function loadPromptContextModules(): Promise<{
-  getSystemPrompt: (
-    tools: unknown,
-    model: string,
-    additionalWorkingDirectories?: string[],
-    mcpClients?: unknown,
-  ) => Promise<string[]>;
-  getUserContext: () => Promise<Record<string, string>>;
-  getSystemContext: () => Promise<Record<string, string>>;
-  buildEffectiveSystemPrompt: (params: {
-    mainThreadAgentDefinition: unknown;
-    toolUseContext: unknown;
-    customSystemPrompt?: string;
-    defaultSystemPrompt: string[];
-    appendSystemPrompt?: string;
-  }) => readonly string[];
 }>;
 
 export function loadMessageUtilityModule(): Promise<{

@@ -1,4 +1,5 @@
 import type { LLMTool } from "../../llm/types.js";
+import type { LLMProvider } from "../../llm/types.js";
 import { readProviderFactoryOptions } from "../../llm/provider.js";
 import type { Session } from "../../session/session.js";
 import type { TurnContext } from "../../session/turn-context.js";
@@ -47,6 +48,7 @@ export interface AgenCToolUseContext {
   readonly clearProviderResponseId: () => void;
   readonly rolloutStore?: unknown;
   readonly session?: { readonly rolloutStore?: unknown };
+  readonly provider?: LLMProvider;
   readonly cwd?: string;
 }
 
@@ -125,6 +127,7 @@ export function buildAgenCToolUseContext(
     ...(session.rolloutStore !== undefined
       ? { session: { rolloutStore: session.rolloutStore } }
       : {}),
+    provider: session.services.provider,
     cwd,
   };
 }

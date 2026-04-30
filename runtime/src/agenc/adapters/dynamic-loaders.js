@@ -1,10 +1,5 @@
-export async function enableUpstreamConfigGate() {
-  const module = await import("../upstream/utils/config.js");
-  module.enableConfigs();
-}
-
 export async function loadContextCollapseModule() {
-  const module = await import("../upstream/services/contextCollapse/index.js");
+  const module = await import("./compact-runtime.js");
   return {
     applyCollapsesIfNeeded: module.applyCollapsesIfNeeded,
     recoverFromOverflow: module.recoverFromOverflow,
@@ -12,21 +7,21 @@ export async function loadContextCollapseModule() {
 }
 
 export async function loadAutoCompactModule() {
-  const module = await import("../upstream/services/compact/autoCompact.js");
+  const module = await import("./compact-runtime.js");
   return {
     autoCompactIfNeeded: module.autoCompactIfNeeded,
   };
 }
 
 export async function loadCompactModule() {
-  const module = await import("../upstream/services/compact/compact.js");
+  const module = await import("./compact-runtime.js");
   return {
     buildPostCompactMessages: module.buildPostCompactMessages,
   };
 }
 
 export async function loadMicroCompactModule() {
-  const module = await import("../upstream/services/compact/microCompact.js");
+  const module = await import("./compact-runtime.js");
   return {
     microcompactMessages: module.microcompactMessages,
     resetMicrocompactState: module.resetMicrocompactState,
@@ -34,26 +29,14 @@ export async function loadMicroCompactModule() {
 }
 
 export async function loadToolResultStorageModule() {
-  const module = await import("../upstream/utils/toolResultStorage.js");
+  const module = await import("./compact-runtime.js");
   return {
     applyToolResultBudget: module.applyToolResultBudget,
   };
 }
 
-export async function loadPromptContextModules() {
-  const prompts = await import("../upstream/constants/prompts.js");
-  const context = await import("../upstream/context.js");
-  const systemPrompt = await import("../upstream/utils/systemPrompt.js");
-  return {
-    getSystemPrompt: prompts.getSystemPrompt,
-    getUserContext: context.getUserContext,
-    getSystemContext: context.getSystemContext,
-    buildEffectiveSystemPrompt: systemPrompt.buildEffectiveSystemPrompt,
-  };
-}
-
 export async function loadMessageUtilityModule() {
-  const module = await import("../upstream/utils/messages.js");
+  const module = await import("./compact-runtime.js");
   return {
     createSyntheticUserCaveatMessage: module.createSyntheticUserCaveatMessage,
     createUserMessage: module.createUserMessage,
@@ -62,15 +45,15 @@ export async function loadMessageUtilityModule() {
 }
 
 export async function loadManualCompactCommand() {
-  const module = await import("../upstream/commands/compact/compact.js");
+  const module = await import("./compact-runtime.js");
   return {
-    call: module.call,
+    call: module.manualCompactCall,
   };
 }
 
 export async function loadContextNonInteractiveCommand() {
-  const module = await import("../upstream/commands/context/context-noninteractive.js");
+  const module = await import("./compact-runtime.js");
   return {
-    call: module.call,
+    call: module.contextUsageCall,
   };
 }
