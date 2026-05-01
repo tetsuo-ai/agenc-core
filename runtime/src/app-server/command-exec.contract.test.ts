@@ -35,6 +35,22 @@ async function waitForNotification(
   throw new Error("timed out waiting for command exec notification");
 }
 
+function notificationContainsOutput(
+  notification: JsonObject,
+  text: string,
+): boolean {
+  const params = notification.params;
+  return (
+    notification.method === "commandExec.outputDelta" &&
+    typeof params === "object" &&
+    params !== null &&
+    !Array.isArray(params) &&
+    params.stream === "stdout" &&
+    typeof params.deltaBase64 === "string" &&
+    Buffer.from(params.deltaBase64, "base64").toString("utf8").includes(text)
+  );
+}
+
 describe("AgenC daemon command exec", () => {
   it("dispatches commandExec methods through initialized JSON-RPC connections", async () => {
     const commandExec: AgenCCommandExec = {
@@ -125,6 +141,41 @@ describe("AgenC daemon command exec", () => {
       expect.stringMatching(/^connection_/),
     );
     expect(notifications).toEqual([]);
+  });
+
+  it("rejects streaming commandExec starts when the connection cannot receive notifications", async () => {
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager(),
+    });
+    const connection = dispatcher.createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "start",
+        method: "commandExec.start",
+        params: {
+          command: [process.execPath, "-e", "process.stdout.write('lost')"],
+          processId: "no-notifications",
+          streamStdoutStderr: true,
+        },
+      }),
+    ).resolves.toMatchObject({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "start",
+      error: {
+        code: -32602,
+        message:
+          "commandExec.start streaming requires daemon connection notifications",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
   });
 
   it("returns buffered stdout and stderr for non-streaming commands", async () => {
@@ -231,7 +282,7 @@ describe("AgenC daemon command exec", () => {
     });
   });
 
-  it.skipIf(!hasPty)("runs a PTY-backed session and resizes it", async () => {
+  it.skipIf(!hasPty)("runs a byte-preserving PTY-backed session and resizes it", async () => {
     const service = new AgenCCommandExecService();
     const notifications: JsonObject[] = [];
     const context = {
@@ -243,7 +294,7 @@ describe("AgenC daemon command exec", () => {
         command: [
           process.execPath,
           "-e",
-          "process.stdin.setRawMode?.(true); process.stdout.write('ready\\n'); process.stdin.on('data', (d) => { if (d.toString().includes('q')) process.exit(0); });",
+          "process.stdin.setRawMode?.(true); process.stdin.resume(); process.stdout.write(Buffer.from([0xff, 0xfe, 0x41])); process.stdout.write('ready\\n'); process.stdin.on('data', (d) => { if (Buffer.from(d).includes(255)) process.exit(0); });",
         ],
         processId: "pty-1",
         tty: true,
@@ -273,7 +324,10 @@ describe("AgenC daemon command exec", () => {
     ).resolves.toEqual({});
     await expect(
       service.write(
-        { processId: "pty-1", deltaBase64: Buffer.from("q").toString("base64") },
+        {
+          processId: "pty-1",
+          deltaBase64: Buffer.from([0xff]).toString("base64"),
+        },
         context,
       ),
     ).resolves.toEqual({});
@@ -283,7 +337,103 @@ describe("AgenC daemon command exec", () => {
       stdout: "",
       stderr: "",
     });
+    const stdoutBytes = Buffer.concat(
+      notifications
+        .map((notification) => notification.params)
+        .filter(
+          (params): params is JsonObject =>
+            typeof params === "object" &&
+            params !== null &&
+            !Array.isArray(params) &&
+            params.stream === "stdout" &&
+            typeof params.deltaBase64 === "string",
+        )
+        .map((params) => Buffer.from(params.deltaBase64 as string, "base64")),
+    );
+    expect(stdoutBytes.includes(Buffer.from([0xff, 0xfe, 0x41]))).toBe(true);
   });
+
+  it.skipIf(!hasPty)(
+    "drives a live PTY command through JSON-RPC while start is pending",
+    async () => {
+      const notifications: JsonObject[] = [];
+      const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: new AgenCDaemonAgentManager(),
+      });
+      const connection = dispatcher.createConnection({
+        sendNotification: (message) => notifications.push(message),
+      });
+      await connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "init",
+        method: "initialize",
+        params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+      });
+      const startResponse = connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "start",
+        method: "commandExec.start",
+        params: {
+          command: [
+            process.execPath,
+            "-e",
+            "process.stdin.setRawMode?.(true); process.stdin.resume(); process.stdout.write('ready\\n'); process.stdin.on('data', (d) => process.stdout.write('got:' + Buffer.from(d).toString('hex') + '\\n')); setInterval(() => {}, 1000);",
+          ],
+          processId: "rpc-pty-1",
+          tty: true,
+          size: { rows: 24, cols: 80 },
+          disableTimeout: true,
+        },
+      });
+
+      await waitForNotification(notifications, (notification) =>
+        notificationContainsOutput(notification, "ready"),
+      );
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "resize",
+          method: "commandExec.resize",
+          params: {
+            processId: "rpc-pty-1",
+            size: { rows: 30, cols: 100 },
+          },
+        }),
+      ).resolves.toMatchObject({ result: {} });
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "write",
+          method: "commandExec.write",
+          params: {
+            processId: "rpc-pty-1",
+            deltaBase64: Buffer.from("x").toString("base64"),
+          },
+        }),
+      ).resolves.toMatchObject({ result: {} });
+      await waitForNotification(notifications, (notification) =>
+        notificationContainsOutput(notification, "got:78"),
+      );
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "terminate",
+          method: "commandExec.terminate",
+          params: { processId: "rpc-pty-1" },
+        }),
+      ).resolves.toMatchObject({ result: {} });
+
+      const response = await startResponse;
+      expect(response).toMatchObject({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "start",
+        result: { stdout: "", stderr: "" },
+      });
+      expect(
+        typeof (response as { result?: { exitCode?: number } }).result?.exitCode,
+      ).toBe("number");
+    },
+  );
 
   it("rejects duplicate process ids and terminates active sessions", async () => {
     const service = new AgenCCommandExecService();

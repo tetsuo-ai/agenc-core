@@ -41,10 +41,10 @@ const require = createRequire(import.meta.url);
 
 interface IPty {
   readonly pid: number;
-  write(data: string): void;
+  write(data: string | Buffer): void;
   resize(columns: number, rows: number): void;
   kill(signal?: string): void;
-  onData(listener: (data: string) => void): { dispose(): void };
+  onData(listener: (data: string | Buffer) => void): { dispose(): void };
   onExit(
     listener: (event: {
       readonly exitCode: number;
@@ -63,6 +63,7 @@ interface PtyModule {
       readonly rows?: number;
       readonly cwd?: string;
       readonly env?: Record<string, string>;
+      readonly encoding?: string | null;
     },
   ): IPty;
 }
@@ -178,6 +179,11 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     ) {
       throw invalidArgument(
         "commandExec.start tty or streaming requires a client-supplied processId",
+      );
+    }
+    if (streamStdoutStderr && context.sendNotification === undefined) {
+      throw invalidArgument(
+        "commandExec.start streaming requires daemon connection notifications",
       );
     }
     if (params.size !== undefined && params.size !== null && !tty) {
@@ -346,10 +352,11 @@ export class AgenCCommandExecService implements AgenCCommandExec {
         rows: params.size?.rows ?? 24,
         cwd: params.cwd ?? process.cwd(),
         env: buildEnv(params.env),
+        encoding: null,
       });
       session.pty = pty;
       pty.onData((data) => {
-        this.#recordOutput(session, "stdout", Buffer.from(data, "utf8"), context);
+        this.#recordOutput(session, "stdout", toOutputBuffer(data), context);
       });
       pty.onExit((event) => {
         finalizeSession(session, normalizeExitCode(event.exitCode));
@@ -663,7 +670,7 @@ function writeStdin(session: CommandExecSession, delta: Buffer): void {
     throw invalidArgument("stdin is already closed");
   }
   if (session.pty !== null) {
-    session.pty.write(delta.toString("utf8"));
+    session.pty.write(delta);
     return;
   }
   const stdin = session.child?.stdin as Writable | null | undefined;
@@ -755,6 +762,10 @@ function loadPtyModule(): PtyModule {
 
 function normalizeExitCode(code: number | null): number {
   return code ?? -1;
+}
+
+function toOutputBuffer(data: string | Buffer): Buffer {
+  return Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
 }
 
 function sessionKey(connectionId: string, processId: string): string {
