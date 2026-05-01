@@ -202,7 +202,7 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("refuses to start with unsupported auth backend before writing daemon.pid", async () => {
+  it("starts with remote auth backend before remote key vending is configured", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -211,15 +211,12 @@ describe("AgenC daemon CLI", () => {
 
     await expect(
       runAgenCDaemonCli({ kind: "command", action: "start" }, { host, io }),
-    ).resolves.toBe(1);
+    ).resolves.toBe(0);
 
-    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
-    expect(host.runningPids).toEqual(new Set());
-    expect(io.stdoutText()).not.toContain("AgenC daemon started");
-    expect(io.stderrText()).toContain(
-      "daemon auth backend initialization failed",
-    );
-    expect(io.stderrText()).toContain("RemoteAuthBackend is not available");
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
+    expect(host.runningPids).toEqual(new Set([4201]));
+    expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+    expect(io.stderrText()).toBe("");
 
     await rm(agencHome, { recursive: true, force: true });
   });
@@ -355,23 +352,24 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("foreground daemon rejects unsupported auth backend before readiness", async () => {
+  it("foreground daemon starts with remote auth backend before remote login flow lands", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
+    const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await writeFile(join(agencHome, "config.toml"), "[auth]\nbackend = \"remote\"\n");
 
-    await expect(
-      runAgenCDaemonCli({ kind: "command", action: "run" }, { host, io }),
-    ).resolves.toBe(1);
-
-    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
-    expect(io.stdoutText()).not.toContain("AgenC daemon running");
-    expect(io.stderrText()).toContain(
-      "daemon auth backend initialization failed",
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
     );
-    expect(io.stderrText()).toContain("RemoteAuthBackend is not available");
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    expect(io.stdoutText()).toContain("AgenC daemon running");
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
 
     await rm(agencHome, { recursive: true, force: true });
   });

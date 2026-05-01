@@ -102,7 +102,7 @@ describe("AgenC auth CLI", () => {
     }
   });
 
-  it("surfaces configured auth backend startup failures", async () => {
+  it("surfaces unavailable remote login flow", async () => {
     const agencHome = await tempAgencHome();
     const env = { ...process.env, AGENC_HOME: agencHome, HOME: agencHome };
     await writeFile(
@@ -115,7 +115,9 @@ describe("AgenC auth CLI", () => {
         runAgenCAuthCli({ kind: "login" }, { env, io }),
       ).resolves.toBe(1);
       expect(io.stdoutText()).toBe("");
-      expect(io.stderrText()).toContain("RemoteAuthBackend is not available");
+      expect(io.stderrText()).toContain(
+        "RemoteAuthBackend login is not available",
+      );
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }

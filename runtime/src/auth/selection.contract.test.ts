@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig, mergeConfigs } from "../config/schema.js";
 import { LocalAuthBackend } from "./backends/local.js";
+import { RemoteAuthBackend } from "./backends/remote.js";
 import {
   createAuthBackend,
   InvalidAuthBackendConfigError,
@@ -37,13 +38,28 @@ describe("auth backend selection", () => {
     );
   });
 
-  it("honors auth.backend = remote with an explicit unavailable-backend error", () => {
+  it("honors auth.backend = remote and creates RemoteAuthBackend", async () => {
     const config = mergeConfigs(defaultConfig(), {
       auth: { backend: "remote" },
     });
 
     expect(resolveAuthBackendKind(config)).toBe("remote");
-    expect(() => createAuthBackend(config)).toThrow(/RemoteAuthBackend/);
+    const backend = createAuthBackend(config, {
+      remote: {
+        keyVendor: ({ provider, sessionId }) => ({
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        }),
+      },
+    });
+
+    expect(backend).toBeInstanceOf(RemoteAuthBackend);
+    await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "managed-key",
+    });
   });
 
   it("rejects invalid auth.backend values instead of falling back", () => {

@@ -5,6 +5,12 @@ export type {
   LocalAuthLoginResult,
   LocalAuthWhoamiResult,
 } from "./backends/local.js";
+export { RemoteAuthBackend } from "./backends/remote.js";
+export type {
+  RemoteAuthBackendOptions,
+  RemoteAuthKeyVendor,
+  RemoteAuthVendKeyRequest,
+} from "./backends/remote.js";
 export {
   createAuthBackend,
   InvalidAuthBackendConfigError,
