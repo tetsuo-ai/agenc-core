@@ -81,6 +81,7 @@ import {
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
+import type { ResolvedProviderSettings } from "../config/resolve-provider.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,
@@ -184,18 +185,58 @@ async function vendProviderKeyOrUndefined(params: {
   readonly authBackend: AuthBackend | undefined;
   readonly provider: ProviderName;
   readonly sessionId: string;
-}): Promise<string | undefined> {
-  if (params.authBackend === undefined) return undefined;
+}): Promise<ManagedProviderKeyResult> {
+  if (params.authBackend === undefined) return { attempted: false };
   try {
     const key = await params.authBackend.vendKey(
       params.provider,
       params.sessionId,
     );
     const apiKey = key.apiKey.trim();
-    return apiKey.length > 0 ? apiKey : undefined;
+    return apiKey.length > 0 ? { attempted: true, apiKey } : { attempted: true };
   } catch {
-    return undefined;
+    return { attempted: true };
   }
+}
+
+interface ManagedProviderKeyResult {
+  readonly attempted: boolean;
+  readonly apiKey?: string;
+}
+
+const PROVIDER_API_KEY_ENV_HINTS: Readonly<Partial<Record<ProviderName, string>>> =
+  Object.freeze({
+    grok: "XAI_API_KEY",
+    openai: "OPENAI_API_KEY",
+    anthropic: "ANTHROPIC_API_KEY",
+    openrouter: "OPENROUTER_API_KEY",
+    groq: "GROQ_API_KEY",
+    deepseek: "DEEPSEEK_API_KEY",
+    gemini: "GEMINI_API_KEY",
+  });
+
+function requireProviderApiKeyOrUndefined(params: {
+  readonly provider: ProviderName;
+  readonly providerSettings: ResolvedProviderSettings | undefined;
+  readonly apiKey: string | undefined;
+  readonly managedKey: ManagedProviderKeyResult;
+}): string | undefined {
+  if (params.apiKey !== undefined) return params.apiKey;
+  const envHint = providerApiKeyEnvHint(params.provider, params.providerSettings);
+  if (envHint === undefined) return undefined;
+  const managedKeyHint = params.managedKey.attempted
+    ? "AuthBackend.vendKey() did not return a usable managed key."
+    : "No AuthBackend was configured to vend a managed key.";
+  throw new Error(
+    `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint} or configure providers.${params.provider}.api_key_env for BYOK fallback.`,
+  );
+}
+
+function providerApiKeyEnvHint(
+  provider: ProviderName,
+  providerSettings: ResolvedProviderSettings | undefined,
+): string | undefined {
+  return providerSettings?.apiKeyEnvVar ?? PROVIDER_API_KEY_ENV_HINTS[provider];
 }
 
 function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
@@ -697,18 +738,23 @@ export async function bootstrapLocalRuntimeSession(
     explicitApiKey: options.apiKey,
     byokApiKey: startup.apiKey,
   });
-  const vendedApiKey =
+  const managedKey =
     byokApiKey === undefined
       ? await vendProviderKeyOrUndefined({
           authBackend: options.authBackend,
           provider: resolvedProvider,
           sessionId: conversationId,
         })
-      : undefined;
-  const selectedApiKey = selectByokPrecedenceApiKey({
-    explicitApiKey: options.apiKey,
-    byokApiKey: startup.apiKey,
-    managedApiKey: vendedApiKey,
+      : { attempted: false };
+  const selectedApiKey = requireProviderApiKeyOrUndefined({
+    provider: resolvedProvider,
+    providerSettings,
+    apiKey: selectByokPrecedenceApiKey({
+      explicitApiKey: options.apiKey,
+      byokApiKey: startup.apiKey,
+      managedApiKey: managedKey.apiKey,
+    }),
+    managedKey,
   });
   const mcpManager = createSessionMcpManagerFromConfig(
     configStore.current(),
