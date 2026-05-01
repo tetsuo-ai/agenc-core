@@ -8,6 +8,7 @@
     "export": "./daemon-json-rpc.schema.json"
   },
   "x-agenc-methods": [
+    "initialize",
     "agent.create",
     "agent.list",
     "agent.attach",
@@ -92,10 +93,34 @@
       },
       "required": ["type", "text"]
     },
+    "InitializeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocolVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "authCookie": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      }
+    },
     "AgentCreateParams": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "objective": {
+          "type": "string"
+        },
         "cwd": {
           "type": "string"
         },
@@ -110,6 +135,20 @@
         },
         "instructions": {
           "type": "string"
+        },
+        "unattendedAllow": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unattendedDeny": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "metadata": {
           "$ref": "#/definitions/JsonObject"
@@ -380,6 +419,9 @@
     "AgenCDaemonRequest": {
       "oneOf": [
         {
+          "$ref": "#/definitions/InitializeRequest"
+        },
+        {
           "$ref": "#/definitions/AgentCreateRequest"
         },
         {
@@ -440,6 +482,25 @@
           "$ref": "#/definitions/AuthLogoutRequest"
         }
       ]
+    },
+    "InitializeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "initialize"
+        },
+        "params": {
+          "$ref": "#/definitions/InitializeParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
     },
     "AgentCreateRequest": {
       "type": "object",

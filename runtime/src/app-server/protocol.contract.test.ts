@@ -34,6 +34,7 @@ interface ProtocolPackageManifest {
 }
 
 const expectedMethods = [
+  "initialize",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -142,66 +143,82 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 1,
-        method: "agent.create",
-        params: { cwd: "/workspace", model: "grok-4" },
+        method: "initialize",
+        params: {
+          protocolVersion: "1.0.0",
+          clientName: "contract-test",
+          capabilities: {},
+        },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 2,
+        method: "agent.create",
+        params: {
+          objective: "Inspect daemon status",
+          cwd: "/workspace",
+          model: "grok-4",
+          unattendedAllow: ["FileRead", "system.grep"],
+          unattendedDeny: ["exec_command"],
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 3,
         method: "agent.list",
         params: { limit: 20 },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 3,
+        id: 4,
         method: "agent.attach",
         params: { agentId: "agent_1", clientId: "tui_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 4,
+        id: 5,
         method: "agent.stop",
         params: { agentId: "agent_1", reason: "user requested stop" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 5,
+        id: 6,
         method: "session.create",
         params: { agentId: "agent_1", initialPrompt: "Inspect status" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 6,
+        id: 7,
         method: "session.list",
         params: { agentId: "agent_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 7,
+        id: 8,
         method: "session.attach",
         params: { sessionId: "session_1", clientId: "tui_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 8,
+        id: 9,
         method: "session.detach",
         params: { sessionId: "session_1", clientId: "tui_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 9,
+        id: 10,
         method: "session.terminate",
         params: { sessionId: "session_1", reason: "user requested stop" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 10,
+        id: 11,
         method: "message.send",
         params: { sessionId: "session_1", content: "Run tests" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 11,
+        id: 12,
         method: "message.stream",
         params: {
           sessionId: "session_1",
@@ -211,13 +228,13 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 12,
+        id: 13,
         method: "tool.approve",
         params: { sessionId: "session_1", requestId: "approval_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 13,
+        id: 14,
         method: "tool.deny",
         params: {
           sessionId: "session_1",
@@ -227,38 +244,38 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 14,
+        id: 15,
         method: "permission.list",
         params: { sessionId: "session_1" },
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 15,
+        id: 16,
         method: "health.ping",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 16,
+        id: 17,
         method: "health.ready",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 17,
+        id: 18,
         method: "health.stats",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 18,
+        id: 19,
         method: "auth.login",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 19,
+        id: 20,
         method: "auth.whoami",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
-        id: 20,
+        id: 21,
         method: "auth.logout",
       },
     ];
