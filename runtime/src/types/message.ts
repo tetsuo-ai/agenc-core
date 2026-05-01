@@ -1,17 +1,18 @@
-// @ts-nocheck
-// Stub for AgenC's `src/types/message.ts`, which is referenced throughout
-// the AgenC implementationed compact/ tree but never exists in upstream source.
-// The port uses these as type-only imports, so any-typed placeholders are
-// sufficient to keep the compact module resolvable without pulling a live
-// message-type implementation into AgenC yet.
-//
-// When the real runtime message graph lands, replace the stubs with real
-// types/imports from the codex runtime.
+/**
+ * Ports OC `src/types/message.ts` onto AgenC's runtime type surface.
+ *
+ * Why this lives here / shape difference from upstream:
+ *   - The donor snapshot exposes permissive message aliases because the
+ *     concrete message graph is outside that source slice.
+ *   - AgenC keeps the extra aliases already required by live type-only
+ *     imports while retaining the same permissive compatibility shape.
+ *
+ * Cross-cuts deliberately NOT carried:
+ *   - None; this file is type-only compatibility for message imports.
+ */
 
-// Use an intersection of `any` and a no-op branded type so that narrowing
-// type guards like `isCompactBoundaryMessage(m): m is SystemCompactBoundaryMessage`
-// do not collapse the remainder to `never`.
-export type Message = any & { readonly __message_stub?: unique symbol };
+/* eslint-disable @typescript-eslint/no-explicit-any */
+export type Message = any;
 export type AssistantMessage = any;
 export type UserMessage = any;
 export type SystemMessage = any;
