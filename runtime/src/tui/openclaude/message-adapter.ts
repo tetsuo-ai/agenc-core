@@ -674,7 +674,8 @@ export function adaptTranscriptEvents(
       case "mcp_tool_call_begin":
       case "exec_command_begin": {
         const callId =
-          typeof payload.callId === "string" ? payload.callId : randomUUID();
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
         const toolName =
           typeof payload.toolName === "string"
             ? payload.toolName
@@ -716,7 +717,8 @@ export function adaptTranscriptEvents(
       case "mcp_tool_call_end":
       case "exec_command_end": {
         const callId =
-          typeof payload.callId === "string" ? payload.callId : randomUUID();
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
         const isError =
           typeof payload.isError === "boolean"
             ? payload.isError
@@ -754,7 +756,8 @@ export function adaptTranscriptEvents(
         break;
       case "collab_agent_spawn_begin": {
         const callId =
-          typeof payload.callId === "string" ? payload.callId : randomUUID();
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
         pushToolUse(out, openTools, toolNames, callId, "Task", {
           description: payload.newAgentNickname ?? payload.agentRole ?? "agent",
           prompt: payload.prompt,
@@ -769,7 +772,8 @@ export function adaptTranscriptEvents(
       case "collab_close_end":
       case "collab_resume_end": {
         const callId =
-          typeof payload.callId === "string" ? payload.callId : randomUUID();
+          typeof payload.callId === "string" ? payload.callId : null;
+        if (callId === null) break;
         pushToolResult(out, openTools, callId, formatAgentStatus(payload.status ?? payload.statuses));
         break;
       }
