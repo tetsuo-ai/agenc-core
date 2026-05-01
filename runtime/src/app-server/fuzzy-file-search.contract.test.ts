@@ -561,7 +561,10 @@ describe("AgenC daemon fuzzy file search", () => {
         roots: ["/workspace"],
         cancellationToken: "search_1",
       },
-      { cancellationScope: expect.stringMatching(/^connection_/) },
+      {
+        cancellationScope: expect.stringMatching(/^connection_/),
+        signal: expect.any(AbortSignal),
+      },
     );
 
     await expect(
@@ -588,7 +591,10 @@ describe("AgenC daemon fuzzy file search", () => {
         roots: ["/workspace"],
         cancellationToken: null,
       },
-      { cancellationScope: expect.stringMatching(/^connection_/) },
+      {
+        cancellationScope: expect.stringMatching(/^connection_/),
+        signal: expect.any(AbortSignal),
+      },
     );
   });
 

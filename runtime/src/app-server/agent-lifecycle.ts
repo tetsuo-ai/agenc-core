@@ -24,10 +24,16 @@ import type {
   MessageContent,
   SessionSummary,
   ToolApproveParams,
+  ToolCancelParams,
   ToolDecisionResult,
   ToolDenyParams,
 } from "./protocol/index.js";
-import { APPROVED, APPROVED_FOR_SESSION, DENIED } from "../permissions/review-decision.js";
+import {
+  ABORT,
+  APPROVED,
+  APPROVED_FOR_SESSION,
+  DENIED,
+} from "../permissions/review-decision.js";
 import type { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 
 export type AgenCDaemonAgentLifecycleErrorCode =
@@ -309,6 +315,32 @@ export class AgenCDaemonAgentManager {
     return { requestId: params.requestId, decision: "denied" };
   }
 
+  async cancelTool(params: ToolCancelParams): Promise<ToolDecisionResult> {
+    const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId, {
+      allowCancelTool: true,
+    });
+    let resolved = false;
+    if (this.#runner!.cancelTool !== undefined) {
+      resolved = await this.#runner!.cancelTool(agentId, {
+        requestId: params.requestId,
+        ...(params.reason !== undefined ? { reason: params.reason } : {}),
+      });
+    }
+    if (!resolved && this.#runner!.resolveToolDecision !== undefined) {
+      resolved = await this.#runner!.resolveToolDecision(agentId, {
+        requestId: params.requestId,
+        decision: ABORT,
+      });
+    }
+    if (!resolved) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `AgenC daemon tool request is not pending: ${params.requestId}`,
+      );
+    }
+    return { requestId: params.requestId, decision: "cancelled" };
+  }
+
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -371,14 +403,20 @@ export class AgenCDaemonAgentManager {
     }
   }
 
-  async #resolveActiveAgentIdForSession(sessionId: string): Promise<string> {
+  async #resolveActiveAgentIdForSession(
+    sessionId: string,
+    options: { readonly allowCancelTool?: boolean } = {},
+  ): Promise<string> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
         "tool decision requires a daemon session manager",
       );
     }
-    if (this.#runner?.resolveToolDecision === undefined) {
+    if (
+      this.#runner?.resolveToolDecision === undefined &&
+      !(options.allowCancelTool === true && this.#runner?.cancelTool !== undefined)
+    ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
         "tool decision requires a background runner",

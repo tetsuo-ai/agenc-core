@@ -93,6 +93,7 @@ export interface AgenCFuzzyFileSearchServiceOptions {
 
 export interface AgenCFuzzyFileSearchSearchOptions {
   readonly cancellationScope?: string;
+  readonly signal?: AbortSignal;
 }
 
 export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
@@ -113,6 +114,15 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
         ? null
         : `${normalizedToken(options.cancellationScope) ?? "default"}\0${cancellationToken}`;
     const controller = new AbortController();
+    const parentSignal = options.signal;
+    const forwardParentAbort = (): void => {
+      controller.abort(parentSignal?.reason ?? "request.cancel");
+    };
+    if (parentSignal?.aborted === true) {
+      forwardParentAbort();
+    } else {
+      parentSignal?.addEventListener("abort", forwardParentAbort, { once: true });
+    }
     if (cancellationKey !== null) {
       this.#pendingByToken.get(cancellationKey)?.abort();
       this.#pendingByToken.set(cancellationKey, controller);
@@ -131,6 +141,7 @@ export class AgenCFuzzyFileSearchService implements AgenCFuzzyFileSearch {
       ) {
         this.#pendingByToken.delete(cancellationKey);
       }
+      parentSignal?.removeEventListener("abort", forwardParentAbort);
     }
   }
 }

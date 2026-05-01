@@ -80,6 +80,11 @@ export interface AgenCBackgroundAgentToolDecisionParams {
   readonly decision: ReviewDecision;
 }
 
+export interface AgenCBackgroundAgentToolCancelParams {
+  readonly requestId: string;
+  readonly reason?: string;
+}
+
 export interface AgenCBackgroundAgentRunner {
   startAgent(
     params: AgenCBackgroundAgentStartParams,
@@ -100,6 +105,10 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentToolDecisionParams,
   ): Promise<boolean>;
+  cancelTool?(
+    agentId: string,
+    params: AgenCBackgroundAgentToolCancelParams,
+  ): Promise<boolean>;
 }
 
 export type AgenCDelegateFunction = (opts: DelegateOpts) => Promise<DelegateOutcome>;
@@ -118,6 +127,7 @@ interface ActiveBackgroundAgent {
   uninstallApprovalBridge?: () => void;
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
+  activeToolCallIds: Set<string>;
 }
 
 interface BackgroundAgentDaemonEvent {
@@ -149,6 +159,7 @@ export class AgenCDelegateBackgroundAgentRunner
   readonly #now: () => string;
   readonly #active = new Map<string, ActiveBackgroundAgent>();
   readonly #pendingEvents = new Map<string, BackgroundAgentDaemonEvent[]>();
+  readonly #pendingActiveToolCallIds = new Map<string, Set<string>>();
   readonly #assistantTextByAgent = new Map<string, string>();
   readonly #pendingToolDecisions = new Map<
     string,
@@ -213,8 +224,12 @@ export class AgenCDelegateBackgroundAgentRunner
         lastActiveAt: startedAt,
         uninstallApprovalBridge,
         bufferedEvents: this.#pendingEvents.get(outcome.thread.threadId) ?? [],
+        activeToolCallIds:
+          this.#pendingActiveToolCallIds.get(outcome.thread.threadId) ??
+          new Set(),
       };
       this.#pendingEvents.delete(outcome.thread.threadId);
+      this.#pendingActiveToolCallIds.delete(outcome.thread.threadId);
       this.#trackAgentStatus(active);
       this.#active.set(outcome.thread.threadId, active);
       this.#cleanupWhenComplete(outcome.thread.threadId, outcome.thread);
@@ -319,6 +334,26 @@ export class AgenCDelegateBackgroundAgentRunner
     return true;
   }
 
+  async cancelTool(
+    agentId: string,
+    params: AgenCBackgroundAgentToolCancelParams,
+  ): Promise<boolean> {
+    const pendingResolved = await this.resolveToolDecision(agentId, {
+      requestId: params.requestId,
+      decision: ABORT,
+    });
+    const active = this.#active.get(agentId);
+    if (active === undefined) return pendingResolved;
+    const activeToolMatched = active.activeToolCallIds.has(params.requestId);
+    if (!pendingResolved && !activeToolMatched) return false;
+    active.control.interrupt(
+      agentId,
+      params.reason ?? `tool.cancel:${params.requestId}`,
+    );
+    active.lastActiveAt = this.#now();
+    return true;
+  }
+
   #installDaemonApprovalBridge(session: LocalRuntimeBootstrap["session"]): () => void {
     const services = (session as { services?: {
       approvalResolver?: ApprovalResolver;
@@ -411,6 +446,7 @@ export class AgenCDelegateBackgroundAgentRunner
         this.#active.delete(agentId);
         this.#pendingEvents.delete(agentId);
         this.#assistantTextByAgent.delete(agentId);
+        this.#pendingActiveToolCallIds.delete(agentId);
         active.unsubscribeStatus?.();
         active.uninstallApprovalBridge?.();
         await active.bootstrap.shutdown().catch(() => {});
@@ -437,6 +473,7 @@ export class AgenCDelegateBackgroundAgentRunner
     agentId: string,
     progress: RunAgentProgressEvent,
   ): Promise<void> {
+    this.#trackActiveToolCall(agentId, progress);
     const event = this.#eventFromProgress(agentId, progress);
     if (event === null) return;
     const active = this.#active.get(agentId);
@@ -447,6 +484,32 @@ export class AgenCDelegateBackgroundAgentRunner
       return;
     }
     await this.#emitOrBufferEvent(active, event);
+  }
+
+  #trackActiveToolCall(
+    agentId: string,
+    progress: RunAgentProgressEvent,
+  ): void {
+    if (progress.kind !== "tool_call" && progress.kind !== "tool_result") {
+      return;
+    }
+    const active = this.#active.get(agentId);
+    const activeToolCallIds =
+      active?.activeToolCallIds ??
+      this.#pendingActiveToolCallIds.get(agentId) ??
+      new Set<string>();
+    if (progress.kind === "tool_call") {
+      activeToolCallIds.add(progress.callId);
+    } else {
+      activeToolCallIds.delete(progress.callId);
+    }
+    if (active === undefined) {
+      if (activeToolCallIds.size === 0) {
+        this.#pendingActiveToolCallIds.delete(agentId);
+      } else {
+        this.#pendingActiveToolCallIds.set(agentId, activeToolCallIds);
+      }
+    }
   }
 
   #eventFromProgress(

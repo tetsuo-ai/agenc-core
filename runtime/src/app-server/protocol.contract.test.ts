@@ -40,6 +40,7 @@ interface ProtocolPackageManifest {
 
 const expectedMethods = [
   "initialize",
+  "request.cancel",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -53,6 +54,7 @@ const expectedMethods = [
   "message.stream",
   "tool.approve",
   "tool.deny",
+  "tool.cancel",
   "permission.list",
   "fs.fuzzy_search",
   "commandExec.start",
@@ -190,6 +192,15 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
+        id: "cancel-search",
+        method: "request.cancel",
+        params: {
+          requestId: "search_1",
+          reason: "superseded",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
         id: 2,
         method: "agent.create",
         params: {
@@ -278,6 +289,16 @@ describe("AgenC daemon protocol surface", () => {
           sessionId: "session_1",
           requestId: "approval_2",
           reason: "outside workspace",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "cancel-tool",
+        method: "tool.cancel",
+        params: {
+          sessionId: "session_1",
+          requestId: "approval_3",
+          reason: "user cancelled",
         },
       },
       {
