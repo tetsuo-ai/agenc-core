@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import {
   createProvider,
+  normalizeProviderName,
   type ProviderName,
 } from "../llm/provider.js";
 import type { LLMProvider } from "../llm/types.js";
@@ -80,6 +81,10 @@ import {
   resolveWorkspace as resolveWorkspaceFromEnv,
   type AgenCConfig,
 } from "../config/index.js";
+import type {
+  AuthBackend,
+  AuthSubscriptionTier,
+} from "../auth/backend.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
   readStartupCliFlags,
@@ -124,6 +129,72 @@ function buildSessionIngressLogUrl(baseUrl: string, sessionId: string): string {
 
 function buildCodeSessionBaseUrl(baseUrl: string, sessionId: string): string {
   return `${trimTrailingSlash(baseUrl)}/v1/code/sessions/${toInfraSessionId(sessionId)}`;
+}
+
+interface ResolvedAuthModelSelection {
+  readonly provider: ProviderName;
+  readonly model: string;
+}
+
+async function resolveAuthSubscriptionTier(
+  authBackend: AuthBackend | undefined,
+  sessionId: string,
+): Promise<AuthSubscriptionTier> {
+  if (authBackend === undefined) return "free";
+  return authBackend.getSubscriptionTier({ sessionId });
+}
+
+function requiresAuthModelInference(provider: string, model: string): boolean {
+  const normalizedProvider = provider.trim().toLowerCase();
+  const normalizedModel = model.trim().toLowerCase();
+  return (
+    normalizedProvider === "agenc" ||
+    normalizedModel === "agenc" ||
+    normalizedModel.startsWith("agenc:")
+  );
+}
+
+async function resolveAuthModelSelection(params: {
+  readonly authBackend: AuthBackend | undefined;
+  readonly provider: ProviderName;
+  readonly model: string;
+  readonly sessionId: string;
+  readonly subscriptionTier: AuthSubscriptionTier;
+}): Promise<ResolvedAuthModelSelection> {
+  if (
+    params.authBackend === undefined ||
+    !requiresAuthModelInference(params.provider, params.model)
+  ) {
+    return { provider: params.provider, model: params.model };
+  }
+  const inferred = await params.authBackend.inferAgencModel({
+    provider: params.provider,
+    requestedModel: params.model,
+    sessionId: params.sessionId,
+    subscriptionTier: params.subscriptionTier,
+  });
+  return {
+    provider: normalizeProviderName(inferred.provider) ?? params.provider,
+    model: inferred.model,
+  };
+}
+
+async function vendProviderKeyOrUndefined(params: {
+  readonly authBackend: AuthBackend | undefined;
+  readonly provider: ProviderName;
+  readonly sessionId: string;
+}): Promise<string | undefined> {
+  if (params.authBackend === undefined) return undefined;
+  try {
+    const key = await params.authBackend.vendKey(
+      params.provider,
+      params.sessionId,
+    );
+    const apiKey = key.apiKey.trim();
+    return apiKey.length > 0 ? apiKey : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
@@ -520,6 +591,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
 
 export interface BootstrapLocalRuntimeSessionOptions {
   readonly apiKey?: string;
+  readonly authBackend?: AuthBackend;
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
   readonly cwd?: string;
@@ -545,6 +617,7 @@ export interface LocalRuntimeBootstrap {
   readonly rolloutStore: RolloutStore;
   readonly sidecarManager: SidecarManager;
   readonly ctx: TurnContext;
+  readonly authSubscriptionTier: AuthSubscriptionTier;
   readonly memoryDir: string;
   readonly memoryMdPath: string;
   readonly shutdown: () => Promise<void>;
@@ -570,6 +643,10 @@ export async function bootstrapLocalRuntimeSession(
   const cli = readStartupCliFlags(argv);
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
+  const conversationId =
+    options.conversationId ?? `conv-${Date.now().toString(36)}`;
+  const resumeConversation =
+    options.conversationId !== undefined && options.resumeConversation !== false;
 
   const workspaceRoot =
     resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd();
@@ -597,13 +674,30 @@ export async function bootstrapLocalRuntimeSession(
   );
   const toolApprovals = new RuntimeApprovalStore<unknown>();
   const networkApproval = new RuntimeNetworkApprovalService();
-  const resolvedProvider = startup.provider;
-  const model = startup.model;
+  const authSubscriptionTier = await resolveAuthSubscriptionTier(
+    options.authBackend,
+    conversationId,
+  );
+  const modelSelection = await resolveAuthModelSelection({
+    authBackend: options.authBackend,
+    provider: startup.provider,
+    model: startup.model,
+    sessionId: conversationId,
+    subscriptionTier: authSubscriptionTier,
+  });
+  const resolvedProvider = modelSelection.provider;
+  const model = modelSelection.model;
   const providerSettings = resolveProviderSettings(
     resolvedProvider,
     startup.config,
     env,
   );
+  const vendedApiKey = await vendProviderKeyOrUndefined({
+    authBackend: options.authBackend,
+    provider: resolvedProvider,
+    sessionId: conversationId,
+  });
+  const selectedApiKey = options.apiKey ?? vendedApiKey ?? startup.apiKey;
   const mcpManager = createSessionMcpManagerFromConfig(
     configStore.current(),
     env,
@@ -666,7 +760,7 @@ export async function bootstrapLocalRuntimeSession(
   const provider: LLMProvider = createProvider(
     resolvedProvider as ProviderName,
     {
-      apiKey: options.apiKey ?? startup.apiKey,
+      apiKey: selectedApiKey,
       ...(providerSettings?.baseURL ? { baseURL: providerSettings.baseURL } : {}),
       model,
       tools: registry.toLLMTools(),
@@ -704,10 +798,6 @@ export async function bootstrapLocalRuntimeSession(
         });
     });
   }
-  const conversationId =
-    options.conversationId ?? `conv-${Date.now().toString(36)}`;
-  const resumeConversation =
-    options.conversationId !== undefined && options.resumeConversation !== false;
   const config = buildDeferredConfig(workspaceRoot, model, {
     ...startup.config,
     autonomous_mode: autonomousModeEnabled,
@@ -783,8 +873,8 @@ export async function bootstrapLocalRuntimeSession(
     buildBootstrapSessionServices({
       provider,
       providerName: resolvedProvider,
-      ...(options.apiKey ?? startup.apiKey
-        ? { apiKey: options.apiKey ?? startup.apiKey }
+      ...(selectedApiKey
+        ? { apiKey: selectedApiKey }
         : {}),
       registry,
       mcpManager: createSessionMcpService(mcpManager, { env }),
@@ -1148,6 +1238,7 @@ export async function bootstrapLocalRuntimeSession(
       rolloutStore: rolloutStoreForReturn,
       sidecarManager: sidecarManager!,
       ctx: ctxForReturn,
+      authSubscriptionTier,
       memoryDir,
       memoryMdPath,
       shutdown,

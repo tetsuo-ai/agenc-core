@@ -32,6 +32,7 @@ import {
   type AgenCSignalProcess,
 } from "../lifecycle/index.js";
 import { createAuthBackend } from "../auth/index.js";
+import type { AuthBackend } from "../auth/backend.js";
 import { loadConfig } from "../config/index.js";
 
 export const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
@@ -219,6 +220,9 @@ async function startAgenCDaemon(
   if (existingPid !== null) {
     await removeAgenCDaemonPid(pidPath);
   }
+  if ((await tryResolveAgenCDaemonAuthStartup(host, io)) === null) {
+    return 1;
+  }
 
   const childPid = host.spawnDetachedDaemon({
     ...host.env,
@@ -286,20 +290,15 @@ async function runAgenCDaemonForeground(
   } = {},
 ): Promise<number> {
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
-  const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  const authStartup = await tryResolveAgenCDaemonAuthStartup(host, io);
+  if (authStartup === null) {
+    return 1;
+  }
   const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
   const snapshotPath = resolveAgenCDaemonSnapshotPath(host.env, host.userHome);
   const daemonCookie = await ensureAgenCDaemonCookie(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
   );
-  const loadedConfig = await loadConfig({
-    home: daemonHome,
-    onWarn: (message) => io.stderr.write(`${message}\n`),
-  });
-  const authBackend = createAuthBackend(loadedConfig.config, {
-    agencHome: daemonHome,
-    env: host.env,
-  });
   const sessionManager = new AgenCDaemonSessionManager();
   const clientMultiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
@@ -309,6 +308,7 @@ async function runAgenCDaemonForeground(
   const runner = new AgenCDelegateBackgroundAgentRunner({
     env: host.env,
     argv: [host.execPath, host.entrypointPath, "--autonomous"],
+    authBackend: authStartup.authBackend,
   });
   const agentManager = new AgenCDaemonAgentManager({
     runner,
@@ -324,7 +324,7 @@ async function runAgenCDaemonForeground(
     agentManager,
     clientMultiplexer,
     commandExec,
-    authBackend,
+    authBackend: authStartup.authBackend,
     initializeAuthenticator: (params) => params.authCookie === daemonCookie,
   });
   const connections = new Map<number, AgenCDaemonJsonRpcConnection>();
@@ -430,6 +430,36 @@ async function runAgenCDaemonForeground(
     }
   }
   return exitCode;
+}
+
+interface AgenCDaemonAuthStartup {
+  readonly daemonHome: string;
+  readonly authBackend: AuthBackend;
+}
+
+async function tryResolveAgenCDaemonAuthStartup(
+  host: AgenCDaemonCliHost,
+  io: AgenCDaemonCliIo,
+): Promise<AgenCDaemonAuthStartup | null> {
+  try {
+    const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+    const loadedConfig = await loadConfig({
+      home: daemonHome,
+      onWarn: (message) => io.stderr.write(`${message}\n`),
+    });
+    return {
+      daemonHome,
+      authBackend: createAuthBackend(loadedConfig.config, {
+        agencHome: daemonHome,
+        env: host.env,
+      }),
+    };
+  } catch (error) {
+    io.stderr.write(
+      `agenc: daemon auth backend initialization failed: ${formatCleanupError(error)}\n`,
+    );
+    return null;
+  }
 }
 
 async function waitForPidExit(
