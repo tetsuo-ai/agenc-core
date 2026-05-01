@@ -122,6 +122,7 @@ export function formatCliHelpText(): string {
     "Usage: agenc [options] [PROMPT]",
     "       agenc daemon <start|stop|status|restart>",
     "       agenc agent start <objective>",
+    "       agenc agent list",
     "",
     "Options:",
     "  --help                                   Show this help text",

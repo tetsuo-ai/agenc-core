@@ -10,6 +10,7 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import type { AgentStatus } from "../agents/status.js";
 
 describe("AgenC delegate background-agent runner", () => {
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
@@ -97,6 +98,83 @@ describe("AgenC delegate background-agent runner", () => {
       "exec_command",
     ]);
     expect(shutdown).not.toHaveBeenCalled();
+  });
+
+  it("reports live status freshness from thread status changes", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = { shutdown: vi.fn(async () => {}) };
+    let currentStatus: AgentStatus = {
+      status: "running",
+      turnId: "turn-1",
+      startedAtMs: 1,
+    };
+    let statusListener: ((status: AgentStatus) => void) | undefined;
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      get currentStatus() {
+        return currentStatus;
+      },
+      onStatusChange: vi.fn((listener: (status: AgentStatus) => void) => {
+        statusListener = listener;
+        listener(currentStatus);
+        return vi.fn();
+      }),
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const times = [
+      "2026-05-01T12:00:00.500Z",
+      "2026-05-01T12:00:01.000Z",
+    ];
+    let timeIndex = 0;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => {
+        const value = times[timeIndex];
+        if (value === undefined) throw new Error("test time exhausted");
+        timeIndex += 1;
+        return value;
+      },
+    });
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await expect(runner.getAgentSnapshot("agent_live")).resolves.toEqual({
+      status: "running",
+      lastActiveAt: "2026-05-01T12:00:00.500Z",
+    });
+
+    currentStatus = {
+      status: "interrupted",
+      turnId: "turn-1",
+      endedAtMs: 2,
+      reason: "waiting for approval",
+    };
+    statusListener?.(currentStatus);
+
+    await expect(runner.getAgentSnapshot("agent_live")).resolves.toEqual({
+      status: "running",
+      lastActiveAt: "2026-05-01T12:00:01.000Z",
+    });
   });
 
   it("shuts down the bootstrap when delegate rejects the background start", async () => {

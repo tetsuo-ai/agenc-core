@@ -7,6 +7,7 @@ import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type {
+  AgenCBackgroundAgentSnapshot,
   AgenCBackgroundAgentRunner,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
@@ -146,6 +147,121 @@ describe("AgenC background agent lifecycle", () => {
           },
         },
       ],
+    });
+  });
+
+  it("refreshes active list status and omits agents no longer active", async () => {
+    const snapshots = new Map<string, AgenCBackgroundAgentSnapshot | null>();
+    const ids = ["agent_active", "agent_done"];
+    let startIndex = 0;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => {
+        const agentId = ids[startIndex];
+        if (agentId === undefined) throw new Error("unexpected start");
+        startIndex += 1;
+        snapshots.set(agentId, {
+          status: "running",
+          lastActiveAt: "2026-05-01T12:00:00.500Z",
+        });
+        return {
+          agentId,
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        };
+      },
+      getAgentSnapshot: async (agentId) => snapshots.get(agentId) ?? null,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+      ]),
+      runner,
+    });
+
+    await agents.createAgent({ objective: "watch active work" });
+    await agents.createAgent({ objective: "finish quickly" });
+    snapshots.set("agent_active", {
+      status: "idle",
+      lastActiveAt: "2026-05-01T12:00:03.000Z",
+    });
+    snapshots.set("agent_done", null);
+
+    await expect(agents.listAgents()).resolves.toEqual({
+      agents: [
+        {
+          agentId: "agent_active",
+          objective: "watch active work",
+          status: "idle",
+          createdAt: "2026-05-01T12:00:00.000Z",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          lastActiveAt: "2026-05-01T12:00:03.000Z",
+          cwd: "/workspace",
+          metadata: {
+            unattendedAllow: [
+              "FileRead",
+              "system.grep",
+              "system.glob",
+              "system.listDir",
+              "system.stat",
+            ],
+            unattendedDeny: [],
+          },
+        },
+      ],
+    });
+    await expect(agents.getAgent("agent_done")).resolves.toBeNull();
+  });
+
+  it("paginates active agents by stable id boundary under churn", async () => {
+    const snapshots = new Map<string, AgenCBackgroundAgentSnapshot | null>();
+    const ids = ["agent_1", "agent_2", "agent_3"];
+    let startIndex = 0;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => {
+        const agentId = ids[startIndex];
+        if (agentId === undefined) throw new Error("unexpected start");
+        startIndex += 1;
+        snapshots.set(agentId, {
+          status: "running",
+          lastActiveAt: "2026-05-01T12:00:00.500Z",
+        });
+        return {
+          agentId,
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        };
+      },
+      getAgentSnapshot: async (agentId) => snapshots.get(agentId) ?? null,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+    });
+
+    await agents.createAgent({ objective: "first" });
+    await agents.createAgent({ objective: "second" });
+    await agents.createAgent({ objective: "third" });
+
+    await expect(agents.listAgents({ limit: 2 })).resolves.toMatchObject({
+      agents: [
+        { agentId: "agent_1", objective: "first" },
+        { agentId: "agent_2", objective: "second" },
+      ],
+      nextCursor: "agent_2",
+    });
+
+    snapshots.set("agent_1", null);
+    await expect(
+      agents.listAgents({ limit: 2, cursor: "agent_2" }),
+    ).resolves.toMatchObject({
+      agents: [{ agentId: "agent_3", objective: "third" }],
     });
   });
 
@@ -326,6 +442,41 @@ describe("AgenC background agent lifecycle", () => {
         },
       },
     });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: 3,
+        method: "agent.list",
+        params: { limit: 1 },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: 3,
+      result: {
+        agents: [
+          {
+            agentId: "agent_rpc",
+            objective: "ship a daemon task",
+            status: "running",
+            createdAt: "2026-05-01T12:00:00.000Z",
+            startedAt: "2026-05-01T12:00:00.500Z",
+            lastActiveAt: "2026-05-01T12:00:00.500Z",
+            cwd: "/repo",
+            metadata: {
+              unattendedAllow: [
+                "FileRead",
+                "system.grep",
+                "system.glob",
+                "system.listDir",
+                "system.stat",
+              ],
+              unattendedDeny: [],
+            },
+          },
+        ],
+      },
+    });
   });
 
   it("rejects malformed agent.create params before launching the runner", async () => {
@@ -380,6 +531,22 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message: "agent.create param 'objective' must be a string",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-list",
+        method: "agent.list",
+        params: { limit: "many" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-list",
+      error: {
+        code: -32602,
+        message: "agent.list param 'limit' must be a number",
         data: { code: "INVALID_ARGUMENT" },
       },
     });

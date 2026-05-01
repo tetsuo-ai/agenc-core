@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createAgenCJsonLineDaemonClient,
   defaultEnsureDaemonReady,
+  formatAgenCAgentList,
   formatAgenCAgentCliHelpText,
   parseAgenCAgentCliArgs,
   runAgenCAgentCli,
@@ -59,6 +60,13 @@ function sequence(values: readonly string[]): () => string {
 describe("agenc agent start CLI", () => {
   it("parses the background-agent start command without claiming prompts", () => {
     expect(parseAgenCAgentCliArgs(["hello"])).toBeNull();
+    expect(parseAgenCAgentCliArgs(["agent", "list"])).toEqual({
+      kind: "list",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "list", "extra"])).toEqual({
+      kind: "error",
+      message: "agent list does not accept arguments",
+    });
     expect(parseAgenCAgentCliArgs(["agent", "start", "build", "it"])).toEqual({
       kind: "start",
       objective: "build it",
@@ -116,6 +124,7 @@ describe("agenc agent start CLI", () => {
     expect(formatAgenCAgentCliHelpText()).toContain(
       "start [--unattended-allow <tools>]",
     );
+    expect(formatAgenCAgentCliHelpText()).toContain("list");
   });
 
   it("prints only the daemon-returned agent ID", async () => {
@@ -144,6 +153,7 @@ describe("agenc agent start CLI", () => {
                 createdAt: "2026-05-01T12:00:00.000Z",
               };
             },
+            listAgents: async () => ({ agents: [] }),
           },
         },
       ),
@@ -161,6 +171,133 @@ describe("agenc agent start CLI", () => {
         unattendedDeny: ["exec_command"],
       },
     ]);
+  });
+
+  it("prints active agent list rows with the required columns", async () => {
+    const io = createIo();
+
+    await expect(
+      runAgenCAgentCli(
+        { kind: "list" },
+        {
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async () => {
+              throw new Error("createAgent should not be called");
+            },
+            listAgents: async () => ({
+              agents: [
+                {
+                  agentId: "agent_1",
+                  objective: "audit the repo",
+                  status: "running",
+                  createdAt: "2026-05-01T12:00:00.000Z",
+                  startedAt: "2026-05-01T12:00:01.000Z",
+                  lastActiveAt: "2026-05-01T12:00:02.000Z",
+                },
+              ],
+            }),
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(io.stdoutText()).toBe(
+      [
+        "id\tobjective\tstatus\tstarted_at\tlast_active_at",
+        "agent_1\taudit the repo\trunning\t2026-05-01T12:00:01.000Z\t2026-05-01T12:00:02.000Z",
+        "",
+      ].join("\n"),
+    );
+    expect(io.stderrText()).toBe("");
+    expect(formatAgenCAgentList({ agents: [] })).toBe("No active agents");
+  });
+
+  it("keeps control characters out of tabular agent list cells", () => {
+    expect(
+      formatAgenCAgentList({
+        agents: [
+          {
+            agentId: "agent_1",
+            objective: "audit\tthe\nrepo\rnow",
+            status: "running",
+            createdAt: "2026-05-01T12:00:00.000Z",
+            startedAt: "2026-05-01T12:00:01.000Z",
+            lastActiveAt: "2026-05-01T12:00:02.000Z",
+          },
+        ],
+      }),
+    ).toBe(
+      [
+        "id\tobjective\tstatus\tstarted_at\tlast_active_at",
+        "agent_1\taudit the repo now\trunning\t2026-05-01T12:00:01.000Z\t2026-05-01T12:00:02.000Z",
+      ].join("\n"),
+    );
+  });
+
+  it("prints agents from every daemon list page", async () => {
+    const io = createIo();
+    const requests: unknown[] = [];
+
+    await expect(
+      runAgenCAgentCli(
+        { kind: "list" },
+        {
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async () => {
+              throw new Error("createAgent should not be called");
+            },
+            listAgents: async (params = {}) => {
+              requests.push(params);
+              if (params.cursor === undefined) {
+                return {
+                  agents: [
+                    {
+                      agentId: "agent_1",
+                      objective: "audit the repo",
+                      status: "running",
+                      createdAt: "2026-05-01T12:00:00.000Z",
+                      startedAt: "2026-05-01T12:00:01.000Z",
+                      lastActiveAt: "2026-05-01T12:00:02.000Z",
+                    },
+                  ],
+                  nextCursor: "1",
+                };
+              }
+              if (params.cursor === "1") {
+                return {
+                  agents: [
+                    {
+                      agentId: "agent_2",
+                      objective: "check release notes",
+                      status: "running",
+                      createdAt: "2026-05-01T12:01:00.000Z",
+                      startedAt: "2026-05-01T12:01:01.000Z",
+                      lastActiveAt: "2026-05-01T12:01:02.000Z",
+                    },
+                  ],
+                };
+              }
+              throw new Error(`unexpected cursor ${params.cursor}`);
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requests).toEqual([{}, { cursor: "1" }]);
+    expect(io.stdoutText()).toBe(
+      [
+        "id\tobjective\tstatus\tstarted_at\tlast_active_at",
+        "agent_1\taudit the repo\trunning\t2026-05-01T12:00:01.000Z\t2026-05-01T12:00:02.000Z",
+        "agent_2\tcheck release notes\trunning\t2026-05-01T12:01:01.000Z\t2026-05-01T12:01:02.000Z",
+        "",
+      ].join("\n"),
+    );
+    expect(io.stderrText()).toBe("");
   });
 
   it("threads the supplied environment into daemon autostart", async () => {
@@ -268,6 +405,28 @@ describe("agenc agent start CLI", () => {
           },
         ),
       ).resolves.toBe(0);
+
+      const listIo = createIo();
+      await expect(
+        runAgenCAgentCli(
+          { kind: "list" },
+          {
+            client: createAgenCJsonLineDaemonClient({
+              socketPath,
+              authCookie: "socket-cookie",
+            }),
+            ensureDaemonReady: async () => {},
+            io: listIo,
+          },
+        ),
+      ).resolves.toBe(0);
+      expect(listIo.stdoutText()).toBe(
+        [
+          "id\tobjective\tstatus\tstarted_at\tlast_active_at",
+          "agent_socket\tbackground compile\trunning\t2026-05-01T12:00:00.500Z\t2026-05-01T12:00:00.500Z",
+          "",
+        ].join("\n"),
+      );
     } finally {
       await server.close();
       await rm(dir, { recursive: true, force: true });
