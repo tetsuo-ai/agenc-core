@@ -17,7 +17,14 @@
 // Override the reviewer model with env AGENC_REVIEW_MODEL=<model>.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -48,6 +55,7 @@ const { item } = await findItem(id);
 
 const disciplinePath = path.join(root, "GOAL_DISCIPLINE.md");
 const discipline = existsSync(disciplinePath) ? readFileSync(disciplinePath, "utf8") : "";
+const crossRepoEvidence = collectCrossRepoEvidence(item.body);
 
 const reviewerInstructions = `You are a senior software engineer reviewing one work item from an AgenC port checklist.
 
@@ -69,6 +77,17 @@ Your job: read the diff against main on the current port/${id} branch and judge 
 
 Operating discipline that the implementing agent was bound by:
 ${discipline}
+
+Cross-repo review evidence:
+${crossRepoEvidence}
+
+Some checklist items explicitly name sibling repositories such as
+\`agenc-sdk/\`, \`agenc-protocol/\`, or \`agenc-plugin-kit/\`. For those
+items, evaluate the named sibling repository state and evidence above as part
+of the item. The agenc-core diff may carry only the local contract gate for
+that sibling deliverable. Still reject the item if the sibling evidence is
+missing, unmerged locally, untested, or does not satisfy the item.
+Ignore unrelated dirty sibling files that do not touch the named item paths.
 
 You are NOT permitted to edit code in this run. Read-only review.
 
@@ -152,3 +171,75 @@ if (verdict === "APPROVED") {
 process.stderr.write(`\n${BOLD}${RED}✗${RESET} reviewer ${verdict} ${id}\n`);
 process.stderr.write(`Address the issues above and re-run scripts/goal/complete.mjs ${id}.\n`);
 process.exit(1);
+
+function collectCrossRepoEvidence(body) {
+  const repos = [];
+  if (body.includes("agenc-sdk")) repos.push("agenc-sdk");
+  if (body.includes("agenc-protocol")) repos.push("agenc-protocol");
+  if (body.includes("agenc-plugin-kit")) repos.push("agenc-plugin-kit");
+  if (repos.length === 0) return "(none)";
+
+  return repos.map((repo) => summarizeSiblingRepo(repo)).join("\n\n");
+}
+
+function summarizeSiblingRepo(repo) {
+  const siblingRoot = path.resolve(root, "..", repo);
+  if (!existsSync(siblingRoot)) {
+    return `- ${repo}: missing at ${siblingRoot}`;
+  }
+
+  const status = runQuiet("git", ["status", "--short", "--branch"], siblingRoot);
+  const log = runQuiet(
+    "git",
+    ["log", "--oneline", "--decorate", "--max-count=8"],
+    siblingRoot,
+  );
+  const examplesDir = path.join(siblingRoot, "examples");
+  const exampleFiles = existsSync(examplesDir)
+    ? walkFiles(examplesDir).map((file) => path.relative(siblingRoot, file))
+    : [];
+
+  return [
+    `- ${repo}: ${siblingRoot}`,
+    "  status:",
+    indent(status || "(no status output)", "    "),
+    "  recent commits:",
+    indent(log || "(no git log output)", "    "),
+    "  examples:",
+    indent(exampleFiles.slice(0, 80).join("\n") || "(no examples found)", "    "),
+  ].join("\n");
+}
+
+function runQuiet(cmd, argv, cwd) {
+  const result = spawnSync(cmd, argv, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    return (result.stderr || result.stdout || "").trim();
+  }
+  return result.stdout.trim();
+}
+
+function walkFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      if (entry === "node_modules" || entry === "dist") continue;
+      out.push(...walkFiles(full));
+      continue;
+    }
+    out.push(full);
+  }
+  return out;
+}
+
+function indent(text, prefix) {
+  return text
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
