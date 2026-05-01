@@ -280,6 +280,219 @@ describe("AgenC background agent lifecycle", () => {
     expect(stopAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("stops all active background agents during daemon cleanup", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1", "session_2"]),
+      createAttachmentId: sequence(["attachment_1", "attachment_2"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:05.000Z",
+        "2026-05-01T12:00:06.000Z",
+      ]),
+    });
+    const startedAgents = ["agent_one", "agent_two"];
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: startedAgents.shift()!,
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:00.250Z",
+        "2026-05-01T12:00:03.000Z",
+        "2026-05-01T12:00:04.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await agents.createAgent({ objective: "one" });
+    await agents.createAgent({ objective: "two" });
+
+    await expect(agents.stopAll("daemon_shutdown")).resolves.toBe(2);
+
+    expect(stopAgent).toHaveBeenCalledWith("agent_one", "daemon_shutdown");
+    expect(stopAgent).toHaveBeenCalledWith("agent_two", "daemon_shutdown");
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(sessions.getSession("session_1")).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:05.000Z",
+    });
+    await expect(sessions.getSession("session_2")).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:06.000Z",
+    });
+  });
+
+  it("continues daemon cleanup when one background agent stop fails", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1", "session_2"]),
+      createAttachmentId: sequence(["attachment_1", "attachment_2"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:05.000Z",
+        "2026-05-01T12:00:06.000Z",
+      ]),
+    });
+    const startedAgents = ["agent_one", "agent_two"];
+    const stopAgent = vi.fn(async (agentId: string) => {
+      if (agentId === "agent_one") {
+        throw new Error("agent one failed to stop");
+      }
+    });
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: startedAgents.shift()!,
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:00.250Z",
+        "2026-05-01T12:00:03.000Z",
+        "2026-05-01T12:00:04.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await agents.createAgent({ objective: "one" });
+    await agents.createAgent({ objective: "two" });
+
+    await expect(agents.stopAll("daemon_shutdown")).rejects.toThrow(
+      "AgenC daemon cleanup failed for 1 agent(s): agent_one",
+    );
+
+    expect(stopAgent).toHaveBeenCalledWith("agent_one", "daemon_shutdown");
+    expect(stopAgent).toHaveBeenCalledWith("agent_two", "daemon_shutdown");
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(agents.getAgent("agent_one")).resolves.toMatchObject({
+      status: "error",
+      lastActiveAt: "2026-05-01T12:00:03.000Z",
+    });
+    await expect(agents.getAgent("agent_two")).resolves.toMatchObject({
+      status: "stopped",
+      lastActiveAt: "2026-05-01T12:00:04.000Z",
+    });
+    await expect(sessions.getSession("session_1")).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:05.000Z",
+    });
+    await expect(sessions.getSession("session_2")).resolves.toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:06.000Z",
+    });
+  });
+
+  it("waits for in-flight agent.create before daemon cleanup snapshots agents", async () => {
+    const started = createDeferred<{
+      readonly agentId: string;
+      readonly startedAt: string;
+      readonly status: "running";
+    }>();
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: vi.fn(async () => started.promise),
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      runner,
+    });
+
+    const create = agents.createAgent({ objective: "late create" });
+    await Promise.resolve();
+    const stopAll = agents.stopAll("daemon_shutdown");
+    started.resolve({
+      agentId: "agent_late",
+      startedAt: "2026-05-01T12:00:00.500Z",
+      status: "running",
+    });
+
+    await expect(create).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "agent.start cancelled because the daemon is shutting down",
+    });
+    await expect(stopAll).resolves.toBe(0);
+    expect(stopAgent).toHaveBeenCalledWith("agent_late", "daemon_shutdown");
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(
+      agents.createAgent({ objective: "after shutdown" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: "agent.start rejected because the daemon is shutting down",
+    });
+  });
+
+  it("flushes daemon agent snapshots after cleanup transitions", async () => {
+    const flushed: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_snapshot",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent: vi.fn(async () => {}),
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+      snapshotFlush: async (snapshot) => {
+        flushed.push(snapshot);
+      },
+    });
+
+    await agents.createAgent({ objective: "snapshot me" });
+    await agents.stopAll("daemon_shutdown");
+
+    await expect(agents.flushSnapshots("daemon_shutdown")).resolves.toBe(1);
+    expect(flushed).toEqual([
+      {
+        reason: "daemon_shutdown",
+        flushedAt: "2026-05-01T12:00:02.000Z",
+        agents: [
+          {
+            agentId: "agent_snapshot",
+            objective: "snapshot me",
+            status: "stopped",
+            createdAt: "2026-05-01T12:00:00.000Z",
+            startedAt: "2026-05-01T12:00:00.500Z",
+            lastActiveAt: "2026-05-01T12:00:01.000Z",
+            cwd: "/workspace",
+            metadata: {
+              unattendedAllow: [
+                "FileRead",
+                "system.grep",
+                "system.glob",
+                "system.listDir",
+                "system.stat",
+              ],
+              unattendedDeny: [],
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
   it("keeps final stop state durable while runner shutdown is in flight", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),

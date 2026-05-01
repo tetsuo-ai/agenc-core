@@ -268,13 +268,21 @@ export class AgenCDelegateBackgroundAgentRunner
     if (active === undefined) return;
     active.status = "stopping";
     active.lastActiveAt = this.#now();
+    let stopError: unknown;
     try {
       await active.control.shutdown(agentId, reason);
+    } catch (error) {
+      stopError = error;
+    }
+    try {
       await active.bootstrap.shutdown();
     } catch (error) {
+      stopError ??= error;
+    }
+    if (stopError !== undefined) {
       active.status = "error";
       active.lastActiveAt = this.#now();
-      throw error;
+      throw stopError;
     }
     this.#active.delete(agentId);
     this.#pendingEvents.delete(agentId);

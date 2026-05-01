@@ -1,7 +1,9 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
+import type { AgenCShutdownSignal } from "../lifecycle/index.js";
 import {
   defaultAgenCDaemonPidPath,
   ensureAgenCDaemonCookie,
@@ -9,6 +11,7 @@ import {
   readAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
+  resolveAgenCDaemonSnapshotPath,
   resolveAgenCDaemonSocketPath,
   runAgenCDaemonCli,
   writeAgenCDaemonPid,
@@ -69,8 +72,40 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
   };
 }
 
+function createSignalProcess() {
+  const listeners = new Map<AgenCShutdownSignal, Set<() => void>>();
+  return {
+    once: (signal: AgenCShutdownSignal, listener: () => void) => {
+      let set = listeners.get(signal);
+      if (set === undefined) {
+        set = new Set();
+        listeners.set(signal, set);
+      }
+      set.add(listener);
+    },
+    removeListener: (signal: AgenCShutdownSignal, listener: () => void) => {
+      listeners.get(signal)?.delete(listener);
+    },
+    emit(signal: AgenCShutdownSignal): void {
+      for (const listener of [...(listeners.get(signal) ?? [])]) {
+        listener();
+      }
+    },
+  };
+}
+
 async function tempAgencHome(): Promise<string> {
   return mkdtemp(join(tmpdir(), "agenc-daemon-cli-"));
+}
+
+async function waitForPid(pidPath: string): Promise<number> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 2_000) {
+    const pid = await readAgenCDaemonPid(pidPath);
+    if (pid !== null) return pid;
+    await delay(10);
+  }
+  throw new Error("timed out waiting for daemon pid");
 }
 
 describe("AgenC daemon CLI", () => {
@@ -95,6 +130,12 @@ describe("AgenC daemon CLI", () => {
     );
     expect(resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
       "/tmp/agenc-home/daemon.cookie",
+    );
+    expect(resolveAgenCDaemonSnapshotPath({}, "/home/test")).toBe(
+      "/home/test/.agenc/daemon-snapshot.json",
+    );
+    expect(resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
+      "/tmp/agenc-home/daemon-snapshot.json",
     );
   });
 
@@ -192,6 +233,82 @@ describe("AgenC daemon CLI", () => {
     ).resolves.toBe(0);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBe(4201);
     expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon routes SIGHUP through cleanup and removes daemon.pid", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    signalProcess.emit("SIGHUP");
+
+    await expect(running).resolves.toBe(130);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    await expect(
+      readFile(resolveAgenCDaemonSnapshotPath(host.env, host.userHome), "utf8"),
+    ).resolves.toContain('"agents": []');
+    expect(io.stderrText()).toContain(
+      "AgenC daemon received SIGHUP; treating terminal loss as shutdown",
+    );
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon does not advertise running after startup signal", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      {
+        host,
+        io,
+        signalProcess,
+        beforeDaemonReady: () => signalProcess.emit("SIGHUP"),
+      },
+    );
+
+    await expect(running).resolves.toBe(130);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(io.stdoutText()).not.toContain("AgenC daemon running");
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon reports cleanup failures and keeps cleaning up", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await mkdir(resolveAgenCDaemonSnapshotPath(host.env, host.userHome), {
+      recursive: true,
+    });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    signalProcess.emit("SIGTERM");
+
+    await expect(running).resolves.toBe(1);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(io.stderrText()).toContain("cleanup[daemon-snapshots] failed");
 
     await rm(agencHome, { recursive: true, force: true });
   });

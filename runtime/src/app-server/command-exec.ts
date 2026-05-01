@@ -350,6 +350,21 @@ export class AgenCCommandExecService implements AgenCCommandExec {
     }
   }
 
+  async closeAll(_reason = "daemon_shutdown"): Promise<void> {
+    const sessions = [...this.#sessions.values()];
+    this.#sessions.clear();
+    this.#keysByConnection.clear();
+    await Promise.all(
+      sessions.map(async (session) => {
+        terminateSession(session);
+        await Promise.race([
+          session.exitPromise.then(() => undefined),
+          delay(FORCE_KILL_DELAY_MS + IO_DRAIN_TIMEOUT_MS),
+        ]);
+      }),
+    );
+  }
+
   #spawnSession(
     session: CommandExecSession,
     params: CommandExecStartParams,
@@ -737,6 +752,13 @@ function terminateSession(session: CommandExecSession): void {
       child.kill("SIGKILL");
     }
   }, FORCE_KILL_DELAY_MS).unref?.();
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 }
 
 function finalizeSession(session: CommandExecSession, exitCode: number): void {

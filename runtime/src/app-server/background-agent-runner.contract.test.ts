@@ -111,7 +111,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
-  it("propagates background stop shutdown failures", async () => {
+  it("still shuts down bootstrap resources when control shutdown fails", async () => {
     const shutdown = vi.fn(async () => {});
     const permissionModeRegistry = {
       current: () => createEmptyToolPermissionContext(),
@@ -156,7 +156,7 @@ describe("AgenC delegate background-agent runner", () => {
       "agent_live",
       "operator stop",
     );
-    expect(shutdown).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledTimes(1);
     await expect(runner.getAgentSnapshot("agent_live")).resolves.toEqual({
       status: "error",
       lastActiveAt: "2026-05-01T12:00:00.500Z",
