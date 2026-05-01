@@ -24,6 +24,11 @@ export type SandboxMode =
   | "workspace-write"
   | "danger-full-access";
 
+export type SandboxConfigMode =
+  | "off"
+  | "read-only"
+  | "workspace-write";
+
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
 
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
@@ -76,6 +81,10 @@ export interface SandboxPolicy {
   readonly mode: SandboxMode;
   readonly network_access?: boolean;
   readonly writable_roots?: readonly string[];
+}
+
+export interface SandboxConfig {
+  readonly mode?: SandboxConfigMode;
 }
 
 export interface ShellEnvironmentPolicy {
@@ -302,6 +311,7 @@ export interface AgenCConfig {
   readonly model_provider?: string;
   readonly approval_policy?: ApprovalPolicy;
   readonly sandbox_mode?: SandboxMode;
+  readonly sandbox?: SandboxConfig;
   readonly sandbox_policy?: SandboxPolicy;
   readonly shell_environment_policy?: ShellEnvironmentPolicy;
   readonly reasoning_effort?: ReasoningEffort;
@@ -431,6 +441,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "model_provider",
   "approval_policy",
   "sandbox_mode",
+  "sandbox",
   "sandbox_policy",
   "shell_environment_policy",
   "reasoning_effort",
@@ -483,6 +494,9 @@ export function defaultConfig(): AgenCConfig {
     model: "grok-4-fast",
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
+    sandbox: Object.freeze({
+      mode: "workspace-write",
+    }) as SandboxConfig,
     reasoning_effort: "medium" as ReasoningEffort,
     approvals_reviewer: "user" as ApprovalsReviewer,
     personality: "default" as Personality,

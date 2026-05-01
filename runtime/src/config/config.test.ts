@@ -59,6 +59,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.approval_policy).toBe("on-request");
     expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
+    expect(cfg.sandbox?.mode).toBe("workspace-write");
     expect(cfg.max_turns).toBeGreaterThan(0);
     expect(cfg.agent_max_threads).toBe(4);
     expect(cfg.agent_max_depth).toBe(1);
@@ -197,6 +198,15 @@ describe("schema: normalizeRawConfig", () => {
     expect(out.auth).toEqual({ backend: "remote" });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("auth")).toBe(true);
+  });
+
+  test("preserves sandbox.mode config on the typed path", () => {
+    const out = normalizeRawConfig({
+      sandbox: { mode: "off" },
+    });
+    expect(out.sandbox).toEqual({ mode: "off" });
+    expect(out._unknown).toBeUndefined();
+    expect(KNOWN_CONFIG_KEYS.includes("sandbox")).toBe(true);
   });
 });
 
@@ -802,6 +812,20 @@ backend = "remote"
     expect(out.exists).toBe(true);
     expect(out.config.auth?.backend).toBe("remote");
     expect(out.config._unknown?.auth).toBeUndefined();
+  });
+
+  test("sandbox.mode TOML overrides the workspace-write default", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      `
+[sandbox]
+mode = "read-only"
+      `,
+    );
+    const out = await loadConfig({ home: dir });
+    expect(out.exists).toBe(true);
+    expect(out.config.sandbox?.mode).toBe("read-only");
+    expect(out.config._unknown?.sandbox).toBeUndefined();
   });
 
   test("unknown keys preserved in _unknown forward-compat table", async () => {
