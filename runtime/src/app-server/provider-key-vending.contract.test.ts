@@ -44,6 +44,18 @@ describe("AgenC daemon provider-key vending", () => {
     ]);
   });
 
+  it("preserves the wrapped backend kind for runtime policy gates", () => {
+    const backend: AuthBackend = {
+      ...makeAuthBackend(() => {
+        throw new Error("not expected");
+      }),
+      kind: "remote",
+    };
+    const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
+
+    expect(wrapped.kind).toBe("remote");
+  });
+
   it("retries a provider-key vend after the AuthBackend rejects", async () => {
     let attempts = 0;
     const backend = makeAuthBackend((provider, sessionId) => {

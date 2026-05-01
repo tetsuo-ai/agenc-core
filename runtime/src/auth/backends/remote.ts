@@ -20,7 +20,10 @@ export const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://api.agenc.tech/v1/auth/vend-key" as const;
 export const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
   "https://api.agenc.tech/v1/auth/infer-model" as const;
+export const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
+  "https://api.agenc.tech/v1/auth/subscription-tier" as const;
 export const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
+export const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
 export const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
 export const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
 export const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -38,15 +41,21 @@ export type RemoteAuthModelInferer = (
   request: AuthInferAgencModelParams,
 ) => AuthInferredAgencModel | Promise<AuthInferredAgencModel>;
 
+export type RemoteAuthSubscriptionTierResolver = (
+  request: AuthSessionRef,
+) => AuthSubscriptionTier | Promise<AuthSubscriptionTier>;
+
 export interface RemoteAuthBackendOptions {
   readonly keyVendor?: RemoteAuthKeyVendor;
   readonly modelInferer?: RemoteAuthModelInferer;
+  readonly subscriptionTierResolver?: RemoteAuthSubscriptionTierResolver;
   readonly endpoint?: string;
   readonly env?: EnvSnapshot;
   readonly fetchImpl?: typeof fetch;
   readonly keyCacheTtlMs?: number;
   readonly modelEndpoint?: string;
   readonly nowMs?: () => number;
+  readonly tierEndpoint?: string;
   readonly token?: string;
 }
 
@@ -56,8 +65,11 @@ interface CachedRemoteAuthKey {
 }
 
 export class RemoteAuthBackend implements AuthBackend {
+  readonly kind = "remote";
+
   readonly #keyVendor: RemoteAuthKeyVendor;
   readonly #modelInferer: RemoteAuthModelInferer;
+  readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
   readonly #keyCacheTtlMs: number;
   readonly #nowMs: () => number;
   readonly #vendedKeys = new Map<string, CachedRemoteAuthKey>();
@@ -66,6 +78,9 @@ export class RemoteAuthBackend implements AuthBackend {
     this.#keyVendor = options.keyVendor ?? createHttpRemoteAuthKeyVendor(options);
     this.#modelInferer =
       options.modelInferer ?? createHttpRemoteAuthModelInferer(options);
+    this.#subscriptionTierResolver =
+      options.subscriptionTierResolver ??
+      createHttpRemoteAuthSubscriptionTierResolver(options);
     this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
     this.#nowMs = options.nowMs ?? (() => Date.now());
   }
@@ -142,10 +157,10 @@ export class RemoteAuthBackend implements AuthBackend {
     return this.#requestInferredModel(params);
   }
 
-  getSubscriptionTier(
-    _params: AuthSessionRef = {},
-  ): AuthSubscriptionTier {
-    return "free";
+  async getSubscriptionTier(
+    params: AuthSessionRef = {},
+  ): Promise<AuthSubscriptionTier> {
+    return this.#requestSubscriptionTier(params);
   }
 
   async #requestVendedKey(
@@ -180,6 +195,13 @@ export class RemoteAuthBackend implements AuthBackend {
   ): Promise<AuthInferredAgencModel> {
     const inferred = await this.#modelInferer(params);
     return normalizeRemoteAuthModelInference(inferred);
+  }
+
+  async #requestSubscriptionTier(
+    params: AuthSessionRef,
+  ): Promise<AuthSubscriptionTier> {
+    const tier = await this.#subscriptionTierResolver(params);
+    return normalizeRequiredSubscriptionTier(tier);
   }
 }
 
@@ -244,6 +266,37 @@ function createHttpRemoteAuthModelInferer(
   };
 }
 
+function createHttpRemoteAuthSubscriptionTierResolver(
+  options: RemoteAuthBackendOptions,
+): RemoteAuthSubscriptionTierResolver {
+  const env = options.env ?? process.env;
+  const endpoint =
+    trimNonEmpty(options.tierEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_TIER_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL;
+  const token =
+    trimNonEmpty(options.token) ?? trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  return async (request) => {
+    if (fetchImpl === undefined) {
+      throw new Error(
+        "RemoteAuthBackend requires fetch for remote subscription tier lookup",
+      );
+    }
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: remoteAuthJsonHeaders(token),
+      body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `RemoteAuthBackend subscription tier lookup failed with HTTP ${response.status}`,
+      );
+    }
+    return parseRemoteAuthSubscriptionTierResponse(await response.json());
+  };
+}
+
 function remoteAuthJsonHeaders(
   token: string | undefined,
 ): Record<string, string> {
@@ -263,6 +316,16 @@ function compactRemoteAuthModelRequest(
       sessionId: request.sessionId,
       subscriptionTier: request.subscriptionTier,
       metadata: request.metadata,
+    }).filter(([, value]) => value !== undefined),
+  );
+}
+
+function compactRemoteAuthSubscriptionTierRequest(
+  request: AuthSessionRef,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({
+      sessionId: request.sessionId,
     }).filter(([, value]) => value !== undefined),
   );
 }
@@ -311,6 +374,24 @@ function parseRemoteAuthModelInferenceResponse(
   );
 }
 
+function parseRemoteAuthSubscriptionTierResponse(
+  value: unknown,
+): AuthSubscriptionTier {
+  if (!value || typeof value !== "object") {
+    throw new Error(
+      "RemoteAuthBackend subscription tier lookup returned a non-object response",
+    );
+  }
+  const record = value as Record<string, unknown>;
+  const rawTier =
+    typeof record.subscriptionTier === "string"
+      ? record.subscriptionTier
+      : typeof record.tier === "string"
+        ? record.tier
+        : undefined;
+  return normalizeRequiredSubscriptionTier(rawTier);
+}
+
 function normalizeRemoteAuthModelInference(
   value: Partial<AuthInferredAgencModel>,
 ): AuthInferredAgencModel {
@@ -356,6 +437,19 @@ function normalizeSubscriptionTier(
     default:
       return undefined;
   }
+}
+
+function normalizeRequiredSubscriptionTier(
+  value: string | undefined,
+): AuthSubscriptionTier {
+  const tier =
+    typeof value === "string" ? normalizeSubscriptionTier(value) : undefined;
+  if (tier === undefined) {
+    throw new Error(
+      "RemoteAuthBackend subscription tier lookup returned an invalid tier",
+    );
+  }
+  return tier;
 }
 
 function trimNonEmpty(value: string | undefined): string | undefined {

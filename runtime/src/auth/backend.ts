@@ -70,6 +70,7 @@ export interface AuthInferredAgencModel extends AuthJsonObject {
 }
 
 export interface AuthBackend {
+  readonly kind?: AuthBackendKind;
   login(params?: AuthLoginParams): AuthLoginResult | Promise<AuthLoginResult>;
   logout(
     params?: AuthLogoutParams,

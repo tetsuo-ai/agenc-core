@@ -11,6 +11,7 @@ export function createAgenCDaemonRuntimeAuthBackend(
   const vendedKeys = new Map<string, Promise<AuthVendedKey>>();
 
   const wrapped: AuthBackend = {
+    ...(backend.kind !== undefined ? { kind: backend.kind } : {}),
     login: (params) => backend.login(params),
     logout: (params) => backend.logout(params),
     whoami: (params) => backend.whoami(params),
