@@ -10,6 +10,7 @@ import {
   createAuthBackend,
   type AuthBackend,
   type AuthIdentity,
+  type RemoteAuthBackendOptions,
 } from "../auth/index.js";
 import {
   loadConfig,
@@ -33,6 +34,7 @@ export interface AgenCAuthCliOptions {
   readonly backend?: AuthBackend;
   readonly env?: NodeJS.ProcessEnv;
   readonly io?: AgenCAuthCliIo;
+  readonly remote?: RemoteAuthBackendOptions;
 }
 
 export function formatAgenCAuthCliHelpText(): string {
@@ -135,7 +137,26 @@ async function resolveAgenCAuthBackend(
   return createAuthBackend(loadedConfig.config, {
     agencHome,
     env,
+    remote: {
+      ...remoteAuthCliOptions(io),
+      ...(options.remote ?? {}),
+    },
   });
+}
+
+function remoteAuthCliOptions(
+  io: AgenCAuthCliIo,
+): Pick<RemoteAuthBackendOptions, "onDeviceCode"> {
+  return {
+    onDeviceCode: ({ verificationUri, userCode }) => {
+      if (verificationUri !== undefined) {
+        io.stdout.write(`Open this URL in your browser: ${verificationUri}\n`);
+      }
+      if (userCode !== undefined) {
+        io.stdout.write(`Enter code: ${userCode}\n`);
+      }
+    },
+  };
 }
 
 export function formatAgenCAuthIdentity(

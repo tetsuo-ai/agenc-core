@@ -1,5 +1,8 @@
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type {
   AuthBackend,
+  AuthIdentity,
   AuthInferAgencModelParams,
   AuthInferredAgencModel,
   AuthLoginParams,
@@ -14,10 +17,17 @@ import type {
   AuthWhoamiParams,
   AuthWhoamiResult,
 } from "../backend.js";
-import type { EnvSnapshot } from "../../config/env.js";
+import {
+  resolveAgencHome,
+  type EnvSnapshot,
+} from "../../config/env.js";
 
 export const DEFAULT_REMOTE_AUTH_KEY_VENDING_URL =
   "https://api.agenc.tech/v1/auth/vend-key" as const;
+export const DEFAULT_REMOTE_AUTH_LOGIN_START_URL =
+  "https://api.agenc.tech/v1/auth/login/start" as const;
+export const DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL =
+  "https://api.agenc.tech/v1/auth/login/poll" as const;
 export const DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL =
   "https://api.agenc.tech/v1/auth/infer-model" as const;
 export const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
@@ -25,8 +35,25 @@ export const DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL =
 export const REMOTE_AUTH_MODEL_URL_ENV = "AGENC_REMOTE_AUTH_MODEL_URL" as const;
 export const REMOTE_AUTH_TIER_URL_ENV = "AGENC_REMOTE_AUTH_TIER_URL" as const;
 export const REMOTE_AUTH_URL_ENV = "AGENC_REMOTE_AUTH_URL" as const;
+export const REMOTE_AUTH_LOGIN_START_URL_ENV =
+  "AGENC_REMOTE_AUTH_LOGIN_START_URL" as const;
+export const REMOTE_AUTH_LOGIN_POLL_URL_ENV =
+  "AGENC_REMOTE_AUTH_LOGIN_POLL_URL" as const;
 export const REMOTE_AUTH_TOKEN_ENV = "AGENC_REMOTE_AUTH_TOKEN" as const;
+export const REMOTE_AUTH_STATE_FILENAME = "auth.json" as const;
+export const REMOTE_AUTH_STATE_VERSION = 1 as const;
 export const REMOTE_AUTH_KEY_CACHE_TTL_MS = 5 * 60 * 1000;
+export const REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS = 1_000;
+
+interface RemoteAuthDiskState {
+  readonly version: typeof REMOTE_AUTH_STATE_VERSION;
+  readonly provider: "remote";
+  readonly token: string;
+  readonly createdAt: string;
+  readonly identity?: AuthIdentity;
+  readonly subscriptionTier?: AuthSubscriptionTier;
+  readonly expiresAt?: string;
+}
 
 export interface RemoteAuthVendKeyRequest {
   readonly provider: AuthProviderSlug | string;
@@ -45,16 +72,48 @@ export type RemoteAuthSubscriptionTierResolver = (
   request: AuthSessionRef,
 ) => AuthSubscriptionTier | Promise<AuthSubscriptionTier>;
 
+export interface RemoteAuthLoginRequest extends AuthSessionRef {}
+
+export interface RemoteAuthLoginFlowResult {
+  readonly token: string;
+  readonly identity?: AuthIdentity;
+  readonly subscriptionTier?: AuthSubscriptionTier;
+  readonly expiresAt?: string;
+}
+
+export interface RemoteAuthDeviceCodePrompt {
+  readonly verificationUri?: string;
+  readonly userCode?: string;
+  readonly expiresAt?: string;
+  readonly intervalSeconds?: number;
+}
+
+export type RemoteAuthDeviceCodeHandler = (
+  prompt: RemoteAuthDeviceCodePrompt,
+) => void | Promise<void>;
+
+export type RemoteAuthLoginFlow = (
+  request: RemoteAuthLoginRequest,
+) => RemoteAuthLoginFlowResult | Promise<RemoteAuthLoginFlowResult>;
+
 export interface RemoteAuthBackendOptions {
+  readonly agencHome?: string;
+  readonly authFilePath?: string;
   readonly keyVendor?: RemoteAuthKeyVendor;
+  readonly loginFlow?: RemoteAuthLoginFlow;
   readonly modelInferer?: RemoteAuthModelInferer;
+  readonly onDeviceCode?: RemoteAuthDeviceCodeHandler;
   readonly subscriptionTierResolver?: RemoteAuthSubscriptionTierResolver;
   readonly endpoint?: string;
   readonly env?: EnvSnapshot;
   readonly fetchImpl?: typeof fetch;
   readonly keyCacheTtlMs?: number;
+  readonly loginPollEndpoint?: string;
+  readonly loginStartEndpoint?: string;
   readonly modelEndpoint?: string;
   readonly nowMs?: () => number;
+  readonly now?: () => Date;
+  readonly sleepMs?: (ms: number) => Promise<void>;
   readonly tierEndpoint?: string;
   readonly token?: string;
 }
@@ -67,35 +126,74 @@ interface CachedRemoteAuthKey {
 export class RemoteAuthBackend implements AuthBackend {
   readonly kind = "remote";
 
+  readonly #authFilePath: string;
   readonly #keyVendor: RemoteAuthKeyVendor;
+  readonly #loginFlow: RemoteAuthLoginFlow;
   readonly #modelInferer: RemoteAuthModelInferer;
   readonly #subscriptionTierResolver: RemoteAuthSubscriptionTierResolver;
   readonly #keyCacheTtlMs: number;
+  readonly #now: () => Date;
   readonly #nowMs: () => number;
   readonly #vendedKeys = new Map<string, CachedRemoteAuthKey>();
 
   constructor(options: RemoteAuthBackendOptions = {}) {
+    this.#authFilePath = remoteAuthFilePath(options);
     this.#keyVendor = options.keyVendor ?? createHttpRemoteAuthKeyVendor(options);
+    this.#loginFlow = options.loginFlow ?? createHttpRemoteAuthLoginFlow(options);
     this.#modelInferer =
       options.modelInferer ?? createHttpRemoteAuthModelInferer(options);
     this.#subscriptionTierResolver =
       options.subscriptionTierResolver ??
       createHttpRemoteAuthSubscriptionTierResolver(options);
     this.#keyCacheTtlMs = positiveTtlMs(options.keyCacheTtlMs);
+    this.#now = options.now ?? (() => new Date());
     this.#nowMs = options.nowMs ?? (() => Date.now());
   }
 
-  login(_params: AuthLoginParams = {}): AuthLoginResult {
-    throw new Error(
-      "RemoteAuthBackend login is not available until the remote login flow is configured",
-    );
+  authFile(): string {
+    return this.#authFilePath;
   }
 
-  logout(_params: AuthLogoutParams = {}): AuthLogoutResult {
+  async login(params: AuthLoginParams = {}): Promise<AuthLoginResult> {
+    const result = normalizeRemoteAuthLoginResult(
+      await this.#loginFlow(params),
+    );
+    await writeRemoteAuthState(this.#authFilePath, {
+      version: REMOTE_AUTH_STATE_VERSION,
+      provider: "remote",
+      token: result.token,
+      createdAt: this.#now().toISOString(),
+      ...(result.identity !== undefined ? { identity: result.identity } : {}),
+      ...(result.subscriptionTier !== undefined
+        ? { subscriptionTier: result.subscriptionTier }
+        : {}),
+      ...(result.expiresAt !== undefined ? { expiresAt: result.expiresAt } : {}),
+    });
+    this.#vendedKeys.clear();
+    return {
+      authenticated: true,
+      provider: "remote",
+      ...(params.sessionId !== undefined ? { sessionId: params.sessionId } : {}),
+      token: result.token,
+      ...(result.identity !== undefined ? { identity: result.identity } : {}),
+    };
+  }
+
+  async logout(_params: AuthLogoutParams = {}): Promise<AuthLogoutResult> {
+    await rm(this.#authFilePath, { force: true });
+    this.#vendedKeys.clear();
     return { authenticated: false };
   }
 
-  whoami(_params: AuthWhoamiParams = {}): AuthWhoamiResult {
+  async whoami(_params: AuthWhoamiParams = {}): Promise<AuthWhoamiResult> {
+    const state = await readRemoteAuthState(this.#authFilePath);
+    if (state !== null) {
+      return {
+        authenticated: true,
+        provider: "remote",
+        ...(state.identity !== undefined ? { identity: state.identity } : {}),
+      };
+    }
     return { authenticated: false, provider: "remote" };
   }
 
@@ -205,6 +303,24 @@ export class RemoteAuthBackend implements AuthBackend {
   }
 }
 
+function remoteAuthFilePath(options: RemoteAuthBackendOptions): string {
+  const agencHome =
+    options.agencHome ?? resolveAgencHome(options.env ?? process.env);
+  return options.authFilePath ?? join(agencHome, REMOTE_AUTH_STATE_FILENAME);
+}
+
+async function resolveRemoteAuthToken(
+  options: RemoteAuthBackendOptions,
+): Promise<string | undefined> {
+  const persisted = (await readRemoteAuthState(remoteAuthFilePath(options)))
+    ?.token;
+  if (persisted !== undefined) return persisted;
+  const env = options.env ?? process.env;
+  const explicit = trimNonEmpty(options.token) ??
+    trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
+  return explicit;
+}
+
 function createHttpRemoteAuthKeyVendor(
   options: RemoteAuthBackendOptions,
 ): RemoteAuthKeyVendor {
@@ -213,8 +329,6 @@ function createHttpRemoteAuthKeyVendor(
     trimNonEmpty(options.endpoint) ??
     trimNonEmpty(env[REMOTE_AUTH_URL_ENV]) ??
     DEFAULT_REMOTE_AUTH_KEY_VENDING_URL;
-  const token =
-    trimNonEmpty(options.token) ?? trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   return async (request) => {
     if (fetchImpl === undefined) {
@@ -222,7 +336,7 @@ function createHttpRemoteAuthKeyVendor(
     }
     const response = await fetchImpl(endpoint, {
       method: "POST",
-      headers: remoteAuthJsonHeaders(token),
+      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
       body: JSON.stringify({
         provider: request.provider,
         sessionId: request.sessionId,
@@ -237,6 +351,110 @@ function createHttpRemoteAuthKeyVendor(
   };
 }
 
+function createHttpRemoteAuthLoginFlow(
+  options: RemoteAuthBackendOptions,
+): RemoteAuthLoginFlow {
+  const env = options.env ?? process.env;
+  const startEndpoint =
+    trimNonEmpty(options.loginStartEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_LOGIN_START_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_LOGIN_START_URL;
+  const pollEndpoint =
+    trimNonEmpty(options.loginPollEndpoint) ??
+    trimNonEmpty(env[REMOTE_AUTH_LOGIN_POLL_URL_ENV]) ??
+    DEFAULT_REMOTE_AUTH_LOGIN_POLL_URL;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  const sleep = options.sleepMs ?? sleepMs;
+  return async (request) => {
+    if (fetchImpl === undefined) {
+      throw new Error("RemoteAuthBackend requires fetch for remote login");
+    }
+    const startResponse = await fetchImpl(startEndpoint, {
+      method: "POST",
+      headers: remoteAuthJsonHeaders(undefined),
+      body: JSON.stringify(compactRemoteAuthLoginRequest(request)),
+    });
+    if (!startResponse.ok) {
+      throw new Error(
+        `RemoteAuthBackend login start failed with HTTP ${startResponse.status}`,
+      );
+    }
+    const started = parseRemoteAuthLoginStartResponse(
+      await startResponse.json(),
+    );
+    if ("token" in started) return started;
+    await notifyRemoteAuthDeviceCode(options.onDeviceCode, started);
+
+    const expiresAtMs =
+      parseExpiresAtMs(started.expiresAt) ??
+      Date.now() + (started.expiresInSeconds ?? 10 * 60) * 1000;
+    let intervalMs = Math.max(
+      REMOTE_AUTH_MIN_LOGIN_POLL_INTERVAL_MS,
+      (started.intervalSeconds ?? 2) * 1000,
+    );
+    while (Date.now() <= expiresAtMs) {
+      const pollResponse = await fetchImpl(pollEndpoint, {
+        method: "POST",
+        headers: remoteAuthJsonHeaders(undefined),
+        body: JSON.stringify({
+          deviceCode: started.deviceCode,
+          sessionId: request.sessionId,
+        }),
+      });
+      if (pollResponse.status === 202) {
+        await sleep(intervalMs);
+        continue;
+      }
+      const polled = await readRemoteAuthPollResponse(pollResponse);
+      if (!pollResponse.ok) {
+        if (isRemoteAuthPendingLoginResponse(polled)) {
+          await sleep(intervalMs);
+          continue;
+        }
+        if (isRemoteAuthSlowDownLoginResponse(polled)) {
+          intervalMs += 5_000;
+          await sleep(intervalMs);
+          continue;
+        }
+        if (isRemoteAuthExpiredLoginResponse(polled)) {
+          throw new Error("RemoteAuthBackend login device code expired");
+        }
+        if (isRemoteAuthAccessDeniedLoginResponse(polled)) {
+          throw new Error("RemoteAuthBackend login authorization was denied");
+        }
+        throw new Error(
+          `RemoteAuthBackend login poll failed with HTTP ${pollResponse.status}`,
+        );
+      }
+      if (isRemoteAuthPendingLoginResponse(polled)) {
+        await sleep(intervalMs);
+        continue;
+      }
+      return normalizeRemoteAuthLoginResult(
+        polled as Partial<RemoteAuthLoginFlowResult>,
+      );
+    }
+    throw new Error("RemoteAuthBackend login device code expired");
+  };
+}
+
+async function notifyRemoteAuthDeviceCode(
+  onDeviceCode: RemoteAuthDeviceCodeHandler | undefined,
+  prompt: RemoteAuthLoginStartDevice,
+): Promise<void> {
+  if (onDeviceCode === undefined) return;
+  await onDeviceCode({
+    ...(prompt.verificationUri !== undefined
+      ? { verificationUri: prompt.verificationUri }
+      : {}),
+    ...(prompt.userCode !== undefined ? { userCode: prompt.userCode } : {}),
+    ...(prompt.expiresAt !== undefined ? { expiresAt: prompt.expiresAt } : {}),
+    ...(prompt.intervalSeconds !== undefined
+      ? { intervalSeconds: prompt.intervalSeconds }
+      : {}),
+  });
+}
+
 function createHttpRemoteAuthModelInferer(
   options: RemoteAuthBackendOptions,
 ): RemoteAuthModelInferer {
@@ -245,8 +463,6 @@ function createHttpRemoteAuthModelInferer(
     trimNonEmpty(options.modelEndpoint) ??
     trimNonEmpty(env[REMOTE_AUTH_MODEL_URL_ENV]) ??
     DEFAULT_REMOTE_AUTH_MODEL_INFERENCE_URL;
-  const token =
-    trimNonEmpty(options.token) ?? trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   return async (request) => {
     if (fetchImpl === undefined) {
@@ -254,7 +470,7 @@ function createHttpRemoteAuthModelInferer(
     }
     const response = await fetchImpl(endpoint, {
       method: "POST",
-      headers: remoteAuthJsonHeaders(token),
+      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
       body: JSON.stringify(compactRemoteAuthModelRequest(request)),
     });
     if (!response.ok) {
@@ -274,8 +490,6 @@ function createHttpRemoteAuthSubscriptionTierResolver(
     trimNonEmpty(options.tierEndpoint) ??
     trimNonEmpty(env[REMOTE_AUTH_TIER_URL_ENV]) ??
     DEFAULT_REMOTE_AUTH_SUBSCRIPTION_TIER_URL;
-  const token =
-    trimNonEmpty(options.token) ?? trimNonEmpty(env[REMOTE_AUTH_TOKEN_ENV]);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   return async (request) => {
     if (fetchImpl === undefined) {
@@ -285,7 +499,7 @@ function createHttpRemoteAuthSubscriptionTierResolver(
     }
     const response = await fetchImpl(endpoint, {
       method: "POST",
-      headers: remoteAuthJsonHeaders(token),
+      headers: remoteAuthJsonHeaders(await resolveRemoteAuthToken(options)),
       body: JSON.stringify(compactRemoteAuthSubscriptionTierRequest(request)),
     });
     if (!response.ok) {
@@ -304,6 +518,16 @@ function remoteAuthJsonHeaders(
     "content-type": "application/json",
     ...(token !== undefined ? { authorization: `Bearer ${token}` } : {}),
   };
+}
+
+function compactRemoteAuthLoginRequest(
+  request: RemoteAuthLoginRequest,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({
+      sessionId: request.sessionId,
+    }).filter(([, value]) => value !== undefined),
+  );
 }
 
 function compactRemoteAuthModelRequest(
@@ -357,6 +581,116 @@ function parseRemoteAuthVendKeyResponse(
     apiKey: record.apiKey,
     ...(typeof record.expiresAt === "string" && record.expiresAt.length > 0
       ? { expiresAt: record.expiresAt }
+      : {}),
+  };
+}
+
+interface RemoteAuthLoginStartDevice {
+  readonly deviceCode: string;
+  readonly userCode?: string;
+  readonly verificationUri?: string;
+  readonly expiresAt?: string;
+  readonly expiresInSeconds?: number;
+  readonly intervalSeconds?: number;
+}
+
+function parseRemoteAuthLoginStartResponse(
+  value: unknown,
+): RemoteAuthLoginFlowResult | RemoteAuthLoginStartDevice {
+  if (!value || typeof value !== "object") {
+    throw new Error("RemoteAuthBackend login start returned a non-object response");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.token === "string") {
+    return normalizeRemoteAuthLoginResult(
+      record as Partial<RemoteAuthLoginFlowResult>,
+    );
+  }
+  const deviceCode = readTrimmedString(record.deviceCode ?? record.device_code);
+  if (deviceCode === undefined) {
+    throw new Error("RemoteAuthBackend login start response missing deviceCode");
+  }
+  const expiresInSeconds = readFiniteNumber(
+    record.expiresInSeconds ?? record.expires_in,
+  );
+  const intervalSeconds = readFiniteNumber(
+    record.intervalSeconds ?? record.interval,
+  );
+  return {
+    deviceCode,
+    ...optionalString("userCode", record.userCode ?? record.user_code),
+    ...optionalString(
+      "verificationUri",
+      record.verificationUri ??
+        record.verification_uri_complete ??
+        record.verification_uri,
+    ),
+    ...optionalString("expiresAt", record.expiresAt),
+    ...(expiresInSeconds !== undefined
+      ? { expiresInSeconds: Math.max(0, expiresInSeconds) }
+      : {}),
+    ...(intervalSeconds !== undefined
+      ? { intervalSeconds: Math.max(0, intervalSeconds) }
+      : {}),
+  };
+}
+
+async function readRemoteAuthPollResponse(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+function isRemoteAuthPendingLoginResponse(value: unknown): boolean {
+  const state = remoteAuthLoginResponseState(value);
+  return state === "pending" || state === "authorization_pending";
+}
+
+function isRemoteAuthSlowDownLoginResponse(value: unknown): boolean {
+  return remoteAuthLoginResponseState(value) === "slow_down";
+}
+
+function isRemoteAuthExpiredLoginResponse(value: unknown): boolean {
+  return remoteAuthLoginResponseState(value) === "expired_token";
+}
+
+function isRemoteAuthAccessDeniedLoginResponse(value: unknown): boolean {
+  return remoteAuthLoginResponseState(value) === "access_denied";
+}
+
+function remoteAuthLoginResponseState(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { readonly error?: unknown; readonly status?: unknown };
+  return typeof record.status === "string"
+    ? record.status
+    : typeof record.error === "string"
+      ? record.error
+      : undefined;
+}
+
+function normalizeRemoteAuthLoginResult(
+  value: Partial<RemoteAuthLoginFlowResult>,
+): RemoteAuthLoginFlowResult {
+  const token =
+    typeof value.token === "string" ? trimNonEmpty(value.token) : undefined;
+  if (token === undefined) {
+    throw new Error("RemoteAuthBackend login response missing token");
+  }
+  const subscriptionTier =
+    typeof value.subscriptionTier === "string"
+      ? normalizeSubscriptionTier(value.subscriptionTier)
+      : undefined;
+  if (value.subscriptionTier !== undefined && subscriptionTier === undefined) {
+    throw new Error("RemoteAuthBackend login response has invalid subscriptionTier");
+  }
+  return {
+    token,
+    ...(isAuthIdentity(value.identity) ? { identity: value.identity } : {}),
+    ...(subscriptionTier !== undefined ? { subscriptionTier } : {}),
+    ...(typeof value.expiresAt === "string" && value.expiresAt.trim().length > 0
+      ? { expiresAt: value.expiresAt.trim() }
       : {}),
   };
 }
@@ -452,9 +786,43 @@ function normalizeRequiredSubscriptionTier(
   return tier;
 }
 
+function isAuthIdentity(value: unknown): value is AuthIdentity {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function optionalString<K extends string>(
+  key: K,
+  value: unknown,
+): Partial<Record<K, string>> {
+  const normalized = readTrimmedString(value);
+  if (normalized === undefined) return {};
+  return { [key]: normalized } as Record<K, string>;
+}
+
+function readTrimmedString(value: unknown): string | undefined {
+  return typeof value === "string" ? trimNonEmpty(value) : undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function trimNonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseExpiresAtMs(expiresAt: string | undefined): number | undefined {
+  if (expiresAt === undefined) return undefined;
+  const parsed = Date.parse(expiresAt);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+async function sleepMs(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
 function positiveTtlMs(value: number | undefined): number {
@@ -481,4 +849,46 @@ function remoteProviderKeyCacheKey(
   sessionId: AuthSessionId,
 ): string {
   return `${sessionId}\0${provider}`;
+}
+
+function isRemoteAuthDiskState(value: unknown): value is RemoteAuthDiskState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const state = value as Partial<RemoteAuthDiskState>;
+  return (
+    state.version === REMOTE_AUTH_STATE_VERSION &&
+    state.provider === "remote" &&
+    typeof state.token === "string" &&
+    state.token.trim().length > 0 &&
+    typeof state.createdAt === "string" &&
+    (state.identity === undefined || isAuthIdentity(state.identity)) &&
+    (state.subscriptionTier === undefined ||
+      normalizeSubscriptionTier(state.subscriptionTier) !== undefined) &&
+    (state.expiresAt === undefined || typeof state.expiresAt === "string")
+  );
+}
+
+async function readRemoteAuthState(
+  path: string,
+): Promise<RemoteAuthDiskState | null> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    return isRemoteAuthDiskState(parsed) ? parsed : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+async function writeRemoteAuthState(
+  path: string,
+  state: RemoteAuthDiskState,
+): Promise<void> {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await rename(tmp, path);
 }

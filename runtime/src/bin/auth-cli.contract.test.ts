@@ -1,13 +1,14 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   formatAgenCAuthCliHelpText,
   parseAgenCAuthCliArgs,
   runAgenCAuthCli,
   type AgenCAuthCliIo,
 } from "./auth-cli.js";
+import { RemoteAuthBackend } from "../auth/index.js";
 
 function createIo(): AgenCAuthCliIo & {
   readonly stdoutText: () => string;
@@ -102,9 +103,76 @@ describe("AgenC auth CLI", () => {
     }
   });
 
-  it("surfaces unavailable remote login flow", async () => {
+  it("persists remote login state through RemoteAuthBackend", async () => {
+    const agencHome = await tempAgencHome();
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({
+        token: "remote-token",
+        identity: {
+          accountId: "acct-1",
+          email: "user@agenc.tech",
+          displayName: "Remote User",
+          plan: "pro",
+        },
+        subscriptionTier: "pro",
+      }),
+    });
+
+    try {
+      const loginIo = createIo();
+      await expect(
+        runAgenCAuthCli({ kind: "login" }, { backend, io: loginIo }),
+      ).resolves.toBe(0);
+      expect(loginIo.stdoutText()).toBe(
+        "Logged in as Remote User (id=acct-1, email=user@agenc.tech, plan=pro)\n",
+      );
+      await expect(
+        readFile(join(agencHome, "auth.json"), "utf8"),
+      ).resolves.toContain("\"provider\": \"remote\"");
+
+      const whoamiIo = createIo();
+      await expect(
+        runAgenCAuthCli({ kind: "whoami" }, { backend, io: whoamiIo }),
+      ).resolves.toBe(0);
+      expect(whoamiIo.stdoutText()).toBe(
+        "Remote User (id=acct-1, email=user@agenc.tech, plan=pro)\n",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("prints remote device-code login instructions from config", async () => {
     const agencHome = await tempAgencHome();
     const env = { ...process.env, AGENC_HOME: agencHome, HOME: agencHome };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            deviceCode: "device-1",
+            userCode: "USER-1",
+            verificationUri: "https://agenc.tech/login",
+            intervalSeconds: 0,
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            token: "remote-token",
+            identity: {
+              accountId: "acct-1",
+              displayName: "Remote User",
+            },
+            subscriptionTier: "pro",
+          }),
+          { status: 200 },
+        ),
+      );
+
     await writeFile(
       join(agencHome, "config.toml"),
       "[auth]\nbackend = \"remote\"\n",
@@ -112,11 +180,26 @@ describe("AgenC auth CLI", () => {
     try {
       const io = createIo();
       await expect(
-        runAgenCAuthCli({ kind: "login" }, { env, io }),
-      ).resolves.toBe(1);
-      expect(io.stdoutText()).toBe("");
-      expect(io.stderrText()).toContain(
-        "RemoteAuthBackend login is not available",
+        runAgenCAuthCli(
+          { kind: "login" },
+          {
+            env,
+            io,
+            remote: {
+              fetchImpl,
+              loginPollEndpoint: "https://api.agenc.tech/test/login/poll",
+              loginStartEndpoint: "https://api.agenc.tech/test/login/start",
+            },
+          },
+        ),
+      ).resolves.toBe(0);
+      expect(io.stdoutText()).toBe(
+        [
+          "Open this URL in your browser: https://agenc.tech/login",
+          "Enter code: USER-1",
+          "Logged in as Remote User (id=acct-1)",
+          "",
+        ].join("\n"),
       );
     } finally {
       await rm(agencHome, { recursive: true, force: true });
