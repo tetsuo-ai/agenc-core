@@ -51,6 +51,10 @@ export const AGENC_DAEMON_METHODS = [
   "tool.deny",
   "permission.list",
   "fs.fuzzy_search",
+  "commandExec.start",
+  "commandExec.write",
+  "commandExec.resize",
+  "commandExec.terminate",
   "health.ping",
   "health.ready",
   "health.stats",
@@ -60,6 +64,13 @@ export const AGENC_DAEMON_METHODS = [
 ] as const;
 
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
+
+export const AGENC_DAEMON_NOTIFICATION_METHODS = [
+  "commandExec.outputDelta",
+] as const;
+
+export type AgenCDaemonNotificationMethod =
+  (typeof AGENC_DAEMON_NOTIFICATION_METHODS)[number];
 
 export interface AgenCDaemonMethodSpec<
   Method extends AgenCDaemonMethod = AgenCDaemonMethod,
@@ -71,8 +82,23 @@ export interface AgenCDaemonMethodSpec<
   readonly description: string;
 }
 
+export interface AgenCDaemonNotificationSpec<
+  Method extends AgenCDaemonNotificationMethod = AgenCDaemonNotificationMethod,
+> {
+  readonly method: Method;
+  readonly direction: "server-to-client";
+  readonly params: "required";
+  readonly description: string;
+}
+
 function defineMethodSpecs<const Spec extends {
   readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
+}>(spec: Spec): Spec {
+  return spec;
+}
+
+function defineNotificationSpecs<const Spec extends {
+  readonly [Method in AgenCDaemonNotificationMethod]: AgenCDaemonNotificationSpec<Method>;
 }>(spec: Spec): Spec {
   return spec;
 }
@@ -190,6 +216,34 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "Search workspace files and directories with fuzzy matching.",
   },
+  "commandExec.start": {
+    method: "commandExec.start",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Start a standalone command process for daemon clients.",
+  },
+  "commandExec.write": {
+    method: "commandExec.write",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Write stdin bytes to a running daemon command process.",
+  },
+  "commandExec.resize": {
+    method: "commandExec.resize",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Resize a PTY-backed daemon command process.",
+  },
+  "commandExec.terminate": {
+    method: "commandExec.terminate",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Terminate a running daemon command process.",
+  },
   "health.ping": {
     method: "health.ping",
     direction: "client-to-server",
@@ -234,8 +288,26 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
   },
 });
 
+export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
+  "commandExec.outputDelta": {
+    method: "commandExec.outputDelta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream base64 stdout or stderr chunks for a command process.",
+  },
+});
+
 export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
   return Object.prototype.hasOwnProperty.call(AGENC_DAEMON_METHOD_SPECS, value);
+}
+
+export function isAgenCDaemonNotificationMethod(
+  value: string,
+): value is AgenCDaemonNotificationMethod {
+  return Object.prototype.hasOwnProperty.call(
+    AGENC_DAEMON_NOTIFICATION_SPECS,
+    value,
+  );
 }
 
 export interface AgentCreateParams extends JsonObject {
@@ -347,6 +419,85 @@ export interface FuzzyFileSearchParams extends JsonObject {
   readonly cancellationToken?: string | null;
 }
 
+export interface CommandExecTerminalSize extends JsonObject {
+  readonly rows: number;
+  readonly cols: number;
+}
+
+export type CommandExecEnv = Readonly<Record<string, string | null>>;
+
+export interface CommandExecStartParams extends JsonObject {
+  readonly command: readonly string[];
+  readonly processId?: string | null;
+  readonly tty?: boolean;
+  readonly streamStdin?: boolean;
+  readonly streamStdoutStderr?: boolean;
+  readonly outputBytesCap?: number | null;
+  readonly disableOutputCap?: boolean;
+  readonly disableTimeout?: boolean;
+  readonly timeoutMs?: number | null;
+  readonly cwd?: string | null;
+  readonly env?: CommandExecEnv | null;
+  readonly size?: CommandExecTerminalSize | null;
+  readonly sandboxPolicy?: JsonObject | null;
+  readonly permissionProfile?: JsonObject | null;
+}
+
+export interface CommandExecResponse extends JsonObject {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export interface CommandExecWriteParams extends JsonObject {
+  readonly processId: string;
+  readonly deltaBase64?: string | null;
+  readonly closeStdin?: boolean;
+}
+
+export interface CommandExecWriteResponse extends JsonObject {}
+
+export interface CommandExecTerminateParams extends JsonObject {
+  readonly processId: string;
+}
+
+export interface CommandExecTerminateResponse extends JsonObject {}
+
+export interface CommandExecResizeParams extends JsonObject {
+  readonly processId: string;
+  readonly size: CommandExecTerminalSize;
+}
+
+export interface CommandExecResizeResponse extends JsonObject {}
+
+export type CommandExecOutputStream = "stdout" | "stderr";
+
+export interface CommandExecOutputDeltaParams extends JsonObject {
+  readonly processId: string;
+  readonly stream: CommandExecOutputStream;
+  readonly deltaBase64: string;
+  readonly capReached: boolean;
+}
+
+export interface AgenCDaemonNotificationWithParams<
+  Method extends AgenCDaemonNotificationMethod,
+  Params extends JsonObject,
+> {
+  readonly jsonrpc: typeof JSON_RPC_VERSION;
+  readonly method: Method;
+  readonly params: Params;
+}
+
+export interface AgenCDaemonNotificationParamsByMethod {
+  readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;
+}
+
+export type AgenCDaemonNotification =
+  AgenCDaemonNotificationWithParams<
+    "commandExec.outputDelta",
+    CommandExecOutputDeltaParams
+  >;
+
 export type EmptyParams = Record<string, never>;
 
 export interface AgenCDaemonRequestWithParams<
@@ -388,6 +539,13 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
   | AgenCDaemonRequestWithParams<"fs.fuzzy_search", FuzzyFileSearchParams>
+  | AgenCDaemonRequestWithParams<"commandExec.start", CommandExecStartParams>
+  | AgenCDaemonRequestWithParams<"commandExec.write", CommandExecWriteParams>
+  | AgenCDaemonRequestWithParams<"commandExec.resize", CommandExecResizeParams>
+  | AgenCDaemonRequestWithParams<
+      "commandExec.terminate",
+      CommandExecTerminateParams
+    >
   | AgenCDaemonRequestWithoutParams<"health.ping">
   | AgenCDaemonRequestWithoutParams<"health.ready">
   | AgenCDaemonRequestWithoutParams<"health.stats">
@@ -592,6 +750,10 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.deny": ToolDecisionResult;
   readonly "permission.list": PermissionListResult;
   readonly "fs.fuzzy_search": FuzzyFileSearchResponse;
+  readonly "commandExec.start": CommandExecResponse;
+  readonly "commandExec.write": CommandExecWriteResponse;
+  readonly "commandExec.resize": CommandExecResizeResponse;
+  readonly "commandExec.terminate": CommandExecTerminateResponse;
   readonly "health.ping": HealthPingResult;
   readonly "health.ready": HealthReadyResult;
   readonly "health.stats": HealthStatsResult;

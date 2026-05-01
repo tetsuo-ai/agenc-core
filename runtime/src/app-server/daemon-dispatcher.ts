@@ -17,6 +17,10 @@ import {
   type AgenCFuzzyFileSearch,
 } from "./fuzzy-file-search.js";
 import {
+  AgenCCommandExecService,
+  type AgenCCommandExec,
+} from "./command-exec.js";
+import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonMethod,
   JSON_RPC_VERSION,
@@ -28,6 +32,10 @@ import {
   type AgenCDaemonMethod,
   type AgenCDaemonResponse,
   type AgenCDaemonResultByMethod,
+  type CommandExecResizeParams,
+  type CommandExecStartParams,
+  type CommandExecTerminateParams,
+  type CommandExecWriteParams,
   type FuzzyFileSearchParams,
   type InitializeParams,
   type JsonObject,
@@ -56,6 +64,7 @@ export interface AgenCDaemonDispatcherOptions {
   >;
   readonly createMessageId?: () => string;
   readonly fuzzyFileSearch?: AgenCFuzzyFileSearch;
+  readonly commandExec?: AgenCCommandExec;
   readonly now?: () => string;
 }
 
@@ -83,6 +92,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | undefined;
   readonly #createMessageId: () => string;
   readonly #fuzzyFileSearch: AgenCFuzzyFileSearch;
+  readonly #commandExec: AgenCCommandExec;
   readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
@@ -93,6 +103,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       options.createMessageId ?? (() => `message_${Date.now().toString(36)}`);
     this.#fuzzyFileSearch =
       options.fuzzyFileSearch ?? new AgenCFuzzyFileSearchService();
+    this.#commandExec = options.commandExec ?? new AgenCCommandExecService();
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -104,6 +115,12 @@ export class AgenCDaemonJsonRpcDispatcher {
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
     return this.createConnection().dispatch(message);
+  }
+
+  async closeConnection(
+    connection: AgenCDaemonJsonRpcConnection,
+  ): Promise<void> {
+    await this.#commandExec.closeConnection(connection.cancellationScope);
   }
 
   async dispatchForConnection(
@@ -194,6 +211,41 @@ export class AgenCDaemonJsonRpcDispatcher {
           await this.#fuzzyFileSearch.search(
             validateFuzzyFileSearchParams(params),
             { cancellationScope: connection.cancellationScope },
+          ),
+        );
+      case "commandExec.start":
+        return successResponse(
+          id,
+          await this.#commandExec.start(validateCommandExecStartParams(params), {
+            connectionId: connection.cancellationScope,
+            sendNotification: connection.sendNotification,
+          }),
+        );
+      case "commandExec.write":
+        return successResponse(
+          id,
+          await this.#commandExec.write(validateCommandExecWriteParams(params), {
+            connectionId: connection.cancellationScope,
+            sendNotification: connection.sendNotification,
+          }),
+        );
+      case "commandExec.resize":
+        return successResponse(
+          id,
+          await this.#commandExec.resize(validateCommandExecResizeParams(params), {
+            connectionId: connection.cancellationScope,
+            sendNotification: connection.sendNotification,
+          }),
+        );
+      case "commandExec.terminate":
+        return successResponse(
+          id,
+          await this.#commandExec.terminate(
+            validateCommandExecTerminateParams(params),
+            {
+              connectionId: connection.cancellationScope,
+              sendNotification: connection.sendNotification,
+            },
           ),
         );
       case "tool.approve":
@@ -343,6 +395,10 @@ export class AgenCDaemonJsonRpcConnection {
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
     return this.#dispatcher.dispatchForConnection(this, message);
   }
+
+  async close(): Promise<void> {
+    await this.#dispatcher.closeConnection(this);
+  }
 }
 
 function requestIdFromMessage(message: JsonObject): RequestId | null {
@@ -485,6 +541,57 @@ function validateFuzzyFileSearchParams(
     throw invalidParams("fs.fuzzy_search param 'roots' must not contain empty paths");
   }
   return validated as FuzzyFileSearchParams;
+}
+
+function validateCommandExecStartParams(
+  params: JsonObject,
+): CommandExecStartParams {
+  return validateObjectShape(params, {
+    methodName: "commandExec.start",
+    valueFields: [
+      "command",
+      "processId",
+      "tty",
+      "streamStdin",
+      "streamStdoutStderr",
+      "outputBytesCap",
+      "disableOutputCap",
+      "disableTimeout",
+      "timeoutMs",
+      "cwd",
+      "env",
+      "size",
+      "sandboxPolicy",
+      "permissionProfile",
+    ],
+  }) as CommandExecStartParams;
+}
+
+function validateCommandExecWriteParams(
+  params: JsonObject,
+): CommandExecWriteParams {
+  return validateObjectShape(params, {
+    methodName: "commandExec.write",
+    valueFields: ["processId", "deltaBase64", "closeStdin"],
+  }) as CommandExecWriteParams;
+}
+
+function validateCommandExecResizeParams(
+  params: JsonObject,
+): CommandExecResizeParams {
+  return validateObjectShape(params, {
+    methodName: "commandExec.resize",
+    valueFields: ["processId", "size"],
+  }) as CommandExecResizeParams;
+}
+
+function validateCommandExecTerminateParams(
+  params: JsonObject,
+): CommandExecTerminateParams {
+  return validateObjectShape(params, {
+    methodName: "commandExec.terminate",
+    valueFields: ["processId"],
+  }) as CommandExecTerminateParams;
 }
 
 function displayUserMessageFromMetadata(
