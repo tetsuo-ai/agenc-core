@@ -94,13 +94,10 @@ writeFileSync(promptFile, reviewerInstructions, "utf8");
 
 process.stdout.write(`\n${BOLD}━━ reviewer subagent: ${id}${RESET}\n`);
 // branding-scan: allow names the reviewer CLI binary that this script invokes
-process.stdout.write(`${DIM}spawning codex exec review --base main (this takes 30–90 seconds)...${RESET}\n`);
+process.stdout.write(`${DIM}spawning codex exec reviewer against main (this takes 30–90 seconds)...${RESET}\n`);
 
 const reviewArgs = [
   "exec",
-  "review",
-  "--base",
-  "main",
   "--ephemeral",
   "--ignore-user-config",
   "--skip-git-repo-check",
@@ -111,13 +108,14 @@ const reviewArgs = [
 if (process.env.AGENC_REVIEW_MODEL) {
   reviewArgs.push("-m", process.env.AGENC_REVIEW_MODEL);
 }
-reviewArgs.push(reviewerInstructions);
+reviewArgs.push("-");
 
 // branding-scan: allow real binary name of the reviewer CLI
 const result = spawnSync("codex", reviewArgs, {
   cwd: root,
   encoding: "utf8",
-  stdio: ["ignore", "pipe", "pipe"],
+  input: reviewerInstructions,
+  stdio: ["pipe", "pipe", "pipe"],
 });
 
 if (result.status !== 0) {
