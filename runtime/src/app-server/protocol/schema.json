@@ -18,6 +18,9 @@
     "tool.approve",
     "tool.deny",
     "permission.list",
+    "health.ping",
+    "health.ready",
+    "health.stats",
     "auth.login",
     "auth.whoami",
     "auth.logout"
@@ -340,6 +343,21 @@
         }
       }
     },
+    "HealthPingParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "HealthReadyParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "HealthStatsParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
     "AuthLoginParams": {
       "type": "object",
       "additionalProperties": false,
@@ -398,6 +416,15 @@
         },
         {
           "$ref": "#/definitions/PermissionListRequest"
+        },
+        {
+          "$ref": "#/definitions/HealthPingRequest"
+        },
+        {
+          "$ref": "#/definitions/HealthReadyRequest"
+        },
+        {
+          "$ref": "#/definitions/HealthStatsRequest"
         },
         {
           "$ref": "#/definitions/AuthLoginRequest"
@@ -675,6 +702,63 @@
         }
       },
       "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "HealthPingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "health.ping"
+        },
+        "params": {
+          "$ref": "#/definitions/HealthPingParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "HealthReadyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "health.ready"
+        },
+        "params": {
+          "$ref": "#/definitions/HealthReadyParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "HealthStatsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "health.stats"
+        },
+        "params": {
+          "$ref": "#/definitions/HealthStatsParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
     },
     "AuthLoginRequest": {
       "type": "object",

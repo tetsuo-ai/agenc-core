@@ -31,6 +31,9 @@ const expectedMethods = [
   "tool.approve",
   "tool.deny",
   "permission.list",
+  "health.ping",
+  "health.ready",
+  "health.stats",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -172,16 +175,31 @@ describe("AgenC daemon protocol surface", () => {
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 15,
-        method: "auth.login",
+        method: "health.ping",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 16,
-        method: "auth.whoami",
+        method: "health.ready",
       },
       {
         jsonrpc: JSON_RPC_VERSION,
         id: 17,
+        method: "health.stats",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 18,
+        method: "auth.login",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 19,
+        method: "auth.whoami",
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: 20,
         method: "auth.logout",
       },
     ];

@@ -61,6 +61,12 @@ export interface AgenCSessionLifecycleOptions {
   readonly defaultAgentId?: string;
 }
 
+export interface AgenCSessionCounts {
+  readonly active: number;
+  readonly closed: number;
+  readonly total: number;
+}
+
 interface MutableSession {
   sessionId: string;
   agentId: string;
@@ -154,6 +160,25 @@ export class AgenCDaemonSessionManager {
     return this.#state.with((state) => {
       const session = state.sessions.get(sessionId);
       return session === undefined ? null : toSessionSummary(session);
+    });
+  }
+
+  async countSessions(): Promise<AgenCSessionCounts> {
+    return this.#state.with((state) => {
+      let active = 0;
+      let closed = 0;
+      for (const session of state.sessions.values()) {
+        if (session.status === "closed") {
+          closed += 1;
+        } else {
+          active += 1;
+        }
+      }
+      return {
+        active,
+        closed,
+        total: active + closed,
+      };
     });
   }
 

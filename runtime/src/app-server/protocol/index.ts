@@ -37,6 +37,9 @@ export const AGENC_DAEMON_METHODS = [
   "tool.approve",
   "tool.deny",
   "permission.list",
+  "health.ping",
+  "health.ready",
+  "health.stats",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -158,6 +161,27 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "List effective permissions for an agent or session.",
+  },
+  "health.ping": {
+    method: "health.ping",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Check whether the daemon process can answer requests.",
+  },
+  "health.ready": {
+    method: "health.ready",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Check whether the daemon process is ready for session work.",
+  },
+  "health.stats": {
+    method: "health.stats",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Read daemon uptime, session counts, and memory usage.",
   },
   "auth.login": {
     method: "auth.login",
@@ -313,6 +337,9 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
+  | AgenCDaemonRequestWithoutParams<"health.ping">
+  | AgenCDaemonRequestWithoutParams<"health.ready">
+  | AgenCDaemonRequestWithoutParams<"health.stats">
   | AgenCDaemonRequestWithoutParams<"auth.login">
   | AgenCDaemonRequestWithoutParams<"auth.whoami">
   | AgenCDaemonRequestWithoutParams<"auth.logout">;
@@ -417,6 +444,38 @@ export interface PermissionListResult extends JsonObject {
   readonly permissions: readonly PermissionGrant[];
 }
 
+export interface HealthPingResult extends JsonObject {
+  readonly ok: true;
+  readonly now: string;
+}
+
+export interface HealthReadyResult extends JsonObject {
+  readonly ready: boolean;
+  readonly uptimeMs: number;
+  readonly now: string;
+}
+
+export interface HealthMemoryStats extends JsonObject {
+  readonly rss: number;
+  readonly heapTotal: number;
+  readonly heapUsed: number;
+  readonly external: number;
+  readonly arrayBuffers: number;
+}
+
+export interface HealthSessionStats extends JsonObject {
+  readonly active: number;
+  readonly closed: number;
+  readonly total: number;
+}
+
+export interface HealthStatsResult extends JsonObject {
+  readonly uptimeMs: number;
+  readonly now: string;
+  readonly sessions: HealthSessionStats;
+  readonly memory: HealthMemoryStats;
+}
+
 export interface AuthIdentity extends JsonObject {
   readonly accountId?: string;
   readonly email?: string;
@@ -455,6 +514,9 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.approve": ToolDecisionResult;
   readonly "tool.deny": ToolDecisionResult;
   readonly "permission.list": PermissionListResult;
+  readonly "health.ping": HealthPingResult;
+  readonly "health.ready": HealthReadyResult;
+  readonly "health.stats": HealthStatsResult;
   readonly "auth.login": AuthLoginResult;
   readonly "auth.whoami": AuthWhoamiResult;
   readonly "auth.logout": AuthLogoutResult;
