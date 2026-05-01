@@ -13,6 +13,7 @@ import type {
   AgenCDaemonResultByMethod,
   JsonObject,
 } from "../app-server/protocol/index.js";
+import { JSON_RPC_VERSION } from "../app-server/protocol/index.js";
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
 
 function createBaseSession(): AgenCTuiBridgeSession {
@@ -288,6 +289,57 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
+  it("bridges typed daemon permission requests back through tool decisions", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: {
+        ...createBaseSession(),
+        services: {
+          ...createBaseSession().services,
+          approvalResolver: {
+            request: async (ctx) => {
+              expect(ctx.callId).toBe("call_1");
+              expect(ctx.toolName).toBe("Bash");
+              return APPROVED;
+            },
+          },
+        },
+      },
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents(() => {});
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.permission_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "call_1",
+        requestId: "call_1",
+        toolName: "Bash",
+        turnId: "turn_1",
+        permissions: ["tool.use"],
+        input: { command: "pwd" },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    unsubscribe();
+
+    expect(client.requests).toEqual([
+      {
+        method: "tool.approve",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          scope: "once",
+        },
+      },
+    ]);
+  });
+
   it("sends daemon deny decisions when permission bridge rejects", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -356,6 +408,100 @@ describe("AgenC TUI daemon session adapter", () => {
     });
 
     expect(received).toEqual([{ type: "turn_start", id: "turn_1" }]);
+  });
+
+  it("converts typed daemon notifications to TUI transcript events", () => {
+    const client = createClient();
+    const received: JsonObject[] = [];
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    const unsubscribe = session.subscribeToEvents?.((event) => {
+      received.push(event as JsonObject);
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.message_chunk",
+      params: {
+        sessionId: "session_1",
+        eventId: "delta_1",
+        delta: "hello",
+      },
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.tool_request",
+      params: {
+        sessionId: "session_1",
+        eventId: "tool_1",
+        requestId: "call_1",
+        toolName: "Bash",
+        input: { command: "pwd" },
+      },
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        sessionId: "session_1",
+        eventId: "turn_1",
+        status: "running",
+        turnId: "turn_1",
+      },
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.agent_status",
+      params: {
+        sessionId: "session_1",
+        eventId: "turn_1_done",
+        status: "idle",
+        turnId: "turn_1",
+        message: "done",
+      },
+    });
+    client.emit("session_1", {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.session_event",
+      params: {
+        sessionId: "session_1",
+        eventId: "raw_1",
+        event: { id: "raw_1", type: "custom", payload: { ok: true } },
+      },
+    });
+    unsubscribe?.();
+
+    expect(received).toEqual([
+      {
+        id: "delta_1",
+        type: "agent_message_delta",
+        payload: { delta: "hello" },
+      },
+      {
+        id: "tool_1",
+        type: "tool_call_started",
+        payload: {
+          callId: "call_1",
+          toolName: "Bash",
+          args: JSON.stringify({ command: "pwd" }),
+        },
+      },
+      {
+        id: "turn_1",
+        type: "turn_started",
+        payload: { turnId: "turn_1" },
+      },
+      {
+        id: "turn_1_done",
+        type: "turn_complete",
+        payload: { turnId: "turn_1", lastAgentMessage: "done" },
+      },
+      { id: "raw_1", type: "custom", payload: { ok: true } },
+    ]);
   });
 
   it("shows a reconnecting notice without dropping the daemon event stream", () => {

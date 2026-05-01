@@ -313,7 +313,92 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
   if (isJsonObject(msg)) {
     return msg;
   }
+  const method = event.method;
+  const params = event.params;
+  if (typeof method !== "string" || !isJsonObject(params)) {
+    return event;
+  }
+  if (method === "event.message_chunk" && typeof params.delta === "string") {
+    return {
+      id: stringParam(params.eventId, "message-delta"),
+      type: "agent_message_delta",
+      payload: { delta: params.delta },
+    };
+  }
+  if (
+    method === "event.tool_request" &&
+    typeof params.requestId === "string" &&
+    typeof params.toolName === "string"
+  ) {
+    return {
+      id: stringParam(params.eventId, params.requestId),
+      type: "tool_call_started",
+      payload: {
+        callId: params.requestId,
+        toolName: params.toolName,
+        args: JSON.stringify(params.input ?? {}),
+      },
+    };
+  }
+  if (method === "event.permission_request" && typeof params.requestId === "string") {
+    return {
+      id: stringParam(params.eventId, params.requestId),
+      type: "request_permissions",
+      payload: {
+        callId: params.requestId,
+        ...(typeof params.toolName === "string" ? { toolName: params.toolName } : {}),
+        ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+        permissions: Array.isArray(params.permissions)
+          ? params.permissions.filter((item): item is string => typeof item === "string")
+          : [],
+        ...(params.input !== undefined ? { input: params.input } : {}),
+        ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+      },
+    };
+  }
+  if (method === "event.agent_status") {
+    return transcriptEventFromAgentStatus(params);
+  }
+  if (method === "event.session_event" && isJsonObject(params.event)) {
+    return params.event;
+  }
   return event;
+}
+
+function transcriptEventFromAgentStatus(params: JsonObject): JsonObject {
+  const status = params.status;
+  const turnId = stringParam(params.turnId, stringParam(params.eventId, "status"));
+  if (status === "running") {
+    return {
+      id: stringParam(params.eventId, turnId),
+      type: "turn_started",
+      payload: { turnId },
+    };
+  }
+  if (status === "error") {
+    return {
+      id: stringParam(params.eventId, turnId),
+      type: "error",
+      payload: {
+        turnId,
+        message: typeof params.message === "string" ? params.message : "agent error",
+      },
+    };
+  }
+  return {
+    id: stringParam(params.eventId, turnId),
+    type: "turn_complete",
+    payload: {
+      turnId,
+      ...(typeof params.message === "string"
+        ? { lastAgentMessage: params.message }
+        : {}),
+    },
+  };
+}
+
+function stringParam(value: JsonValue | undefined, fallback: string): string {
+  return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
 function connectionNoticeEvents(

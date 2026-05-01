@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
 import type {
+  AgenCDaemonSessionNotification,
   JsonObject,
   SessionAttachResult,
   SessionDetachResult,
@@ -26,7 +27,8 @@ export type AgenCClientSend = (message: JsonObject) => void | Promise<void>;
 export type AgenCClientMultiplexerErrorCode =
   | "CLIENT_ALREADY_REGISTERED"
   | "CLIENT_NOT_ATTACHED"
-  | "CLIENT_NOT_FOUND";
+  | "CLIENT_NOT_FOUND"
+  | "SESSION_NOTIFICATION_MISMATCH";
 
 export class AgenCClientMultiplexerError extends Error {
   readonly code: AgenCClientMultiplexerErrorCode;
@@ -242,6 +244,19 @@ export class AgenCDaemonClientMultiplexer {
       sessionId,
       ...(await settleDeliveries(deliveries)),
     };
+  }
+
+  async broadcastSessionNotification(
+    sessionId: string,
+    notification: AgenCDaemonSessionNotification,
+  ): Promise<AgenCSessionBroadcastResult> {
+    if (notification.params.sessionId !== sessionId) {
+      throw new AgenCClientMultiplexerError(
+        "SESSION_NOTIFICATION_MISMATCH",
+        `AgenC daemon notification session mismatch: ${notification.params.sessionId} !== ${sessionId}`,
+      );
+    }
+    return this.broadcastSessionEvent(sessionId, notification);
   }
 }
 

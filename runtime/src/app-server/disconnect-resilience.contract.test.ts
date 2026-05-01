@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
-import type { JsonObject } from "./protocol/index.js";
+import {
+  JSON_RPC_VERSION,
+  type AgenCDaemonSessionNotification,
+  type JsonObject,
+} from "./protocol/index.js";
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -97,16 +101,29 @@ describe("AgenC daemon disconnect resilience", () => {
     await multiplexer.disconnectClient("client_1");
 
     for (const sequence of [1, 2, 3]) {
-      await multiplexer.broadcastSessionEvent("session_1", {
-        type: "session.delta",
-        sessionId: "session_1",
-        sequence,
-      });
+      await multiplexer.broadcastSessionNotification("session_1", {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          eventId: `event_${sequence}`,
+          sequence,
+          event: {
+            type: "session.delta",
+            sequence,
+          },
+        },
+      } satisfies AgenCDaemonSessionNotification);
     }
 
     await multiplexer.registerClient({
       clientId: "client_1",
-      send: (message) => replayedSequences.push(Number(message.sequence)),
+      send: (message) => {
+        const params = message.params;
+        if (typeof params === "object" && params !== null && "sequence" in params) {
+          replayedSequences.push(Number(params.sequence));
+        }
+      },
     });
     await multiplexer.attachClientToSession("session_1", "client_1");
 

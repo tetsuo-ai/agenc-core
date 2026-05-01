@@ -71,6 +71,11 @@ const expectedMethods = [
 
 const expectedNotifications = [
   "commandExec.outputDelta",
+  "event.message_chunk",
+  "event.tool_request",
+  "event.permission_request",
+  "event.agent_status",
+  "event.session_event",
 ] as const;
 
 function readProtocolSchema(): ProtocolSchema {
@@ -451,6 +456,65 @@ describe("AgenC daemon protocol surface", () => {
           capReached: false,
         },
       },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.message_chunk",
+        params: {
+          sessionId: "session_1",
+          eventId: "event_1",
+          messageId: "message_1",
+          streamId: "stream_1",
+          delta: "hello",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.tool_request",
+        params: {
+          sessionId: "session_1",
+          eventId: "event_2",
+          requestId: "tool_1",
+          toolName: "FileRead",
+          turnId: "turn_1",
+          input: { path: "README.md" },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.permission_request",
+        params: {
+          sessionId: "session_1",
+          eventId: "event_3",
+          requestId: "permission_1",
+          toolName: "Bash",
+          turnId: "turn_1",
+          permissions: ["tool.use"],
+          input: { command: "pwd" },
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.agent_status",
+        params: {
+          sessionId: "session_1",
+          eventId: "event_4",
+          agentId: "agent_1",
+          status: "running",
+          turnId: "turn_1",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          eventId: "event_5",
+          event: {
+            type: "turn_complete",
+            payload: { turnId: "turn_1" },
+          },
+        },
+      },
     ];
 
     for (const sample of samples) {
@@ -466,6 +530,18 @@ describe("AgenC daemon protocol surface", () => {
           stream: "stdin",
           deltaBase64: "aGVsbG8=",
           capReached: false,
+        },
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.permission_request",
+        params: {
+          sessionId: "session_1",
+          eventId: "event_bad",
+          requestId: "permission_1",
+          permissions: "tool.use",
         },
       }),
     ).toBe(false);

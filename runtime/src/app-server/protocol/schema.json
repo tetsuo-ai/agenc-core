@@ -38,7 +38,12 @@
     "auth.logout"
   ],
   "x-agenc-notifications": [
-    "commandExec.outputDelta"
+    "commandExec.outputDelta",
+    "event.message_chunk",
+    "event.tool_request",
+    "event.permission_request",
+    "event.agent_status",
+    "event.session_event"
   ],
   "oneOf": [
     {
@@ -675,6 +680,246 @@
       },
       "required": ["processId", "stream", "deltaBase64", "capReached"]
     },
+    "AgenCEventBaseParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "eventId"]
+    },
+    "EventMessageChunkParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "messageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "delta": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "eventId", "delta"]
+    },
+    "EventToolRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {}
+      },
+      "required": ["sessionId", "eventId", "requestId", "toolName"]
+    },
+    "EventPermissionRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "permissions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "input": {},
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "eventId", "requestId", "permissions"]
+    },
+    "EventAgentStatusParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "status": {
+          "$ref": "#/definitions/AgentStatus"
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "eventId", "agentId", "status"]
+    },
+    "EventSessionEventParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceptedAt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "event": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "eventId", "event"]
+    },
     "HealthPingParams": {
       "type": "object",
       "additionalProperties": false,
@@ -797,6 +1042,21 @@
       "oneOf": [
         {
           "$ref": "#/definitions/CommandExecOutputDeltaNotification"
+        },
+        {
+          "$ref": "#/definitions/EventMessageChunkNotification"
+        },
+        {
+          "$ref": "#/definitions/EventToolRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventPermissionRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventAgentStatusNotification"
+        },
+        {
+          "$ref": "#/definitions/EventSessionEventNotification"
         }
       ]
     },
@@ -812,6 +1072,86 @@
         },
         "params": {
           "$ref": "#/definitions/CommandExecOutputDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventMessageChunkNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.message_chunk"
+        },
+        "params": {
+          "$ref": "#/definitions/EventMessageChunkParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventToolRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.tool_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventToolRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventPermissionRequestNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.permission_request"
+        },
+        "params": {
+          "$ref": "#/definitions/EventPermissionRequestParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventAgentStatusNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.agent_status"
+        },
+        "params": {
+          "$ref": "#/definitions/EventAgentStatusParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
+    },
+    "EventSessionEventNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.session_event"
+        },
+        "params": {
+          "$ref": "#/definitions/EventSessionEventParams"
         }
       },
       "required": ["jsonrpc", "method", "params"]

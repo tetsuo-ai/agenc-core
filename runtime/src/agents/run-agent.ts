@@ -76,7 +76,12 @@ export interface RunAgentParams {
 export type RunAgentProgressEvent =
   | { readonly kind: "status"; readonly text: string }
   | { readonly kind: "message"; readonly message: LLMMessage }
-  | { readonly kind: "tool_call"; readonly callId: string; readonly toolName: string }
+  | {
+      readonly kind: "tool_call";
+      readonly callId: string;
+      readonly toolName: string;
+      readonly arguments?: string;
+    }
   | {
       readonly kind: "tool_result";
       readonly callId: string;
@@ -1069,6 +1074,7 @@ export async function* runAgent(
             kind: "tool_call",
             callId: event.toolCall.id,
             toolName: event.toolCall.name,
+            arguments: event.toolCall.arguments,
           };
           continue;
         }
