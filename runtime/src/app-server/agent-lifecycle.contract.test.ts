@@ -396,6 +396,62 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("flushes daemon agent snapshots after cleanup transitions", async () => {
+    const flushed: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_snapshot",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent: vi.fn(async () => {}),
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+      snapshotFlush: async (snapshot) => {
+        flushed.push(snapshot);
+      },
+    });
+
+    await agents.createAgent({ objective: "snapshot me" });
+    await agents.stopAll("daemon_shutdown");
+
+    await expect(agents.flushSnapshots("daemon_shutdown")).resolves.toBe(1);
+    expect(flushed).toEqual([
+      {
+        reason: "daemon_shutdown",
+        flushedAt: "2026-05-01T12:00:02.000Z",
+        agents: [
+          {
+            agentId: "agent_snapshot",
+            objective: "snapshot me",
+            status: "stopped",
+            createdAt: "2026-05-01T12:00:00.000Z",
+            startedAt: "2026-05-01T12:00:00.500Z",
+            lastActiveAt: "2026-05-01T12:00:01.000Z",
+            cwd: "/workspace",
+            metadata: {
+              unattendedAllow: [
+                "FileRead",
+                "system.grep",
+                "system.glob",
+                "system.listDir",
+                "system.stat",
+              ],
+              unattendedDeny: [],
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
   it("keeps final stop state durable while runner shutdown is in flight", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),

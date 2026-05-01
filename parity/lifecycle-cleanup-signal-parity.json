@@ -74,12 +74,15 @@
         "foreground daemon shutdown terminates commandExec child processes",
         "foreground daemon shutdown stops background agents so session shutdown flushes durable state and closes MCP connections",
         "background agent cleanup attempts bootstrap/session shutdown even when control shutdown fails",
+        "foreground daemon shutdown flushes daemon-visible agent snapshots to durable state",
         "foreground daemon shutdown closes the Unix socket and removes daemon.pid"
       ],
       "edgeCases": [
         "SIGHUP follows the cleanup path and returns the interrupt exit code",
+        "cleanup failures are surfaced and convert orderly shutdown to a non-zero exit",
         "cleanup is idempotent between signal-triggered cleanup and finally cleanup",
-        "one background agent stop failure cannot prevent later agents from being stopped and closed"
+        "one background agent stop failure cannot prevent later agents from being stopped and closed",
+        "daemon intake closes before command and agent resources are torn down"
       ],
       "tests": [
         "runtime/src/app-server/daemon-cli.contract.test.ts",

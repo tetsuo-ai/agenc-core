@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -11,6 +11,7 @@ import {
   readAgenCDaemonPid,
   resolveAgenCDaemonCookiePath,
   resolveAgenCDaemonPidPath,
+  resolveAgenCDaemonSnapshotPath,
   resolveAgenCDaemonSocketPath,
   runAgenCDaemonCli,
   writeAgenCDaemonPid,
@@ -130,6 +131,12 @@ describe("AgenC daemon CLI", () => {
     expect(resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
       "/tmp/agenc-home/daemon.cookie",
     );
+    expect(resolveAgenCDaemonSnapshotPath({}, "/home/test")).toBe(
+      "/home/test/.agenc/daemon-snapshot.json",
+    );
+    expect(resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
+      "/tmp/agenc-home/daemon-snapshot.json",
+    );
   });
 
   it("creates a private daemon cookie and reuses it", async () => {
@@ -247,9 +254,37 @@ describe("AgenC daemon CLI", () => {
 
     await expect(running).resolves.toBe(130);
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    await expect(
+      readFile(resolveAgenCDaemonSnapshotPath(host.env, host.userHome), "utf8"),
+    ).resolves.toContain('"agents": []');
     expect(io.stderrText()).toContain(
       "AgenC daemon received SIGHUP; treating terminal loss as shutdown",
     );
+
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("foreground daemon reports cleanup failures and keeps cleaning up", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await mkdir(resolveAgenCDaemonSnapshotPath(host.env, host.userHome), {
+      recursive: true,
+    });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+
+    signalProcess.emit("SIGTERM");
+
+    await expect(running).resolves.toBe(1);
+    await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
+    expect(io.stderrText()).toContain("cleanup[daemon-snapshots] failed");
 
     await rm(agencHome, { recursive: true, force: true });
   });

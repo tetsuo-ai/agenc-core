@@ -60,10 +60,19 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly now?: () => string;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly sessionManager?: AgenCDaemonSessionManager;
+  readonly snapshotFlush?: (
+    snapshot: AgenCDaemonAgentSnapshotFlush,
+  ) => void | Promise<void>;
   readonly broadcastSessionEvent?: (
     sessionId: string,
     event: JsonObject,
   ) => void | Promise<void>;
+}
+
+export interface AgenCDaemonAgentSnapshotFlush extends JsonObject {
+  readonly reason: string;
+  readonly flushedAt: string;
+  readonly agents: readonly AgentSummary[];
 }
 
 export const DEFAULT_UNATTENDED_ALLOWLIST = [
@@ -101,6 +110,9 @@ export class AgenCDaemonAgentManager {
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
+  readonly #snapshotFlush:
+    | ((snapshot: AgenCDaemonAgentSnapshotFlush) => void | Promise<void>)
+    | undefined;
   readonly #broadcastSessionEvent:
     | ((sessionId: string, event: JsonObject) => void | Promise<void>)
     | undefined;
@@ -113,6 +125,7 @@ export class AgenCDaemonAgentManager {
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#runner = options.runner;
     this.#sessionManager = options.sessionManager;
+    this.#snapshotFlush = options.snapshotFlush;
     this.#broadcastSessionEvent = options.broadcastSessionEvent;
   }
 
@@ -395,6 +408,15 @@ export class AgenCDaemonAgentManager {
       );
     }
     return stopped;
+  }
+
+  async flushSnapshots(reason = "daemon_shutdown"): Promise<number> {
+    const flushedAt = this.#now();
+    const agents = await this.#state.with((state) =>
+      [...state.agents.values()].map(toAgentSummary),
+    );
+    await this.#snapshotFlush?.({ reason, flushedAt, agents });
+    return agents.length;
   }
 
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
