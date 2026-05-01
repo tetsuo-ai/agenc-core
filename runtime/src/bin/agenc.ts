@@ -98,7 +98,9 @@ import {
   runAgenCDaemonCli,
 } from "../app-server/daemon-cli.js";
 import {
+  createConnectedAgenCJsonLineDaemonTuiClient,
   parseAgenCAgentCliArgs,
+  resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
 import {
@@ -123,6 +125,7 @@ export function formatCliHelpText(): string {
     "       agenc daemon <start|stop|status|restart>",
     "       agenc agent start <objective>",
     "       agenc agent list",
+    "       agenc agent attach <id>",
     "",
     "Options:",
     "  --help                                   Show this help text",
@@ -1072,6 +1075,8 @@ export async function oneShotCLI(
       delegateSessionHolder,
       toolRegistryOptions,
     } = createSharedBootstrapTooling();
+    // The daemon owns the live rollout lock for runtimeSessionId, so
+    // attach reuses the id without resuming that rollout locally.
     const {
       agencHome,
       configStore,
@@ -1319,6 +1324,28 @@ async function loadBootTUI(): Promise<
   return mod.bootTUI;
 }
 
+async function loadCreateDaemonTuiSession(): Promise<
+  (opts: {
+    baseSession: unknown;
+    client: unknown;
+    sessionId: string;
+    conversationId?: string;
+    clientId: string;
+  }) => Promise<unknown>
+> {
+  const specifier = "../tui/daemon-session.js";
+  const mod = (await import(specifier)) as {
+    readonly createDaemonTuiSession: (opts: {
+      baseSession: unknown;
+      client: unknown;
+      sessionId: string;
+      conversationId?: string;
+      clientId: string;
+    }) => unknown;
+  };
+  return (opts) => Promise.resolve(mod.createDaemonTuiSession(opts));
+}
+
 type EarlyInputCapture = {
   readonly startCapturingEarlyInput?: () => void;
   readonly consumeEarlyInput?: (options?: {
@@ -1455,6 +1482,133 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   }
 }
 
+export interface AttachAgentTuiEntryArgs {
+  readonly agentId: string;
+  readonly clientId: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly daemonClient?: Awaited<
+    ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
+  >;
+}
+
+/** Attach the Ink TUI to a daemon-owned background agent session. */
+export async function attachAgentTuiEntry(
+  args: AttachAgentTuiEntryArgs,
+): Promise<number> {
+  const env = args.env ?? process.env;
+  let daemonClient:
+    | Awaited<ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>>
+    | null = null;
+  try {
+    validateAgencHome(env);
+    daemonClient =
+      args.daemonClient ??
+      (await createConnectedAgenCJsonLineDaemonTuiClient({
+        env,
+      }));
+    const attachment = await daemonClient.request("agent.attach", {
+      agentId: args.agentId,
+      clientId: args.clientId,
+    });
+    const sessionId = attachment.sessionIds[0];
+    if (sessionId === undefined) {
+      throw new Error(`daemon agent has no attached session: ${args.agentId}`);
+    }
+    const runtimeSessionId =
+      attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
+    const bootstrapCwd = resolveAgenCAgentAttachCwd(
+      attachment,
+      processCwd(),
+    );
+    const {
+      sessionSlot,
+      delegateSessionHolder,
+      toolRegistryOptions,
+    } = createSharedBootstrapTooling();
+    const {
+      agencHome,
+      configStore,
+      workspaceRoot,
+      resolvedProvider,
+      registry,
+      model,
+      session,
+      memoryDir,
+      memoryMdPath,
+      shutdown,
+      autonomousModeEnabled,
+    } = await bootstrapLocalRuntimeSession({
+      env,
+      argv: process.argv,
+      cwd: bootstrapCwd,
+      conversationId: runtimeSessionId,
+      resumeConversation: false,
+      toolRegistryOptions,
+    });
+    try {
+      sessionSlot.current = session;
+      delegateSessionHolder.current = session;
+
+      const loadTurnInputsFn = () =>
+        prepareTurnRuntimeInputs({
+          session,
+          configStore,
+          workspaceRoot,
+          memoryDir,
+          memoryMdPath,
+          registry,
+        });
+      const uninstallTuiSessionContract = installTuiSessionContract({
+        session,
+        configStore,
+        agencHome,
+        resolvedProvider,
+        autonomousModeEnabled,
+        loadTurnInputsFn,
+      });
+
+      try {
+        const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+        const daemonSession = await createDaemonTuiSession({
+          baseSession: session,
+          client: daemonClient,
+          sessionId,
+          conversationId: runtimeSessionId,
+          clientId: args.clientId,
+        });
+        const boot = await loadBootTUI();
+        const handle = await boot({
+          session: daemonSession,
+          configStore,
+          model,
+        });
+        activeInkUnmount = handle.unmount;
+        await handle.waitUntilExit();
+        return 0;
+      } finally {
+        activeInkUnmount = null;
+        uninstallTuiSessionContract();
+      }
+    } finally {
+      sessionSlot.current = null;
+      delegateSessionHolder.current = null;
+      await shutdown().catch(() => {
+        /* best effort */
+      });
+    }
+  } catch (error) {
+    if (error instanceof SessionLockedError || error instanceof SchemaMismatchError) {
+      process.stderr.write(`agenc: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  } finally {
+    await daemonClient?.close().catch(() => {
+      /* best effort */
+    });
+  }
+}
+
 /**
  * Resume a prior session through the TUI. The entry adapter verifies the
  * requested id exists, then re-enters the shared bootstrap path with the
@@ -1518,7 +1672,9 @@ export async function main(): Promise<number> {
   }
   const agentCommand = parseAgenCAgentCliArgs(argv);
   if (agentCommand !== null) {
-    return runAgenCAgentCli(agentCommand);
+    return runAgenCAgentCli(agentCommand, {
+      attachTui: (context) => attachAgentTuiEntry(context),
+    });
   }
 
   const startupShortCircuit = detectStartupShortCircuit(argv);

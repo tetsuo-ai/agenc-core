@@ -20,14 +20,22 @@ import {
 } from "./daemon-cli.js";
 import {
   JSON_RPC_VERSION,
+  type AgentAttachParams,
+  type AgentAttachResult,
+  type AgenCDaemonMethod,
+  type AgenCDaemonResultByMethod,
   type AgentCreateParams,
   type AgentCreateResult,
   type AgentListParams,
   type AgentListResult,
   type AgentSummary,
+  type SessionSummary,
   type AgenCDaemonErrorResponse,
   type AgenCDaemonResponse,
   type AgenCDaemonSuccessResponse,
+  type JsonObject,
+  type JsonValue,
+  type RequestId,
 } from "./protocol/index.js";
 
 export type AgenCAgentCliCommand =
@@ -38,6 +46,7 @@ export type AgenCAgentCliCommand =
       readonly unattendedDeny: readonly string[];
     }
   | { readonly kind: "list" }
+  | { readonly kind: "attach"; readonly agentId: string }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -49,6 +58,39 @@ export interface AgenCAgentCliIo {
 export interface AgenCAgentCliDaemonClient {
   createAgent(params: AgentCreateParams): Promise<AgentCreateResult>;
   listAgents(params?: AgentListParams): Promise<AgentListResult>;
+  attachAgent(params: AgentAttachParams): Promise<AgentAttachResult>;
+}
+
+export interface AgenCJsonLineDaemonRequestClient {
+  request<Method extends AgenCDaemonMethod>(
+    method: Method,
+    params?: JsonObject,
+  ): Promise<AgenCDaemonResultByMethod[Method]>;
+}
+
+export interface AgenCJsonLineDaemonTuiClient
+  extends AgenCJsonLineDaemonRequestClient {
+  subscribeToSessionEvents(
+    sessionId: string,
+    cb: (event: JsonObject) => void,
+  ): () => void;
+  getConnectionState(): {
+    readonly status: "connected" | "disconnected";
+    readonly message?: string;
+  };
+  subscribeToConnectionState(
+    cb: (state: {
+      readonly status: "connected" | "disconnected";
+      readonly message?: string;
+    }) => void,
+  ): () => void;
+  close(): Promise<void>;
+}
+
+export interface AgenCAgentAttachTuiContext {
+  readonly agentId: string;
+  readonly clientId: string;
+  readonly env?: NodeJS.ProcessEnv;
 }
 
 export interface AgenCAgentCliOptions {
@@ -57,6 +99,8 @@ export interface AgenCAgentCliOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly io?: AgenCAgentCliIo;
   readonly ensureDaemonReady?: () => Promise<void>;
+  readonly clientId?: string;
+  readonly attachTui?: (context: AgenCAgentAttachTuiContext) => Promise<number>;
 }
 
 export interface AgenCJsonLineDaemonClientOptions {
@@ -76,6 +120,7 @@ export function formatAgenCAgentCliHelpText(): string {
     "Commands:",
     "  start [--unattended-allow <tools>] [--unattended-deny <tools>] <objective>",
     "  list    Show active background agents",
+    "  attach <id>    Attach to a running agent",
   ].join("\n");
 }
 
@@ -95,6 +140,22 @@ export function parseAgenCAgentCliArgs(
       };
     }
     return { kind: "list" };
+  }
+  if (action === "attach") {
+    const agentId = argv[2]?.trim();
+    if (agentId === undefined || agentId.length === 0) {
+      return {
+        kind: "error",
+        message: "agent attach requires an agent id",
+      };
+    }
+    if (argv.length > 3) {
+      return {
+        kind: "error",
+        message: "agent attach accepts exactly one agent id",
+      };
+    }
+    return { kind: "attach", agentId };
   }
   if (action !== "start") {
     return {
@@ -137,6 +198,8 @@ export async function runAgenCAgentCli(
       return 1;
     case "list":
       return listAgenCAgents(io, options);
+    case "attach":
+      return attachAgenCAgent(command, io, options);
     case "start":
       return startAgenCAgent(command, io, options);
   }
@@ -145,29 +208,51 @@ export async function runAgenCAgentCli(
 export function createAgenCJsonLineDaemonClient(
   options: AgenCJsonLineDaemonClientOptions = {},
 ): AgenCAgentCliDaemonClient {
+  const requestClient = createAgenCJsonLineDaemonRequestClient(options);
+  return {
+    createAgent: (params) => requestClient.request("agent.create", params),
+    listAgents: (params = {}) => requestClient.request("agent.list", params),
+    attachAgent: (params) => requestClient.request("agent.attach", params),
+  };
+}
+
+export function createAgenCJsonLineDaemonRequestClient(
+  options: AgenCJsonLineDaemonClientOptions = {},
+): AgenCJsonLineDaemonRequestClient {
   const socketPath =
     options.socketPath ??
     resolveAgenCDaemonSocketPath(options.env, options.userHome);
   const cookiePath = resolveAgenCDaemonCookiePath(options.env, options.userHome);
   const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
   return {
-    createAgent: (params) =>
+    request: (method, params = {}) =>
       requestDaemon(
-        "agent.create",
-        params,
-        socketPath,
-        timeoutMs,
-        options.authCookie ?? readDaemonCookie(cookiePath),
-      ),
-    listAgents: (params = {}) =>
-      requestDaemon(
-        "agent.list",
+        method,
         params,
         socketPath,
         timeoutMs,
         options.authCookie ?? readDaemonCookie(cookiePath),
       ),
   };
+}
+
+export async function createConnectedAgenCJsonLineDaemonTuiClient(
+  options: AgenCJsonLineDaemonClientOptions = {},
+): Promise<AgenCJsonLineDaemonTuiClient> {
+  const socketPath =
+    options.socketPath ??
+    resolveAgenCDaemonSocketPath(options.env, options.userHome);
+  const cookiePath = resolveAgenCDaemonCookiePath(options.env, options.userHome);
+  const timeoutMs = options.timeoutMs ?? DEFAULT_DAEMON_REQUEST_TIMEOUT_MS;
+  const authCookie = await (options.authCookie ?? readDaemonCookie(cookiePath));
+  const client = await connectPersistentDaemonClient(socketPath, timeoutMs);
+  await client.request("initialize", {
+    protocolVersion: "1.0.0",
+    clientName: "agenc-agent-tui",
+    authCookie,
+    capabilities: {},
+  });
+  return client;
 }
 
 async function startAgenCAgent(
@@ -223,6 +308,38 @@ async function listAgenCAgents(
   }
 }
 
+async function attachAgenCAgent(
+  command: Extract<AgenCAgentCliCommand, { readonly kind: "attach" }>,
+  io: AgenCAgentCliIo,
+  options: AgenCAgentCliOptions,
+): Promise<number> {
+  try {
+    await (options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env))();
+    const clientId = options.clientId ?? defaultAgenCAgentAttachClientId();
+    if (options.attachTui !== undefined) {
+      return await options.attachTui({
+        agentId: command.agentId,
+        clientId,
+        ...(options.env !== undefined ? { env: options.env } : {}),
+      });
+    }
+    const client = options.client ?? createAgenCJsonLineDaemonClient({
+      env: options.env,
+    });
+    const result = await client.attachAgent({
+      agentId: command.agentId,
+      clientId,
+    });
+    io.stdout.write(`${formatAgenCAgentAttachResult(result)}\n`);
+    return 0;
+  } catch (error) {
+    io.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
+  }
+}
+
 async function listAllAgenCAgents(
   client: AgenCAgentCliDaemonClient,
 ): Promise<AgentListResult> {
@@ -242,6 +359,38 @@ async function listAllAgenCAgents(
     seenCursors.add(page.nextCursor);
     cursor = page.nextCursor;
   }
+}
+
+export function formatAgenCAgentAttachResult(
+  result: AgentAttachResult,
+): string {
+  return [
+    ["agent_id", "session_id", "attachment_id"].join("\t"),
+    [
+      result.agentId,
+      result.sessionIds[0] ?? "-",
+      result.attachmentId,
+    ].join("\t"),
+  ].join("\n");
+}
+
+export function resolveAgenCAgentAttachSession(
+  result: AgentAttachResult,
+): SessionSummary | null {
+  const primarySessionId = result.sessionIds[0];
+  if (primarySessionId === undefined) return null;
+  return (
+    result.sessions?.find((session) => session.sessionId === primarySessionId) ??
+    null
+  );
+}
+
+export function resolveAgenCAgentAttachCwd(
+  result: AgentAttachResult,
+  fallbackCwd: string,
+): string {
+  const cwd = resolveAgenCAgentAttachSession(result)?.cwd?.trim();
+  return cwd && cwd.length > 0 ? cwd : fallbackCwd;
 }
 
 export function formatAgenCAgentList(result: AgentListResult): string {
@@ -264,6 +413,213 @@ function formatAgenCAgentListCell(value: string): string {
   return value.replace(/[\t\r\n]+/g, " ");
 }
 
+function defaultAgenCAgentAttachClientId(): string {
+  return `agenc-agent-cli-${process.pid}`;
+}
+
+function connectPersistentDaemonClient(
+  socketPath: string,
+  timeoutMs: number,
+): Promise<AgenCJsonLineDaemonTuiClient> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    const pending = new Map<
+      RequestId,
+      {
+        readonly resolve: (value: unknown) => void;
+        readonly reject: (error: Error) => void;
+      }
+    >();
+    const sessionListeners = new Map<string, Set<(event: JsonObject) => void>>();
+    const bufferedSessionEvents = new Map<string, JsonObject[]>();
+    const connectionStateListeners = new Set<
+      (state: { readonly status: "connected" | "disconnected"; readonly message?: string }) => void
+    >();
+    let buffer = "";
+    let nextRequestId = 1;
+    let connected = false;
+    let closed = false;
+    let connectionState: { readonly status: "connected" | "disconnected"; readonly message?: string } = {
+      status: "connected",
+    };
+    const timeout = setTimeout(() => {
+      reject(new Error(`Timed out connecting to daemon at ${socketPath}`));
+      socket.destroy();
+    }, timeoutMs);
+
+    const failPending = (error: Error) => {
+      for (const waiter of pending.values()) {
+        waiter.reject(error);
+      }
+      pending.clear();
+    };
+    const setConnectionState = (state: typeof connectionState): void => {
+      connectionState = state;
+      for (const listener of connectionStateListeners) {
+        listener(state);
+      }
+    };
+    const closeClient = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      setConnectionState({
+        status: "disconnected",
+        message: "Daemon connection closed",
+      });
+      socket.destroy();
+      failPending(new Error("Daemon connection closed"));
+    };
+    const client: AgenCJsonLineDaemonTuiClient = {
+      request: (method, params = {}) => {
+        if (closed) {
+          return Promise.reject(new Error("Daemon connection is closed"));
+        }
+        const id = nextRequestId;
+        nextRequestId += 1;
+        const request = {
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method,
+          params,
+        };
+        return new Promise<unknown>((requestResolve, requestReject) => {
+          pending.set(id, {
+            resolve: requestResolve,
+            reject: requestReject,
+          });
+          socket.write(`${JSON.stringify(request)}\n`);
+        }) as Promise<AgenCDaemonResultByMethod[typeof method]>;
+      },
+      subscribeToSessionEvents: (sessionId, cb) => {
+        let listeners = sessionListeners.get(sessionId);
+        if (listeners === undefined) {
+          listeners = new Set();
+          sessionListeners.set(sessionId, listeners);
+        }
+        listeners.add(cb);
+        const buffered = bufferedSessionEvents.get(sessionId);
+        if (buffered !== undefined) {
+          bufferedSessionEvents.delete(sessionId);
+          for (const event of buffered) cb(event);
+        }
+        return () => {
+          listeners?.delete(cb);
+          if (listeners?.size === 0) sessionListeners.delete(sessionId);
+        };
+      },
+      getConnectionState: () => connectionState,
+      subscribeToConnectionState: (cb) => {
+        connectionStateListeners.add(cb);
+        return () => {
+          connectionStateListeners.delete(cb);
+        };
+      },
+      close: closeClient,
+    };
+
+    socket.once("connect", () => {
+      connected = true;
+      clearTimeout(timeout);
+      setConnectionState({ status: "connected" });
+      resolve(client);
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString("utf8");
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.length > 0) {
+          handlePersistentDaemonMessage(
+            line,
+            pending,
+            sessionListeners,
+            bufferedSessionEvents,
+          );
+        }
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+    socket.once("error", (error) => {
+      clearTimeout(timeout);
+      if (!connected) {
+        reject(error);
+        return;
+      }
+      setConnectionState({
+        status: "disconnected",
+        message: error.message,
+      });
+      failPending(error);
+    });
+    socket.once("close", () => {
+      if (!closed) {
+        setConnectionState({
+          status: "disconnected",
+          message: "Daemon connection closed",
+        });
+      }
+      closed = true;
+      clearTimeout(timeout);
+      failPending(new Error("Daemon connection closed"));
+    });
+  });
+}
+
+function handlePersistentDaemonMessage(
+  line: string,
+  pending: Map<
+    RequestId,
+    {
+      readonly resolve: (value: unknown) => void;
+      readonly reject: (error: Error) => void;
+    }
+  >,
+  sessionListeners: Map<string, Set<(event: JsonObject) => void>>,
+  bufferedSessionEvents: Map<string, JsonObject[]>,
+): void {
+  const message = JSON.parse(line) as JsonValue;
+  if (!isJsonObject(message)) return;
+  if (typeof message.id === "string" || typeof message.id === "number") {
+    const waiter = pending.get(message.id);
+    if (waiter === undefined) return;
+    pending.delete(message.id);
+    const response = message as AgenCDaemonResponse;
+    if (isErrorResponse(response)) {
+      waiter.reject(new Error(response.error.message));
+      return;
+    }
+    waiter.resolve((response as AgenCDaemonSuccessResponse).result);
+    return;
+  }
+
+  const sessionId = daemonEventSessionId(message);
+  if (sessionId === null) return;
+  const listeners = sessionListeners.get(sessionId);
+  if (listeners === undefined || listeners.size === 0) {
+    const buffered = bufferedSessionEvents.get(sessionId) ?? [];
+    buffered.push(message);
+    bufferedSessionEvents.set(sessionId, buffered);
+    return;
+  }
+  for (const listener of listeners) {
+    listener(message);
+  }
+}
+
+function daemonEventSessionId(message: JsonObject): string | null {
+  if (typeof message.sessionId === "string") return message.sessionId;
+  const params = message.params;
+  if (isJsonObject(params) && typeof params.sessionId === "string") {
+    return params.sessionId;
+  }
+  return null;
+}
+
+function isJsonObject(value: JsonValue | undefined): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function defaultEnsureDaemonReady(
   env: NodeJS.ProcessEnv = process.env,
   ensureAutostart: typeof ensureAgenCDaemonAutostart =
@@ -281,27 +637,13 @@ export function defaultEnsureDaemonReady(
   };
 }
 
-async function requestDaemon(
-  method: "agent.create",
-  params: AgentCreateParams,
+async function requestDaemon<Method extends AgenCDaemonMethod>(
+  method: Method,
+  params: JsonObject,
   socketPath: string,
   timeoutMs: number,
   authCookie: string | Promise<string>,
-): Promise<AgentCreateResult>;
-async function requestDaemon(
-  method: "agent.list",
-  params: AgentListParams,
-  socketPath: string,
-  timeoutMs: number,
-  authCookie: string | Promise<string>,
-): Promise<AgentListResult>;
-async function requestDaemon(
-  method: "agent.create" | "agent.list",
-  params: AgentCreateParams | AgentListParams,
-  socketPath: string,
-  timeoutMs: number,
-  authCookie: string | Promise<string>,
-): Promise<AgentCreateResult | AgentListResult> {
+): Promise<AgenCDaemonResultByMethod[Method]> {
   const resolvedAuthCookie = await authCookie;
   const responses = await sendJsonLineRequestWithRetry(
     socketPath,
@@ -339,15 +681,13 @@ async function requestDaemon(
   if (isErrorResponse(response)) {
     throw new Error(response.error.message);
   }
-  return resultFromDaemonResponse(response);
+  return resultFromDaemonResponse<Method>(response);
 }
 
-function resultFromDaemonResponse(
+function resultFromDaemonResponse<Method extends AgenCDaemonMethod>(
   response: AgenCDaemonResponse,
-): AgentCreateResult | AgentListResult {
-  return (
-    response as AgenCDaemonSuccessResponse<"agent.create" | "agent.list">
-  ).result;
+): AgenCDaemonResultByMethod[Method] {
+  return (response as AgenCDaemonSuccessResponse<Method>).result;
 }
 
 async function readDaemonCookie(cookiePath: string): Promise<string> {

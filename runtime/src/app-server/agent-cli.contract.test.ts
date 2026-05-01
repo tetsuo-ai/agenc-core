@@ -3,21 +3,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  createConnectedAgenCJsonLineDaemonTuiClient,
   createAgenCJsonLineDaemonClient,
   defaultEnsureDaemonReady,
+  formatAgenCAgentAttachResult,
   formatAgenCAgentList,
   formatAgenCAgentCliHelpText,
   parseAgenCAgentCliArgs,
+  resolveAgenCAgentAttachCwd,
   runAgenCAgentCli,
   type AgenCAgentCliIo,
 } from "./agent-cli.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
+import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 import type { AgentCreateParams } from "./protocol/index.js";
 import type {
+  AgenCBackgroundAgentMessageParams,
   AgenCBackgroundAgentRunner,
+  AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
 
@@ -66,6 +72,18 @@ describe("agenc agent start CLI", () => {
     expect(parseAgenCAgentCliArgs(["agent", "list", "extra"])).toEqual({
       kind: "error",
       message: "agent list does not accept arguments",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "attach", "agent_1"])).toEqual({
+      kind: "attach",
+      agentId: "agent_1",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "attach"])).toEqual({
+      kind: "error",
+      message: "agent attach requires an agent id",
+    });
+    expect(parseAgenCAgentCliArgs(["agent", "attach", "agent_1", "extra"])).toEqual({
+      kind: "error",
+      message: "agent attach accepts exactly one agent id",
     });
     expect(parseAgenCAgentCliArgs(["agent", "start", "build", "it"])).toEqual({
       kind: "start",
@@ -125,6 +143,7 @@ describe("agenc agent start CLI", () => {
       "start [--unattended-allow <tools>]",
     );
     expect(formatAgenCAgentCliHelpText()).toContain("list");
+    expect(formatAgenCAgentCliHelpText()).toContain("attach <id>");
   });
 
   it("prints only the daemon-returned agent ID", async () => {
@@ -154,6 +173,9 @@ describe("agenc agent start CLI", () => {
               };
             },
             listAgents: async () => ({ agents: [] }),
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
           },
         },
       ),
@@ -198,6 +220,9 @@ describe("agenc agent start CLI", () => {
                 },
               ],
             }),
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
           },
         },
       ),
@@ -283,6 +308,9 @@ describe("agenc agent start CLI", () => {
               }
               throw new Error(`unexpected cursor ${params.cursor}`);
             },
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
           },
         },
       ),
@@ -297,6 +325,114 @@ describe("agenc agent start CLI", () => {
         "",
       ].join("\n"),
     );
+    expect(io.stderrText()).toBe("");
+  });
+
+  it("prints the daemon-returned agent attachment target", async () => {
+    const io = createIo();
+    const requests: unknown[] = [];
+
+    await expect(
+      runAgenCAgentCli(
+        { kind: "attach", agentId: "agent_1" },
+        {
+          clientId: "tui_test",
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async () => {
+              throw new Error("createAgent should not be called");
+            },
+            listAgents: async () => {
+              throw new Error("listAgents should not be called");
+            },
+            attachAgent: async (params) => {
+              requests.push(params);
+              return {
+                agentId: params.agentId,
+                attachmentId: "attachment_1",
+                sessionIds: ["session_1"],
+              };
+            },
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(requests).toEqual([{ agentId: "agent_1", clientId: "tui_test" }]);
+    expect(io.stdoutText()).toBe(
+      [
+        "agent_id\tsession_id\tattachment_id",
+        "agent_1\tsession_1\tattachment_1",
+        "",
+      ].join("\n"),
+    );
+    expect(formatAgenCAgentAttachResult({
+      agentId: "agent_2",
+      attachmentId: "attachment_2",
+      sessionIds: [],
+    })).toBe(
+      [
+        "agent_id\tsession_id\tattachment_id",
+        "agent_2\t-\tattachment_2",
+      ].join("\n"),
+    );
+    expect(resolveAgenCAgentAttachCwd({
+      agentId: "agent_3",
+      attachmentId: "attachment_3",
+      sessionIds: ["session_remote"],
+      sessions: [
+        {
+          sessionId: "session_remote",
+          agentId: "agent_3",
+          status: "idle",
+          createdAt: "2026-05-01T12:00:00.000Z",
+          cwd: "/daemon/workspace",
+        },
+      ],
+    }, "/local/workspace")).toBe("/daemon/workspace");
+    expect(io.stderrText()).toBe("");
+  });
+
+  it("hands agent attach to the TUI launcher when provided", async () => {
+    const io = createIo();
+    const launches: unknown[] = [];
+
+    await expect(
+      runAgenCAgentCli(
+        { kind: "attach", agentId: "agent_1" },
+        {
+          clientId: "tui_test",
+          env: { AGENC_HOME: "/tmp/agenc-home" },
+          ensureDaemonReady: async () => {},
+          io,
+          client: {
+            createAgent: async () => {
+              throw new Error("createAgent should not be called");
+            },
+            listAgents: async () => {
+              throw new Error("listAgents should not be called");
+            },
+            attachAgent: async () => {
+              throw new Error("attachAgent should not be called");
+            },
+          },
+          attachTui: async (context) => {
+            launches.push(context);
+            return 0;
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+
+    expect(launches).toEqual([
+      {
+        agentId: "agent_1",
+        clientId: "tui_test",
+        env: { AGENC_HOME: "/tmp/agenc-home" },
+      },
+    ]);
+    expect(io.stdoutText()).toBe("");
     expect(io.stderrText()).toBe("");
   });
 
@@ -334,9 +470,19 @@ describe("agenc agent start CLI", () => {
     const io = createIo();
     const sessionManager = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
-      now: sequence(["2026-05-01T12:00:01.000Z"]),
+      createAttachmentId: sequence(["attachment_socket", "attachment_live"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:03.000Z",
+      ]),
+    });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager,
     });
     const starts: AgenCBackgroundAgentStartParams[] = [];
+    const submitted: AgenCBackgroundAgentMessageParams[] = [];
+    let sessionBinding: AgenCBackgroundAgentSessionEventBinding | undefined;
     const runner: AgenCBackgroundAgentRunner = {
       startAgent: async (params) => {
         starts.push(params);
@@ -347,6 +493,45 @@ describe("agenc agent start CLI", () => {
           status: "running",
         };
       },
+      attachAgentSessionEvents: async (_agentId, binding) => {
+        sessionBinding = binding;
+      },
+      submitAgentMessage: async (_agentId, params) => {
+        submitted.push(params);
+        await sessionBinding?.emit({
+          type: "daemon.event",
+          sessionId: params.sessionId,
+          messageId: params.messageId,
+          streamId: params.streamId,
+          acceptedAt: params.acceptedAt,
+          msg: {
+            id: params.messageId,
+            type: "user_message",
+            payload: {
+              message: params.originalContent,
+              displayText: params.content,
+            },
+          },
+        });
+        await sessionBinding?.emit({
+          type: "daemon.event",
+          sessionId: params.sessionId,
+          msg: {
+            id: "runtime_echo",
+            type: "agent_message_delta",
+            payload: { delta: `accepted ${params.content}` },
+          },
+        });
+        await sessionBinding?.emit({
+          type: "daemon.event",
+          sessionId: params.sessionId,
+          msg: {
+            id: "runtime_complete",
+            type: "turn_complete",
+            payload: { lastAgentMessage: `accepted ${params.content}` },
+          },
+        });
+      },
     };
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
       agentManager: new AgenCDaemonAgentManager({
@@ -354,7 +539,13 @@ describe("agenc agent start CLI", () => {
         now: sequence(["2026-05-01T12:00:00.000Z"]),
         runner,
         sessionManager,
+        broadcastSessionEvent: async (sessionId, event) => {
+          await clientMultiplexer.broadcastSessionEvent(sessionId, event);
+        },
       }),
+      clientMultiplexer,
+      createMessageId: sequence(["message_socket"]),
+      now: sequence(["2026-05-01T12:00:03.500Z"]),
       initializeAuthenticator: (params) => params.authCookie === "socket-cookie",
     });
     const connections = new Map<number, ReturnType<typeof dispatcher.createConnection>>();
@@ -363,12 +554,18 @@ describe("agenc agent start CLI", () => {
       onMessage: async (message, context) => {
         let connection = connections.get(context.connectionId);
         if (connection === undefined) {
-          connection = dispatcher.createConnection();
+          connection = dispatcher.createConnection({
+            sendNotification: (notification) => context.send(notification),
+          });
           connections.set(context.connectionId, connection);
         }
         await context.send(await connection.dispatch(message));
       },
       onConnectionClosed: (connectionId) => {
+        const connection = connections.get(connectionId);
+        for (const clientId of connection?.trackedClientIds ?? []) {
+          void clientMultiplexer.removeClient(clientId).catch(() => {});
+        }
         connections.delete(connectionId);
       },
     });
@@ -427,6 +624,94 @@ describe("agenc agent start CLI", () => {
           "",
         ].join("\n"),
       );
+
+      const attachIo = createIo();
+      await expect(
+        runAgenCAgentCli(
+          { kind: "attach", agentId: "agent_socket" },
+          {
+            client: createAgenCJsonLineDaemonClient({
+              socketPath,
+              authCookie: "socket-cookie",
+            }),
+            clientId: "tui_socket",
+            ensureDaemonReady: async () => {},
+            io: attachIo,
+          },
+        ),
+      ).resolves.toBe(0);
+      expect(attachIo.stdoutText()).toBe(
+        [
+          "agent_id\tsession_id\tattachment_id",
+          "agent_socket\tsession_1\tattachment_socket",
+          "",
+        ].join("\n"),
+      );
+
+      const tuiClient = await createConnectedAgenCJsonLineDaemonTuiClient({
+        socketPath,
+        authCookie: "socket-cookie",
+      });
+      const liveEvents: unknown[] = [];
+      try {
+        await tuiClient.request("agent.attach", {
+          agentId: "agent_socket",
+          clientId: "tui_live",
+        });
+        const unsubscribe = tuiClient.subscribeToSessionEvents(
+          "session_1",
+          (event) => liveEvents.push(event),
+        );
+        await expect(
+          tuiClient.request("message.stream", {
+            sessionId: "session_1",
+            content: "continue",
+            streamId: "stream_socket",
+          }),
+        ).resolves.toEqual({
+          messageId: "message_socket",
+          streamId: "stream_socket",
+          acceptedAt: "2026-05-01T12:00:03.500Z",
+        });
+        unsubscribe();
+      } finally {
+        await tuiClient.close();
+      }
+      expect(liveEvents).toEqual([
+        {
+          type: "daemon.event",
+          sessionId: "session_1",
+          messageId: "message_socket",
+          streamId: "stream_socket",
+          acceptedAt: "2026-05-01T12:00:03.500Z",
+          msg: {
+            type: "user_message",
+            id: "message_socket",
+            payload: {
+              message: "continue",
+              displayText: "continue",
+            },
+          },
+        },
+        {
+          type: "daemon.event",
+          sessionId: "session_1",
+          msg: {
+            id: "runtime_echo",
+            type: "agent_message_delta",
+            payload: { delta: "accepted continue" },
+          },
+        },
+        {
+          type: "daemon.event",
+          sessionId: "session_1",
+          msg: {
+            id: "runtime_complete",
+            type: "turn_complete",
+            payload: { lastAgentMessage: "accepted continue" },
+          },
+        },
+      ]);
     } finally {
       await server.close();
       await rm(dir, { recursive: true, force: true });
@@ -447,12 +732,151 @@ describe("agenc agent start CLI", () => {
         unattendedDeny: [],
       },
     ]);
+    expect(submitted).toEqual([
+      {
+        sessionId: "session_1",
+        content: "continue",
+        originalContent: "continue",
+        messageId: "message_socket",
+        streamId: "stream_socket",
+        acceptedAt: "2026-05-01T12:00:03.500Z",
+      },
+    ]);
     await expect(sessionManager.getSession("session_1")).resolves.toMatchObject({
       agentId: "agent_socket",
       metadata: {
         objective: "background compile",
         source: "agent.start",
       },
+    });
+  });
+
+  it("buffers attach replay notifications until the TUI subscribes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-attach-replay-"));
+    const socketPath = join(dir, "daemon.sock");
+    const replayEvent = {
+      type: "daemon.event",
+      sessionId: "session_replay",
+      msg: {
+        id: "event_before_subscribe",
+        type: "agent_message_delta",
+        payload: { delta: "already running" },
+      },
+    };
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+          return;
+        }
+        if (message.method === "agent.attach") {
+          await context.send(replayEvent);
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              agentId: "agent_replay",
+              attachmentId: "attachment_replay",
+              sessionIds: ["session_replay"],
+              sessions: [
+                {
+                  sessionId: "session_replay",
+                  agentId: "agent_replay",
+                  status: "idle",
+                  createdAt: "2026-05-01T12:00:00.000Z",
+                  cwd: "/daemon/workspace",
+                },
+              ],
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "replay-cookie",
+    });
+    try {
+      await expect(
+        client.request("agent.attach", {
+          agentId: "agent_replay",
+          clientId: "tui_replay",
+        }),
+      ).resolves.toMatchObject({
+        agentId: "agent_replay",
+        sessionIds: ["session_replay"],
+      });
+      const received: unknown[] = [];
+      const unsubscribe = client.subscribeToSessionEvents(
+        "session_replay",
+        (event) => received.push(event),
+      );
+      unsubscribe();
+
+      expect(received).toEqual([replayEvent]);
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("notifies persistent TUI clients when the daemon socket drops", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-connection-state-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method === "initialize") {
+          await context.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            result: {
+              type: "initialized",
+              protocolVersion: "1.0.0",
+              capabilities: {},
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "state-cookie",
+    });
+    const states: unknown[] = [];
+    const unsubscribe = client.subscribeToConnectionState((state) => {
+      states.push(state);
+    });
+    try {
+      await server.close();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      unsubscribe();
+      await client.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+
+    expect(states).toContainEqual({
+      status: "disconnected",
+      message: "Daemon connection closed",
+    });
+    expect(client.getConnectionState()).toEqual({
+      status: "disconnected",
+      message: "Daemon connection closed",
     });
   });
 

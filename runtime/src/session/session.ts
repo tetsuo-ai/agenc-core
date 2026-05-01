@@ -43,7 +43,7 @@ import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { projectMcpManagerToConnections } from "../agenc/adapters/upstream-mcp-clients.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
   normalizeProviderName,
@@ -1405,7 +1405,7 @@ export class Session {
   }
 
   async *runTurn(
-    userMessage: string,
+    userMessage: string | readonly LLMContentPart[],
     opts: SessionRunTurnOptions = {},
   ): AsyncGenerator<PhaseEvent, Terminal> {
     if (

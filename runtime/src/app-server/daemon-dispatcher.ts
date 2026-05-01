@@ -11,10 +11,12 @@ import {
   AgenCDaemonAgentLifecycleError,
   type AgenCDaemonAgentManager,
 } from "./agent-lifecycle.js";
+import type { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   isAgenCDaemonMethod,
   JSON_RPC_VERSION,
+  type AgentAttachParams,
   type AgentCreateParams,
   type AgentListParams,
   type AgenCDaemonErrorCode,
@@ -24,35 +26,71 @@ import {
   type AgenCDaemonResultByMethod,
   type InitializeParams,
   type JsonObject,
+  type MessageStreamParams,
   type RequestId,
+  type ToolApproveParams,
+  type ToolDenyParams,
 } from "./protocol/index.js";
 
 export interface AgenCDaemonDispatcherOptions {
   readonly agentManager: Pick<
     AgenCDaemonAgentManager,
-    "createAgent" | "listAgents"
+    | "approveTool"
+    | "attachAgent"
+    | "createAgent"
+    | "denyTool"
+    | "listAgents"
+    | "streamAgentMessage"
   >;
   readonly initializeAuthenticator?: (
     params: InitializeParams,
   ) => boolean | Promise<boolean>;
+  readonly clientMultiplexer?: Pick<
+    AgenCDaemonClientMultiplexer,
+    "attachClientToSession" | "broadcastSessionEvent" | "registerClient" | "removeClient"
+  >;
+  readonly createMessageId?: () => string;
+  readonly now?: () => string;
 }
 
 export class AgenCDaemonJsonRpcDispatcher {
   readonly #agentManager: Pick<
     AgenCDaemonAgentManager,
-    "createAgent" | "listAgents"
+    | "approveTool"
+    | "attachAgent"
+    | "createAgent"
+    | "denyTool"
+    | "listAgents"
+    | "streamAgentMessage"
   >;
   readonly #initializeAuthenticator:
     | ((params: InitializeParams) => boolean | Promise<boolean>)
     | undefined;
+  readonly #clientMultiplexer:
+    | Pick<
+        AgenCDaemonClientMultiplexer,
+        | "attachClientToSession"
+        | "broadcastSessionEvent"
+        | "registerClient"
+        | "removeClient"
+      >
+    | undefined;
+  readonly #createMessageId: () => string;
+  readonly #now: () => string;
 
   constructor(options: AgenCDaemonDispatcherOptions) {
     this.#agentManager = options.agentManager;
     this.#initializeAuthenticator = options.initializeAuthenticator;
+    this.#clientMultiplexer = options.clientMultiplexer;
+    this.#createMessageId =
+      options.createMessageId ?? (() => `message_${Date.now().toString(36)}`);
+    this.#now = options.now ?? (() => new Date().toISOString());
   }
 
-  createConnection(): AgenCDaemonJsonRpcConnection {
-    return new AgenCDaemonJsonRpcConnection(this);
+  createConnection(
+    options: AgenCDaemonJsonRpcConnectionOptions = {},
+  ): AgenCDaemonJsonRpcConnection {
+    return new AgenCDaemonJsonRpcConnection(this, options);
   }
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
@@ -110,6 +148,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       }
 
       return await this.#dispatchKnownMethod(
+        connection,
         id,
         message.method,
         params,
@@ -120,6 +159,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   }
 
   async #dispatchKnownMethod<Method extends AgenCDaemonMethod>(
+    connection: AgenCDaemonJsonRpcConnection,
     id: RequestId,
     method: Method,
     params: JsonObject,
@@ -135,22 +175,121 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.listAgents(validateAgentListParams(params)),
         );
+      case "agent.attach":
+        return this.#attachAgent(id, connection, params);
+      case "message.stream":
+        return this.#streamMessage(id, params);
+      case "tool.approve":
+        return successResponse(
+          id,
+          await this.#agentManager.approveTool(validateToolApproveParams(params)),
+        );
+      case "tool.deny":
+        return successResponse(
+          id,
+          await this.#agentManager.denyTool(validateToolDenyParams(params)),
+        );
       default:
         return errorResponse(
           id,
           -32601,
           `daemon method is not implemented yet: ${method}`,
-        );
+      );
     }
   }
+
+  async #attachAgent(
+    id: RequestId,
+    connection: AgenCDaemonJsonRpcConnection,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    const attachParams = validateAgentAttachParams(params);
+    const result = await this.#agentManager.attachAgent(attachParams);
+    const primarySessionId = result.sessionIds[0];
+    if (primarySessionId !== undefined) {
+      await this.#registerAttachedClient(
+        connection,
+        attachParams,
+        primarySessionId,
+      );
+    }
+    return successResponse(id, result);
+  }
+
+  async #registerAttachedClient(
+    connection: AgenCDaemonJsonRpcConnection,
+    params: AgentAttachParams,
+    sessionId: string,
+  ): Promise<void> {
+    if (
+      this.#clientMultiplexer === undefined ||
+      params.clientId === undefined ||
+      connection.sendNotification === undefined
+    ) {
+      return;
+    }
+    await this.#clientMultiplexer
+      .registerClient({
+        clientId: params.clientId,
+        send: (message) => connection.sendNotification!(message),
+      })
+      .catch((error) => {
+        if ((error as { code?: string }).code === "CLIENT_ALREADY_REGISTERED") {
+          throw invalidParams(
+            `daemon client is already registered: ${params.clientId}`,
+          );
+        }
+        throw error;
+    });
+    connection.trackClientId(params.clientId);
+    await this.#clientMultiplexer.attachClientToSession(
+      sessionId,
+      params.clientId,
+    );
+  }
+
+  async #streamMessage(
+    id: RequestId,
+    params: JsonObject,
+  ): Promise<AgenCDaemonResponse> {
+    const streamParams = validateMessageStreamParams(params);
+    const messageId = streamParams.clientMessageId ?? this.#createMessageId();
+    const streamId = streamParams.streamId ?? messageId;
+    const acceptedAt = this.#now();
+    await this.#agentManager.streamAgentMessage({
+      sessionId: streamParams.sessionId,
+      content: streamParams.content,
+      ...displayUserMessageFromMetadata(streamParams.metadata),
+      messageId,
+      streamId,
+      acceptedAt,
+    });
+    return successResponse(id, {
+      messageId,
+      streamId,
+      acceptedAt,
+    });
+  }
+}
+
+export interface AgenCDaemonJsonRpcConnectionOptions {
+  readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
 }
 
 export class AgenCDaemonJsonRpcConnection {
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
+  readonly #sendNotification:
+    | ((message: JsonObject) => void | Promise<void>)
+    | undefined;
+  readonly #clientIds = new Set<string>();
   #initialized = false;
 
-  constructor(dispatcher: AgenCDaemonJsonRpcDispatcher) {
+  constructor(
+    dispatcher: AgenCDaemonJsonRpcDispatcher,
+    options: AgenCDaemonJsonRpcConnectionOptions = {},
+  ) {
     this.#dispatcher = dispatcher;
+    this.#sendNotification = options.sendNotification;
   }
 
   get initialized(): boolean {
@@ -159,6 +298,20 @@ export class AgenCDaemonJsonRpcConnection {
 
   markInitialized(): void {
     this.#initialized = true;
+  }
+
+  get sendNotification():
+    | ((message: JsonObject) => void | Promise<void>)
+    | undefined {
+    return this.#sendNotification;
+  }
+
+  trackClientId(clientId: string): void {
+    this.#clientIds.add(clientId);
+  }
+
+  get trackedClientIds(): readonly string[] {
+    return [...this.#clientIds];
   }
 
   async dispatch(message: JsonObject): Promise<AgenCDaemonResponse> {
@@ -226,6 +379,113 @@ function validateAgentListParams(params: JsonObject): AgentListParams {
   return validated as AgentListParams;
 }
 
+function validateAgentAttachParams(params: JsonObject): AgentAttachParams {
+  const validated = validateObjectShape(params, {
+    methodName: "agent.attach",
+    stringFields: ["agentId", "clientId"],
+  });
+  if (
+    typeof validated.agentId !== "string" ||
+    validated.agentId.trim().length === 0
+  ) {
+    throw invalidParams("agent.attach requires agentId");
+  }
+  return validated as AgentAttachParams;
+}
+
+function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
+  const validated = validateObjectShape(params, {
+    methodName: "message.stream",
+    stringFields: ["sessionId", "clientMessageId", "streamId"],
+    objectFields: ["metadata"],
+    valueFields: ["content"],
+  });
+  if (
+    typeof validated.sessionId !== "string" ||
+    validated.sessionId.trim().length === 0
+  ) {
+    throw invalidParams("message.stream requires sessionId");
+  }
+  const content = validated.content;
+  if (typeof content !== "string" && !Array.isArray(content)) {
+    throw invalidParams("message.stream param 'content' must be a string or array");
+  }
+  if (Array.isArray(content)) {
+    for (const [index, block] of content.entries()) {
+      if (!isValidMessageContentBlock(block)) {
+        throw invalidParams(
+          `message.stream param 'content[${index}]' must be a text or image_url block`,
+        );
+      }
+    }
+  }
+  return validated as MessageStreamParams;
+}
+
+function displayUserMessageFromMetadata(
+  metadata: JsonObject | undefined,
+): { readonly displayUserMessage?: string | null } {
+  if (metadata === undefined || !("displayUserMessage" in metadata)) return {};
+  const value = metadata.displayUserMessage;
+  if (value === null || typeof value === "string") {
+    return { displayUserMessage: value };
+  }
+  throw invalidParams(
+    "message.stream metadata 'displayUserMessage' must be a string or null",
+  );
+}
+
+function isValidMessageContentBlock(block: unknown): boolean {
+  if (!isPlainJsonObject(block)) return false;
+  if (block.type === "text") {
+    return typeof block.text === "string";
+  }
+  if (block.type === "image_url") {
+    const image = block.image_url;
+    return isPlainJsonObject(image) && typeof image.url === "string";
+  }
+  return false;
+}
+
+function validateToolApproveParams(params: JsonObject): ToolApproveParams {
+  const validated = validateObjectShape(params, {
+    methodName: "tool.approve",
+    stringFields: ["sessionId", "requestId", "scope"],
+  });
+  validateRequiredString(validated, "tool.approve", "sessionId");
+  validateRequiredString(validated, "tool.approve", "requestId");
+  if (
+    validated.scope !== undefined &&
+    validated.scope !== "once" &&
+    validated.scope !== "session" &&
+    validated.scope !== "agent"
+  ) {
+    throw invalidParams("tool.approve param 'scope' must be once, session, or agent");
+  }
+  return validated as ToolApproveParams;
+}
+
+function validateToolDenyParams(params: JsonObject): ToolDenyParams {
+  const validated = validateObjectShape(params, {
+    methodName: "tool.deny",
+    stringFields: ["sessionId", "requestId", "reason"],
+  });
+  validateRequiredString(validated, "tool.deny", "sessionId");
+  validateRequiredString(validated, "tool.deny", "requestId");
+  return validated as ToolDenyParams;
+}
+
+function validateRequiredString(
+  params: JsonObject,
+  methodName: string,
+  field: string,
+): void {
+  const value = params[field];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw invalidParams(`${methodName} requires ${field}`);
+  }
+}
+
 function validateObjectShape(
   params: JsonObject,
   options: {
@@ -234,6 +494,7 @@ function validateObjectShape(
     readonly numberFields?: readonly string[];
     readonly stringArrayFields?: readonly string[];
     readonly objectFields?: readonly string[];
+    readonly valueFields?: readonly string[];
   },
 ): JsonObject {
   const allowed = new Set([
@@ -241,6 +502,7 @@ function validateObjectShape(
     ...(options.numberFields ?? []),
     ...(options.stringArrayFields ?? []),
     ...(options.objectFields ?? []),
+    ...(options.valueFields ?? []),
   ]);
   for (const [key, value] of Object.entries(params)) {
     if (!allowed.has(key)) {

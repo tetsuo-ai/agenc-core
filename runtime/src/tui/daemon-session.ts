@@ -6,13 +6,17 @@
  */
 
 import type {
+  AgentAttachParams,
   AgenCDaemonMethod,
   AgenCDaemonResultByMethod,
   JsonObject,
   JsonValue,
+  MessageContentBlock,
   MessageStreamParams,
   SessionAttachParams,
 } from "../app-server/protocol/index.js";
+import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
+import { reviewDecisionIsAllow, type ReviewDecision } from "../permissions/review-decision.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
@@ -30,7 +34,10 @@ export interface AgenCDaemonConnectionState extends JsonObject {
 
 export interface AgenCTuiBridgeSession {
   readonly conversationId: string;
-  readonly services: unknown;
+  readonly services: {
+    approvalResolver?: ApprovalResolver;
+    readonly [key: string]: unknown;
+  };
   readonly initialTranscriptEvents?: readonly unknown[];
   getInitialTranscriptEvents?(): readonly unknown[];
   subscribeToEvents?(cb: (event: unknown) => void): () => void;
@@ -38,6 +45,7 @@ export interface AgenCTuiBridgeSession {
     message: string,
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
+  enqueueIdleInput?(input: unknown): number;
 }
 
 export type AgenCDaemonBackedTuiSession<
@@ -45,6 +53,7 @@ export type AgenCDaemonBackedTuiSession<
 > = Omit<
   Session,
   | "conversationId"
+  | "enqueueIdleInput"
   | "getInitialTranscriptEvents"
   | "submit"
   | "subscribeToEvents"
@@ -56,6 +65,7 @@ export type AgenCDaemonBackedTuiSession<
     message: string,
     opts?: { readonly displayUserMessage?: string | null },
   ): Promise<void>;
+  enqueueIdleInput(input: unknown): number;
 };
 
 export interface AgenCDaemonTuiClient {
@@ -80,6 +90,33 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly client: AgenCDaemonTuiClient;
   readonly sessionId: string;
   readonly clientId: string;
+  readonly conversationId?: string;
+}
+
+export interface AgenCDaemonAgentTuiSessionOptions<
+  Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
+> extends Omit<AgenCDaemonTuiSessionOptions<Session>, "sessionId"> {
+  readonly agentId: string;
+}
+
+export async function attachDaemonAgentTuiSession<
+  Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
+>(
+  options: AgenCDaemonAgentTuiSessionOptions<Session>,
+): Promise<AgenCDaemonBackedTuiSession<Session>> {
+  const attachment = await options.client.request("agent.attach", {
+    agentId: options.agentId,
+    clientId: options.clientId,
+  } satisfies AgentAttachParams);
+  const sessionId = attachment.sessionIds[0];
+  if (sessionId === undefined) {
+    throw new Error(`daemon agent has no attached session: ${options.agentId}`);
+  }
+  return createDaemonTuiSession({
+    ...options,
+    sessionId,
+    conversationId: attachment.runtimeSessionId ?? options.agentId,
+  });
 }
 
 export async function attachDaemonTuiSession<
@@ -100,19 +137,44 @@ export function createDaemonTuiSession<
   options: AgenCDaemonTuiSessionOptions<Session>,
 ): AgenCDaemonBackedTuiSession<Session> {
   const { baseSession, client, sessionId, clientId } = options;
+  const conversationId = options.conversationId ?? sessionId;
+  const queuedInputs: MessageContentBlock[] = [];
+  let queuedInputCount = 0;
   return {
     ...baseSession,
-    conversationId: sessionId,
-    submit: async (message) => {
-      if (message.length === 0) return;
+    conversationId,
+    submit: async (message, opts) => {
+      const queued = queuedInputs.splice(0);
+      queuedInputCount = 0;
+      if (queued.length === 0 && message.length === 0) return;
+      const content =
+        queued.length === 0
+          ? message
+          : [
+              ...queued,
+              ...(message.length > 0
+                ? [{ type: "text", text: message } as MessageContentBlock]
+                : []),
+            ];
       await client.request("message.stream", {
         sessionId,
-        content: message,
+        content,
+        ...(opts?.displayUserMessage !== undefined
+          ? { metadata: { displayUserMessage: opts.displayUserMessage } }
+          : {}),
         streamId: `${clientId}:${Date.now()}`,
       } satisfies MessageStreamParams);
     },
+    enqueueIdleInput: (input) => {
+      const blocks = queuedInputBlocks(input);
+      if (blocks.length > 0) {
+        queuedInputs.push(...blocks);
+        queuedInputCount += 1;
+      }
+      return queuedInputCount;
+    },
     subscribeToEvents: (cb) =>
-      subscribeToDaemonEvents(client, sessionId, cb),
+      subscribeToDaemonEvents(client, sessionId, baseSession, cb),
     getInitialTranscriptEvents: () => [
       ...baseInitialTranscriptEvents(baseSession),
       ...connectionNoticeEvents(client.getConnectionState?.() ?? null),
@@ -120,15 +182,47 @@ export function createDaemonTuiSession<
   } as AgenCDaemonBackedTuiSession<Session>;
 }
 
+function queuedInputBlocks(input: unknown): MessageContentBlock[] {
+  if (typeof input === "string") return [{ type: "text", text: input }];
+  if (!isJsonObject(input)) return [];
+  return messageContentBlocks(input.content);
+}
+
+function messageContentBlocks(
+  content: JsonValue | undefined,
+): MessageContentBlock[] {
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  if (!Array.isArray(content)) return [];
+  return content
+    .flatMap((part): MessageContentBlock[] => {
+      if (!isJsonObject(part) || typeof part.type !== "string") return [];
+      if (part.type === "text") {
+        return typeof part.text === "string"
+          ? [{ type: "text", text: part.text }]
+          : [];
+      }
+      if (part.type === "image_url") {
+        const image = part.image_url;
+        if (isJsonObject(image) && typeof image.url === "string") {
+          return [{ type: "image_url", image_url: { url: image.url } }];
+        }
+      }
+      return [];
+    })
+}
+
 function subscribeToDaemonEvents(
   client: AgenCDaemonTuiClient,
   sessionId: string,
+  session: AgenCTuiBridgeSession,
   cb: (event: unknown) => void,
 ): () => void {
   const unsubscribeSession = client.subscribeToSessionEvents(
     sessionId,
     (event) => {
-      cb(toTranscriptEvent(event));
+      const transcriptEvent = toTranscriptEvent(event);
+      cb(transcriptEvent);
+      void maybeBridgeDaemonApproval(client, sessionId, session, transcriptEvent);
     },
   );
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
@@ -139,6 +233,68 @@ function subscribeToDaemonEvents(
   return () => {
     unsubscribeSession();
     unsubscribeConnection?.();
+  };
+}
+
+async function maybeBridgeDaemonApproval(
+  client: AgenCDaemonTuiClient,
+  sessionId: string,
+  session: AgenCTuiBridgeSession,
+  event: unknown,
+): Promise<void> {
+  if (!isJsonObject(event) || event.type !== "request_permissions") return;
+  const payload = event.payload;
+  if (!isJsonObject(payload) || typeof payload.callId !== "string") return;
+  const resolver = session.services.approvalResolver;
+  if (resolver === undefined) return;
+  const toolName =
+    typeof payload.toolName === "string" ? payload.toolName : "tool";
+  const decision = await resolver
+    .request(buildDaemonApprovalCtx(session, payload, toolName))
+    .catch((): ReviewDecision => ({ kind: "denied" }));
+  if (reviewDecisionIsAllow(decision)) {
+    await client.request("tool.approve", {
+      sessionId,
+      requestId: payload.callId,
+      scope: decision.kind === "approved_for_session" ? "session" : "once",
+    });
+    return;
+  }
+  await client.request("tool.deny", {
+    sessionId,
+    requestId: payload.callId,
+    reason: decision.kind,
+  });
+}
+
+function buildDaemonApprovalCtx(
+  session: AgenCTuiBridgeSession,
+  payload: JsonObject,
+  toolName: string,
+): ApprovalCtx {
+  const callId = payload.callId as string;
+  const input = isJsonObject(payload.input) ? payload.input : {};
+  return {
+    invocation: {
+      session,
+      turn: { subId: typeof payload.turnId === "string" ? payload.turnId : callId },
+      tracker: {
+        appendFileDiff() {},
+        snapshot: () => [],
+        clear() {},
+      },
+      callId,
+      toolName: { name: toolName },
+      payload: {
+        kind: "function",
+        arguments: JSON.stringify(input),
+      },
+      source: "direct",
+    } as ApprovalCtx["invocation"],
+    callId,
+    toolName,
+    turnId: typeof payload.turnId === "string" ? payload.turnId : callId,
+    ...(typeof payload.reason === "string" ? { retryReason: payload.reason } : {}),
   };
 }
 

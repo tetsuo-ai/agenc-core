@@ -10,7 +10,9 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import { APPROVED } from "../permissions/review-decision.js";
 import type { AgentStatus } from "../agents/status.js";
+import type { ApprovalResolver } from "../tools/orchestrator.js";
 
 describe("AgenC delegate background-agent runner", () => {
   it("starts agent.create through the async delegate path and keeps it alive", async () => {
@@ -88,6 +90,7 @@ describe("AgenC delegate background-agent runner", () => {
       runInBackground: true,
       isolation: "cwd",
       model: "grok-4",
+      onProgress: expect.any(Function),
     });
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]?.alwaysAllowRules.session).toEqual([
@@ -98,6 +101,380 @@ describe("AgenC delegate background-agent runner", () => {
       "exec_command",
     ]);
     expect(shutdown).not.toHaveBeenCalled();
+  });
+
+  it("replays real delegate progress to the bound daemon session and routes attached input to the live agent", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = { conversationId: "parent-session", permissionModeRegistry };
+    const control = {
+      shutdown: vi.fn(async () => {}),
+      sendInput: vi.fn(async () => {}),
+    };
+    let statusListener: ((status: AgentStatus) => void) | undefined;
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      onStatusChange: vi.fn((listener: (status: AgentStatus) => void) => {
+        statusListener = listener;
+        listener({ status: "pending_init" });
+        return vi.fn();
+      }),
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const delegateFn = vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+      await opts.onProgress?.(
+        {
+          kind: "message",
+          message: { role: "assistant", content: "he" },
+        },
+        thread,
+      );
+      await opts.onProgress?.(
+        {
+          kind: "message",
+          message: { role: "assistant", content: "hello" },
+        },
+        thread,
+      );
+      await opts.onProgress?.(
+        {
+          kind: "tool_call",
+          callId: "tool_1",
+          toolName: "FileRead",
+        },
+        thread,
+      );
+      await opts.onProgress?.(
+        {
+          kind: "tool_result",
+          callId: "tool_1",
+          toolName: "FileRead",
+          result: "file text",
+          isError: false,
+        },
+        thread,
+      );
+      await opts.onProgress?.(
+        {
+          kind: "run_complete",
+          finalMessage: "hello",
+          toolCallCount: 1,
+        },
+        thread,
+      );
+      return {
+        kind: "async_launched",
+        thread,
+      };
+    }) as unknown as AgenCDelegateFunction;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    statusListener?.({
+      status: "completed",
+      turnId: "turn_1",
+      endedAtMs: 100,
+      lastMessage: "hello",
+    });
+    await runner.submitAgentMessage("agent_live", {
+      sessionId: "session_1",
+      content: "continue",
+      originalContent: "continue",
+      messageId: "message_1",
+      streamId: "stream_1",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+    });
+
+    expect(control.sendInput).toHaveBeenCalledWith("agent_live", "continue");
+    expect(emitted).toEqual([
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        msg: {
+          id: expect.any(String),
+          type: "agent_message_delta",
+          payload: { delta: "he" },
+        },
+      },
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        msg: {
+          id: expect.any(String),
+          type: "agent_message_delta",
+          payload: { delta: "llo" },
+        },
+      },
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        msg: {
+          id: "tool_1",
+          type: "tool_call_started",
+          payload: {
+            callId: "tool_1",
+            toolName: "FileRead",
+            args: "{}",
+          },
+        },
+      },
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        msg: {
+          id: "tool-result-tool_1",
+          type: "tool_call_completed",
+          payload: {
+            callId: "tool_1",
+            result: "file text",
+            isError: false,
+            metadata: {
+              toolName: "FileRead",
+            },
+          },
+        },
+      },
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        msg: {
+          id: expect.any(String),
+          type: "turn_complete",
+          payload: {
+            turnId: "turn_1",
+            lastAgentMessage: "hello",
+            completedAt: 100,
+          },
+        },
+      },
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        messageId: "message_1",
+        streamId: "stream_1",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+        msg: {
+          id: "message_1",
+          type: "user_message",
+          payload: {
+            message: "continue",
+            displayText: "continue",
+          },
+        },
+      },
+    ]);
+  });
+
+  it("bridges background tool approvals through daemon session decisions", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const services: { approvalResolver?: ApprovalResolver } = {};
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+      services,
+    };
+    const control = { shutdown: vi.fn(async () => {}) };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    let resolver: ApprovalResolver | undefined;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async (opts: Parameters<AgenCDelegateFunction>[0]) => {
+        resolver = opts.parent.services.approvalResolver;
+        return {
+          kind: "async_launched",
+          thread,
+        };
+      }) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+
+    const decision = resolver!.request({
+      callId: "call_1",
+      toolName: "Bash",
+      turnId: "turn_1",
+      invocation: {
+        session: { conversationId: "agent_live" },
+        payload: {
+          kind: "function",
+          arguments: JSON.stringify({ command: "pwd" }),
+        },
+      },
+    } as never);
+    await Promise.resolve();
+
+    expect(emitted).toEqual([
+      {
+        type: "daemon.event",
+        sessionId: "session_1",
+        msg: {
+          id: "call_1",
+          type: "request_permissions",
+          payload: {
+            callId: "call_1",
+            toolName: "Bash",
+            turnId: "turn_1",
+            permissions: ["tool.use"],
+            input: { command: "pwd" },
+          },
+        },
+      },
+    ]);
+    await expect(
+      runner.resolveToolDecision("agent_live", {
+        requestId: "call_1",
+        decision: APPROVED,
+      }),
+    ).resolves.toBe(true);
+    await expect(decision).resolves.toBe(APPROVED);
+  });
+
+  it("preserves structured attached input and honors hidden display submits", async () => {
+    const shutdown = vi.fn(async () => {});
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: vi.fn(async () => {}),
+    };
+    const session = {
+      conversationId: "parent-session",
+      permissionModeRegistry,
+    };
+    const control = {
+      shutdown: vi.fn(async () => {}),
+      sendInput: vi.fn(async () => {}),
+    };
+    const downInbox = { send: vi.fn(() => "sent") };
+    const thread = {
+      threadId: "agent_live",
+      agentPath: "/root/agent_live",
+      live: {
+        agentPath: "/root/agent_live",
+        downInbox,
+      },
+      join: vi.fn(() => new Promise(() => {})),
+    } as unknown as AgentThread;
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: vi.fn(async () => ({
+        session,
+        shutdown,
+      })) as unknown as AgenCBootstrapFunction,
+      ensureAgentControl: vi.fn(() => ({
+        control,
+        registry: {},
+      })) as unknown as AgenCEnsureAgentControlFunction,
+      delegateFn: vi.fn(async () => ({
+        kind: "async_launched",
+        thread,
+      })) as unknown as AgenCDelegateFunction,
+      now: () => "2026-05-01T12:00:00.500Z",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "compile the daemon",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("agent_live", {
+      sessionId: "session_1",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    await runner.submitAgentMessage("agent_live", {
+      sessionId: "session_1",
+      content: [
+        { type: "text", text: "inspect" },
+        {
+          type: "image_url",
+          image_url: { url: "file:///tmp/screenshot.png" },
+        },
+      ],
+      originalContent: [
+        { type: "text", text: "inspect" },
+        {
+          type: "image_url",
+          image_url: { url: "file:///tmp/screenshot.png" },
+        },
+      ],
+      displayUserMessage: null,
+      messageId: "message_1",
+      streamId: "stream_1",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+    });
+
+    expect(control.sendInput).not.toHaveBeenCalled();
+    expect(downInbox.send).toHaveBeenCalledWith({
+      author: "/root/agent_live",
+      recipient: "/root/agent_live",
+      content: "inspect\n[image]",
+      triggerTurn: true,
+      direction: "down",
+      metadata: {
+        kind: "user_input",
+        inputContent: [
+          { type: "text", text: "inspect" },
+          {
+            type: "image_url",
+            image_url: { url: "file:///tmp/screenshot.png" },
+          },
+        ],
+      },
+    });
+    expect(emitted).toEqual([]);
   });
 
   it("reports live status freshness from thread status changes", async () => {

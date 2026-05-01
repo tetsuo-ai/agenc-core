@@ -3,6 +3,7 @@ import {
   AgenCDaemonAgentLifecycleError,
   AgenCDaemonAgentManager,
 } from "./agent-lifecycle.js";
+import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -28,7 +29,11 @@ describe("AgenC background agent lifecycle", () => {
   it("agent.create launches a running background agent and seeds its session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
-      now: sequence(["2026-05-01T12:00:01.000Z"]),
+      createAttachmentId: sequence(["attachment_1"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
     });
     const starts: AgenCBackgroundAgentStartParams[] = [];
     const runner: AgenCBackgroundAgentRunner = {
@@ -148,6 +153,40 @@ describe("AgenC background agent lifecycle", () => {
         },
       ],
     });
+    await expect(
+      agents.attachAgent({ agentId: "agent_1", clientId: "tui_1" }),
+    ).resolves.toEqual({
+      agentId: "agent_1",
+      attachmentId: "attachment_1",
+      sessionIds: ["session_1"],
+      runtimeSessionId: "agent_1",
+      sessions: [
+        {
+          sessionId: "session_1",
+          agentId: "agent_1",
+          status: "idle",
+          createdAt: "2026-05-01T12:00:01.000Z",
+          cwd: "/workspace",
+          metadata: {
+            ticket: "F-06a",
+            objective: "build the parser",
+            source: "agent.start",
+            unattendedAllow: [
+              "FileRead",
+              "system.grep",
+              "system.glob",
+              "system.listDir",
+              "system.stat",
+            ],
+            unattendedDeny: [],
+          },
+          activeAttachmentIds: ["attachment_1"],
+        },
+      ],
+    });
+    await expect(sessions.getSession("session_1")).resolves.toMatchObject({
+      activeAttachmentIds: ["attachment_1"],
+    });
   });
 
   it("refreshes active list status and omits agents no longer active", async () => {
@@ -263,6 +302,120 @@ describe("AgenC background agent lifecycle", () => {
     ).resolves.toMatchObject({
       agents: [{ agentId: "agent_3", objective: "third" }],
     });
+  });
+
+  it("preserves structured message.stream content for the background runner", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const submitted: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_structured",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async (agentId, params) => {
+        submitted.push({ agentId, params });
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await agents.createAgent({ objective: "inspect image" });
+
+    await agents.streamAgentMessage({
+      sessionId: "session_1",
+      content: [
+        { type: "text", text: "inspect" },
+        {
+          type: "image_url",
+          image_url: { url: "file:///tmp/screenshot.png" },
+        },
+      ],
+      messageId: "message_1",
+      streamId: "stream_1",
+      acceptedAt: "2026-05-01T12:00:01.000Z",
+      displayUserMessage: null,
+    });
+
+    expect(submitted).toEqual([
+      {
+        agentId: "agent_structured",
+        params: {
+          sessionId: "session_1",
+          content: [
+            { type: "text", text: "inspect" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/screenshot.png" },
+            },
+          ],
+          originalContent: [
+            { type: "text", text: "inspect" },
+            {
+              type: "image_url",
+              image_url: { url: "file:///tmp/screenshot.png" },
+            },
+          ],
+          displayUserMessage: null,
+          messageId: "message_1",
+          streamId: "stream_1",
+          acceptedAt: "2026-05-01T12:00:01.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("rejects agent attach for missing agents and inactive sessions", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1", "session_2"]),
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+    });
+    let active = true;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: active ? "agent_closed" : "agent_inactive",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      getAgentSnapshot: async (agentId) =>
+        agentId === "agent_inactive" && !active
+          ? null
+          : {
+              status: "running",
+              lastActiveAt: "2026-05-01T12:00:00.500Z",
+            },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      runner,
+      sessionManager: sessions,
+    });
+
+    await expect(
+      agents.attachAgent({ agentId: "agent_missing" }),
+    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+
+    await agents.createAgent({ objective: "closed session" });
+    await sessions.terminateSession({
+      sessionId: "session_1",
+      reason: "test closed",
+    });
+    await expect(
+      agents.attachAgent({ agentId: "agent_closed" }),
+    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+
+    active = false;
+    await agents.createAgent({ objective: "inactive before attach" });
+    await expect(
+      agents.attachAgent({ agentId: "agent_inactive" }),
+    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
   });
 
   it("does not report running when no background runner is available", async () => {
@@ -553,6 +706,41 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
+        id: "bad-attach",
+        method: "agent.attach",
+        params: { clientId: "tui_1" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-attach",
+      error: {
+        code: -32602,
+        message: "agent.attach requires agentId",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-stream-content",
+        method: "message.stream",
+        params: {
+          sessionId: "session_1",
+          content: [{ type: "image", text: "not allowed" }],
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-stream-content",
+      error: {
+        code: -32602,
+        message: "message.stream param 'content[0]' must be a text or image_url block",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
         id: 3,
         method: "agent.create",
         params: { objective: "ship", unattendedAllow: "FileRead" },
@@ -583,5 +771,249 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     expect(startAgent).not.toHaveBeenCalled();
+  });
+
+  it("routes daemon tool approval decisions to the background runner", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    const decisions: unknown[] = [];
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_approve",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      resolveToolDecision: async (agentId, params) => {
+        decisions.push({ agentId, params });
+        return true;
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await agents.createAgent({ objective: "wait for approval" });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+    });
+    const connection = dispatcher.createConnection();
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "approve",
+        method: "tool.approve",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_1",
+          scope: "session",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "approve",
+      result: { requestId: "call_1", decision: "approved" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "deny",
+        method: "tool.deny",
+        params: {
+          sessionId: "session_1",
+          requestId: "call_2",
+          reason: "no",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "deny",
+      result: { requestId: "call_2", decision: "denied" },
+    });
+
+    expect(decisions).toEqual([
+      {
+        agentId: "agent_approve",
+        params: {
+          requestId: "call_1",
+          decision: { kind: "approved_for_session" },
+        },
+      },
+      {
+        agentId: "agent_approve",
+        params: {
+          requestId: "call_2",
+          decision: { kind: "denied" },
+        },
+      },
+    ]);
+  });
+
+  it("rejects duplicate attach client ids instead of retaining a stale socket", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      createAttachmentId: sequence(["attachment_1"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+    });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager: sessions,
+    });
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      runner: {
+        startAgent: async () => ({
+          agentId: "agent_dup",
+          startedAt: "2026-05-01T12:00:00.500Z",
+          status: "running",
+        }),
+      },
+      sessionManager: sessions,
+      broadcastSessionEvent: async (sessionId, event) => {
+        await clientMultiplexer.broadcastSessionEvent(sessionId, event);
+      },
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+      clientMultiplexer,
+    });
+    const first = dispatcher.createConnection({ sendNotification: () => {} });
+    const second = dispatcher.createConnection({ sendNotification: () => {} });
+
+    for (const [id, connection] of [
+      ["init-1", first],
+      ["init-2", second],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "initialize",
+          params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+        }),
+      ).resolves.toMatchObject({ result: { type: "initialized" } });
+    }
+    await expect(
+      first.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "create",
+        method: "agent.create",
+        params: { objective: "run background work" },
+      }),
+    ).resolves.toMatchObject({
+      result: { agentId: "agent_dup", sessionId: "session_1" },
+    });
+    await expect(
+      first.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach-1",
+        method: "agent.attach",
+        params: { agentId: "agent_dup", clientId: "tui_dup" },
+      }),
+    ).resolves.toMatchObject({
+      result: { agentId: "agent_dup", sessionIds: ["session_1"] },
+    });
+    await expect(
+      second.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach-2",
+        method: "agent.attach",
+        params: { agentId: "agent_dup", clientId: "tui_dup" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "attach-2",
+      error: {
+        code: -32602,
+        message: "daemon client is already registered: tui_dup",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+  });
+
+  it("registers an attached client only on the primary attached session", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_new", "session_old"]),
+      createAttachmentId: sequence(["attachment_new"]),
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+    });
+    await sessions.createSession({ agentId: "agent_multi" });
+    await sessions.createSession({ agentId: "agent_multi" });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
+      sessionManager: sessions,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: {
+        createAgent: async () => {
+          throw new Error("createAgent should not be called");
+        },
+        listAgents: async () => ({ agents: [] }),
+        streamAgentMessage: async () => {},
+        approveTool: async () => ({ requestId: "unused", decision: "approved" }),
+        denyTool: async () => ({ requestId: "unused", decision: "denied" }),
+        attachAgent: async () => ({
+          agentId: "agent_multi",
+          attachmentId: "attachment_new",
+          sessionIds: ["session_new", "session_old"],
+          sessions: [
+            {
+              sessionId: "session_new",
+              agentId: "agent_multi",
+              status: "idle",
+              createdAt: "2026-05-01T12:00:00.000Z",
+            },
+            {
+              sessionId: "session_old",
+              agentId: "agent_multi",
+              status: "idle",
+              createdAt: "2026-05-01T12:00:01.000Z",
+            },
+          ],
+        }),
+      },
+      clientMultiplexer,
+    });
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "init",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attach",
+        method: "agent.attach",
+        params: { agentId: "agent_multi", clientId: "tui_multi" },
+      }),
+    ).resolves.toMatchObject({
+      result: {
+        agentId: "agent_multi",
+        sessionIds: ["session_new", "session_old"],
+      },
+    });
+
+    await expect(
+      clientMultiplexer.attachedClientIds("session_new"),
+    ).resolves.toEqual(["tui_multi"]);
+    await expect(
+      clientMultiplexer.attachedClientIds("session_old"),
+    ).resolves.toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Delegate — the AgentTool spawn dispatcher.
  *
- * Hand-port of openclaude `tools/AgentTool/AgentTool.tsx` (1,232 LOC)
+ * Hand-port of the donor AgentTool dispatcher (1,232 LOC)
  * spawn-dispatcher subset. Public entry point for:
  *
  *   - Isolation setup (worktree create + bind CWD, or CWD-only)
@@ -24,7 +24,7 @@ import type { AgentRegistry, AgentPath } from "./registry.js";
 import type { ForkMode } from "./fork-context.js";
 import type { WorktreeHandle } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
-import type { RunAgentResult } from "./run-agent.js";
+import type { RunAgentProgressEvent, RunAgentResult } from "./run-agent.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -62,6 +62,10 @@ export interface DelegateOpts {
   readonly forceSynchronous?: boolean;
   readonly toolAllowlist?: ReadonlyArray<string>;
   readonly resumeManager?: ResumeManager;
+  readonly onProgress?: (
+    event: RunAgentProgressEvent,
+    thread: AgentThread,
+  ) => void | Promise<void>;
 }
 
 export type DelegateOutcome =
@@ -192,6 +196,9 @@ export async function delegate(
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
+      ...(opts.onProgress !== undefined
+        ? { onProgress: opts.onProgress }
+        : {}),
     });
 
   if (!opts.forceSynchronous && (runInBackground || live.role.config.background)) {
@@ -240,6 +247,7 @@ export async function delegate(
 
 async function runToCompletion(
   params: Parameters<typeof runAgent>[0],
+  onProgress?: (event: RunAgentProgressEvent) => void | Promise<void>,
 ): Promise<RunAgentResult> {
   const iter = runAgent(params);
   // eslint-disable-next-line no-constant-condition
@@ -248,6 +256,7 @@ async function runToCompletion(
     if (step.done) {
       return step.value;
     }
+    await onProgress?.(step.value);
   }
 }
 
@@ -263,23 +272,30 @@ async function runDelegateAgentLoop(opts: {
   readonly model?: string;
   readonly reasoningEffort?: ReasoningEffort;
   readonly resumeManager?: ResumeManager;
+  readonly onProgress?: (
+    event: RunAgentProgressEvent,
+    thread: AgentThread,
+  ) => void | Promise<void>;
 }): Promise<RunAgentResult> {
   while (true) {
     const live = opts.thread.live;
-    const result = await runToCompletion({
-      live,
-      parent: opts.parent,
-      initialMessages: opts.initialMessages,
-      taskPrompt: opts.taskPrompt,
-      ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
-      ...(opts.toolAllowlist !== undefined
-        ? { toolAllowlist: opts.toolAllowlist }
-        : {}),
-      ...(opts.model !== undefined ? { model: opts.model } : {}),
-      ...(opts.reasoningEffort !== undefined
-        ? { reasoningEffort: opts.reasoningEffort }
-        : {}),
-    });
+    const result = await runToCompletion(
+      {
+        live,
+        parent: opts.parent,
+        initialMessages: opts.initialMessages,
+        taskPrompt: opts.taskPrompt,
+        ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
+        ...(opts.toolAllowlist !== undefined
+          ? { toolAllowlist: opts.toolAllowlist }
+          : {}),
+        ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(opts.reasoningEffort !== undefined
+          ? { reasoningEffort: opts.reasoningEffort }
+          : {}),
+      },
+      (event) => opts.onProgress?.(event, opts.thread),
+    );
 
     if (result.outcome !== "errored") {
       opts.resumeManager?.recordSuccess(live.agentId);

@@ -6,7 +6,7 @@ import {
   formatStructuredToolResult,
 } from "./message-adapter.js";
 
-describe("OpenClaude TUI transcript bridge", () => {
+describe("AgenC TUI transcript bridge", () => {
   test("maps AgenC user and streaming assistant events into upstream messages", () => {
     const transcript = adaptTranscriptEvents([
       {
@@ -29,6 +29,26 @@ describe("OpenClaude TUI transcript bridge", () => {
     expect(transcript.messages.at(-1)).toMatchObject({
       type: "user",
       message: { content: "hello" },
+    });
+  });
+
+  test("renders daemon user messages from displayText instead of dropping content-shaped payloads", () => {
+    const transcript = adaptTranscriptEvents([
+      {
+        id: "daemon-user",
+        msg: {
+          type: "user_message",
+          payload: {
+            message: [{ type: "text", text: "raw block" }],
+            displayText: "render this",
+          },
+        },
+      },
+    ]);
+
+    expect(transcript.messages.at(-1)).toMatchObject({
+      type: "user",
+      message: { content: "render this" },
     });
   });
 

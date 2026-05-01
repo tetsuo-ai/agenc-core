@@ -186,6 +186,37 @@ describe("AgenC daemon client multiplexer", () => {
     expect(received).toEqual([1, 2]);
   });
 
+  it("buffers daemon session events emitted before the first client attaches", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    const received: JsonObject[] = [];
+
+    await sessionManager.createSession({ agentId: "agent_1" });
+    const event = {
+      type: "daemon.event",
+      sessionId: "session_1",
+      msg: {
+        id: "early-turn",
+        type: "agent_message_delta",
+        payload: { delta: "ready" },
+      },
+    };
+
+    await expect(
+      multiplexer.broadcastSessionEvent("session_1", event),
+    ).resolves.toEqual({
+      sessionId: "session_1",
+      deliveredClientIds: [],
+      failed: [],
+    });
+    await multiplexer.registerClient({
+      clientId: "client_1",
+      send: (message) => received.push(message),
+    });
+    await multiplexer.attachClientToSession("session_1", "client_1");
+
+    expect(received).toEqual([event]);
+  });
+
   it("rejects unknown and duplicate clients before mutating session routes", async () => {
     const { sessionManager, multiplexer } = createHarness();
     await sessionManager.createSession({ agentId: "agent_1" });

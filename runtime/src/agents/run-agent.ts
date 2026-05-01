@@ -1,7 +1,7 @@
 /**
  * runAgent — drive one subagent's run-turn loop.
  *
- * Hand-port of openclaude `tools/AgentTool/runAgent.ts` (987 LOC)
+ * Hand-port of the donor AgentTool runner (987 LOC)
  * subset. Responsibilities:
  *
  *   1. Build a child Session from the parent + fork context.
@@ -20,6 +20,7 @@
 
 import type {
   LLMChatOptions,
+  LLMContentPart,
   LLMMessage,
   LLMProvider,
   LLMUsage,
@@ -76,6 +77,13 @@ export type RunAgentProgressEvent =
   | { readonly kind: "status"; readonly text: string }
   | { readonly kind: "message"; readonly message: LLMMessage }
   | { readonly kind: "tool_call"; readonly callId: string; readonly toolName: string }
+  | {
+      readonly kind: "tool_result";
+      readonly callId: string;
+      readonly toolName: string;
+      readonly result: string;
+      readonly isError: boolean;
+    }
   | { readonly kind: "run_complete"; readonly finalMessage?: string; readonly toolCallCount: number }
   | { readonly kind: "run_error"; readonly error: string }
   | { readonly kind: "run_interrupted"; readonly reason: string };
@@ -332,7 +340,7 @@ function parentAgentPathFor(agentPath: string): string {
 
 function drainChildMailbox(live: LiveAgent): {
   readonly interruptReason?: string;
-  readonly nextUserMessage?: string;
+  readonly nextUserMessage?: string | readonly LLMContentPart[];
 } {
   const drained = live.downInbox.drain();
   if (drained.length === 0) {
@@ -340,7 +348,7 @@ function drainChildMailbox(live: LiveAgent): {
   }
 
   const passthrough: InterAgentCommunication[] = [];
-  const nextTurnParts: string[] = [];
+  const nextTurnParts: Array<string | readonly LLMContentPart[]> = [];
   let shouldTriggerTurn = false;
 
   for (const item of drained) {
@@ -360,7 +368,12 @@ function drainChildMailbox(live: LiveAgent): {
     }
     passthrough.push(item);
     shouldTriggerTurn ||= item.triggerTurn;
-    if (item.content.trim().length > 0) {
+    const inputContent = item.metadata?.inputContent;
+    if (isLlmContentParts(inputContent)) {
+      nextTurnParts.push(inputContent);
+    } else if (typeof inputContent === "string" && inputContent.trim().length > 0) {
+      nextTurnParts.push(inputContent);
+    } else if (item.content.trim().length > 0) {
       nextTurnParts.push(item.content);
     }
   }
@@ -378,9 +391,42 @@ function drainChildMailbox(live: LiveAgent): {
     return {};
   }
 
-  return {
-    nextUserMessage: nextTurnParts.join("\n\n"),
-  };
+  return { nextUserMessage: mergeChildInputParts(nextTurnParts) };
+}
+
+function isLlmContentParts(value: unknown): value is readonly LLMContentPart[] {
+  return (
+    Array.isArray(value) &&
+    value.every((part) => {
+      if (part === null || typeof part !== "object") return false;
+      const candidate = part as { type?: unknown; text?: unknown; image_url?: unknown };
+      if (candidate.type === "text") return typeof candidate.text === "string";
+      if (candidate.type === "image_url") {
+        const image = candidate.image_url as { url?: unknown } | null;
+        return image !== null &&
+          typeof image === "object" &&
+          typeof image.url === "string";
+      }
+      return false;
+    })
+  );
+}
+
+function mergeChildInputParts(
+  parts: readonly (string | readonly LLMContentPart[])[],
+): string | readonly LLMContentPart[] {
+  if (!parts.some((part) => Array.isArray(part))) {
+    return (parts as readonly string[]).join("\n\n");
+  }
+  const merged: LLMContentPart[] = [];
+  for (const part of parts) {
+    if (typeof part === "string") {
+      if (part.trim().length > 0) merged.push({ type: "text", text: part });
+      continue;
+    }
+    merged.push(...part);
+  }
+  return merged;
 }
 
 export function buildFilteredRegistry(
@@ -966,7 +1012,7 @@ export async function* runAgent(
         content: live.role.config.systemPrompt,
       } as LLMMessage);
     }
-    let nextUserMessage = userMessage;
+    let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
     let firstTurn = true;
     let assistantText = "";
     let toolCallCount = 0;
@@ -1023,6 +1069,17 @@ export async function* runAgent(
             kind: "tool_call",
             callId: event.toolCall.id,
             toolName: event.toolCall.name,
+          };
+          continue;
+        }
+
+        if (event.type === "tool_result") {
+          yield {
+            kind: "tool_result",
+            callId: event.toolCall.id,
+            toolName: event.toolCall.name,
+            result: event.result.content,
+            isError: event.result.isError ?? false,
           };
           continue;
         }
@@ -1086,7 +1143,12 @@ export async function* runAgent(
       }
       if (pendingChildInput.nextUserMessage !== undefined) {
         nextUserMessage = pendingChildInput.nextUserMessage;
-        live.messages.push({ role: "user", content: nextUserMessage });
+        live.messages.push({
+          role: "user",
+          content: typeof nextUserMessage === "string"
+            ? nextUserMessage
+            : [...nextUserMessage],
+        });
         relayToParentMailbox({
           live,
           parent,

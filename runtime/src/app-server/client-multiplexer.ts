@@ -222,8 +222,7 @@ export class AgenCDaemonClientMultiplexer {
     event: JsonObject,
   ): Promise<AgenCSessionBroadcastResult> {
     const deliveries = await this.#state.with((state) => {
-      const route = state.sessions.get(sessionId);
-      if (route === undefined) return [];
+      const route = getOrCreateRoute(state, sessionId);
 
       const activeClientIds = [...route.clientAttachmentIds.keys()].filter(
         (clientId) => state.clients.has(clientId),
