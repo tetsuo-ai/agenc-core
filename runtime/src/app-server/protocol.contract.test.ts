@@ -1,7 +1,12 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import {
+  AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
+  AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
+  AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
+  AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_METHOD_SPECS,
   JSON_RPC_VERSION,
@@ -10,10 +15,22 @@ import {
 } from "./protocol/index.js";
 
 interface ProtocolSchema {
+  readonly $id: string;
   readonly definitions: {
     readonly AgenCDaemonRequest: object;
   };
+  readonly "x-agenc-package": {
+    readonly name: string;
+    readonly export: string;
+  };
   readonly "x-agenc-methods": readonly string[];
+}
+
+interface ProtocolPackageManifest {
+  readonly name?: string;
+  readonly publishConfig?: {
+    readonly access?: string;
+  };
 }
 
 const expectedMethods = [
@@ -54,6 +71,32 @@ function compileRequestValidator(schema: ProtocolSchema) {
   });
 }
 
+function readSiblingProtocolPackage(): ProtocolPackageManifest | null {
+  const packagePath = [
+    resolve(
+      process.cwd(),
+      "..",
+      "..",
+      "agenc-protocol",
+      "packages",
+      "protocol",
+      "package.json",
+    ),
+    resolve(
+      process.cwd(),
+      "..",
+      "agenc-protocol",
+      "packages",
+      "protocol",
+      "package.json",
+    ),
+  ].find(existsSync);
+  if (packagePath === undefined) return null;
+  return JSON.parse(
+    readFileSync(packagePath, "utf8"),
+  ) as ProtocolPackageManifest;
+}
+
 describe("AgenC daemon protocol surface", () => {
   it("exports the exact initial daemon method list", () => {
     expect(AGENC_DAEMON_METHODS).toEqual(expectedMethods);
@@ -71,10 +114,26 @@ describe("AgenC daemon protocol surface", () => {
     expect(isAgenCDaemonMethod("account/login/start")).toBe(false);
   });
 
-  it("publishes a schema with the same method list", () => {
+  it("publishes a schema with the same method list and package target", () => {
     const schema = readProtocolSchema();
 
+    expect(schema.$id).toBe(AGENC_DAEMON_PROTOCOL_SCHEMA_ID);
+    expect(schema["x-agenc-package"]).toEqual({
+      name: AGENC_DAEMON_PROTOCOL_PACKAGE_NAME,
+      export: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
+    });
     expect(schema["x-agenc-methods"]).toEqual(expectedMethods);
+    expect(AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET).toEqual({
+      packageName: "@tetsuo-ai/protocol",
+      schemaExport: "./daemon-json-rpc.schema.json",
+      schemaId: "urn:agenc:app-server:protocol",
+    });
+
+    const siblingPackage = readSiblingProtocolPackage();
+    if (siblingPackage !== null) {
+      expect(siblingPackage.name).toBe(AGENC_DAEMON_PROTOCOL_PACKAGE_NAME);
+      expect(siblingPackage.publishConfig?.access).toBe("public");
+    }
   });
 
   it("validates all request-bearing methods through the published schema", () => {
