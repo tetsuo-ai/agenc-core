@@ -62,6 +62,7 @@ describe("schema: defaultConfig", () => {
     expect(cfg.max_turns).toBeGreaterThan(0);
     expect(cfg.agent_max_threads).toBe(4);
     expect(cfg.agent_max_depth).toBe(1);
+    expect(cfg.auth?.backend).toBe("local");
     expect(cfg.editorMode).toBe("default");
     expect(cfg.voiceInput?.enabled).toBe(false);
     expect(cfg.tuiLayout?.mode).toBe("single");
@@ -186,6 +187,14 @@ describe("schema: normalizeRawConfig", () => {
       sidePane: "context",
       minColumns: 100,
     });
+    expect(out._unknown).toBeUndefined();
+  });
+
+  test("preserves auth.backend config on the typed path", () => {
+    const out = normalizeRawConfig({
+      auth: { backend: "remote" },
+    });
+    expect(out.auth).toEqual({ backend: "remote" });
     expect(out._unknown).toBeUndefined();
   });
 });
@@ -325,12 +334,14 @@ describe("provider resolution (T13)", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
         openrouter: {
+          // branding-scan: allow documented provider model id
           default_model: "anthropic/claude-3.7-sonnet",
         },
       },
     });
 
     expect(buildProviderModelCatalog(config).openrouter).toContain(
+      // branding-scan: allow documented provider model id
       "anthropic/claude-3.7-sonnet",
     );
   });
