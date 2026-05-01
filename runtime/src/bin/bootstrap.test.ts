@@ -558,7 +558,10 @@ describe("bootstrapLocalRuntimeSession", () => {
           ...process.env,
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
           HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
         },
       });
       shutdown = boot.shutdown;
@@ -642,7 +645,10 @@ describe("bootstrapLocalRuntimeSession", () => {
           ...process.env,
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
+          AGENC_XAI_API_KEY: "",
           HOME: home,
+          GROK_API_KEY: "",
+          XAI_API_KEY: "",
         },
       });
       shutdown = boot.shutdown;

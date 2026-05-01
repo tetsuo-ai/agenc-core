@@ -85,6 +85,7 @@ import type {
   AuthBackend,
   AuthSubscriptionTier,
 } from "../auth/backend.js";
+import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
   readStartupCliFlags,
@@ -692,12 +693,23 @@ export async function bootstrapLocalRuntimeSession(
     startup.config,
     env,
   );
-  const vendedApiKey = await vendProviderKeyOrUndefined({
-    authBackend: options.authBackend,
-    provider: resolvedProvider,
-    sessionId: conversationId,
+  const byokApiKey = selectByokPrecedenceApiKey({
+    explicitApiKey: options.apiKey,
+    byokApiKey: startup.apiKey,
   });
-  const selectedApiKey = options.apiKey ?? vendedApiKey ?? startup.apiKey;
+  const vendedApiKey =
+    byokApiKey === undefined
+      ? await vendProviderKeyOrUndefined({
+          authBackend: options.authBackend,
+          provider: resolvedProvider,
+          sessionId: conversationId,
+        })
+      : undefined;
+  const selectedApiKey = selectByokPrecedenceApiKey({
+    explicitApiKey: options.apiKey,
+    byokApiKey: startup.apiKey,
+    managedApiKey: vendedApiKey,
+  });
   const mcpManager = createSessionMcpManagerFromConfig(
     configStore.current(),
     env,
