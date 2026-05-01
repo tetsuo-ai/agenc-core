@@ -16,9 +16,16 @@ describe("remote AuthBackend bootstrap key vending", () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-remote-auth-ws-"));
     const fetchImpl = vi.fn(async () =>
-      new Response(JSON.stringify({ apiKey: " remote-managed-key " }), {
-        status: 200,
-      }),
+      new Response(
+        JSON.stringify({
+          provider: "grok",
+          sessionId: "conv-remote-key",
+          apiKey: " remote-managed-key ",
+        }),
+        {
+          status: 200,
+        },
+      ),
     );
     const authBackend = createAuthBackend(
       mergeConfigs(defaultConfig(), { auth: { backend: "remote" } }),

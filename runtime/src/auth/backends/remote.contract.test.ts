@@ -38,6 +38,34 @@ describe("RemoteAuthBackend", () => {
     ]);
   });
 
+  it("expires cached managed keys after the configured in-memory TTL", async () => {
+    let nowMs = 1_000;
+    let vendCount = 0;
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: `managed-${++vendCount}`,
+    }));
+    const backend = new RemoteAuthBackend({
+      keyVendor,
+      keyCacheTtlMs: 100,
+      nowMs: () => nowMs,
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).resolves.toMatchObject({
+      apiKey: "managed-1",
+    });
+    nowMs += 99;
+    await expect(backend.vendKey("grok", "session-1")).resolves.toMatchObject({
+      apiKey: "managed-1",
+    });
+    nowMs += 2;
+    await expect(backend.vendKey("grok", "session-1")).resolves.toMatchObject({
+      apiKey: "managed-2",
+    });
+    expect(keyVendor).toHaveBeenCalledTimes(2);
+  });
+
   it("retries key vending after a failed remote request", async () => {
     let attempts = 0;
     const backend = new RemoteAuthBackend({
@@ -59,10 +87,26 @@ describe("RemoteAuthBackend", () => {
     expect(attempts).toBe(2);
   });
 
+  it("rejects injected key vendors that return a different identity", async () => {
+    const backend = new RemoteAuthBackend({
+      keyVendor: () => ({
+        provider: "openai",
+        sessionId: "session-2",
+        apiKey: "managed-key",
+      }),
+    });
+
+    await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
+      /provider mismatch/,
+    );
+  });
+
   it("uses the configured HTTP key vending endpoint by default", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
+          provider: "grok",
+          sessionId: "session-1",
           apiKey: " managed-http-key ",
           expiresAt: "2026-05-01T12:00:00.000Z",
         }),
@@ -96,6 +140,40 @@ describe("RemoteAuthBackend", () => {
           sessionId: "session-1",
         }),
       },
+    );
+  });
+
+  it("rejects remote key responses for a different session or provider", async () => {
+    const providerMismatch = new RemoteAuthBackend({
+      fetchImpl: vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            provider: "openai",
+            sessionId: "session-1",
+            apiKey: "managed-key",
+          }),
+          { status: 200 },
+        ),
+      ),
+    });
+    await expect(providerMismatch.vendKey("grok", "session-1")).rejects.toThrow(
+      /provider mismatch/,
+    );
+
+    const sessionMismatch = new RemoteAuthBackend({
+      fetchImpl: vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            provider: "grok",
+            sessionId: "session-2",
+            apiKey: "managed-key",
+          }),
+          { status: 200 },
+        ),
+      ),
+    });
+    await expect(sessionMismatch.vendKey("grok", "session-1")).rejects.toThrow(
+      /session mismatch/,
     );
   });
 
