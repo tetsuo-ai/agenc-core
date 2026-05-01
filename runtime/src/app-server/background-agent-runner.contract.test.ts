@@ -125,14 +125,21 @@ describe("AgenC delegate background-agent runner", () => {
       agentPath: "/root/agent_live",
       join: vi.fn(() => new Promise(() => {})),
     } as AgentThread;
-    const authBackend = {
-      login: vi.fn(),
-      logout: vi.fn(),
-      whoami: vi.fn(),
-      vendKey: vi.fn(),
-      inferAgencModel: vi.fn(),
-      getSubscriptionTier: vi.fn(),
-    } as unknown as AuthBackend;
+    const authBackend: AuthBackend = {
+      login: vi.fn(() => ({ authenticated: true, provider: "local" })),
+      logout: vi.fn(() => ({ authenticated: false })),
+      whoami: vi.fn(() => ({ authenticated: true, provider: "local" })),
+      vendKey: vi.fn((provider, sessionId) => ({
+        provider: String(provider),
+        sessionId,
+        apiKey: "managed-key",
+      })),
+      inferAgencModel: vi.fn(() => ({
+        provider: "agenc",
+        model: "agenc:grok",
+      })),
+      getSubscriptionTier: vi.fn(() => "pro"),
+    };
     const bootstrap = vi.fn(async () => ({
       session,
       shutdown,
@@ -157,10 +164,19 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedDeny: [],
     });
 
-    expect(bootstrap).toHaveBeenCalledWith({
-      authBackend,
+    const bootstrapOptions = vi.mocked(bootstrap).mock.calls[0]?.[0];
+    expect(bootstrapOptions).toMatchObject({
       argv: ["node", "agenc", "--autonomous"],
     });
+    expect(bootstrapOptions?.authBackend).not.toBe(authBackend);
+    await expect(
+      bootstrapOptions?.authBackend?.vendKey("grok", "daemon-session"),
+    ).resolves.toMatchObject({
+      provider: "grok",
+      sessionId: "daemon-session",
+      apiKey: "managed-key",
+    });
+    expect(authBackend.vendKey).toHaveBeenCalledWith("grok", "daemon-session");
   });
 
   it("still shuts down bootstrap resources when control shutdown fails", async () => {
