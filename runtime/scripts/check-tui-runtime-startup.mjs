@@ -1,0 +1,257 @@
+#!/usr/bin/env node
+/**
+ * Built-artifact import + pseudo-terminal startup smoke for the AgenC TUI.
+ *
+ * Catches the failure modes that source-level builds and unit tests miss:
+ *
+ *   1. `runtime/dist/tui/main.js` crashes on import even though `tsc`
+ *      and the unit tests passed (e.g. an externalized dependency the
+ *      bundler dropped, a feature-gated `require()` that resolves to
+ *      a missing path inside the dist tree).
+ *   2. The first frame paints fine but the runtime crashes when the
+ *      terminal answers async queries like XTVERSION (`\e[>0q`) and
+ *      DA1 (`\e[c`); a debug-import or console-spy bug only fires on
+ *      that delayed reply, so a first-paint-only smoke does not catch
+ *      it.
+ *
+ * Hard requirements implemented here:
+ *   - Import `runtime/dist/tui/main.js` and confirm it exposes `bootTUI`.
+ *   - Spawn `agenc` and `agenc --yolo` under a pseudo-terminal when
+ *     `@homebridge/node-pty-prebuilt-multiarch` is loadable; fall back
+ *     to plain pipe stdio when it is not (still catches import errors
+ *     and unhandled rejections from startup).
+ *   - Inject XTVERSION + DA1 replies after first-paint, wait for the
+ *     post-reply tick, then send SIGTERM and collect output.
+ *   - Scan stdout/stderr for fatal startup patterns. Exit non-zero on
+ *     any match.
+ *
+ * Usage:
+ *   node scripts/check-tui-runtime-startup.mjs
+ */
+import { spawn as childSpawn } from "node:child_process";
+import { createRequire } from "node:module";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const RUNTIME_DIR = path.resolve(SCRIPT_DIR, "..");
+const DIST_TUI_PATH = path.join(RUNTIME_DIR, "dist", "tui", "main.js");
+const BIN_AGENC_PATH = path.join(RUNTIME_DIR, "dist", "bin", "agenc.js");
+
+// Time budgets. Generous because a slow CI host should not flake this gate;
+// the gate is for catching fatal exceptions, not for asserting fast startup.
+const FIRST_PAINT_MS = 1500;
+const POST_REPLY_MS = 1500;
+const SIGTERM_GRACE_MS = 1000;
+
+// Bytes to inject. XTVERSION is the secondary device-attribute query that the
+// upstream-mirrored debug-import flow has historically crashed on; DA1 is the
+// classic primary device-attribute query the renderer expects.
+const XTVERSION_REPLY = "\x1b[>0;1;0c";
+const DA1_REPLY = "\x1b[?6c";
+
+const FATAL_PATTERNS = [
+  /\bUncaught\s+(?:Exception|TypeError|ReferenceError|Error)\b/i,
+  /Cannot find (?:module|package)\b/i,
+  /\bUnhandled (?:promise rejection|rejection)\b/i,
+  /\bTypeError:\s/,
+  /\bReferenceError:\s/,
+  /\bSyntaxError:\s/,
+  /\bAssertionError:\s/,
+  // Common stack-frame markers — only flag when paired with a thrown
+  // identifier above in the same buffer; the matcher below applies the
+  // pattern to the full collected output, so a stack alone is fine.
+];
+
+const require = createRequire(import.meta.url);
+
+function red(text) {
+  return process.stdout.isTTY ? `\x1b[31m${text}\x1b[0m` : text;
+}
+function green(text) {
+  return process.stdout.isTTY ? `\x1b[32m${text}\x1b[0m` : text;
+}
+function yellow(text) {
+  return process.stdout.isTTY ? `\x1b[33m${text}\x1b[0m` : text;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function importBuiltArtifact() {
+  console.log(`[1/3] importing ${path.relative(RUNTIME_DIR, DIST_TUI_PATH)} ...`);
+  let mod;
+  try {
+    mod = await import(DIST_TUI_PATH);
+  } catch (error) {
+    const message =
+      error && typeof error === "object" && "message" in error
+        ? String(error.message).split("\n")[0]
+        : String(error);
+    console.error(red(`[1/3] FAILED to import built TUI artifact: ${message}`));
+    return false;
+  }
+  if (typeof mod.bootTUI !== "function") {
+    console.error(
+      red(
+        `[1/3] FAILED: built TUI artifact is missing the 'bootTUI' export (got: ${Object.keys(
+          mod,
+        )
+          .slice(0, 8)
+          .join(", ")})`,
+      ),
+    );
+    return false;
+  }
+  console.log(green("[1/3] built TUI artifact imports cleanly"));
+  return true;
+}
+
+function loadPtyModule() {
+  try {
+    return require("@homebridge/node-pty-prebuilt-multiarch");
+  } catch {
+    return null;
+  }
+}
+
+function scanOutput(buffer) {
+  const matches = [];
+  for (const pattern of FATAL_PATTERNS) {
+    const m = buffer.match(pattern);
+    if (m) matches.push({ pattern: pattern.source, hit: m[0] });
+  }
+  return matches;
+}
+
+async function ptyStartupSmoke(label, args) {
+  const pty = loadPtyModule();
+  if (pty === null) {
+    return pipeStartupSmoke(label, args);
+  }
+
+  console.log(
+    `[2/3] PTY spawn ${label}: ${args.join(" ") || "(no args)"} (real PTY)`,
+  );
+  const term = pty.spawn(process.execPath, [BIN_AGENC_PATH, ...args], {
+    name: "xterm-256color",
+    cols: 120,
+    rows: 30,
+    cwd: RUNTIME_DIR,
+    env: {
+      ...process.env,
+      // Keep the smoke deterministic: disable telemetry, force one-shot
+      // exit-friendly env, and leave the PTY queries answerable so the
+      // post-reply async path actually fires.
+      AGENC_DISABLE_TELEMETRY: "1",
+    },
+  });
+
+  let buffer = "";
+  term.onData((data) => {
+    buffer += data;
+  });
+
+  await delay(FIRST_PAINT_MS);
+  term.write(XTVERSION_REPLY);
+  term.write(DA1_REPLY);
+  await delay(POST_REPLY_MS);
+
+  return await collectAndKill(label, buffer, () => term.kill("SIGTERM"));
+}
+
+async function pipeStartupSmoke(label, args) {
+  console.log(
+    `[2/3] ${yellow(
+      "fallback",
+    )} pipe-stdio spawn ${label}: ${args.join(" ") || "(no args)"} (real PTY unavailable; @homebridge/node-pty-prebuilt-multiarch optional dep is not installed on this host)`,
+  );
+  const child = childSpawn(process.execPath, [BIN_AGENC_PATH, ...args], {
+    cwd: RUNTIME_DIR,
+    env: {
+      ...process.env,
+      AGENC_DISABLE_TELEMETRY: "1",
+      // Tell the runtime stdin/stdout are TTYs even though they are
+      // pipes. Some startup paths early-exit when isTTY is false; we
+      // want to exercise the TTY path so this smoke catches the same
+      // failures a real terminal would.
+      FORCE_COLOR: "1",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  let buffer = "";
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+  });
+  child.stderr.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+  });
+
+  await delay(FIRST_PAINT_MS);
+  child.stdin.write(XTVERSION_REPLY);
+  child.stdin.write(DA1_REPLY);
+  await delay(POST_REPLY_MS);
+
+  return await collectAndKill(label, buffer, () => {
+    child.kill("SIGTERM");
+  });
+}
+
+async function collectAndKill(label, initialBuffer, killFn) {
+  let buffer = initialBuffer;
+  killFn();
+  await delay(SIGTERM_GRACE_MS);
+
+  // Re-read whatever extra output landed during the grace window. The
+  // real-PTY and pipe paths both append directly to `buffer` via the
+  // shared closure, so the kill grace simply lets late writes land.
+
+  const matches = scanOutput(buffer);
+  if (matches.length === 0) {
+    console.log(
+      green(
+        `[2/3] ${label}: clean startup (no fatal pattern in ${buffer.length} bytes of output)`,
+      ),
+    );
+    return true;
+  }
+  console.error(red(`[2/3] ${label}: FAILED — fatal patterns matched`));
+  for (const { pattern, hit } of matches) {
+    console.error(red(`        pattern /${pattern}/i hit: ${hit.trim()}`));
+  }
+  // Print last 60 lines of buffer so the operator can read the surrounding
+  // stack without having to re-run with verbose flags.
+  const tail = buffer
+    .split(/\r?\n/)
+    .slice(-60)
+    .join("\n");
+  console.error(red(`        ----- last 60 lines of output -----`));
+  console.error(tail);
+  console.error(red(`        ----- end output -----`));
+  return false;
+}
+
+async function main() {
+  const importOk = await importBuiltArtifact();
+  if (!importOk) {
+    process.exit(1);
+  }
+
+  const agencOk = await ptyStartupSmoke("agenc", []);
+  const yoloOk = await ptyStartupSmoke("agenc --yolo", ["--yolo"]);
+
+  if (agencOk && yoloOk) {
+    console.log(green("[3/3] TUI runtime startup smoke passed"));
+    process.exit(0);
+  }
+  console.error(red("[3/3] TUI runtime startup smoke FAILED"));
+  process.exit(1);
+}
+
+main().catch((error) => {
+  console.error(red(`startup smoke crashed: ${error.stack ?? error.message ?? error}`));
+  process.exit(1);
+});

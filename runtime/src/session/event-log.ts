@@ -482,6 +482,27 @@ export type EventMsg =
       };
     }
   | {
+      readonly type: "tool_input_block_start";
+      readonly payload: {
+        readonly callId: string;
+        readonly index: number;
+        readonly contentBlock: {
+          readonly type: "tool_use";
+          readonly id: string;
+          readonly name: string;
+          readonly input: Record<string, unknown>;
+        };
+      };
+    }
+  | {
+      readonly type: "tool_input_delta";
+      readonly payload: {
+        readonly callId: string;
+        readonly index: number;
+        readonly partialJson: string;
+      };
+    }
+  | {
       readonly type: "tool_call_completed";
       readonly payload: {
         readonly callId: string;
@@ -685,6 +706,8 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "exec_command_end",
     "exec_approval_request",
     "tool_call_started",
+    "tool_input_block_start",
+    "tool_input_delta",
     "tool_call_completed",
     "tool_progress",
     "request_permissions",

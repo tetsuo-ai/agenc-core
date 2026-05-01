@@ -1,0 +1,329 @@
+{
+  "contractName": "streaming-tool-use-parity",
+  "scope": "End-to-end OpenClaude streamingToolUses + toolJSX parity for the AgenC TUI: live host (App.tsx), transcript producer (message-adapter.ts + use-session-transcript.ts), and Anthropic provider input_json_delta forwarding. Non-Anthropic providers (openai, grok, deepseek, gemini, groq, lmstudio, ollama, openrouter) are explicitly out of scope for this contract and will be tracked in a follow-up parity contract.",
+  "generatedAt": "2026-05-01T01:55:04.498Z",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "..",
+  "sourceCommit": "0ca43335375beec6e58711b797d5b0c4bb5019b8",
+  "rows": [
+    {
+      "id": "tui-host-streamingtooluses",
+      "source": "src/screens/REPL.tsx",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "sources": [
+        "src/screens/REPL.tsx",
+        "src/components/Messages.tsx"
+      ],
+      "requiredBehaviors": [
+        "App.tsx no longer hardcodes streamingToolUses={[]}; reads the array from transcript.streamingToolUses (sourced via use-session-transcript.ts) and passes it to <Messages>",
+        "Initial render with no in-flight tools passes an empty array, matching upstream REPL.tsx:853 initial state",
+        "Array identity is stable across re-renders when contents are unchanged (no new reference per render), matching the memoization Messages.tsx:732+ relies on"
+      ],
+      "edgeCases": [
+        "adaptTranscriptEvents([]) returns an AdaptedTranscript whose streamingToolUses field is an empty array (typeof === 'object' && length === 0)",
+        "Constructing an AdaptedTranscript with streamingToolUses set to a single-element array containing {index: 0, contentBlock: {type:'tool_use', id:'a', name:'X', input:{}}, unparsedToolInput: '{\"q\":'} preserves the element identity when read back",
+        "Constructing an AdaptedTranscript with two streamingToolUses entries at indices 0 and 1 preserves both elements with their distinct unparsedToolInput strings",
+        "App.tsx source no longer contains the literal hardcoded JSX 'streamingToolUses={[]}' (asserted by reading the file and matching with a non-trivial regex)",
+        "App.tsx source contains the wiring 'streamingToolUses={transcript.streamingToolUses}' (or an equivalent prop expression that references the transcript field)",
+        "message-adapter.ts imports StreamingToolUse from runtime/src/agenc/upstream/utils/messages.js so the AgenC transcript field type is identical to the upstream <Messages> consumer prop type"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.streaming-tool-use.parity.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npx vitest run src/tui/openclaude/App.streaming-tool-use.parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tui-host-tooljsx-state",
+      "source": "src/screens/REPL.tsx",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "targets": [
+        "runtime/src/tui/openclaude/App.tsx",
+        "runtime/src/tui/openclaude/use-tool-jsx.ts"
+      ],
+      "requiredBehaviors": [
+        "App.tsx no longer hardcodes toolJSX={null}; declares useState<ToolJSXState | null>(null) where ToolJSXState matches REPL.tsx:1036 shape ({jsx: React.ReactNode | null, shouldHidePromptInput: boolean, shouldContinueAnimation?: true, showSpinner?: boolean, isLocalJSXCommand?: boolean, isImmediate?: boolean})",
+        "App.tsx ports the upstream localJSXCommandRef + setToolJSX wrapper from REPL.tsx:1055-1104 so local-JSX commands persist across normal tool updates and only clear on explicit clearLocalJSX:true",
+        "The wrapped setToolJSX is exposed to tools through the existing getToolUseContext callback so AgenC tools that render their own UI surfaces can call it",
+        "When toolJSX !== null, App.tsx renders <Box flexDirection=\"column\" width=\"100%\">{toolJSX.jsx}</Box> as a sibling block, mirroring REPL.tsx:4469-4470",
+        "The current toolJSX value is passed verbatim to <Messages toolJSX={...}>, not a normalized copy"
+      ],
+      "edgeCases": [
+        "applyToolJSXUpdate(prev=null, args={isLocalJSXCommand:true, jsx:'X', shouldHidePromptInput:false}) stores args (minus clearLocalJSX) in the local-ref equivalent and returns the args as the new state value",
+        "applyToolJSXUpdate when local-ref is set and args lacks clearLocalJSX returns the previous state unchanged (REPL.tsx:1095 'keep the local JSX command visible')",
+        "applyToolJSXUpdate when local-ref is set and args.clearLocalJSX===true returns null AND clears the local-ref",
+        "applyToolJSXUpdate when local-ref is null and args.clearLocalJSX===true returns null",
+        "applyToolJSXUpdate when local-ref is null and args is a normal value returns args as-is (no transformation)",
+        "applyToolJSXUpdate(prev, null) returns null when local-ref is null (full clear path)",
+        "App.tsx source no longer contains the literal hardcoded 'toolJSX={null}' on the <Messages> element; the prop is wired to the toolJSX state variable",
+        "App.tsx source contains the sibling Box rendering the toolJSX.jsx node when toolJSX is non-null (matches REPL.tsx:4469-4470 exactly)"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.tooljsx-state.parity.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npx vitest run src/tui/openclaude/App.tooljsx-state.parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tui-host-tooljsx-gating",
+      "source": "src/screens/REPL.tsx",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "requiredBehaviors": [
+        "The toolJSX state value is passed verbatim into <Messages toolJSX={toolJSX}> so the upstream-mirrored animation gate at runtime/src/agenc/upstream/components/Messages.tsx:595 (canAnimate = (!toolJSX || !!toolJSX.shouldContinueAnimation) && !toolUseConfirmQueue.length && !isMessageSelectorVisible) actually receives the live toolJSX value (R2 wiring is the load-bearing change; this row asserts the gate is reachable)",
+        "Permission overlay rendering condition is unchanged (renders when permissionRequests[0] is truthy) — upstream parity here is 'dialog still renders when toolJSX is set' which AgenC already does, NOT a new gate",
+        "isMessageSelectorVisible passed to <Messages> is false (parity with AgenC's no-message-selector host) so the Messages animation gate's third clause never blocks animation due to a missing AgenC feature",
+        "toolUseConfirmQueue array passed to <Messages> reflects the live confirm queue from buildToolUseConfirmQueue(permissionRequests, tools) so the animation gate's second clause respects pending confirmations"
+      ],
+      "edgeCases": [
+        "Building a Messages.tsx canAnimate computation with toolJSX=null AND empty toolUseConfirmQueue AND isMessageSelectorVisible=false yields canAnimate=true (REPL.tsx:595)",
+        "Computation with toolJSX={shouldContinueAnimation:true} AND empty queue yields canAnimate=true (set-but-continuing path)",
+        "Computation with toolJSX={shouldContinueAnimation:undefined, jsx:'X', shouldHidePromptInput:false} AND empty queue yields canAnimate=false (set-and-blocking path)",
+        "Computation with toolJSX=null AND non-empty toolUseConfirmQueue yields canAnimate=false (queue-blocks path)",
+        "Computation with toolJSX=null AND empty queue AND isMessageSelectorVisible=true yields canAnimate=false (selector-blocks path)",
+        "App.tsx source passes the toolJSX state variable, an empty/derived toolUseConfirmQueue, and isMessageSelectorVisible={false} to <Messages> (asserted by reading App.tsx)"
+      ],
+      "approvedDivergence": {
+        "approvedBy": "tetsuo",
+        "approvedAt": "2026-04-30T00:00:00.000Z",
+        "reason": "Upstream REPL.tsx renders a host-level <SpinnerWithVerb> at line 4653 gated by REPL.tsx:1704 (showSpinner) and an idle notification timer at REPL.tsx:4005. AgenC's TUI host (runtime/src/tui/openclaude/App.tsx) renders neither of these surfaces today; PromptInput owns its own spinner-adjacent UI internally. Adding a host-level spinner and idle timer with full apiMetricsRef / responseLengthRef / streamMode plumbing is a separate parity concern (a future contract scoped to host-level streaming-status surfaces), and is therefore out of scope for the streaming-tool-use parity contract. The toolJSX-gated animation behavior is preserved through the upstream-mirrored <Messages> component (R2 wires it).",
+        "sourceBehavior": "Upstream REPL renders <SpinnerWithVerb> with a showSpinner gate that combines toolJSX, toolUseConfirmQueue, promptQueue, and an idle notification timer that only fires when !isLoading && !toolJSX.",
+        "targetBehavior": "AgenC App.tsx does not render a host-level Spinner or run an idle notification timer. The toolJSX-driven animation/dialog-gating behavior is preserved through the upstream-mirrored <Messages> component (animation gate at Messages.tsx:595) and through the OpenClaudePermissionOverlay (which already renders when there is a request, regardless of toolJSX)."
+      },
+      "tests": [
+        "runtime/src/tui/openclaude/App.tooljsx-gating.parity.test.tsx"
+      ],
+      "commands": [
+        "cd runtime && npx vitest run src/tui/openclaude/App.tooljsx-gating.parity.test.tsx"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "tui-remove-runningtoolprogressindicator",
+      "source": "src/screens/REPL.tsx",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "requiredBehaviors": [
+        "RunningToolProgressIndicator function and its <Text> rendering (App.tsx:111-146) are removed",
+        "<RunningToolProgressIndicator progress={transcript.runningToolProgress} /> JSX is removed from App.tsx render output",
+        "Imports of RunningToolProgress type from message-adapter are removed from App.tsx",
+        "runningToolProgress field is removed from OpenClaudeBridgeSession transcript shape and from message-adapter.ts (lines 42, 576, 706-734, 797)",
+        "RunningToolProgress type export is removed from message-adapter.ts; the row-reviewer subagent verifies via grep that no live caller outside dead-code paths references it before approving the row"
+      ],
+      "edgeCases": [
+        "After removal, an active tool stream still produces visible UI (proven by tui-host-streamingtooluses tests rendering synthetic cells in <Messages>)",
+        "No transcript consumer outside App.tsx and message-adapter.ts references runningToolProgress (verified via grep in the parity test)",
+        "TypeScript build succeeds with the field removed (no compile errors from stale references)",
+        "AgenC-specific RunningToolProgress field absence is asserted by an executable check that fails if the symbol reappears in App.tsx or transcript types"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.no-runningtoolprogress.parity.test.tsx",
+        "runtime/src/tui/openclaude/message-adapter.no-runningtoolprogress.parity.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npx vitest run src/tui/openclaude/App.no-runningtoolprogress.parity.test.tsx src/tui/openclaude/message-adapter.no-runningtoolprogress.parity.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "transcript-streaming-tool-use-accumulator",
+      "source": "src/utils/messages.ts",
+      "target": "runtime/src/tui/openclaude/message-adapter.ts",
+      "targets": [
+        "runtime/src/tui/openclaude/message-adapter.ts",
+        "runtime/src/tui/openclaude/use-session-transcript.ts"
+      ],
+      "requiredBehaviors": [
+        "message-adapter.ts builds a streamingToolUses: StreamingToolUse[] from the same input event stream it consumes today, using the upstream contract from messages.ts handleMessageFromStream (content_block_start + input_json_delta cases at messages.ts:3029, 3062-3079)",
+        "On content_block_start whose contentBlock.type === 'tool_use', append {index, contentBlock, unparsedToolInput: ''} to the array",
+        "On input_json_delta with a known index, replace the matching element with {...element, unparsedToolInput: element.unparsedToolInput + delta} (immutable update, matches upstream return shape at messages.ts:3071-3077)",
+        "On input_json_delta with an index that does not match any existing element, return the array unchanged (matches messages.ts:3068-3070 early return when find() yields no element)",
+        "On stream completion / new turn boundary AND on turn_aborted, the array is cleared (matches REPL.tsx:1609 and 2940 setStreamingToolUses([]) calls)",
+        "use-session-transcript.ts exposes streamingToolUses on the transcript snapshot shape consumed by App.tsx",
+        "StreamingToolUse type is imported from runtime/src/agenc/upstream/utils/messages.ts so the AgenC bridge type matches the upstream <Messages> consumer prop type exactly"
+      ],
+      "edgeCases": [
+        "Empty input event sequence yields streamingToolUses=[]",
+        "Single tool with a single delta yields one element with the delta concatenated into unparsedToolInput",
+        "Two concurrent tools at indices 0 and 1 with interleaved deltas yield two elements each containing only their own deltas",
+        "Out-of-order delta (delta arrives before content_block_start for that index) does not throw and does not create a phantom element — array unchanged",
+        "Delta with empty partial_json string is appended as the empty string (no-op concat, no exception)",
+        "Stream cancelled mid-delta (turn_aborted event) clears the array; subsequent stream starts from empty",
+        "Transcript snapshot identity changes when streamingToolUses changes (new reference) but is stable across re-derivations with the same input",
+        "Multi-megabyte cumulative unparsedToolInput does not regex over the whole string per delta (parity with upstream perf — handler does immutable concat only, no full-string scans)"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts",
+        "runtime/src/tui/openclaude/use-session-transcript.streaming-tool-use.parity.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npx vitest run src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts src/tui/openclaude/use-session-transcript.streaming-tool-use.parity.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "anthropic-input-json-delta-forwarding",
+      "source": "src/utils/messages.ts",
+      "target": "runtime/src/llm/providers/anthropic/adapter.ts",
+      "targets": [
+        "runtime/src/llm/providers/anthropic/adapter.ts",
+        "runtime/src/llm/types.ts",
+        "runtime/src/phases/stream-model.ts",
+        "runtime/src/session/event-log.ts"
+      ],
+      "requiredBehaviors": [
+        "LLMStreamChunk in runtime/src/llm/types.ts gains optional toolInputBlockStart and toolInputDelta fields whose payloads carry {callId, index, contentBlock} and {callId, index, partialJson} respectively, mirroring the upstream content_block_start (tool_use) and input_json_delta data shapes so the AgenC TUI bridge can reconstruct the upstream streamingToolUses contract from messages.ts:3024-3079",
+        "The Anthropic adapter (adapter.ts) emits a chunk with toolInputBlockStart whenever it receives an SSE content_block_start whose content_block.type === 'tool_use' and a non-negative index — fired BEFORE any input_json_delta for that block reaches the consumer",
+        "The Anthropic adapter emits a chunk with toolInputDelta for each content_block_delta whose delta.type === 'input_json_delta' and a non-negative index, carrying the raw partial_json string, in addition to (not in place of) its existing toolBlocks.arguments accumulation",
+        "Forwarded events do not break the existing completed-tool-call emission at content_block_stop (current behavior at adapter.ts ~lines 292-311 must still emit chunk.toolCalls)",
+        "Existing onChunk text-delta path is unaffected (no regression in streaming text rendering)",
+        "stream-model.ts onChunk handler emits a session event {type:'tool_input_block_start', payload:{callId,index,contentBlock}} when chunk.toolInputBlockStart is set, and a session event {type:'tool_input_delta', payload:{callId,index,partialJson}} when chunk.toolInputDelta is set; both feed the message-adapter accumulator from R5",
+        "event-log.ts EventMsg discriminated union and KNOWN_EVENT_TYPES set declare both tool_input_block_start and tool_input_delta variants so the typed Session.emit accepts the new events without falling into the I-26 forward-compat shim path used for unrecognized event tags"
+      ],
+      "edgeCases": [
+        "An SSE content_block_start with content_block.type !== 'tool_use' does NOT emit toolInputBlockStart (only tool_use blocks open a streaming-tool-use entry; text blocks must not appear in transcript.streamingToolUses)",
+        "An SSE content_block_start with index === -1 (the adapter's sentinel for missing index) does NOT emit toolInputBlockStart (only valid indices reach the bridge)",
+        "An input_json_delta whose partial_json is not a string is dropped at the adapter (matches the existing typeof guard at adapter.ts:285); no chunk.toolInputDelta is emitted",
+        "Multiple input_json_deltas for the same tool block in rapid succession all forward through onChunk in arrival order with their partial_json contents preserved",
+        "Two concurrent tool_use blocks at distinct indices each emit their own toolInputBlockStart and their own toolInputDelta chunks without interleaving payloads",
+        "A consumer that ignores chunk.toolInputBlockStart and chunk.toolInputDelta still observes the existing completed-tool-call emission at content_block_stop (backward-compatibility)",
+        "stream-model.ts onChunk handler does NOT emit a session event when chunk.toolInputBlockStart and chunk.toolInputDelta are both undefined (only the existing assistant-text and tool-call paths fire)",
+        "The new chunk fields are opt-in for non-Anthropic providers — providers that do not set them produce no streaming-tool-use UI, but their existing tool-call emission is unaffected (matches the matrix scope statement that openai/grok/etc. are out of scope for this contract)"
+      ],
+      "tests": [
+        "runtime/src/llm/providers/anthropic/adapter.input-json-delta-forwarding.parity.test.ts",
+        "runtime/src/phases/stream-model.tool-input-events.parity.test.ts",
+        "runtime/src/session/event-log.tool-input-events.parity.test.ts"
+      ],
+      "commands": [
+        "cd runtime && npx vitest run src/llm/providers/anthropic/adapter.input-json-delta-forwarding.parity.test.ts src/phases/stream-model.tool-input-events.parity.test.ts src/session/event-log.tool-input-events.parity.test.ts"
+      ],
+      "status": "required"
+    }
+  ],
+  "sourceFiles": [
+    "src/screens/REPL.tsx",
+    "src/utils/messages.ts",
+    "src/components/Messages.tsx"
+  ],
+  "targetFiles": [
+    "runtime/src/tui/openclaude/App.tsx",
+    "runtime/src/tui/openclaude/message-adapter.ts",
+    "runtime/src/tui/openclaude/use-session-transcript.ts",
+    "runtime/src/tui/openclaude/use-tool-jsx.ts",
+    "runtime/src/llm/providers/anthropic/adapter.ts",
+    "runtime/src/llm/types.ts",
+    "runtime/src/phases/stream-model.ts",
+    "runtime/src/session/event-log.ts"
+  ],
+  "testFiles": [
+    "runtime/src/tui/openclaude/App.streaming-tool-use.parity.test.tsx",
+    "runtime/src/tui/openclaude/App.tooljsx-state.parity.test.tsx",
+    "runtime/src/tui/openclaude/App.tooljsx-gating.parity.test.tsx",
+    "runtime/src/tui/openclaude/App.no-runningtoolprogress.parity.test.tsx",
+    "runtime/src/tui/openclaude/message-adapter.no-runningtoolprogress.parity.test.ts",
+    "runtime/src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts",
+    "runtime/src/tui/openclaude/use-session-transcript.streaming-tool-use.parity.test.ts",
+    "runtime/src/llm/providers/anthropic/adapter.input-json-delta-forwarding.parity.test.ts",
+    "runtime/src/phases/stream-model.tool-input-events.parity.test.ts",
+    "runtime/src/session/event-log.tool-input-events.parity.test.ts"
+  ],
+  "approvedExceptions": [
+    {
+      "id": "ts-unknown-keyword-in-bridge-and-provider",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "TypeScript 'unknown' keyword used in pre-existing type annotations and 'as unknown as' casts across the AgenC TUI bridge, the Anthropic provider, and the shared LLM/session type files. Legitimate TS language feature, not a contract shortcut. The checker's /\\bunknown\\b/i pattern conflates these with the 'unknown' shortcut term.",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/tui/openclaude/App.tsx",
+        "runtime/src/tui/openclaude/message-adapter.ts",
+        "runtime/src/tui/openclaude/use-session-transcript.ts",
+        "runtime/src/tui/openclaude/use-tool-jsx.ts",
+        "runtime/src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts",
+        "runtime/src/llm/providers/anthropic/adapter.ts",
+        "runtime/src/llm/types.ts",
+        "runtime/src/phases/stream-model.ts",
+        "runtime/src/phases/stream-model.tool-input-events.parity.test.ts",
+        "runtime/src/session/event-log.ts",
+        "runtime/src/session/event-log.tool-input-events.parity.test.ts"
+      ]
+    },
+    {
+      "id": "deferred-token-in-runtime-comment",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "Pre-existing module-header JSDoc in stream-model.ts uses the word 'deferred' in 'the actual continuation decision is deferred to the boundary check' — describing real budget-tracker behavior, not a contract shortcut. The matrix scope does not require rewriting unrelated pre-existing prose.",
+      "pattern": "\\bdeferred\\b",
+      "files": [
+        "runtime/src/phases/stream-model.ts"
+      ]
+    },
+    {
+      "id": "partial-keyword-real-meaning",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "The token 'partial' has multiple legitimate non-shortcut meanings in the touched files: a status enum value in event-log.ts; the TS Partial<T> utility type in test files; the noun 'partial JSON' / 'partial reply' / 'partial content' in adapter, types, and message-adapter comments; and the JSDoc field name 'partial' on LLMResponseError. None of these are contract shortcuts; rewriting them would damage real domain language.",
+      "pattern": "\\bpartial\\b",
+      "files": [
+        "runtime/src/session/event-log.ts",
+        "runtime/src/llm/types.ts",
+        "runtime/src/llm/providers/anthropic/adapter.ts",
+        "runtime/src/tui/openclaude/message-adapter.ts",
+        "runtime/src/tui/openclaude/message-adapter.streaming-tool-use.parity.test.ts",
+        "runtime/src/tui/openclaude/App.tooljsx-state.parity.test.tsx",
+        "runtime/src/phases/stream-model.tool-input-events.parity.test.ts"
+      ]
+    },
+    {
+      "id": "skip-discriminator-in-tooljsx-update",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "applyToolJSXUpdate (use-tool-jsx.ts) returns a discriminated-union result whose first variant is { skip: true } — an explicit signal mirroring the upstream wrapper's 'keep the local JSX command visible — ignore tool updates' branch at REPL.tsx:1095. Tests reference 'skip' by name. Not a contract shortcut.",
+      "pattern": "\\bskip(?:ped)?\\b",
+      "files": [
+        "runtime/src/tui/openclaude/use-tool-jsx.ts",
+        "runtime/src/tui/openclaude/App.tooljsx-state.parity.test.tsx"
+      ]
+    },
+    {
+      "id": "stub-test-fixture-variable",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "stream-model parity test uses the local variable name 'stub' (e.g. 'const stub = { emit, nextInternalSubId }') for the Session test double. This is a test-fixture variable name, not a marker of a stubbed implementation in production code.",
+      "pattern": "\\bstub\\b",
+      "files": [
+        "runtime/src/phases/stream-model.tool-input-events.parity.test.ts"
+      ]
+    },
+    {
+      "id": "ts-unknown-keyword-in-app-tooljsx-tests",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "App.tooljsx-gating.parity.test.tsx uses 'readonly unknown[]' as a type for toolUseConfirmQueue (TS keyword, not a shortcut), and a comment that quotes the upstream phrase 'show unless blocked by toolJSX' which contains the token 'blocked' from the FORBIDDEN_PATTERNS list. Both usages are legitimate references to upstream behavior, not contract shortcuts.",
+      "pattern": "\\bunknown\\b|\\bblocked\\b",
+      "files": [
+        "runtime/src/tui/openclaude/App.tooljsx-gating.parity.test.tsx"
+      ]
+    },
+    {
+      "id": "legacy-not-yet-jsdoc-pre-r4-deletion",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "Pre-existing JSDoc comment in the RunningToolProgressIndicator block (App.tsx ~lines 95-113) contains 'not yet'. The entire comment block is removed by row tui-remove-runningtoolprogressindicator (R4) of this contract; the exception keeps the row checker green for R1/R2/R3 while R4 has not yet shipped.",
+      "pattern": "not yet",
+      "files": [
+        "runtime/src/tui/openclaude/App.tsx"
+      ]
+    }
+  ]
+}

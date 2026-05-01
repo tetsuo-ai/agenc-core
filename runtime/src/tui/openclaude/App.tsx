@@ -10,12 +10,12 @@ import {
   useAppState,
   useSetAppState,
 } from "../../agenc/upstream/state/AppState.js";
-import { Box, Text, useApp } from "../../agenc/upstream/ink.js";
-import type { RunningToolProgress } from "./message-adapter.js";
+import { Box, useApp } from "../../agenc/upstream/ink.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import { createBridgeTools } from "./tool-stubs.js";
 import { useSessionTranscript } from "./use-session-transcript.js";
+import { useToolJSX } from "./use-tool-jsx.js";
 import {
   OpenClaudePermissionOverlay,
   buildToolUseConfirmQueue,
@@ -101,50 +101,6 @@ function useInitialSubmit(
   }, [initialPrompt, initialUserMessages, session, submit]);
 }
 
-/**
- * Compact "tool running" indicator. Renders one line per tool that
- * has emitted at least one `tool_progress` event but has not yet
- * fired its terminal `tool_call_completed` / `exec_command_end` /
- * `mcp_tool_call_end`. Cleared automatically as soon as the tool
- * settles.
- *
- * Intentionally tiny — a richer side-panel surface is out of scope
- * for this commit.
- */
-function RunningToolProgressIndicator({
-  progress,
-}: {
-  readonly progress: ReadonlyMap<string, RunningToolProgress>;
-}): React.ReactElement | null {
-  if (progress.size === 0) return null;
-  const PREVIEW_LIMIT = 80;
-  // Cap the slice with generous headroom BEFORE collapsing whitespace, so a
-  // multi-megabyte stdout chunk does not run a regex over the full string on
-  // every render.
-  const RAW_LIMIT = PREVIEW_LIMIT * 4;
-  const rows = Array.from(progress.entries()).map(([callId, entry]) => {
-    const raw = entry.latestChunk.slice(0, RAW_LIMIT);
-    const previewSource = raw.replace(/\s+/g, " ").trim();
-    const preview =
-      previewSource.length > PREVIEW_LIMIT
-        ? `${previewSource.slice(0, PREVIEW_LIMIT - 1)}…`
-        : previewSource;
-    const streamLabel = entry.stream ? ` (${entry.stream})` : "";
-    return (
-      <Text key={callId} dimColor>
-        ⟳ {entry.toolName}
-        {streamLabel}: {preview} [{entry.chunkCount} chunk
-        {entry.chunkCount === 1 ? "" : "s"}]
-      </Text>
-    );
-  });
-  return (
-    <Box flexDirection="column" paddingX={1}>
-      {rows}
-    </Box>
-  );
-}
-
 function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
   const { exit } = useApp();
   const [input, setInput] = useState(props.initialComposerText ?? "");
@@ -163,6 +119,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
     props.session,
     props.initialUserMessages ?? [],
   );
+  const [toolJSX, setToolJSX] = useToolJSX();
   const setModel = useCallback(
     (next: string) => {
       setAppState((prev) => ({
@@ -232,8 +189,9 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         getToolPermissionContext: async () => toolPermissionContext,
         options: {},
         tools,
+        setToolJSX,
       }) as any,
-    [props.session.abortController, toolPermissionContext, tools],
+    [props.session.abortController, toolPermissionContext, tools, setToolJSX],
   );
 
   const commands = useMemo(() => loadUpstreamCommandList(), []);
@@ -249,25 +207,27 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
 
   return (
     <Box flexDirection="column" width="100%">
-      <RunningToolProgressIndicator
-        progress={transcript.runningToolProgress}
-      />
       <Messages
         messages={transcript.messages as any[]}
         tools={tools as any}
         commands={commands as unknown as Command[]}
         verbose={false}
-        toolJSX={null}
+        toolJSX={toolJSX as any}
         toolUseConfirmQueue={toolUseConfirmQueue as never[]}
         inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
         isMessageSelectorVisible={false}
         conversationId={"agenc"}
         screen={"prompt" as any}
-        streamingToolUses={[]}
+        streamingToolUses={transcript.streamingToolUses as never[]}
         isLoading={transcript.isStreaming}
         streamingText={transcript.streamingText}
         hidePastThinking={false}
       />
+      {toolJSX !== null ? (
+        <Box flexDirection="column" width="100%">
+          {toolJSX.jsx}
+        </Box>
+      ) : null}
       <OpenClaudePermissionOverlay
         request={permissionRequests[0]}
         tools={tools}

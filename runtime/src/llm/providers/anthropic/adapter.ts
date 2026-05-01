@@ -255,10 +255,33 @@ export class AnthropicProvider implements LLMProvider {
               ? (event.data.content_block as Record<string, unknown>)
               : {};
           if (block.type === "tool_use" && index >= 0) {
+            const id = String(block.id ?? "");
+            const name = String(block.name ?? "");
             toolBlocks.set(index, {
-              id: String(block.id ?? ""),
-              name: String(block.name ?? ""),
+              id,
+              name,
               arguments: "",
+            });
+            // Forward a streaming-tool-use start signal alongside the
+            // normal accumulator. Downstream consumers translate this
+            // into a `tool_input_block_start` session event for the
+            // TUI bridge (see runtime/src/phases/stream-model.ts and
+            // runtime/src/tui/openclaude/message-adapter.ts). Mirrors
+            // upstream content_block_start handling at
+            // openclaude/src/utils/messages.ts:3024-3037.
+            onChunk({
+              content: "",
+              done: false,
+              toolInputBlockStart: {
+                callId: id,
+                index,
+                contentBlock: {
+                  type: "tool_use",
+                  id,
+                  name,
+                  input: {},
+                },
+              },
             });
           }
           continue;
@@ -284,6 +307,19 @@ export class AnthropicProvider implements LLMProvider {
             const block = toolBlocks.get(index);
             if (block && typeof delta.partial_json === "string") {
               block.arguments += delta.partial_json;
+              // Forward the partial JSON delta so the TUI bridge can
+              // render the synthetic streaming-tool-use cell as the
+              // arguments arrive. Mirrors the upstream input_json_delta
+              // handler at openclaude/src/utils/messages.ts:3062-3079.
+              onChunk({
+                content: "",
+                done: false,
+                toolInputDelta: {
+                  callId: block.id,
+                  index,
+                  partialJson: delta.partial_json,
+                },
+              });
             }
           }
           continue;

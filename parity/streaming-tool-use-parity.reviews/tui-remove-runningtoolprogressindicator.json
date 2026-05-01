@@ -1,0 +1,69 @@
+{
+  "rowId": "tui-remove-runningtoolprogressindicator",
+  "verdict": "APPROVED",
+  "reviewedAt": "2026-05-01T02:53:48Z",
+  "reviewer": "general-purpose-agent",
+  "matrixPath": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity/parity/streaming-tool-use-parity.json",
+  "sourceRoot": "/home/tetsuo/git/openclaude",
+  "targetRoot": "/home/tetsuo/git/AgenC-worktrees/contract-streaming-tool-use-parity",
+  "behaviorsAudited": [
+    {
+      "behavior": "RunningToolProgressIndicator function and its <Text> rendering (App.tsx:111-146) are removed",
+      "implementedAt": "runtime/src/tui/openclaude/App.tsx:1-297 (no definition present)",
+      "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.1 the RunningToolProgressIndicator function definition is gone",
+      "ok": true
+    },
+    {
+      "behavior": "<RunningToolProgressIndicator progress={transcript.runningToolProgress} /> JSX is removed from App.tsx render output",
+      "implementedAt": "runtime/src/tui/openclaude/App.tsx:208-277 (render block contains no such JSX)",
+      "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.2 the <RunningToolProgressIndicator ... /> JSX usage is gone",
+      "ok": true
+    },
+    {
+      "behavior": "Imports of RunningToolProgress type from message-adapter are removed from App.tsx",
+      "implementedAt": "runtime/src/tui/openclaude/App.tsx:1-30 (no RunningToolProgress import; only typed imports of LLMMessage, ToolPermissionContext, Command, AgentDefinition, OpenClaudeTuiProps)",
+      "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.3 App.tsx no longer imports RunningToolProgress from message-adapter",
+      "ok": true
+    },
+    {
+      "behavior": "runningToolProgress field is removed from OpenClaudeBridgeSession transcript shape and from message-adapter.ts (lines 42, 576, 706-734, 797)",
+      "implementedAt": "runtime/src/tui/openclaude/message-adapter.ts:22-40 (AdaptedTranscript no longer declares runningToolProgress); :564-768 (adaptTranscriptEvents has no runningToolProgress Map, no tool_progress case populating it, and the return object at :759-767 omits the key)",
+      "assertedAt": "message-adapter.no-runningtoolprogress.parity.test.ts:B4.4 AdaptedTranscript no longer declares the runningToolProgress field; B4.4 adaptTranscriptEvents no longer constructs a runningToolProgress Map or includes it in the return object; B4.4 the runtime adaptTranscriptEvents return value lacks the runningToolProgress key entirely",
+      "ok": true
+    },
+    {
+      "behavior": "RunningToolProgress type export is removed from message-adapter.ts; the row-reviewer subagent verifies via grep that no live caller outside dead-code paths references it before approving the row",
+      "implementedAt": "runtime/src/tui/openclaude/message-adapter.ts:1-768 (no `export interface RunningToolProgress` and no `export type RunningToolProgress` present); reviewer grep across runtime/src excluding agenc/upstream and *.test.ts(x) returned zero references",
+      "assertedAt": "message-adapter.no-runningtoolprogress.parity.test.ts:B4.4 RunningToolProgress interface is no longer exported from message-adapter.ts; E4.2 no other file under runtime/src references runningToolProgress; E4.4 RunningToolProgress symbol absence is asserted across the full bridge directory",
+      "ok": true
+    }
+  ],
+  "edgeCasesAudited": [
+    {
+      "edgeCase": "After removal, an active tool stream still produces visible UI (proven by tui-host-streamingtooluses tests rendering synthetic cells in <Messages>)",
+      "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:E4.1 the new running-tool UI surface is the upstream streamingToolUses prop on <Messages>; verify the wiring still flows from R1 (regression guard for R4 not accidentally removing R1); cross-row coverage via App.streaming-tool-use.parity.test.tsx (R1) and message-adapter.no-runningtoolprogress.parity.test.ts:E4.1 tool_progress events still arrive without throwing",
+      "ok": true
+    },
+    {
+      "edgeCase": "No transcript consumer outside App.tsx and message-adapter.ts references runningToolProgress (verified via grep in the parity test)",
+      "assertedAt": "message-adapter.no-runningtoolprogress.parity.test.ts:E4.2 no other file under runtime/src references runningToolProgress (consumers were limited to App.tsx + message-adapter; both now clean)",
+      "ok": true
+    },
+    {
+      "edgeCase": "TypeScript build succeeds with the field removed (no compile errors from stale references)",
+      "assertedAt": "vitest run of both parity test files passed (2 files, 12 tests, 124ms) — vitest transforms TS via the same ts-loader path the runtime uses, so any stale reference would fail at transform/import time. The E4.2/E4.4 file-walk tests additionally confirm there are no production-side references that could provoke a tsc error.",
+      "ok": true
+    },
+    {
+      "edgeCase": "AgenC-specific RunningToolProgress field absence is asserted by an executable check that fails if the symbol reappears in App.tsx or transcript types",
+      "assertedAt": "App.no-runningtoolprogress.parity.test.tsx:B4.1/B4.2/B4.3/E4.4 (App.tsx-scoped); message-adapter.no-runningtoolprogress.parity.test.ts:E4.4 RunningToolProgress symbol absence is asserted across the full bridge directory (production code only)",
+      "ok": true
+    }
+  ],
+  "missingBehaviors": [],
+  "missingEdgeCases": [],
+  "scopeDrift": [],
+  "hiddenCoupling": [],
+  "unverifiedAssumptions": [],
+  "summary": "R4 is fully implemented. App.tsx contains no RunningToolProgressIndicator definition, no JSX usage, no RunningToolProgress import, and no transcript.runningToolProgress read. message-adapter.ts contains no RunningToolProgress interface/type export, no runningToolProgress field on AdaptedTranscript, no Map construction, no tool_progress capture branch, and no runningToolProgress key in the return object. Both parity test files exist and exhaustively cover every required behavior plus all four edge cases (active-stream UI via streamingToolUses, no other consumers in runtime/src, TS build cleanliness, executable absence-check). The R1 regression guard (streamingToolUses={transcript.streamingToolUses} on <Messages>) is wired at App.tsx:221. Upstream OpenClaude (/home/tetsuo/git/openclaude/src) was confirmed to contain no RunningToolProgressIndicator or runningToolProgress symbol, so strict-parity-by-absence is the correct contract. All 12 tests pass via the row's command invocation. APPROVED."
+}
