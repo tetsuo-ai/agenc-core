@@ -1,0 +1,64 @@
+{
+  "contractName": "openclaude-app-startup-fixes",
+  "scope": "Two narrowly-scoped fixes in runtime/src/tui/openclaude/App.tsx: (1) replace hard-coded conversationId={\"agenc\"} with the real id from props.session; (2) when there is no initial prompt but startup messages exist, enqueue them and trigger the turn through the session API instead of calling the local React submit(\"\"), which short-circuits and leaves the messages stranded in the idle queue.",
+  "sourceRoot": "..",
+  "targetRoot": "..",
+  "approvedExceptions": [
+    {
+      "id": "ts-unknown-keyword",
+      "type": "forbidden-language",
+      "approvedBy": "tetsuo.solana@gmail.com",
+      "approvedAt": "2026-04-30T00:00:00.000Z",
+      "reason": "The literal token 'unknown' in the scanned target files is the TypeScript `unknown` type keyword (used for type-safe casts and bridge interface fields), not shortcut/uncertainty language.",
+      "pattern": "\\bunknown\\b",
+      "files": [
+        "runtime/src/tui/openclaude/App.tsx",
+        "runtime/src/tui/openclaude/session-types.ts",
+        "runtime/src/tui/openclaude/App.startup-fixes.parity.test.tsx"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "id": "conversation-id-from-session",
+      "source": "runtime/src/tui/openclaude/session-types.ts",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "targets": [
+        "runtime/src/tui/openclaude/App.tsx",
+        "runtime/src/tui/openclaude/session-types.ts"
+      ],
+      "requiredBehaviors": [
+        "OpenClaudeBridgeSession exposes readonly conversationId: string so the TUI can read the live session id (matches Session.conversationId in runtime/src/session/session.ts:688)",
+        "App.tsx Messages prop conversationId is sourced from props.session.conversationId, not the literal string 'agenc'",
+        "When two distinct sessions are mounted, the conversationId prop reflects each session's real id (no shared/static fallback in the live render path)"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.startup-fixes.parity.test.tsx"
+      ],
+      "commands": [
+        "node -e \"const s=require('fs').readFileSync('runtime/src/tui/openclaude/App.tsx','utf8'); if (/conversationId=\\\\{\\\"agenc\\\"\\\\}/.test(s)) { console.error('hard-coded conversationId still present'); process.exit(1); } if (!/conversationId=\\\\{props\\\\.session\\\\.conversationId\\\\}/.test(s)) { console.error('conversationId not sourced from props.session.conversationId'); process.exit(1); } console.log('ok'); \"",
+        "npx vitest run runtime/src/tui/openclaude/App.startup-fixes.parity.test.tsx -t conversation-id-from-session"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "initial-submit-startup-messages",
+      "source": "runtime/src/agents/thread-manager.ts",
+      "target": "runtime/src/tui/openclaude/App.tsx",
+      "requiredBehaviors": [
+        "When initialPrompt is empty AND initialUserMessages.length > 0, useInitialSubmit must NOT call the local React submit(\"\") (which short-circuits on empty text and leaves the idle queue undrained)",
+        "Each startup message is enqueued via session.enqueueIdleInput before the turn is triggered",
+        "After enqueue, the turn is triggered through the session API (session.submit(\"\", { displayUserMessage: null })), matching the canonical pattern in runtime/src/agents/thread-manager.ts:535",
+        "When initialPrompt is non-empty, behavior is preserved: enqueue startup messages then call the local submit(initialPrompt)",
+        "useInitialSubmit fires at most once per mount (submitted ref preserved)"
+      ],
+      "tests": [
+        "runtime/src/tui/openclaude/App.startup-fixes.parity.test.tsx"
+      ],
+      "commands": [
+        "npx vitest run runtime/src/tui/openclaude/App.startup-fixes.parity.test.tsx -t initial-submit-startup-messages"
+      ],
+      "status": "required"
+    }
+  ]
+}

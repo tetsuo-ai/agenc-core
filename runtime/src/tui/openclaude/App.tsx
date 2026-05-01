@@ -97,7 +97,11 @@ function useInitialSubmit(
     for (const message of startupMessages) {
       session.enqueueIdleInput?.(message);
     }
-    void submit(hasPrompt ? initialPrompt : "").catch(() => {});
+    if (hasPrompt) {
+      void submit(initialPrompt).catch(() => {});
+    } else {
+      void session.submit?.("", { displayUserMessage: null }).catch(() => {});
+    }
   }, [initialPrompt, initialUserMessages, session, submit]);
 }
 
@@ -216,7 +220,7 @@ function OpenClaudeShell(props: OpenClaudeTuiProps): React.ReactElement {
         toolUseConfirmQueue={toolUseConfirmQueue as never[]}
         inProgressToolUseIDs={new Set(transcript.inProgressToolUseIDs)}
         isMessageSelectorVisible={false}
-        conversationId={"agenc"}
+        conversationId={props.session.conversationId}
         screen={"prompt" as any}
         streamingToolUses={transcript.streamingToolUses as never[]}
         isLoading={transcript.isStreaming}
