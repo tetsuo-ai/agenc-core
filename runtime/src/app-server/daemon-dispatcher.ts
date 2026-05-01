@@ -16,6 +16,7 @@ import {
   isAgenCDaemonMethod,
   JSON_RPC_VERSION,
   type AgentCreateParams,
+  type AgentListParams,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
@@ -27,14 +28,20 @@ import {
 } from "./protocol/index.js";
 
 export interface AgenCDaemonDispatcherOptions {
-  readonly agentManager: Pick<AgenCDaemonAgentManager, "createAgent">;
+  readonly agentManager: Pick<
+    AgenCDaemonAgentManager,
+    "createAgent" | "listAgents"
+  >;
   readonly initializeAuthenticator?: (
     params: InitializeParams,
   ) => boolean | Promise<boolean>;
 }
 
 export class AgenCDaemonJsonRpcDispatcher {
-  readonly #agentManager: Pick<AgenCDaemonAgentManager, "createAgent">;
+  readonly #agentManager: Pick<
+    AgenCDaemonAgentManager,
+    "createAgent" | "listAgents"
+  >;
   readonly #initializeAuthenticator:
     | ((params: InitializeParams) => boolean | Promise<boolean>)
     | undefined;
@@ -123,6 +130,11 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.createAgent(validateAgentCreateParams(params)),
         );
+      case "agent.list":
+        return successResponse(
+          id,
+          await this.#agentManager.listAgents(validateAgentListParams(params)),
+        );
       default:
         return errorResponse(
           id,
@@ -195,17 +207,38 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
   }) as AgentCreateParams;
 }
 
+function validateAgentListParams(params: JsonObject): AgentListParams {
+  const validated = validateObjectShape(params, {
+    methodName: "agent.list",
+    stringFields: ["cursor"],
+    numberFields: ["limit"],
+  });
+  const limit = validated.limit;
+  if (limit !== undefined && typeof limit !== "number") {
+    throw invalidParams("agent.list param 'limit' must be a number");
+  }
+  if (
+    limit !== undefined &&
+    (!Number.isInteger(limit) || limit < 1)
+  ) {
+    throw invalidParams("agent.list param 'limit' must be a positive integer");
+  }
+  return validated as AgentListParams;
+}
+
 function validateObjectShape(
   params: JsonObject,
   options: {
     readonly methodName: string;
     readonly stringFields?: readonly string[];
+    readonly numberFields?: readonly string[];
     readonly stringArrayFields?: readonly string[];
     readonly objectFields?: readonly string[];
   },
 ): JsonObject {
   const allowed = new Set([
     ...(options.stringFields ?? []),
+    ...(options.numberFields ?? []),
     ...(options.stringArrayFields ?? []),
     ...(options.objectFields ?? []),
   ]);
@@ -216,6 +249,9 @@ function validateObjectShape(
     if (value === undefined) continue;
     if (options.stringFields?.includes(key) && typeof value !== "string") {
       throw invalidParams(`${options.methodName} param '${key}' must be a string`);
+    }
+    if (options.numberFields?.includes(key) && typeof value !== "number") {
+      throw invalidParams(`${options.methodName} param '${key}' must be a number`);
     }
     if (options.stringArrayFields?.includes(key)) {
       if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {

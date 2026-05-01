@@ -1,9 +1,9 @@
 /**
  * CLI frontend for background-agent lifecycle commands.
  *
- * F-06a exposes `agenc agent start <objective>` as a thin daemon client. The
- * command autostarts the daemon when enabled, sends `agent.create`, and prints
- * only the returned agent ID so scripts can capture it directly.
+ * `agenc agent start <objective>` autostarts the daemon when enabled, sends
+ * `agent.create`, and prints only the returned agent ID so scripts can capture
+ * it directly. `agenc agent list` reports active background-agent summaries.
  */
 
 import { createConnection } from "node:net";
@@ -22,6 +22,9 @@ import {
   JSON_RPC_VERSION,
   type AgentCreateParams,
   type AgentCreateResult,
+  type AgentListParams,
+  type AgentListResult,
+  type AgentSummary,
   type AgenCDaemonErrorResponse,
   type AgenCDaemonResponse,
   type AgenCDaemonSuccessResponse,
@@ -34,6 +37,7 @@ export type AgenCAgentCliCommand =
       readonly unattendedAllow: readonly string[];
       readonly unattendedDeny: readonly string[];
     }
+  | { readonly kind: "list" }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -44,6 +48,7 @@ export interface AgenCAgentCliIo {
 
 export interface AgenCAgentCliDaemonClient {
   createAgent(params: AgentCreateParams): Promise<AgentCreateResult>;
+  listAgents(params?: AgentListParams): Promise<AgentListResult>;
 }
 
 export interface AgenCAgentCliOptions {
@@ -70,6 +75,7 @@ export function formatAgenCAgentCliHelpText(): string {
     "",
     "Commands:",
     "  start [--unattended-allow <tools>] [--unattended-deny <tools>] <objective>",
+    "  list    Show active background agents",
   ].join("\n");
 }
 
@@ -80,6 +86,15 @@ export function parseAgenCAgentCliArgs(
   const action = argv[1];
   if (action === undefined || action === "--help" || action === "-h") {
     return { kind: "help", text: formatAgenCAgentCliHelpText() };
+  }
+  if (action === "list") {
+    if (argv.length > 2) {
+      return {
+        kind: "error",
+        message: "agent list does not accept arguments",
+      };
+    }
+    return { kind: "list" };
   }
   if (action !== "start") {
     return {
@@ -120,6 +135,8 @@ export async function runAgenCAgentCli(
       io.stderr.write(`agenc: ${command.message}\n`);
       io.stderr.write(`${formatAgenCAgentCliHelpText()}\n`);
       return 1;
+    case "list":
+      return listAgenCAgents(io, options);
     case "start":
       return startAgenCAgent(command, io, options);
   }
@@ -137,6 +154,14 @@ export function createAgenCJsonLineDaemonClient(
     createAgent: (params) =>
       requestDaemon(
         "agent.create",
+        params,
+        socketPath,
+        timeoutMs,
+        options.authCookie ?? readDaemonCookie(cookiePath),
+      ),
+    listAgents: (params = {}) =>
+      requestDaemon(
+        "agent.list",
         params,
         socketPath,
         timeoutMs,
@@ -178,6 +203,67 @@ async function startAgenCAgent(
   }
 }
 
+async function listAgenCAgents(
+  io: AgenCAgentCliIo,
+  options: AgenCAgentCliOptions,
+): Promise<number> {
+  try {
+    await (options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env))();
+    const client = options.client ?? createAgenCJsonLineDaemonClient({
+      env: options.env,
+    });
+    const result = await listAllAgenCAgents(client);
+    io.stdout.write(`${formatAgenCAgentList(result)}\n`);
+    return 0;
+  } catch (error) {
+    io.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
+  }
+}
+
+async function listAllAgenCAgents(
+  client: AgenCAgentCliDaemonClient,
+): Promise<AgentListResult> {
+  const agents: AgentSummary[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  for (;;) {
+    const page = await client.listAgents(
+      cursor === undefined ? {} : { cursor },
+    );
+    agents.push(...page.agents);
+    if (page.nextCursor === undefined) return { agents };
+    if (seenCursors.has(page.nextCursor)) {
+      throw new Error("daemon returned a repeated agent list cursor");
+    }
+    seenCursors.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
+}
+
+export function formatAgenCAgentList(result: AgentListResult): string {
+  if (result.agents.length === 0) return "No active agents";
+  return [
+    ["id", "objective", "status", "started_at", "last_active_at"].join("\t"),
+    ...result.agents.map((agent) =>
+      [
+        formatAgenCAgentListCell(agent.agentId),
+        formatAgenCAgentListCell(agent.objective ?? ""),
+        formatAgenCAgentListCell(agent.status),
+        formatAgenCAgentListCell(agent.startedAt ?? "-"),
+        formatAgenCAgentListCell(agent.lastActiveAt ?? "-"),
+      ].join("\t"),
+    ),
+  ].join("\n");
+}
+
+function formatAgenCAgentListCell(value: string): string {
+  return value.replace(/[\t\r\n]+/g, " ");
+}
+
 export function defaultEnsureDaemonReady(
   env: NodeJS.ProcessEnv = process.env,
   ensureAutostart: typeof ensureAgenCDaemonAutostart =
@@ -201,7 +287,21 @@ async function requestDaemon(
   socketPath: string,
   timeoutMs: number,
   authCookie: string | Promise<string>,
-): Promise<AgentCreateResult> {
+): Promise<AgentCreateResult>;
+async function requestDaemon(
+  method: "agent.list",
+  params: AgentListParams,
+  socketPath: string,
+  timeoutMs: number,
+  authCookie: string | Promise<string>,
+): Promise<AgentListResult>;
+async function requestDaemon(
+  method: "agent.create" | "agent.list",
+  params: AgentCreateParams | AgentListParams,
+  socketPath: string,
+  timeoutMs: number,
+  authCookie: string | Promise<string>,
+): Promise<AgentCreateResult | AgentListResult> {
   const resolvedAuthCookie = await authCookie;
   const responses = await sendJsonLineRequestWithRetry(
     socketPath,
@@ -234,12 +334,20 @@ async function requestDaemon(
     throw new Error(initializeResponse.error.message);
   }
   if (response === undefined) {
-    throw new Error("daemon did not return an agent.create response");
+    throw new Error(`daemon did not return an ${method} response`);
   }
   if (isErrorResponse(response)) {
     throw new Error(response.error.message);
   }
-  return (response as AgenCDaemonSuccessResponse<"agent.create">).result;
+  return resultFromDaemonResponse(response);
+}
+
+function resultFromDaemonResponse(
+  response: AgenCDaemonResponse,
+): AgentCreateResult | AgentListResult {
+  return (
+    response as AgenCDaemonSuccessResponse<"agent.create" | "agent.list">
+  ).result;
 }
 
 async function readDaemonCookie(cookiePath: string): Promise<string> {

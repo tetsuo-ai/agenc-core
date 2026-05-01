@@ -8,6 +8,7 @@
 
 import { AsyncLock } from "../utils/async-lock.js";
 import type {
+  AgenCBackgroundAgentSnapshot,
   AgenCBackgroundAgentRunner,
 } from "./background-agent-runner.js";
 import type {
@@ -161,13 +162,23 @@ export class AgenCDaemonAgentManager {
   }
 
   async listAgents(params: AgentListParams = {}): Promise<AgentListResult> {
-    return this.#state.with((state) => {
-      const cursor = parseCursor(params.cursor);
+    return this.#state.with(async (state) => {
+      await this.#refreshAgentsFromRunner(state);
+      const cursor = normalizeCursor(params.cursor);
       const limit = normalizeLimit(params.limit);
-      const agents = [...state.agents.values()];
-      const page = agents.slice(cursor, cursor + limit);
+      const agents = [...state.agents.values()]
+        .filter(isActiveAgent)
+        .sort(compareAgentsForList);
+      const pageStart =
+        cursor === undefined
+          ? 0
+          : agents.findIndex((agent) => agent.agentId > cursor);
+      const page =
+        pageStart < 0 ? [] : agents.slice(pageStart, pageStart + limit);
       const nextCursor =
-        cursor + limit < agents.length ? String(cursor + limit) : undefined;
+        pageStart >= 0 && pageStart + limit < agents.length
+          ? page.at(-1)?.agentId
+          : undefined;
       return {
         agents: page.map(toAgentSummary),
         ...(nextCursor !== undefined ? { nextCursor } : {}),
@@ -176,10 +187,33 @@ export class AgenCDaemonAgentManager {
   }
 
   async getAgent(agentId: string): Promise<AgentSummary | null> {
-    return this.#state.with((state) => {
+    return this.#state.with(async (state) => {
       const agent = state.agents.get(agentId);
-      return agent === undefined ? null : toAgentSummary(agent);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(agentId);
+      return refreshed === undefined ? null : toAgentSummary(refreshed);
     });
+  }
+
+  async #refreshAgentsFromRunner(state: AgentLifecycleState): Promise<void> {
+    for (const agent of [...state.agents.values()]) {
+      await this.#refreshAgentFromRunner(state, agent);
+    }
+  }
+
+  async #refreshAgentFromRunner(
+    state: AgentLifecycleState,
+    agent: MutableAgent,
+  ): Promise<void> {
+    const snapshot = await this.#runner?.getAgentSnapshot?.(agent.agentId);
+    if (snapshot === undefined) return;
+    if (snapshot === null) {
+      state.agents.delete(agent.agentId);
+      return;
+    }
+    applyAgentSnapshot(agent, snapshot);
   }
 }
 
@@ -215,16 +249,8 @@ function normalizeStringList(
   return normalized;
 }
 
-function parseCursor(cursor: string | undefined): number {
-  if (cursor === undefined || cursor.length === 0) return 0;
-  const parsed = Number.parseInt(cursor, 10);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new AgenCDaemonAgentLifecycleError(
-      "INVALID_CURSOR",
-      `invalid agent list cursor: ${cursor}`,
-    );
-  }
-  return parsed;
+function normalizeCursor(cursor: string | undefined): string | undefined {
+  return cursor === undefined || cursor.length === 0 ? undefined : cursor;
 }
 
 function normalizeLimit(limit: number | undefined): number {
@@ -236,6 +262,22 @@ function normalizeLimit(limit: number | undefined): number {
     );
   }
   return Math.min(limit, 500);
+}
+
+function applyAgentSnapshot(
+  agent: MutableAgent,
+  snapshot: AgenCBackgroundAgentSnapshot,
+): void {
+  agent.status = snapshot.status;
+  agent.lastActiveAt = snapshot.lastActiveAt;
+}
+
+function isActiveAgent(agent: MutableAgent): boolean {
+  return agent.status !== "stopped" && agent.status !== "error";
+}
+
+function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {
+  return left.agentId.localeCompare(right.agentId);
 }
 
 function toAgentCreateResult(agent: MutableAgent): AgentCreateResult {

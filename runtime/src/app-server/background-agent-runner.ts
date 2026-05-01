@@ -24,7 +24,12 @@ import type { AgentThread } from "../agents/thread.js";
 import { setRulesForSource } from "../permissions/rules.js";
 import type { PermissionModeRegistry } from "../permissions/mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
-import type { JsonObject } from "./protocol/index.js";
+import { isFinal } from "../agents/status.js";
+import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
+import type {
+  AgentStatus as DaemonAgentStatus,
+  JsonObject,
+} from "./protocol/index.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -44,10 +49,18 @@ export interface AgenCBackgroundAgentStartResult {
   readonly status: "running";
 }
 
+export interface AgenCBackgroundAgentSnapshot {
+  readonly status: DaemonAgentStatus;
+  readonly lastActiveAt: string;
+}
+
 export interface AgenCBackgroundAgentRunner {
   startAgent(
     params: AgenCBackgroundAgentStartParams,
   ): Promise<AgenCBackgroundAgentStartResult>;
+  getAgentSnapshot?(
+    agentId: string,
+  ): Promise<AgenCBackgroundAgentSnapshot | null>;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
 }
 
@@ -61,6 +74,9 @@ interface ActiveBackgroundAgent {
   readonly bootstrap: LocalRuntimeBootstrap;
   readonly control: AgentControl;
   readonly thread: AgentThread;
+  status: DaemonAgentStatus;
+  lastActiveAt: string;
+  unsubscribeStatus?: () => void;
 }
 
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
@@ -128,16 +144,21 @@ export class AgenCDelegateBackgroundAgentRunner
         );
       }
 
-      this.#active.set(outcome.thread.threadId, {
+      const startedAt = this.#now();
+      const active: ActiveBackgroundAgent = {
         bootstrap,
         control,
         thread: outcome.thread,
-      });
+        status: "running",
+        lastActiveAt: startedAt,
+      };
+      this.#trackAgentStatus(active);
+      this.#active.set(outcome.thread.threadId, active);
       this.#cleanupWhenComplete(outcome.thread.threadId, outcome.thread);
       return {
         agentId: outcome.thread.threadId,
         agentPath: outcome.thread.agentPath,
-        startedAt: this.#now(),
+        startedAt,
         status: "running",
       };
     } catch (error) {
@@ -146,12 +167,37 @@ export class AgenCDelegateBackgroundAgentRunner
     }
   }
 
+  async getAgentSnapshot(
+    agentId: string,
+  ): Promise<AgenCBackgroundAgentSnapshot | null> {
+    const active = this.#active.get(agentId);
+    if (active === undefined) return null;
+    if (hasCurrentStatus(active.thread) && isFinal(active.thread.currentStatus)) {
+      return null;
+    }
+    return {
+      status: active.status,
+      lastActiveAt: active.lastActiveAt,
+    };
+  }
+
   async stopAgent(agentId: string, reason = "daemon_agent_stop"): Promise<void> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
     this.#active.delete(agentId);
+    active.unsubscribeStatus?.();
     await active.control.shutdown(agentId, reason).catch(() => {});
     await active.bootstrap.shutdown().catch(() => {});
+  }
+
+  #trackAgentStatus(active: ActiveBackgroundAgent): void {
+    if (!hasStatusSubscription(active.thread)) return;
+    let sawInitialStatus = false;
+    active.unsubscribeStatus = active.thread.onStatusChange((status) => {
+      active.status = mapThreadStatus(status);
+      if (sawInitialStatus) active.lastActiveAt = this.#now();
+      sawInitialStatus = true;
+    });
   }
 
   #cleanupWhenComplete(agentId: string, thread: AgentThread): void {
@@ -162,8 +208,38 @@ export class AgenCDelegateBackgroundAgentRunner
         const active = this.#active.get(agentId);
         if (active === undefined || active.thread !== thread) return;
         this.#active.delete(agentId);
+        active.unsubscribeStatus?.();
         await active.bootstrap.shutdown().catch(() => {});
       });
+  }
+}
+
+function hasCurrentStatus(
+  thread: AgentThread,
+): thread is AgentThread & { readonly currentStatus: ThreadAgentStatus } {
+  return "currentStatus" in thread;
+}
+
+function hasStatusSubscription(
+  thread: AgentThread,
+): thread is AgentThread & {
+  onStatusChange(listener: (status: ThreadAgentStatus) => void): () => void;
+} {
+  return typeof thread.onStatusChange === "function";
+}
+
+function mapThreadStatus(status: ThreadAgentStatus): DaemonAgentStatus {
+  switch (status.status) {
+    case "completed":
+    case "not_found":
+    case "shutdown":
+      return "stopped";
+    case "errored":
+      return "error";
+    case "interrupted":
+    case "pending_init":
+    case "running":
+      return "running";
   }
 }
 
