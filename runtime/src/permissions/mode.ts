@@ -1,7 +1,7 @@
 /**
  * Permission-mode finite state machine (I-3 primitive).
  *
- * Ports openclaude's `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
+ * Ports upstream `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
  * transition helpers from `permissionSetup.ts` / `bootstrap/state.ts` into a
  * self-contained module with no global state. All session state that
  * AgenC stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
@@ -31,6 +31,10 @@ import {
   __setAutoModeGateResolverForTesting as __setClassifierAutoModeGateResolverForTesting,
   isAutoModeGateEnabled as isClassifierAutoModeGateEnabled,
 } from "./classifier.js";
+import {
+  CROSS_PLATFORM_CODE_EXEC,
+  DANGEROUS_BASH_PATTERNS,
+} from "./dangerous-patterns.js";
 
 // ---------------------------------------------------------------------------
 // Mode constants + predicates
@@ -68,7 +72,7 @@ export const INTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
 
 /**
  * Type guard — true when `mode` is one of the Shift+Tab-visible external
- * modes. Mirrors openclaude's `isExternalPermissionMode`.
+ * modes. Mirrors upstream `isExternalPermissionMode`.
  */
 export function isExternalPermissionMode(mode: PermissionMode): boolean {
   return (EXTERNAL_PERMISSION_MODES as readonly PermissionMode[]).includes(mode);
@@ -440,47 +444,6 @@ export function prepareContextForPlanMode(
 // ---------------------------------------------------------------------------
 
 /**
- * Interpreter / shell patterns that auto-allow arbitrary code execution when
- * present as a Bash allow rule (e.g. `Bash(python:*)` hands the model a
- * scripting escape hatch). Subset of AgenC's
- * `CROSS_PLATFORM_CODE_EXEC` + `DANGEROUS_BASH_PATTERNS` — the entries most
- * commonly seen as broad allowlist prefixes in operator configs.
- */
-const DANGEROUS_BASH_PATTERNS: readonly string[] = Object.freeze([
-  // Interpreters
-  "python",
-  "python3",
-  "python2",
-  "node",
-  "deno",
-  "tsx",
-  "ruby",
-  "perl",
-  "php",
-  "lua",
-  // Package runners
-  "npx",
-  "bunx",
-  "npm run",
-  "yarn run",
-  "pnpm run",
-  "bun run",
-  // Shells
-  "bash",
-  "sh",
-  "zsh",
-  "fish",
-  // Generic code-exec builtins
-  "eval",
-  "exec",
-  "env",
-  "xargs",
-  "sudo",
-  // Remote arbitrary-command wrapper
-  "ssh",
-] as const);
-
-/**
  * Tool names treated as always-dangerous when allowlisted. Any spawn_agent allow
  * rule auto-approves sub-agent spawns before the classifier can see the
  * prompt (delegation attack surface).
@@ -516,11 +479,8 @@ export function isDangerousBashPermission(
 }
 
 /**
- * Similar detector for PowerShell and spawn_agent allow rules. Scoped narrowly to
- * the cases AgenC explicitly catches in
- * `isDangerousPowerShellPermission` + `isDangerousTaskPermission`. We keep
- * the matcher conservative — if the content looks like a non-exact rule
- * (e.g. `PowerShell(iex:*)`) we strip it.
+ * Similar detector for PowerShell allow rules. Uses the upstream
+ * cross-platform code-exec list plus PowerShell-specific escape hatches.
  */
 function isDangerousPowerShellPermission(
   toolName: string,
@@ -531,6 +491,7 @@ function isDangerousPowerShellPermission(
   const content = ruleContent.trim().toLowerCase();
   if (content === "*") return true;
   const patterns: readonly string[] = [
+    ...CROSS_PLATFORM_CODE_EXEC,
     "pwsh",
     "powershell",
     "cmd",
@@ -556,6 +517,16 @@ function isDangerousPowerShellPermission(
     if (content === `${p}*`) return true;
     if (content === `${p} *`) return true;
     if (content.startsWith(`${p} -`) && content.endsWith("*")) return true;
+    const sp = p.indexOf(" ");
+    const exe =
+      sp === -1
+        ? `${p}.exe`
+        : `${p.slice(0, sp)}.exe${p.slice(sp)}`;
+    if (content === exe) return true;
+    if (content === `${exe}:*`) return true;
+    if (content === `${exe}*`) return true;
+    if (content === `${exe} *`) return true;
+    if (content.startsWith(`${exe} -`) && content.endsWith("*")) return true;
   }
   return false;
 }
