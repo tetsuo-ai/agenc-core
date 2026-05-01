@@ -3,11 +3,17 @@
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
 const packageDir = path.dirname(packageJsonPath);
 const runtimeInternalEntrypoints = [];
+const requiredRootExports = [
+  "VERSION",
+  "AgenCDaemonJsonRpcDispatcher",
+  "AgenCInProcessDaemonTransport",
+  "startAgenCInProcessDaemonTransport",
+];
 
 function collectPackageEntryPaths(packageManifest) {
   const paths = new Set();
@@ -80,6 +86,8 @@ async function main() {
     }
   }
 
+  await checkRequiredRootExports(packageManifest);
+
   if (missingPaths.length > 0) {
     throw new Error(
       `runtime package metadata references missing built entries:\n- ${missingPaths.join("\n- ")}`,
@@ -89,6 +97,33 @@ async function main() {
   process.stdout.write(
     `[runtime build contract] verified ${packageManifest.name} entrypoints (${expectedPaths.size})\n`,
   );
+}
+
+async function checkRequiredRootExports(packageManifest) {
+  const rootExport = packageManifest.exports?.["."] ?? packageManifest.main;
+  const importTarget =
+    typeof rootExport === "string"
+      ? rootExport
+      : rootExport?.import ?? rootExport?.default;
+  if (typeof importTarget !== "string") {
+    throw new Error("runtime package root export does not expose an import target");
+  }
+
+  const rootModule = await import(
+    pathToFileURL(path.join(packageDir, normalizePackagePath(importTarget))).href
+  );
+  const missingExports = requiredRootExports.filter(
+    (name) => !(name in rootModule),
+  );
+  if (missingExports.length > 0) {
+    throw new Error(
+      `runtime package root export is missing required exports:\n- ${missingExports.join("\n- ")}`,
+    );
+  }
+}
+
+function normalizePackagePath(value) {
+  return value.startsWith("./") ? value.slice(2) : value;
 }
 
 await main();

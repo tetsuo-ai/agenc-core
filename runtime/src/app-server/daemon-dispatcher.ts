@@ -120,6 +120,16 @@ export class AgenCDaemonJsonRpcDispatcher {
   async closeConnection(
     connection: AgenCDaemonJsonRpcConnection,
   ): Promise<void> {
+    if (this.#clientMultiplexer !== undefined) {
+      for (const clientId of connection.trackedClientIds) {
+        await this.#clientMultiplexer.removeClient(clientId).catch((error) => {
+          if ((error as { code?: string }).code === "CLIENT_NOT_FOUND") {
+            return;
+          }
+          throw error;
+        });
+      }
+    }
     await this.#commandExec.closeConnection(connection.cancellationScope);
   }
 

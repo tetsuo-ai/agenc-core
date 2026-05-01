@@ -1,11 +1,44 @@
 /**
  * @tetsuo-ai/runtime — lean coding CLI
  *
- * Post-gut: this barrel only re-exports the minimum surface a host
- * needs. The agent loop, tools, and TUI are internal; consumers should
- * reach for the `agenc` binary, not the runtime module.
+ * Post-gut: this barrel re-exports the minimum surface a host needs. Most
+ * agent loop, tool, and TUI internals stay private; embedded daemon consumers
+ * use the in-process app-server transport exported here.
  *
  * @packageDocumentation
  */
 
 export const VERSION = "0.2.0";
+
+export {
+  AgenCDaemonAgentManager,
+  type AgenCDaemonAgentManagerOptions,
+} from "./app-server/agent-lifecycle.js";
+export {
+  AgenCDaemonClientMultiplexer,
+  type AgenCClientMultiplexerOptions,
+} from "./app-server/client-multiplexer.js";
+export {
+  AgenCDaemonJsonRpcDispatcher,
+  type AgenCDaemonDispatcherOptions,
+} from "./app-server/daemon-dispatcher.js";
+export {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  JSON_RPC_VERSION,
+  type AgenCDaemonRequest,
+  type AgenCDaemonResponse,
+  type InitializeParams,
+  type JsonObject,
+  type RequestId,
+} from "./app-server/protocol/index.js";
+export {
+  AgenCDaemonSessionManager,
+  type AgenCSessionLifecycleOptions,
+} from "./app-server/session-lifecycle.js";
+export {
+  AgenCInProcessDaemonTransport,
+  defaultInProcessInitializeParams,
+  startAgenCInProcessDaemonTransport,
+  type AgenCInProcessDaemonTransportOptions,
+  type StartAgenCInProcessDaemonTransportOptions,
+} from "./app-server/transport/in-process.js";
