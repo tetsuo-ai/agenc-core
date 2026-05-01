@@ -1,0 +1,79 @@
+{
+  "contractName": "app-server-notification-channel",
+  "scope": "AgenC daemon server-to-client notification methods and session-scoped subscription replay mapped from the donor app-server notification/listener flow. AgenC keeps dot-separated event.* methods and a compact session multiplexer while preserving the donor control-plane contract: typed server push is routed only to subscribed clients and disconnected clients receive bounded replay.",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs", "_sourceRootBrandingAllow": "branding-scan: allow donor source root path",
+  "targetRoot": "..",
+  "sourceCommit": "48791920a8b122939c4d3feb15673c0a690ca4a0",
+  "sourceFiles": [
+    "app-server-protocol/src/protocol/common.rs",
+    "app-server-protocol/src/protocol/v2.rs",
+    "app-server/src/outgoing_message.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/app-server/protocol/index.ts",
+    "runtime/src/app-server/protocol/schema.json",
+    "runtime/src/app-server/client-multiplexer.ts"
+  ],
+  "testFiles": [
+    "runtime/src/app-server/protocol.contract.test.ts",
+    "runtime/src/app-server/client-multiplexer.contract.test.ts",
+    "runtime/src/app-server/disconnect-resilience.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "event-notification-protocol",
+      "source": "app-server-protocol/src/protocol/common.rs",
+      "target": "runtime/src/app-server/protocol/index.ts",
+      "requiredBehaviors": [
+        "the daemon notification registry includes event.message_chunk, event.tool_request, event.permission_request, event.agent_status, and event.session_event",
+        "each event notification has typed params anchored by sessionId and eventId",
+        "the published JSON Schema accepts all event notification envelopes and rejects malformed params"
+      ],
+      "edgeCases": [
+        "event.permission_request requires a permission list instead of accepting a scalar",
+        "existing commandExec.outputDelta notification remains in the registry"
+      ],
+      "tests": [
+        "runtime/src/app-server/protocol.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "session-subscription-fanout",
+      "source": "app-server/src/outgoing_message.rs",
+      "target": "runtime/src/app-server/client-multiplexer.ts",
+      "requiredBehaviors": [
+        "typed session notifications are delivered through the same session route as existing daemon session events",
+        "multiple clients attached to one session receive independent ordered delivery",
+        "delivery failure for one client does not prevent delivery to other clients"
+      ],
+      "edgeCases": [
+        "unknown clients cannot attach to session routes",
+        "duplicate client ids are rejected before mutating session state"
+      ],
+      "tests": [
+        "runtime/src/app-server/client-multiplexer.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "bounded-replay",
+      "source": "app-server/src/outgoing_message.rs",
+      "target": "runtime/src/app-server/client-multiplexer.ts",
+      "requiredBehaviors": [
+        "session notifications emitted with no attached clients are buffered for replay",
+        "reattaching to a session replays buffered notifications in original order",
+        "the per-session buffer is bounded and drops the oldest entries first"
+      ],
+      "edgeCases": [
+        "detaching or disconnecting a client keeps the daemon session alive",
+        "bounded replay applies to typed event.session_event notifications"
+      ],
+      "tests": [
+        "runtime/src/app-server/disconnect-resilience.contract.test.ts",
+        "runtime/src/app-server/client-multiplexer.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

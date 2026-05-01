@@ -4,7 +4,11 @@ import {
   AgenCDaemonClientMultiplexer,
 } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
-import type { JsonObject } from "./protocol/index.js";
+import {
+  JSON_RPC_VERSION,
+  type AgenCDaemonSessionNotification,
+  type JsonObject,
+} from "./protocol/index.js";
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -191,18 +195,18 @@ describe("AgenC daemon client multiplexer", () => {
     const received: JsonObject[] = [];
 
     await sessionManager.createSession({ agentId: "agent_1" });
-    const event = {
-      type: "daemon.event",
-      sessionId: "session_1",
-      msg: {
-        id: "early-turn",
-        type: "agent_message_delta",
-        payload: { delta: "ready" },
+    const event: AgenCDaemonSessionNotification = {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.message_chunk",
+      params: {
+        sessionId: "session_1",
+        eventId: "early-turn",
+        delta: "ready",
       },
     };
 
     await expect(
-      multiplexer.broadcastSessionEvent("session_1", event),
+      multiplexer.broadcastSessionNotification("session_1", event),
     ).resolves.toEqual({
       sessionId: "session_1",
       deliveredClientIds: [],

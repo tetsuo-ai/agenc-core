@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLock } from "../utils/async-lock.js";
 import type {
+  AgenCDaemonSessionNotification,
   JsonObject,
   SessionAttachResult,
   SessionDetachResult,
@@ -242,6 +243,13 @@ export class AgenCDaemonClientMultiplexer {
       sessionId,
       ...(await settleDeliveries(deliveries)),
     };
+  }
+
+  async broadcastSessionNotification(
+    sessionId: string,
+    notification: AgenCDaemonSessionNotification,
+  ): Promise<AgenCSessionBroadcastResult> {
+    return this.broadcastSessionEvent(sessionId, notification);
   }
 }
 

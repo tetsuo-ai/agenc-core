@@ -69,6 +69,11 @@ export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 
 export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "commandExec.outputDelta",
+  "event.message_chunk",
+  "event.tool_request",
+  "event.permission_request",
+  "event.agent_status",
+  "event.session_event",
 ] as const;
 
 export type AgenCDaemonNotificationMethod =
@@ -311,6 +316,36 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     params: "required",
     description: "Stream base64 stdout or stderr chunks for a command process.",
   },
+  "event.message_chunk": {
+    method: "event.message_chunk",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream an assistant text chunk for an attached daemon session.",
+  },
+  "event.tool_request": {
+    method: "event.tool_request",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that a daemon session started tool work.",
+  },
+  "event.permission_request": {
+    method: "event.permission_request",
+    direction: "server-to-client",
+    params: "required",
+    description: "Ask an attached client to resolve a pending permission request.",
+  },
+  "event.agent_status": {
+    method: "event.agent_status",
+    direction: "server-to-client",
+    params: "required",
+    description: "Notify clients that a daemon agent status changed.",
+  },
+  "event.session_event": {
+    method: "event.session_event",
+    direction: "server-to-client",
+    params: "required",
+    description: "Deliver a generic daemon session event to attached clients.",
+  },
 });
 
 export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
@@ -506,10 +541,52 @@ export interface CommandExecOutputDeltaParams extends JsonObject {
   readonly capReached: boolean;
 }
 
+export interface AgenCEventBaseParams extends JsonObject {
+  readonly sessionId: string;
+  readonly eventId: string;
+  readonly agentId?: string;
+  readonly sequence?: number;
+  readonly acceptedAt?: string;
+  readonly metadata?: JsonObject;
+}
+
+export interface EventMessageChunkParams extends AgenCEventBaseParams {
+  readonly messageId?: string;
+  readonly streamId?: string;
+  readonly delta: string;
+}
+
+export interface EventToolRequestParams extends AgenCEventBaseParams {
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly turnId?: string;
+  readonly input?: JsonValue;
+}
+
+export interface EventPermissionRequestParams extends AgenCEventBaseParams {
+  readonly requestId: string;
+  readonly toolName?: string;
+  readonly turnId?: string;
+  readonly permissions: readonly string[];
+  readonly input?: JsonValue;
+  readonly reason?: string;
+}
+
+export interface EventAgentStatusParams extends AgenCEventBaseParams {
+  readonly agentId: string;
+  readonly status: AgentStatus;
+  readonly turnId?: string;
+  readonly message?: string;
+}
+
+export interface EventSessionEventParams extends AgenCEventBaseParams {
+  readonly event: JsonObject;
+}
+
 export interface AgenCDaemonNotificationWithParams<
   Method extends AgenCDaemonNotificationMethod,
   Params extends JsonObject,
-> {
+> extends JsonObject {
   readonly jsonrpc: typeof JSON_RPC_VERSION;
   readonly method: Method;
   readonly params: Params;
@@ -517,13 +594,46 @@ export interface AgenCDaemonNotificationWithParams<
 
 export interface AgenCDaemonNotificationParamsByMethod {
   readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;
+  readonly "event.message_chunk": EventMessageChunkParams;
+  readonly "event.tool_request": EventToolRequestParams;
+  readonly "event.permission_request": EventPermissionRequestParams;
+  readonly "event.agent_status": EventAgentStatusParams;
+  readonly "event.session_event": EventSessionEventParams;
 }
 
 export type AgenCDaemonNotification =
   AgenCDaemonNotificationWithParams<
     "commandExec.outputDelta",
     CommandExecOutputDeltaParams
-  >;
+  >
+  | AgenCDaemonNotificationWithParams<
+      "event.message_chunk",
+      EventMessageChunkParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.tool_request",
+      EventToolRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.permission_request",
+      EventPermissionRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.agent_status",
+      EventAgentStatusParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.session_event",
+      EventSessionEventParams
+    >;
+
+export type AgenCDaemonSessionNotification = Exclude<
+  AgenCDaemonNotification,
+  AgenCDaemonNotificationWithParams<
+    "commandExec.outputDelta",
+    CommandExecOutputDeltaParams
+  >
+>;
 
 export type EmptyParams = Record<string, never>;
 
