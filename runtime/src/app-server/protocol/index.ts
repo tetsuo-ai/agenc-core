@@ -7,8 +7,8 @@
  *     while the donor app-server protocol uses a broader slash-separated API.
  *
  * Cross-cuts deliberately NOT carried:
- *   - account login/logout, plugin, marketplace, app, filesystem, and desktop
- *     endpoints are outside the initial AgenC daemon surface for F-03a.
+ *   - account, plugin, marketplace, app, filesystem, and desktop endpoints
+ *     from the donor app-server surface are outside AgenC's daemon protocol.
  */
 
 export const JSON_RPC_VERSION = "2.0" as const;
@@ -34,7 +34,9 @@ export const AGENC_DAEMON_METHODS = [
   "tool.approve",
   "tool.deny",
   "permission.list",
+  "auth.login",
   "auth.whoami",
+  "auth.logout",
 ] as const;
 
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
@@ -133,12 +135,26 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description: "List effective permissions for an agent or session.",
   },
+  "auth.login": {
+    method: "auth.login",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Start the AgenC-owned daemon login flow.",
+  },
   "auth.whoami": {
     method: "auth.whoami",
     direction: "client-to-server",
     params: "optional",
     result: "object",
     description: "Read the daemon's current AgenC authentication identity.",
+  },
+  "auth.logout": {
+    method: "auth.logout",
+    direction: "client-to-server",
+    params: "optional",
+    result: "object",
+    description: "Clear the daemon's current AgenC authentication identity.",
   },
 });
 
@@ -251,7 +267,9 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"tool.approve", ToolApproveParams>
   | AgenCDaemonRequestWithParams<"tool.deny", ToolDenyParams>
   | AgenCDaemonRequestWithParams<"permission.list", PermissionListParams>
-  | AgenCDaemonRequestWithoutParams<"auth.whoami">;
+  | AgenCDaemonRequestWithoutParams<"auth.login">
+  | AgenCDaemonRequestWithoutParams<"auth.whoami">
+  | AgenCDaemonRequestWithoutParams<"auth.logout">;
 
 export type AgentStatus = "idle" | "running" | "stopping" | "stopped" | "error";
 export type SessionStatus = "idle" | "running" | "waiting" | "closed" | "error";
@@ -341,6 +359,16 @@ export interface AuthWhoamiResult extends JsonObject {
   readonly identity?: AuthIdentity;
 }
 
+export interface AuthLoginResult extends JsonObject {
+  readonly authenticated: true;
+  readonly provider?: string;
+  readonly identity?: AuthIdentity;
+}
+
+export interface AuthLogoutResult extends JsonObject {
+  readonly authenticated: false;
+}
+
 export interface AgenCDaemonResultByMethod {
   readonly "agent.create": AgentCreateResult;
   readonly "agent.list": AgentListResult;
@@ -353,7 +381,9 @@ export interface AgenCDaemonResultByMethod {
   readonly "tool.approve": ToolDecisionResult;
   readonly "tool.deny": ToolDecisionResult;
   readonly "permission.list": PermissionListResult;
+  readonly "auth.login": AuthLoginResult;
   readonly "auth.whoami": AuthWhoamiResult;
+  readonly "auth.logout": AuthLogoutResult;
 }
 
 export type AgenCDaemonSuccessResponse<
