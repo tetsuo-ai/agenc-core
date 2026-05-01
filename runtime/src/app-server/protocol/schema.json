@@ -1,0 +1,611 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://schema.agenc.dev/app-server/protocol.schema.json",
+  "title": "AgenC Daemon JSON-RPC Protocol",
+  "description": "Initial AgenC daemon JSON-RPC method surface.",
+  "x-agenc-methods": [
+    "agent.create",
+    "agent.list",
+    "agent.attach",
+    "agent.stop",
+    "session.create",
+    "session.list",
+    "message.send",
+    "message.stream",
+    "tool.approve",
+    "tool.deny",
+    "permission.list",
+    "auth.whoami"
+  ],
+  "oneOf": [
+    {
+      "$ref": "#/definitions/AgenCDaemonRequest"
+    },
+    {
+      "$ref": "#/definitions/AgenCDaemonSuccessResponse"
+    },
+    {
+      "$ref": "#/definitions/AgenCDaemonErrorResponse"
+    }
+  ],
+  "definitions": {
+    "RequestId": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "integer"
+        }
+      ]
+    },
+    "JsonObject": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "AgentStatus": {
+      "type": "string",
+      "enum": ["idle", "running", "stopping", "stopped", "error"]
+    },
+    "SessionStatus": {
+      "type": "string",
+      "enum": ["idle", "running", "waiting", "closed", "error"]
+    },
+    "MessageContent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/MessageContentBlock"
+          }
+        }
+      ]
+    },
+    "MessageContentBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["type", "text"]
+    },
+    "AgentCreateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      }
+    },
+    "AgentListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "AgentAttachParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "clientId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["agentId"]
+    },
+    "AgentStopParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["agentId"]
+    },
+    "SessionCreateParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "initialPrompt": {
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      }
+    },
+    "SessionListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "MessageSendParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "$ref": "#/definitions/MessageContent"
+        },
+        "clientMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["sessionId", "content"]
+    },
+    "MessageStreamParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "$ref": "#/definitions/MessageContent"
+        },
+        "clientMessageId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "$ref": "#/definitions/JsonObject"
+        },
+        "streamId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": ["sessionId", "content"]
+    },
+    "ToolApproveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["once", "session", "agent"]
+        }
+      },
+      "required": ["sessionId", "requestId"]
+    },
+    "ToolDenyParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": ["sessionId", "requestId"]
+    },
+    "PermissionListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "AuthWhoamiParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "AgenCDaemonRequest": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/AgentCreateRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentListRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentAttachRequest"
+        },
+        {
+          "$ref": "#/definitions/AgentStopRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionCreateRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionListRequest"
+        },
+        {
+          "$ref": "#/definitions/MessageSendRequest"
+        },
+        {
+          "$ref": "#/definitions/MessageStreamRequest"
+        },
+        {
+          "$ref": "#/definitions/ToolApproveRequest"
+        },
+        {
+          "$ref": "#/definitions/ToolDenyRequest"
+        },
+        {
+          "$ref": "#/definitions/PermissionListRequest"
+        },
+        {
+          "$ref": "#/definitions/AuthWhoamiRequest"
+        }
+      ]
+    },
+    "AgentCreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.create"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentCreateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.list"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentAttachRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.attach"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentAttachParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AgentStopRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "agent.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentStopParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionCreateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.create"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionCreateParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "SessionListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.list"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "MessageSendRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "message.send"
+        },
+        "params": {
+          "$ref": "#/definitions/MessageSendParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "MessageStreamRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "message.stream"
+        },
+        "params": {
+          "$ref": "#/definitions/MessageStreamParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ToolApproveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "tool.approve"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolApproveParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "ToolDenyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "tool.deny"
+        },
+        "params": {
+          "$ref": "#/definitions/ToolDenyParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "PermissionListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "permission.list"
+        },
+        "params": {
+          "$ref": "#/definitions/PermissionListParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
+    },
+    "AuthWhoamiRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "auth.whoami"
+        },
+        "params": {
+          "$ref": "#/definitions/AuthWhoamiParams"
+        }
+      },
+      "required": ["jsonrpc", "id", "method"]
+    },
+    "AgenCDaemonSuccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "result": {
+          "$ref": "#/definitions/JsonObject"
+        }
+      },
+      "required": ["jsonrpc", "id", "result"]
+    },
+    "AgenCDaemonErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/RequestId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "$ref": "#/definitions/AgenCDaemonErrorObject"
+        }
+      },
+      "required": ["jsonrpc", "id", "error"]
+    },
+    "AgenCDaemonErrorObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "integer",
+          "enum": [-32700, -32600, -32601, -32602, -32603, -32000]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data": true
+      },
+      "required": ["code", "message"]
+    }
+  }
+}
