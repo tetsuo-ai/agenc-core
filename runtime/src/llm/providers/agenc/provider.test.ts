@@ -85,6 +85,9 @@ describe("AgenCProvider", () => {
       subscriptionTier: "team",
       model: "agenc",
       providerFactory,
+      providerOptions: {
+        baseURL: "https://grok.example/v1",
+      },
     });
 
     await expect(
@@ -104,6 +107,7 @@ describe("AgenCProvider", () => {
       "grok",
       expect.objectContaining({
         apiKey: "managed-key",
+        baseURL: "https://grok.example/v1",
         model: "grok-4-fast",
       }),
     );
@@ -203,6 +207,75 @@ describe("AgenCProvider", () => {
 
     await provider.chat([{ role: "user", content: "first" }]);
     nowMs += 49;
+    await provider.chat([{ role: "user", content: "still cached" }]);
+    nowMs += 2;
+    await provider.chat([{ role: "user", content: "refresh" }]);
+
+    expect(providerFactory).toHaveBeenCalledTimes(2);
+    expect(firstDelegate.chat).toHaveBeenCalledTimes(2);
+    expect(secondDelegate.chat).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([
+      "infer:agenc:agenc:fast:session-1:team",
+      "vendKey:grok:session-1",
+      "infer:agenc:agenc:fast:session-1:team",
+      "vendKey:grok:session-1",
+    ]);
+  });
+
+  it("bounds routed delegate caching when vended keys have no expiry", async () => {
+    let nowMs = 2_000;
+    let vendCount = 0;
+    const calls: string[] = [];
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "remote" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "remote" }),
+      vendKey: (provider, sessionId) => {
+        calls.push(`vendKey:${provider}:${sessionId}`);
+        vendCount += 1;
+        return {
+          provider,
+          sessionId,
+          apiKey: `managed-key-${vendCount}`,
+        };
+      },
+      inferAgencModel: ({
+        provider,
+        requestedModel,
+        sessionId,
+        subscriptionTier,
+      } = {}) => {
+        calls.push(
+          `infer:${provider ?? ""}:${requestedModel ?? ""}:${sessionId ?? ""}:${subscriptionTier ?? ""}`,
+        );
+        return {
+          provider: "grok",
+          model: "grok-4-fast",
+          subscriptionTier,
+        };
+      },
+      getSubscriptionTier: () => "team",
+    };
+    const firstDelegate = makeDelegateProvider("grok-4-fast");
+    const secondDelegate = makeDelegateProvider("grok-4-fast");
+    let factoryIndex = 0;
+    const providerFactory = vi.fn(() => {
+      const delegate = [firstDelegate, secondDelegate][factoryIndex];
+      factoryIndex += 1;
+      return delegate ?? makeDelegateProvider("grok-4-fast");
+    });
+    const provider = new AgenCProvider({
+      authBackend,
+      sessionId: "session-1",
+      subscriptionTier: "team",
+      model: "agenc:fast",
+      providerFactory,
+      delegateCacheTtlMs: 100,
+      nowMs: () => nowMs,
+    });
+
+    await provider.chat([{ role: "user", content: "first" }]);
+    nowMs += 99;
     await provider.chat([{ role: "user", content: "still cached" }]);
     nowMs += 2;
     await provider.chat([{ role: "user", content: "refresh" }]);

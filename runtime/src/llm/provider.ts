@@ -722,13 +722,19 @@ export function createProvider(
           ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
           providerFactory: (concreteProvider, providerOptions) =>
             createProvider(concreteProvider, providerOptions),
-          ...(providerExtra !== undefined
-            ? { providerOptions: { extra: providerExtra } }
+          ...(opts.baseURL !== undefined || providerExtra !== undefined
+            ? {
+              providerOptions: {
+                ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
+                ...(providerExtra !== undefined ? { extra: providerExtra } : {}),
+              },
+            }
             : {}),
         }),
         {
           provider: "agenc",
           options: {
+            ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
             model,
             ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
             ...(providerExtra !== undefined ? { extra: providerExtra } : {}),

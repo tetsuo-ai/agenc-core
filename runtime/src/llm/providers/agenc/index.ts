@@ -24,12 +24,15 @@ export type AgenCConcreteProviderFactory = (
   options: ProviderFactoryOptions,
 ) => LLMProvider;
 
+const DEFAULT_DELEGATE_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export interface AgenCProviderConfig extends LLMProviderConfig {
   readonly authBackend: AuthBackend;
   readonly sessionId: AuthSessionId;
   readonly subscriptionTier?: AuthSubscriptionTier;
   readonly providerFactory: AgenCConcreteProviderFactory;
-  readonly providerOptions?: Pick<ProviderFactoryOptions, "extra">;
+  readonly providerOptions?: Pick<ProviderFactoryOptions, "baseURL" | "extra">;
+  readonly delegateCacheTtlMs?: number;
   readonly nowMs?: () => number;
 }
 
@@ -161,12 +164,17 @@ export class AgenCProvider implements LLMProvider {
     if (apiKey === undefined) {
       throw new Error("AgenCProvider managed key vending returned an empty key");
     }
-    const expiresAtMs = parseExpiresAtMs(key.expiresAt);
+    const expiresAtMs =
+      parseExpiresAtMs(key.expiresAt) ??
+      this.nowMs() + this.delegateCacheTtlMs();
     return {
       provider,
       model,
       instance: this.#config.providerFactory(provider, {
         apiKey,
+        ...(this.#config.providerOptions?.baseURL !== undefined
+          ? { baseURL: this.#config.providerOptions.baseURL }
+          : {}),
         model,
         tools: this.#config.tools ? [...this.#config.tools] : undefined,
         ...(this.#config.timeoutMs !== undefined
@@ -188,6 +196,15 @@ export class AgenCProvider implements LLMProvider {
 
   private nowMs(): number {
     return this.#config.nowMs?.() ?? Date.now();
+  }
+
+  private delegateCacheTtlMs(): number {
+    const configured = this.#config.delegateCacheTtlMs;
+    return typeof configured === "number" &&
+      Number.isFinite(configured) &&
+      configured > 0
+      ? Math.floor(configured)
+      : DEFAULT_DELEGATE_CACHE_TTL_MS;
   }
 }
 

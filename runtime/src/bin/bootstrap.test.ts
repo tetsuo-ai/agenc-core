@@ -693,6 +693,15 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("constructs the hosted AgenC provider as the normal routing boundary", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      [
+        "[providers.grok]",
+        'base_url = "https://grok.example/v1"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
     const calls: string[] = [];
     const authBackend: AuthBackend = {
       login: () => ({ authenticated: true, provider: "local" }),
@@ -770,6 +779,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(createProviderSpy).toHaveBeenCalledWith(
         "agenc",
         expect.objectContaining({
+          baseURL: "https://grok.example/v1",
           model: "agenc",
           extra: expect.objectContaining({
             authBackend,

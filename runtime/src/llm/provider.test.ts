@@ -63,6 +63,7 @@ describe("createProvider", () => {
 
   test("routes 'agenc' to AgenCProvider with explicit auth context", () => {
     const provider = createProvider("agenc", {
+      baseURL: "https://grok.example/v1",
       model: "agenc",
       extra: {
         authBackend,
@@ -76,6 +77,7 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
     expect(readProviderIdentity(provider)).toBe("agenc");
     expect(readProviderFactoryOptions(provider)).toMatchObject({
+      baseURL: "https://grok.example/v1",
       model: "agenc",
       extra: {
         maxTokens: 2048,

@@ -866,8 +866,8 @@ export async function bootstrapLocalRuntimeSession(
     resolvedProvider as ProviderName,
     {
       apiKey: selectedApiKey,
-      ...(runtimeProviderSettings?.baseURL
-        ? { baseURL: runtimeProviderSettings.baseURL }
+      ...(providerSettings?.baseURL
+        ? { baseURL: providerSettings.baseURL }
         : {}),
       model: providerModel,
       tools: registry.toLLMTools(),
