@@ -93,6 +93,10 @@ import {
   resolveLatestSessionId,
   resolveResumeSessionId,
 } from "./resume-session.js";
+import {
+  parseAgenCDaemonCliArgs,
+  runAgenCDaemonCli,
+} from "../app-server/daemon-cli.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -108,6 +112,7 @@ function hasArgFlag(argv: readonly string[], flag: string): boolean {
 export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
+    "       agenc daemon <start|stop|status|restart>",
     "",
     "Options:",
     "  --help                                   Show this help text",
@@ -1496,7 +1501,13 @@ export function initializeCliRuntime(): void {
  */
 export async function main(): Promise<number> {
   initializeCliRuntime();
-  const startupShortCircuit = detectStartupShortCircuit(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const daemonCommand = parseAgenCDaemonCliArgs(argv);
+  if (daemonCommand !== null) {
+    return runAgenCDaemonCli(daemonCommand);
+  }
+
+  const startupShortCircuit = detectStartupShortCircuit(argv);
   if (startupShortCircuit !== null) {
     if (startupShortCircuit.kind === "error") {
       process.stderr.write(`agenc: ${startupShortCircuit.message}\n`);
