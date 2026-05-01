@@ -107,6 +107,10 @@ import {
   ensureAgenCDaemonAutostart,
   shouldAutostartAgenCDaemon,
 } from "../app-server/daemon-autostart.js";
+import {
+  parseAgenCAuthCliArgs,
+  runAgenCAuthCli,
+} from "./auth-cli.js";
 
 export {
   bootstrapLocalRuntimeSession,
@@ -122,6 +126,9 @@ function hasArgFlag(argv: readonly string[], flag: string): boolean {
 export function formatCliHelpText(): string {
   return [
     "Usage: agenc [options] [PROMPT]",
+    "       agenc login",
+    "       agenc logout",
+    "       agenc whoami",
     "       agenc daemon <start|stop|status|restart>",
     "       agenc agent start <objective>",
     "       agenc agent list",
@@ -1676,6 +1683,10 @@ export async function main(): Promise<number> {
     return runAgenCAgentCli(agentCommand, {
       attachTui: (context) => attachAgentTuiEntry(context),
     });
+  }
+  const authCommand = parseAgenCAuthCliArgs(argv);
+  if (authCommand !== null) {
+    return runAgenCAuthCli(authCommand);
   }
 
   const startupShortCircuit = detectStartupShortCircuit(argv);
