@@ -66,6 +66,30 @@ describe("RemoteAuthBackend", () => {
     expect(keyVendor).toHaveBeenCalledTimes(2);
   });
 
+  it("sweeps expired one-shot sessions when vending a different session", async () => {
+    let nowMs = 1_000;
+    const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      provider,
+      sessionId,
+      apiKey: `managed-${sessionId}`,
+    }));
+    const backend = new RemoteAuthBackend({
+      keyVendor,
+      keyCacheTtlMs: 100,
+      nowMs: () => nowMs,
+    });
+
+    await backend.vendKey("grok", "session-1");
+    nowMs += 101;
+    await backend.vendKey("grok", "session-2");
+
+    expect(backend.pruneExpiredKeys()).toBe(0);
+    expect(keyVendor.mock.calls.map(([request]) => request.sessionId)).toEqual([
+      "session-1",
+      "session-2",
+    ]);
+  });
+
   it("retries key vending after a failed remote request", async () => {
     let attempts = 0;
     const backend = new RemoteAuthBackend({

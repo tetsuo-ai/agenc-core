@@ -78,6 +78,7 @@ export class RemoteAuthBackend implements AuthBackend {
   ): Promise<AuthVendedKey> {
     const cacheKey = remoteProviderKeyCacheKey(provider, sessionId);
     const now = this.#nowMs();
+    this.pruneExpiredKeys(now);
     const existing = this.#vendedKeys.get(cacheKey);
     if (existing !== undefined && existing.expiresAtMs > now) {
       return existing.promise;
@@ -110,6 +111,17 @@ export class RemoteAuthBackend implements AuthBackend {
       expiresAtMs: now + this.#keyCacheTtlMs,
     });
     return cached;
+  }
+
+  pruneExpiredKeys(nowMs: number = this.#nowMs()): number {
+    let pruned = 0;
+    for (const [cacheKey, cached] of this.#vendedKeys) {
+      if (cached.expiresAtMs <= nowMs) {
+        this.#vendedKeys.delete(cacheKey);
+        pruned += 1;
+      }
+    }
+    return pruned;
   }
 
   inferAgencModel(
