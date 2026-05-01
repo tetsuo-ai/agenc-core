@@ -65,6 +65,7 @@ function remoteBackendOptions(
   options: AuthBackendSelectionOptions,
 ): RemoteAuthBackendOptions {
   return {
+    ...(options.env ? { env: options.env } : {}),
     ...(options.remote ?? {}),
   };
 }
