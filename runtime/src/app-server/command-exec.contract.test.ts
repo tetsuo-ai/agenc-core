@@ -1,4 +1,6 @@
 import { Buffer } from "node:buffer";
+import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import {
@@ -9,6 +11,29 @@ import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
 
 const idleScript = "setInterval(() => {}, 1000)";
+const require = createRequire(import.meta.url);
+const hasPty = (() => {
+  try {
+    require("@homebridge/node-pty-prebuilt-multiarch");
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+async function waitForNotification(
+  notifications: readonly JsonObject[],
+  predicate: (notification: JsonObject) => boolean,
+  timeoutMs = 2_000,
+): Promise<JsonObject> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const match = notifications.find(predicate);
+    if (match !== undefined) return match;
+    await delay(10);
+  }
+  throw new Error("timed out waiting for command exec notification");
+}
 
 describe("AgenC daemon command exec", () => {
   it("dispatches commandExec methods through initialized JSON-RPC connections", async () => {
@@ -206,6 +231,60 @@ describe("AgenC daemon command exec", () => {
     });
   });
 
+  it.skipIf(!hasPty)("runs a PTY-backed session and resizes it", async () => {
+    const service = new AgenCCommandExecService();
+    const notifications: JsonObject[] = [];
+    const context = {
+      connectionId: "pty",
+      sendNotification: (message: JsonObject) => notifications.push(message),
+    };
+    const started = service.start(
+      {
+        command: [
+          process.execPath,
+          "-e",
+          "process.stdin.setRawMode?.(true); process.stdout.write('ready\\n'); process.stdin.on('data', (d) => { if (d.toString().includes('q')) process.exit(0); });",
+        ],
+        processId: "pty-1",
+        tty: true,
+        size: { rows: 24, cols: 80 },
+        disableTimeout: true,
+      },
+      context,
+    );
+
+    await waitForNotification(notifications, (notification) => {
+      const params = notification.params;
+      return (
+        notification.method === "commandExec.outputDelta" &&
+        typeof params === "object" &&
+        params !== null &&
+        !Array.isArray(params) &&
+        params.stream === "stdout" &&
+        typeof params.deltaBase64 === "string" &&
+        Buffer.from(params.deltaBase64, "base64").toString("utf8").includes(
+          "ready",
+        )
+      );
+    });
+
+    await expect(
+      service.resize({ processId: "pty-1", size: { rows: 30, cols: 100 } }, context),
+    ).resolves.toEqual({});
+    await expect(
+      service.write(
+        { processId: "pty-1", deltaBase64: Buffer.from("q").toString("base64") },
+        context,
+      ),
+    ).resolves.toEqual({});
+
+    await expect(started).resolves.toEqual({
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+    });
+  });
+
   it("rejects duplicate process ids and terminates active sessions", async () => {
     const service = new AgenCCommandExecService();
     const context = { connectionId: "terminate" };
@@ -237,6 +316,33 @@ describe("AgenC daemon command exec", () => {
     ).resolves.toEqual({});
     await expect(started).resolves.toMatchObject({ stdout: "", stderr: "" });
     const result = await started;
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it("terminates even when a detached descendant keeps stdio open", async () => {
+    const service = new AgenCCommandExecService();
+    const context = { connectionId: "leaked-stdio" };
+    const started = service.start(
+      {
+        command: [
+          process.execPath,
+          "-e",
+          "const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 4000)'], { detached: true, stdio: 'inherit' }); child.unref(); setInterval(() => {}, 1000);",
+        ],
+        processId: "leaked-stdio-1",
+        disableTimeout: true,
+      },
+      context,
+    );
+    await delay(100);
+
+    const terminatedAt = Date.now();
+    await expect(
+      service.terminate({ processId: "leaked-stdio-1" }, context),
+    ).resolves.toEqual({});
+    const result = await started;
+
+    expect(Date.now() - terminatedAt).toBeLessThan(3_500);
     expect(result.exitCode).not.toBe(0);
   });
 

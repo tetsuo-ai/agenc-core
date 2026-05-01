@@ -34,6 +34,7 @@ import {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_OUTPUT_BYTES_CAP = 1024 * 1024;
 const EXEC_TIMEOUT_EXIT_CODE = 124;
+const IO_DRAIN_TIMEOUT_MS = 2_000;
 const FORCE_KILL_DELAY_MS = 500;
 
 const require = createRequire(import.meta.url);
@@ -379,8 +380,16 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       );
       finalizeSession(session, 1);
     });
-    child.once("close", (code) => {
-      finalizeSession(session, normalizeExitCode(code));
+    child.once("exit", (code) => {
+      const exitCode = normalizeExitCode(code);
+      const drainTimeout = setTimeout(() => {
+        finalizeSession(session, exitCode);
+      }, IO_DRAIN_TIMEOUT_MS);
+      drainTimeout.unref?.();
+      child.once("close", () => {
+        clearTimeout(drainTimeout);
+        finalizeSession(session, exitCode);
+      });
     });
   }
 

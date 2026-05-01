@@ -35,9 +35,15 @@
     "auth.whoami",
     "auth.logout"
   ],
+  "x-agenc-notifications": [
+    "commandExec.outputDelta"
+  ],
   "oneOf": [
     {
       "$ref": "#/definitions/AgenCDaemonRequest"
+    },
+    {
+      "$ref": "#/definitions/AgenCDaemonNotification"
     },
     {
       "$ref": "#/definitions/AgenCDaemonSuccessResponse"
@@ -741,6 +747,29 @@
           "$ref": "#/definitions/AuthLogoutRequest"
         }
       ]
+    },
+    "AgenCDaemonNotification": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/CommandExecOutputDeltaNotification"
+        }
+      ]
+    },
+    "CommandExecOutputDeltaNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "commandExec.outputDelta"
+        },
+        "params": {
+          "$ref": "#/definitions/CommandExecOutputDeltaParams"
+        }
+      },
+      "required": ["jsonrpc", "method", "params"]
     },
     "InitializeRequest": {
       "type": "object",

@@ -65,6 +65,13 @@ export const AGENC_DAEMON_METHODS = [
 
 export type AgenCDaemonMethod = (typeof AGENC_DAEMON_METHODS)[number];
 
+export const AGENC_DAEMON_NOTIFICATION_METHODS = [
+  "commandExec.outputDelta",
+] as const;
+
+export type AgenCDaemonNotificationMethod =
+  (typeof AGENC_DAEMON_NOTIFICATION_METHODS)[number];
+
 export interface AgenCDaemonMethodSpec<
   Method extends AgenCDaemonMethod = AgenCDaemonMethod,
 > {
@@ -75,8 +82,23 @@ export interface AgenCDaemonMethodSpec<
   readonly description: string;
 }
 
+export interface AgenCDaemonNotificationSpec<
+  Method extends AgenCDaemonNotificationMethod = AgenCDaemonNotificationMethod,
+> {
+  readonly method: Method;
+  readonly direction: "server-to-client";
+  readonly params: "required";
+  readonly description: string;
+}
+
 function defineMethodSpecs<const Spec extends {
   readonly [Method in AgenCDaemonMethod]: AgenCDaemonMethodSpec<Method>;
+}>(spec: Spec): Spec {
+  return spec;
+}
+
+function defineNotificationSpecs<const Spec extends {
+  readonly [Method in AgenCDaemonNotificationMethod]: AgenCDaemonNotificationSpec<Method>;
 }>(spec: Spec): Spec {
   return spec;
 }
@@ -266,8 +288,26 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
   },
 });
 
+export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
+  "commandExec.outputDelta": {
+    method: "commandExec.outputDelta",
+    direction: "server-to-client",
+    params: "required",
+    description: "Stream base64 stdout or stderr chunks for a command process.",
+  },
+});
+
 export function isAgenCDaemonMethod(value: string): value is AgenCDaemonMethod {
   return Object.prototype.hasOwnProperty.call(AGENC_DAEMON_METHOD_SPECS, value);
+}
+
+export function isAgenCDaemonNotificationMethod(
+  value: string,
+): value is AgenCDaemonNotificationMethod {
+  return Object.prototype.hasOwnProperty.call(
+    AGENC_DAEMON_NOTIFICATION_SPECS,
+    value,
+  );
 }
 
 export interface AgentCreateParams extends JsonObject {
@@ -438,6 +478,25 @@ export interface CommandExecOutputDeltaParams extends JsonObject {
   readonly deltaBase64: string;
   readonly capReached: boolean;
 }
+
+export interface AgenCDaemonNotificationWithParams<
+  Method extends AgenCDaemonNotificationMethod,
+  Params extends JsonObject,
+> {
+  readonly jsonrpc: typeof JSON_RPC_VERSION;
+  readonly method: Method;
+  readonly params: Params;
+}
+
+export interface AgenCDaemonNotificationParamsByMethod {
+  readonly "commandExec.outputDelta": CommandExecOutputDeltaParams;
+}
+
+export type AgenCDaemonNotification =
+  AgenCDaemonNotificationWithParams<
+    "commandExec.outputDelta",
+    CommandExecOutputDeltaParams
+  >;
 
 export type EmptyParams = Record<string, never>;
 

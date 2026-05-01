@@ -9,9 +9,13 @@ import {
   AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_METHOD_SPECS,
+  AGENC_DAEMON_NOTIFICATION_METHODS,
+  AGENC_DAEMON_NOTIFICATION_SPECS,
   JSON_RPC_VERSION,
   isAgenCDaemonMethod,
+  isAgenCDaemonNotificationMethod,
   type AgenCDaemonRequest,
+  type AgenCDaemonNotification,
 } from "./protocol/index.js";
 
 interface ProtocolSchema {
@@ -24,6 +28,7 @@ interface ProtocolSchema {
     readonly export: string;
   };
   readonly "x-agenc-methods": readonly string[];
+  readonly "x-agenc-notifications": readonly string[];
 }
 
 interface ProtocolPackageManifest {
@@ -62,6 +67,10 @@ const expectedMethods = [
   "auth.logout",
 ] as const;
 
+const expectedNotifications = [
+  "commandExec.outputDelta",
+] as const;
+
 function readProtocolSchema(): ProtocolSchema {
   return JSON.parse(
     readFileSync(new URL("./protocol/schema.json", import.meta.url), "utf8"),
@@ -74,6 +83,15 @@ function compileRequestValidator(schema: ProtocolSchema) {
     $schema: "http://json-schema.org/draft-07/schema#",
     definitions: schema.definitions,
     $ref: "#/definitions/AgenCDaemonRequest",
+  });
+}
+
+function compileNotificationValidator(schema: ProtocolSchema) {
+  const ajv = new Ajv({ strict: false });
+  return ajv.compile({
+    $schema: "http://json-schema.org/draft-07/schema#",
+    definitions: schema.definitions,
+    $ref: "#/definitions/AgenCDaemonNotification",
   });
 }
 
@@ -107,6 +125,10 @@ describe("AgenC daemon protocol surface", () => {
   it("exports the exact initial daemon method list", () => {
     expect(AGENC_DAEMON_METHODS).toEqual(expectedMethods);
     expect(Object.keys(AGENC_DAEMON_METHOD_SPECS)).toEqual(expectedMethods);
+    expect(AGENC_DAEMON_NOTIFICATION_METHODS).toEqual(expectedNotifications);
+    expect(Object.keys(AGENC_DAEMON_NOTIFICATION_SPECS)).toEqual(
+      expectedNotifications,
+    );
 
     for (const method of expectedMethods) {
       expect(AGENC_DAEMON_METHOD_SPECS[method].method).toBe(method);
@@ -115,9 +137,19 @@ describe("AgenC daemon protocol surface", () => {
       );
       expect(isAgenCDaemonMethod(method)).toBe(true);
     }
+    for (const method of expectedNotifications) {
+      expect(AGENC_DAEMON_NOTIFICATION_SPECS[method].method).toBe(method);
+      expect(AGENC_DAEMON_NOTIFICATION_SPECS[method].direction).toBe(
+        "server-to-client",
+      );
+      expect(isAgenCDaemonNotificationMethod(method)).toBe(true);
+    }
 
     expect(isAgenCDaemonMethod("thread/start")).toBe(false);
     expect(isAgenCDaemonMethod("account/login/start")).toBe(false);
+    expect(isAgenCDaemonNotificationMethod("command/exec/outputDelta")).toBe(
+      false,
+    );
   });
 
   it("publishes a schema with the same method list and package target", () => {
@@ -129,6 +161,7 @@ describe("AgenC daemon protocol surface", () => {
       export: AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
     });
     expect(schema["x-agenc-methods"]).toEqual(expectedMethods);
+    expect(schema["x-agenc-notifications"]).toEqual(expectedNotifications);
     expect(AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET).toEqual({
       packageName: "@tetsuo-ai/protocol",
       schemaExport: "./daemon-json-rpc.schema.json",
@@ -371,6 +404,39 @@ describe("AgenC daemon protocol surface", () => {
         jsonrpc: JSON_RPC_VERSION,
         method: "agent.list",
         params: {},
+      }),
+    ).toBe(false);
+  });
+
+  it("validates server notification envelopes through the published schema", () => {
+    const validate = compileNotificationValidator(readProtocolSchema());
+    const samples: readonly AgenCDaemonNotification[] = [
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        method: "commandExec.outputDelta",
+        params: {
+          processId: "proc_1",
+          stream: "stdout",
+          deltaBase64: "aGVsbG8=",
+          capReached: false,
+        },
+      },
+    ];
+
+    for (const sample of samples) {
+      expect(validate(sample), JSON.stringify(validate.errors)).toBe(true);
+    }
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "commandExec.outputDelta",
+        params: {
+          processId: "proc_1",
+          stream: "stdin",
+          deltaBase64: "aGVsbG8=",
+          capReached: false,
+        },
       }),
     ).toBe(false);
   });
