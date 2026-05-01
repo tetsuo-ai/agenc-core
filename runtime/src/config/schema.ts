@@ -286,6 +286,12 @@ export interface ProviderConfig {
   readonly capability_overrides?: ProviderCapabilityOverrides;
 }
 
+export type AuthBackendConfigKind = "local" | "remote";
+
+export interface AuthConfig {
+  readonly backend?: AuthBackendConfigKind;
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Canonical AgenCConfig
 // ─────────────────────────────────────────────────────────────────────
@@ -307,6 +313,7 @@ export interface AgenCConfig {
   readonly personality?: Personality;
   readonly agent_max_threads?: number;
   readonly agent_max_depth?: number;
+  readonly auth?: AuthConfig;
   readonly profiles?: Readonly<Record<string, ProfileOverride>>;
   readonly providers?: Readonly<Record<string, ProviderConfig>>;
   readonly project_root_markers?: readonly string[];
@@ -435,6 +442,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "personality",
   "agent_max_threads",
   "agent_max_depth",
+  "auth",
   "profiles",
   "providers",
   "project_root_markers",
@@ -480,6 +488,9 @@ export function defaultConfig(): AgenCConfig {
     personality: "default" as Personality,
     agent_max_threads: 4,
     agent_max_depth: 1,
+    auth: Object.freeze({
+      backend: "local",
+    }) as AuthConfig,
     project_root_markers: Object.freeze([
       ".git",
       "package.json",

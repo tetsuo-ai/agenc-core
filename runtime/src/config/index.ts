@@ -21,6 +21,8 @@ export type {
   Personality,
   PermissionMode,
   AttachmentsConfig,
+  AuthBackendConfigKind,
+  AuthConfig,
   PermissionsConfig,
   ProviderCapabilityOverrides,
   ProviderConfig,
