@@ -3,7 +3,8 @@
  *
  * `agenc agent start <objective>` autostarts the daemon when enabled, sends
  * `agent.create`, and prints only the returned agent ID so scripts can capture
- * it directly. `agenc agent list` reports active background-agent summaries.
+ * it directly. `agenc agent list` reports active background-agent summaries,
+ * and `agenc agent stop <id>` shuts down a daemon-owned background agent.
  */
 
 import { createConnection } from "node:net";
@@ -29,6 +30,8 @@ import {
   type AgentListParams,
   type AgentListResult,
   type AgentSummary,
+  type AgentStopParams,
+  type AgentStopResult,
   type SessionSummary,
   type AgenCDaemonErrorResponse,
   type AgenCDaemonResponse,
@@ -47,6 +50,7 @@ export type AgenCAgentCliCommand =
     }
   | { readonly kind: "list" }
   | { readonly kind: "attach"; readonly agentId: string }
+  | { readonly kind: "stop"; readonly agentId: string }
   | { readonly kind: "help"; readonly text: string }
   | { readonly kind: "error"; readonly message: string };
 
@@ -59,6 +63,7 @@ export interface AgenCAgentCliDaemonClient {
   createAgent(params: AgentCreateParams): Promise<AgentCreateResult>;
   listAgents(params?: AgentListParams): Promise<AgentListResult>;
   attachAgent(params: AgentAttachParams): Promise<AgentAttachResult>;
+  stopAgent(params: AgentStopParams): Promise<AgentStopResult>;
 }
 
 export interface AgenCJsonLineDaemonRequestClient {
@@ -121,6 +126,7 @@ export function formatAgenCAgentCliHelpText(): string {
     "  start [--unattended-allow <tools>] [--unattended-deny <tools>] <objective>",
     "  list    Show active background agents",
     "  attach <id>    Attach to a running agent",
+    "  stop <id>    Stop a running agent",
   ].join("\n");
 }
 
@@ -156,6 +162,22 @@ export function parseAgenCAgentCliArgs(
       };
     }
     return { kind: "attach", agentId };
+  }
+  if (action === "stop") {
+    const agentId = argv[2]?.trim();
+    if (agentId === undefined || agentId.length === 0) {
+      return {
+        kind: "error",
+        message: "agent stop requires an agent id",
+      };
+    }
+    if (argv.length > 3) {
+      return {
+        kind: "error",
+        message: "agent stop accepts exactly one agent id",
+      };
+    }
+    return { kind: "stop", agentId };
   }
   if (action !== "start") {
     return {
@@ -200,6 +222,8 @@ export async function runAgenCAgentCli(
       return listAgenCAgents(io, options);
     case "attach":
       return attachAgenCAgent(command, io, options);
+    case "stop":
+      return stopAgenCAgent(command, io, options);
     case "start":
       return startAgenCAgent(command, io, options);
   }
@@ -213,6 +237,7 @@ export function createAgenCJsonLineDaemonClient(
     createAgent: (params) => requestClient.request("agent.create", params),
     listAgents: (params = {}) => requestClient.request("agent.list", params),
     attachAgent: (params) => requestClient.request("agent.attach", params),
+    stopAgent: (params) => requestClient.request("agent.stop", params),
   };
 }
 
@@ -340,6 +365,30 @@ async function attachAgenCAgent(
   }
 }
 
+async function stopAgenCAgent(
+  command: Extract<AgenCAgentCliCommand, { readonly kind: "stop" }>,
+  io: AgenCAgentCliIo,
+  options: AgenCAgentCliOptions,
+): Promise<number> {
+  try {
+    await (options.ensureDaemonReady ?? defaultEnsureDaemonReady(options.env))();
+    const client = options.client ?? createAgenCJsonLineDaemonClient({
+      env: options.env,
+    });
+    const result = await client.stopAgent({
+      agentId: command.agentId,
+      reason: "agenc agent stop",
+    });
+    io.stdout.write(`${formatAgenCAgentStopResult(result)}\n`);
+    return 0;
+  } catch (error) {
+    io.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 1;
+  }
+}
+
 async function listAllAgenCAgents(
   client: AgenCAgentCliDaemonClient,
 ): Promise<AgentListResult> {
@@ -372,6 +421,12 @@ export function formatAgenCAgentAttachResult(
       result.attachmentId,
     ].join("\t"),
   ].join("\n");
+}
+
+export function formatAgenCAgentStopResult(result: AgentStopResult): string {
+  return [result.agentId, result.stopped ? "stopped" : "already_stopped"].join(
+    "\t",
+  );
 }
 
 export function resolveAgenCAgentAttachSession(

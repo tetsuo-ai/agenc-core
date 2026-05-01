@@ -1,0 +1,116 @@
+{
+  "contractName": "app-server-agent-stop",
+  "scope": "AgenC daemon agent.stop and CLI stop behavior mapped from the donor background-agent close/shutdown flow. AgenC exposes the stop as a daemon JSON-RPC method and agenc agent stop command, while preserving the donor intent that shutdown removes the live runner and leaves an inspectable previous/final state.",
+  "sourceRoot": "/home/tetsuo/git/codex/codex-rs", "_sourceRootBrandingAllow": "branding-scan: allow donor source root path",
+  "targetRoot": "..",
+  "sourceCommit": "48791920a8b122939c4d3feb15673c0a690ca4a0",
+  "sourceFiles": [
+    "core/src/agent/control.rs",
+    "core/src/tools/handlers/multi_agents_v2/close_agent.rs",
+    "core/src/tools/handlers/multi_agents_tests.rs"
+  ],
+  "targetFiles": [
+    "runtime/src/app-server/agent-lifecycle.ts",
+    "runtime/src/app-server/background-agent-runner.ts",
+    "runtime/src/app-server/daemon-dispatcher.ts",
+    "runtime/src/app-server/agent-cli.ts",
+    "runtime/src/bin/agenc.ts"
+  ],
+  "testFiles": [
+    "runtime/src/app-server/agent-lifecycle.contract.test.ts",
+    "runtime/src/app-server/background-agent-runner.contract.test.ts",
+    "runtime/src/app-server/agent-cli.contract.test.ts"
+  ],
+  "rows": [
+    {
+      "id": "daemon-agent-stop-dispatch",
+      "source": "core/src/agent/control.rs",
+      "target": "runtime/src/app-server/daemon-dispatcher.ts",
+      "requiredBehaviors": [
+        "agent.stop is accepted after initialize and routed through the daemon agent manager",
+        "agent.stop validates a non-empty agentId and rejects malformed parameters before invoking lifecycle code",
+        "agent.stop returns the daemon AgentStopResult shape with the target agent id and whether a live agent was stopped"
+      ],
+      "edgeCases": [
+        "missing agentId returns the standard INVALID_ARGUMENT JSON-RPC error",
+        "agent.stop remains non-cancellable because it is side-effecting once dispatched"
+      ],
+      "tests": [
+        "runtime/src/app-server/agent-lifecycle.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "lifecycle-stop-persists-final-state",
+      "source": "core/src/agent/control.rs",
+      "target": "runtime/src/app-server/agent-lifecycle.ts",
+      "requiredBehaviors": [
+        "stopping a live daemon agent calls the background runner stop hook with the requested reason",
+        "daemon-owned sessions for the agent are terminated during stop",
+        "the agent is omitted from active listing after stop but getAgent keeps a stopped summary for final-state inspection",
+        "stopping an already stopped persisted agent returns stopped=false without invoking the runner again",
+        "the lifecycle state enters a non-refreshable stopping state before runner shutdown can make the live runner snapshot disappear"
+      ],
+      "edgeCases": [
+        "agents that disappear from the runner before explicit stop are treated as not found",
+        "stopping and stopped agents are not refreshed away by runner snapshots after the final state is recorded",
+        "runner shutdown failure marks the daemon agent as error and does not report stopped=true"
+      ],
+      "tests": [
+        "runtime/src/app-server/agent-lifecycle.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "runner-stop-error-surface",
+      "source": "core/src/agent/control.rs",
+      "target": "runtime/src/app-server/background-agent-runner.ts",
+      "requiredBehaviors": [
+        "the delegate background runner keeps an agent visible as stopping while shutdown is in progress",
+        "control shutdown failures propagate to callers instead of being swallowed",
+        "failed shutdown attempts leave the runner snapshot in an error state for lifecycle callers"
+      ],
+      "edgeCases": [
+        "bootstrap cleanup is only attempted after control shutdown succeeds",
+        "successful shutdown still removes the active runner entry and buffered daemon state"
+      ],
+      "tests": [
+        "runtime/src/app-server/background-agent-runner.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "agent-stop-cli",
+      "source": "core/src/tools/handlers/multi_agents_v2/close_agent.rs",
+      "target": "runtime/src/app-server/agent-cli.ts",
+      "requiredBehaviors": [
+        "agenc agent stop <id> parses as a dedicated lifecycle command with exactly one id argument",
+        "the JSON-line daemon client exposes stopAgent and sends agent.stop over an initialized, authenticated connection",
+        "the CLI prints a compact stop outcome suitable for scripts"
+      ],
+      "edgeCases": [
+        "missing or extra stop arguments produce help-backed CLI errors",
+        "a daemon response with stopped=false is printed distinctly as already_stopped"
+      ],
+      "tests": [
+        "runtime/src/app-server/agent-cli.contract.test.ts"
+      ],
+      "status": "required"
+    },
+    {
+      "id": "top-level-help-surface",
+      "source": "core/src/tools/handlers/multi_agents_tests.rs",
+      "target": "runtime/src/bin/agenc.ts",
+      "requiredBehaviors": [
+        "top-level agenc help lists agenc agent stop <id> alongside start, list, and attach"
+      ],
+      "edgeCases": [
+        "non-agent prompts are still not claimed by the agent command parser"
+      ],
+      "tests": [
+        "runtime/src/app-server/agent-cli.contract.test.ts"
+      ],
+      "status": "required"
+    }
+  ]
+}

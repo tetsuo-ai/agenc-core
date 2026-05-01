@@ -25,6 +25,20 @@ function sequence(values: readonly string[]): () => string {
   };
 }
 
+function createDeferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (error: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("AgenC background agent lifecycle", () => {
   it("agent.create launches a running background agent and seeds its session", async () => {
     const sessions = new AgenCDaemonSessionManager({
@@ -186,6 +200,180 @@ describe("AgenC background agent lifecycle", () => {
     });
     await expect(sessions.getSession("session_1")).resolves.toMatchObject({
       activeAttachmentIds: ["attachment_1"],
+    });
+  });
+
+  it("agent.stop shuts down the runner and persists the stopped summary", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      createAttachmentId: sequence(["attachment_1"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:02.000Z",
+        "2026-05-01T12:00:03.000Z",
+      ]),
+    });
+    const stopAgent = vi.fn(async () => {});
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_stop",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent,
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await agents.createAgent({ objective: "build the parser" });
+    await expect(
+      agents.attachAgent({ agentId: "agent_stop", clientId: "tui_1" }),
+    ).resolves.toMatchObject({
+      agentId: "agent_stop",
+      sessionIds: ["session_1"],
+    });
+
+    await expect(
+      agents.stopAgent({ agentId: "agent_stop", reason: "operator stop" }),
+    ).resolves.toEqual({ agentId: "agent_stop", stopped: true });
+    expect(stopAgent).toHaveBeenCalledWith("agent_stop", "operator stop");
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(agents.getAgent("agent_stop")).resolves.toEqual({
+      agentId: "agent_stop",
+      objective: "build the parser",
+      status: "stopped",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      startedAt: "2026-05-01T12:00:00.500Z",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+      cwd: "/workspace",
+      metadata: {
+        unattendedAllow: [
+          "FileRead",
+          "system.grep",
+          "system.glob",
+          "system.listDir",
+          "system.stat",
+        ],
+        unattendedDeny: [],
+      },
+    });
+    const stoppedSession = await sessions.getSession("session_1");
+    expect(stoppedSession).toMatchObject({
+      status: "closed",
+      closedAt: "2026-05-01T12:00:03.000Z",
+    });
+    expect(stoppedSession).not.toHaveProperty("activeAttachmentIds");
+    await expect(
+      agents.attachAgent({ agentId: "agent_stop" }),
+    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+    await expect(agents.stopAgent({ agentId: "agent_stop" })).resolves.toEqual({
+      agentId: "agent_stop",
+      stopped: false,
+    });
+    expect(stopAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps final stop state durable while runner shutdown is in flight", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_1"]),
+      now: sequence([
+        "2026-05-01T12:00:01.000Z",
+        "2026-05-01T12:00:03.000Z",
+      ]),
+    });
+    const stopStarted = createDeferred();
+    const releaseStop = createDeferred();
+    let stopping = false;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_race",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      getAgentSnapshot: async () =>
+        stopping
+          ? null
+          : {
+              status: "running",
+              lastActiveAt: "2026-05-01T12:00:00.500Z",
+            },
+      stopAgent: async () => {
+        stopping = true;
+        stopStarted.resolve(undefined);
+        await releaseStop.promise;
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+      sessionManager: sessions,
+    });
+
+    await agents.createAgent({ objective: "race stop" });
+    const stop = agents.stopAgent({ agentId: "agent_race" });
+    await stopStarted.promise;
+
+    await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
+    await expect(agents.getAgent("agent_race")).resolves.toMatchObject({
+      agentId: "agent_race",
+      status: "stopping",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    });
+    await expect(
+      agents.attachAgent({ agentId: "agent_race" }),
+    ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
+
+    releaseStop.resolve(undefined);
+    await expect(stop).resolves.toEqual({
+      agentId: "agent_race",
+      stopped: true,
+    });
+    await expect(agents.getAgent("agent_race")).resolves.toMatchObject({
+      agentId: "agent_race",
+      status: "stopped",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
+    });
+  });
+
+  it("keeps stop failures from being reported as successful stops", async () => {
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_fail_stop",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      stopAgent: async () => {
+        throw new Error("shutdown failed");
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      defaultCwd: () => "/workspace",
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:02.000Z",
+      ]),
+      runner,
+    });
+
+    await agents.createAgent({ objective: "fail stop" });
+    await expect(agents.stopAgent({ agentId: "agent_fail_stop" })).rejects.toThrow(
+      "shutdown failed",
+    );
+    await expect(agents.getAgent("agent_fail_stop")).resolves.toMatchObject({
+      agentId: "agent_fail_stop",
+      status: "error",
+      lastActiveAt: "2026-05-01T12:00:02.000Z",
     });
   });
 
@@ -477,10 +665,14 @@ describe("AgenC background agent lifecycle", () => {
         startedAt: "2026-05-01T12:00:00.500Z",
         status: "running",
       }),
+      stopAgent: vi.fn(async () => {}),
     };
     const agents = new AgenCDaemonAgentManager({
       defaultCwd: () => "/workspace",
-      now: sequence(["2026-05-01T12:00:00.000Z"]),
+      now: sequence([
+        "2026-05-01T12:00:00.000Z",
+        "2026-05-01T12:00:01.000Z",
+      ]),
       runner,
     });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -630,6 +822,37 @@ describe("AgenC background agent lifecycle", () => {
         ],
       },
     });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: 4,
+        method: "agent.stop",
+        params: { agentId: "agent_rpc" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: 4,
+      result: {
+        agentId: "agent_rpc",
+        stopped: true,
+      },
+    });
+    expect(runner.stopAgent).toHaveBeenCalledWith("agent_rpc", "agent.stop");
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: 5,
+        method: "agent.list",
+        params: { limit: 1 },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: 5,
+      result: {
+        agents: [],
+      },
+    });
   });
 
   it("rejects malformed agent.create params before launching the runner", async () => {
@@ -716,6 +939,22 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message: "agent.attach requires agentId",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "bad-stop",
+        method: "agent.stop",
+        params: { reason: "missing id" },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "bad-stop",
+      error: {
+        code: -32602,
+        message: "agent.stop requires agentId",
         data: { code: "INVALID_ARGUMENT" },
       },
     });

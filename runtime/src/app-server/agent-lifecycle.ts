@@ -1,9 +1,10 @@
 /**
  * In-memory daemon lifecycle for user-started background agents.
  *
- * F-06a owns the launch path only: start the background delegate loop, record
- * its daemon-visible agent summary, and seed the first daemon session with the
- * objective. Later F-06 rows add listing, attach, stop, logs, and recovery.
+ * F-06a owns the launch path: start the background delegate loop, record its
+ * daemon-visible agent summary, and seed the first daemon session with the
+ * objective. F-06d adds explicit stop while keeping the final stopped summary
+ * available for follow-up inspection.
  */
 
 import { AsyncLock } from "../utils/async-lock.js";
@@ -18,6 +19,8 @@ import type {
   AgentCreateResult,
   AgentListParams,
   AgentListResult,
+  AgentStopParams,
+  AgentStopResult,
   AgentStatus,
   AgentSummary,
   JsonObject,
@@ -282,6 +285,69 @@ export class AgenCDaemonAgentManager {
     });
   }
 
+  async stopAgent(params: AgentStopParams): Promise<AgentStopResult> {
+    const agentId = normalizeRequiredAgentId(params.agentId, "agent.stop");
+    const reason = normalizeNonEmpty(params.reason) ?? "agent.stop";
+    const runner = this.#runner;
+    const stopRunner = runner?.stopAgent?.bind(runner);
+    let transitionAt: string | undefined;
+    const target = await this.#state.with(async (state) => {
+      const agent = state.agents.get(agentId);
+      if (agent !== undefined) {
+        await this.#refreshAgentFromRunner(state, agent);
+      }
+      const refreshed = state.agents.get(agentId);
+      if (refreshed === undefined) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "AGENT_NOT_FOUND",
+          `AgenC daemon agent not found: ${agentId}`,
+        );
+      }
+      if (!isActiveAgent(refreshed)) {
+        return null;
+      }
+      if (stopRunner === undefined) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "BACKGROUND_RUNNER_UNAVAILABLE",
+          "agent.stop requires a background runner",
+        );
+      }
+      transitionAt = this.#now();
+      refreshed.status = "stopping";
+      refreshed.lastActiveAt = transitionAt;
+      return {
+        sessionIds: [...refreshed.sessionIds],
+      };
+    });
+
+    if (target === null) {
+      return { agentId, stopped: false };
+    }
+    if (stopRunner === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "agent.stop requires a background runner",
+      );
+    }
+    try {
+      await stopRunner(agentId, reason);
+    } catch (error) {
+      await this.#markAgentStopFailed(agentId, transitionAt);
+      throw error;
+    }
+
+    const stoppedAt = transitionAt ?? this.#now();
+    await this.#state.with((state) => {
+      const agent = state.agents.get(agentId);
+      if (agent === undefined) return;
+      agent.status = "stopped";
+      agent.lastActiveAt = stoppedAt;
+      agent.sessionIds = [];
+    });
+    await this.#terminateAgentSessions(target.sessionIds, reason);
+    return { agentId, stopped: true };
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     const agentId = await this.#resolveActiveAgentIdForSession(params.sessionId);
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
@@ -450,6 +516,7 @@ export class AgenCDaemonAgentManager {
     state: AgentLifecycleState,
     agent: MutableAgent,
   ): Promise<void> {
+    if (!isActiveAgent(agent)) return;
     const snapshot = await this.#runner?.getAgentSnapshot?.(agent.agentId);
     if (snapshot === undefined) return;
     if (snapshot === null) {
@@ -478,6 +545,28 @@ export class AgenCDaemonAgentManager {
       };
     });
   }
+
+  async #terminateAgentSessions(
+    sessionIds: readonly string[],
+    reason: string,
+  ): Promise<void> {
+    if (this.#sessionManager === undefined) return;
+    for (const sessionId of sessionIds) {
+      await this.#sessionManager.terminateSession({ sessionId, reason });
+    }
+  }
+
+  async #markAgentStopFailed(
+    agentId: string,
+    failedAt: string | undefined,
+  ): Promise<void> {
+    await this.#state.with((state) => {
+      const agent = state.agents.get(agentId);
+      if (agent === undefined || agent.status !== "stopping") return;
+      agent.status = "error";
+      agent.lastActiveAt = failedAt ?? this.#now();
+    });
+  }
 }
 
 function normalizeObjective(params: AgentCreateParams): string {
@@ -494,6 +583,17 @@ function normalizeObjective(params: AgentCreateParams): string {
 function normalizeNonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+function normalizeRequiredAgentId(value: string, methodName: string): string {
+  const normalized = normalizeNonEmpty(value);
+  if (normalized === undefined) {
+    throw new AgenCDaemonAgentLifecycleError(
+      "INVALID_ARGUMENT",
+      `${methodName} requires agentId`,
+    );
+  }
+  return normalized;
 }
 
 function normalizeStringList(
@@ -536,7 +636,11 @@ function applyAgentSnapshot(
 }
 
 function isActiveAgent(agent: MutableAgent): boolean {
-  return agent.status !== "stopped" && agent.status !== "error";
+  return (
+    agent.status !== "stopping" &&
+    agent.status !== "stopped" &&
+    agent.status !== "error"
+  );
 }
 
 function compareAgentsForList(left: MutableAgent, right: MutableAgent): number {

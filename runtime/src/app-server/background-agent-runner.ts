@@ -263,11 +263,22 @@ export class AgenCDelegateBackgroundAgentRunner
   async stopAgent(agentId: string, reason = "daemon_agent_stop"): Promise<void> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
+    active.status = "stopping";
+    active.lastActiveAt = this.#now();
+    try {
+      await active.control.shutdown(agentId, reason);
+      await active.bootstrap.shutdown();
+    } catch (error) {
+      active.status = "error";
+      active.lastActiveAt = this.#now();
+      throw error;
+    }
     this.#active.delete(agentId);
+    this.#pendingEvents.delete(agentId);
+    this.#assistantTextByAgent.delete(agentId);
+    this.#pendingActiveToolCallIds.delete(agentId);
     active.unsubscribeStatus?.();
     active.uninstallApprovalBridge?.();
-    await active.control.shutdown(agentId, reason).catch(() => {});
-    await active.bootstrap.shutdown().catch(() => {});
   }
 
   async attachAgentSessionEvents(

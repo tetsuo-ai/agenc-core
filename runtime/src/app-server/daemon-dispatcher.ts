@@ -27,6 +27,7 @@ import {
   type AgentAttachParams,
   type AgentCreateParams,
   type AgentListParams,
+  type AgentStopParams,
   type AgenCDaemonErrorCode,
   type AgenCDaemonErrorObject,
   type AgenCDaemonMethod,
@@ -56,6 +57,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "createAgent"
     | "denyTool"
     | "listAgents"
+    | "stopAgent"
     | "streamAgentMessage"
   >;
   readonly initializeAuthenticator?: (
@@ -80,6 +82,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "createAgent"
     | "denyTool"
     | "listAgents"
+    | "stopAgent"
     | "streamAgentMessage"
   >;
   readonly #initializeAuthenticator:
@@ -234,6 +237,11 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "agent.attach":
         return this.#attachAgent(id, connection, params);
+      case "agent.stop":
+        return successResponse(
+          id,
+          await this.#agentManager.stopAgent(validateAgentStopParams(params)),
+        );
       case "message.stream":
         return this.#streamMessage(id, params);
       case "fs.fuzzy_search":
@@ -622,6 +630,15 @@ function validateAgentAttachParams(params: JsonObject): AgentAttachParams {
     throw invalidParams("agent.attach requires agentId");
   }
   return validated as AgentAttachParams;
+}
+
+function validateAgentStopParams(params: JsonObject): AgentStopParams {
+  const validated = validateObjectShape(params, {
+    methodName: "agent.stop",
+    stringFields: ["agentId", "reason"],
+  });
+  validateRequiredString(validated, "agent.stop", "agentId");
+  return validated as AgentStopParams;
 }
 
 function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
