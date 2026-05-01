@@ -59,9 +59,20 @@ const FATAL_PATTERNS = [
   /\bReferenceError:\s/,
   /\bSyntaxError:\s/,
   /\bAssertionError:\s/,
-  // Common stack-frame markers — only flag when paired with a thrown
-  // identifier above in the same buffer; the matcher below applies the
-  // pattern to the full collected output, so a stack alone is fine.
+  // Catches ink-formatted errors like `ERROR  Config accessed before allowed.`
+  // (the chalk-red `ERROR` token followed by 2+ spaces and a message). The
+  // upstream Ink runtime prints unhandled React errors in this shape; without
+  // this pattern, a startup that throws inside ThemeProvider's
+  // `defaultInitialTheme` (and similar useState init paths) was previously
+  // reported as "clean" because none of the JS-error words appeared in the
+  // captured bytes.
+  /\bERROR\s{2,}\S/,
+  // Stack-frame line: `at <symbol> (file:///path:NN:NN)`,
+  // `at <symbol> (/abs/path:NN:NN)`, or `at <symbol> (node:internal/...:NN:NN)`.
+  // Stack frames don't appear in normal TUI output — if any are present in the
+  // captured buffer the runtime threw a stack-emitting exception during
+  // startup, which is exactly the failure mode this gate exists for.
+  /\bat\s+(?:async\s+)?[\w$.<>[\]]+\s+\(?(?:file:|node:|\/)[^\s)]+:\d+:\d+\)?/,
 ];
 
 const require = createRequire(import.meta.url);
